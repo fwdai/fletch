@@ -23,7 +23,12 @@ use tokio::time::{sleep, timeout};
 use crate::error::{Error, Result};
 use crate::vm::Vm;
 
-const UPSTREAM_IMAGE: &str = "ghcr.io/cirruslabs/ubuntu:latest";
+/// Pinned to an explicit LTS tag instead of `:latest` because `:latest` has
+/// been observed to have unreliable first-boot behavior (sshd starting and
+/// stopping multiple times during cloud-init, transient firewall states).
+/// If 24.04 is also problematic, we'll need to generate a cidata ISO and
+/// attach via `--disk` so cloud-init runs our config first.
+const UPSTREAM_IMAGE: &str = "ghcr.io/cirruslabs/ubuntu:24.04";
 const GUEST_USER: &str = "admin";
 const INITIAL_PASSWORD: &str = "admin";
 /// Total budget for the VM to acquire an IP. First boots can take a while
