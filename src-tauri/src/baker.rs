@@ -336,27 +336,55 @@ where
             let elapsed = Instant::now()
                 .saturating_duration_since(deadline - total)
                 .as_secs();
-            // "Connection refused" is the expected error while cloud-init
-            // is still running ssh-keygen / hasn't started ssh.service yet.
-            // Calling that out explicitly so the user knows the wait is
-            // expected, not stuck.
+            // Tell the user *why* we're still waiting with a one-line
+            // network diagnosis. ping ✓ means the VM is alive and we're
+            // just waiting on sshd; arp empty means the bridge can't
+            // route at all; "No route to host" means the guest is
+            // ICMP-rejecting (firewall).
+            let diag = diagnose(ip).await;
             let detail = match last_err.as_deref() {
                 Some(e) if e.contains("Connection refused") => {
-                    "VM is reachable; ssh.service hasn't started yet \
-                     (cloud-init regenerates host keys on first boot — \
-                     usually 2–3 min)"
+                    "VM is reachable; ssh.service not yet listening (cloud-init regenerates host keys on first boot — usually 2–3 min)".to_string()
                 }
-                _ => last_err.as_deref().unwrap_or("(retrying)"),
+                Some(e) if e.contains("No route") => {
+                    format!("{diag}\nVM is responding but its kernel is rejecting port 22 — likely a firewall on the guest. Waiting for it to come down…")
+                }
+                _ => format!("{diag}\nLast: {}", last_err.as_deref().unwrap_or("?")),
             };
             report(
                 BakeStage::WaitingForSsh,
                 &format!("Still waiting for SSH on {ip} ({elapsed}s elapsed)…"),
-                Some(detail),
+                Some(&detail),
             );
         }
 
         sleep(SSH_TRY_INTERVAL).await;
     }
+}
+
+/// One-line network diagnosis used in heartbeats. Best-effort — never
+/// fails, just reports what it sees.
+async fn diagnose(ip: &str) -> String {
+    use tokio::process::Command;
+    let ping_ok = Command::new("ping")
+        .args(["-c", "1", "-W", "1000", ip])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let arp_line = Command::new("arp")
+        .args(["-n", ip])
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let arp_state = match arp_line {
+        Some(l) if l.contains("incomplete") || l.contains("no entry") => "arp ✗",
+        Some(_) => "arp ✓",
+        None => "arp ?",
+    };
+    format!("ping {} · {}", if ping_ok { "✓" } else { "✗" }, arp_state)
 }
 
 /// Tail of stderr from a long-running child process. We capture it so that
