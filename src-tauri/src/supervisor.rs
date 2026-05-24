@@ -162,12 +162,16 @@ impl Supervisor {
                 );
             },
             move |stage_message| {
+                tracing::info!(agent_id = %id_for_progress, stage = %stage_message, "spawn progress");
                 // Persist so a frontend that re-fetches after losing the
                 // event (e.g. dev-server reload mid-spawn) sees the same
                 // message, then emit the live update.
-                let _ = workspace_for_progress
-                    .update_agent_status_message(&id_for_progress, Some(stage_message.into()));
-                let _ = app_for_progress.emit(
+                if let Err(e) = workspace_for_progress
+                    .update_agent_status_message(&id_for_progress, Some(stage_message.into()))
+                {
+                    tracing::warn!(error = %e, "persist progress msg failed");
+                }
+                if let Err(e) = app_for_progress.emit(
                     "agent:status",
                     AgentStatusPayload {
                         agent_id: id_for_progress.clone(),
@@ -175,7 +179,9 @@ impl Supervisor {
                         last_error: None,
                         status_message: Some(stage_message.into()),
                     },
-                );
+                ) {
+                    tracing::warn!(error = %e, "emit progress failed");
+                }
             },
         )
         .await?;
