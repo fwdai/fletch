@@ -309,6 +309,38 @@ small code {
 }
 .row-input { display: flex; gap: 6px; }
 .row-input input { flex: 1; }
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--border-strong); }
+.chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+small.warn {
+  color: var(--warning);
+  border-left: 2px solid var(--warning);
+  padding-left: 8px;
+  margin-top: 8px;
+}
+small.warn code {
+  display: inline-block;
+  margin: 4px 0;
+}
 .formerr {
   background: rgba(227, 100, 100, 0.15);
   border: 1px solid var(--danger);

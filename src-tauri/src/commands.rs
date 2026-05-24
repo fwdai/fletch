@@ -77,3 +77,16 @@ pub async fn discard_worktree(
 pub fn get_public_key(supervisor: State<'_, Arc<Supervisor>>) -> Result<String> {
     keys::read_public_key(&supervisor.keys)
 }
+
+/// Returns the names of all Tart VMs visible to the bundled `tart` binary.
+/// Used by the frontend to populate a "pick a base image" picker — agent
+/// VMs (named `algiers-*`) are filtered out so we only show candidates.
+#[tauri::command]
+pub async fn list_base_images(supervisor: State<'_, Arc<Supervisor>>) -> Result<Vec<String>> {
+    let vm = supervisor.vm.clone();
+    let names = vm.list_names().await?;
+    Ok(names
+        .into_iter()
+        .filter(|n| !n.starts_with("algiers-"))
+        .collect())
+}

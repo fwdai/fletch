@@ -94,6 +94,7 @@ pub fn run() {
             commands::stop_agent,
             commands::discard_worktree,
             commands::get_public_key,
+            commands::list_base_images,
         ])
         .run(tauri::generate_context!())
         .expect("error while running algiers");

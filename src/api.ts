@@ -49,6 +49,7 @@ export const api = {
   discardWorktree: (agentId: string) =>
     invoke<void>("discard_worktree", { agentId }),
   getPublicKey: () => invoke<string>("get_public_key"),
+  listBaseImages: () => invoke<string[]>("list_base_images"),
 };
 
 export function onAgentOutput(

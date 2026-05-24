@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { api } from "../api";
 import { useAppStore } from "../store";
 
 /**
@@ -17,6 +18,26 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
 
   const [path, setPath] = useState(workspace?.repo_path ?? "");
   const [baseImage, setBaseImage] = useState(workspace?.base_image ?? "base-dev");
+  const [available, setAvailable] = useState<string[] | null>(null);
+  const [imagesError, setImagesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listBaseImages()
+      .then((list) => {
+        if (!cancelled) setAvailable(list);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setAvailable([]);
+          setImagesError(String(e));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function pickDirectory() {
     const selected = await open({
@@ -60,16 +81,53 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
             </div>
           </label>
           <label>
-            <span>Tart base image name</span>
+            <span>Tart base image</span>
             <input
               value={baseImage}
               onChange={(e) => setBaseImage(e.target.value)}
               placeholder="base-dev"
+              list="base-image-options"
             />
-            <small>
-              Run <code>tart list</code> in a terminal to see available images.
-              See <code>scripts/build-base-image.md</code> for how to build one.
-            </small>
+            {available && available.length > 0 && (
+              <datalist id="base-image-options">
+                {available.map((name) => (
+                  <option key={name} value={name} />
+                ))}
+              </datalist>
+            )}
+            {available === null && <small>Loading available VMs…</small>}
+            {available && available.length > 0 && (
+              <div className="chips">
+                {available.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className={`chip ${baseImage === name ? "active" : ""}`}
+                    onClick={() => setBaseImage(name)}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {available && available.length === 0 && !imagesError && (
+              <small className="warn">
+                No Tart VMs found on this system. Build a base image first —
+                see <code>scripts/build-base-image.md</code>. Short version:
+                <br />
+                <code>
+                  tart clone ghcr.io/cirruslabs/ubuntu:latest base-dev
+                </code>
+                <br />
+                then SSH in and install node + claude code CLI + your
+                public key.
+              </small>
+            )}
+            {imagesError && (
+              <small className="warn">
+                Couldn't list Tart VMs: {imagesError}
+              </small>
+            )}
           </label>
           {lastError && <div className="formerr">{lastError}</div>}
           <div className="actions">

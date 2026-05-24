@@ -127,7 +127,6 @@ impl Vm {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn list_names(&self) -> Result<Vec<String>> {
         let out = self.cli.capture(&["list", "--quiet"]).await?;
         if !out.ok() {
