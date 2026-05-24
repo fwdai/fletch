@@ -28,10 +28,15 @@ const GUEST_USER: &str = "admin";
 const INITIAL_PASSWORD: &str = "admin";
 /// Total budget for the VM to acquire an IP. First boots can take a while
 /// because cloud-init runs synchronously before networking comes up.
-const IP_READY_TIMEOUT: Duration = Duration::from_secs(120);
-/// Total budget for SSH to start listening after the VM has an IP. cloud-init
-/// finishing + ssh.service start can take another minute on a fresh image.
-const SSH_READY_TIMEOUT: Duration = Duration::from_secs(180);
+const IP_READY_TIMEOUT: Duration = Duration::from_secs(180);
+/// Total budget for SSH to start listening after the VM has an IP.
+///
+/// First boot of a freshly-cloned cirruslabs Ubuntu image runs cloud-init
+/// end-to-end, including `ssh-keygen -A` which regenerates host keys, and
+/// only THEN starts `ssh.service`. Empirically this takes 2–3 minutes; we
+/// give it 5 to be safe. Until that's done, `connect()` returns
+/// `Connection refused` — the network is reachable, sshd just isn't up.
+const SSH_READY_TIMEOUT: Duration = Duration::from_secs(300);
 /// Hard cap on each individual `TcpStream::connect` attempt. The macOS
 /// kernel's SYN retry budget is 75+ seconds, which silently freezes the
 /// retry loop if we don't cut it short.
@@ -298,10 +303,22 @@ where
             let elapsed = Instant::now()
                 .saturating_duration_since(deadline - total)
                 .as_secs();
+            // "Connection refused" is the expected error while cloud-init
+            // is still running ssh-keygen / hasn't started ssh.service yet.
+            // Calling that out explicitly so the user knows the wait is
+            // expected, not stuck.
+            let detail = match last_err.as_deref() {
+                Some(e) if e.contains("Connection refused") => {
+                    "VM is reachable; ssh.service hasn't started yet \
+                     (cloud-init regenerates host keys on first boot — \
+                     usually 2–3 min)"
+                }
+                _ => last_err.as_deref().unwrap_or("(retrying)"),
+            };
             report(
                 BakeStage::WaitingForSsh,
                 &format!("Still waiting for SSH on {ip} ({elapsed}s elapsed)…"),
-                last_err.as_deref(),
+                Some(detail),
             );
         }
 
