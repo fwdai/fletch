@@ -20,13 +20,17 @@ use crate::vm::{MountSpec, Vm};
 /// 90s gives some headroom for system load.
 const VM_BOOT_TIMEOUT: Duration = Duration::from_secs(90);
 /// How long to wait for sshd to start accepting on port 22 after the VM
-/// has an IP. Cloned VMs already have host keys baked in, but
-/// `ssh.service` start is still async — usually <10s, occasionally
-/// longer under load.
-const SSH_PORT_TIMEOUT: Duration = Duration::from_secs(60);
+/// has an IP. Bumped to 2 minutes because cirruslabs cloned VMs sometimes
+/// reboot during cloud-init — when that happens the host kernel sees
+/// "No route to host" until a fresh DHCP lease finalizes and we re-query
+/// `tart ip` (see [`wait_for_ssh_port_with_reip`]).
+const SSH_PORT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Per-`connect` timeout. The macOS kernel will spend ~75s retrying SYN
 /// on its own if we don't cut it short.
 const SSH_CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
+/// How often to re-query `tart ip` during the SSH wait, in case the VM
+/// rebooted and the IP we already have is stale.
+const REIP_INTERVAL: Duration = Duration::from_secs(8);
 
 /// Username baked into the base image. Hardcoded for v1 — eventually moves
 /// into per-workspace config alongside `base_image`.
@@ -81,7 +85,7 @@ impl Agent {
     ) -> Result<Self>
     where
         F: Fn(Vec<u8>) + Send + 'static,
-        P: Fn(&str) + Send + 'static,
+        P: Fn(&str) + Send + Sync + 'static,
     {
         // 1. Clone the base image into a fresh per-agent VM (APFS CoW, fast).
         on_progress("Cloning base image (APFS CoW, fast)…");
@@ -116,11 +120,22 @@ impl Agent {
         };
 
         on_progress(&format!("VM at {ip}. Waiting for SSH (port 22)…"));
-        if let Err(e) = wait_for_ssh_port(&ip, SSH_PORT_TIMEOUT).await {
-            let _ = vm.stop(spec.vm_name).await;
-            let _ = vm.delete(spec.vm_name).await;
-            return Err(e);
-        }
+        let ip = match wait_for_ssh_port_with_reip(
+            &vm,
+            spec.vm_name,
+            ip,
+            &on_progress,
+            SSH_PORT_TIMEOUT,
+        )
+        .await
+        {
+            Ok(ip) => ip,
+            Err(e) => {
+                let _ = vm.stop(spec.vm_name).await;
+                let _ = vm.delete(spec.vm_name).await;
+                return Err(e);
+            }
+        };
 
         // 4. Mount the share inside the guest, then start claude under a PTY.
         //    Combining both into one remote command keeps spawn atomic from
@@ -176,28 +191,58 @@ impl Agent {
 /// after `timeout`. Each `connect` attempt is wrapped in a short timeout —
 /// without it, macOS's kernel SYN-retry budget (~75s) would freeze the
 /// outer retry loop on the first attempt.
-async fn wait_for_ssh_port(ip: &str, total: Duration) -> Result<()> {
+///
+/// Also periodically re-queries `tart ip` so that if the VM rebooted
+/// during cloud-init and got a new DHCP lease, we follow it to the new
+/// address instead of hammering the dead one. Returns the IP that
+/// eventually accepted the connection.
+async fn wait_for_ssh_port_with_reip(
+    vm: &Vm,
+    image_name: &str,
+    initial_ip: String,
+    on_progress: &(impl Fn(&str) + Send + 'static),
+    total: Duration,
+) -> Result<String> {
     let deadline = Instant::now() + total;
+    let mut current_ip = initial_ip;
     let mut last_err: Option<String> = None;
+    let mut last_reip_at = Instant::now();
     let _ = &last_err;
     loop {
         match timeout(
             SSH_CONNECT_ATTEMPT_TIMEOUT,
-            tokio::net::TcpStream::connect((ip, 22)),
+            tokio::net::TcpStream::connect((current_ip.as_str(), 22)),
         )
         .await
         {
-            Ok(Ok(_)) => return Ok(()),
+            Ok(Ok(_)) => return Ok(current_ip),
             Ok(Err(e)) => last_err = Some(format!("connect: {e}")),
             Err(_) => last_err = Some("connect: timed out".into()),
         }
+
         if Instant::now() >= deadline {
             return Err(Error::Ssh(format!(
-                "SSH did not start listening on {ip}:22 within {}s (last: {})",
+                "SSH did not start listening on {current_ip}:22 within {}s (last: {})",
                 total.as_secs(),
                 last_err.as_deref().unwrap_or("?")
             )));
         }
+
+        // If we're seeing "No route to host" or repeated timeouts, the
+        // VM might have rebooted and the IP we have is stale. Re-query
+        // every `REIP_INTERVAL` and follow if it changed.
+        if last_reip_at.elapsed() >= REIP_INTERVAL {
+            last_reip_at = Instant::now();
+            if let Ok(Some(new_ip)) = vm.try_ip(image_name).await {
+                if new_ip != current_ip {
+                    on_progress(&format!(
+                        "VM IP changed: {current_ip} → {new_ip}. Retrying SSH there…"
+                    ));
+                    current_ip = new_ip;
+                }
+            }
+        }
+
         sleep(Duration::from_secs(1)).await;
     }
 }
