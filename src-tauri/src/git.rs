@@ -75,3 +75,28 @@ pub async fn worktree_prune(repo: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// Force-delete a local branch. Returns Ok even if the branch never
+/// existed in the first place — that's exactly the state the caller
+/// usually wants to converge on. Errors only for genuine git failures
+/// (e.g. branch checked out in another live worktree).
+pub async fn branch_delete(repo: &Path, branch: &str) -> Result<()> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["branch", "-D", branch])
+        .output()
+        .await?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // git emits "branch '<x>' not found." with exit 1 when the branch is
+    // already gone. Treat that as success — the caller's goal is satisfied.
+    if stderr.contains("not found") {
+        return Ok(());
+    }
+    Err(Error::Git(format!(
+        "branch -D {branch} failed: {}",
+        stderr.trim()
+    )))
+}

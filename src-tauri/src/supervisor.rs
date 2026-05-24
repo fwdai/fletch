@@ -226,6 +226,12 @@ impl Supervisor {
         let repo = self.workspace.repo_path()?;
         let worktree = self.workspace.worktree_path(agent_id)?;
         let vm_name = format!("algiers-{}", agent_id);
+        // Capture the branch up-front — we still want to delete it even if
+        // the agent record gets removed mid-cleanup somehow.
+        let branch = self
+            .workspace
+            .current()
+            .and_then(|ws| ws.agents.iter().find(|a| a.id == agent_id).map(|a| a.branch.clone()));
 
         // 1. Kill any live in-memory Agent handle. The PTY drop also kills
         //    the SSH session; the `tart run` child gets killed via
@@ -259,7 +265,17 @@ impl Supervisor {
             }
         }
 
-        // 4. ALWAYS remove the agent record so the UI doesn't leave the
+        // 4. Delete the agent's branch (best-effort). The "Remove" action
+        //    implies the user is done with this agent's work; leaving the
+        //    branch around just clutters `git branch`. Recoverable via
+        //    reflog for ~90 days if the user changes their mind.
+        if let Some(branch) = branch {
+            if let Err(e) = git::branch_delete(&repo, &branch).await {
+                tracing::warn!(%branch, error = %e, "discard: branch delete failed");
+            }
+        }
+
+        // 5. ALWAYS remove the agent record so the UI doesn't leave the
         //    user with stuck rows they can't get rid of.
         self.workspace.remove_agent(agent_id)?;
         Ok(())
