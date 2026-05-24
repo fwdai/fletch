@@ -31,12 +31,13 @@ const INITIAL_PASSWORD: &str = "admin";
 const IP_READY_TIMEOUT: Duration = Duration::from_secs(180);
 /// Total budget for SSH to start listening after the VM has an IP.
 ///
-/// First boot of a freshly-cloned cirruslabs Ubuntu image runs cloud-init
-/// end-to-end, including `ssh-keygen -A` which regenerates host keys, and
-/// only THEN starts `ssh.service`. Empirically this takes 2–3 minutes; we
-/// give it 5 to be safe. Until that's done, `connect()` returns
-/// `Connection refused` — the network is reachable, sshd just isn't up.
-const SSH_READY_TIMEOUT: Duration = Duration::from_secs(300);
+/// First boot of a freshly-cloned cirruslabs Ubuntu `:latest` image is
+/// agonizingly slow — empirically 3–5 minutes from IP-up to sshd
+/// listening. During that window we see a mix of `Connection refused`
+/// (sshd not started yet) and `No route to host` (transient firewall
+/// state during cloud-init's network module). 8 minutes gives enough
+/// headroom for a worst-case first boot.
+const SSH_READY_TIMEOUT: Duration = Duration::from_secs(480);
 /// Hard cap on each individual `TcpStream::connect` attempt. The macOS
 /// kernel's SYN retry budget is 75+ seconds, which silently freezes the
 /// retry loop if we don't cut it short.
@@ -90,10 +91,15 @@ where
     let res = bake_inner(&vm, &spec, &report).await;
     if let Err(e) = &res {
         report(BakeStage::Error, &e.to_string(), None);
-        // Best-effort cleanup so the user can retry without a stale VM
-        // lying around.
+        // Don't auto-delete on failure. The VM may have made progress
+        // (e.g. successfully booted, just not in time for our SSH wait),
+        // and a retry can salvage it via the pre-clean logic at the top
+        // of bake_inner. Auto-deleting forces the user to redo the
+        // expensive 1–2GB upstream download every time.
+        //
+        // We still stop the VM to free up RAM, but leave the image on
+        // disk so retry can re-run it without re-downloading.
         let _ = vm.stop(spec.image_name).await;
-        let _ = vm.delete(spec.image_name).await;
     } else {
         report(BakeStage::Done, "Base image ready", None);
     }
@@ -114,27 +120,32 @@ where
         ));
     }
 
-    // 0. Pre-clean: if a previous bake left a half-baked VM by this name
-    //    around (e.g. user killed the app mid-bake), `tart clone` will fail
-    //    with "already exists". Force a fresh start. Best-effort — ignore
-    //    errors here since the next step would surface them anyway.
-    if vm.exists(spec.image_name).await.unwrap_or(false) {
+    // 0. If a previous bake left this VM behind (e.g. timed out during the
+    //    SSH wait but the disk image is intact), reuse it — saves the 1–2 GB
+    //    upstream download. We just need to start the VM and (re-)try the
+    //    SSH wait. If the VM doesn't exist, fall through to a fresh clone.
+    let reused = vm.exists(spec.image_name).await.unwrap_or(false);
+    if reused {
         report(
             BakeStage::Cloning,
-            &format!("Removing existing VM '{}' from a previous attempt…", spec.image_name),
+            &format!(
+                "Reusing existing '{}' VM from a previous bake attempt (skipping 1–2 GB download)…",
+                spec.image_name
+            ),
             None,
         );
+        // Make sure it's stopped before we re-launch it (idempotent).
         let _ = vm.stop(spec.image_name).await;
-        let _ = vm.delete(spec.image_name).await;
+    } else {
+        // 1. Clone the upstream image. This is the long step — it downloads
+        //    ~1–2 GB.
+        report(
+            BakeStage::Cloning,
+            "Downloading Ubuntu base image (1–2 GB, may take several minutes)…",
+            None,
+        );
+        vm.clone_image(UPSTREAM_IMAGE, spec.image_name).await?;
     }
-
-    // 1. Clone the upstream image. This is the long step — it downloads ~1–2 GB.
-    report(
-        BakeStage::Cloning,
-        "Downloading Ubuntu base image (1–2 GB, may take several minutes)…",
-        None,
-    );
-    vm.clone_image(UPSTREAM_IMAGE, spec.image_name).await?;
 
     // 2. Boot it. Keep the child handle — we kill it via `tart stop` later
     //    rather than killing the process directly (gives the guest a clean
