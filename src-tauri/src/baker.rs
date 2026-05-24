@@ -8,13 +8,16 @@
 //! are streamed through `on_progress` so the UI can show what's happening.
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use russh::client;
 use russh::keys::key::PublicKey;
 use russh::ChannelMsg;
 use serde::Serialize;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Child;
 use tokio::time::{sleep, timeout};
 
 use crate::error::{Error, Result};
@@ -97,6 +100,20 @@ where
         ));
     }
 
+    // 0. Pre-clean: if a previous bake left a half-baked VM by this name
+    //    around (e.g. user killed the app mid-bake), `tart clone` will fail
+    //    with "already exists". Force a fresh start. Best-effort — ignore
+    //    errors here since the next step would surface them anyway.
+    if vm.exists(spec.image_name).await.unwrap_or(false) {
+        report(
+            BakeStage::Cloning,
+            &format!("Removing existing VM '{}' from a previous attempt…", spec.image_name),
+            None,
+        );
+        let _ = vm.stop(spec.image_name).await;
+        let _ = vm.delete(spec.image_name).await;
+    }
+
     // 1. Clone the upstream image. This is the long step — it downloads ~1–2 GB.
     report(
         BakeStage::Cloning,
@@ -107,16 +124,36 @@ where
 
     // 2. Boot it. Keep the child handle — we kill it via `tart stop` later
     //    rather than killing the process directly (gives the guest a clean
-    //    shutdown).
+    //    shutdown). Drain stderr/stdout in background tasks so the pipe
+    //    buffers never fill up (which would silently freeze tart), and so
+    //    we can surface tart's error message if it dies on us.
     report(BakeStage::Booting, "Booting the VM…", None);
     let mut vm_child = vm.run_detached(spec.image_name, &[]).await?;
+    let vm_stderr_tail = spawn_drain(&mut vm_child);
 
-    // 3. Wait for the VM to get an IP and for SSH to actually accept
-    //    connections (which is slightly later than IP assignment).
-    report(BakeStage::WaitingForSsh, "Waiting for SSH to come up…", None);
-    let ip = vm
-        .wait_for_ip(spec.image_name, SSH_READY_TIMEOUT)
-        .await?;
+    // 3. Wait for the VM to get an IP. Poll our own loop instead of
+    //    `Vm::wait_for_ip` so we can also check whether the `tart run`
+    //    child has died and surface its stderr to the UI.
+    report(
+        BakeStage::WaitingForSsh,
+        "Waiting for VM to acquire a network address…",
+        None,
+    );
+    let ip = wait_for_ip_with_progress(
+        vm,
+        spec.image_name,
+        &mut vm_child,
+        &vm_stderr_tail,
+        SSH_READY_TIMEOUT,
+        report,
+    )
+    .await?;
+
+    report(
+        BakeStage::WaitingForSsh,
+        &format!("VM reached {ip}. Waiting for SSH (port 22)…"),
+        None,
+    );
     wait_for_ssh_port(&ip, SSH_READY_TIMEOUT).await?;
 
     // 4. SSH in with the upstream default password and run the install
@@ -192,13 +229,113 @@ echo 'BAKE_COMPLETE'
 }
 
 async fn wait_for_ssh_port(ip: &str, total: Duration) -> Result<()> {
-    let deadline = std::time::Instant::now() + total;
+    let deadline = Instant::now() + total;
     loop {
         match tokio::net::TcpStream::connect((ip, 22)).await {
             Ok(_) => return Ok(()),
-            Err(_) if std::time::Instant::now() < deadline => sleep(SSH_TRY_INTERVAL).await,
+            Err(_) if Instant::now() < deadline => sleep(SSH_TRY_INTERVAL).await,
             Err(_) => return Err(Error::VmBootTimeout(total.as_secs())),
         }
+    }
+}
+
+/// Tail of stderr from a long-running child process. We capture it so that
+/// if the child dies the bake can show a useful message instead of just
+/// timing out.
+type StderrTail = Arc<Mutex<Vec<String>>>;
+
+const STDERR_TAIL_LINES: usize = 50;
+
+/// Take `Child::stderr` and `Child::stdout`, spawn background tasks that
+/// drain them line by line. Returns a shared buffer containing the last
+/// `STDERR_TAIL_LINES` lines of stderr.
+fn spawn_drain(child: &mut Child) -> StderrTail {
+    let tail: StderrTail = Arc::new(Mutex::new(Vec::new()));
+
+    if let Some(stderr) = child.stderr.take() {
+        let tail = tail.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let mut g = tail.lock();
+                g.push(line);
+                if g.len() > STDERR_TAIL_LINES {
+                    let drop_n = g.len() - STDERR_TAIL_LINES;
+                    g.drain(..drop_n);
+                }
+            }
+        });
+    }
+    if let Some(stdout) = child.stdout.take() {
+        tokio::spawn(async move {
+            // Discard tart's stdout — it doesn't write anything useful here
+            // and we just need the pipe drained so it doesn't block.
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(_)) = lines.next_line().await {}
+        });
+    }
+
+    tail
+}
+
+/// Poll for the VM's IP, but also watch the `tart run` child for early
+/// exit. Emits periodic "still waiting" progress so the dialog isn't
+/// frozen-looking.
+async fn wait_for_ip_with_progress<R>(
+    vm: &Vm,
+    image_name: &str,
+    vm_child: &mut Child,
+    stderr_tail: &StderrTail,
+    total: Duration,
+    report: &R,
+) -> Result<String>
+where
+    R: Fn(BakeStage, &str, Option<&str>),
+{
+    let deadline = Instant::now() + total;
+    let mut attempt: u32 = 0;
+    loop {
+        if let Some(status) = vm_child.try_wait()? {
+            let tail = stderr_tail.lock().join("\n");
+            return Err(Error::Other(format!(
+                "`tart run {image_name}` exited unexpectedly (status: {status}). \
+                 Recent stderr:\n{}",
+                if tail.is_empty() { "(no output)" } else { &tail }
+            )));
+        }
+
+        if let Some(ip) = vm.try_ip(image_name).await? {
+            return Ok(ip);
+        }
+
+        if Instant::now() >= deadline {
+            let tail = stderr_tail.lock().join("\n");
+            return Err(Error::Other(format!(
+                "Timed out after {}s waiting for VM '{image_name}' to acquire an IP. \
+                 If `tart` printed anything:\n{}",
+                total.as_secs(),
+                if tail.is_empty() { "(no output)" } else { &tail }
+            )));
+        }
+
+        attempt += 1;
+        // Every ~10s of waiting, emit a heartbeat so the UI shows progress.
+        if attempt % 5 == 0 {
+            let elapsed = total.saturating_sub(deadline.saturating_duration_since(Instant::now()));
+            let tail = stderr_tail.lock();
+            let last_line = tail.last().cloned();
+            drop(tail);
+            report(
+                BakeStage::WaitingForSsh,
+                &format!(
+                    "Still waiting for VM IP ({}s elapsed)…",
+                    elapsed.as_secs()
+                ),
+                last_line.as_deref(),
+            );
+        }
+
+        sleep(Duration::from_secs(2)).await;
     }
 }
 

@@ -144,18 +144,46 @@ impl Vm {
     pub async fn wait_for_ip(&self, name: &str, timeout: Duration) -> Result<String> {
         let deadline = std::time::Instant::now() + timeout;
         loop {
-            let out = self.cli.capture(&["ip", name, "--wait", "1"]).await?;
-            if out.ok() {
-                let ip = out.stdout.trim();
-                if !ip.is_empty() {
-                    return Ok(ip.to_string());
+            match self.try_ip(name).await? {
+                Some(ip) => return Ok(ip),
+                None => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(Error::VmBootTimeout(timeout.as_secs()));
+                    }
+                    sleep(Duration::from_millis(500)).await;
                 }
             }
-            if std::time::Instant::now() >= deadline {
-                return Err(Error::VmBootTimeout(timeout.as_secs()));
-            }
-            sleep(Duration::from_millis(500)).await;
         }
+    }
+
+    /// Single-shot IP probe. Returns `Ok(None)` if Tart doesn't (yet) have an
+    /// IP for this VM, `Ok(Some(ip))` once it does, or `Err` for any error
+    /// other than "no IP yet". Callers wanting their own polling loop (e.g.
+    /// the bake flow, which also watches the `tart run` child for early
+    /// exit) use this directly.
+    pub async fn try_ip(&self, name: &str) -> Result<Option<String>> {
+        let out = self.cli.capture(&["ip", name, "--wait", "2"]).await?;
+        if out.ok() {
+            let trimmed = out.stdout.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        } else {
+            // Tart returns nonzero when it can't find the IP. Distinguish
+            // "real error" from "not ready yet" by looking at stderr — but
+            // for now treat both as "not ready" and let the outer loop
+            // timeout. The bake flow surfaces the underlying `tart run`
+            // stderr separately, which is the more useful signal.
+            Ok(None)
+        }
+    }
+
+    /// Has a VM by this name already been cloned? Returns the result of
+    /// `tart list --quiet` filtered to the exact name.
+    pub async fn exists(&self, name: &str) -> Result<bool> {
+        Ok(self.list_names().await?.iter().any(|n| n == name))
     }
 
     /// Spawn `tart run` in the background. Caller owns the child and is
