@@ -296,11 +296,20 @@ runcmd:
     std::fs::write(staging.join("meta-data"), meta_data)?;
 
     let iso_path = dir.join("cidata.iso");
+    // Set the volume label on ALL filesystem layers hdiutil creates. The
+    // NoCloud cloud-init datasource specifically looks for the ISO 9660
+    // label (read via blkid in the guest), so `-iso-volume-name` is the
+    // load-bearing one — but setting all three is harmless and removes
+    // ambiguity for any other tool that might inspect the image.
     let out = tokio::process::Command::new("hdiutil")
         .arg("makehybrid")
         .arg("-iso")
         .arg("-joliet")
         .arg("-default-volume-name")
+        .arg("CIDATA")
+        .arg("-iso-volume-name")
+        .arg("CIDATA")
+        .arg("-joliet-volume-name")
         .arg("CIDATA")
         .arg("-o")
         .arg(&iso_path)
@@ -316,6 +325,12 @@ runcmd:
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
+
+    tracing::info!(
+        path = %iso_path.display(),
+        stdout = %String::from_utf8_lossy(&out.stdout).trim(),
+        "cidata.iso generated"
+    );
 
     Ok(iso_path)
 }
