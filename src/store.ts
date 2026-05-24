@@ -28,12 +28,18 @@ export function registerOutputSink(
   };
 }
 
+export type BaseImageStatus = "unknown" | "checking" | "ready" | "missing";
+
 interface AppState {
   workspace: Workspace | null;
   selectedAgentId: string | null;
   busy: boolean;
   lastError: string | null;
   initialized: boolean;
+  /** Whether the workspace's configured base image actually exists on the
+   *  user's Tart store. Drives the "build base image" banner + Spawn
+   *  enablement. */
+  baseImageStatus: BaseImageStatus;
 
   init: () => Promise<void>;
   selectAgent: (id: string | null) => void;
@@ -42,6 +48,7 @@ interface AppState {
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;
   clearError: () => void;
+  refreshBaseImageStatus: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -50,6 +57,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   busy: false,
   lastError: null,
   initialized: false,
+  baseImageStatus: "unknown",
 
   init: async () => {
     if (get().initialized) return;
@@ -57,6 +65,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const workspace = await api.getWorkspace();
     set({ workspace });
+    void get().refreshBaseImageStatus();
 
     await onAgentOutput((e) => {
       const sink = outputSinks.get(e.agent_id);
@@ -85,10 +94,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const ws = await api.setRepo(path, baseImage);
       set({ workspace: ws });
+      void get().refreshBaseImageStatus();
     } catch (e) {
       set({ lastError: String(e) });
     } finally {
       set({ busy: false });
+    }
+  },
+
+  refreshBaseImageStatus: async () => {
+    const ws = get().workspace;
+    if (!ws) {
+      set({ baseImageStatus: "unknown" });
+      return;
+    }
+    set({ baseImageStatus: "checking" });
+    try {
+      const list = await api.listBaseImages();
+      set({
+        baseImageStatus: list.includes(ws.base_image) ? "ready" : "missing",
+      });
+    } catch {
+      // If we can't list (e.g. tart not on PATH in dev), treat as missing —
+      // safer than letting the user click Spawn and get a generic error.
+      set({ baseImageStatus: "missing" });
     }
   },
 
