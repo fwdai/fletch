@@ -6,16 +6,27 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
+use tokio::time::{sleep, timeout};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pty_bridge::{PtySession, SshSpawn, SshTarget};
 use crate::vm::{MountSpec, Vm};
 
-/// How long to wait for a freshly cloned VM to acquire an IP before we give
-/// up and tear it down.
-const VM_BOOT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long to wait for a freshly cloned VM to acquire an IP. Cloned VMs
+/// boot faster than the original (cloud-init artifacts are baked in) but
+/// 90s gives some headroom for system load.
+const VM_BOOT_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long to wait for sshd to start accepting on port 22 after the VM
+/// has an IP. Cloned VMs already have host keys baked in, but
+/// `ssh.service` start is still async — usually <10s, occasionally
+/// longer under load.
+const SSH_PORT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Per-`connect` timeout. The macOS kernel will spend ~75s retrying SYN
+/// on its own if we don't cut it short.
+const SSH_CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Username baked into the base image. Hardcoded for v1 — eventually moves
 /// into per-workspace config alongside `base_image`.
@@ -65,25 +76,36 @@ impl Agent {
         vm.clone_image(spec.base_image, spec.vm_name).await?;
 
         // 2. Boot it with the worktree mounted as a virtiofs share. `tart run`
-        //    is long-running; we keep the child handle so we can kill it later.
+        //    is long-running; we keep the child handle so we can kill it
+        //    later. Drain stdout+stderr immediately — a full pipe buffer
+        //    silently blocks the child.
         let mount = MountSpec {
             name: SHARE_TAG,
             path: &spec.worktree,
             readonly: false,
         };
-        let vm_child = vm.run_detached(spec.vm_name, &[mount]).await?;
+        let mut vm_child = vm.run_detached(spec.vm_name, &[mount]).await?;
+        drain_child_io(&mut vm_child);
 
-        // 3. Wait for the VM to come up and report an IP.
+        // 3. Wait for the VM to come up and report an IP, then for sshd to
+        //    actually start listening (these are separate events — sshd
+        //    starts a beat after networking does). On any failure here we
+        //    tear down the half-baked VM so a retry doesn't trip over a
+        //    name collision.
         let ip = match vm.wait_for_ip(spec.vm_name, VM_BOOT_TIMEOUT).await {
             Ok(ip) => ip,
             Err(e) => {
-                // Boot failed — try to clean up the half-baked VM so a retry
-                // doesn't trip over a name collision.
                 let _ = vm.stop(spec.vm_name).await;
                 let _ = vm.delete(spec.vm_name).await;
                 return Err(e);
             }
         };
+
+        if let Err(e) = wait_for_ssh_port(&ip, SSH_PORT_TIMEOUT).await {
+            let _ = vm.stop(spec.vm_name).await;
+            let _ = vm.delete(spec.vm_name).await;
+            return Err(e);
+        }
 
         // 4. Mount the share inside the guest, then start claude under a PTY.
         //    Combining both into one remote command keeps spawn atomic from
@@ -131,6 +153,57 @@ impl Agent {
         let _ = vm.stop(&self.vm_name).await;
         vm.delete(&self.vm_name).await?;
         Ok(())
+    }
+}
+
+/// Poll TCP port 22 on the guest until sshd accepts a connection, or fail
+/// after `timeout`. Each `connect` attempt is wrapped in a short timeout —
+/// without it, macOS's kernel SYN-retry budget (~75s) would freeze the
+/// outer retry loop on the first attempt.
+async fn wait_for_ssh_port(ip: &str, total: Duration) -> Result<()> {
+    let deadline = Instant::now() + total;
+    let mut last_err: Option<String> = None;
+    let _ = &last_err;
+    loop {
+        match timeout(
+            SSH_CONNECT_ATTEMPT_TIMEOUT,
+            tokio::net::TcpStream::connect((ip, 22)),
+        )
+        .await
+        {
+            Ok(Ok(_)) => return Ok(()),
+            Ok(Err(e)) => last_err = Some(format!("connect: {e}")),
+            Err(_) => last_err = Some("connect: timed out".into()),
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::Ssh(format!(
+                "SSH did not start listening on {ip}:22 within {}s (last: {})",
+                total.as_secs(),
+                last_err.as_deref().unwrap_or("?")
+            )));
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// Drain stdout/stderr of a long-running child so the pipe buffers don't
+/// fill and freeze the process. We don't surface the output anywhere for
+/// agent spawns (the bake reports it to the UI; for spawns it's not
+/// useful enough to plumb through), just discard.
+fn drain_child_io(child: &mut Child) {
+    if let Some(out) = child.stdout.take() {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(_)) = lines.next_line().await {}
+        });
+    }
+    if let Some(err) = child.stderr.take() {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(err).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::debug!(target: "tart_run", "{line}");
+            }
+        });
     }
 }
 
