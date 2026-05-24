@@ -76,6 +76,12 @@ pub struct MountSpec<'a> {
     pub readonly: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct DiskAttach<'a> {
+    pub path: &'a Path,
+    pub readonly: bool,
+}
+
 pub struct Vm {
     cli: Box<dyn TartCli>,
 }
@@ -189,10 +195,28 @@ impl Vm {
     /// Spawn `tart run` in the background. Caller owns the child and is
     /// responsible for killing it when shutting the VM down.
     pub async fn run_detached(&self, name: &str, mounts: &[MountSpec<'_>]) -> Result<Child> {
+        self.run_detached_with(name, mounts, &[]).await
+    }
+
+    /// Spawn `tart run` with additional disk attachments. The bake uses this
+    /// to attach a NoCloud cidata ISO that cloud-init picks up on first boot.
+    pub async fn run_detached_with(
+        &self,
+        name: &str,
+        mounts: &[MountSpec<'_>],
+        disks: &[DiskAttach<'_>],
+    ) -> Result<Child> {
         let mut args: Vec<String> = vec!["run".into(), name.into(), "--no-graphics".into()];
         for m in mounts {
             let mut spec = format!("--dir={}:{}", m.name, m.path.display());
             if m.readonly {
+                spec.push_str(":ro");
+            }
+            args.push(spec);
+        }
+        for d in disks {
+            let mut spec = format!("--disk={}", d.path.display());
+            if d.readonly {
                 spec.push_str(":ro");
             }
             args.push(spec);
