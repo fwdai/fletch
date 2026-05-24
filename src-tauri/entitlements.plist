@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Required for the bundled `tart` sidecar to use Virtualization.framework.
+    Distribution builds require this entitlement to be approved by Apple on
+    the signing Developer ID. For local dev signing it is sufficient.
+  -->
+  <key>com.apple.security.virtualization</key>
+  <true/>
+  <key>com.apple.security.hypervisor</key>
+  <true/>
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+  <!-- Tart manages its own data under ~/.tart -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+</dict>
+</plist>

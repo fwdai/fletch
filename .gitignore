@@ -1,0 +1,25 @@
+# Node
+node_modules/
+dist/
+.vite/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/WixTools/
+
+# Bundled binaries (fetched by scripts/download-tart.sh)
+src-tauri/binaries/
+src-tauri/resources/tart/
+src-tauri/resources/third-party/
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Logs / local
+*.log
+.context/
