@@ -207,6 +207,17 @@ where
 /// Bash script that turns a stock cirruslabs Ubuntu image into a usable
 /// base for algiers agents. Designed to be idempotent enough that re-runs
 /// don't break (so a retry after a partial failure is safe).
+///
+/// Critical for cloned VMs:
+/// - Disables cloud-init from re-running on first boot of a clone. Without
+///   this, cloud-init detects the new instance-id and runs end-to-end
+///   again on every clone — regenerating SSH host keys, occasionally
+///   re-enabling ufw, and generally taking 2–5 min during which port 22
+///   may be firewalled or sshd may be temporarily stopped.
+/// - Disables ufw outright. Defensive: cloud-init's default config on
+///   recent cirruslabs images can leave it enabled with rules that send
+///   ICMP Destination Unreachable for unauthorized inbound traffic, which
+///   the host sees as `No route to host` on `connect()`.
 fn install_script(public_key: &str) -> String {
     // Single-quote-escape the public key. Public keys are usually one line
     // with no quotes, but be defensive.
@@ -217,20 +228,20 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-echo '[1/6] Updating apt indexes'
+echo '[1/8] Updating apt indexes'
 sudo apt-get update -y -qq
 
-echo '[2/6] Installing core packages'
+echo '[2/8] Installing core packages'
 sudo apt-get install -y -qq curl git ca-certificates build-essential
 
-echo '[3/6] Installing Node.js 20'
+echo '[3/8] Installing Node.js 20'
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null
 sudo apt-get install -y -qq nodejs
 
-echo '[4/6] Installing Claude Code CLI'
+echo '[4/8] Installing Claude Code CLI'
 sudo npm install -g @anthropic-ai/claude-code
 
-echo '[5/6] Baking in host SSH key + sudoers'
+echo '[5/8] Baking in host SSH key + sudoers'
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
 KEY='{escaped_key}'
 grep -qxF "$KEY" ~/.ssh/authorized_keys 2>/dev/null || echo "$KEY" >> ~/.ssh/authorized_keys
@@ -240,9 +251,31 @@ echo 'admin ALL=(ALL) NOPASSWD: /usr/bin/mount, /usr/bin/umount' | \
   sudo tee /etc/sudoers.d/algiers >/dev/null
 sudo chmod 440 /etc/sudoers.d/algiers
 
-echo '[6/6] Pre-creating /workspace mount point'
+echo '[6/8] Pre-creating /workspace mount point'
 sudo mkdir -p /workspace
 sudo chown admin:admin /workspace
+
+echo '[7/8] Hardening: disabling firewall (clones occasionally inherit a blocking ufw config)'
+sudo ufw --force disable 2>/dev/null || true
+sudo systemctl stop ufw 2>/dev/null || true
+sudo systemctl disable ufw 2>/dev/null || true
+sudo iptables -F INPUT 2>/dev/null || true
+sudo iptables -P INPUT ACCEPT 2>/dev/null || true
+# Make sure sshd is enabled and running.
+sudo systemctl enable ssh 2>/dev/null || true
+sudo systemctl start ssh 2>/dev/null || true
+
+echo '[8/8] Disabling cloud-init re-runs on cloned VMs'
+# Cloud-init detects "new instance" on every clone (different instance-id)
+# and re-runs all modules — regenerating SSH host keys, possibly re-
+# enabling firewall, etc. Since we've completed setup, lock it out.
+sudo touch /etc/cloud/cloud-init.disabled
+# Belt-and-suspenders: also mask cloud-init's services so they can't
+# spuriously activate.
+sudo systemctl mask cloud-init.service 2>/dev/null || true
+sudo systemctl mask cloud-init-local.service 2>/dev/null || true
+sudo systemctl mask cloud-config.service 2>/dev/null || true
+sudo systemctl mask cloud-final.service 2>/dev/null || true
 
 echo 'BAKE_COMPLETE'
 "#,
