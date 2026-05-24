@@ -90,3 +90,13 @@ pub async fn list_base_images(supervisor: State<'_, Arc<Supervisor>>) -> Result<
         .filter(|n| !n.starts_with("algiers-"))
         .collect())
 }
+
+#[tauri::command]
+pub async fn bake_base_image(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    image_name: String,
+) -> Result<()> {
+    let sup = supervisor.inner().clone();
+    sup.bake_base_image(app, image_name).await
+}

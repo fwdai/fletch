@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import { useAppStore } from "../store";
+import { BakeDialog } from "./BakeDialog";
 
 /**
  * Combined repo + base-image picker.
@@ -20,6 +21,8 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
   const [baseImage, setBaseImage] = useState(workspace?.base_image ?? "base-dev");
   const [available, setAvailable] = useState<string[] | null>(null);
   const [imagesError, setImagesError] = useState<string | null>(null);
+  const [bakeOpen, setBakeOpen] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,7 +40,7 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshTick]);
 
   async function pickDirectory() {
     const selected = await open({
@@ -55,6 +58,19 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
     // Only close if the call succeeded. If it failed, `lastError` is set
     // and we keep the modal open so the user can fix and retry.
     if (!useAppStore.getState().lastError) onClose();
+  }
+
+  if (bakeOpen) {
+    return (
+      <BakeDialog
+        imageName={baseImage.trim() || "base-dev"}
+        onClose={() => setBakeOpen(false)}
+        onSuccess={() => {
+          setBakeOpen(false);
+          setRefreshTick((t) => t + 1);
+        }}
+      />
+    );
   }
 
   return (
@@ -111,17 +127,23 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
               </div>
             )}
             {available && available.length === 0 && !imagesError && (
-              <small className="warn">
-                No Tart VMs found on this system. Build a base image first —
-                see <code>scripts/build-base-image.md</code>. Short version:
-                <br />
-                <code>
-                  tart clone ghcr.io/cirruslabs/ubuntu:latest base-dev
-                </code>
-                <br />
-                then SSH in and install node + claude code CLI + your
-                public key.
-              </small>
+              <div className="empty-images">
+                <p>
+                  No base images found. Build one to get started — this
+                  downloads Ubuntu, installs node + the Claude Code CLI,
+                  and bakes in your SSH key. Takes 5–10 minutes once.
+                </p>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => {
+                    if (!baseImage.trim()) setBaseImage("base-dev");
+                    setBakeOpen(true);
+                  }}
+                >
+                  Build base image
+                </button>
+              </div>
             )}
             {imagesError && (
               <small className="warn">

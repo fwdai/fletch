@@ -1,6 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+export type BakeStage =
+  | "cloning"
+  | "booting"
+  | "waiting_for_ssh"
+  | "installing"
+  | "finalizing"
+  | "done"
+  | "error";
+
+export interface BakeProgress {
+  stage: BakeStage;
+  message: string;
+  tail: string | null;
+}
+
 export type AgentStatus =
   | "spawning"
   | "running"
@@ -50,7 +65,15 @@ export const api = {
     invoke<void>("discard_worktree", { agentId }),
   getPublicKey: () => invoke<string>("get_public_key"),
   listBaseImages: () => invoke<string[]>("list_base_images"),
+  bakeBaseImage: (imageName: string) =>
+    invoke<void>("bake_base_image", { imageName }),
 };
+
+export function onBakeProgress(
+  cb: (e: BakeProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<BakeProgress>("bake:progress", (event) => cb(event.payload));
+}
 
 export function onAgentOutput(
   cb: (e: AgentOutputEvent) => void,

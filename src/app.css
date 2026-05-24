@@ -310,6 +310,104 @@ small code {
 .row-input { display: flex; gap: 6px; }
 .row-input input { flex: 1; }
 
+.modal-wide { width: 640px; }
+
+.empty-images {
+  margin-top: 8px;
+  padding: 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.empty-images p {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.stages {
+  list-style: none;
+  margin: 16px 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.stage {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+.stage-dot {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  font-size: 10px;
+}
+.stage.completed { color: var(--text); }
+.stage.completed .stage-dot {
+  background: var(--success);
+  border-color: var(--success);
+  color: #0e0f12;
+}
+.stage.active { color: var(--text); }
+.stage.active .stage-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(91, 141, 239, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(91, 141, 239, 0); }
+}
+
+.stage-message {
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+.stage-message-error {
+  background: rgba(227, 100, 100, 0.15);
+  border: 1px solid var(--danger);
+  color: var(--text);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.bake-tail {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  height: 160px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+.bake-tail-line { white-space: pre-wrap; word-break: break-all; }
+.bake-tail-empty { font-style: italic; color: var(--border-strong); }
+
+.hint {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;

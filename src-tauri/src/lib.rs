@@ -1,4 +1,5 @@
 mod agent;
+mod baker;
 mod commands;
 mod error;
 mod git;
@@ -95,6 +96,7 @@ pub fn run() {
             commands::discard_worktree,
             commands::get_public_key,
             commands::list_base_images,
+            commands::bake_base_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running algiers");

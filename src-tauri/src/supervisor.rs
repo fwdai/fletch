@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 use crate::agent::{Agent, SpawnSpec};
+use crate::baker::{self, BakeSpec};
 use crate::error::{Error, Result};
 use crate::git;
 use crate::vm::Vm;
@@ -43,6 +44,10 @@ pub struct Supervisor {
     /// also need to be torn down from inside async command handlers; we hold
     /// the lock only across cheap map ops, never across awaits.
     pub agents: Mutex<HashMap<String, Agent>>,
+    /// Exclusive flag so only one base-image bake runs at a time. Bakes
+    /// stomp on each other badly (the upstream image is cloned by name) so
+    /// we serialize.
+    pub baking: Mutex<bool>,
 }
 
 impl Supervisor {
@@ -52,6 +57,7 @@ impl Supervisor {
             vm,
             keys,
             agents: Mutex::new(HashMap::new()),
+            baking: Mutex::new(false),
         }
     }
 
@@ -195,6 +201,41 @@ impl Supervisor {
         git::worktree_remove(&repo, &worktree, true).await?;
         self.workspace.remove_agent(agent_id)?;
         Ok(())
+    }
+
+    /// Run the in-app base-image bake. Streams progress as `bake:progress`
+    /// events on the supplied AppHandle. Errors are still emitted as a final
+    /// progress event with `stage: Error` so the UI sees the message even if
+    /// the Tauri command Result is mishandled.
+    pub async fn bake_base_image(
+        self: Arc<Self>,
+        app: AppHandle,
+        image_name: String,
+    ) -> Result<()> {
+        {
+            let mut guard = self.baking.lock();
+            if *guard {
+                return Err(Error::Other(
+                    "a base-image build is already in progress".into(),
+                ));
+            }
+            *guard = true;
+        }
+
+        let res = baker::bake_base_image(
+            self.vm.clone(),
+            BakeSpec {
+                image_name: &image_name,
+                public_key_path: &self.keys.public_key,
+            },
+            move |progress| {
+                let _ = app.emit("bake:progress", progress);
+            },
+        )
+        .await;
+
+        *self.baking.lock() = false;
+        res
     }
 }
 
