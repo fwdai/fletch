@@ -57,3 +57,21 @@ pub async fn worktree_remove(repo: &Path, worktree_path: &Path, force: bool) -> 
 pub fn worktrees_dir(repo: &Path) -> PathBuf {
     repo.join(".worktrees")
 }
+
+/// Drop any internal `.git/worktrees/<id>` refs whose linked working tree
+/// no longer exists. Safe to run unconditionally — git just no-ops when
+/// there's nothing to prune.
+pub async fn worktree_prune(repo: &Path) -> Result<()> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["worktree", "prune"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "worktree prune failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}

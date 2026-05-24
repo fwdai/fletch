@@ -195,10 +195,53 @@ impl Supervisor {
         res
     }
 
+    /// Tear down everything associated with an agent: stop & delete its VM
+    /// if still around, unregister and delete its worktree if still around,
+    /// and ALWAYS remove the agent record from workspace state.
+    ///
+    /// Every step is best-effort and tolerated-on-failure. The whole point
+    /// of this function is to be the "I don't care what state things are
+    /// in, just make it go away" button — the previous version would bail
+    /// on the first error and leave the agent stuck in the list forever.
     pub async fn discard_worktree(&self, agent_id: &str) -> Result<()> {
         let repo = self.workspace.repo_path()?;
         let worktree = self.workspace.worktree_path(agent_id)?;
-        git::worktree_remove(&repo, &worktree, true).await?;
+        let vm_name = format!("algiers-{}", agent_id);
+
+        // 1. Kill any live in-memory Agent handle. The PTY drop also kills
+        //    the SSH session; the `tart run` child gets killed via
+        //    `kill_on_drop` when we drop Agent. Best-effort.
+        if let Some(agent) = self.agents.lock().remove(agent_id) {
+            drop(agent);
+        }
+
+        // 2. Stop + delete the VM if it exists. Either step may legitimately
+        //    fail (VM never created, already deleted, etc.).
+        if self.vm.exists(&vm_name).await.unwrap_or(false) {
+            if let Err(e) = self.vm.stop(&vm_name).await {
+                tracing::warn!(%vm_name, error = %e, "discard: tart stop failed");
+            }
+            if let Err(e) = self.vm.delete(&vm_name).await {
+                tracing::warn!(%vm_name, error = %e, "discard: tart delete failed");
+            }
+        }
+
+        // 3. Worktree cleanup. First `git worktree prune` to clear out any
+        //    internal refs that point at a missing directory, then attempt
+        //    the registered removal, then fall back to removing the
+        //    directory directly if it's still there.
+        let _ = git::worktree_prune(&repo).await;
+        if let Err(e) = git::worktree_remove(&repo, &worktree, true).await {
+            tracing::warn!(path = %worktree.display(), error = %e, "discard: git worktree remove failed; trying fs fallback");
+            if worktree.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&worktree) {
+                    tracing::warn!(path = %worktree.display(), error = %e, "discard: fs remove failed too");
+                }
+            }
+        }
+
+        // 4. ALWAYS remove the agent record so the UI doesn't leave the
+        //    user with stuck rows they can't get rid of.
         self.workspace.remove_agent(agent_id)?;
         Ok(())
     }
