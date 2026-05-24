@@ -16,7 +16,7 @@
 
 ## Architecture (one paragraph)
 
-A Tauri 2 app. The frontend is Svelte 5 + xterm.js. The Rust backend owns a `Supervisor` that wraps a small `Vm` module (shells out to `tart`), a `WorkspaceManager` (persists a single JSON file in `~/Library/Application Support/com.algiers.app/`), and a `pty_bridge` (local PTY around `ssh -tt` so terminal resize + interactive prompts work). Tart itself is bundled as a Tauri sidecar binary so end users don't need to `brew install` anything. The full design is in [`docs/superpowers/specs/`](docs/superpowers/specs/).
+A Tauri 2 app. The frontend is React 18 + TypeScript + Zustand + xterm.js. The Rust backend owns a `Supervisor` that wraps a small `Vm` module (shells out to `tart`), a `WorkspaceManager` (persists a single JSON file in `~/Library/Application Support/com.algiers.app/`), and a `pty_bridge` (local PTY around `ssh -tt` so terminal resize + interactive prompts work). Tart itself is bundled as a Tauri **resource** (the full `tart.app` bundle, NOT the inner binary — extracting it breaks the signing/entitlements and macOS SIGKILLs it) so end users don't need to `brew install` anything. The full design is in [`docs/superpowers/specs/`](docs/superpowers/specs/).
 
 ## Requirements
 
@@ -56,10 +56,13 @@ tart stop base-dev
 ## Project layout
 
 ```
-src/                       # Svelte 5 frontend
-  lib/api.ts               # typed Tauri IPC + event wrappers
-  lib/store.svelte.ts      # reactive store (runes)
-  lib/*.svelte             # WorkspaceBar, AgentList, AgentPanes, AgentTerminal, SpawnDialog
+src/                       # React 18 + TS frontend
+  main.tsx                 # entry
+  App.tsx                  # shell layout
+  api.ts                   # typed Tauri IPC + event wrappers
+  store.ts                 # Zustand store
+  components/              # WorkspaceBar, ChooseRepoDialog, AgentList,
+                           # AgentPanes, AgentTerminal, SpawnDialog
 src-tauri/
   src/lib.rs               # Tauri setup, sidecar resolution, IPC registration
   src/vm.rs                # Tart CLI wrapper (mockable via TartCli trait)
