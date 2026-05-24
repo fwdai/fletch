@@ -76,8 +76,8 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
 
   async function onDiscard() {
     const ok = await ask(
-      `Discard worktree for "${agent.name}"? Uncommitted work will be lost.`,
-      { title: "Discard worktree", kind: "warning" },
+      `Remove "${agent.name}"? Its VM will be deleted and the worktree (with any uncommitted work) will be removed.`,
+      { title: "Remove agent", kind: "warning" },
     );
     if (ok) await discard(agent.id);
   }
@@ -96,9 +96,12 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
           {(agent.status === "running" || agent.status === "spawning") && (
             <button onClick={onStop}>Stop</button>
           )}
-          {(agent.status === "stopped" || agent.status === "error") && (
-            <button onClick={onDiscard}>Discard worktree</button>
-          )}
+          {/*
+            "Remove" is always available — it's the universal "make this
+            agent go away" affordance. Backend best-effort cleans up the
+            VM + worktree regardless of which subset still exists.
+          */}
+          <button onClick={onDiscard}>Remove</button>
         </div>
       </div>
       {agent.last_error && <div className="errbar">{agent.last_error}</div>}

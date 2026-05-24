@@ -176,23 +176,42 @@ impl Supervisor {
         agent.resize(cols, rows)
     }
 
+    /// Stop a live agent. Idempotent — if the agent isn't in the live map
+    /// (e.g. it was already stopped, or it's a leftover record from an app
+    /// restart), we still attempt to clean up the named VM and mark the
+    /// state record as stopped so the UI is consistent.
     pub async fn stop_agent(&self, app: AppHandle, agent_id: &str) -> Result<()> {
-        // Pop the agent out of the map without holding the lock across the
-        // async shutdown.
-        let agent = self
-            .agents
-            .lock()
-            .remove(agent_id)
-            .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
-        let res = agent.shutdown(self.vm.clone()).await;
-        let (status, last_err) = match &res {
-            Ok(_) => (AgentStatus::Stopped, None),
-            Err(e) => (AgentStatus::Error, Some(e.to_string())),
+        let live_agent = self.agents.lock().remove(agent_id);
+
+        let (status, last_err) = if let Some(agent) = live_agent {
+            match agent.shutdown(self.vm.clone()).await {
+                Ok(_) => (AgentStatus::Stopped, None),
+                Err(e) => (AgentStatus::Error, Some(e.to_string())),
+            }
+        } else {
+            // No in-memory handle. The VM may still exist (e.g., app
+            // restart left it running) — best-effort kill it so the user
+            // doesn't have to drop to a terminal.
+            let vm_name = format!("algiers-{}", agent_id);
+            if self.vm.exists(&vm_name).await.unwrap_or(false) {
+                let _ = self.vm.stop(&vm_name).await;
+                let _ = self.vm.delete(&vm_name).await;
+            }
+            (AgentStatus::Stopped, None)
         };
-        self.workspace
-            .update_agent_status(agent_id, status.clone(), last_err.clone())?;
+
+        // The record may already have been removed (e.g., concurrent
+        // discard). Tolerate that case by ignoring AgentNotFound errors
+        // from the status update.
+        match self
+            .workspace
+            .update_agent_status(agent_id, status.clone(), last_err.clone())
+        {
+            Ok(_) | Err(Error::AgentNotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
         emit_status(&app, agent_id, status, last_err);
-        res
+        Ok(())
     }
 
     /// Tear down everything associated with an agent: stop & delete its VM
