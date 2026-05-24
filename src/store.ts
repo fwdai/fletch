@@ -9,6 +9,11 @@ import {
 
 type OutputHandler = (bytes: Uint8Array) => void;
 
+/** Stable empty-array sentinel for selectors. Returning a fresh `[]`
+ *  literal from a Zustand selector triggers React's "snapshot changed"
+ *  check on every render and explodes into a setState loop. */
+export const EMPTY_AGENTS: readonly AgentRecord[] = Object.freeze([]);
+
 /** Per-agent xterm sinks. Lives outside the Zustand store because it isn't
  *  reactive — components register/unregister with bare function refs. */
 const outputSinks = new Map<string, OutputHandler>();

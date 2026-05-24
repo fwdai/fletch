@@ -1,9 +1,9 @@
-import { useAppStore } from "../store";
+import { EMPTY_AGENTS, useAppStore } from "../store";
 import { AgentTerminal } from "./AgentTerminal";
 
 export function AgentPanes() {
   const workspace = useAppStore((s) => s.workspace);
-  const agents = useAppStore((s) => s.workspace?.agents ?? []);
+  const agents = useAppStore((s) => s.workspace?.agents ?? EMPTY_AGENTS);
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const lastError = useAppStore((s) => s.lastError);
   const clearError = useAppStore((s) => s.clearError);

@@ -1,4 +1,4 @@
-import { useAppStore } from "../store";
+import { EMPTY_AGENTS, useAppStore } from "../store";
 import type { AgentStatus } from "../api";
 
 function statusColor(s: AgentStatus): string {
@@ -15,7 +15,7 @@ function statusColor(s: AgentStatus): string {
 }
 
 export function AgentList() {
-  const agents = useAppStore((s) => s.workspace?.agents ?? []);
+  const agents = useAppStore((s) => s.workspace?.agents ?? EMPTY_AGENTS);
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const selectAgent = useAppStore((s) => s.selectAgent);
 
