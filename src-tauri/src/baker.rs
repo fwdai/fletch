@@ -26,7 +26,16 @@ use crate::vm::Vm;
 const UPSTREAM_IMAGE: &str = "ghcr.io/cirruslabs/ubuntu:latest";
 const GUEST_USER: &str = "admin";
 const INITIAL_PASSWORD: &str = "admin";
-const SSH_READY_TIMEOUT: Duration = Duration::from_secs(120);
+/// Total budget for the VM to acquire an IP. First boots can take a while
+/// because cloud-init runs synchronously before networking comes up.
+const IP_READY_TIMEOUT: Duration = Duration::from_secs(120);
+/// Total budget for SSH to start listening after the VM has an IP. cloud-init
+/// finishing + ssh.service start can take another minute on a fresh image.
+const SSH_READY_TIMEOUT: Duration = Duration::from_secs(180);
+/// Hard cap on each individual `TcpStream::connect` attempt. The macOS
+/// kernel's SYN retry budget is 75+ seconds, which silently freezes the
+/// retry loop if we don't cut it short.
+const SSH_CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
 const SSH_TRY_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,17 +153,25 @@ where
         spec.image_name,
         &mut vm_child,
         &vm_stderr_tail,
-        SSH_READY_TIMEOUT,
+        IP_READY_TIMEOUT,
         report,
     )
     .await?;
 
     report(
         BakeStage::WaitingForSsh,
-        &format!("VM reached {ip}. Waiting for SSH (port 22)…"),
+        &format!("VM reached {ip}. Waiting for SSH on port 22…"),
         None,
     );
-    wait_for_ssh_port(&ip, SSH_READY_TIMEOUT).await?;
+    wait_for_ssh_port_with_progress(
+        &ip,
+        spec.image_name,
+        &mut vm_child,
+        &vm_stderr_tail,
+        SSH_READY_TIMEOUT,
+        report,
+    )
+    .await?;
 
     // 4. SSH in with the upstream default password and run the install
     //    script. Output lines are forwarded to the progress callback so the
@@ -228,14 +245,67 @@ echo 'BAKE_COMPLETE'
     )
 }
 
-async fn wait_for_ssh_port(ip: &str, total: Duration) -> Result<()> {
+/// Poll for SSH (TCP 22) to start accepting on the guest. Each `connect`
+/// attempt is wrapped in [`SSH_CONNECT_ATTEMPT_TIMEOUT`] because macOS's
+/// kernel-level SYN retry budget would otherwise leave each failed attempt
+/// hanging for ~75 seconds — silently freezing the outer retry loop.
+async fn wait_for_ssh_port_with_progress<R>(
+    ip: &str,
+    image_name: &str,
+    vm_child: &mut Child,
+    stderr_tail: &StderrTail,
+    total: Duration,
+    report: &R,
+) -> Result<()>
+where
+    R: Fn(BakeStage, &str, Option<&str>),
+{
     let deadline = Instant::now() + total;
+    let mut attempt: u32 = 0;
+    let mut last_err: Option<String> = None;
+    let _ = &last_err;
     loop {
-        match tokio::net::TcpStream::connect((ip, 22)).await {
-            Ok(_) => return Ok(()),
-            Err(_) if Instant::now() < deadline => sleep(SSH_TRY_INTERVAL).await,
-            Err(_) => return Err(Error::VmBootTimeout(total.as_secs())),
+        if let Some(status) = vm_child.try_wait()? {
+            let tail = stderr_tail.lock().join("\n");
+            return Err(Error::Other(format!(
+                "`tart run {image_name}` died while we were waiting for SSH (status: {status}). \
+                 Recent stderr:\n{}",
+                if tail.is_empty() { "(no output)" } else { &tail }
+            )));
         }
+
+        match timeout(
+            SSH_CONNECT_ATTEMPT_TIMEOUT,
+            tokio::net::TcpStream::connect((ip, 22)),
+        )
+        .await
+        {
+            Ok(Ok(_)) => return Ok(()),
+            Ok(Err(e)) => last_err = Some(format!("connect: {e}")),
+            Err(_) => last_err = Some("connect: timed out".into()),
+        }
+
+        if Instant::now() >= deadline {
+            return Err(Error::Other(format!(
+                "Timed out after {}s waiting for SSH on {ip}:22. Last error: {}",
+                total.as_secs(),
+                last_err.as_deref().unwrap_or("(none)")
+            )));
+        }
+
+        attempt += 1;
+        if attempt % 5 == 0 {
+            let elapsed = Instant::now()
+                .saturating_duration_since(deadline - total)
+                .as_secs();
+            report(
+                BakeStage::WaitingForSsh,
+                &format!("Still waiting for SSH on {ip} ({elapsed}s elapsed)…"),
+                last_err.as_deref(),
+            );
+        }
+
+        sleep(SSH_TRY_INTERVAL).await;
     }
 }
 
