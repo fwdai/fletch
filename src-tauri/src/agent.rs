@@ -131,9 +131,24 @@ impl Agent {
         {
             Ok(ip) => ip,
             Err(e) => {
-                let _ = vm.stop(spec.vm_name).await;
-                let _ = vm.delete(spec.vm_name).await;
-                return Err(e);
+                // Collect host-side diagnostics before reporting. We
+                // deliberately do NOT delete the VM here — the user needs
+                // to be able to SSH in manually to figure out what's
+                // going on inside the guest. They can clean it up via
+                // the Remove button when they're done.
+                let last_ip = vm
+                    .try_ip(spec.vm_name)
+                    .await
+                    .unwrap_or(None)
+                    .unwrap_or_else(|| "<unknown>".into());
+                let diag = diagnose_unreachable(&last_ip).await;
+                return Err(crate::error::Error::Ssh(format!(
+                    "{e}\n\nDiagnostics for {last_ip}:\n{diag}\n\
+                     The VM '{}' is still running so you can inspect it:\n\
+                     • ssh admin@{last_ip}  (password is no longer 'admin' — use the algiers SSH key)\n\
+                     • Click Remove on this agent to clean it up.",
+                    spec.vm_name
+                )));
             }
         };
 
@@ -245,6 +260,51 @@ async fn wait_for_ssh_port_with_reip(
 
         sleep(Duration::from_secs(1)).await;
     }
+}
+
+/// Best-effort network diagnostics for "VM is unreachable" errors. Runs
+/// `ping` + `arp -n` on the host and returns a short report. All errors
+/// are folded into the report itself — this function never fails so it
+/// can be safely chained into an error builder.
+async fn diagnose_unreachable(ip: &str) -> String {
+    use tokio::process::Command;
+    let mut out = String::new();
+
+    // ICMP ping — distinguishes "VM down" from "VM up but sshd off".
+    match Command::new("ping")
+        .args(["-c", "2", "-W", "1500", ip])
+        .output()
+        .await
+    {
+        Ok(o) if o.status.success() => {
+            out.push_str("  ping: ✓ VM responds to ICMP (it's alive, just no sshd)\n");
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            out.push_str(&format!(
+                "  ping: ✗ VM does not respond to ICMP — {}\n",
+                stderr.trim().is_empty().then(|| stdout.trim()).unwrap_or(stderr.trim())
+            ));
+        }
+        Err(e) => out.push_str(&format!("  ping: could not run ({e})\n")),
+    }
+
+    // ARP table — does the host even know how to reach this IP?
+    match Command::new("arp").args(["-n", ip]).output().await {
+        Ok(o) => {
+            let line = String::from_utf8_lossy(&o.stdout);
+            let line = line.trim();
+            if line.is_empty() {
+                out.push_str("  arp: (no entry — host can't resolve VM MAC at all)\n");
+            } else {
+                out.push_str(&format!("  arp: {line}\n"));
+            }
+        }
+        Err(e) => out.push_str(&format!("  arp: could not run ({e})\n")),
+    }
+
+    out
 }
 
 /// Drain stdout/stderr of a long-running child so the pipe buffers don't
