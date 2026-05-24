@@ -79,7 +79,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...ws,
         agents: ws.agents.map((a) =>
           a.id === e.agent_id
-            ? { ...a, status: e.status, last_error: e.last_error ?? a.last_error }
+            ? {
+                ...a,
+                status: e.status,
+                last_error: e.last_error ?? a.last_error,
+                // status_message is "live" — undefined means "no change",
+                // null means "clear it" (settled into a terminal state).
+                status_message:
+                  e.status_message === undefined
+                    ? a.status_message
+                    : e.status_message,
+              }
             : a,
         ),
       };

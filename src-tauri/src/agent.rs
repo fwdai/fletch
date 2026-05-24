@@ -68,11 +68,23 @@ pub struct SpawnSpec<'a> {
 impl Agent {
     /// Full spawn flow: clone the VM, start it, wait for SSH, mount the
     /// worktree, launch `claude` over an SSH PTY.
-    pub async fn spawn<F>(vm: Arc<Vm>, spec: SpawnSpec<'_>, on_output: F) -> Result<Self>
+    ///
+    /// `on_progress` is called between stages with a short human-readable
+    /// message ("Cloning VM image", "Waiting for SSH", …). Used by the
+    /// supervisor to surface what's happening while the agent is still in
+    /// the Spawning state.
+    pub async fn spawn<F, P>(
+        vm: Arc<Vm>,
+        spec: SpawnSpec<'_>,
+        on_output: F,
+        on_progress: P,
+    ) -> Result<Self>
     where
         F: Fn(Vec<u8>) + Send + 'static,
+        P: Fn(&str) + Send + 'static,
     {
         // 1. Clone the base image into a fresh per-agent VM (APFS CoW, fast).
+        on_progress("Cloning base image (APFS CoW, fast)…");
         vm.clone_image(spec.base_image, spec.vm_name).await?;
 
         // 2. Boot it with the worktree mounted as a virtiofs share. `tart run`
@@ -84,6 +96,7 @@ impl Agent {
             path: &spec.worktree,
             readonly: false,
         };
+        on_progress("Booting VM…");
         let mut vm_child = vm.run_detached(spec.vm_name, &[mount]).await?;
         drain_child_io(&mut vm_child);
 
@@ -92,6 +105,7 @@ impl Agent {
         //    starts a beat after networking does). On any failure here we
         //    tear down the half-baked VM so a retry doesn't trip over a
         //    name collision.
+        on_progress("Waiting for VM network…");
         let ip = match vm.wait_for_ip(spec.vm_name, VM_BOOT_TIMEOUT).await {
             Ok(ip) => ip,
             Err(e) => {
@@ -101,6 +115,7 @@ impl Agent {
             }
         };
 
+        on_progress(&format!("VM at {ip}. Waiting for SSH (port 22)…"));
         if let Err(e) = wait_for_ssh_port(&ip, SSH_PORT_TIMEOUT).await {
             let _ = vm.stop(spec.vm_name).await;
             let _ = vm.delete(spec.vm_name).await;
@@ -110,6 +125,7 @@ impl Agent {
         // 4. Mount the share inside the guest, then start claude under a PTY.
         //    Combining both into one remote command keeps spawn atomic from
         //    the host's perspective.
+        on_progress("Mounting worktree and launching claude…");
         let remote_cmd = build_remote_cmd(spec.task);
 
         let pty = PtySession::spawn_ssh(

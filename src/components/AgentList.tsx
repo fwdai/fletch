@@ -46,6 +46,9 @@ export function AgentList() {
               <span className="dim">·</span>
               <span className="branch">{agent.branch}</span>
             </div>
+            {agent.status === "spawning" && agent.status_message && (
+              <div className="meta progress">{agent.status_message}</div>
+            )}
           </div>
         </button>
       ))}

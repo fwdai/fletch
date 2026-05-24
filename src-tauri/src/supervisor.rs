@@ -27,6 +27,8 @@ pub struct AgentStatusPayload {
     pub agent_id: String,
     pub status: AgentStatus,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub status_message: Option<String>,
 }
 
 /// Path to the SSH key pair the host uses to authenticate to guests.
@@ -132,8 +134,12 @@ impl Supervisor {
         git::worktree_add(repo_path, worktree, branch).await?;
 
         // 2. Hand off to Agent::spawn for VM + SSH PTY.
-        let app2 = app.clone();
-        let id_owned = agent_id.to_string();
+        let app_for_output = app.clone();
+        let id_for_output = agent_id.to_string();
+        let app_for_progress = app.clone();
+        let id_for_progress = agent_id.to_string();
+        let workspace_for_progress = self.workspace.clone();
+
         let agent = Agent::spawn(
             self.vm.clone(),
             SpawnSpec {
@@ -147,11 +153,27 @@ impl Supervisor {
                 rows: 32,
             },
             move |bytes| {
-                let _ = app2.emit(
+                let _ = app_for_output.emit(
                     "agent:output",
                     AgentOutputPayload {
-                        agent_id: id_owned.clone(),
+                        agent_id: id_for_output.clone(),
                         bytes,
+                    },
+                );
+            },
+            move |stage_message| {
+                // Persist so a frontend that re-fetches after losing the
+                // event (e.g. dev-server reload mid-spawn) sees the same
+                // message, then emit the live update.
+                let _ = workspace_for_progress
+                    .update_agent_status_message(&id_for_progress, Some(stage_message.into()));
+                let _ = app_for_progress.emit(
+                    "agent:status",
+                    AgentStatusPayload {
+                        agent_id: id_for_progress.clone(),
+                        status: AgentStatus::Spawning,
+                        last_error: None,
+                        status_message: Some(stage_message.into()),
                     },
                 );
             },
@@ -324,6 +346,7 @@ fn emit_status(app: &AppHandle, agent_id: &str, status: AgentStatus, last_error:
             agent_id: agent_id.to_string(),
             status,
             last_error,
+            status_message: None,
         },
     );
 }

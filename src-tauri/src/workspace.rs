@@ -33,6 +33,11 @@ pub struct AgentRecord {
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Free-form "what's happening right now" string. Set during multi-step
+    /// transitions (e.g. "Booting VM"). Cleared once we settle into a
+    /// stable status like Running or Stopped.
+    #[serde(default)]
+    pub status_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -145,6 +150,29 @@ impl WorkspaceManager {
             if let Some(err) = last_error {
                 a.last_error = Some(err);
             }
+            // Stable terminal states should clear the in-progress message.
+            if matches!(
+                a.status,
+                AgentStatus::Running | AgentStatus::Stopped | AgentStatus::Idle | AgentStatus::Error
+            ) {
+                a.status_message = None;
+            }
+        }
+        self.persist()
+    }
+
+    /// Set the in-progress message without changing status. Used to report
+    /// spawn substages ("Cloning VM", "Waiting for SSH", …).
+    pub fn update_agent_status_message(&self, id: &str, message: Option<String>) -> Result<()> {
+        {
+            let mut g = self.inner.write();
+            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
+            let a = ws
+                .agents
+                .iter_mut()
+                .find(|a| a.id == id)
+                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
+            a.status_message = message;
         }
         self.persist()
     }
@@ -210,6 +238,7 @@ pub fn new_agent_record(name: String, branch: String, task: String) -> AgentReco
         status: AgentStatus::Spawning,
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
+        status_message: None,
     }
 }
 

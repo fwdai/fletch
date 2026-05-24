@@ -31,6 +31,7 @@ export interface AgentRecord {
   status: AgentStatus;
   created_at: string;
   last_error?: string | null;
+  status_message?: string | null;
 }
 
 export interface Workspace {
@@ -48,6 +49,7 @@ export interface AgentStatusEvent {
   agent_id: string;
   status: AgentStatus;
   last_error: string | null;
+  status_message?: string | null;
 }
 
 export const api = {
