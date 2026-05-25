@@ -34,16 +34,37 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
 
     // Defer the first fit until the DOM has actually laid out — opening
     // an xterm and immediately calling fit() on a freshly-mounted div
-    // can race the renderer initialization (the dimensions are read
-    // before WebGL/canvas finishes setting up). requestAnimationFrame
-    // is enough to push past that.
+    // can race the renderer initialization. Also focus immediately so
+    // claude code (which uses ink and waits for `\x1b[I` focus-gained
+    // before showing its UI) doesn't sit hidden forever.
     const initialFit = requestAnimationFrame(() => {
       try {
         fit.fit();
-      } catch {
-        /* container not measurable yet — ResizeObserver will retry */
+        term.focus();
+        // eslint-disable-next-line no-console
+        console.log(
+          "[term",
+          agent.id,
+          "] fit",
+          term.cols,
+          "x",
+          term.rows,
+          "container",
+          el.clientWidth,
+          "x",
+          el.clientHeight,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[term", agent.id, "] fit failed:", err);
       }
     });
+
+    // Click anywhere in the terminal area refocuses xterm. Without this,
+    // clicking outside (or switching agents and back) leaves it unfocused
+    // and claude's UI freezes.
+    const onContainerClick = () => term.focus();
+    el.addEventListener("click", onContainerClick);
 
     // Replay any output the agent has produced before this terminal was
     // mounted (the user might've switched tabs after the agent started).
@@ -53,8 +74,18 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
     }
 
     const onDataDisposer = term.onData((data) => {
-      api.writeToAgent(agent.id, data).catch(() => {
-        /* surfaced via lastError elsewhere if relevant */
+      // eslint-disable-next-line no-console
+      console.log(
+        "[term",
+        agent.id,
+        "] onData ->",
+        JSON.stringify(data),
+        "len=",
+        data.length,
+      );
+      api.writeToAgent(agent.id, data).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn("[term", agent.id, "] writeToAgent failed:", err);
       });
     });
     const onResizeDisposer = term.onResize(({ cols, rows }) => {
@@ -82,6 +113,7 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
 
     return () => {
       cancelAnimationFrame(initialFit);
+      el.removeEventListener("click", onContainerClick);
       ro.disconnect();
       unregister();
       onDataDisposer.dispose();
