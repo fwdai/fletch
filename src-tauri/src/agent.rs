@@ -54,7 +54,7 @@ impl Agent {
         //    `-f` reads from a path; keeps the profile out of argv).
         let profile_text = sandbox::build_profile(&spec.worktree, &home)?;
         let mut profile_file = tempfile::Builder::new()
-            .prefix("algiers-sandbox-")
+            .prefix("amux-sandbox-")
             .suffix(".sb")
             .tempfile()
             .map_err(|e| Error::Other(format!("create sandbox profile tmp: {e}")))?;

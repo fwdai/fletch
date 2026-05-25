@@ -1,4 +1,4 @@
-# algiers
+# amux
 
 > Spawn multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in parallel on a single repo, each in its own git worktree and a kernel-enforced macOS sandbox. Yolo mode (`claude --dangerously-skip-permissions`) is safe because each agent can only modify its own worktree.
 
@@ -15,7 +15,7 @@
 
 ## Architecture (one paragraph)
 
-A Tauri 2 app. Frontend is React 18 + TypeScript + Zustand + xterm.js. The Rust backend owns a `Supervisor` that creates a `git worktree`, writes a per-agent `sandbox-exec` profile, spawns `claude --dangerously-skip-permissions` under that profile inside a local PTY, and bridges the PTY to the frontend over Tauri events. Workspace state persists as JSON in `~/Library/Application Support/com.algiers.app/`.
+A Tauri 2 app. Frontend is React 18 + TypeScript + Zustand + xterm.js. The Rust backend owns a `Supervisor` that creates a `git worktree`, writes a per-agent `sandbox-exec` profile, spawns `claude --dangerously-skip-permissions` under that profile inside a local PTY, and bridges the PTY to the frontend over Tauri events. Workspace state persists as JSON in `~/Library/Application Support/com.amux.desktop/`.
 
 ## Requirements
 

@@ -11,7 +11,7 @@ export function WorkspaceBar({ onChooseRepo }: { onChooseRepo: () => void }) {
   return (
     <header className="bar">
       <div className="left">
-        <span className="logo">algiers</span>
+        <span className="logo">amux</span>
         {workspace ? (
           <span className="repo" title={workspace.repo_path}>
             {basename(workspace.repo_path)}
