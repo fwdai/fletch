@@ -25,11 +25,10 @@ pub fn set_repo(
 pub async fn spawn_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     app: AppHandle,
-    task: String,
     view: Option<AgentView>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
-    sup.spawn_agent(app, task, view.unwrap_or_default()).await
+    sup.spawn_agent(app, view.unwrap_or_default()).await
 }
 
 #[tauri::command]
@@ -39,7 +38,8 @@ pub fn write_to_agent(
     agent_id: String,
     data: String,
 ) -> Result<()> {
-    supervisor.write_to_agent(&app, &agent_id, data.as_bytes())
+    let sup = supervisor.inner().clone();
+    sup.write_to_agent(&app, &agent_id, data.as_bytes())
 }
 
 #[tauri::command]
@@ -49,7 +49,8 @@ pub fn send_user_message(
     agent_id: String,
     text: String,
 ) -> Result<()> {
-    supervisor.send_user_message(&app, &agent_id, &text)
+    let sup = supervisor.inner().clone();
+    sup.send_user_message(&app, &agent_id, &text)
 }
 
 #[tauri::command]

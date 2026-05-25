@@ -13,7 +13,8 @@ export type AgentView = "custom" | "native";
 export interface AgentRecord {
   id: string;
   name: string;
-  branch: string;
+  branch?: string | null;
+  parent_branch?: string | null;
   task: string;
   status: AgentStatus;
   view: AgentView;
@@ -21,6 +22,9 @@ export interface AgentRecord {
   created_at: string;
   last_error?: string | null;
   status_message?: string | null;
+  /** Most recent turn's `usage.input_tokens` — matches claude's
+   *  `/context` figure. Only populated for custom-view turns. */
+  context_tokens?: number | null;
 }
 
 export interface Workspace {
@@ -52,11 +56,26 @@ export interface AgentViewEvent {
   view: AgentView;
 }
 
+export interface AgentTokensEvent {
+  agent_id: string;
+  context_tokens: number;
+}
+
+export interface AgentTaskEvent {
+  agent_id: string;
+  task: string;
+}
+
+export interface AgentBranchEvent {
+  agent_id: string;
+  branch: string;
+}
+
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
   setRepo: (repoPath: string) => invoke<Workspace>("set_repo", { repoPath }),
-  spawnAgent: (task: string, view: AgentView) =>
-    invoke<AgentRecord>("spawn_agent", { task, view }),
+  spawnAgent: (view: AgentView) =>
+    invoke<AgentRecord>("spawn_agent", { view }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   sendUserMessage: (agentId: string, text: string) =>
@@ -94,4 +113,26 @@ export function onAgentView(
   cb: (e: AgentViewEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<AgentViewEvent>("agent:view", (event) => cb(event.payload));
+}
+
+export function onAgentTokens(
+  cb: (e: AgentTokensEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AgentTokensEvent>("agent:tokens", (event) =>
+    cb(event.payload),
+  );
+}
+
+export function onAgentTask(
+  cb: (e: AgentTaskEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AgentTaskEvent>("agent:task", (event) => cb(event.payload));
+}
+
+export function onAgentBranch(
+  cb: (e: AgentBranchEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AgentBranchEvent>("agent:branch", (event) =>
+    cb(event.payload),
+  );
 }

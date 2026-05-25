@@ -44,6 +44,24 @@ pub struct AgentViewPayload {
     pub view: AgentView,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct AgentTokensPayload {
+    pub agent_id: String,
+    pub context_tokens: u64,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct AgentTaskPayload {
+    pub agent_id: String,
+    pub task: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct AgentBranchPayload {
+    pub agent_id: String,
+    pub branch: String,
+}
+
 /// Watchdog cadence — how often we poll each agent's Activity to ask
 /// "has the turn ended?". The Activity's own threshold governs when
 /// turn_ended() starts returning true; this is just polling cost.
@@ -89,32 +107,29 @@ impl Supervisor {
     pub async fn spawn_agent(
         self: Arc<Self>,
         app: AppHandle,
-        task: String,
         view: AgentView,
     ) -> Result<AgentRecord> {
         let repo_path = self.workspace.repo_path()?;
 
-        // The agent's display name comes from the auto-allocated place
-        // id. The git branch is derived from the task itself — much
-        // more useful in `git branch`, `git log`, and PR titles — and
-        // namespaced under the app name via `branding::branch_for` so
-        // a rename is a one-constant change. On collision with an
-        // existing branch we append the place id for uniqueness.
+        // Instant spawn: no task is captured at spawn time, and we
+        // deliberately don't create a branch yet. The worktree comes
+        // up on detached HEAD; the first user message later gives us
+        // a slug to name the branch after. Agents that never receive
+        // a message therefore stay out of `git branch` entirely.
         let agent_id = self.workspace.allocate_agent_id()?;
         let name = agent_id.clone();
 
-        let slug = branding::slugify_task(&task);
-        let slug = if slug.is_empty() { agent_id.clone() } else { slug };
-        let mut branch = branding::branch_for(&slug);
-        if git::branch_exists(&repo_path, &branch).await.unwrap_or(false) {
-            branch = format!("{branch}-{agent_id}");
-        }
+        // Capture the branch the user was on when they spawned the
+        // agent. This is the natural merge target later. Detached
+        // HEAD or git failure → None; UI hides the arrow.
+        let parent_branch = git::current_branch(&repo_path).await.ok().flatten();
 
         let record = new_agent_record(
             agent_id.clone(),
             name,
-            branch.clone(),
-            task.clone(),
+            None, // branch — set later from first user message
+            parent_branch,
+            String::new(),
             view,
         );
         let worktree = self.workspace.worktree_path(&agent_id)?;
@@ -136,7 +151,7 @@ impl Supervisor {
                 return;
             }
 
-            if let Err(e) = git::worktree_add(&repo_path, &worktree, &branch).await {
+            if let Err(e) = git::worktree_add_detached(&repo_path, &worktree).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                 return;
             }
@@ -310,7 +325,12 @@ impl Supervisor {
         self.start_process(&app, agent_id, false).await
     }
 
-    pub fn write_to_agent(&self, app: &AppHandle, agent_id: &str, bytes: &[u8]) -> Result<()> {
+    pub fn write_to_agent(
+        self: Arc<Self>,
+        app: &AppHandle,
+        agent_id: &str,
+        bytes: &[u8],
+    ) -> Result<()> {
         {
             let agents = self.agents.lock();
             let agent = agents
@@ -322,12 +342,18 @@ impl Supervisor {
         // (we disabled xterm keystroke pass-through). So every write
         // is a user-initiated turn submission — mark Running and tell
         // the activity tracker a new turn has started.
-        mark_user_turn_started(self, app, agent_id);
+        mark_user_turn_started(&self, app, agent_id);
+        // The bytes are usually `<text>\r`. Strip the trailing CR/LF
+        // for storage so the sidebar summary doesn't show a literal
+        // newline marker.
+        let text = String::from_utf8_lossy(bytes);
+        let trimmed = text.trim_end_matches(['\r', '\n']);
+        on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), trimmed.to_string());
         Ok(())
     }
 
     pub fn send_user_message(
-        &self,
+        self: Arc<Self>,
         app: &AppHandle,
         agent_id: &str,
         text: &str,
@@ -339,7 +365,8 @@ impl Supervisor {
                 .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
             agent.send_user_message(text)?;
         }
-        mark_user_turn_started(self, app, agent_id);
+        mark_user_turn_started(&self, app, agent_id);
+        on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), text.to_string());
         Ok(())
     }
 
@@ -420,15 +447,14 @@ impl Supervisor {
     pub async fn discard_agent(self: Arc<Self>, agent_id: &str) -> Result<()> {
         let repo = self.workspace.repo_path()?;
         let worktree = self.workspace.worktree_path(agent_id)?;
-        let branch = self
-            .workspace
-            .current()
-            .and_then(|ws| {
-                ws.agents
-                    .iter()
-                    .find(|a| a.id == agent_id)
-                    .map(|a| a.branch.clone())
-            });
+        // .and_then on the inner find flattens Option<&AgentRecord> →
+        // Option<String> directly so we don't end up with Option<Option<_>>.
+        let branch = self.workspace.current().and_then(|ws| {
+            ws.agents
+                .iter()
+                .find(|a| a.id == agent_id)
+                .and_then(|a| a.branch.clone())
+        });
 
         if let Some(agent) = self.agents.lock().remove(agent_id) {
             let _ = agent.shutdown();
@@ -521,6 +547,29 @@ fn spawn_managed_agent(
                 activity.observe_event(&event);
             }
 
+            // Pull the context window size out of `result` events.
+            // Claude's `usage.input_tokens` is what its own `/context`
+            // command shows — the size of the conversation it'll
+            // re-send on the next turn (shrinks after `/compact`).
+            if event.get("type").and_then(|v| v.as_str()) == Some("result") {
+                if let Some(input) = event
+                    .get("usage")
+                    .and_then(|u| u.get("input_tokens"))
+                    .and_then(|v| v.as_u64())
+                {
+                    let _ = sup_for_event
+                        .workspace
+                        .update_agent_context_tokens(&id_for_event, input);
+                    let _ = app_for_event.emit(
+                        "agent:tokens",
+                        AgentTokensPayload {
+                            agent_id: id_for_event.clone(),
+                            context_tokens: input,
+                        },
+                    );
+                }
+            }
+
             if let Err(e) = app_for_event.emit(
                 "agent:event",
                 AgentEventPayload {
@@ -535,6 +584,118 @@ fn spawn_managed_agent(
             apply_exit_if_current(&sup_for_exit, &app_for_exit, &id_for_exit, gen, exit.success, exit.message);
         },
     )
+}
+
+/// Fire-and-forget handler for the user's first message: persists it
+/// as the agent's `task` (sidebar context across restarts) and, if
+/// the agent doesn't have a branch yet, derives a slug, creates
+/// `amux/<slug>` inside the worktree, and emits `agent:branch`.
+///
+/// Idempotent — calls after the first one only no-op (set_*_if_empty
+/// guards both fields). Errors during branch creation are logged but
+/// don't fail the user's send; the next message will retry.
+fn on_first_user_message(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+    text: String,
+) {
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    // Task capture is synchronous (just a workspace mutex + persist).
+    match sup.workspace.set_agent_task_if_empty(&agent_id, &trimmed) {
+        Ok(true) => {
+            let _ = app.emit(
+                "agent:task",
+                AgentTaskPayload {
+                    agent_id: agent_id.clone(),
+                    task: trimmed.clone(),
+                },
+            );
+        }
+        Ok(false) => {} // task already set
+        Err(e) => {
+            tracing::warn!(error = %e, agent_id = %agent_id, "set_agent_task_if_empty failed");
+        }
+    }
+
+    // Branch creation runs in a background task because it involves
+    // git calls. Submitting the user's message doesn't wait for it —
+    // the branch appears in the UI when the `agent:branch` event lands.
+    tauri::async_runtime::spawn(async move {
+        // Re-read the record under the same task; if the branch is
+        // already set (another concurrent send won, or this is a
+        // second message), we have nothing to do.
+        let record = match sup.workspace.agent(&agent_id) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, agent_id = %agent_id, "branch creation: agent lookup failed");
+                return;
+            }
+        };
+        if record.branch.is_some() {
+            return;
+        }
+
+        let slug = branding::slugify_task(&trimmed);
+        let slug = if slug.is_empty() {
+            agent_id.clone()
+        } else {
+            slug
+        };
+
+        let repo_path = match sup.workspace.repo_path() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "branch creation: repo_path failed");
+                return;
+            }
+        };
+        let worktree = match sup.workspace.worktree_path(&agent_id) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "branch creation: worktree_path failed");
+                return;
+            }
+        };
+
+        // Pick a unique name. Collisions are rare — the slug only
+        // collides with a hand-made branch under amux/ — but suffix
+        // with the place id when it happens.
+        let mut branch = branding::branch_for(&slug);
+        if git::branch_exists(&repo_path, &branch).await.unwrap_or(false) {
+            branch = format!("{branch}-{agent_id}");
+        }
+
+        if let Err(e) = git::checkout_new_branch(&worktree, &branch).await {
+            tracing::warn!(
+                error = %e,
+                agent_id = %agent_id,
+                branch = %branch,
+                "checkout_new_branch failed"
+            );
+            return;
+        }
+
+        match sup.workspace.set_agent_branch_if_empty(&agent_id, &branch) {
+            Ok(true) => {
+                let _ = app.emit(
+                    "agent:branch",
+                    AgentBranchPayload {
+                        agent_id: agent_id.clone(),
+                        branch: branch.clone(),
+                    },
+                );
+            }
+            Ok(false) => {} // raced; another caller won
+            Err(e) => {
+                tracing::warn!(error = %e, agent_id = %agent_id, "set_agent_branch_if_empty failed");
+            }
+        }
+    });
 }
 
 /// Mark "the user just started a turn." Flips status to Running and

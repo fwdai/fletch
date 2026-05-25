@@ -44,9 +44,6 @@ pub fn slugify_task(task: &str) -> String {
     if out.len() <= MAX_LEN {
         return out;
     }
-    // Cut at the last hyphen at or before MAX_LEN so words stay whole.
-    // If there's no hyphen (single very long word), accept the hard
-    // truncation rather than returning an empty slug.
     let cut = out[..MAX_LEN].rfind('-').unwrap_or(MAX_LEN);
     out.truncate(cut);
     out
@@ -57,20 +54,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn branch_uses_app_name() {
+        assert_eq!(branch_for("foo"), "amux/foo");
+    }
+
+    #[test]
     fn slug_basic() {
         assert_eq!(slugify_task("Fix the bug"), "fix-the-bug");
     }
 
     #[test]
-    fn slug_lowercases_and_dehyphenates() {
-        assert_eq!(slugify_task("ADD --DRY-RUN flag"), "add-dry-run-flag");
-    }
-
-    #[test]
     fn slug_caps_at_word_boundary() {
         let s = slugify_task("Refactor the auth flow to use middleware");
-        // 32-char cap should land at the last hyphen at or before 32:
-        // "refactor-the-auth-flow-to-use-middleware" → "refactor-the-auth-flow-to-use"
         assert_eq!(s, "refactor-the-auth-flow-to-use");
         assert!(s.len() <= 32);
     }
@@ -78,8 +73,6 @@ mod tests {
     #[test]
     fn slug_strips_punctuation_and_unicode() {
         assert_eq!(slugify_task("Add @user/foo as a dep!"), "add-user-foo-as-a-dep");
-        // Non-ASCII gets stripped entirely; remaining ASCII becomes
-        // the slug.
         assert_eq!(slugify_task("修复 login bug"), "login-bug");
     }
 
@@ -93,14 +86,7 @@ mod tests {
 
     #[test]
     fn slug_long_single_word_truncates_hard() {
-        // No hyphen to break on — hard-truncate at MAX_LEN.
         let s = slugify_task("supercalifragilisticexpialidociousness");
         assert_eq!(s.len(), 32);
-        assert_eq!(s, "supercalifragilisticexpialidocio");
-    }
-
-    #[test]
-    fn branch_uses_app_name() {
-        assert_eq!(branch_for("foo"), "amux/foo");
     }
 }

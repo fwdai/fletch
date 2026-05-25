@@ -117,10 +117,16 @@ impl Agent {
             "spawning sandboxed managed agent"
         );
 
-        // On a fresh spawn we seed the conversation with the user's
-        // initial task. On a resume we do nothing — claude rehydrates
-        // the previous turns and waits for the next user message.
-        let initial_task = if spec.fresh { Some(spec.task) } else { None };
+        // On a fresh spawn with an initial task, seed the conversation
+        // immediately. On a fresh spawn without a task (instant-spawn
+        // flow), the user types their first message themselves. On
+        // resume we do nothing — claude rehydrates prior turns and
+        // waits for the next user message.
+        let initial_task = if spec.fresh && !spec.task.is_empty() {
+            Some(spec.task)
+        } else {
+            None
+        };
 
         let session = ManagedSession::spawn(
             ManagedSpawn {
@@ -217,7 +223,11 @@ fn prepare_pty_args(
     if spec.fresh {
         args.push("--session-id".into());
         args.push(spec.session_id.to_string());
-        args.push(spec.task.to_string());
+        // Initial task is optional — if empty, claude launches into
+        // an interactive prompt waiting for the user's first message.
+        if !spec.task.is_empty() {
+            args.push(spec.task.to_string());
+        }
     } else {
         args.push("--resume".into());
         args.push(spec.session_id.to_string());

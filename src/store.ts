@@ -1,9 +1,12 @@
 import { create } from "zustand";
 import {
   api,
+  onAgentBranch,
   onAgentEvent,
   onAgentOutput,
   onAgentStatus,
+  onAgentTask,
+  onAgentTokens,
   onAgentView,
   type AgentRecord,
   type AgentView,
@@ -87,7 +90,7 @@ interface AppState {
   init: () => Promise<void>;
   selectAgent: (id: string | null) => void;
   setRepo: (path: string) => Promise<void>;
-  spawn: (task: string, view: AgentView) => Promise<AgentRecord | null>;
+  spawn: (view: AgentView) => Promise<AgentRecord | null>;
   sendUserMessage: (id: string, text: string) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
   resume: (id: string) => Promise<void>;
@@ -276,6 +279,47 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => handleManagedEvent(state, e.agent_id, e.event));
     });
 
+    await onAgentBranch((e) => {
+      const ws = get().workspace;
+      if (!ws) return;
+      set({
+        workspace: {
+          ...ws,
+          agents: ws.agents.map((a) =>
+            a.id === e.agent_id ? { ...a, branch: e.branch } : a,
+          ),
+        },
+      });
+    });
+
+    await onAgentTask((e) => {
+      const ws = get().workspace;
+      if (!ws) return;
+      set({
+        workspace: {
+          ...ws,
+          agents: ws.agents.map((a) =>
+            a.id === e.agent_id ? { ...a, task: e.task } : a,
+          ),
+        },
+      });
+    });
+
+    await onAgentTokens((e) => {
+      const ws = get().workspace;
+      if (!ws) return;
+      set({
+        workspace: {
+          ...ws,
+          agents: ws.agents.map((a) =>
+            a.id === e.agent_id
+              ? { ...a, context_tokens: e.context_tokens }
+              : a,
+          ),
+        },
+      });
+    });
+
     await onAgentView((e) => {
       // Backend changed the view (usually our own switchView call).
       // Reflect on the record so the UI swaps components.
@@ -331,10 +375,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  spawn: async (task, view) => {
+  spawn: async (view) => {
     set({ busy: true, lastError: null });
     try {
-      const rec = await api.spawnAgent(task, view);
+      const rec = await api.spawnAgent(view);
       const fresh = await api.getWorkspace();
       set((state) => {
         const patches: Partial<AppState> = {
@@ -342,13 +386,21 @@ export const useAppStore = create<AppState>((set, get) => ({
           selectedAgentId: rec.id,
         };
         if (view === "custom") {
-          // Seed the log with the initial task so users see what was
-          // sent before claude's first response lands.
+          // No initial task / no branch yet — both arrive after the
+          // user's first message. Greet with what we have (the
+          // worktree id and the parent branch we forked from).
+          const parent = rec.parent_branch
+            ? ` from ${rec.parent_branch}`
+            : "";
+          const greeting =
+            `Worktree ${rec.id} ready${parent}. ` +
+            `Claude is waiting — send a message to begin.`;
           patches.managedLogs = {
             ...state.managedLogs,
-            [rec.id]: [{ kind: "user", text: task }],
+            [rec.id]: [{ kind: "system", text: greeting }],
           };
-          patches.managedBusy = { ...state.managedBusy, [rec.id]: true };
+          // No turn is in flight at spawn — input is enabled.
+          patches.managedBusy = { ...state.managedBusy, [rec.id]: false };
         }
         return patches;
       });

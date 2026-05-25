@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { api, type AgentRecord } from "../api";
 import { getOutputBuffer, registerOutputSink } from "../store";
-import { ViewToggle } from "./ViewToggle";
+import { AgentHeader } from "./AgentHeader";
 
 /** Native view: claude's TUI is streamed verbatim into xterm. Claude's
  *  own input prompt at the bottom of the terminal is hidden behind our
@@ -116,18 +116,7 @@ export function NativeAgentView({ agent }: { agent: AgentRecord }) {
 
   return (
     <div className="termwrap">
-      <div className="termheader">
-        <div className="left">
-          <span className="name">{agent.name}</span>
-          <span className="branch">{agent.branch}</span>
-          <span className="status" data-status={agent.status}>
-            {agent.status}
-          </span>
-        </div>
-        <div className="right">
-          <ViewToggle agentId={agent.id} current="native" />
-        </div>
-      </div>
+      <AgentHeader agent={agent} view="native" />
       {agent.last_error && <div className="errbar">{agent.last_error}</div>}
 
       <div className="native-stage">

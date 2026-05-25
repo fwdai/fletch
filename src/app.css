@@ -223,6 +223,31 @@ small code {
   min-width: 0;
   flex: 1;
 }
+
+/* Three-line sidebar row layout */
+.row-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.task-summary-line {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta .provider { text-transform: lowercase; color: var(--text-muted); }
+.meta .status-text {
+  text-transform: lowercase;
+  color: var(--text-muted);
+}
+.meta .status-text[data-status="running"] { color: var(--success); }
+.meta .status-text[data-status="spawning"] { color: var(--warning); }
+.meta .status-text[data-status="error"] { color: var(--danger); }
+.meta .status-text[data-status="idle"] { color: var(--text-muted); }
+.meta .status-text[data-status="stopped"] { color: var(--text-muted); }
 .dim { color: var(--border-strong); }
 .meta.progress {
   color: var(--warning);
@@ -304,6 +329,79 @@ small code {
   font-size: 11px;
 }
 .term { flex: 1; min-height: 0; padding: 8px; background: var(--bg); overflow: hidden; }
+
+/* ---------- Agent view header (two rows) ---------- */
+
+.agentheader {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px 6px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.agentheader-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 22px;
+}
+.agentheader-row .left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.agentheader-row .right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.agentheader .sep {
+  color: var(--border-strong);
+}
+.agentheader .provider {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.agentheader-row.primary .status {
+  /* Re-use the existing .status color rules but make it readable
+   * without the prior uppercase pill background. */
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 0;
+  border-radius: 0;
+}
+.agentheader-row.secondary {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+.agentheader .agent-id {
+  color: var(--text);
+  font-weight: 500;
+}
+.agentheader .branch {
+  /* override the sidebar `.branch` font-size pill — here we want it
+   * to blend with the secondary row's mono text. */
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: 11px;
+}
+.agentheader .arrow {
+  color: var(--text-muted);
+  margin: 0 2px;
+}
+.agentheader .parent-branch {
+  color: var(--text);
+}
 
 /* ---------- Error toast ---------- */
 
@@ -684,6 +782,16 @@ small.warn code {
   text-align: center;
 }
 .msg-result.error .msg-body { color: var(--danger); }
+
+.msg-system .msg-body {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: center;
+}
 
 .msg-tool, .msg-tool-result {
   background: var(--bg-elevated);

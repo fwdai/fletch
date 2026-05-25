@@ -45,7 +45,18 @@ impl Default for AgentView {
 pub struct AgentRecord {
     pub id: String,
     pub name: String,
-    pub branch: String,
+    /// `None` until the user sends their first message — we defer
+    /// branch creation so spawned-but-unused agents don't pollute
+    /// `git branch`. Set to `amux/<slug>` once the first user message
+    /// gives us something to name it after.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// The branch the agent's worktree was created from. Captured at
+    /// spawn time so the UI can show "→ target: main" and so future
+    /// "make a PR" flows know the merge target. `None` for agents
+    /// spawned in detached HEAD state or before this field existed.
+    #[serde(default)]
+    pub parent_branch: Option<String>,
     pub task: String,
     pub status: AgentStatus,
     #[serde(default)]
@@ -60,6 +71,13 @@ pub struct AgentRecord {
     pub last_error: Option<String>,
     #[serde(default)]
     pub status_message: Option<String>,
+    /// Most recent turn's input-token count — the closest approximation
+    /// of what claude's `/context` displays. Updated from the `usage`
+    /// field on each stream-json `result` event in custom view. `None`
+    /// for native-view agents (no signal) and for agents that haven't
+    /// completed a turn yet.
+    #[serde(default)]
+    pub context_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -229,6 +247,68 @@ impl WorkspaceManager {
         Ok(changed)
     }
 
+    /// Record the first user message as the agent's task — but only
+    /// if the task hasn't been set yet. Returns true if it actually
+    /// wrote (so callers can decide whether to emit an event).
+    pub fn set_agent_task_if_empty(&self, id: &str, task: &str) -> Result<bool> {
+        let mut wrote = false;
+        {
+            let mut g = self.inner.write();
+            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
+            let a = ws
+                .agents
+                .iter_mut()
+                .find(|a| a.id == id)
+                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
+            if a.task.trim().is_empty() {
+                a.task = task.to_string();
+                wrote = true;
+            }
+        }
+        if wrote {
+            self.persist()?;
+        }
+        Ok(wrote)
+    }
+
+    pub fn update_agent_context_tokens(&self, id: &str, tokens: u64) -> Result<()> {
+        {
+            let mut g = self.inner.write();
+            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
+            let a = ws
+                .agents
+                .iter_mut()
+                .find(|a| a.id == id)
+                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
+            a.context_tokens = Some(tokens);
+        }
+        self.persist()
+    }
+
+    /// Set the agent's branch — but only if it isn't set yet. Used
+    /// when the first user message triggers branch creation. Returns
+    /// true iff it actually wrote.
+    pub fn set_agent_branch_if_empty(&self, id: &str, branch: &str) -> Result<bool> {
+        let mut wrote = false;
+        {
+            let mut g = self.inner.write();
+            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
+            let a = ws
+                .agents
+                .iter_mut()
+                .find(|a| a.id == id)
+                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
+            if a.branch.is_none() {
+                a.branch = Some(branch.to_string());
+                wrote = true;
+            }
+        }
+        if wrote {
+            self.persist()?;
+        }
+        Ok(wrote)
+    }
+
     pub fn update_agent_view(&self, id: &str, view: AgentView) -> Result<()> {
         {
             let mut g = self.inner.write();
@@ -308,7 +388,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 pub fn new_agent_record(
     id: String,
     name: String,
-    branch: String,
+    branch: Option<String>,
+    parent_branch: Option<String>,
     task: String,
     view: AgentView,
 ) -> AgentRecord {
@@ -316,6 +397,7 @@ pub fn new_agent_record(
         id,
         name,
         branch,
+        parent_branch,
         task,
         status: AgentStatus::Spawning,
         view,
@@ -325,6 +407,7 @@ pub fn new_agent_record(
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         status_message: None,
+        context_tokens: None,
     }
 }
 
@@ -352,11 +435,11 @@ mod tests {
         {
             let wm = WorkspaceManager::new(app_dir.clone()).unwrap();
             wm.set_repo(repo.clone()).unwrap();
-            let mut running = new_agent_record("yosemite".into(), "a".into(), "b".into(), "c".into(), AgentView::Custom);
+            let mut running = new_agent_record("yosemite".into(), "a".into(), Some("b".into()), None, "c".into(), AgentView::Custom);
             running.status = AgentStatus::Running;
             wm.add_agent(running).unwrap();
 
-            let mut stopped = new_agent_record("dolomites".into(), "s".into(), "sb".into(), "sc".into(), AgentView::Custom);
+            let mut stopped = new_agent_record("dolomites".into(), "s".into(), Some("sb".into()), None, "sc".into(), AgentView::Custom);
             stopped.status = AgentStatus::Stopped;
             wm.add_agent(stopped).unwrap();
         }
@@ -385,7 +468,7 @@ mod tests {
         let repo = init_repo(td.path());
         let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
         wm.set_repo(repo).unwrap();
-        let rec = new_agent_record("test-id".into(), "a".into(), "b".into(), "c".into(), AgentView::Custom);
+        let rec = new_agent_record("test-id".into(), "a".into(), Some("b".into()), None, "c".into(), AgentView::Custom);
         let id = rec.id.clone();
         wm.add_agent(rec).unwrap();
 

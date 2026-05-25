@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { type AgentRecord } from "../api";
 import { type ManagedItem, useAppStore } from "../store";
-import { ViewToggle } from "./ViewToggle";
+import { AgentHeader } from "./AgentHeader";
 
 const EMPTY_LOG: ManagedItem[] = [];
 
@@ -36,20 +36,7 @@ export function CustomAgentView({ agent }: { agent: AgentRecord }) {
 
   return (
     <div className="termwrap">
-      <div className="termheader">
-        <div className="left">
-          <span className="name">{agent.name}</span>
-          <span className="branch">{agent.branch}</span>
-          <span className="status" data-status={agent.status}>
-            {agent.status}
-          </span>
-        </div>
-        <div className="right">
-          {/* Disable the toggle while a turn is in flight — switching
-              tears down the process, which would truncate the response. */}
-          <ViewToggle agentId={agent.id} current="custom" disabled={busy} />
-        </div>
-      </div>
+      <AgentHeader agent={agent} view="custom" toggleDisabled={busy} />
       {agent.last_error && <div className="errbar">{agent.last_error}</div>}
 
       <div className="msglog" ref={scrollRef}>
@@ -130,7 +117,11 @@ function MessageItem({ item }: { item: ManagedItem }) {
         </div>
       );
     case "system":
-      return null;
+      return (
+        <div className="msg msg-system">
+          <div className="msg-body">{item.text}</div>
+        </div>
+      );
   }
 }
 
