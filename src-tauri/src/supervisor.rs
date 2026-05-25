@@ -97,13 +97,22 @@ impl Supervisor {
                 rows: 32,
             },
             move |bytes| {
-                let _ = app_for_output.emit(
+                let len = bytes.len();
+                if let Err(e) = app_for_output.emit(
                     "agent:output",
                     AgentOutputPayload {
                         agent_id: id_for_output.clone(),
                         bytes,
                     },
-                );
+                ) {
+                    tracing::warn!(error = %e, agent_id = %id_for_output, "emit agent:output failed");
+                } else {
+                    tracing::debug!(
+                        agent_id = %id_for_output,
+                        bytes = len,
+                        "emitted agent:output"
+                    );
+                }
             },
         );
 

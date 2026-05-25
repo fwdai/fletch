@@ -91,12 +91,28 @@ impl PtySession {
             let mut reader = reader;
             move || {
                 let mut buf = vec![0u8; 4096];
+                let mut total: usize = 0;
                 loop {
                     match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => on_output(buf[..n].to_vec()),
+                        Ok(0) => {
+                            tracing::info!(total_bytes = total, "pty reader: EOF");
+                            break;
+                        }
+                        Ok(n) => {
+                            total += n;
+                            tracing::trace!(
+                                bytes = n,
+                                total = total,
+                                preview = %String::from_utf8_lossy(&buf[..n.min(120)]).replace('\n', "\\n"),
+                                "pty reader: chunk"
+                            );
+                            on_output(buf[..n].to_vec());
+                        }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(_) => break,
+                        Err(e) => {
+                            tracing::warn!(error = %e, total = total, "pty reader: error, exiting");
+                            break;
+                        }
                     }
                 }
             }

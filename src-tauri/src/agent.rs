@@ -83,6 +83,13 @@ impl Agent {
 
         // 4. Spawn under a PTY so the frontend xterm gets a real
         //    interactive terminal.
+        tracing::info!(
+            agent_id = %spec.agent_id,
+            worktree = %spec.worktree.display(),
+            profile = %profile_file.path().display(),
+            argv = ?args,
+            "spawning agent under sandbox-exec"
+        );
         let pty = PtySession::spawn(
             PtySpawn {
                 program: Path::new(SANDBOX_EXEC),
