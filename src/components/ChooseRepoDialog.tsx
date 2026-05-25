@@ -1,16 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api } from "../api";
 import { useAppStore } from "../store";
-import { BakeDialog } from "./BakeDialog";
 
-/**
- * Combined repo + base-image picker.
- *
- * Replaces the previous flow that used `window.prompt()` to ask for the
- * base image after the directory picker — `prompt()` returns `null` in
- * Tauri's webview, so the whole flow silently aborted.
- */
 export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
   const workspace = useAppStore((s) => s.workspace);
   const setRepo = useAppStore((s) => s.setRepo);
@@ -18,29 +9,6 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
   const lastError = useAppStore((s) => s.lastError);
 
   const [path, setPath] = useState(workspace?.repo_path ?? "");
-  const [baseImage, setBaseImage] = useState(workspace?.base_image ?? "base-dev");
-  const [available, setAvailable] = useState<string[] | null>(null);
-  const [imagesError, setImagesError] = useState<string | null>(null);
-  const [bakeOpen, setBakeOpen] = useState(false);
-  const [refreshTick, setRefreshTick] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .listBaseImages()
-      .then((list) => {
-        if (!cancelled) setAvailable(list);
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          setAvailable([]);
-          setImagesError(String(e));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshTick]);
 
   async function pickDirectory() {
     const selected = await open({
@@ -53,33 +21,14 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!path.trim() || !baseImage.trim()) return;
-    await setRepo(path.trim(), baseImage.trim());
-    // Only close if the call succeeded. If it failed, `lastError` is set
-    // and we keep the modal open so the user can fix and retry.
+    if (!path.trim()) return;
+    await setRepo(path.trim());
     if (!useAppStore.getState().lastError) onClose();
-  }
-
-  if (bakeOpen) {
-    return (
-      <BakeDialog
-        imageName={baseImage.trim() || "base-dev"}
-        onClose={() => setBakeOpen(false)}
-        onSuccess={() => {
-          setBakeOpen(false);
-          setRefreshTick((t) => t + 1);
-        }}
-      />
-    );
   }
 
   return (
     <>
-      <div
-        className="backdrop"
-        onClick={onClose}
-        role="presentation"
-      />
+      <div className="backdrop" onClick={onClose} role="presentation" />
       <div className="modal" role="dialog" aria-label="Choose repository">
         <form onSubmit={onSubmit}>
           <h2>Choose repository</h2>
@@ -95,61 +44,12 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
                 Browse…
               </button>
             </div>
-          </label>
-          <label>
-            <span>Tart base image</span>
-            <input
-              value={baseImage}
-              onChange={(e) => setBaseImage(e.target.value)}
-              placeholder="base-dev"
-              list="base-image-options"
-            />
-            {available && available.length > 0 && (
-              <datalist id="base-image-options">
-                {available.map((name) => (
-                  <option key={name} value={name} />
-                ))}
-              </datalist>
-            )}
-            {available === null && <small>Loading available VMs…</small>}
-            {available && available.length > 0 && (
-              <div className="chips">
-                {available.map((name) => (
-                  <button
-                    key={name}
-                    type="button"
-                    className={`chip ${baseImage === name ? "active" : ""}`}
-                    onClick={() => setBaseImage(name)}
-                  >
-                    {name}
-                  </button>
-                ))}
-              </div>
-            )}
-            {available && available.length === 0 && !imagesError && (
-              <div className="empty-images">
-                <p>
-                  No base images found. Build one to get started — this
-                  downloads Ubuntu, installs node + the Claude Code CLI,
-                  and bakes in your SSH key. Takes 5–10 minutes once.
-                </p>
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => {
-                    if (!baseImage.trim()) setBaseImage("base-dev");
-                    setBakeOpen(true);
-                  }}
-                >
-                  Build base image
-                </button>
-              </div>
-            )}
-            {imagesError && (
-              <small className="warn">
-                Couldn't list Tart VMs: {imagesError}
-              </small>
-            )}
+            <small>
+              Each agent will get its own worktree under{" "}
+              <code>.worktrees/</code> on a fresh branch, and run claude
+              under a macOS sandbox (kernel-enforced — agents can only
+              modify their own worktree).
+            </small>
           </label>
           {lastError && <div className="formerr">{lastError}</div>}
           <div className="actions">
@@ -159,7 +59,7 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
             <button
               type="submit"
               className="primary"
-              disabled={busy || !path.trim() || !baseImage.trim()}
+              disabled={busy || !path.trim()}
             >
               {busy ? "Setting…" : "Use this repo"}
             </button>

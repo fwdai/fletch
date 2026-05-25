@@ -1,21 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type BakeStage =
-  | "cloning"
-  | "booting"
-  | "waiting_for_ssh"
-  | "installing"
-  | "finalizing"
-  | "done"
-  | "error";
-
-export interface BakeProgress {
-  stage: BakeStage;
-  message: string;
-  tail: string | null;
-}
-
 export type AgentStatus =
   | "spawning"
   | "running"
@@ -36,7 +21,6 @@ export interface AgentRecord {
 
 export interface Workspace {
   repo_path: string;
-  base_image: string;
   agents: AgentRecord[];
 }
 
@@ -54,8 +38,7 @@ export interface AgentStatusEvent {
 
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
-  setRepo: (repoPath: string, baseImage: string) =>
-    invoke<Workspace>("set_repo", { repoPath, baseImage }),
+  setRepo: (repoPath: string) => invoke<Workspace>("set_repo", { repoPath }),
   spawnAgent: (name: string, branch: string, task: string) =>
     invoke<AgentRecord>("spawn_agent", { name, branch, task }),
   writeToAgent: (agentId: string, data: string) =>
@@ -63,19 +46,9 @@ export const api = {
   resizeAgent: (agentId: string, cols: number, rows: number) =>
     invoke<void>("resize_agent", { agentId, cols, rows }),
   stopAgent: (agentId: string) => invoke<void>("stop_agent", { agentId }),
-  discardWorktree: (agentId: string) =>
-    invoke<void>("discard_worktree", { agentId }),
-  getPublicKey: () => invoke<string>("get_public_key"),
-  listBaseImages: () => invoke<string[]>("list_base_images"),
-  bakeBaseImage: (imageName: string) =>
-    invoke<void>("bake_base_image", { imageName }),
+  discardAgent: (agentId: string) =>
+    invoke<void>("discard_agent", { agentId }),
 };
-
-export function onBakeProgress(
-  cb: (e: BakeProgress) => void,
-): Promise<UnlistenFn> {
-  return listen<BakeProgress>("bake:progress", (event) => cb(event.payload));
-}
 
 export function onAgentOutput(
   cb: (e: AgentOutputEvent) => void,

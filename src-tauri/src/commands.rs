@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use crate::error::Result;
-use crate::keys;
 use crate::supervisor::Supervisor;
 use crate::workspace::{AgentRecord, Workspace};
 
@@ -18,9 +17,8 @@ pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace
 pub fn set_repo(
     supervisor: State<'_, Arc<Supervisor>>,
     repo_path: String,
-    base_image: String,
 ) -> Result<Workspace> {
-    supervisor.set_repo(PathBuf::from(repo_path), base_image)
+    supervisor.set_repo(PathBuf::from(repo_path))
 }
 
 #[tauri::command]
@@ -65,38 +63,10 @@ pub async fn stop_agent(
 }
 
 #[tauri::command]
-pub async fn discard_worktree(
+pub async fn discard_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.discard_worktree(&agent_id).await
-}
-
-#[tauri::command]
-pub fn get_public_key(supervisor: State<'_, Arc<Supervisor>>) -> Result<String> {
-    keys::read_public_key(&supervisor.keys)
-}
-
-/// Returns the names of all Tart VMs visible to the bundled `tart` binary.
-/// Used by the frontend to populate a "pick a base image" picker — agent
-/// VMs (named `algiers-*`) are filtered out so we only show candidates.
-#[tauri::command]
-pub async fn list_base_images(supervisor: State<'_, Arc<Supervisor>>) -> Result<Vec<String>> {
-    let vm = supervisor.vm.clone();
-    let names = vm.list_names().await?;
-    Ok(names
-        .into_iter()
-        .filter(|n| !n.starts_with("algiers-"))
-        .collect())
-}
-
-#[tauri::command]
-pub async fn bake_base_image(
-    supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
-    image_name: String,
-) -> Result<()> {
-    let sup = supervisor.inner().clone();
-    sup.bake_base_image(app, image_name).await
+    sup.discard_agent(&agent_id).await
 }

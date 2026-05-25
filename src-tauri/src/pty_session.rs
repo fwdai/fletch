@@ -1,14 +1,12 @@
-//! SSH-over-PTY bridge.
+//! Local PTY around a child process.
 //!
-//! Spawns `ssh -tt user@host -- <remote-cmd>` inside a local PTY so the agent
-//! gets a fully interactive terminal. Bytes flowing out of the PTY are handed
-//! to a callback (the supervisor uses it to forward to Tauri events). Bytes
-//! flowing in come from the frontend via [`PtySession::write`].
+//! Used to wrap the sandboxed `claude` invocation so the frontend
+//! xterm gets a full interactive terminal (readline, ANSI colors,
+//! resize, ^C, etc.). Replaces the previous SSH-based PtySession.
 
 use parking_lot::Mutex;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
-use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
@@ -20,24 +18,21 @@ pub struct PtySession {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
 }
 
-pub struct SshTarget<'a> {
-    pub user: &'a str,
-    pub host: &'a str,
-    pub key_path: &'a Path,
-    pub port: Option<u16>,
-}
-
-pub struct SshSpawn<'a> {
-    pub target: SshTarget<'a>,
-    pub remote_cmd: &'a str,
+pub struct PtySpawn<'a> {
+    /// Path to the binary to exec.
+    pub program: &'a std::path::Path,
+    /// argv after the program.
+    pub args: &'a [String],
+    /// Extra env vars to set (on top of inherited).
+    pub envs: &'a [(&'a str, String)],
+    /// Working directory inside the PTY.
+    pub cwd: &'a std::path::Path,
     pub cols: u16,
     pub rows: u16,
 }
 
 impl PtySession {
-    /// Spawn an SSH-over-PTY session. `on_output` is called from a background
-    /// thread whenever bytes arrive from the remote PTY.
-    pub fn spawn_ssh<F>(spec: SshSpawn<'_>, on_output: F) -> Result<Self>
+    pub fn spawn<F>(spec: PtySpawn<'_>, on_output: F) -> Result<Self>
     where
         F: Fn(Vec<u8>) + Send + 'static,
     {
@@ -49,46 +44,36 @@ impl PtySession {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|e| Error::Ssh(format!("openpty failed: {e}")))?;
+            .map_err(|e| Error::Other(format!("openpty: {e}")))?;
 
-        let mut cmd = CommandBuilder::new("ssh");
-        // CommandBuilder::arg/args return (), so they can't be chained.
-        cmd.arg("-tt"); // force PTY allocation on the remote
-        cmd.args(["-o", "StrictHostKeyChecking=no"]);
-        cmd.args(["-o", "UserKnownHostsFile=/dev/null"]);
-        cmd.args(["-o", "LogLevel=ERROR"]);
-        cmd.arg("-i");
-        cmd.arg(spec.target.key_path);
-        if let Some(p) = spec.target.port {
-            cmd.arg("-p");
-            cmd.arg(p.to_string());
+        let mut cmd = CommandBuilder::new(spec.program);
+        for a in spec.args {
+            cmd.arg(a);
         }
-        cmd.arg(format!("{}@{}", spec.target.user, spec.target.host));
-        cmd.arg("--");
-        cmd.arg(spec.remote_cmd);
+        cmd.cwd(spec.cwd);
+        for (k, v) in spec.envs {
+            cmd.env(*k, v);
+        }
 
         let child = pair
             .slave
             .spawn_command(cmd)
-            .map_err(|e| Error::Ssh(format!("ssh spawn failed: {e}")))?;
+            .map_err(|e| Error::Other(format!("pty spawn: {e}")))?;
         let killer = child.clone_killer();
-        drop(pair.slave); // we only need the master from here
+        drop(pair.slave); // host side only needs master from here on
 
         let reader = pair
             .master
             .try_clone_reader()
-            .map_err(|e| Error::Ssh(format!("clone reader failed: {e}")))?;
+            .map_err(|e| Error::Other(format!("pty clone reader: {e}")))?;
         let writer = pair
             .master
             .take_writer()
-            .map_err(|e| Error::Ssh(format!("take writer failed: {e}")))?;
+            .map_err(|e| Error::Other(format!("pty take writer: {e}")))?;
 
         let master = Arc::new(Mutex::new(pair.master));
         let writer = Arc::new(Mutex::new(writer));
 
-        // Reader thread: pump PTY output to the callback. Exits when the PTY
-        // closes (the child has exited or been killed). Sole owner of the
-        // callback — no Sync bound needed because we don't share it.
         thread::spawn({
             let mut reader = reader;
             move || {
@@ -115,7 +100,7 @@ impl PtySession {
         self.writer
             .lock()
             .write_all(bytes)
-            .map_err(|e| Error::Ssh(format!("pty write: {e}")))
+            .map_err(|e| Error::Other(format!("pty write: {e}")))
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
@@ -127,14 +112,14 @@ impl PtySession {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|e| Error::Ssh(format!("resize: {e}")))
+            .map_err(|e| Error::Other(format!("pty resize: {e}")))
     }
 
     pub fn kill(&self) -> Result<()> {
         self.killer
             .lock()
             .kill()
-            .map_err(|e| Error::Ssh(format!("kill: {e}")))
+            .map_err(|e| Error::Other(format!("pty kill: {e}")))
     }
 }
 

@@ -3,17 +3,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("tart command failed: {0}")]
-    Tart(String),
-
     #[error("git command failed: {0}")]
     Git(String),
-
-    #[error("ssh error: {0}")]
-    Ssh(String),
-
-    #[error("vm boot timeout after {0}s")]
-    VmBootTimeout(u64),
 
     #[error("agent not found: {0}")]
     AgentNotFound(String),

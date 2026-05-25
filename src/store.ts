@@ -10,12 +10,10 @@ import {
 type OutputHandler = (bytes: Uint8Array) => void;
 
 /** Stable empty-array sentinel for selectors. Returning a fresh `[]`
- *  literal from a Zustand selector triggers React's "snapshot changed"
- *  check on every render and explodes into a setState loop. */
+ *  from a Zustand selector triggers React's "snapshot changed" check
+ *  on every render and explodes into a setState loop. */
 export const EMPTY_AGENTS: readonly AgentRecord[] = Object.freeze([]);
 
-/** Per-agent xterm sinks. Lives outside the Zustand store because it isn't
- *  reactive — components register/unregister with bare function refs. */
 const outputSinks = new Map<string, OutputHandler>();
 
 export function registerOutputSink(
@@ -28,27 +26,24 @@ export function registerOutputSink(
   };
 }
 
-export type BaseImageStatus = "unknown" | "checking" | "ready" | "missing";
-
 interface AppState {
   workspace: Workspace | null;
   selectedAgentId: string | null;
   busy: boolean;
   lastError: string | null;
   initialized: boolean;
-  /** Whether the workspace's configured base image actually exists on the
-   *  user's Tart store. Drives the "build base image" banner + Spawn
-   *  enablement. */
-  baseImageStatus: BaseImageStatus;
 
   init: () => Promise<void>;
   selectAgent: (id: string | null) => void;
-  setRepo: (path: string, baseImage: string) => Promise<void>;
-  spawn: (name: string, branch: string, task: string) => Promise<AgentRecord | null>;
+  setRepo: (path: string) => Promise<void>;
+  spawn: (
+    name: string,
+    branch: string,
+    task: string,
+  ) => Promise<AgentRecord | null>;
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;
   clearError: () => void;
-  refreshBaseImageStatus: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -57,7 +52,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   busy: false,
   lastError: null,
   initialized: false,
-  baseImageStatus: "unknown",
 
   init: async () => {
     if (get().initialized) return;
@@ -65,7 +59,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const workspace = await api.getWorkspace();
     set({ workspace });
-    void get().refreshBaseImageStatus();
 
     await onAgentOutput((e) => {
       const sink = outputSinks.get(e.agent_id);
@@ -83,8 +76,6 @@ export const useAppStore = create<AppState>((set, get) => ({
                 ...a,
                 status: e.status,
                 last_error: e.last_error ?? a.last_error,
-                // status_message is "live" — undefined means "no change",
-                // null means "clear it" (settled into a terminal state).
                 status_message:
                   e.status_message === undefined
                     ? a.status_message
@@ -99,35 +90,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   selectAgent: (id) => set({ selectedAgentId: id }),
 
-  setRepo: async (path, baseImage) => {
+  setRepo: async (path) => {
     set({ busy: true, lastError: null });
     try {
-      const ws = await api.setRepo(path, baseImage);
+      const ws = await api.setRepo(path);
       set({ workspace: ws });
-      void get().refreshBaseImageStatus();
     } catch (e) {
       set({ lastError: String(e) });
     } finally {
       set({ busy: false });
-    }
-  },
-
-  refreshBaseImageStatus: async () => {
-    const ws = get().workspace;
-    if (!ws) {
-      set({ baseImageStatus: "unknown" });
-      return;
-    }
-    set({ baseImageStatus: "checking" });
-    try {
-      const list = await api.listBaseImages();
-      set({
-        baseImageStatus: list.includes(ws.base_image) ? "ready" : "missing",
-      });
-    } catch {
-      // If we can't list (e.g. tart not on PATH in dev), treat as missing —
-      // safer than letting the user click Spawn and get a generic error.
-      set({ baseImageStatus: "missing" });
     }
   },
 
@@ -156,7 +127,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   discard: async (id) => {
     try {
-      await api.discardWorktree(id);
+      await api.discardAgent(id);
       const fresh = await api.getWorkspace();
       set((s) => ({
         workspace: fresh,

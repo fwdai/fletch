@@ -32,10 +32,8 @@
       "icons/128x128@2x.png",
       "icons/icon.icns"
     ],
-    "resources": ["resources/tart/**/*", "resources/third-party/**/*"],
     "macOS": {
-      "minimumSystemVersion": "13.0",
-      "entitlements": "entitlements.plist"
+      "minimumSystemVersion": "13.0"
     }
   }
 }

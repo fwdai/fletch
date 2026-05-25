@@ -8,8 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "check": "tsc --noEmit",
-    "postinstall": "bash scripts/download-tart.sh"
+    "check": "tsc --noEmit"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",

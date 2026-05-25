@@ -77,7 +77,6 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
   async function onDiscard() {
     const ok = await ask(
       `Remove "${agent.name}"?\n\nThis will delete:\n` +
-        `  • the VM\n` +
         `  • the worktree at .worktrees/${agent.id} (any uncommitted work)\n` +
         `  • the branch ${agent.branch}\n\n` +
         `Branch deletion can be undone via git reflog within ~90 days.`,

@@ -1,7 +1,4 @@
 //! Coordinator between Tauri IPC commands and the running agents.
-//!
-//! Owns the live `Agent` map plus the `WorkspaceManager` and `Vm`. All
-//! frontend-initiated mutations funnel through here.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -10,11 +7,11 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 use crate::agent::{Agent, SpawnSpec};
-use crate::baker::{self, BakeSpec};
 use crate::error::{Error, Result};
 use crate::git;
-use crate::vm::Vm;
-use crate::workspace::{new_agent_record, AgentRecord, AgentStatus, Workspace, WorkspaceManager};
+use crate::workspace::{
+    new_agent_record, AgentRecord, AgentStatus, Workspace, WorkspaceManager,
+};
 
 #[derive(Clone, serde::Serialize)]
 pub struct AgentOutputPayload {
@@ -31,35 +28,16 @@ pub struct AgentStatusPayload {
     pub status_message: Option<String>,
 }
 
-/// Path to the SSH key pair the host uses to authenticate to guests.
-/// Generated lazily on first spawn if absent.
-pub struct KeyMaterial {
-    pub private_key: PathBuf,
-    pub public_key: PathBuf,
-}
-
 pub struct Supervisor {
     pub workspace: Arc<WorkspaceManager>,
-    pub vm: Arc<Vm>,
-    pub keys: KeyMaterial,
-    /// Live agents keyed by agent id. Wrapped in a sync mutex because agents
-    /// also need to be torn down from inside async command handlers; we hold
-    /// the lock only across cheap map ops, never across awaits.
     pub agents: Mutex<HashMap<String, Agent>>,
-    /// Exclusive flag so only one base-image bake runs at a time. Bakes
-    /// stomp on each other badly (the upstream image is cloned by name) so
-    /// we serialize.
-    pub baking: Mutex<bool>,
 }
 
 impl Supervisor {
-    pub fn new(workspace: Arc<WorkspaceManager>, vm: Arc<Vm>, keys: KeyMaterial) -> Self {
+    pub fn new(workspace: Arc<WorkspaceManager>) -> Self {
         Self {
             workspace,
-            vm,
-            keys,
             agents: Mutex::new(HashMap::new()),
-            baking: Mutex::new(false),
         }
     }
 
@@ -67,88 +45,54 @@ impl Supervisor {
         self.workspace.current()
     }
 
-    pub fn set_repo(&self, repo_path: PathBuf, base_image: String) -> Result<Workspace> {
-        self.workspace.set_repo(repo_path, base_image)
+    pub fn set_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
+        self.workspace.set_repo(repo_path)
     }
 
     pub async fn spawn_agent(
-        &self,
+        self: Arc<Self>,
         app: AppHandle,
         name: String,
         branch: String,
         task: String,
     ) -> Result<AgentRecord> {
         let repo_path = self.workspace.repo_path()?;
-        let base_image = self.workspace.base_image()?;
 
         let record = new_agent_record(name, branch.clone(), task.clone());
         let agent_id = record.id.clone();
-        let vm_name = format!("algiers-{}", agent_id);
         let worktree = self.workspace.worktree_path(&agent_id)?;
 
-        // Persist as Spawning before we do anything destructive.
         self.workspace.add_agent(record.clone())?;
         emit_status(&app, &agent_id, AgentStatus::Spawning, None);
+        emit_progress(&self.workspace, &app, &agent_id, "Creating git worktree…");
 
-        // Run the full spawn flow; on error we roll back the worktree and
-        // surface the failure as Error status.
-        let spawn_result = self
-            .do_spawn(&app, &repo_path, &branch, &agent_id, &vm_name, &worktree, &base_image, &task)
-            .await;
-
-        match spawn_result {
-            Ok(agent) => {
-                self.agents.lock().insert(agent_id.clone(), agent);
-                self.workspace
-                    .update_agent_status(&agent_id, AgentStatus::Running, None)?;
-                emit_status(&app, &agent_id, AgentStatus::Running, None);
-                let updated = find_record(&self.workspace.current(), &agent_id)
-                    .unwrap_or(record);
-                Ok(updated)
-            }
-            Err(e) => {
-                let err_str = e.to_string();
-                let _ = git::worktree_remove(&repo_path, &worktree, true).await;
-                self.workspace
-                    .update_agent_status(&agent_id, AgentStatus::Error, Some(err_str.clone()))?;
-                emit_status(&app, &agent_id, AgentStatus::Error, Some(err_str));
-                Err(e)
-            }
+        // 1. Create the worktree on the new branch.
+        std::fs::create_dir_all(git::worktrees_dir(&repo_path))?;
+        if let Err(e) = git::worktree_add(&repo_path, &worktree, &branch).await {
+            self.workspace.update_agent_status(
+                &agent_id,
+                AgentStatus::Error,
+                Some(e.to_string()),
+            )?;
+            emit_status(&app, &agent_id, AgentStatus::Error, Some(e.to_string()));
+            return Err(e);
         }
-    }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn do_spawn(
-        &self,
-        app: &AppHandle,
-        repo_path: &std::path::Path,
-        branch: &str,
-        agent_id: &str,
-        vm_name: &str,
-        worktree: &std::path::Path,
-        base_image: &str,
-        task: &str,
-    ) -> Result<Agent> {
-        // 1. Worktree first — fails fast on conflict, doesn't touch the VM.
-        std::fs::create_dir_all(git::worktrees_dir(repo_path))?;
-        git::worktree_add(repo_path, worktree, branch).await?;
+        // 2. Spawn the sandboxed claude inside the worktree.
+        emit_progress(
+            &self.workspace,
+            &app,
+            &agent_id,
+            "Launching claude inside sandbox-exec…",
+        );
 
-        // 2. Hand off to Agent::spawn for VM + SSH PTY.
         let app_for_output = app.clone();
-        let id_for_output = agent_id.to_string();
-        let app_for_progress = app.clone();
-        let id_for_progress = agent_id.to_string();
-        let workspace_for_progress = self.workspace.clone();
-
+        let id_for_output = agent_id.clone();
         let agent = Agent::spawn(
-            self.vm.clone(),
             SpawnSpec {
-                agent_id,
-                vm_name,
-                base_image,
-                worktree: worktree.to_path_buf(),
-                task,
-                key_path: self.keys.private_key.clone(),
+                agent_id: &agent_id,
+                worktree: worktree.clone(),
+                task: &task,
                 cols: 120,
                 rows: 32,
             },
@@ -161,31 +105,28 @@ impl Supervisor {
                     },
                 );
             },
-            move |stage_message| {
-                tracing::info!(agent_id = %id_for_progress, stage = %stage_message, "spawn progress");
-                // Persist so a frontend that re-fetches after losing the
-                // event (e.g. dev-server reload mid-spawn) sees the same
-                // message, then emit the live update.
-                if let Err(e) = workspace_for_progress
-                    .update_agent_status_message(&id_for_progress, Some(stage_message.into()))
-                {
-                    tracing::warn!(error = %e, "persist progress msg failed");
-                }
-                if let Err(e) = app_for_progress.emit(
-                    "agent:status",
-                    AgentStatusPayload {
-                        agent_id: id_for_progress.clone(),
-                        status: AgentStatus::Spawning,
-                        last_error: None,
-                        status_message: Some(stage_message.into()),
-                    },
-                ) {
-                    tracing::warn!(error = %e, "emit progress failed");
-                }
-            },
-        )
-        .await?;
-        Ok(agent)
+        );
+
+        match agent {
+            Ok(agent) => {
+                self.agents.lock().insert(agent_id.clone(), agent);
+                self.workspace
+                    .update_agent_status(&agent_id, AgentStatus::Running, None)?;
+                emit_status(&app, &agent_id, AgentStatus::Running, None);
+                let updated = find_record(&self.workspace.current(), &agent_id)
+                    .unwrap_or(record);
+                Ok(updated)
+            }
+            Err(e) => {
+                let err = e.to_string();
+                // Roll back the worktree so a retry isn't blocked.
+                let _ = git::worktree_remove(&repo_path, &worktree, true).await;
+                self.workspace
+                    .update_agent_status(&agent_id, AgentStatus::Error, Some(err.clone()))?;
+                emit_status(&app, &agent_id, AgentStatus::Error, Some(err));
+                Err(e)
+            }
+        }
     }
 
     pub fn write_to_agent(&self, agent_id: &str, bytes: &[u8]) -> Result<()> {
@@ -204,148 +145,70 @@ impl Supervisor {
         agent.resize(cols, rows)
     }
 
-    /// Stop a live agent. Idempotent — if the agent isn't in the live map
-    /// (e.g. it was already stopped, or it's a leftover record from an app
-    /// restart), we still attempt to clean up the named VM and mark the
-    /// state record as stopped so the UI is consistent.
-    pub async fn stop_agent(&self, app: AppHandle, agent_id: &str) -> Result<()> {
-        let live_agent = self.agents.lock().remove(agent_id);
-
-        let (status, last_err) = if let Some(agent) = live_agent {
-            match agent.shutdown(self.vm.clone()).await {
-                Ok(_) => (AgentStatus::Stopped, None),
-                Err(e) => (AgentStatus::Error, Some(e.to_string())),
-            }
-        } else {
-            // No in-memory handle. The VM may still exist (e.g., app
-            // restart left it running) — best-effort kill it so the user
-            // doesn't have to drop to a terminal.
-            let vm_name = format!("algiers-{}", agent_id);
-            if self.vm.exists(&vm_name).await.unwrap_or(false) {
-                let _ = self.vm.stop(&vm_name).await;
-                let _ = self.vm.delete(&vm_name).await;
-            }
-            (AgentStatus::Stopped, None)
-        };
-
-        // The record may already have been removed (e.g., concurrent
-        // discard). Tolerate that case by ignoring AgentNotFound errors
-        // from the status update.
+    pub async fn stop_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+        let live = self.agents.lock().remove(agent_id);
+        if let Some(agent) = live {
+            let _ = agent.shutdown();
+        }
         match self
             .workspace
-            .update_agent_status(agent_id, status.clone(), last_err.clone())
+            .update_agent_status(agent_id, AgentStatus::Stopped, None)
         {
             Ok(_) | Err(Error::AgentNotFound(_)) => {}
             Err(e) => return Err(e),
         }
-        emit_status(&app, agent_id, status, last_err);
+        emit_status(&app, agent_id, AgentStatus::Stopped, None);
         Ok(())
     }
 
-    /// Tear down everything associated with an agent: stop & delete its VM
-    /// if still around, unregister and delete its worktree if still around,
-    /// and ALWAYS remove the agent record from workspace state.
-    ///
-    /// Every step is best-effort and tolerated-on-failure. The whole point
-    /// of this function is to be the "I don't care what state things are
-    /// in, just make it go away" button — the previous version would bail
-    /// on the first error and leave the agent stuck in the list forever.
-    pub async fn discard_worktree(&self, agent_id: &str) -> Result<()> {
+    /// Universal "make this agent go away" — kill the process, remove
+    /// the worktree, delete the branch, drop the record.
+    pub async fn discard_agent(self: Arc<Self>, agent_id: &str) -> Result<()> {
         let repo = self.workspace.repo_path()?;
         let worktree = self.workspace.worktree_path(agent_id)?;
-        let vm_name = format!("algiers-{}", agent_id);
-        // Capture the branch up-front — we still want to delete it even if
-        // the agent record gets removed mid-cleanup somehow.
         let branch = self
             .workspace
             .current()
-            .and_then(|ws| ws.agents.iter().find(|a| a.id == agent_id).map(|a| a.branch.clone()));
+            .and_then(|ws| {
+                ws.agents
+                    .iter()
+                    .find(|a| a.id == agent_id)
+                    .map(|a| a.branch.clone())
+            });
 
-        // 1. Kill any live in-memory Agent handle. The PTY drop also kills
-        //    the SSH session; the `tart run` child gets killed via
-        //    `kill_on_drop` when we drop Agent. Best-effort.
+        // 1. Kill the live process if any.
         if let Some(agent) = self.agents.lock().remove(agent_id) {
-            drop(agent);
+            let _ = agent.shutdown();
         }
 
-        // 2. Stop + delete the VM if it exists. Either step may legitimately
-        //    fail (VM never created, already deleted, etc.).
-        if self.vm.exists(&vm_name).await.unwrap_or(false) {
-            if let Err(e) = self.vm.stop(&vm_name).await {
-                tracing::warn!(%vm_name, error = %e, "discard: tart stop failed");
-            }
-            if let Err(e) = self.vm.delete(&vm_name).await {
-                tracing::warn!(%vm_name, error = %e, "discard: tart delete failed");
-            }
-        }
-
-        // 3. Worktree cleanup. First `git worktree prune` to clear out any
-        //    internal refs that point at a missing directory, then attempt
-        //    the registered removal, then fall back to removing the
-        //    directory directly if it's still there.
+        // 2. Worktree cleanup (idempotent across all the failure shapes).
         let _ = git::worktree_prune(&repo).await;
         if let Err(e) = git::worktree_remove(&repo, &worktree, true).await {
-            tracing::warn!(path = %worktree.display(), error = %e, "discard: git worktree remove failed; trying fs fallback");
+            tracing::warn!(error = %e, "discard: worktree remove failed; trying fs fallback");
             if worktree.exists() {
-                if let Err(e) = std::fs::remove_dir_all(&worktree) {
-                    tracing::warn!(path = %worktree.display(), error = %e, "discard: fs remove failed too");
-                }
+                let _ = std::fs::remove_dir_all(&worktree);
             }
         }
 
-        // 4. Delete the agent's branch (best-effort). The "Remove" action
-        //    implies the user is done with this agent's work; leaving the
-        //    branch around just clutters `git branch`. Recoverable via
-        //    reflog for ~90 days if the user changes their mind.
+        // 3. Branch cleanup.
         if let Some(branch) = branch {
             if let Err(e) = git::branch_delete(&repo, &branch).await {
                 tracing::warn!(%branch, error = %e, "discard: branch delete failed");
             }
         }
 
-        // 5. ALWAYS remove the agent record so the UI doesn't leave the
-        //    user with stuck rows they can't get rid of.
+        // 4. Always drop the record.
         self.workspace.remove_agent(agent_id)?;
         Ok(())
     }
-
-    /// Run the in-app base-image bake. Streams progress as `bake:progress`
-    /// events on the supplied AppHandle. Errors are still emitted as a final
-    /// progress event with `stage: Error` so the UI sees the message even if
-    /// the Tauri command Result is mishandled.
-    pub async fn bake_base_image(
-        self: Arc<Self>,
-        app: AppHandle,
-        image_name: String,
-    ) -> Result<()> {
-        {
-            let mut guard = self.baking.lock();
-            if *guard {
-                return Err(Error::Other(
-                    "a base-image build is already in progress".into(),
-                ));
-            }
-            *guard = true;
-        }
-
-        let res = baker::bake_base_image(
-            self.vm.clone(),
-            BakeSpec {
-                image_name: &image_name,
-                public_key_path: &self.keys.public_key,
-            },
-            move |progress| {
-                let _ = app.emit("bake:progress", progress);
-            },
-        )
-        .await;
-
-        *self.baking.lock() = false;
-        res
-    }
 }
 
-fn emit_status(app: &AppHandle, agent_id: &str, status: AgentStatus, last_error: Option<String>) {
+fn emit_status(
+    app: &AppHandle,
+    agent_id: &str,
+    status: AgentStatus,
+    last_error: Option<String>,
+) {
     let _ = app.emit(
         "agent:status",
         AgentStatusPayload {
@@ -353,6 +216,24 @@ fn emit_status(app: &AppHandle, agent_id: &str, status: AgentStatus, last_error:
             status,
             last_error,
             status_message: None,
+        },
+    );
+}
+
+fn emit_progress(
+    workspace: &WorkspaceManager,
+    app: &AppHandle,
+    agent_id: &str,
+    message: &str,
+) {
+    let _ = workspace.update_agent_status_message(agent_id, Some(message.into()));
+    let _ = app.emit(
+        "agent:status",
+        AgentStatusPayload {
+            agent_id: agent_id.to_string(),
+            status: AgentStatus::Spawning,
+            last_error: None,
+            status_message: Some(message.into()),
         },
     );
 }

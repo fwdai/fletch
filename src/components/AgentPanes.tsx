@@ -14,9 +14,9 @@ export function AgentPanes() {
       <div className="placeholder">
         <h2>Pick a repo to get started</h2>
         <p>
-          Choose a git repository in the top bar. Each agent you spawn will get
-          its own worktree under <code>.worktrees/</code> and a fresh Tart VM
-          cloned from your base image.
+          Choose a git repository in the top bar. Each agent you spawn gets
+          its own worktree under <code>.worktrees/</code> and runs claude
+          under a macOS sandbox restricted to that worktree.
         </p>
       </div>
     );
