@@ -87,12 +87,7 @@ interface AppState {
   init: () => Promise<void>;
   selectAgent: (id: string | null) => void;
   setRepo: (path: string) => Promise<void>;
-  spawn: (
-    name: string,
-    branch: string,
-    task: string,
-    view: AgentView,
-  ) => Promise<AgentRecord | null>;
+  spawn: (task: string, view: AgentView) => Promise<AgentRecord | null>;
   sendUserMessage: (id: string, text: string) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
   resume: (id: string) => Promise<void>;
@@ -336,10 +331,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  spawn: async (name, branch, task, view) => {
+  spawn: async (task, view) => {
     set({ busy: true, lastError: null });
     try {
-      const rec = await api.spawnAgent(name, branch, task, view);
+      const rec = await api.spawnAgent(task, view);
       const fresh = await api.getWorkspace();
       set((state) => {
         const patches: Partial<AppState> = {

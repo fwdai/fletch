@@ -55,8 +55,8 @@ export interface AgentViewEvent {
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
   setRepo: (repoPath: string) => invoke<Workspace>("set_repo", { repoPath }),
-  spawnAgent: (name: string, branch: string, task: string, view: AgentView) =>
-    invoke<AgentRecord>("spawn_agent", { name, branch, task, view }),
+  spawnAgent: (task: string, view: AgentView) =>
+    invoke<AgentRecord>("spawn_agent", { task, view }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   sendUserMessage: (agentId: string, text: string) =>

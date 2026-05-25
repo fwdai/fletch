@@ -2,6 +2,12 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { EMPTY_AGENTS, useAppStore } from "../store";
 import type { AgentRecord, AgentStatus } from "../api";
 
+function firstLine(s: string): string {
+  const idx = s.indexOf("\n");
+  const head = idx === -1 ? s : s.slice(0, idx);
+  return head.length > 48 ? head.slice(0, 47) + "…" : head;
+}
+
 function statusColor(s: AgentStatus): string {
   switch (s) {
     case "running":
@@ -111,7 +117,7 @@ function AgentRow({
         <div className="meta">
           <span>{agent.status}</span>
           <span className="dim">·</span>
-          <span className="branch">{agent.branch}</span>
+          <span className="task-summary">{firstLine(agent.task)}</span>
         </div>
         {agent.status === "spawning" && agent.status_message && (
           <div className="meta progress">{agent.status_message}</div>

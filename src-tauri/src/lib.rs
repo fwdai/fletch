@@ -1,9 +1,11 @@
 mod activity;
 mod agent;
+mod branding;
 mod commands;
 mod error;
 mod git;
 mod managed_session;
+mod names;
 mod pty_session;
 mod sandbox;
 mod supervisor;

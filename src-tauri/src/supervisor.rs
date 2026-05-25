@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::activity::{Activity, ClaudeManagedActivity, ClaudeNativeActivity};
 use crate::agent::{Agent, SpawnSpec};
+use crate::branding;
 use crate::error::{Error, Result};
 use crate::git;
 use crate::workspace::{
@@ -88,15 +89,34 @@ impl Supervisor {
     pub async fn spawn_agent(
         self: Arc<Self>,
         app: AppHandle,
-        name: String,
-        branch: String,
         task: String,
         view: AgentView,
     ) -> Result<AgentRecord> {
         let repo_path = self.workspace.repo_path()?;
 
-        let record = new_agent_record(name, branch.clone(), task.clone(), view);
-        let agent_id = record.id.clone();
+        // The agent's display name comes from the auto-allocated place
+        // id. The git branch is derived from the task itself — much
+        // more useful in `git branch`, `git log`, and PR titles — and
+        // namespaced under the app name via `branding::branch_for` so
+        // a rename is a one-constant change. On collision with an
+        // existing branch we append the place id for uniqueness.
+        let agent_id = self.workspace.allocate_agent_id()?;
+        let name = agent_id.clone();
+
+        let slug = branding::slugify_task(&task);
+        let slug = if slug.is_empty() { agent_id.clone() } else { slug };
+        let mut branch = branding::branch_for(&slug);
+        if git::branch_exists(&repo_path, &branch).await.unwrap_or(false) {
+            branch = format!("{branch}-{agent_id}");
+        }
+
+        let record = new_agent_record(
+            agent_id.clone(),
+            name,
+            branch.clone(),
+            task.clone(),
+            view,
+        );
         let worktree = self.workspace.worktree_path(&agent_id)?;
 
         self.workspace.add_agent(record.clone())?;

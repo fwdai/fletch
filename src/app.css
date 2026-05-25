@@ -216,6 +216,13 @@ small code {
 .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 4px; align-items: center; }
 .branch { font-family: var(--font-mono); }
+.task-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
 .dim { color: var(--border-strong); }
 .meta.progress {
   color: var(--warning);

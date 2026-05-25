@@ -6,29 +6,16 @@ export function SpawnDialog({ onClose }: { onClose: () => void }) {
   const busy = useAppStore((s) => s.busy);
   const lastError = useAppStore((s) => s.lastError);
 
-  const [name, setName] = useState("");
-  const [branch, setBranch] = useState("");
   const [task, setTask] = useState("");
-
-  function suggestBranch() {
-    if (!branch && name) {
-      setBranch(
-        "agent/" +
-          name
-            .toLowerCase()
-            .replace(/[^a-z0-9-]+/g, "-")
-            .slice(0, 32),
-      );
-    }
-  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !branch.trim() || !task.trim()) return;
-    // Always spawn in the custom view by default. The user can flip to
-    // native view from inside the agent — see the view toggle in each
-    // agent's header.
-    const rec = await spawn(name.trim(), branch.trim(), task.trim(), "custom");
+    const trimmed = task.trim();
+    if (!trimmed) return;
+    // Name + branch are derived server-side from an auto-allocated
+    // place id (e.g. `yosemite` → branch `agent/yosemite`). The user
+    // only needs to describe what the agent should do.
+    const rec = await spawn(trimmed, "custom");
     if (rec) onClose();
   }
 
@@ -39,38 +26,34 @@ export function SpawnDialog({ onClose }: { onClose: () => void }) {
         <form onSubmit={onSubmit}>
           <h2>Spawn agent</h2>
           <label>
-            <span>Name</span>
-            <input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onBlur={suggestBranch}
-              placeholder="refactor-auth"
-            />
-          </label>
-          <label>
-            <span>Branch</span>
-            <input
-              value={branch}
-              onChange={(e) => setBranch(e.target.value)}
-              placeholder="agent/refactor-auth"
-            />
-          </label>
-          <label>
             <span>Task</span>
             <textarea
+              autoFocus
               value={task}
               onChange={(e) => setTask(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  onSubmit(e as unknown as React.FormEvent);
+                }
+              }}
               placeholder="What should this agent do? Plain English instructions."
-              rows={5}
+              rows={6}
             />
+            <small>
+              Branch and worktree name are assigned automatically.
+            </small>
           </label>
           {lastError && <div className="formerr">{lastError}</div>}
           <div className="actions">
             <button type="button" onClick={onClose}>
               Cancel
             </button>
-            <button type="submit" className="primary" disabled={busy}>
+            <button
+              type="submit"
+              className="primary"
+              disabled={busy || !task.trim()}
+            >
               {busy ? "Spawning…" : "Spawn"}
             </button>
           </div>

@@ -76,6 +76,32 @@ pub async fn worktree_prune(repo: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether a local branch with this name exists in the repo. Used by
+/// the supervisor to disambiguate auto-generated branch names before
+/// spawning a worktree — on collision it falls back to a name that
+/// includes the agent's place id.
+pub async fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .output()
+        .await?;
+    // Exit 0 = ref exists, exit 1 = not found, anything else = real error.
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(Error::Git(format!(
+            "show-ref failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+    }
+}
+
 /// Force-delete a local branch. Returns Ok even if the branch never
 /// existed in the first place — that's exactly the state the caller
 /// usually wants to converge on. Errors only for genuine git failures

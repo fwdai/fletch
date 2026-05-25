@@ -4,10 +4,12 @@
 use chrono::Utc;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::git;
+use crate::names;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -137,6 +139,18 @@ impl WorkspaceManager {
         self.inner.write().current = Some(ws.clone());
         self.persist()?;
         Ok(ws)
+    }
+
+    /// Pick a memorable, unused id for a new agent. Reads the current
+    /// agents under the workspace lock so two consecutive calls
+    /// observe each other's writes; if you need full atomicity
+    /// against `add_agent`, do them back-to-back without anything
+    /// else mutating the agents list in between.
+    pub fn allocate_agent_id(&self) -> Result<String> {
+        let g = self.inner.read();
+        let ws = g.current.as_ref().ok_or(Error::WorkspaceNotLoaded)?;
+        let used: HashSet<String> = ws.agents.iter().map(|a| a.id.clone()).collect();
+        Ok(names::allocate(&used))
     }
 
     pub fn add_agent(&self, record: AgentRecord) -> Result<()> {
@@ -292,18 +306,14 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 pub fn new_agent_record(
+    id: String,
     name: String,
     branch: String,
     task: String,
     view: AgentView,
 ) -> AgentRecord {
     AgentRecord {
-        id: uuid::Uuid::new_v4()
-            .to_string()
-            .split('-')
-            .next()
-            .unwrap_or("agent")
-            .to_string(),
+        id,
         name,
         branch,
         task,
@@ -342,11 +352,11 @@ mod tests {
         {
             let wm = WorkspaceManager::new(app_dir.clone()).unwrap();
             wm.set_repo(repo.clone()).unwrap();
-            let mut running = new_agent_record("a".into(), "b".into(), "c".into(), AgentView::Custom);
+            let mut running = new_agent_record("yosemite".into(), "a".into(), "b".into(), "c".into(), AgentView::Custom);
             running.status = AgentStatus::Running;
             wm.add_agent(running).unwrap();
 
-            let mut stopped = new_agent_record("s".into(), "sb".into(), "sc".into(), AgentView::Custom);
+            let mut stopped = new_agent_record("dolomites".into(), "s".into(), "sb".into(), "sc".into(), AgentView::Custom);
             stopped.status = AgentStatus::Stopped;
             wm.add_agent(stopped).unwrap();
         }
@@ -375,7 +385,7 @@ mod tests {
         let repo = init_repo(td.path());
         let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
         wm.set_repo(repo).unwrap();
-        let rec = new_agent_record("a".into(), "b".into(), "c".into(), AgentView::Custom);
+        let rec = new_agent_record("test-id".into(), "a".into(), "b".into(), "c".into(), AgentView::Custom);
         let id = rec.id.clone();
         wm.add_agent(rec).unwrap();
 

@@ -25,14 +25,11 @@ pub fn set_repo(
 pub async fn spawn_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     app: AppHandle,
-    name: String,
-    branch: String,
     task: String,
     view: Option<AgentView>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
-    sup.spawn_agent(app, name, branch, task, view.unwrap_or_default())
-        .await
+    sup.spawn_agent(app, task, view.unwrap_or_default()).await
 }
 
 #[tauri::command]
