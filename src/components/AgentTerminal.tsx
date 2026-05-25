@@ -64,8 +64,12 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
     });
 
     const unregister = registerOutputSink(agent.id, (bytes) => {
+      // eslint-disable-next-line no-console
+      console.log("[term", agent.id, "] write", bytes.length, "bytes");
       term.write(bytes);
     });
+    // eslint-disable-next-line no-console
+    console.log("[term", agent.id, "] mounted, sink registered");
 
     const ro = new ResizeObserver(() => {
       try {

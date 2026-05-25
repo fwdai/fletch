@@ -95,6 +95,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       const chunk = new Uint8Array(e.bytes);
       appendToBuffer(e.agent_id, chunk);
       const sink = outputSinks.get(e.agent_id);
+      // eslint-disable-next-line no-console
+      console.log(
+        "[store] agent:output",
+        e.agent_id,
+        "bytes=",
+        chunk.length,
+        "sink=",
+        sink ? "yes" : "NO SINK",
+        "preview=",
+        new TextDecoder().decode(chunk.slice(0, 120)).replace(/\n/g, "\\n"),
+      );
       if (sink) sink(chunk);
     });
 
