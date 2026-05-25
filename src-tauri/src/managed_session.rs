@@ -24,9 +24,6 @@ pub struct ManagedSpawn<'a> {
     pub program: &'a Path,
     pub args: &'a [String],
     pub cwd: &'a Path,
-    /// First user message to send after spawn. `None` when resuming an
-    /// existing session — the user will type the next turn themselves.
-    pub initial_task: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,16 +117,10 @@ impl ManagedSession {
             });
         }
 
-        let session = Self {
+        Ok(Self {
             child: child_arc,
             stdin: stdin_arc,
-        };
-
-        if let Some(text) = spec.initial_task {
-            session.send_user_message(text)?;
-        }
-
-        Ok(session)
+        })
     }
 
     pub fn send_user_message(&self, text: &str) -> Result<()> {

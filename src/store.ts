@@ -6,7 +6,6 @@ import {
   onAgentOutput,
   onAgentStatus,
   onAgentTask,
-  onAgentTokens,
   onAgentView,
   type AgentRecord,
   type AgentView,
@@ -86,6 +85,11 @@ interface AppState {
   managedBusy: Record<string, boolean>;
   /** True while a view switch is in flight — disable toggle UI. */
   switchInFlight: Record<string, boolean>;
+  /** Most recent turn's `usage.input_tokens` — matches claude's
+   *  `/context`. Populated from the stream-json `result` event;
+   *  custom-view only (native view doesn't deliver structured events).
+   *  In-memory only — resets to empty on app restart. */
+  tokens: Record<string, number>;
 
   init: () => Promise<void>;
   selectAgent: (id: string | null) => void;
@@ -247,7 +251,19 @@ function handleManagedEvent(
         is_error: isError,
       }),
     );
-    return { ...patches, managedBusy: { ...state.managedBusy, [agentId]: false } };
+    // Pull the context-window size from `usage.input_tokens` — this is
+    // what claude's `/context` displays.
+    const inputTokens = (ev.usage as Record<string, unknown> | undefined)
+      ?.input_tokens;
+    const tokens =
+      typeof inputTokens === "number" && inputTokens > 0
+        ? { ...state.tokens, [agentId]: inputTokens }
+        : state.tokens;
+    return {
+      ...patches,
+      managedBusy: { ...state.managedBusy, [agentId]: false },
+      tokens,
+    };
   }
 
   // system / init / unknown — ignore in UI
@@ -263,6 +279,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   managedLogs: {},
   managedBusy: {},
   switchInFlight: {},
+  tokens: {},
 
   init: async () => {
     if (get().initialized) return;
@@ -305,21 +322,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     });
 
-    await onAgentTokens((e) => {
-      const ws = get().workspace;
-      if (!ws) return;
-      set({
-        workspace: {
-          ...ws,
-          agents: ws.agents.map((a) =>
-            a.id === e.agent_id
-              ? { ...a, context_tokens: e.context_tokens }
-              : a,
-          ),
-        },
-      });
-    });
-
     await onAgentView((e) => {
       // Backend changed the view (usually our own switchView call).
       // Reflect on the record so the UI swaps components.
@@ -346,10 +348,6 @@ export const useAppStore = create<AppState>((set, get) => ({
                 ...a,
                 status: e.status,
                 last_error: e.last_error ?? a.last_error,
-                status_message:
-                  e.status_message === undefined
-                    ? a.status_message
-                    : e.status_message,
               }
             : a,
         ),
@@ -494,11 +492,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((s) => {
         const { [id]: _droppedLog, ...restLogs } = s.managedLogs;
         const { [id]: _droppedBusy, ...restBusy } = s.managedBusy;
+        const { [id]: _droppedTokens, ...restTokens } = s.tokens;
         return {
           workspace: fresh,
           selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
           managedLogs: restLogs,
           managedBusy: restBusy,
+          tokens: restTokens,
         };
       });
     } catch (e) {

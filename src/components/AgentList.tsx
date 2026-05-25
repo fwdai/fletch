@@ -140,9 +140,10 @@ function AgentRow({
   }
 
   const age = formatAge(agent.created_at, now);
+  const rawTokens = useAppStore((s) => s.tokens[agent.id]);
   const tokens =
-    typeof agent.context_tokens === "number" && agent.context_tokens > 0
-      ? formatTokens(agent.context_tokens)
+    typeof rawTokens === "number" && rawTokens > 0
+      ? formatTokens(rawTokens)
       : null;
 
   return (
@@ -181,7 +182,7 @@ function AgentRow({
           {tokens && (
             <>
               <span className="dim">·</span>
-              <span title={`${agent.context_tokens} input tokens last turn (matches claude /context)`}>
+              <span title={`${rawTokens} input tokens last turn (matches claude /context)`}>
                 {tokens} tok
               </span>
             </>
@@ -189,9 +190,6 @@ function AgentRow({
         </div>
         {agent.task && (
           <div className="task-summary-line">{firstLine(agent.task)}</div>
-        )}
-        {agent.status === "spawning" && agent.status_message && (
-          <div className="meta progress">{agent.status_message}</div>
         )}
       </div>
       <div className="row-actions">

@@ -69,15 +69,6 @@ pub struct AgentRecord {
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
-    #[serde(default)]
-    pub status_message: Option<String>,
-    /// Most recent turn's input-token count — the closest approximation
-    /// of what claude's `/context` displays. Updated from the `usage`
-    /// field on each stream-json `result` event in custom view. `None`
-    /// for native-view agents (no signal) and for agents that haven't
-    /// completed a turn yet.
-    #[serde(default)]
-    pub context_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -123,7 +114,6 @@ impl WorkspaceManager {
                     AgentStatus::Running | AgentStatus::Spawning | AgentStatus::Idle
                 ) {
                     a.status = AgentStatus::Spawning;
-                    a.status_message = Some("Resuming after restart…".into());
                     dirty = true;
                 }
             }
@@ -180,13 +170,14 @@ impl WorkspaceManager {
         self.persist()
     }
 
-    pub fn update_agent_status(
-        &self,
-        id: &str,
-        status: AgentStatus,
-        last_error: Option<String>,
-    ) -> Result<()> {
-        {
+    /// Mutate one agent under the workspace write lock and persist iff
+    /// the closure returns true. The single primitive every callable
+    /// update_/set_ helper builds on.
+    fn mutate_agent<F>(&self, id: &str, f: F) -> Result<bool>
+    where
+        F: FnOnce(&mut AgentRecord) -> bool,
+    {
+        let changed = {
             let mut g = self.inner.write();
             let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
             let a = ws
@@ -194,18 +185,28 @@ impl WorkspaceManager {
                 .iter_mut()
                 .find(|a| a.id == id)
                 .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
-            a.status = status;
-            if let Some(err) = last_error {
-                a.last_error = Some(err);
-            }
-            if matches!(
-                a.status,
-                AgentStatus::Running | AgentStatus::Stopped | AgentStatus::Idle | AgentStatus::Error
-            ) {
-                a.status_message = None;
-            }
+            f(a)
+        };
+        if changed {
+            self.persist()?;
         }
-        self.persist()
+        Ok(changed)
+    }
+
+    pub fn update_agent_status(
+        &self,
+        id: &str,
+        status: AgentStatus,
+        last_error: Option<String>,
+    ) -> Result<()> {
+        self.mutate_agent(id, |a| {
+            a.status = status;
+            if last_error.is_some() {
+                a.last_error = last_error;
+            }
+            true
+        })?;
+        Ok(())
     }
 
     pub fn update_agent_status_if<F>(
@@ -218,109 +219,50 @@ impl WorkspaceManager {
     where
         F: FnOnce(&AgentStatus) -> bool,
     {
-        let changed = {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            let a = ws
-                .agents
-                .iter_mut()
-                .find(|a| a.id == id)
-                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
+        self.mutate_agent(id, |a| {
             if !predicate(&a.status) {
-                return Ok(false);
+                return false;
             }
             a.status = status;
-            if let Some(err) = last_error {
-                a.last_error = Some(err);
-            }
-            if matches!(
-                a.status,
-                AgentStatus::Running | AgentStatus::Stopped | AgentStatus::Idle | AgentStatus::Error
-            ) {
-                a.status_message = None;
+            if last_error.is_some() {
+                a.last_error = last_error;
             }
             true
-        };
-        if changed {
-            self.persist()?;
-        }
-        Ok(changed)
+        })
     }
 
     /// Record the first user message as the agent's task — but only
     /// if the task hasn't been set yet. Returns true if it actually
     /// wrote (so callers can decide whether to emit an event).
     pub fn set_agent_task_if_empty(&self, id: &str, task: &str) -> Result<bool> {
-        let mut wrote = false;
-        {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            let a = ws
-                .agents
-                .iter_mut()
-                .find(|a| a.id == id)
-                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
-            if a.task.trim().is_empty() {
-                a.task = task.to_string();
-                wrote = true;
+        self.mutate_agent(id, |a| {
+            if !a.task.trim().is_empty() {
+                return false;
             }
-        }
-        if wrote {
-            self.persist()?;
-        }
-        Ok(wrote)
-    }
-
-    pub fn update_agent_context_tokens(&self, id: &str, tokens: u64) -> Result<()> {
-        {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            let a = ws
-                .agents
-                .iter_mut()
-                .find(|a| a.id == id)
-                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
-            a.context_tokens = Some(tokens);
-        }
-        self.persist()
+            a.task = task.to_string();
+            true
+        })
     }
 
     /// Set the agent's branch — but only if it isn't set yet. Used
     /// when the first user message triggers branch creation. Returns
     /// true iff it actually wrote.
     pub fn set_agent_branch_if_empty(&self, id: &str, branch: &str) -> Result<bool> {
-        let mut wrote = false;
-        {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            let a = ws
-                .agents
-                .iter_mut()
-                .find(|a| a.id == id)
-                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
-            if a.branch.is_none() {
-                a.branch = Some(branch.to_string());
-                wrote = true;
+        self.mutate_agent(id, |a| {
+            if a.branch.is_some() {
+                return false;
             }
-        }
-        if wrote {
-            self.persist()?;
-        }
-        Ok(wrote)
+            a.branch = Some(branch.to_string());
+            true
+        })
     }
 
     pub fn update_agent_view(&self, id: &str, view: AgentView) -> Result<()> {
-        {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            let a = ws
-                .agents
-                .iter_mut()
-                .find(|a| a.id == id)
-                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
+        self.mutate_agent(id, |a| {
             a.view = view;
-        }
-        self.persist()
+            true
+        })?;
+        Ok(())
     }
 
     pub fn agent(&self, id: &str) -> Result<AgentRecord> {
@@ -331,20 +273,6 @@ impl WorkspaceManager {
             .find(|a| a.id == id)
             .cloned()
             .ok_or_else(|| Error::AgentNotFound(id.to_string()))
-    }
-
-    pub fn update_agent_status_message(&self, id: &str, message: Option<String>) -> Result<()> {
-        {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            let a = ws
-                .agents
-                .iter_mut()
-                .find(|a| a.id == id)
-                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
-            a.status_message = message;
-        }
-        self.persist()
     }
 
     pub fn remove_agent(&self, id: &str) -> Result<()> {
@@ -406,8 +334,6 @@ pub fn new_agent_record(
         session_id: Some(uuid::Uuid::new_v4().to_string()),
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
-        status_message: None,
-        context_tokens: None,
     }
 }
 

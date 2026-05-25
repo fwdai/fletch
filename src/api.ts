@@ -21,10 +21,6 @@ export interface AgentRecord {
   session_id?: string | null;
   created_at: string;
   last_error?: string | null;
-  status_message?: string | null;
-  /** Most recent turn's `usage.input_tokens` — matches claude's
-   *  `/context` figure. Only populated for custom-view turns. */
-  context_tokens?: number | null;
 }
 
 export interface Workspace {
@@ -48,17 +44,11 @@ export interface AgentStatusEvent {
   agent_id: string;
   status: AgentStatus;
   last_error: string | null;
-  status_message?: string | null;
 }
 
 export interface AgentViewEvent {
   agent_id: string;
   view: AgentView;
-}
-
-export interface AgentTokensEvent {
-  agent_id: string;
-  context_tokens: number;
 }
 
 export interface AgentTaskEvent {
@@ -113,14 +103,6 @@ export function onAgentView(
   cb: (e: AgentViewEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<AgentViewEvent>("agent:view", (event) => cb(event.payload));
-}
-
-export function onAgentTokens(
-  cb: (e: AgentTokensEvent) => void,
-): Promise<UnlistenFn> {
-  return listen<AgentTokensEvent>("agent:tokens", (event) =>
-    cb(event.payload),
-  );
 }
 
 export function onAgentTask(

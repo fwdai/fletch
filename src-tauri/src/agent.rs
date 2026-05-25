@@ -30,19 +30,11 @@ pub enum Agent {
 }
 
 pub struct PtyAgent {
-    #[allow(dead_code)]
-    pub id: String,
-    #[allow(dead_code)]
-    pub worktree: PathBuf,
     pty: PtySession,
     _profile_file: tempfile::NamedTempFile,
 }
 
 pub struct ManagedAgent {
-    #[allow(dead_code)]
-    pub id: String,
-    #[allow(dead_code)]
-    pub worktree: PathBuf,
     session: ManagedSession,
     _profile_file: tempfile::NamedTempFile,
 }
@@ -55,8 +47,6 @@ pub struct SpawnSpec<'a> {
     /// on disk for this session). False if we're respawning to switch
     /// views — claude should `--resume` instead of starting fresh.
     pub fresh: bool,
-    /// Initial user task. Used only on fresh spawns; ignored on resume.
-    pub task: &'a str,
     pub cols: u16,
     pub rows: u16,
 }
@@ -83,7 +73,6 @@ impl Agent {
             PtySpawn {
                 program: Path::new(SANDBOX_EXEC),
                 args: &args,
-                envs: &[],
                 cwd: &spec.worktree,
                 cols: spec.cols,
                 rows: spec.rows,
@@ -93,8 +82,6 @@ impl Agent {
         )?;
 
         Ok(Self::Pty(PtyAgent {
-            id: spec.agent_id.to_string(),
-            worktree: spec.worktree,
             pty,
             _profile_file: profile_file,
         }))
@@ -117,31 +104,17 @@ impl Agent {
             "spawning sandboxed managed agent"
         );
 
-        // On a fresh spawn with an initial task, seed the conversation
-        // immediately. On a fresh spawn without a task (instant-spawn
-        // flow), the user types their first message themselves. On
-        // resume we do nothing — claude rehydrates prior turns and
-        // waits for the next user message.
-        let initial_task = if spec.fresh && !spec.task.is_empty() {
-            Some(spec.task)
-        } else {
-            None
-        };
-
         let session = ManagedSession::spawn(
             ManagedSpawn {
                 program: Path::new(SANDBOX_EXEC),
                 args: &args,
                 cwd: &spec.worktree,
-                initial_task,
             },
             on_event,
             on_exit,
         )?;
 
         Ok(Self::Managed(ManagedAgent {
-            id: spec.agent_id.to_string(),
-            worktree: spec.worktree,
             session,
             _profile_file: profile_file,
         }))
@@ -223,11 +196,6 @@ fn prepare_pty_args(
     if spec.fresh {
         args.push("--session-id".into());
         args.push(spec.session_id.to_string());
-        // Initial task is optional — if empty, claude launches into
-        // an interactive prompt waiting for the user's first message.
-        if !spec.task.is_empty() {
-            args.push(spec.task.to_string());
-        }
     } else {
         args.push("--resume".into());
         args.push(spec.session_id.to_string());

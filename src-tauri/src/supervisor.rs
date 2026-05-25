@@ -34,20 +34,12 @@ pub struct AgentStatusPayload {
     pub agent_id: String,
     pub status: AgentStatus,
     pub last_error: Option<String>,
-    #[serde(default)]
-    pub status_message: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
 pub struct AgentViewPayload {
     pub agent_id: String,
     pub view: AgentView,
-}
-
-#[derive(Clone, serde::Serialize)]
-pub struct AgentTokensPayload {
-    pub agent_id: String,
-    pub context_tokens: u64,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -144,8 +136,6 @@ impl Supervisor {
         let app_for_task = app.clone();
         let id_for_task = agent_id.clone();
         tauri::async_runtime::spawn(async move {
-            emit_progress(&sup.workspace, &app_for_task, &id_for_task, "Creating git worktree...");
-
             if let Err(e) = std::fs::create_dir_all(git::worktrees_dir(&repo_path)) {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                 return;
@@ -160,8 +150,6 @@ impl Supervisor {
             // PTY mode is sensitive to early terminal-negotiation bytes;
             // custom mode is less so but it costs nothing to wait.
             tokio::time::sleep(Duration::from_millis(350)).await;
-
-            emit_progress(&sup.workspace, &app_for_task, &id_for_task, "Launching claude...");
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
                 let _ = git::worktree_remove(&repo_path, &worktree, true).await;
@@ -202,7 +190,7 @@ impl Supervisor {
 
         // Install a fresh Activity instance for this generation. Done
         // before spawn so the first output chunks can be observed.
-        let activity: Box<dyn Activity> = match record.view {
+        let mut activity: Box<dyn Activity> = match record.view {
             AgentView::Native => Box::new(ClaudeNativeActivity::new()),
             AgentView::Custom => Box::new(ClaudeManagedActivity::new()),
         };
@@ -210,7 +198,6 @@ impl Supervisor {
         // processing the initial task). A resume does not. We tell
         // the activity which one so its turn_ended() doesn't fire
         // prematurely on the silence that precedes the first event.
-        let mut activity = activity;
         if fresh {
             activity.reset_for_new_turn();
         }
@@ -221,7 +208,6 @@ impl Supervisor {
             worktree: worktree.clone(),
             session_id: &session_id,
             fresh,
-            task: &record.task,
             cols: 120,
             rows: 32,
         };
@@ -253,15 +239,14 @@ impl Supervisor {
         } else {
             AgentStatus::Idle
         };
-        let initial_for_emit = initial.clone();
         let changed = self.workspace.update_agent_status_if(
             &agent_id_str,
-            initial,
+            initial.clone(),
             None,
             |status| matches!(status, AgentStatus::Spawning),
         );
         if matches!(changed, Ok(true)) {
-            emit_status(&app, &agent_id_str, initial_for_emit, None);
+            emit_status(&app, &agent_id_str, initial, None);
         }
 
         spawn_turn_watchdog(self.clone(), app, agent_id_str, my_gen);
@@ -295,7 +280,6 @@ impl Supervisor {
             let id = record.id.clone();
             arm_spawn_timeout(sup.clone(), app.clone(), id.clone());
             tauri::async_runtime::spawn(async move {
-                emit_progress(&sup.workspace, &app, &id, "Resuming…");
                 if let Err(e) = sup.start_process(&app, &id, false).await {
                     fail_spawn(&sup, &app, &id, e.to_string());
                 }
@@ -319,7 +303,7 @@ impl Supervisor {
         }
         self.workspace
             .update_agent_status(agent_id, AgentStatus::Spawning, None)?;
-        emit_progress(&self.workspace, &app, agent_id, "Resuming…");
+        emit_status(&app, agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
 
         self.start_process(&app, agent_id, false).await
@@ -404,12 +388,9 @@ impl Supervisor {
                 view: new_view,
             },
         );
-        let _ = self.workspace.update_agent_status(
-            agent_id,
-            AgentStatus::Spawning,
-            None,
-        );
-        emit_progress(&self.workspace, &app, agent_id, "Switching view…");
+        self.workspace
+            .update_agent_status(agent_id, AgentStatus::Spawning, None)?;
+        emit_status(&app, agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
 
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -447,14 +428,7 @@ impl Supervisor {
     pub async fn discard_agent(self: Arc<Self>, agent_id: &str) -> Result<()> {
         let repo = self.workspace.repo_path()?;
         let worktree = self.workspace.worktree_path(agent_id)?;
-        // .and_then on the inner find flattens Option<&AgentRecord> →
-        // Option<String> directly so we don't end up with Option<Option<_>>.
-        let branch = self.workspace.current().and_then(|ws| {
-            ws.agents
-                .iter()
-                .find(|a| a.id == agent_id)
-                .and_then(|a| a.branch.clone())
-        });
+        let branch = self.workspace.agent(agent_id).ok().and_then(|r| r.branch);
 
         if let Some(agent) = self.agents.lock().remove(agent_id) {
             let _ = agent.shutdown();
@@ -545,29 +519,6 @@ fn spawn_managed_agent(
                 .get_mut(&id_for_event)
             {
                 activity.observe_event(&event);
-            }
-
-            // Pull the context window size out of `result` events.
-            // Claude's `usage.input_tokens` is what its own `/context`
-            // command shows — the size of the conversation it'll
-            // re-send on the next turn (shrinks after `/compact`).
-            if event.get("type").and_then(|v| v.as_str()) == Some("result") {
-                if let Some(input) = event
-                    .get("usage")
-                    .and_then(|u| u.get("input_tokens"))
-                    .and_then(|v| v.as_u64())
-                {
-                    let _ = sup_for_event
-                        .workspace
-                        .update_agent_context_tokens(&id_for_event, input);
-                    let _ = app_for_event.emit(
-                        "agent:tokens",
-                        AgentTokensPayload {
-                            agent_id: id_for_event.clone(),
-                            context_tokens: input,
-                        },
-                    );
-                }
             }
 
             if let Err(e) = app_for_event.emit(
@@ -792,21 +743,19 @@ fn transition_active(
     agent_id: &str,
     new: AgentStatus,
 ) {
-    let for_predicate = new.clone();
-    let for_emit = new.clone();
     let changed = sup.workspace.update_agent_status_if(
         agent_id,
-        new,
+        new.clone(),
         None,
-        move |cur| {
+        |cur| {
             matches!(
                 cur,
                 AgentStatus::Spawning | AgentStatus::Running | AgentStatus::Idle
-            ) && *cur != for_predicate
+            ) && *cur != new
         },
     );
     if matches!(changed, Ok(true)) {
-        emit_status(app, agent_id, for_emit, None);
+        emit_status(app, agent_id, new, None);
     }
 }
 
@@ -841,37 +790,24 @@ fn apply_exit_if_current(
     sup.agents.lock().remove(agent_id);
     sup.activities.lock().remove(agent_id);
 
-    if success {
-        let changed = sup.workspace.update_agent_status_if(
-            agent_id,
-            AgentStatus::Stopped,
-            None,
-            |status| {
-                matches!(
-                    status,
-                    AgentStatus::Running | AgentStatus::Idle | AgentStatus::Spawning
-                )
-            },
-        );
-        if matches!(changed, Ok(true)) {
-            emit_status(app, agent_id, AgentStatus::Stopped, None);
-        }
+    let (status, err) = if success {
+        (AgentStatus::Stopped, None)
     } else {
-        let err = format!("Agent process exited: {message}");
-        let changed = sup.workspace.update_agent_status_if(
-            agent_id,
-            AgentStatus::Error,
-            Some(err.clone()),
-            |status| {
-                matches!(
-                    status,
-                    AgentStatus::Running | AgentStatus::Idle | AgentStatus::Spawning
-                )
-            },
-        );
-        if matches!(changed, Ok(true)) {
-            emit_status(app, agent_id, AgentStatus::Error, Some(err));
-        }
+        (AgentStatus::Error, Some(format!("Agent process exited: {message}")))
+    };
+    let changed = sup.workspace.update_agent_status_if(
+        agent_id,
+        status.clone(),
+        err.clone(),
+        |status| {
+            matches!(
+                status,
+                AgentStatus::Running | AgentStatus::Idle | AgentStatus::Spawning
+            )
+        },
+    );
+    if matches!(changed, Ok(true)) {
+        emit_status(app, agent_id, status, err);
     }
 }
 
@@ -887,25 +823,6 @@ fn emit_status(
             agent_id: agent_id.to_string(),
             status,
             last_error,
-            status_message: None,
-        },
-    );
-}
-
-fn emit_progress(
-    workspace: &WorkspaceManager,
-    app: &AppHandle,
-    agent_id: &str,
-    message: &str,
-) {
-    let _ = workspace.update_agent_status_message(agent_id, Some(message.into()));
-    let _ = app.emit(
-        "agent:status",
-        AgentStatusPayload {
-            agent_id: agent_id.to_string(),
-            status: AgentStatus::Spawning,
-            last_error: None,
-            status_message: Some(message.into()),
         },
     );
 }
