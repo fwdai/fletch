@@ -46,9 +46,8 @@ export function ChooseRepoDialog({ onClose }: { onClose: () => void }) {
             </div>
             <small>
               Each agent will get its own worktree under{" "}
-              <code>.worktrees/</code> on a fresh branch, and run claude
-              under a macOS sandbox (kernel-enforced — agents can only
-              modify their own worktree).
+              <code>.worktrees/</code> on a fresh branch, and run claude in
+              a macOS sandbox restricted to that worktree for writes.
             </small>
           </label>
           {lastError && <div className="formerr">{lastError}</div>}

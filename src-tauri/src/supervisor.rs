@@ -64,78 +64,130 @@ impl Supervisor {
 
         self.workspace.add_agent(record.clone())?;
         emit_status(&app, &agent_id, AgentStatus::Spawning, None);
-        emit_progress(&self.workspace, &app, &agent_id, "Creating git worktree…");
 
-        // 1. Create the worktree on the new branch.
-        std::fs::create_dir_all(git::worktrees_dir(&repo_path))?;
-        if let Err(e) = git::worktree_add(&repo_path, &worktree, &branch).await {
-            self.workspace.update_agent_status(
-                &agent_id,
-                AgentStatus::Error,
-                Some(e.to_string()),
-            )?;
-            emit_status(&app, &agent_id, AgentStatus::Error, Some(e.to_string()));
-            return Err(e);
-        }
+        let sup = self.clone();
+        let app_for_task = app.clone();
+        let id_for_task = agent_id.clone();
+        tauri::async_runtime::spawn(async move {
+            emit_progress(&sup.workspace, &app_for_task, &id_for_task, "Creating git worktree...");
 
-        // 2. Spawn the sandboxed claude inside the worktree.
-        emit_progress(
-            &self.workspace,
-            &app,
-            &agent_id,
-            "Launching claude inside sandbox-exec…",
-        );
-
-        let app_for_output = app.clone();
-        let id_for_output = agent_id.clone();
-        let agent = Agent::spawn(
-            SpawnSpec {
-                agent_id: &agent_id,
-                worktree: worktree.clone(),
-                task: &task,
-                cols: 120,
-                rows: 32,
-            },
-            move |bytes| {
-                let len = bytes.len();
-                if let Err(e) = app_for_output.emit(
-                    "agent:output",
-                    AgentOutputPayload {
-                        agent_id: id_for_output.clone(),
-                        bytes,
-                    },
-                ) {
-                    tracing::warn!(error = %e, agent_id = %id_for_output, "emit agent:output failed");
-                } else {
-                    tracing::debug!(
-                        agent_id = %id_for_output,
-                        bytes = len,
-                        "emitted agent:output"
-                    );
-                }
-            },
-        );
-
-        match agent {
-            Ok(agent) => {
-                self.agents.lock().insert(agent_id.clone(), agent);
-                self.workspace
-                    .update_agent_status(&agent_id, AgentStatus::Running, None)?;
-                emit_status(&app, &agent_id, AgentStatus::Running, None);
-                let updated = find_record(&self.workspace.current(), &agent_id)
-                    .unwrap_or(record);
-                Ok(updated)
-            }
-            Err(e) => {
+            if let Err(e) = std::fs::create_dir_all(git::worktrees_dir(&repo_path)) {
                 let err = e.to_string();
-                // Roll back the worktree so a retry isn't blocked.
-                let _ = git::worktree_remove(&repo_path, &worktree, true).await;
-                self.workspace
-                    .update_agent_status(&agent_id, AgentStatus::Error, Some(err.clone()))?;
-                emit_status(&app, &agent_id, AgentStatus::Error, Some(err));
-                Err(e)
+                let _ = sup.workspace.update_agent_status(
+                    &id_for_task,
+                    AgentStatus::Error,
+                    Some(err.clone()),
+                );
+                emit_status(&app_for_task, &id_for_task, AgentStatus::Error, Some(err));
+                return;
             }
-        }
+
+            if let Err(e) = git::worktree_add(&repo_path, &worktree, &branch).await {
+                let err = e.to_string();
+                let _ = sup.workspace.update_agent_status(
+                    &id_for_task,
+                    AgentStatus::Error,
+                    Some(err.clone()),
+                );
+                emit_status(&app_for_task, &id_for_task, AgentStatus::Error, Some(err));
+                return;
+            }
+
+            // Give React a tick to mount xterm before Claude starts terminal
+            // negotiation. Starting the child before a terminal is attached can
+            // drop startup control sequences and leave Claude waiting silently.
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+
+            emit_progress(&sup.workspace, &app_for_task, &id_for_task, "Launching claude...");
+
+            let app_for_output = app_for_task.clone();
+            let id_for_output = id_for_task.clone();
+            let sup_for_exit = sup.clone();
+            let app_for_exit = app_for_task.clone();
+            let id_for_exit = id_for_task.clone();
+            let agent = Agent::spawn(
+                SpawnSpec {
+                    agent_id: &id_for_task,
+                    worktree: worktree.clone(),
+                    task: &task,
+                    cols: 120,
+                    rows: 32,
+                },
+                move |bytes| {
+                    let len = bytes.len();
+                    if let Err(e) = app_for_output.emit(
+                        "agent:output",
+                        AgentOutputPayload {
+                            agent_id: id_for_output.clone(),
+                            bytes,
+                        },
+                    ) {
+                        tracing::warn!(error = %e, agent_id = %id_for_output, "emit agent:output failed");
+                    } else {
+                        tracing::debug!(
+                            agent_id = %id_for_output,
+                            bytes = len,
+                            "emitted agent:output"
+                        );
+                    }
+                },
+                move |exit| {
+                    sup_for_exit.agents.lock().remove(&id_for_exit);
+
+                    if exit.success {
+                        let changed = sup_for_exit.workspace.update_agent_status_if(
+                            &id_for_exit,
+                            AgentStatus::Stopped,
+                            None,
+                            |status| matches!(status, AgentStatus::Running | AgentStatus::Spawning),
+                        );
+                        if matches!(changed, Ok(true)) {
+                            emit_status(&app_for_exit, &id_for_exit, AgentStatus::Stopped, None);
+                        }
+                    } else {
+                        let err = format!("Agent process exited: {}", exit.message);
+                        let changed = sup_for_exit.workspace.update_agent_status_if(
+                            &id_for_exit,
+                            AgentStatus::Error,
+                            Some(err.clone()),
+                            |status| matches!(status, AgentStatus::Running | AgentStatus::Spawning),
+                        );
+                        if matches!(changed, Ok(true)) {
+                            emit_status(&app_for_exit, &id_for_exit, AgentStatus::Error, Some(err));
+                        }
+                    }
+                },
+            );
+
+            match agent {
+                Ok(agent) => {
+                    sup.agents.lock().insert(id_for_task.clone(), agent);
+                    let changed = sup.workspace.update_agent_status_if(
+                        &id_for_task,
+                        AgentStatus::Running,
+                        None,
+                        |status| matches!(status, AgentStatus::Spawning),
+                    );
+                    if matches!(changed, Ok(true)) {
+                        emit_status(&app_for_task, &id_for_task, AgentStatus::Running, None);
+                    } else {
+                        sup.agents.lock().remove(&id_for_task);
+                    }
+                }
+                Err(e) => {
+                    let err = e.to_string();
+                    let _ = git::worktree_remove(&repo_path, &worktree, true).await;
+                    let _ = sup.workspace.update_agent_status(
+                        &id_for_task,
+                        AgentStatus::Error,
+                        Some(err.clone()),
+                    );
+                    emit_status(&app_for_task, &id_for_task, AgentStatus::Error, Some(err));
+                }
+            }
+        });
+
+        Ok(record)
     }
 
     pub fn write_to_agent(&self, agent_id: &str, bytes: &[u8]) -> Result<()> {
@@ -245,12 +297,4 @@ fn emit_progress(
             status_message: Some(message.into()),
         },
     );
-}
-
-fn find_record(ws: &Option<Workspace>, agent_id: &str) -> Option<AgentRecord> {
-    ws.as_ref()?
-        .agents
-        .iter()
-        .find(|a| a.id == agent_id)
-        .cloned()
 }
