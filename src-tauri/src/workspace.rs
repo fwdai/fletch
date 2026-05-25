@@ -89,21 +89,21 @@ impl WorkspaceManager {
             PersistedState::default()
         };
 
-        // Reconcile stale statuses left over from a crash / forced quit.
+        // Reconcile stale statuses left over from a crash / clean shutdown.
         // The in-memory Supervisor is fresh on every start, so any agent
-        // marked Running or Spawning on disk is bogus — flip to Stopped.
+        // marked Running / Idle / Spawning on disk has no live process.
+        // We flip those back to Spawning so the supervisor's auto-resume
+        // pass picks them up — agents the user explicitly Stopped (status
+        // Stopped) stay stopped, available via the manual Resume button.
         let mut dirty = false;
         if let Some(ws) = inner.current.as_mut() {
             for a in ws.agents.iter_mut() {
-                if matches!(a.status, AgentStatus::Running | AgentStatus::Spawning) {
-                    a.status = AgentStatus::Stopped;
-                    if a.last_error.is_none() {
-                        a.last_error = Some(
-                            "App restarted while agent was running. Remove and re-spawn."
-                                .into(),
-                        );
-                    }
-                    a.status_message = None;
+                if matches!(
+                    a.status,
+                    AgentStatus::Running | AgentStatus::Spawning | AgentStatus::Idle
+                ) {
+                    a.status = AgentStatus::Spawning;
+                    a.status_message = Some("Resuming after restart…".into());
                     dirty = true;
                 }
             }
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn persists_across_instances_and_reconciles_stale_running() {
+    fn persists_across_instances_and_reconciles_to_spawning_for_resume() {
         let td = tmpdir();
         let app_dir = td.path().to_path_buf();
         let repo = init_repo(td.path());
@@ -342,17 +342,23 @@ mod tests {
         {
             let wm = WorkspaceManager::new(app_dir.clone()).unwrap();
             wm.set_repo(repo.clone()).unwrap();
-            let mut spawning = new_agent_record("a".into(), "b".into(), "c".into(), AgentView::Custom);
-            spawning.status = AgentStatus::Spawning;
-            wm.add_agent(spawning).unwrap();
+            let mut running = new_agent_record("a".into(), "b".into(), "c".into(), AgentView::Custom);
+            running.status = AgentStatus::Running;
+            wm.add_agent(running).unwrap();
+
+            let mut stopped = new_agent_record("s".into(), "sb".into(), "sc".into(), AgentView::Custom);
+            stopped.status = AgentStatus::Stopped;
+            wm.add_agent(stopped).unwrap();
         }
 
         let wm2 = WorkspaceManager::new(app_dir).unwrap();
         let cur = wm2.current().unwrap();
         assert_eq!(cur.repo_path, repo);
-        assert_eq!(cur.agents.len(), 1);
-        // Stale Spawning reconciled to Stopped on reload.
-        assert_eq!(cur.agents[0].status, AgentStatus::Stopped);
+        assert_eq!(cur.agents.len(), 2);
+        // Previously-running agent flagged for auto-resume.
+        assert_eq!(cur.agents[0].status, AgentStatus::Spawning);
+        // Previously-stopped agent stays stopped (manual Resume required).
+        assert_eq!(cur.agents[1].status, AgentStatus::Stopped);
     }
 
     #[test]

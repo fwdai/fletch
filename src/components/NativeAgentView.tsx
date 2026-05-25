@@ -17,6 +17,7 @@ export function NativeAgentView({ agent }: { agent: AgentRecord }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const stop = useAppStore((s) => s.stop);
+  const resume = useAppStore((s) => s.resume);
   const discard = useAppStore((s) => s.discard);
 
   const [draft, setDraft] = useState("");
@@ -135,6 +136,8 @@ export function NativeAgentView({ agent }: { agent: AgentRecord }) {
 
   const canSend =
     !sending && (agent.status === "running" || agent.status === "idle");
+  const canResume =
+    agent.status === "stopped" || agent.status === "error";
 
   return (
     <div className="termwrap">
@@ -148,7 +151,12 @@ export function NativeAgentView({ agent }: { agent: AgentRecord }) {
         </div>
         <div className="right">
           <ViewToggle agentId={agent.id} current="native" />
-          {(agent.status === "running" || agent.status === "spawning") && (
+          {canResume && (
+            <button onClick={() => resume(agent.id)}>Resume</button>
+          )}
+          {(agent.status === "running" ||
+            agent.status === "idle" ||
+            agent.status === "spawning") && (
             <button onClick={onStop}>Stop</button>
           )}
           <button onClick={onDiscard}>Remove</button>
@@ -170,26 +178,20 @@ export function NativeAgentView({ agent }: { agent: AgentRecord }) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              // Enter submits; Shift+Enter inserts a newline.
+              if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 onSubmit(e as unknown as React.FormEvent);
               }
             }}
             placeholder={
               canSend
-                ? "Message claude — ⌘↵ to send"
+                ? "Message claude — ↵ to send, ⇧↵ for newline"
                 : "Agent is not ready"
             }
             rows={2}
             disabled={!canSend}
           />
-          <button
-            type="submit"
-            className="primary"
-            disabled={!canSend || !draft.trim()}
-          >
-            Send
-          </button>
         </form>
       </div>
     </div>

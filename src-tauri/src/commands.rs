@@ -38,19 +38,21 @@ pub async fn spawn_agent(
 #[tauri::command]
 pub fn write_to_agent(
     supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
     agent_id: String,
     data: String,
 ) -> Result<()> {
-    supervisor.write_to_agent(&agent_id, data.as_bytes())
+    supervisor.write_to_agent(&app, &agent_id, data.as_bytes())
 }
 
 #[tauri::command]
 pub fn send_user_message(
     supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
     agent_id: String,
     text: String,
 ) -> Result<()> {
-    supervisor.send_user_message(&agent_id, &text)
+    supervisor.send_user_message(&app, &agent_id, &text)
 }
 
 #[tauri::command]
@@ -61,6 +63,16 @@ pub fn resize_agent(
     rows: u16,
 ) -> Result<()> {
     supervisor.resize_agent(&agent_id, cols, rows)
+}
+
+#[tauri::command]
+pub async fn resume_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+) -> Result<()> {
+    let sup = supervisor.inner().clone();
+    sup.resume_agent(app, &agent_id).await
 }
 
 #[tauri::command]

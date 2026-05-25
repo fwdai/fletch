@@ -95,6 +95,7 @@ interface AppState {
   ) => Promise<AgentRecord | null>;
   sendUserMessage: (id: string, text: string) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
+  resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;
   clearError: () => void;
@@ -411,6 +412,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => ({
         switchInFlight: { ...state.switchInFlight, [id]: false },
       }));
+    }
+  },
+
+  resume: async (id) => {
+    // Same buffer-clearing logic as a view switch — claude's --resume
+    // doesn't replay events on stdout (custom view stays as-is), but
+    // its PTY redraws history from scratch on resume, so native's
+    // output buffer should start empty to avoid duplicated frames.
+    clearOutputBuffer(id);
+    set((state) => ({
+      managedBusy: { ...state.managedBusy, [id]: false },
+    }));
+    try {
+      await api.resumeAgent(id);
+    } catch (e) {
+      set({ lastError: String(e) });
     }
   },
 

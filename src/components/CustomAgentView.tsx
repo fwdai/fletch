@@ -14,6 +14,7 @@ export function CustomAgentView({ agent }: { agent: AgentRecord }) {
   const log = useAppStore((s) => s.managedLogs[agent.id] ?? EMPTY_LOG);
   const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
   const send = useAppStore((s) => s.sendUserMessage);
+  const resume = useAppStore((s) => s.resume);
   const stop = useAppStore((s) => s.stop);
   const discard = useAppStore((s) => s.discard);
 
@@ -55,6 +56,8 @@ export function CustomAgentView({ agent }: { agent: AgentRecord }) {
 
   const canSend =
     !busy && (agent.status === "running" || agent.status === "idle");
+  const canResume =
+    agent.status === "stopped" || agent.status === "error";
 
   return (
     <div className="termwrap">
@@ -70,7 +73,12 @@ export function CustomAgentView({ agent }: { agent: AgentRecord }) {
           {/* Disable the toggle while a turn is in flight — switching
               tears down the process, which would truncate the response. */}
           <ViewToggle agentId={agent.id} current="custom" disabled={busy} />
-          {(agent.status === "running" || agent.status === "spawning") && (
+          {canResume && (
+            <button onClick={() => resume(agent.id)}>Resume</button>
+          )}
+          {(agent.status === "running" ||
+            agent.status === "idle" ||
+            agent.status === "spawning") && (
             <button onClick={onStop}>Stop</button>
           )}
           <button onClick={onDiscard}>Remove</button>
@@ -106,14 +114,17 @@ export function CustomAgentView({ agent }: { agent: AgentRecord }) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            // Enter submits; Shift+Enter inserts a newline. This
+            // matches the convention used by claude.ai, ChatGPT, and
+            // most modern chat UIs.
+            if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               onSubmit(e as unknown as React.FormEvent);
             }
           }}
           placeholder={
             canSend
-              ? "Reply to claude — ⌘↵ to send"
+              ? "Reply to claude — ↵ to send, ⇧↵ for newline"
               : busy
                 ? "Waiting for claude…"
                 : "Agent is not running"
@@ -121,13 +132,6 @@ export function CustomAgentView({ agent }: { agent: AgentRecord }) {
           rows={2}
           disabled={!canSend}
         />
-        <button
-          type="submit"
-          className="primary"
-          disabled={!canSend || !draft.trim()}
-        >
-          Send
-        </button>
       </form>
     </div>
   );
