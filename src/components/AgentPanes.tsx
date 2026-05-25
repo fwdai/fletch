@@ -8,6 +8,8 @@ export function AgentPanes() {
   const lastError = useAppStore((s) => s.lastError);
   const clearError = useAppStore((s) => s.clearError);
 
+  const selected = agents.find((a) => a.id === selectedId);
+
   let content;
   if (!workspace) {
     content = (
@@ -29,7 +31,7 @@ export function AgentPanes() {
         </p>
       </div>
     );
-  } else if (!selectedId) {
+  } else if (!selected) {
     content = (
       <div className="placeholder">
         <h2>Select an agent</h2>
@@ -37,21 +39,12 @@ export function AgentPanes() {
       </div>
     );
   } else {
-    // Render *all* agents but only show the selected one. Keeps terminal
-    // state alive when the user switches away and back.
-    content = (
-      <>
-        {agents.map((agent) => (
-          <div
-            key={agent.id}
-            className="termhost"
-            style={{ display: selectedId === agent.id ? "flex" : "none" }}
-          >
-            <AgentTerminal agent={agent} />
-          </div>
-        ))}
-      </>
-    );
+    // Only the selected agent's terminal is mounted. xterm.js can't
+    // initialize its renderer on a display:none element (throws
+    // `_renderer.value.dimensions undefined`), so we tear down on
+    // unselect and replay the per-agent output buffer on remount.
+    // `key={selected.id}` forces a fresh mount when switching agents.
+    content = <AgentTerminal key={selected.id} agent={selected} />;
   }
 
   return (

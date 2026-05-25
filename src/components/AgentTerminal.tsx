@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { api, type AgentRecord } from "../api";
-import { registerOutputSink, useAppStore } from "../store";
+import { getOutputBuffer, registerOutputSink, useAppStore } from "../store";
 
 export function AgentTerminal({ agent }: { agent: AgentRecord }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -31,7 +31,26 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
-    fit.fit();
+
+    // Defer the first fit until the DOM has actually laid out — opening
+    // an xterm and immediately calling fit() on a freshly-mounted div
+    // can race the renderer initialization (the dimensions are read
+    // before WebGL/canvas finishes setting up). requestAnimationFrame
+    // is enough to push past that.
+    const initialFit = requestAnimationFrame(() => {
+      try {
+        fit.fit();
+      } catch {
+        /* container not measurable yet — ResizeObserver will retry */
+      }
+    });
+
+    // Replay any output the agent has produced before this terminal was
+    // mounted (the user might've switched tabs after the agent started).
+    const buffered = getOutputBuffer(agent.id);
+    if (buffered && buffered.length > 0) {
+      term.write(buffered);
+    }
 
     const onDataDisposer = term.onData((data) => {
       api.writeToAgent(agent.id, data).catch(() => {
@@ -40,7 +59,7 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
     });
     const onResizeDisposer = term.onResize(({ cols, rows }) => {
       api.resizeAgent(agent.id, cols, rows).catch(() => {
-        /* harmless if VM is gone */
+        /* harmless if process is gone */
       });
     });
 
@@ -58,6 +77,7 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
     ro.observe(el);
 
     return () => {
+      cancelAnimationFrame(initialFit);
       ro.disconnect();
       unregister();
       onDataDisposer.dispose();

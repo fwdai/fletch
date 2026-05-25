@@ -16,6 +16,37 @@ export const EMPTY_AGENTS: readonly AgentRecord[] = Object.freeze([]);
 
 const outputSinks = new Map<string, OutputHandler>();
 
+/** Per-agent ring buffer of recent output bytes, used to repaint the
+ *  terminal when the user switches tabs (which unmounts+remounts the
+ *  xterm to avoid renderer-on-hidden-div crashes). Capped at ~256KB
+ *  per agent so long-running sessions don't grow unbounded. */
+const outputBuffers = new Map<string, Uint8Array>();
+const MAX_BUFFER_BYTES = 256 * 1024;
+
+function appendToBuffer(agentId: string, chunk: Uint8Array) {
+  const existing = outputBuffers.get(agentId);
+  let next: Uint8Array;
+  if (!existing) {
+    next = chunk;
+  } else {
+    next = new Uint8Array(existing.length + chunk.length);
+    next.set(existing, 0);
+    next.set(chunk, existing.length);
+  }
+  if (next.length > MAX_BUFFER_BYTES) {
+    next = next.slice(next.length - MAX_BUFFER_BYTES);
+  }
+  outputBuffers.set(agentId, next);
+}
+
+export function getOutputBuffer(agentId: string): Uint8Array | undefined {
+  return outputBuffers.get(agentId);
+}
+
+export function clearOutputBuffer(agentId: string) {
+  outputBuffers.delete(agentId);
+}
+
 export function registerOutputSink(
   agentId: string,
   handler: OutputHandler,
@@ -61,8 +92,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ workspace });
 
     await onAgentOutput((e) => {
+      const chunk = new Uint8Array(e.bytes);
+      appendToBuffer(e.agent_id, chunk);
       const sink = outputSinks.get(e.agent_id);
-      if (sink) sink(new Uint8Array(e.bytes));
+      if (sink) sink(chunk);
     });
 
     await onAgentStatus((e) => {
@@ -128,6 +161,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   discard: async (id) => {
     try {
       await api.discardAgent(id);
+      clearOutputBuffer(id);
       const fresh = await api.getWorkspace();
       set((s) => ({
         workspace: fresh,

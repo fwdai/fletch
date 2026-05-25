@@ -51,6 +51,19 @@ impl PtySession {
             cmd.arg(a);
         }
         cmd.cwd(spec.cwd);
+
+        // Inherit the user's environment so the child sees PATH, HOME,
+        // ANTHROPIC_API_KEY, locale settings, etc. portable-pty doesn't
+        // do this by default.
+        for (k, v) in std::env::vars() {
+            cmd.env(k, v);
+        }
+        // Explicit terminal type — claude code uses ink which checks TERM
+        // for capability lookups. Without this, input handling falls back
+        // to a line-buffered mode that doesn't match what the user expects.
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+        // Caller-supplied overrides take precedence.
         for (k, v) in spec.envs {
             cmd.env(*k, v);
         }
