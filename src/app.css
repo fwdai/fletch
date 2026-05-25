@@ -162,6 +162,49 @@ small code {
   background: var(--bg-input);
   border-color: var(--border-strong);
 }
+.row:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Action icons live on the right edge of each row. Hidden by default,
+ * revealed on hover (and always visible when the row is selected) so
+ * the sidebar stays calm but the actions are still discoverable. */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+  flex-shrink: 0;
+}
+.row:hover .row-actions,
+.row:focus-within .row-actions {
+  opacity: 1;
+}
+.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.iconbtn:hover { background: var(--bg-elevated); color: var(--text); }
+.iconbtn.tone-danger:hover { color: var(--danger); }
+.iconbtn.tone-accent { color: var(--accent); }
+.iconbtn.tone-accent:hover { background: var(--bg-elevated); color: var(--accent-hover); }
+.iconbtn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
 .dot {
   width: 8px;
   height: 8px;
@@ -169,10 +212,42 @@ small code {
   flex-shrink: 0;
   display: inline-block;
 }
-.rowtext { display: flex; flex-direction: column; min-width: 0; }
+.rowtext { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 4px; align-items: center; }
 .branch { font-family: var(--font-mono); }
+.task-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Three-line sidebar row layout */
+.row-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.task-summary-line {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta .provider { text-transform: lowercase; color: var(--text-muted); }
+.meta .status-text {
+  text-transform: lowercase;
+  color: var(--text-muted);
+}
+.meta .status-text[data-status="running"] { color: var(--success); }
+.meta .status-text[data-status="spawning"] { color: var(--warning); }
+.meta .status-text[data-status="error"] { color: var(--danger); }
+.meta .status-text[data-status="idle"] { color: var(--text-muted); }
+.meta .status-text[data-status="stopped"] { color: var(--text-muted); }
 .dim { color: var(--border-strong); }
 .meta.progress {
   color: var(--warning);
@@ -254,6 +329,79 @@ small code {
   font-size: 11px;
 }
 .term { flex: 1; min-height: 0; padding: 8px; background: var(--bg); overflow: hidden; }
+
+/* ---------- Agent view header (two rows) ---------- */
+
+.agentheader {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px 6px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.agentheader-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 22px;
+}
+.agentheader-row .left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.agentheader-row .right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.agentheader .sep {
+  color: var(--border-strong);
+}
+.agentheader .provider {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.agentheader-row.primary .status {
+  /* Re-use the existing .status color rules but make it readable
+   * without the prior uppercase pill background. */
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 0;
+  border-radius: 0;
+}
+.agentheader-row.secondary {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+.agentheader .agent-id {
+  color: var(--text);
+  font-weight: 500;
+}
+.agentheader .branch {
+  /* override the sidebar `.branch` font-size pill — here we want it
+   * to blend with the secondary row's mono text. */
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: 11px;
+}
+.agentheader .arrow {
+  color: var(--text-muted);
+  margin: 0 2px;
+}
+.agentheader .parent-branch {
+  color: var(--text);
+}
 
 /* ---------- Error toast ---------- */
 
@@ -503,3 +651,228 @@ small.warn code {
   gap: 8px;
   margin-top: 16px;
 }
+
+/* ---------- View toggle (Custom / Native) ---------- */
+
+.viewtoggle {
+  display: inline-flex;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 0;
+}
+.viewtoggle button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.viewtoggle button:hover:not(:disabled):not(.active) {
+  color: var(--text);
+}
+.viewtoggle button.active {
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+.viewtoggle[data-disabled] { opacity: 0.6; }
+
+/* ---------- Native view: terminal + overlay input ---------- */
+
+/* The terminal stage is a positioning context for the overlay. */
+.native-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* The terminal fills the entire stage including the area beneath the
+ * overlay. xterm still believes it has every visible row, so claude
+ * renders its TUI input into the bottom rows — but those rows are
+ * physically covered by .native-input-overlay below. */
+.native-stage .term {
+  position: absolute;
+  inset: 0;
+  padding: 8px;
+}
+.term-readonly { cursor: default; }
+
+.native-input-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  /* Min height covers ~7 rows of xterm at 13px font (the bordered
+   * input box + status hint claude renders below it). Grows with the
+   * textarea up to its max-height. */
+  min-height: 120px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  /* A soft fade at the top edge so the boundary between claude's
+   * (now-hidden) input area and our overlay is less jarring when
+   * claude redraws. */
+  box-shadow: 0 -8px 12px -8px rgba(0, 0, 0, 0.45);
+}
+.native-input-overlay textarea {
+  flex: 1;
+  min-height: 60px;
+  max-height: 180px;
+  resize: vertical;
+}
+.native-input-overlay button { flex-shrink: 0; }
+
+/* ---------- Custom view: structured chat ---------- */
+
+.msglog {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.msgempty {
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+  margin-top: 32px;
+}
+
+.msg { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
+.msg-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.msg-body {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.55;
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+.msg-user .msg-body {
+  background: rgba(91, 141, 239, 0.12);
+  border-color: rgba(91, 141, 239, 0.35);
+}
+.msg-result .msg-body {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: center;
+}
+.msg-result.error .msg-body { color: var(--danger); }
+
+.msg-system .msg-body {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: center;
+}
+
+.msg-tool, .msg-tool-result {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.msg-tool-result.error { border-color: rgba(227, 100, 100, 0.5); }
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 8px 12px;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  border-radius: 0;
+}
+.tool-header:hover { background: var(--bg-input); }
+.tool-header .caret { width: 12px; color: var(--text-muted); }
+.tool-name { font-weight: 600; }
+.tool-summary {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.tool-body {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+
+.msgbusy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.msgbusy .dots { display: inline-flex; gap: 3px; }
+.msgbusy .dots span {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: bounce 1.2s ease-in-out infinite;
+}
+.msgbusy .dots span:nth-child(2) { animation-delay: 0.15s; }
+.msgbusy .dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes bounce {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
+.msginput {
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 10px 12px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+.msginput textarea {
+  flex: 1;
+  min-height: 40px;
+  max-height: 200px;
+  resize: vertical;
+}
+.msginput button { flex-shrink: 0; }

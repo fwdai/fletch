@@ -4,10 +4,12 @@
 use chrono::Utc;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::git;
+use crate::names;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,18 +21,54 @@ pub enum AgentStatus {
     Error,
 }
 
+/// Which view the user has open for an agent. Both views attach to the
+/// same conversation (via claude's --session-id / --resume), but each
+/// view requires a different process shape, so only one can be live at
+/// a time per agent. The user can toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentView {
+    /// Structured chat UI rendered from claude's stream-json events.
+    Custom,
+    /// Read-only xterm showing claude's native TUI, with our input box
+    /// overlaid on top of the claude input prompt.
+    Native,
+}
+
+impl Default for AgentView {
+    fn default() -> Self {
+        AgentView::Custom
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
     pub id: String,
     pub name: String,
-    pub branch: String,
+    /// `None` until the user sends their first message — we defer
+    /// branch creation so spawned-but-unused agents don't pollute
+    /// `git branch`. Set to `amux/<slug>` once the first user message
+    /// gives us something to name it after.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// The branch the agent's worktree was created from. Captured at
+    /// spawn time so the UI can show "→ target: main" and so future
+    /// "make a PR" flows know the merge target. `None` for agents
+    /// spawned in detached HEAD state or before this field existed.
+    #[serde(default)]
+    pub parent_branch: Option<String>,
     pub task: String,
     pub status: AgentStatus,
+    #[serde(default)]
+    pub view: AgentView,
+    /// UUID claude uses to persist this agent's conversation. Set on
+    /// first spawn; used with --resume on subsequent process spawns
+    /// (e.g. when the user switches views).
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
-    #[serde(default)]
-    pub status_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -62,21 +100,20 @@ impl WorkspaceManager {
             PersistedState::default()
         };
 
-        // Reconcile stale statuses left over from a crash / forced quit.
+        // Reconcile stale statuses left over from a crash / clean shutdown.
         // The in-memory Supervisor is fresh on every start, so any agent
-        // marked Running or Spawning on disk is bogus — flip to Stopped.
+        // marked Running / Idle / Spawning on disk has no live process.
+        // We flip those back to Spawning so the supervisor's auto-resume
+        // pass picks them up — agents the user explicitly Stopped (status
+        // Stopped) stay stopped, available via the manual Resume button.
         let mut dirty = false;
         if let Some(ws) = inner.current.as_mut() {
             for a in ws.agents.iter_mut() {
-                if matches!(a.status, AgentStatus::Running | AgentStatus::Spawning) {
-                    a.status = AgentStatus::Stopped;
-                    if a.last_error.is_none() {
-                        a.last_error = Some(
-                            "App restarted while agent was running. Remove and re-spawn."
-                                .into(),
-                        );
-                    }
-                    a.status_message = None;
+                if matches!(
+                    a.status,
+                    AgentStatus::Running | AgentStatus::Spawning | AgentStatus::Idle
+                ) {
+                    a.status = AgentStatus::Spawning;
                     dirty = true;
                 }
             }
@@ -112,6 +149,18 @@ impl WorkspaceManager {
         Ok(ws)
     }
 
+    /// Pick a memorable, unused id for a new agent. Reads the current
+    /// agents under the workspace lock so two consecutive calls
+    /// observe each other's writes; if you need full atomicity
+    /// against `add_agent`, do them back-to-back without anything
+    /// else mutating the agents list in between.
+    pub fn allocate_agent_id(&self) -> Result<String> {
+        let g = self.inner.read();
+        let ws = g.current.as_ref().ok_or(Error::WorkspaceNotLoaded)?;
+        let used: HashSet<String> = ws.agents.iter().map(|a| a.id.clone()).collect();
+        Ok(names::allocate(&used))
+    }
+
     pub fn add_agent(&self, record: AgentRecord) -> Result<()> {
         {
             let mut g = self.inner.write();
@@ -121,13 +170,14 @@ impl WorkspaceManager {
         self.persist()
     }
 
-    pub fn update_agent_status(
-        &self,
-        id: &str,
-        status: AgentStatus,
-        last_error: Option<String>,
-    ) -> Result<()> {
-        {
+    /// Mutate one agent under the workspace write lock and persist iff
+    /// the closure returns true. The single primitive every callable
+    /// update_/set_ helper builds on.
+    fn mutate_agent<F>(&self, id: &str, f: F) -> Result<bool>
+    where
+        F: FnOnce(&mut AgentRecord) -> bool,
+    {
+        let changed = {
             let mut g = self.inner.write();
             let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
             let a = ws
@@ -135,18 +185,28 @@ impl WorkspaceManager {
                 .iter_mut()
                 .find(|a| a.id == id)
                 .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
-            a.status = status;
-            if let Some(err) = last_error {
-                a.last_error = Some(err);
-            }
-            if matches!(
-                a.status,
-                AgentStatus::Running | AgentStatus::Stopped | AgentStatus::Idle | AgentStatus::Error
-            ) {
-                a.status_message = None;
-            }
+            f(a)
+        };
+        if changed {
+            self.persist()?;
         }
-        self.persist()
+        Ok(changed)
+    }
+
+    pub fn update_agent_status(
+        &self,
+        id: &str,
+        status: AgentStatus,
+        last_error: Option<String>,
+    ) -> Result<()> {
+        self.mutate_agent(id, |a| {
+            a.status = status;
+            if last_error.is_some() {
+                a.last_error = last_error;
+            }
+            true
+        })?;
+        Ok(())
     }
 
     pub fn update_agent_status_if<F>(
@@ -159,47 +219,60 @@ impl WorkspaceManager {
     where
         F: FnOnce(&AgentStatus) -> bool,
     {
-        let changed = {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            let a = ws
-                .agents
-                .iter_mut()
-                .find(|a| a.id == id)
-                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
+        self.mutate_agent(id, |a| {
             if !predicate(&a.status) {
-                return Ok(false);
+                return false;
             }
             a.status = status;
-            if let Some(err) = last_error {
-                a.last_error = Some(err);
-            }
-            if matches!(
-                a.status,
-                AgentStatus::Running | AgentStatus::Stopped | AgentStatus::Idle | AgentStatus::Error
-            ) {
-                a.status_message = None;
+            if last_error.is_some() {
+                a.last_error = last_error;
             }
             true
-        };
-        if changed {
-            self.persist()?;
-        }
-        Ok(changed)
+        })
     }
 
-    pub fn update_agent_status_message(&self, id: &str, message: Option<String>) -> Result<()> {
-        {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            let a = ws
-                .agents
-                .iter_mut()
-                .find(|a| a.id == id)
-                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
-            a.status_message = message;
-        }
-        self.persist()
+    /// Record the first user message as the agent's task — but only
+    /// if the task hasn't been set yet. Returns true if it actually
+    /// wrote (so callers can decide whether to emit an event).
+    pub fn set_agent_task_if_empty(&self, id: &str, task: &str) -> Result<bool> {
+        self.mutate_agent(id, |a| {
+            if !a.task.trim().is_empty() {
+                return false;
+            }
+            a.task = task.to_string();
+            true
+        })
+    }
+
+    /// Set the agent's branch — but only if it isn't set yet. Used
+    /// when the first user message triggers branch creation. Returns
+    /// true iff it actually wrote.
+    pub fn set_agent_branch_if_empty(&self, id: &str, branch: &str) -> Result<bool> {
+        self.mutate_agent(id, |a| {
+            if a.branch.is_some() {
+                return false;
+            }
+            a.branch = Some(branch.to_string());
+            true
+        })
+    }
+
+    pub fn update_agent_view(&self, id: &str, view: AgentView) -> Result<()> {
+        self.mutate_agent(id, |a| {
+            a.view = view;
+            true
+        })?;
+        Ok(())
+    }
+
+    pub fn agent(&self, id: &str) -> Result<AgentRecord> {
+        let g = self.inner.read();
+        let ws = g.current.as_ref().ok_or(Error::WorkspaceNotLoaded)?;
+        ws.agents
+            .iter()
+            .find(|a| a.id == id)
+            .cloned()
+            .ok_or_else(|| Error::AgentNotFound(id.to_string()))
     }
 
     pub fn remove_agent(&self, id: &str) -> Result<()> {
@@ -240,21 +313,27 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub fn new_agent_record(name: String, branch: String, task: String) -> AgentRecord {
+pub fn new_agent_record(
+    id: String,
+    name: String,
+    branch: Option<String>,
+    parent_branch: Option<String>,
+    task: String,
+    view: AgentView,
+) -> AgentRecord {
     AgentRecord {
-        id: uuid::Uuid::new_v4()
-            .to_string()
-            .split('-')
-            .next()
-            .unwrap_or("agent")
-            .to_string(),
+        id,
         name,
         branch,
+        parent_branch,
         task,
         status: AgentStatus::Spawning,
+        view,
+        // Full UUID for claude's --session-id; reused on every respawn
+        // (e.g. view switch) so the conversation persists.
+        session_id: Some(uuid::Uuid::new_v4().to_string()),
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
-        status_message: None,
     }
 }
 
@@ -274,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn persists_across_instances_and_reconciles_stale_running() {
+    fn persists_across_instances_and_reconciles_to_spawning_for_resume() {
         let td = tmpdir();
         let app_dir = td.path().to_path_buf();
         let repo = init_repo(td.path());
@@ -282,17 +361,23 @@ mod tests {
         {
             let wm = WorkspaceManager::new(app_dir.clone()).unwrap();
             wm.set_repo(repo.clone()).unwrap();
-            let mut spawning = new_agent_record("a".into(), "b".into(), "c".into());
-            spawning.status = AgentStatus::Spawning;
-            wm.add_agent(spawning).unwrap();
+            let mut running = new_agent_record("yosemite".into(), "a".into(), Some("b".into()), None, "c".into(), AgentView::Custom);
+            running.status = AgentStatus::Running;
+            wm.add_agent(running).unwrap();
+
+            let mut stopped = new_agent_record("dolomites".into(), "s".into(), Some("sb".into()), None, "sc".into(), AgentView::Custom);
+            stopped.status = AgentStatus::Stopped;
+            wm.add_agent(stopped).unwrap();
         }
 
         let wm2 = WorkspaceManager::new(app_dir).unwrap();
         let cur = wm2.current().unwrap();
         assert_eq!(cur.repo_path, repo);
-        assert_eq!(cur.agents.len(), 1);
-        // Stale Spawning reconciled to Stopped on reload.
-        assert_eq!(cur.agents[0].status, AgentStatus::Stopped);
+        assert_eq!(cur.agents.len(), 2);
+        // Previously-running agent flagged for auto-resume.
+        assert_eq!(cur.agents[0].status, AgentStatus::Spawning);
+        // Previously-stopped agent stays stopped (manual Resume required).
+        assert_eq!(cur.agents[1].status, AgentStatus::Stopped);
     }
 
     #[test]
@@ -309,7 +394,7 @@ mod tests {
         let repo = init_repo(td.path());
         let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
         wm.set_repo(repo).unwrap();
-        let rec = new_agent_record("a".into(), "b".into(), "c".into());
+        let rec = new_agent_record("test-id".into(), "a".into(), Some("b".into()), None, "c".into(), AgentView::Custom);
         let id = rec.id.clone();
         wm.add_agent(rec).unwrap();
 

@@ -6,7 +6,7 @@ use tauri::{AppHandle, State};
 
 use crate::error::Result;
 use crate::supervisor::Supervisor;
-use crate::workspace::{AgentRecord, Workspace};
+use crate::workspace::{AgentRecord, AgentView, Workspace};
 
 #[tauri::command]
 pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace> {
@@ -25,21 +25,32 @@ pub fn set_repo(
 pub async fn spawn_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     app: AppHandle,
-    name: String,
-    branch: String,
-    task: String,
+    view: Option<AgentView>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
-    sup.spawn_agent(app, name, branch, task).await
+    sup.spawn_agent(app, view.unwrap_or_default()).await
 }
 
 #[tauri::command]
 pub fn write_to_agent(
     supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
     agent_id: String,
     data: String,
 ) -> Result<()> {
-    supervisor.write_to_agent(&agent_id, data.as_bytes())
+    let sup = supervisor.inner().clone();
+    sup.write_to_agent(&app, &agent_id, data.as_bytes())
+}
+
+#[tauri::command]
+pub fn send_user_message(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+    text: String,
+) -> Result<()> {
+    let sup = supervisor.inner().clone();
+    sup.send_user_message(&app, &agent_id, &text)
 }
 
 #[tauri::command]
@@ -50,6 +61,27 @@ pub fn resize_agent(
     rows: u16,
 ) -> Result<()> {
     supervisor.resize_agent(&agent_id, cols, rows)
+}
+
+#[tauri::command]
+pub async fn resume_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+) -> Result<()> {
+    let sup = supervisor.inner().clone();
+    sup.resume_agent(app, &agent_id).await
+}
+
+#[tauri::command]
+pub async fn switch_view(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+    view: AgentView,
+) -> Result<()> {
+    let sup = supervisor.inner().clone();
+    sup.switch_view(app, &agent_id, view).await
 }
 
 #[tauri::command]

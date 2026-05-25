@@ -25,12 +25,6 @@ pub enum Error {
     Other(String),
 }
 
-impl From<anyhow::Error> for Error {
-    fn from(e: anyhow::Error) -> Self {
-        Error::Other(e.to_string())
-    }
-}
-
 /// Tauri requires command return errors to be `Serialize` so they can cross
 /// the IPC boundary. We serialize as the display string.
 impl Serialize for Error {

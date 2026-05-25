@@ -1,7 +1,11 @@
+mod activity;
 mod agent;
+mod branding;
 mod commands;
 mod error;
 mod git;
+mod managed_session;
+mod names;
 mod pty_session;
 mod sandbox;
 mod supervisor;
@@ -31,7 +35,19 @@ pub fn run() {
 
             let workspace = Arc::new(WorkspaceManager::new(app_data)?);
             let supervisor = Arc::new(Supervisor::new(workspace));
-            app.manage(supervisor);
+            app.manage(supervisor.clone());
+
+            // Auto-resume any agent that was live before the previous
+            // shutdown. Runs on a tauri async task so we don't block
+            // app boot; events emit as they would for a manual spawn.
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Tiny delay so the frontend has time to mount its
+                // event listeners and the workspace view before agents
+                // start emitting.
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                supervisor.resume_persisted_agents(app_handle);
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -39,7 +55,10 @@ pub fn run() {
             commands::set_repo,
             commands::spawn_agent,
             commands::write_to_agent,
+            commands::send_user_message,
             commands::resize_agent,
+            commands::switch_view,
+            commands::resume_agent,
             commands::stop_agent,
             commands::discard_agent,
         ])

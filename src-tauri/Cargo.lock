@@ -36,7 +36,6 @@ dependencies = [
 name = "amux"
 version = "0.1.1"
 dependencies = [
- "anyhow",
  "chrono",
  "dirs 5.0.1",
  "parking_lot",
