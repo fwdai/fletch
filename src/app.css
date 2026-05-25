@@ -120,11 +120,7 @@ small code {
   height: 44px;
   flex-shrink: 0;
 }
-.bar .left { display: flex; align-items: center; gap: 14px; }
-.bar .right { display: flex; align-items: center; gap: 8px; }
 .logo { font-weight: 700; letter-spacing: -0.3px; color: var(--accent); }
-.repo { font-weight: 500; }
-.repo.dim { color: var(--text-muted); font-style: italic; font-weight: 400; }
 .base {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -134,9 +130,50 @@ small code {
   border-radius: 4px;
 }
 
-/* ---------- Agent list ---------- */
+/* ---------- Sidebar: repo groups + agent list ---------- */
 
 .list { flex: 1; overflow-y: auto; padding: 4px; }
+.repo-group { margin-bottom: 8px; }
+.repo-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 4px;
+  gap: 8px;
+}
+.repo-group-name {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.repo-group-empty {
+  padding: 4px 10px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.ghostbtn {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.ghostbtn:hover { background: var(--bg-input); color: var(--text); }
+.ghostbtn:disabled { opacity: 0.5; cursor: not-allowed; }
 .empty {
   padding: 16px;
   color: var(--text-muted);
@@ -401,6 +438,30 @@ small code {
 }
 .agentheader .parent-branch {
   color: var(--text);
+}
+.agentheader .subdir {
+  color: var(--text);
+  font-weight: 500;
+}
+.agentheader .agent-id.placeholder {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+.add-repo-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.add-repo-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border-strong);
 }
 
 /* ---------- Error toast ---------- */

@@ -2,18 +2,21 @@
 //!
 //! The app still launches Claude in a normal PTY. `sandbox-exec` is only
 //! the process wrapper around that PTY child, so terminal streaming and
-//! startup timing stay the same while writes are constrained to the agent
-//! worktree plus standard state/cache locations.
+//! startup timing stay the same while writes are constrained to the
+//! agent's parent dir (under `~/.amux/worktrees/<id>/`) plus standard
+//! state/cache locations. The agent's per-repo worktrees live as
+//! subdirs of that parent, so each one inherits the writable allowance
+//! without re-spawning claude.
 
 use std::path::Path;
 
 use crate::error::{Error, Result};
 
-pub fn build_profile(worktree: &Path, home: &Path) -> Result<String> {
-    let worktree = canonical(worktree)?;
+pub fn build_profile(writable_root: &Path, home: &Path) -> Result<String> {
+    let writable_root = canonical(writable_root)?;
     let home = canonical(home)?;
 
-    let worktree_s = sbpl_string(&worktree.to_string_lossy());
+    let writable_root_s = sbpl_string(&writable_root.to_string_lossy());
     let home_s = home.to_string_lossy();
 
     let claude_state = sbpl_string(&format!("{home_s}/.claude"));
@@ -30,7 +33,7 @@ pub fn build_profile(worktree: &Path, home: &Path) -> Result<String> {
 ;; Block writes everywhere by default, then re-allow specific subpaths.
 (deny file-write*)
 (allow file-write*
-  (subpath {worktree_s})
+  (subpath {writable_root_s})
   (subpath "/private/tmp")
   (subpath "/private/var/folders")
   (subpath "/private/var/tmp")
@@ -66,18 +69,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn profile_includes_worktree_path_and_denies_writes_by_default() {
+    fn profile_includes_writable_root_and_denies_writes_by_default() {
         let td = tempfile::tempdir().unwrap();
-        let worktree = td.path().join("worktree");
+        let root = td.path().join("agent-parent");
         let home = td.path().join("home");
-        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_profile(&worktree, &home).unwrap();
-        let canonical_worktree = std::fs::canonicalize(&worktree).unwrap();
+        let profile = build_profile(&root, &home).unwrap();
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
 
         assert!(profile.contains("(deny file-write*)"));
-        assert!(profile.contains(&format!("\"{}\"", canonical_worktree.display())));
+        assert!(profile.contains(&format!("\"{}\"", canonical_root.display())));
     }
 
     #[test]

@@ -1,5 +1,6 @@
-//! Workspace state — the on-disk record of which repo is active and
-//! the agents that belong to it.
+//! Workspace state — the on-disk record of the sidebar's repo list and
+//! the agents the user has spawned. Each agent is anchored to a primary
+//! repo (`repos[0]`); the sidebar groups agents by that primary.
 
 use chrono::Utc;
 use parking_lot::RwLock;
@@ -8,7 +9,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::git;
 use crate::names;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,22 +41,30 @@ impl Default for AgentView {
     }
 }
 
+/// One repo an agent has a worktree in.
+///
+/// At spawn time every agent gets `repos[0]` populated from the
+/// repo the user spawned it against. The user can extend this list
+/// mid-session via `add_repo_to_agent`, which creates a sibling
+/// worktree under the same parent dir.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackedRepo {
+    pub repo_path: PathBuf,
+    pub subdir: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub parent_branch: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
     pub id: String,
     pub name: String,
-    /// `None` until the user sends their first message — we defer
-    /// branch creation so spawned-but-unused agents don't pollute
-    /// `git branch`. Set to `amux/<slug>` once the first user message
-    /// gives us something to name it after.
+    /// The repos this agent has worktrees in. Always non-empty;
+    /// `repos[0]` is the primary (the repo the user spawned against).
     #[serde(default)]
-    pub branch: Option<String>,
-    /// The branch the agent's worktree was created from. Captured at
-    /// spawn time so the UI can show "→ target: main" and so future
-    /// "make a PR" flows know the merge target. `None` for agents
-    /// spawned in detached HEAD state or before this field existed.
-    #[serde(default)]
-    pub parent_branch: Option<String>,
+    pub repos: Vec<TrackedRepo>,
     pub task: String,
     pub status: AgentStatus,
     #[serde(default)]
@@ -73,7 +81,11 @@ pub struct AgentRecord {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Workspace {
-    pub repo_path: PathBuf,
+    /// Repos pinned in the sidebar. Empty on first launch — the user
+    /// adds one or more via "+ Repo". Agents spawn against one of
+    /// these; the sidebar groups agents by primary repo.
+    #[serde(default)]
+    pub repos: Vec<PathBuf>,
     #[serde(default)]
     pub agents: Vec<AgentRecord>,
 }
@@ -99,6 +111,12 @@ impl WorkspaceManager {
         } else {
             PersistedState::default()
         };
+
+        // Always have a workspace — empty repos / empty agents on first
+        // launch. Avoids None-handling sprawl downstream.
+        if inner.current.is_none() {
+            inner.current = Some(Workspace::default());
+        }
 
         // Reconcile stale statuses left over from a crash / clean shutdown.
         // The in-memory Supervisor is fresh on every start, so any agent
@@ -133,27 +151,40 @@ impl WorkspaceManager {
         self.inner.read().current.clone()
     }
 
-    pub fn set_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
+    /// Append a repo to the sidebar's pinned list. Idempotent — adding
+    /// a path that's already pinned is a no-op (returns Ok).
+    pub fn add_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
                 "not a git repository: {}",
                 repo_path.display()
             )));
         }
-        let ws = Workspace {
-            repo_path,
-            agents: vec![],
-        };
-        self.inner.write().current = Some(ws.clone());
+        {
+            let mut g = self.inner.write();
+            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
+            if !ws.repos.iter().any(|p| p == &repo_path) {
+                ws.repos.push(repo_path);
+            }
+        }
         self.persist()?;
-        Ok(ws)
+        Ok(self.current().expect("workspace initialized"))
     }
 
-    /// Pick a memorable, unused id for a new agent. Reads the current
-    /// agents under the workspace lock so two consecutive calls
-    /// observe each other's writes; if you need full atomicity
-    /// against `add_agent`, do them back-to-back without anything
-    /// else mutating the agents list in between.
+    /// Remove a repo from the sidebar's pinned list. Does NOT touch
+    /// agents — agents whose primary points at the removed repo keep
+    /// working and continue to show in the sidebar under that repo
+    /// (the sidebar takes the union of pinned + agent-primary repos).
+    pub fn remove_workspace_repo(&self, repo_path: &Path) -> Result<Workspace> {
+        {
+            let mut g = self.inner.write();
+            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
+            ws.repos.retain(|p| p != repo_path);
+        }
+        self.persist()?;
+        Ok(self.current().expect("workspace initialized"))
+    }
+
     pub fn allocate_agent_id(&self) -> Result<String> {
         let g = self.inner.read();
         let ws = g.current.as_ref().ok_or(Error::WorkspaceNotLoaded)?;
@@ -170,9 +201,6 @@ impl WorkspaceManager {
         self.persist()
     }
 
-    /// Mutate one agent under the workspace write lock and persist iff
-    /// the closure returns true. The single primitive every callable
-    /// update_/set_ helper builds on.
     fn mutate_agent<F>(&self, id: &str, f: F) -> Result<bool>
     where
         F: FnOnce(&mut AgentRecord) -> bool,
@@ -231,9 +259,6 @@ impl WorkspaceManager {
         })
     }
 
-    /// Record the first user message as the agent's task — but only
-    /// if the task hasn't been set yet. Returns true if it actually
-    /// wrote (so callers can decide whether to emit an event).
     pub fn set_agent_task_if_empty(&self, id: &str, task: &str) -> Result<bool> {
         self.mutate_agent(id, |a| {
             if !a.task.trim().is_empty() {
@@ -244,17 +269,34 @@ impl WorkspaceManager {
         })
     }
 
-    /// Set the agent's branch — but only if it isn't set yet. Used
-    /// when the first user message triggers branch creation. Returns
-    /// true iff it actually wrote.
-    pub fn set_agent_branch_if_empty(&self, id: &str, branch: &str) -> Result<bool> {
-        self.mutate_agent(id, |a| {
-            if a.branch.is_some() {
+    /// Set the branch on a specific tracked repo within an agent — but
+    /// only if it isn't set yet. Identified by subdir (unique per
+    /// agent). Returns true iff it actually wrote.
+    pub fn set_repo_branch_if_empty(
+        &self,
+        agent_id: &str,
+        subdir: &str,
+        branch: &str,
+    ) -> Result<bool> {
+        self.mutate_agent(agent_id, |a| {
+            let repo = match a.repos.iter_mut().find(|r| r.subdir == subdir) {
+                Some(r) => r,
+                None => return false,
+            };
+            if repo.branch.is_some() {
                 return false;
             }
-            a.branch = Some(branch.to_string());
+            repo.branch = Some(branch.to_string());
             true
         })
+    }
+
+    pub fn append_tracked_repo(&self, agent_id: &str, repo: TrackedRepo) -> Result<()> {
+        self.mutate_agent(agent_id, |a| {
+            a.repos.push(repo);
+            true
+        })?;
+        Ok(())
     }
 
     pub fn update_agent_view(&self, id: &str, view: AgentView) -> Result<()> {
@@ -284,21 +326,6 @@ impl WorkspaceManager {
         self.persist()
     }
 
-    pub fn worktree_path(&self, agent_id: &str) -> Result<PathBuf> {
-        let g = self.inner.read();
-        let ws = g.current.as_ref().ok_or(Error::WorkspaceNotLoaded)?;
-        Ok(git::worktrees_dir(&ws.repo_path).join(agent_id))
-    }
-
-    pub fn repo_path(&self) -> Result<PathBuf> {
-        let g = self.inner.read();
-        Ok(g.current
-            .as_ref()
-            .ok_or(Error::WorkspaceNotLoaded)?
-            .repo_path
-            .clone())
-    }
-
     fn persist(&self) -> Result<()> {
         let snapshot = self.inner.read();
         let raw = serde_json::to_string_pretty(&*snapshot)?;
@@ -313,28 +340,61 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Build a fresh AgentRecord with one primary tracked repo.
 pub fn new_agent_record(
     id: String,
     name: String,
-    branch: Option<String>,
-    parent_branch: Option<String>,
+    primary: TrackedRepo,
     task: String,
     view: AgentView,
 ) -> AgentRecord {
     AgentRecord {
         id,
         name,
-        branch,
-        parent_branch,
+        repos: vec![primary],
         task,
         status: AgentStatus::Spawning,
         view,
-        // Full UUID for claude's --session-id; reused on every respawn
-        // (e.g. view switch) so the conversation persists.
         session_id: Some(uuid::Uuid::new_v4().to_string()),
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
     }
+}
+
+/// Compute a unique subdir name for a new tracked repo. Basename of
+/// the repo path, with `-2`, `-3`, … suffix appended on collision with
+/// an existing subdir in the same agent.
+pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
+    let base = repo_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repo")
+        .to_string();
+    if !used.iter().any(|u| u == &base) {
+        return base;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if !used.iter().any(|u| u == &candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Absolute path to the dir holding all of one agent's worktrees:
+/// `~/.amux/worktrees/<agent-id>/`.
+pub fn agent_parent_dir(agent_id: &str) -> Result<PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+    Ok(home.join(".amux").join("worktrees").join(agent_id))
+}
+
+/// Absolute path to one tracked repo's worktree:
+/// `~/.amux/worktrees/<agent-id>/<subdir>/`.
+pub fn repo_worktree_path(agent_id: &str, subdir: &str) -> Result<PathBuf> {
+    Ok(agent_parent_dir(agent_id)?.join(subdir))
 }
 
 #[cfg(test)]
@@ -352,6 +412,15 @@ mod tests {
         repo
     }
 
+    fn mk_repo(path: &str) -> TrackedRepo {
+        TrackedRepo {
+            repo_path: PathBuf::from(path),
+            subdir: "repo".into(),
+            branch: None,
+            parent_branch: None,
+        }
+    }
+
     #[test]
     fn persists_across_instances_and_reconciles_to_spawning_for_resume() {
         let td = tmpdir();
@@ -360,23 +429,33 @@ mod tests {
 
         {
             let wm = WorkspaceManager::new(app_dir.clone()).unwrap();
-            wm.set_repo(repo.clone()).unwrap();
-            let mut running = new_agent_record("yosemite".into(), "a".into(), Some("b".into()), None, "c".into(), AgentView::Custom);
+            wm.add_workspace_repo(repo.clone()).unwrap();
+            let mut running = new_agent_record(
+                "yosemite".into(),
+                "a".into(),
+                mk_repo("/r"),
+                "c".into(),
+                AgentView::Custom,
+            );
             running.status = AgentStatus::Running;
             wm.add_agent(running).unwrap();
 
-            let mut stopped = new_agent_record("dolomites".into(), "s".into(), Some("sb".into()), None, "sc".into(), AgentView::Custom);
+            let mut stopped = new_agent_record(
+                "dolomites".into(),
+                "s".into(),
+                mk_repo("/r2"),
+                "sc".into(),
+                AgentView::Custom,
+            );
             stopped.status = AgentStatus::Stopped;
             wm.add_agent(stopped).unwrap();
         }
 
         let wm2 = WorkspaceManager::new(app_dir).unwrap();
         let cur = wm2.current().unwrap();
-        assert_eq!(cur.repo_path, repo);
+        assert_eq!(cur.repos, vec![repo]);
         assert_eq!(cur.agents.len(), 2);
-        // Previously-running agent flagged for auto-resume.
         assert_eq!(cur.agents[0].status, AgentStatus::Spawning);
-        // Previously-stopped agent stays stopped (manual Resume required).
         assert_eq!(cur.agents[1].status, AgentStatus::Stopped);
     }
 
@@ -384,8 +463,39 @@ mod tests {
     fn rejects_non_repo_path() {
         let td = tmpdir();
         let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
-        let err = wm.set_repo(td.path().join("nope")).unwrap_err();
+        let err = wm.add_workspace_repo(td.path().join("nope")).unwrap_err();
         assert!(err.to_string().contains("not a git repository"));
+    }
+
+    #[test]
+    fn add_repo_idempotent() {
+        let td = tmpdir();
+        let repo = init_repo(td.path());
+        let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
+        wm.add_workspace_repo(repo.clone()).unwrap();
+        wm.add_workspace_repo(repo.clone()).unwrap();
+        let cur = wm.current().unwrap();
+        assert_eq!(cur.repos, vec![repo]);
+    }
+
+    #[test]
+    fn remove_repo_leaves_agents_alone() {
+        let td = tmpdir();
+        let repo = init_repo(td.path());
+        let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
+        wm.add_workspace_repo(repo.clone()).unwrap();
+        wm.add_agent(new_agent_record(
+            "yosemite".into(),
+            "a".into(),
+            mk_repo(repo.to_str().unwrap()),
+            "".into(),
+            AgentView::Custom,
+        ))
+        .unwrap();
+        wm.remove_workspace_repo(&repo).unwrap();
+        let cur = wm.current().unwrap();
+        assert!(cur.repos.is_empty());
+        assert_eq!(cur.agents.len(), 1);
     }
 
     #[test]
@@ -393,8 +503,14 @@ mod tests {
         let td = tmpdir();
         let repo = init_repo(td.path());
         let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
-        wm.set_repo(repo).unwrap();
-        let rec = new_agent_record("test-id".into(), "a".into(), Some("b".into()), None, "c".into(), AgentView::Custom);
+        wm.add_workspace_repo(repo).unwrap();
+        let rec = new_agent_record(
+            "test-id".into(),
+            "a".into(),
+            mk_repo("/r"),
+            "c".into(),
+            AgentView::Custom,
+        );
         let id = rec.id.clone();
         wm.add_agent(rec).unwrap();
 
@@ -402,5 +518,23 @@ mod tests {
             .unwrap();
         let cur = wm.current().unwrap();
         assert_eq!(cur.agents[0].status, AgentStatus::Running);
+    }
+
+    #[test]
+    fn allocate_subdir_handles_collision() {
+        let used = vec!["luxembourg".to_string()];
+        assert_eq!(
+            allocate_repo_subdir(Path::new("/foo/luxembourg"), &used),
+            "luxembourg-2"
+        );
+        let used2 = vec!["luxembourg".to_string(), "luxembourg-2".to_string()];
+        assert_eq!(
+            allocate_repo_subdir(Path::new("/bar/luxembourg"), &used2),
+            "luxembourg-3"
+        );
+        assert_eq!(
+            allocate_repo_subdir(Path::new("/foo/fresh"), &used),
+            "fresh"
+        );
     }
 }

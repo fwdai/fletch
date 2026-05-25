@@ -14,7 +14,8 @@ use crate::branding;
 use crate::error::{Error, Result};
 use crate::git;
 use crate::workspace::{
-    new_agent_record, AgentRecord, AgentStatus, AgentView, Workspace, WorkspaceManager,
+    agent_parent_dir, allocate_repo_subdir, new_agent_record, repo_worktree_path, AgentRecord,
+    AgentStatus, AgentView, TrackedRepo, Workspace, WorkspaceManager,
 };
 
 #[derive(Clone, serde::Serialize)]
@@ -51,30 +52,23 @@ pub struct AgentTaskPayload {
 #[derive(Clone, serde::Serialize)]
 pub struct AgentBranchPayload {
     pub agent_id: String,
+    pub subdir: String,
     pub branch: String,
 }
 
-/// Watchdog cadence — how often we poll each agent's Activity to ask
-/// "has the turn ended?". The Activity's own threshold governs when
-/// turn_ended() starts returning true; this is just polling cost.
-const WATCHDOG_TICK: Duration = Duration::from_millis(500);
+#[derive(Clone, serde::Serialize)]
+pub struct AgentRepoAddedPayload {
+    pub agent_id: String,
+    pub repo: TrackedRepo,
+}
 
-/// Upper bound on the Spawning state. If the worktree or claude
-/// launch hangs longer than this, force the agent into Error so the
-/// UI never wedges on a phantom "starting…" pill.
+const WATCHDOG_TICK: Duration = Duration::from_millis(500);
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct Supervisor {
     pub workspace: Arc<WorkspaceManager>,
     pub agents: Mutex<HashMap<String, Agent>>,
-    /// Per-agent spawn generation. Bumped on every `start_process` so
-    /// exit callbacks from a torn-down (switched-away) process can be
-    /// identified and ignored — without this, a stale exit would mark
-    /// the freshly-spawned replacement as Stopped.
     pub generations: Mutex<HashMap<String, u64>>,
-    /// Per-agent turn detector. The supervisor feeds it whatever
-    /// signal the agent's output channel produces and the watchdog
-    /// polls turn_ended() to drive Running → Idle.
     pub activities: Mutex<HashMap<String, Box<dyn Activity>>>,
 }
 
@@ -92,67 +86,75 @@ impl Supervisor {
         self.workspace.current()
     }
 
-    pub fn set_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
-        self.workspace.set_repo(repo_path)
+    pub fn add_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
+        self.workspace.add_workspace_repo(repo_path)
+    }
+
+    pub fn remove_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
+        self.workspace.remove_workspace_repo(&repo_path)
     }
 
     pub async fn spawn_agent(
         self: Arc<Self>,
         app: AppHandle,
         view: AgentView,
+        repo_path: PathBuf,
     ) -> Result<AgentRecord> {
-        let repo_path = self.workspace.repo_path()?;
+        if !repo_path.join(".git").exists() {
+            return Err(Error::InvalidPath(format!(
+                "not a git repository: {}",
+                repo_path.display()
+            )));
+        }
 
-        // Instant spawn: no task is captured at spawn time, and we
-        // deliberately don't create a branch yet. The worktree comes
-        // up on detached HEAD; the first user message later gives us
-        // a slug to name the branch after. Agents that never receive
-        // a message therefore stay out of `git branch` entirely.
         let agent_id = self.workspace.allocate_agent_id()?;
         let name = agent_id.clone();
 
-        // Capture the branch the user was on when they spawned the
-        // agent. This is the natural merge target later. Detached
-        // HEAD or git failure → None; UI hides the arrow.
+        // Parent_branch captured per-repo; primary's parent is the
+        // branch the user was on when they hit Spawn.
         let parent_branch = git::current_branch(&repo_path).await.ok().flatten();
+        let subdir = allocate_repo_subdir(&repo_path, &[]);
+
+        let primary = TrackedRepo {
+            repo_path: repo_path.clone(),
+            subdir: subdir.clone(),
+            branch: None, // created later from first user message
+            parent_branch,
+        };
 
         let record = new_agent_record(
             agent_id.clone(),
             name,
-            None, // branch — set later from first user message
-            parent_branch,
+            primary,
             String::new(),
             view,
         );
-        let worktree = self.workspace.worktree_path(&agent_id)?;
+        let parent_dir = agent_parent_dir(&agent_id)?;
+        let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
 
         self.workspace.add_agent(record.clone())?;
         emit_status(&app, &agent_id, AgentStatus::Spawning, None);
-        // Belt: if we somehow get stuck Spawning, this guarantees we
-        // surface Error rather than wedge forever.
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.clone());
 
         let sup = self.clone();
         let app_for_task = app.clone();
         let id_for_task = agent_id.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = std::fs::create_dir_all(git::worktrees_dir(&repo_path)) {
+            if let Err(e) = std::fs::create_dir_all(&parent_dir) {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                 return;
             }
 
-            if let Err(e) = git::worktree_add_detached(&repo_path, &worktree).await {
+            if let Err(e) = git::worktree_add_detached(&repo_path, &primary_worktree).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                 return;
             }
 
-            // Give React a tick to mount the view before claude starts.
-            // PTY mode is sensitive to early terminal-negotiation bytes;
-            // custom mode is less so but it costs nothing to wait.
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
-                let _ = git::worktree_remove(&repo_path, &worktree, true).await;
+                let _ = git::worktree_remove(&repo_path, &primary_worktree, true).await;
+                let _ = std::fs::remove_dir_all(&parent_dir);
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
             }
         });
@@ -160,11 +162,67 @@ impl Supervisor {
         Ok(record)
     }
 
-    /// Spawn the claude process matching the record's current view and
-    /// register it in the agents map. Assumes the worktree already
-    /// exists. `fresh=true` only on the very first spawn (uses
-    /// --session-id); subsequent spawns (view switches / resume) use
-    /// --resume.
+    /// Bring a second (or third…) repo into a live agent. Creates a
+    /// detached worktree at `~/.amux/worktrees/<agent-id>/<subdir>/`
+    /// and appends a TrackedRepo entry. If the agent already has a
+    /// task set, a branch is created in the new repo immediately;
+    /// otherwise we defer (consistent with the primary).
+    pub async fn add_repo_to_agent(
+        self: Arc<Self>,
+        app: AppHandle,
+        agent_id: &str,
+        repo_path: PathBuf,
+    ) -> Result<TrackedRepo> {
+        if !repo_path.join(".git").exists() {
+            return Err(Error::InvalidPath(format!(
+                "not a git repository: {}",
+                repo_path.display()
+            )));
+        }
+        let record = self.workspace.agent(agent_id)?;
+        if record.repos.iter().any(|r| r.repo_path == repo_path) {
+            return Err(Error::Other(
+                "this repo is already tracked by the agent".into(),
+            ));
+        }
+        let used: Vec<String> = record.repos.iter().map(|r| r.subdir.clone()).collect();
+        let subdir = allocate_repo_subdir(&repo_path, &used);
+        let worktree = repo_worktree_path(agent_id, &subdir)?;
+        let parent_branch = git::current_branch(&repo_path).await.ok().flatten();
+
+        git::worktree_add_detached(&repo_path, &worktree).await?;
+
+        let repo = TrackedRepo {
+            repo_path: repo_path.clone(),
+            subdir: subdir.clone(),
+            branch: None,
+            parent_branch,
+        };
+        self.workspace
+            .append_tracked_repo(agent_id, repo.clone())?;
+        let _ = app.emit(
+            "agent:repo_added",
+            AgentRepoAddedPayload {
+                agent_id: agent_id.to_string(),
+                repo: repo.clone(),
+            },
+        );
+
+        // If the agent already has a task (slug), create the branch
+        // in the freshly-added repo right away.
+        let task = record.task.trim().to_string();
+        if !task.is_empty() {
+            create_branches_for_branchless_repos(
+                self.clone(),
+                app.clone(),
+                agent_id.to_string(),
+                task,
+            );
+        }
+
+        Ok(repo)
+    }
+
     async fn start_process(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -176,7 +234,21 @@ impl Supervisor {
             .session_id
             .clone()
             .ok_or_else(|| Error::Other("agent record missing session_id".into()))?;
-        let worktree = self.workspace.worktree_path(agent_id)?;
+        let primary = record
+            .repos
+            .first()
+            .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?;
+        let cwd = repo_worktree_path(agent_id, &primary.subdir)?;
+        let sandbox_root = agent_parent_dir(agent_id)?;
+
+        // Claude only writes a session file once the first turn lands.
+        // If task is still empty (no first user message has ever been
+        // sent) `--resume <uuid>` will 404. So we treat that case as
+        // fresh — same UUID, no replay attempt — and the eventual
+        // first message creates the session file. Once that's
+        // happened, switch / resume can safely `--resume`.
+        let no_messages_yet = record.task.trim().is_empty();
+        let effective_fresh = fresh || no_messages_yet;
 
         let app = app.clone();
         let agent_id_str = agent_id.to_string();
@@ -188,26 +260,21 @@ impl Supervisor {
             *entry
         };
 
-        // Install a fresh Activity instance for this generation. Done
-        // before spawn so the first output chunks can be observed.
         let mut activity: Box<dyn Activity> = match record.view {
             AgentView::Native => Box::new(ClaudeNativeActivity::new()),
             AgentView::Custom => Box::new(ClaudeManagedActivity::new()),
         };
-        // A fresh spawn implies an in-flight turn (claude is
-        // processing the initial task). A resume does not. We tell
-        // the activity which one so its turn_ended() doesn't fire
-        // prematurely on the silence that precedes the first event.
-        if fresh {
+        if effective_fresh {
             activity.reset_for_new_turn();
         }
         self.activities.lock().insert(agent_id_str.clone(), activity);
 
         let spec = SpawnSpec {
             agent_id: &agent_id_str,
-            worktree: worktree.clone(),
+            cwd,
+            sandbox_root,
             session_id: &session_id,
-            fresh,
+            fresh: effective_fresh,
             cols: 120,
             rows: 32,
         };
@@ -231,22 +298,17 @@ impl Supervisor {
 
         self.agents.lock().insert(agent_id_str.clone(), agent);
 
-        // Initial status per the state machine:
-        //   fresh  → Running  (initial task in flight)
-        //   resume → Idle     (claude loaded session, no turn yet)
-        let initial = if fresh {
-            AgentStatus::Running
-        } else {
-            AgentStatus::Idle
-        };
+        // Initial status is always Idle now — at process start there's
+        // never an in-flight turn (we no longer pass a task as a spawn
+        // arg). The user's first send flips it to Running.
         let changed = self.workspace.update_agent_status_if(
             &agent_id_str,
-            initial.clone(),
+            AgentStatus::Idle,
             None,
             |status| matches!(status, AgentStatus::Spawning),
         );
         if matches!(changed, Ok(true)) {
-            emit_status(&app, &agent_id_str, initial, None);
+            emit_status(&app, &agent_id_str, AgentStatus::Idle, None);
         }
 
         spawn_turn_watchdog(self.clone(), app, agent_id_str, my_gen);
@@ -264,8 +326,8 @@ impl Supervisor {
             if !matches!(record.status, AgentStatus::Spawning) {
                 continue;
             }
-            if record.session_id.is_none() {
-                let err = "Agent record has no session id (created before resume was supported). Remove and respawn.".to_string();
+            if record.session_id.is_none() || record.repos.is_empty() {
+                let err = "Agent record incomplete (no session id / no repos). Remove and respawn.".to_string();
                 let _ = self.workspace.update_agent_status(
                     &record.id,
                     AgentStatus::Error,
@@ -322,14 +384,7 @@ impl Supervisor {
                 .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
             agent.write_pty(bytes)?;
         }
-        // In native mode the overlay-input box is the only writer
-        // (we disabled xterm keystroke pass-through). So every write
-        // is a user-initiated turn submission — mark Running and tell
-        // the activity tracker a new turn has started.
         mark_user_turn_started(&self, app, agent_id);
-        // The bytes are usually `<text>\r`. Strip the trailing CR/LF
-        // for storage so the sidebar summary doesn't show a literal
-        // newline marker.
         let text = String::from_utf8_lossy(bytes);
         let trimmed = text.trim_end_matches(['\r', '\n']);
         on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), trimmed.to_string());
@@ -376,8 +431,6 @@ impl Supervisor {
         if let Some(agent) = self.agents.lock().remove(agent_id) {
             let _ = agent.shutdown();
         }
-        // Drop the old activity so the new spawn can't observe stale
-        // state by accident.
         self.activities.lock().remove(agent_id);
 
         self.workspace.update_agent_view(agent_id, new_view)?;
@@ -426,26 +479,40 @@ impl Supervisor {
     }
 
     pub async fn discard_agent(self: Arc<Self>, agent_id: &str) -> Result<()> {
-        let repo = self.workspace.repo_path()?;
-        let worktree = self.workspace.worktree_path(agent_id)?;
-        let branch = self.workspace.agent(agent_id).ok().and_then(|r| r.branch);
+        let record = self.workspace.agent(agent_id).ok();
+        let repos = record.as_ref().map(|r| r.repos.clone()).unwrap_or_default();
+        let parent_dir = agent_parent_dir(agent_id).ok();
 
         if let Some(agent) = self.agents.lock().remove(agent_id) {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
 
-        let _ = git::worktree_prune(&repo).await;
-        if let Err(e) = git::worktree_remove(&repo, &worktree, true).await {
-            tracing::warn!(error = %e, "discard: worktree remove failed; trying fs fallback");
-            if worktree.exists() {
-                let _ = std::fs::remove_dir_all(&worktree);
+        // Tear down each tracked repo's worktree + branch.
+        for repo in &repos {
+            let worktree = match repo_worktree_path(agent_id, &repo.subdir) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(error = %e, subdir = %repo.subdir, "discard: worktree_path failed");
+                    continue;
+                }
+            };
+            let _ = git::worktree_prune(&repo.repo_path).await;
+            if let Err(e) = git::worktree_remove(&repo.repo_path, &worktree, true).await {
+                tracing::warn!(error = %e, subdir = %repo.subdir, "discard: worktree remove failed");
+            }
+            if let Some(branch) = &repo.branch {
+                if let Err(e) = git::branch_delete(&repo.repo_path, branch).await {
+                    tracing::warn!(%branch, error = %e, "discard: branch delete failed");
+                }
             }
         }
 
-        if let Some(branch) = branch {
-            if let Err(e) = git::branch_delete(&repo, &branch).await {
-                tracing::warn!(%branch, error = %e, "discard: branch delete failed");
+        // Remove the parent dir (may contain orphan files if any
+        // worktree removal failed). Best-effort.
+        if let Some(parent) = parent_dir {
+            if parent.exists() {
+                let _ = std::fs::remove_dir_all(&parent);
             }
         }
 
@@ -470,9 +537,6 @@ fn spawn_pty_agent(
     Agent::spawn_pty(
         spec,
         move |bytes| {
-            // Feed the activity tracker. We do NOT flip status here —
-            // Running is set explicitly by the user's Send action and
-            // demoted by the watchdog when activity.turn_ended() fires.
             if let Some(activity) = sup_for_output
                 .activities
                 .lock()
@@ -538,13 +602,8 @@ fn spawn_managed_agent(
 }
 
 /// Fire-and-forget handler for the user's first message: persists it
-/// as the agent's `task` (sidebar context across restarts) and, if
-/// the agent doesn't have a branch yet, derives a slug, creates
-/// `amux/<slug>` inside the worktree, and emits `agent:branch`.
-///
-/// Idempotent — calls after the first one only no-op (set_*_if_empty
-/// guards both fields). Errors during branch creation are logged but
-/// don't fail the user's send; the next message will retry.
+/// as the agent's `task` and kicks branch creation for every
+/// branchless tracked repo.
 fn on_first_user_message(
     sup: Arc<Supervisor>,
     app: AppHandle,
@@ -556,7 +615,6 @@ fn on_first_user_message(
         return;
     }
 
-    // Task capture is synchronous (just a workspace mutex + persist).
     match sup.workspace.set_agent_task_if_empty(&agent_id, &trimmed) {
         Ok(true) => {
             let _ = app.emit(
@@ -573,13 +631,20 @@ fn on_first_user_message(
         }
     }
 
-    // Branch creation runs in a background task because it involves
-    // git calls. Submitting the user's message doesn't wait for it —
-    // the branch appears in the UI when the `agent:branch` event lands.
+    create_branches_for_branchless_repos(sup, app, agent_id, trimmed);
+}
+
+/// For every tracked repo on the agent that doesn't have a branch yet,
+/// derive a slug from the agent's task and create `amux/<slug>` inside
+/// that repo's worktree. Runs in a background task. Idempotent —
+/// `set_repo_branch_if_empty` guards each write.
+fn create_branches_for_branchless_repos(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+    task: String,
+) {
     tauri::async_runtime::spawn(async move {
-        // Re-read the record under the same task; if the branch is
-        // already set (another concurrent send won, or this is a
-        // second message), we have nothing to do.
         let record = match sup.workspace.agent(&agent_id) {
             Ok(r) => r,
             Err(e) => {
@@ -587,71 +652,65 @@ fn on_first_user_message(
                 return;
             }
         };
-        if record.branch.is_some() {
-            return;
-        }
 
-        let slug = branding::slugify_task(&trimmed);
-        let slug = if slug.is_empty() {
+        let slug_base = branding::slugify_task(&task);
+        let slug = if slug_base.is_empty() {
             agent_id.clone()
         } else {
-            slug
+            slug_base
         };
 
-        let repo_path = match sup.workspace.repo_path() {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(error = %e, "branch creation: repo_path failed");
-                return;
+        for repo in record.repos.iter() {
+            if repo.branch.is_some() {
+                continue;
             }
-        };
-        let worktree = match sup.workspace.worktree_path(&agent_id) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(error = %e, "branch creation: worktree_path failed");
-                return;
+            let worktree = match repo_worktree_path(&agent_id, &repo.subdir) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(error = %e, subdir = %repo.subdir, "branch creation: worktree_path failed");
+                    continue;
+                }
+            };
+            let mut branch = branding::branch_for(&slug);
+            if git::branch_exists(&repo.repo_path, &branch)
+                .await
+                .unwrap_or(false)
+            {
+                branch = format!("{branch}-{agent_id}");
             }
-        };
-
-        // Pick a unique name. Collisions are rare — the slug only
-        // collides with a hand-made branch under amux/ — but suffix
-        // with the place id when it happens.
-        let mut branch = branding::branch_for(&slug);
-        if git::branch_exists(&repo_path, &branch).await.unwrap_or(false) {
-            branch = format!("{branch}-{agent_id}");
-        }
-
-        if let Err(e) = git::checkout_new_branch(&worktree, &branch).await {
-            tracing::warn!(
-                error = %e,
-                agent_id = %agent_id,
-                branch = %branch,
-                "checkout_new_branch failed"
-            );
-            return;
-        }
-
-        match sup.workspace.set_agent_branch_if_empty(&agent_id, &branch) {
-            Ok(true) => {
-                let _ = app.emit(
-                    "agent:branch",
-                    AgentBranchPayload {
-                        agent_id: agent_id.clone(),
-                        branch: branch.clone(),
-                    },
+            if let Err(e) = git::checkout_new_branch(&worktree, &branch).await {
+                tracing::warn!(
+                    error = %e,
+                    agent_id = %agent_id,
+                    subdir = %repo.subdir,
+                    branch = %branch,
+                    "checkout_new_branch failed"
                 );
+                continue;
             }
-            Ok(false) => {} // raced; another caller won
-            Err(e) => {
-                tracing::warn!(error = %e, agent_id = %agent_id, "set_agent_branch_if_empty failed");
+            match sup
+                .workspace
+                .set_repo_branch_if_empty(&agent_id, &repo.subdir, &branch)
+            {
+                Ok(true) => {
+                    let _ = app.emit(
+                        "agent:branch",
+                        AgentBranchPayload {
+                            agent_id: agent_id.clone(),
+                            subdir: repo.subdir.clone(),
+                            branch: branch.clone(),
+                        },
+                    );
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "set_repo_branch_if_empty failed");
+                }
             }
         }
     });
 }
 
-/// Mark "the user just started a turn." Flips status to Running and
-/// tells the activity tracker to begin a new turn (so any prior
-/// turn-end flag clears before claude starts emitting).
 fn mark_user_turn_started(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
     if let Some(activity) = sup.activities.lock().get_mut(agent_id) {
         activity.reset_for_new_turn();
@@ -659,9 +718,6 @@ fn mark_user_turn_started(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
     transition_active(sup, app, agent_id, AgentStatus::Running);
 }
 
-/// Watchdog: poll the agent's activity tracker and demote Running →
-/// Idle when turn_ended() fires. Exits when the agent's generation
-/// moves (switch / resume / stop / discard).
 fn spawn_turn_watchdog(
     sup: Arc<Supervisor>,
     app: AppHandle,
@@ -696,9 +752,6 @@ fn spawn_turn_watchdog(
     });
 }
 
-/// If the agent is still in Spawning after SPAWN_TIMEOUT, force it to
-/// Error. Prevents wedging in "starting…" forever when the worktree
-/// or claude launch hangs.
 fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: String) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(SPAWN_TIMEOUT).await;
@@ -717,8 +770,6 @@ fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: String) {
             Some(err.clone()),
         );
         emit_status(&app, &agent_id, AgentStatus::Error, Some(err));
-        // Best-effort: tear down any half-spawned process so it
-        // doesn't keep emitting events.
         if let Some(agent) = sup.agents.lock().remove(&agent_id) {
             let _ = agent.shutdown();
         }
@@ -733,10 +784,6 @@ fn fail_spawn(sup: &Supervisor, app: &AppHandle, agent_id: &str, err: String) {
     emit_status(app, agent_id, AgentStatus::Error, Some(err));
 }
 
-/// Flip an agent between Running and Idle. Allowed transitions:
-/// Spawning|Running|Idle → target. Refuses to overwrite Stopped/Error
-/// (so a late watchdog tick can't resurrect a dead agent) and skips
-/// persistence when target equals current.
 fn transition_active(
     sup: &Supervisor,
     app: &AppHandle,
@@ -759,10 +806,6 @@ fn transition_active(
     }
 }
 
-/// Apply an exit callback only if this generation is still the
-/// "current" one for the agent. A stale generation means we already
-/// replaced this process (via switch_view) and the new spawn owns the
-/// status; touching it here would clobber the live process.
 fn apply_exit_if_current(
     sup: &Supervisor,
     app: &AppHandle,
