@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { EMPTY_AGENTS, useAppStore } from "../store";
+import { useAppStore } from "../store";
 import type { AgentRecord, AgentStatus } from "../api";
 
 // Hardcoded for now; will become an `agent.provider` field when we
@@ -45,9 +45,6 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
-/** Hook returning a clock that ticks every minute. Used for the age
- *  formatter so labels like "4m" stay current without re-rendering
- *  every second. */
 function useMinuteClock(): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -57,50 +54,16 @@ function useMinuteClock(): number {
   return now;
 }
 
-export function AgentList() {
-  const agents = useAppStore((s) => s.workspace?.agents ?? EMPTY_AGENTS);
+export function AgentRow({ agent }: { agent: AgentRecord }) {
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const selectAgent = useAppStore((s) => s.selectAgent);
-  const now = useMinuteClock();
-
-  if (agents.length === 0) {
-    return (
-      <div className="list">
-        <div className="empty">No agents yet. Click + Spawn to start one.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="list">
-      {agents.map((agent) => (
-        <AgentRow
-          key={agent.id}
-          agent={agent}
-          selected={selectedId === agent.id}
-          onSelect={() => selectAgent(agent.id)}
-          now={now}
-        />
-      ))}
-    </div>
-  );
-}
-
-function AgentRow({
-  agent,
-  selected,
-  onSelect,
-  now,
-}: {
-  agent: AgentRecord;
-  selected: boolean;
-  onSelect: () => void;
-  now: number;
-}) {
   const stop = useAppStore((s) => s.stop);
   const resume = useAppStore((s) => s.resume);
   const discard = useAppStore((s) => s.discard);
+  const rawTokens = useAppStore((s) => s.tokens[agent.id]);
+  const now = useMinuteClock();
 
+  const selected = selectedId === agent.id;
   const isLive =
     agent.status === "running" ||
     agent.status === "idle" ||
@@ -123,16 +86,23 @@ function AgentRow({
 
   async function onDiscard(e: React.MouseEvent) {
     e.stopPropagation();
-    const branchLine = agent.branch
-      ? `  • the branch ${agent.branch}\n`
-      : "";
-    const reflogNote = agent.branch
+    const branches = agent.repos
+      .filter((r) => r.branch)
+      .map((r) => `  • ${r.branch} (in ${r.subdir})`)
+      .join("\n");
+    const branchLines = branches ? `${branches}\n` : "";
+    const reflogNote = branches
       ? `\nBranch deletion can be undone via git reflog within ~90 days.`
       : "";
+    const worktreeCount = agent.repos.length;
+    const worktreeLine =
+      worktreeCount === 1
+        ? `  • the worktree under ~/.amux/worktrees/${agent.id} (any uncommitted work)\n`
+        : `  • ${worktreeCount} worktrees under ~/.amux/worktrees/${agent.id} (any uncommitted work)\n`;
     const ok = await ask(
       `Remove "${agent.name}"?\n\nThis will delete:\n` +
-        `  • the worktree at .worktrees/${agent.id} (any uncommitted work)\n` +
-        branchLine +
+        worktreeLine +
+        branchLines +
         reflogNote,
       { title: "Remove agent", kind: "warning" },
     );
@@ -140,7 +110,6 @@ function AgentRow({
   }
 
   const age = formatAge(agent.created_at, now);
-  const rawTokens = useAppStore((s) => s.tokens[agent.id]);
   const tokens =
     typeof rawTokens === "number" && rawTokens > 0
       ? formatTokens(rawTokens)
@@ -151,11 +120,11 @@ function AgentRow({
       className={`row ${selected ? "selected" : ""}`}
       role="button"
       tabIndex={0}
-      onClick={onSelect}
+      onClick={() => selectAgent(agent.id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onSelect();
+          selectAgent(agent.id);
         }
       }}
     >

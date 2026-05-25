@@ -4,6 +4,7 @@ import {
   onAgentBranch,
   onAgentEvent,
   onAgentOutput,
+  onAgentRepoAdded,
   onAgentStatus,
   onAgentTask,
   onAgentView,
@@ -93,8 +94,9 @@ interface AppState {
 
   init: () => Promise<void>;
   selectAgent: (id: string | null) => void;
-  setRepo: (path: string) => Promise<void>;
-  spawn: (view: AgentView) => Promise<AgentRecord | null>;
+  addWorkspaceRepo: (path: string) => Promise<void>;
+  removeWorkspaceRepo: (path: string) => Promise<void>;
+  spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
   sendUserMessage: (id: string, text: string) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
   resume: (id: string) => Promise<void>;
@@ -303,7 +305,27 @@ export const useAppStore = create<AppState>((set, get) => ({
         workspace: {
           ...ws,
           agents: ws.agents.map((a) =>
-            a.id === e.agent_id ? { ...a, branch: e.branch } : a,
+            a.id === e.agent_id
+              ? {
+                  ...a,
+                  repos: a.repos.map((r) =>
+                    r.subdir === e.subdir ? { ...r, branch: e.branch } : r,
+                  ),
+                }
+              : a,
+          ),
+        },
+      });
+    });
+
+    await onAgentRepoAdded((e) => {
+      const ws = get().workspace;
+      if (!ws) return;
+      set({
+        workspace: {
+          ...ws,
+          agents: ws.agents.map((a) =>
+            a.id === e.agent_id ? { ...a, repos: [...a.repos, e.repo] } : a,
           ),
         },
       });
@@ -361,10 +383,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   selectAgent: (id) => set({ selectedAgentId: id }),
 
-  setRepo: async (path) => {
+  addWorkspaceRepo: async (path) => {
     set({ busy: true, lastError: null });
     try {
-      const ws = await api.setRepo(path);
+      const ws = await api.addWorkspaceRepo(path);
       set({ workspace: ws });
     } catch (e) {
       set({ lastError: String(e) });
@@ -373,10 +395,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  spawn: async (view) => {
+  removeWorkspaceRepo: async (path) => {
+    try {
+      const ws = await api.removeWorkspaceRepo(path);
+      set({ workspace: ws });
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  spawn: async (view, repoPath) => {
     set({ busy: true, lastError: null });
     try {
-      const rec = await api.spawnAgent(view);
+      const rec = await api.spawnAgent(view, repoPath);
       const fresh = await api.getWorkspace();
       set((state) => {
         const patches: Partial<AppState> = {
@@ -387,9 +418,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           // No initial task / no branch yet — both arrive after the
           // user's first message. Greet with what we have (the
           // worktree id and the parent branch we forked from).
-          const parent = rec.parent_branch
-            ? ` from ${rec.parent_branch}`
-            : "";
+          const primaryParent = rec.repos[0]?.parent_branch;
+          const parent = primaryParent ? ` from ${primaryParent}` : "";
           const greeting =
             `Worktree ${rec.id} ready${parent}. ` +
             `Claude is waiting — send a message to begin.`;

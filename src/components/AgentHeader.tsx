@@ -1,4 +1,7 @@
+import { open } from "@tauri-apps/plugin-dialog";
 import type { AgentRecord, AgentView } from "../api";
+import { api } from "../api";
+import { useAppStore } from "../store";
 import { ViewToggle } from "./ViewToggle";
 
 interface Props {
@@ -13,18 +16,29 @@ interface Props {
 // (gemini, codex, …) will add a `provider` field on AgentRecord.
 const PROVIDER_LABEL = "Claude";
 
-/** Two-row header shared by both agent views:
+/** Header rendered above each agent pane.
  *
- *    Claude · idle                              [Custom | Native]
- *    yosemite · amux/refactor-auth-flow → main
+ *  Row 1:   Claude · idle               [+ Add repo] [Custom | Native]
+ *  Row 2+:  <id> · <subdir> · <branch> → <parent_branch>     (one per tracked repo)
  *
- * Row 1 carries the provider, live status, and the view switcher.
- * Row 2 carries git context — agent id, branch, and the branch this
- * worktree was forked from (the natural merge target). The arrow row
- * is dropped if we don't know the parent branch (detached HEAD at
- * spawn, or pre-`parent_branch` records). */
+ *  Single-repo agents show two rows. Multi-repo agents grow by one
+ *  row per added repo. Branch info is hidden per-repo until that
+ *  repo's first commit lands. */
 export function AgentHeader({ agent, view, toggleDisabled }: Props) {
-  const parent = agent.parent_branch;
+  async function onAddRepo() {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: "Select a git repository",
+    });
+    if (typeof picked !== "string") return;
+    try {
+      await api.addRepoToAgent(agent.id, picked);
+    } catch (e) {
+      useAppStore.setState({ lastError: String(e) });
+    }
+  }
+
   return (
     <div className="agentheader">
       <div className="agentheader-row primary">
@@ -36,6 +50,15 @@ export function AgentHeader({ agent, view, toggleDisabled }: Props) {
           </span>
         </div>
         <div className="right">
+          <button
+            type="button"
+            className="add-repo-btn"
+            title="Add another repo to this agent"
+            aria-label="Add repo"
+            onClick={onAddRepo}
+          >
+            + Repo
+          </button>
           <ViewToggle
             agentId={agent.id}
             current={view}
@@ -43,30 +66,38 @@ export function AgentHeader({ agent, view, toggleDisabled }: Props) {
           />
         </div>
       </div>
-      <div className="agentheader-row secondary">
-        <div className="left">
-          <span className="agent-id">{agent.name}</span>
-          {/* Branch (and its arrow to the parent) only appears once
-           *  the first user message has triggered branch creation.
-           *  Before that we just show the agent id alone. */}
-          {agent.branch && (
-            <>
-              <span className="sep">·</span>
-              <span className="branch">{agent.branch}</span>
-              {parent && (
-                <>
-                  <span className="arrow" aria-hidden="true">
-                    →
-                  </span>
-                  <span className="parent-branch" title="Parent branch">
-                    {parent}
-                  </span>
-                </>
-              )}
-            </>
-          )}
+      {agent.repos.map((repo, idx) => (
+        <div
+          key={repo.subdir}
+          className={`agentheader-row secondary${idx === 0 ? " primary-repo" : ""}`}
+        >
+          <div className="left">
+            {idx === 0 ? (
+              <span className="agent-id">{agent.name}</span>
+            ) : (
+              <span className="agent-id placeholder">+</span>
+            )}
+            <span className="sep">·</span>
+            <span className="subdir">{repo.subdir}</span>
+            {repo.branch && (
+              <>
+                <span className="sep">·</span>
+                <span className="branch">{repo.branch}</span>
+                {repo.parent_branch && (
+                  <>
+                    <span className="arrow" aria-hidden="true">
+                      →
+                    </span>
+                    <span className="parent-branch" title="Parent branch">
+                      {repo.parent_branch}
+                    </span>
+                  </>
+                )}
+              </>
+            )}
+          </div>
         </div>
-      </div>
+      ))}
     </div>
   );
 }

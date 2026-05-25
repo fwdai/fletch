@@ -41,7 +41,12 @@ pub struct ManagedAgent {
 
 pub struct SpawnSpec<'a> {
     pub agent_id: &'a str,
-    pub worktree: PathBuf,
+    /// Claude's working directory — the primary repo's worktree.
+    pub cwd: PathBuf,
+    /// Sandbox writable root — the agent's parent dir, which may
+    /// contain multiple per-repo worktrees as siblings of `cwd`. Writes
+    /// are allowed anywhere under this path.
+    pub sandbox_root: PathBuf,
     pub session_id: &'a str,
     /// True if this is the agent's first spawn (no prior conversation
     /// on disk for this session). False if we're respawning to switch
@@ -63,7 +68,8 @@ impl Agent {
             agent_id = %spec.agent_id,
             session = %spec.session_id,
             fresh = spec.fresh,
-            worktree = %spec.worktree.display(),
+            cwd = %spec.cwd.display(),
+            sandbox_root = %spec.sandbox_root.display(),
             profile = %profile_file.path().display(),
             argv = ?args,
             "spawning sandboxed pty agent"
@@ -73,7 +79,7 @@ impl Agent {
             PtySpawn {
                 program: Path::new(SANDBOX_EXEC),
                 args: &args,
-                cwd: &spec.worktree,
+                cwd: &spec.cwd,
                 cols: spec.cols,
                 rows: spec.rows,
             },
@@ -98,7 +104,8 @@ impl Agent {
             agent_id = %spec.agent_id,
             session = %spec.session_id,
             fresh = spec.fresh,
-            worktree = %spec.worktree.display(),
+            cwd = %spec.cwd.display(),
+            sandbox_root = %spec.sandbox_root.display(),
             profile = %profile_file.path().display(),
             argv = ?args,
             "spawning sandboxed managed agent"
@@ -108,7 +115,7 @@ impl Agent {
             ManagedSpawn {
                 program: Path::new(SANDBOX_EXEC),
                 args: &args,
-                cwd: &spec.worktree,
+                cwd: &spec.cwd,
             },
             on_event,
             on_exit,
@@ -176,7 +183,7 @@ fn prepare_pty_args(
     let home = dirs::home_dir()
         .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     let claude = resolve_claude(&home)?;
-    let profile_file = prepare_sandbox(&spec.worktree, &home)?;
+    let profile_file = prepare_sandbox(&spec.sandbox_root, &home)?;
 
     let profile_path = profile_file
         .path()
@@ -210,7 +217,7 @@ fn prepare_managed_args(
     let home = dirs::home_dir()
         .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     let claude = resolve_claude(&home)?;
-    let profile_file = prepare_sandbox(&spec.worktree, &home)?;
+    let profile_file = prepare_sandbox(&spec.sandbox_root, &home)?;
 
     let profile_path = profile_file
         .path()

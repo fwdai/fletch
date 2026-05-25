@@ -10,11 +10,19 @@ export type AgentStatus =
 
 export type AgentView = "custom" | "native";
 
+export interface TrackedRepo {
+  repo_path: string;
+  subdir: string;
+  branch?: string | null;
+  parent_branch?: string | null;
+}
+
 export interface AgentRecord {
   id: string;
   name: string;
-  branch?: string | null;
-  parent_branch?: string | null;
+  /** Repos this agent has worktrees in. Always non-empty;
+   *  `repos[0]` is the primary (the workspace repo at spawn). */
+  repos: TrackedRepo[];
   task: string;
   status: AgentStatus;
   view: AgentView;
@@ -24,7 +32,8 @@ export interface AgentRecord {
 }
 
 export interface Workspace {
-  repo_path: string;
+  /** Repos pinned in the sidebar. Empty on first launch. */
+  repos: string[];
   agents: AgentRecord[];
 }
 
@@ -58,14 +67,23 @@ export interface AgentTaskEvent {
 
 export interface AgentBranchEvent {
   agent_id: string;
+  subdir: string;
   branch: string;
+}
+
+export interface AgentRepoAddedEvent {
+  agent_id: string;
+  repo: TrackedRepo;
 }
 
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
-  setRepo: (repoPath: string) => invoke<Workspace>("set_repo", { repoPath }),
-  spawnAgent: (view: AgentView) =>
-    invoke<AgentRecord>("spawn_agent", { view }),
+  addWorkspaceRepo: (repoPath: string) =>
+    invoke<Workspace>("add_workspace_repo", { repoPath }),
+  removeWorkspaceRepo: (repoPath: string) =>
+    invoke<Workspace>("remove_workspace_repo", { repoPath }),
+  spawnAgent: (view: AgentView, repoPath: string) =>
+    invoke<AgentRecord>("spawn_agent", { view, repoPath }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   sendUserMessage: (agentId: string, text: string) =>
@@ -79,6 +97,8 @@ export const api = {
   stopAgent: (agentId: string) => invoke<void>("stop_agent", { agentId }),
   discardAgent: (agentId: string) =>
     invoke<void>("discard_agent", { agentId }),
+  addRepoToAgent: (agentId: string, repoPath: string) =>
+    invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
 };
 
 export function onAgentOutput(
@@ -115,6 +135,14 @@ export function onAgentBranch(
   cb: (e: AgentBranchEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<AgentBranchEvent>("agent:branch", (event) =>
+    cb(event.payload),
+  );
+}
+
+export function onAgentRepoAdded(
+  cb: (e: AgentRepoAddedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AgentRepoAddedEvent>("agent:repo_added", (event) =>
     cb(event.payload),
   );
 }

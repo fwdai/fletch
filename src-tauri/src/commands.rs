@@ -6,7 +6,7 @@ use tauri::{AppHandle, State};
 
 use crate::error::Result;
 use crate::supervisor::Supervisor;
-use crate::workspace::{AgentRecord, AgentView, Workspace};
+use crate::workspace::{AgentRecord, AgentView, TrackedRepo, Workspace};
 
 #[tauri::command]
 pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace> {
@@ -14,11 +14,19 @@ pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace
 }
 
 #[tauri::command]
-pub fn set_repo(
+pub fn add_workspace_repo(
     supervisor: State<'_, Arc<Supervisor>>,
     repo_path: String,
 ) -> Result<Workspace> {
-    supervisor.set_repo(PathBuf::from(repo_path))
+    supervisor.add_workspace_repo(PathBuf::from(repo_path))
+}
+
+#[tauri::command]
+pub fn remove_workspace_repo(
+    supervisor: State<'_, Arc<Supervisor>>,
+    repo_path: String,
+) -> Result<Workspace> {
+    supervisor.remove_workspace_repo(PathBuf::from(repo_path))
 }
 
 #[tauri::command]
@@ -26,9 +34,11 @@ pub async fn spawn_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     app: AppHandle,
     view: Option<AgentView>,
+    repo_path: String,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
-    sup.spawn_agent(app, view.unwrap_or_default()).await
+    sup.spawn_agent(app, view.unwrap_or_default(), PathBuf::from(repo_path))
+        .await
 }
 
 #[tauri::command]
@@ -101,4 +111,16 @@ pub async fn discard_agent(
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
     sup.discard_agent(&agent_id).await
+}
+
+#[tauri::command]
+pub async fn add_repo_to_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+    repo_path: String,
+) -> Result<TrackedRepo> {
+    let sup = supervisor.inner().clone();
+    sup.add_repo_to_agent(app, &agent_id, PathBuf::from(repo_path))
+        .await
 }

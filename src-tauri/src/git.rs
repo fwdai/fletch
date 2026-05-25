@@ -3,7 +3,7 @@
 //! Kept deliberately minimal — the v1 supervisor only needs to add a
 //! worktree on a fresh branch and remove it later.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tokio::process::Command;
 
 use crate::error::{Error, Result};
@@ -75,10 +75,6 @@ pub async fn worktree_remove(repo: &Path, worktree_path: &Path, force: bool) -> 
         )));
     }
     Ok(())
-}
-
-pub fn worktrees_dir(repo: &Path) -> PathBuf {
-    repo.join(".worktrees")
 }
 
 /// Drop any internal `.git/worktrees/<id>` refs whose linked working tree

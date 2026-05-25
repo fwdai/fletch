@@ -52,7 +52,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_workspace,
-            commands::set_repo,
+            commands::add_workspace_repo,
+            commands::remove_workspace_repo,
             commands::spawn_agent,
             commands::write_to_agent,
             commands::send_user_message,
@@ -61,6 +62,7 @@ pub fn run() {
             commands::resume_agent,
             commands::stop_agent,
             commands::discard_agent,
+            commands::add_repo_to_agent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running amux");
