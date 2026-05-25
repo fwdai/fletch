@@ -1,5 +1,6 @@
 import { EMPTY_AGENTS, useAppStore } from "../store";
-import { AgentTerminal } from "./AgentTerminal";
+import { CustomAgentView } from "./CustomAgentView";
+import { NativeAgentView } from "./NativeAgentView";
 
 export function AgentPanes() {
   const workspace = useAppStore((s) => s.workspace);
@@ -35,16 +36,19 @@ export function AgentPanes() {
     content = (
       <div className="placeholder">
         <h2>Select an agent</h2>
-        <p>Pick one from the sidebar to attach to its terminal.</p>
+        <p>Pick one from the sidebar to attach.</p>
       </div>
     );
+  } else if (selected.view === "native") {
+    // Force re-mount when switching agents OR views — both views own
+    // their own xterm / message-list and shouldn't carry state across.
+    content = (
+      <NativeAgentView key={`${selected.id}:native`} agent={selected} />
+    );
   } else {
-    // Only the selected agent's terminal is mounted. xterm.js can't
-    // initialize its renderer on a display:none element (throws
-    // `_renderer.value.dimensions undefined`), so we tear down on
-    // unselect and replay the per-agent output buffer on remount.
-    // `key={selected.id}` forces a fresh mount when switching agents.
-    content = <AgentTerminal key={selected.id} agent={selected} />;
+    content = (
+      <CustomAgentView key={`${selected.id}:custom`} agent={selected} />
+    );
   }
 
   return (

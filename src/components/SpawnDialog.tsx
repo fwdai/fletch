@@ -25,7 +25,10 @@ export function SpawnDialog({ onClose }: { onClose: () => void }) {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim() || !branch.trim() || !task.trim()) return;
-    const rec = await spawn(name.trim(), branch.trim(), task.trim());
+    // Always spawn in the custom view by default. The user can flip to
+    // native view from inside the agent — see the view toggle in each
+    // agent's header.
+    const rec = await spawn(name.trim(), branch.trim(), task.trim(), "custom");
     if (rec) onClose();
   }
 

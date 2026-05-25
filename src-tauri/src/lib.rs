@@ -2,6 +2,7 @@ mod agent;
 mod commands;
 mod error;
 mod git;
+mod managed_session;
 mod pty_session;
 mod sandbox;
 mod supervisor;
@@ -39,7 +40,9 @@ pub fn run() {
             commands::set_repo,
             commands::spawn_agent,
             commands::write_to_agent,
+            commands::send_user_message,
             commands::resize_agent,
+            commands::switch_view,
             commands::stop_agent,
             commands::discard_agent,
         ])

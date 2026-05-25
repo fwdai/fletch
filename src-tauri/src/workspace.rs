@@ -19,6 +19,26 @@ pub enum AgentStatus {
     Error,
 }
 
+/// Which view the user has open for an agent. Both views attach to the
+/// same conversation (via claude's --session-id / --resume), but each
+/// view requires a different process shape, so only one can be live at
+/// a time per agent. The user can toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentView {
+    /// Structured chat UI rendered from claude's stream-json events.
+    Custom,
+    /// Read-only xterm showing claude's native TUI, with our input box
+    /// overlaid on top of the claude input prompt.
+    Native,
+}
+
+impl Default for AgentView {
+    fn default() -> Self {
+        AgentView::Custom
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
     pub id: String,
@@ -26,6 +46,13 @@ pub struct AgentRecord {
     pub branch: String,
     pub task: String,
     pub status: AgentStatus,
+    #[serde(default)]
+    pub view: AgentView,
+    /// UUID claude uses to persist this agent's conversation. Set on
+    /// first spawn; used with --resume on subsequent process spawns
+    /// (e.g. when the user switches views).
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -188,6 +215,30 @@ impl WorkspaceManager {
         Ok(changed)
     }
 
+    pub fn update_agent_view(&self, id: &str, view: AgentView) -> Result<()> {
+        {
+            let mut g = self.inner.write();
+            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
+            let a = ws
+                .agents
+                .iter_mut()
+                .find(|a| a.id == id)
+                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
+            a.view = view;
+        }
+        self.persist()
+    }
+
+    pub fn agent(&self, id: &str) -> Result<AgentRecord> {
+        let g = self.inner.read();
+        let ws = g.current.as_ref().ok_or(Error::WorkspaceNotLoaded)?;
+        ws.agents
+            .iter()
+            .find(|a| a.id == id)
+            .cloned()
+            .ok_or_else(|| Error::AgentNotFound(id.to_string()))
+    }
+
     pub fn update_agent_status_message(&self, id: &str, message: Option<String>) -> Result<()> {
         {
             let mut g = self.inner.write();
@@ -240,7 +291,12 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub fn new_agent_record(name: String, branch: String, task: String) -> AgentRecord {
+pub fn new_agent_record(
+    name: String,
+    branch: String,
+    task: String,
+    view: AgentView,
+) -> AgentRecord {
     AgentRecord {
         id: uuid::Uuid::new_v4()
             .to_string()
@@ -252,6 +308,10 @@ pub fn new_agent_record(name: String, branch: String, task: String) -> AgentReco
         branch,
         task,
         status: AgentStatus::Spawning,
+        view,
+        // Full UUID for claude's --session-id; reused on every respawn
+        // (e.g. view switch) so the conversation persists.
+        session_id: Some(uuid::Uuid::new_v4().to_string()),
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         status_message: None,
@@ -282,7 +342,7 @@ mod tests {
         {
             let wm = WorkspaceManager::new(app_dir.clone()).unwrap();
             wm.set_repo(repo.clone()).unwrap();
-            let mut spawning = new_agent_record("a".into(), "b".into(), "c".into());
+            let mut spawning = new_agent_record("a".into(), "b".into(), "c".into(), AgentView::Custom);
             spawning.status = AgentStatus::Spawning;
             wm.add_agent(spawning).unwrap();
         }
@@ -309,7 +369,7 @@ mod tests {
         let repo = init_repo(td.path());
         let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
         wm.set_repo(repo).unwrap();
-        let rec = new_agent_record("a".into(), "b".into(), "c".into());
+        let rec = new_agent_record("a".into(), "b".into(), "c".into(), AgentView::Custom);
         let id = rec.id.clone();
         wm.add_agent(rec).unwrap();
 
