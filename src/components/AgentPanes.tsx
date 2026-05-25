@@ -17,8 +17,8 @@ export function AgentPanes() {
         <h2>Pick a repo to get started</h2>
         <p>
           Choose a git repository in the top bar. Each agent you spawn gets
-          its own worktree under <code>.worktrees/</code> and runs claude
-          under a macOS sandbox restricted to that worktree.
+          its own worktree under <code>.worktrees/</code> and runs claude in
+          a write-restricted macOS sandbox.
         </p>
       </div>
     );

@@ -149,6 +149,45 @@ impl WorkspaceManager {
         self.persist()
     }
 
+    pub fn update_agent_status_if<F>(
+        &self,
+        id: &str,
+        status: AgentStatus,
+        last_error: Option<String>,
+        predicate: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(&AgentStatus) -> bool,
+    {
+        let changed = {
+            let mut g = self.inner.write();
+            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
+            let a = ws
+                .agents
+                .iter_mut()
+                .find(|a| a.id == id)
+                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
+            if !predicate(&a.status) {
+                return Ok(false);
+            }
+            a.status = status;
+            if let Some(err) = last_error {
+                a.last_error = Some(err);
+            }
+            if matches!(
+                a.status,
+                AgentStatus::Running | AgentStatus::Stopped | AgentStatus::Idle | AgentStatus::Error
+            ) {
+                a.status_message = None;
+            }
+            true
+        };
+        if changed {
+            self.persist()?;
+        }
+        Ok(changed)
+    }
+
     pub fn update_agent_status_message(&self, id: &str, message: Option<String>) -> Result<()> {
         {
             let mut g = self.inner.write();

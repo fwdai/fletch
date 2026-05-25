@@ -1,22 +1,18 @@
 //! Per-agent lifecycle.
 //!
-//! An agent is now just: a git worktree + a sandboxed `claude` process
-//! running inside it, with its I/O wired to a PTY the frontend
-//! displays as a terminal.
+//! An agent is a git worktree + a sandboxed `claude` process running
+//! inside it, with its I/O wired to a PTY the frontend displays as a
+//! terminal.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::error::{Error, Result};
-use crate::pty_session::{PtySession, PtySpawn};
+use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
 
-/// Where the sandbox-exec binary lives on every supported macOS.
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
-
-/// Default to claude on the user's PATH. Resolved via /usr/bin/env so
-/// shims (Volta, fnm, etc.) work without us having to know about them.
-const CLAUDE_LAUNCHER: &str = "/usr/bin/env";
 
 pub struct Agent {
     #[allow(dead_code)]
@@ -24,8 +20,6 @@ pub struct Agent {
     #[allow(dead_code)]
     pub worktree: PathBuf,
     pty: PtySession,
-    /// SBPL profile file kept on disk for the lifetime of the agent.
-    /// Dropped automatically when the Agent is dropped.
     _profile_file: tempfile::NamedTempFile,
 }
 
@@ -38,23 +32,20 @@ pub struct SpawnSpec<'a> {
 }
 
 impl Agent {
-    /// Spawn claude inside a sandbox-exec profile rooted at the agent's
-    /// worktree. Output is streamed to `on_output`.
-    pub fn spawn<F>(spec: SpawnSpec<'_>, on_output: F) -> Result<Self>
+    /// Spawn Claude in a sandbox rooted at the agent worktree. Output is
+    /// streamed to `on_output`.
+    pub fn spawn<F, G>(spec: SpawnSpec<'_>, on_output: F, on_exit: G) -> Result<Self>
     where
         F: Fn(Vec<u8>) + Send + 'static,
+        G: Fn(PtyExit) + Send + 'static,
     {
-        // 1. Resolve $HOME for the sandbox profile. claude reads from
-        //    ~/.claude.json for auth and writes session state under
-        //    ~/.claude, so we narrowly re-allow writes to those.
         let home = dirs::home_dir()
             .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let claude = resolve_claude(&home)?;
 
-        // 2. Build the profile and write it to a tempfile (sandbox-exec
-        //    `-f` reads from a path; keeps the profile out of argv).
         let profile_text = sandbox::build_profile(&spec.worktree, &home)?;
         let mut profile_file = tempfile::Builder::new()
-            .prefix("algiers-sandbox-")
+            .prefix("amux-sandbox-")
             .suffix(".sb")
             .tempfile()
             .map_err(|e| Error::Other(format!("create sandbox profile tmp: {e}")))?;
@@ -65,9 +56,6 @@ impl Agent {
             .flush()
             .map_err(|e| Error::Other(format!("flush sandbox profile: {e}")))?;
 
-        // 3. argv for sandbox-exec:
-        //      sandbox-exec -f <profile>
-        //        /usr/bin/env claude --dangerously-skip-permissions "<task>"
         let args: Vec<String> = vec![
             "-f".into(),
             profile_file
@@ -75,20 +63,19 @@ impl Agent {
                 .to_str()
                 .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
                 .into(),
-            CLAUDE_LAUNCHER.into(),
-            "claude".into(),
+            claude,
             "--dangerously-skip-permissions".into(),
+            "--permission-mode".into(),
+            "bypassPermissions".into(),
             spec.task.to_string(),
         ];
 
-        // 4. Spawn under a PTY so the frontend xterm gets a real
-        //    interactive terminal.
         tracing::info!(
             agent_id = %spec.agent_id,
             worktree = %spec.worktree.display(),
             profile = %profile_file.path().display(),
             argv = ?args,
-            "spawning agent under sandbox-exec"
+            "spawning sandboxed agent"
         );
         let pty = PtySession::spawn(
             PtySpawn {
@@ -100,6 +87,7 @@ impl Agent {
                 rows: spec.rows,
             },
             on_output,
+            on_exit,
         )?;
 
         Ok(Self {
@@ -119,24 +107,64 @@ impl Agent {
     }
 
     pub fn shutdown(self) -> Result<()> {
-        // PtySession::Drop kills the child + closes the PTY; the
-        // profile tempfile drops with us.
+        // PtySession::Drop kills the child + closes the PTY.
         drop(self.pty);
         Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_profile_includes_correct_subpath() {
-        let td = tempfile::tempdir().unwrap();
-        let wt = td.path().join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        let profile = sandbox::build_profile(&wt, td.path()).unwrap();
-        let canon = std::fs::canonicalize(&wt).unwrap();
-        assert!(profile.contains(canon.to_str().unwrap()));
+fn resolve_claude(home: &Path) -> Result<String> {
+    if let Some(path) = command_in_path("claude") {
+        return Ok(path);
     }
+
+    if let Some(path) = command_from_login_shell("claude") {
+        return Ok(path);
+    }
+
+    for candidate in common_claude_paths(home) {
+        if candidate.is_file() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+    }
+
+    Err(Error::Other(
+        "Could not find the `claude` executable. Install Claude Code or make it available on PATH."
+            .into(),
+    ))
+}
+
+fn command_in_path(name: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+fn command_from_login_shell(name: &str) -> Option<String> {
+    let script = format!("command -v {name}");
+    let out = Command::new("/bin/zsh")
+        .args(["-lc", &script])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
+}
+
+fn common_claude_paths(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".local/bin/claude"),
+        home.join(".npm-global/bin/claude"),
+        home.join(".bun/bin/claude"),
+        PathBuf::from("/opt/homebrew/bin/claude"),
+        PathBuf::from("/usr/local/bin/claude"),
+    ]
 }

@@ -26,7 +26,6 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
         selectionBackground: "#3a3f4a",
       },
       scrollback: 5000,
-      allowProposedApi: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -35,28 +34,13 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
     // Defer the first fit until the DOM has actually laid out — opening
     // an xterm and immediately calling fit() on a freshly-mounted div
     // can race the renderer initialization. Also focus immediately so
-    // claude code (which uses ink and waits for `\x1b[I` focus-gained
-    // before showing its UI) doesn't sit hidden forever.
+    // keyboard input goes straight to the agent.
     const initialFit = requestAnimationFrame(() => {
       try {
         fit.fit();
         term.focus();
-        // eslint-disable-next-line no-console
-        console.log(
-          "[term",
-          agent.id,
-          "] fit",
-          term.cols,
-          "x",
-          term.rows,
-          "container",
-          el.clientWidth,
-          "x",
-          el.clientHeight,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn("[term", agent.id, "] fit failed:", err);
+      } catch {
+        /* container may not be measurable yet */
       }
     });
 
@@ -74,18 +58,8 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
     }
 
     const onDataDisposer = term.onData((data) => {
-      // eslint-disable-next-line no-console
-      console.log(
-        "[term",
-        agent.id,
-        "] onData ->",
-        JSON.stringify(data),
-        "len=",
-        data.length,
-      );
-      api.writeToAgent(agent.id, data).catch((err) => {
-        // eslint-disable-next-line no-console
-        console.warn("[term", agent.id, "] writeToAgent failed:", err);
+      api.writeToAgent(agent.id, data).catch(() => {
+        /* harmless if process is gone */
       });
     });
     const onResizeDisposer = term.onResize(({ cols, rows }) => {
@@ -95,12 +69,8 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
     });
 
     const unregister = registerOutputSink(agent.id, (bytes) => {
-      // eslint-disable-next-line no-console
-      console.log("[term", agent.id, "] write", bytes.length, "bytes");
       term.write(bytes);
     });
-    // eslint-disable-next-line no-console
-    console.log("[term", agent.id, "] mounted, sink registered");
 
     const ro = new ResizeObserver(() => {
       try {
@@ -124,7 +94,7 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
 
   async function onStop() {
     const ok = await ask(
-      `Stop agent "${agent.name}"? The VM will be destroyed.`,
+      `Stop agent "${agent.name}"? The process will be terminated.`,
       { title: "Stop agent", kind: "warning" },
     );
     if (ok) await stop(agent.id);
@@ -158,7 +128,7 @@ export function AgentTerminal({ agent }: { agent: AgentRecord }) {
           {/*
             "Remove" is always available — it's the universal "make this
             agent go away" affordance. Backend best-effort cleans up the
-            VM + worktree regardless of which subset still exists.
+            process + worktree regardless of which subset still exists.
           */}
           <button onClick={onDiscard}>Remove</button>
         </div>

@@ -1,11 +1,10 @@
 //! Local PTY around a child process.
 //!
-//! Used to wrap the sandboxed `claude` invocation so the frontend
-//! xterm gets a full interactive terminal (readline, ANSI colors,
-//! resize, ^C, etc.). Replaces the previous SSH-based PtySession.
+//! Used to wrap the `claude` invocation so the frontend xterm gets a
+//! full interactive terminal (readline, ANSI colors, resize, ^C, etc.).
 
 use parking_lot::Mutex;
-use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::thread;
@@ -31,10 +30,17 @@ pub struct PtySpawn<'a> {
     pub rows: u16,
 }
 
+#[derive(Debug, Clone)]
+pub struct PtyExit {
+    pub success: bool,
+    pub message: String,
+}
+
 impl PtySession {
-    pub fn spawn<F>(spec: PtySpawn<'_>, on_output: F) -> Result<Self>
+    pub fn spawn<F, G>(spec: PtySpawn<'_>, on_output: F, on_exit: G) -> Result<Self>
     where
         F: Fn(Vec<u8>) + Send + 'static,
+        G: Fn(PtyExit) + Send + 'static,
     {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
@@ -68,7 +74,7 @@ impl PtySession {
             cmd.env(*k, v);
         }
 
-        let child = pair
+        let mut child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| Error::Other(format!("pty spawn: {e}")))?;
@@ -100,12 +106,7 @@ impl PtySession {
                         }
                         Ok(n) => {
                             total += n;
-                            tracing::trace!(
-                                bytes = n,
-                                total = total,
-                                preview = %String::from_utf8_lossy(&buf[..n.min(120)]).replace('\n', "\\n"),
-                                "pty reader: chunk"
-                            );
+                            tracing::trace!(bytes = n, total = total, "pty reader: chunk");
                             on_output(buf[..n].to_vec());
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -115,6 +116,25 @@ impl PtySession {
                         }
                     }
                 }
+            }
+        });
+
+        thread::spawn(move || match child.wait() {
+            Ok(status) => {
+                let exit = exit_from_status(status);
+                tracing::info!(
+                    success = exit.success,
+                    message = %exit.message,
+                    "pty child exited"
+                );
+                on_exit(exit);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "pty child wait failed");
+                on_exit(PtyExit {
+                    success: false,
+                    message: format!("wait failed: {e}"),
+                });
             }
         });
 
@@ -152,8 +172,56 @@ impl PtySession {
     }
 }
 
+fn exit_from_status(status: ExitStatus) -> PtyExit {
+    PtyExit {
+        success: status.success(),
+        message: status.to_string(),
+    }
+}
+
 impl Drop for PtySession {
     fn drop(&mut self) {
         let _ = self.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn streams_output_and_reports_exit() {
+        let td = tempfile::tempdir().unwrap();
+        let (out_tx, out_rx) = mpsc::channel();
+        let (exit_tx, exit_rx) = mpsc::channel();
+
+        let _pty = PtySession::spawn(
+            PtySpawn {
+                program: std::path::Path::new("/bin/sh"),
+                args: &[
+                    "-lc".to_string(),
+                    "printf hello-from-pty".to_string(),
+                ],
+                envs: &[],
+                cwd: td.path(),
+                cols: 80,
+                rows: 24,
+            },
+            move |bytes| {
+                let _ = out_tx.send(bytes);
+            },
+            move |exit| {
+                let _ = exit_tx.send(exit);
+            },
+        )
+        .unwrap();
+
+        let first = out_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(String::from_utf8_lossy(&first).contains("hello-from-pty"));
+
+        let exit = exit_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(exit.success, "unexpected PTY exit: {exit:?}");
     }
 }

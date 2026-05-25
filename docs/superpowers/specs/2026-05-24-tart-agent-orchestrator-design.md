@@ -1,6 +1,6 @@
 # Tart Agent Orchestrator — v1 Design
 
-**Working name:** `algiers` (placeholder — final name TBD)
+**Working name:** `amux`
 **Status:** Approved for implementation planning
 **Date:** 2026-05-24
 
@@ -161,6 +161,6 @@ Everything else (network blips on the SSH channel, transient `tart` failures) is
 **Smaller open questions, OK to resolve during planning:**
 
 2. Frontend framework choice — SolidJS, Svelte, or plain TS? (Lean: Svelte for ecosystem + Tauri examples.)
-3. App name — placeholder is `algiers` (branch name); pick before first release.
+3. App name — resolved as `amux`.
 4. SSH key management — generate a dedicated keypair on first run, or reuse `~/.ssh/id_ed25519`? (Lean: generate a dedicated one, store under app data dir.)
 5. Concurrency cap — should the UI prevent spawning more than `<system-RAM / 2GB>` agents, or just let the user push it? (Lean: soft warning, no hard cap.)

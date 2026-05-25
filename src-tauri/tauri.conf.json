@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "algiers",
+  "productName": "amux",
   "version": "0.1.1",
-  "identifier": "com.algiers.app",
+  "identifier": "com.amux.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "algiers",
+        "title": "amux",
         "width": 1280,
         "height": 800,
         "minWidth": 900,

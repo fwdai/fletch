@@ -88,24 +88,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().initialized) return;
     set({ initialized: true });
 
-    const workspace = await api.getWorkspace();
-    set({ workspace });
-
     await onAgentOutput((e) => {
       const chunk = new Uint8Array(e.bytes);
       appendToBuffer(e.agent_id, chunk);
       const sink = outputSinks.get(e.agent_id);
-      // eslint-disable-next-line no-console
-      console.log(
-        "[store] agent:output",
-        e.agent_id,
-        "bytes=",
-        chunk.length,
-        "sink=",
-        sink ? "yes" : "NO SINK",
-        "preview=",
-        new TextDecoder().decode(chunk.slice(0, 120)).replace(/\n/g, "\\n"),
-      );
       if (sink) sink(chunk);
     });
 
@@ -130,6 +116,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       set({ workspace: next });
     });
+
+    const workspace = await api.getWorkspace();
+    set({ workspace });
   },
 
   selectAgent: (id) => set({ selectedAgentId: id }),
