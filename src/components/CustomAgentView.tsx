@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { type AgentRecord } from "../api";
 import { type ManagedItem, useAppStore } from "../store";
 import { ViewToggle } from "./ViewToggle";
@@ -14,9 +13,6 @@ export function CustomAgentView({ agent }: { agent: AgentRecord }) {
   const log = useAppStore((s) => s.managedLogs[agent.id] ?? EMPTY_LOG);
   const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
   const send = useAppStore((s) => s.sendUserMessage);
-  const resume = useAppStore((s) => s.resume);
-  const stop = useAppStore((s) => s.stop);
-  const discard = useAppStore((s) => s.discard);
 
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -35,29 +31,8 @@ export function CustomAgentView({ agent }: { agent: AgentRecord }) {
     await send(agent.id, text);
   }
 
-  async function onStop() {
-    const ok = await ask(
-      `Stop agent "${agent.name}"? The process will be terminated.`,
-      { title: "Stop agent", kind: "warning" },
-    );
-    if (ok) await stop(agent.id);
-  }
-
-  async function onDiscard() {
-    const ok = await ask(
-      `Remove "${agent.name}"?\n\nThis will delete:\n` +
-        `  • the worktree at .worktrees/${agent.id} (any uncommitted work)\n` +
-        `  • the branch ${agent.branch}\n\n` +
-        `Branch deletion can be undone via git reflog within ~90 days.`,
-      { title: "Remove agent", kind: "warning" },
-    );
-    if (ok) await discard(agent.id);
-  }
-
   const canSend =
     !busy && (agent.status === "running" || agent.status === "idle");
-  const canResume =
-    agent.status === "stopped" || agent.status === "error";
 
   return (
     <div className="termwrap">
@@ -73,15 +48,6 @@ export function CustomAgentView({ agent }: { agent: AgentRecord }) {
           {/* Disable the toggle while a turn is in flight — switching
               tears down the process, which would truncate the response. */}
           <ViewToggle agentId={agent.id} current="custom" disabled={busy} />
-          {canResume && (
-            <button onClick={() => resume(agent.id)}>Resume</button>
-          )}
-          {(agent.status === "running" ||
-            agent.status === "idle" ||
-            agent.status === "spawning") && (
-            <button onClick={onStop}>Stop</button>
-          )}
-          <button onClick={onDiscard}>Remove</button>
         </div>
       </div>
       {agent.last_error && <div className="errbar">{agent.last_error}</div>}

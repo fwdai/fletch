@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { api, type AgentRecord } from "../api";
-import { getOutputBuffer, registerOutputSink, useAppStore } from "../store";
+import { getOutputBuffer, registerOutputSink } from "../store";
 import { ViewToggle } from "./ViewToggle";
 
 /** Native view: claude's TUI is streamed verbatim into xterm. Claude's
@@ -16,9 +15,6 @@ import { ViewToggle } from "./ViewToggle";
 export function NativeAgentView({ agent }: { agent: AgentRecord }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const stop = useAppStore((s) => s.stop);
-  const resume = useAppStore((s) => s.resume);
-  const discard = useAppStore((s) => s.discard);
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -115,29 +111,8 @@ export function NativeAgentView({ agent }: { agent: AgentRecord }) {
     }
   }
 
-  async function onStop() {
-    const ok = await ask(
-      `Stop agent "${agent.name}"? The process will be terminated.`,
-      { title: "Stop agent", kind: "warning" },
-    );
-    if (ok) await stop(agent.id);
-  }
-
-  async function onDiscard() {
-    const ok = await ask(
-      `Remove "${agent.name}"?\n\nThis will delete:\n` +
-        `  • the worktree at .worktrees/${agent.id} (any uncommitted work)\n` +
-        `  • the branch ${agent.branch}\n\n` +
-        `Branch deletion can be undone via git reflog within ~90 days.`,
-      { title: "Remove agent", kind: "warning" },
-    );
-    if (ok) await discard(agent.id);
-  }
-
   const canSend =
     !sending && (agent.status === "running" || agent.status === "idle");
-  const canResume =
-    agent.status === "stopped" || agent.status === "error";
 
   return (
     <div className="termwrap">
@@ -151,15 +126,6 @@ export function NativeAgentView({ agent }: { agent: AgentRecord }) {
         </div>
         <div className="right">
           <ViewToggle agentId={agent.id} current="native" />
-          {canResume && (
-            <button onClick={() => resume(agent.id)}>Resume</button>
-          )}
-          {(agent.status === "running" ||
-            agent.status === "idle" ||
-            agent.status === "spawning") && (
-            <button onClick={onStop}>Stop</button>
-          )}
-          <button onClick={onDiscard}>Remove</button>
         </div>
       </div>
       {agent.last_error && <div className="errbar">{agent.last_error}</div>}

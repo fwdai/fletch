@@ -162,6 +162,49 @@ small code {
   background: var(--bg-input);
   border-color: var(--border-strong);
 }
+.row:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Action icons live on the right edge of each row. Hidden by default,
+ * revealed on hover (and always visible when the row is selected) so
+ * the sidebar stays calm but the actions are still discoverable. */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+  flex-shrink: 0;
+}
+.row:hover .row-actions,
+.row:focus-within .row-actions {
+  opacity: 1;
+}
+.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.iconbtn:hover { background: var(--bg-elevated); color: var(--text); }
+.iconbtn.tone-danger:hover { color: var(--danger); }
+.iconbtn.tone-accent { color: var(--accent); }
+.iconbtn.tone-accent:hover { background: var(--bg-elevated); color: var(--accent-hover); }
+.iconbtn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
 .dot {
   width: 8px;
   height: 8px;
@@ -169,7 +212,7 @@ small code {
   flex-shrink: 0;
   display: inline-block;
 }
-.rowtext { display: flex; flex-direction: column; min-width: 0; }
+.rowtext { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 4px; align-items: center; }
 .branch { font-family: var(--font-mono); }
