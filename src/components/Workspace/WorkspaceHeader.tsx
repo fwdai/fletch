@@ -1,0 +1,83 @@
+import type { AgentRecord, AgentStatus } from "../../api";
+import { useAppStore } from "../../store";
+import { Icon } from "../Icon";
+import { IconButton } from "../ui/IconButton";
+import { formatAge } from "../../util/format";
+import { useMinuteClock } from "../../util/hooks";
+import { ViewToggle } from "./ViewToggle";
+
+/** Header strip above the workspace body. Houses the left-sidebar
+ *  toggle, the agent task + meta line, the Custom/Native view
+ *  switcher, and the right-panel toggle. */
+interface Props {
+  agent: AgentRecord;
+}
+
+export function WorkspaceHeader({ agent }: Props) {
+  const viewMode = useAppStore((s) => s.viewMode);
+  const switchView = useAppStore((s) => s.switchView);
+  const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id]);
+  const leftCollapsed = useAppStore((s) => s.leftCollapsed);
+  const rightCollapsed = useAppStore((s) => s.rightCollapsed);
+  const toggleLeft = useAppStore((s) => s.toggleLeft);
+  const toggleRight = useAppStore((s) => s.toggleRight);
+  const now = useMinuteClock();
+
+  const branch = agent.repos[0]?.branch ?? "—";
+  const age = formatAge(agent.created_at, now);
+
+  return (
+    <div className="center-h">
+      <IconButton
+        tip={leftCollapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
+        onClick={toggleLeft}
+      >
+        <Icon name="sidebarL" />
+      </IconButton>
+
+      <div className="task">
+        <div className="t-name">
+          <StatusDot status={agent.status} />
+          <span>{agent.task || agent.name}</span>
+        </div>
+        <div className="t-meta">
+          {agent.name} · {branch}
+          {age && <> · <span>{age}</span></>}
+        </div>
+      </div>
+
+      <ViewToggle
+        value={viewMode}
+        onChange={(v) => switchView(agent.id, v)}
+        disabled={switchInFlight}
+      />
+
+      <IconButton
+        active={!rightCollapsed}
+        tip={rightCollapsed ? "Show panel (⌘/)" : "Hide panel (⌘/)"}
+        onClick={toggleRight}
+      >
+        <Icon name="sidebarR" />
+      </IconButton>
+    </div>
+  );
+}
+
+function StatusDot({ status }: { status: AgentStatus }) {
+  const bg =
+    status === "running" ? "var(--success)" :
+    status === "spawning" ? "var(--warn)" :
+    status === "error" ? "var(--danger)" : "var(--fg-3)";
+  return (
+    <span
+      style={{
+        width: 7, height: 7, borderRadius: "50%",
+        background: bg,
+        boxShadow: status === "running"
+          ? "0 0 0 2px color-mix(in oklch, var(--success), transparent 78%)"
+          : "none",
+        flexShrink: 0,
+      }}
+    />
+  );
+}
