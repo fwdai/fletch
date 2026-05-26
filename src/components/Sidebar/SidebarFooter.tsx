@@ -3,7 +3,9 @@ import { IconButton } from "../ui/IconButton";
 import { useAppStore } from "../../store";
 
 export function SidebarFooter() {
-  const toggleSettings = useAppStore((s) => s.toggleSettings);
+  const theme = useAppStore((s) => s.theme);
+  const setTheme = useAppStore((s) => s.setTheme);
+  const isDark = theme === "dark";
   return (
     <div className="side-foot">
       <div className="user-avatar">A</div>
@@ -11,8 +13,12 @@ export function SidebarFooter() {
         <div className="un">you</div>
         <div className="ue">local workspace</div>
       </div>
-      <IconButton tip="Settings (⌘,)" onClick={() => toggleSettings(true)}>
-        <Icon name="settings" />
+      <IconButton
+        tip={isDark ? "Light theme (⌘⇧L)" : "Dark theme (⌘⇧L)"}
+        onClick={() => setTheme(isDark ? "light" : "dark")}
+        aria-label="Toggle theme"
+      >
+        <Icon name={isDark ? "sun" : "moon"} />
       </IconButton>
     </div>
   );
