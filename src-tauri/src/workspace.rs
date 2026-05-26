@@ -384,15 +384,15 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
 }
 
 /// Absolute path to the dir holding all of one agent's worktrees:
-/// `~/.amux/worktrees/<agent-id>/`.
+/// `~/.quorum/worktrees/<agent-id>/`.
 pub fn agent_parent_dir(agent_id: &str) -> Result<PathBuf> {
     let home = dirs::home_dir()
         .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    Ok(home.join(".amux").join("worktrees").join(agent_id))
+    Ok(home.join(".quorum").join("worktrees").join(agent_id))
 }
 
 /// Absolute path to one tracked repo's worktree:
-/// `~/.amux/worktrees/<agent-id>/<subdir>/`.
+/// `~/.quorum/worktrees/<agent-id>/<subdir>/`.
 pub fn repo_worktree_path(agent_id: &str, subdir: &str) -> Result<PathBuf> {
     Ok(agent_parent_dir(agent_id)?.join(subdir))
 }

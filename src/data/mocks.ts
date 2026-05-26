@@ -1,6 +1,6 @@
 // Mock data used by the right panel until git/diff/run IPC commands
 // land. Each shape is keyed to a component in `components/RightPanel`.
-// TODO(amux): wire to real git state via Tauri commands.
+// TODO(quorum): wire to real git state via Tauri commands.
 
 export type MockGitState =
   | "clean"

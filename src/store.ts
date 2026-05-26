@@ -124,7 +124,7 @@ const FEATURE_KEYS = Object.keys(DEFAULT_FEATURES) as (keyof FeatureFlags)[];
 
 function loadFeatures(): FeatureFlags {
   try {
-    const raw = localStorage.getItem("amux:features");
+    const raw = localStorage.getItem("quorum:features");
     if (!raw) return DEFAULT_FEATURES;
     const parsed = JSON.parse(raw) as Partial<FeatureFlags>;
     return { ...DEFAULT_FEATURES, ...parsed };
@@ -135,7 +135,7 @@ function loadFeatures(): FeatureFlags {
 
 function loadProviderFlags(): Record<string, boolean> {
   try {
-    const raw = localStorage.getItem("amux:providers");
+    const raw = localStorage.getItem("quorum:providers");
     if (!raw) return {};
     return JSON.parse(raw) as Record<string, boolean>;
   } catch {
@@ -419,13 +419,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   leftWidth: 256,
   rightWidth: 320,
 
-  theme: loadString<ThemeMode>("amux:theme", "dark"),
-  accent: loadString<string>("amux:accent", "copper"),
-  density: loadString<Density>("amux:density", "comfortable"),
-  showLandmarks: localStorage.getItem("amux:showLandmarks") !== "0",
+  theme: loadString<ThemeMode>("quorum:theme", "dark"),
+  accent: loadString<string>("quorum:accent", "copper"),
+  density: loadString<Density>("quorum:density", "comfortable"),
+  showLandmarks: localStorage.getItem("quorum:showLandmarks") !== "0",
   features: loadFeatures(),
   providerFlags: loadProviderFlags(),
-  viewMode: loadString<WorkspaceView>("amux:viewMode", "custom"),
+  viewMode: loadString<WorkspaceView>("quorum:viewMode", "custom"),
 
   init: async () => {
     if (get().initialized) return;
@@ -745,26 +745,26 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // ── appearance ──────────────────────────────────────────────────────────────
   setTheme: (t) => {
-    localStorage.setItem("amux:theme", t);
+    localStorage.setItem("quorum:theme", t);
     set({ theme: t });
   },
   setAccent: (a) => {
-    localStorage.setItem("amux:accent", a);
+    localStorage.setItem("quorum:accent", a);
     set({ accent: a });
   },
   setDensity: (d) => {
-    localStorage.setItem("amux:density", d);
+    localStorage.setItem("quorum:density", d);
     set({ density: d });
   },
   setShowLandmarks: (v) => {
-    localStorage.setItem("amux:showLandmarks", v ? "1" : "0");
+    localStorage.setItem("quorum:showLandmarks", v ? "1" : "0");
     set({ showLandmarks: v });
   },
   setFeature: (k, v) =>
     set((s) => {
       const next = { ...s.features, [k]: v };
       localStorage.setItem(
-        "amux:features",
+        "quorum:features",
         JSON.stringify(
           Object.fromEntries(FEATURE_KEYS.map((key) => [key, next[key]])),
         ),
@@ -774,11 +774,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setProviderEnabled: (id, enabled) =>
     set((s) => {
       const next = { ...s.providerFlags, [id]: enabled };
-      localStorage.setItem("amux:providers", JSON.stringify(next));
+      localStorage.setItem("quorum:providers", JSON.stringify(next));
       return { providerFlags: next };
     }),
   setViewMode: (v) => {
-    localStorage.setItem("amux:viewMode", v);
+    localStorage.setItem("quorum:viewMode", v);
     set({ viewMode: v });
   },
 }));

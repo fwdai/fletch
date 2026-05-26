@@ -3,7 +3,7 @@
 //! The app still launches Claude in a normal PTY. `sandbox-exec` is only
 //! the process wrapper around that PTY child, so terminal streaming and
 //! startup timing stay the same while writes are constrained to the
-//! agent's parent dir (under `~/.amux/worktrees/<id>/`) plus standard
+//! agent's parent dir (under `~/.quorum/worktrees/<id>/`) plus standard
 //! state/cache locations. The agent's per-repo worktrees live as
 //! subdirs of that parent, so each one inherits the writable allowance
 //! without re-spawning claude.

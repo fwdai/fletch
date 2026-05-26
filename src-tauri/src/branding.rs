@@ -7,11 +7,11 @@
 
 /// Display / branding name. Used as the git branch namespace and
 /// available to anything else that needs to identify the app.
-pub const APP_NAME: &str = "amux";
+pub const APP_NAME: &str = "quorum";
 
 /// Build the full agent branch name from a slug. Always namespaced
 /// under APP_NAME so the branches are easy to spot and filter:
-/// `git branch | grep ^amux/`.
+/// `git branch | grep ^quorum/`.
 pub fn branch_for(slug: &str) -> String {
     format!("{APP_NAME}/{slug}")
 }
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn branch_uses_app_name() {
-        assert_eq!(branch_for("foo"), "amux/foo");
+        assert_eq!(branch_for("foo"), "quorum/foo");
     }
 
     #[test]

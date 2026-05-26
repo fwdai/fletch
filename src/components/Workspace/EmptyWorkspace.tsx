@@ -77,7 +77,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
         <p className="empty-sub">
           A worktree and branch will be created under{" "}
           <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
-            ~/.amux/worktrees/{draft.name}
+            ~/.quorum/worktrees/{draft.name}
           </span>
           . Your first message starts the agent.
         </p>

@@ -164,7 +164,7 @@ fn prepare_sandbox(
 ) -> Result<tempfile::NamedTempFile> {
     let profile_text = sandbox::build_profile(worktree, home)?;
     let mut profile_file = tempfile::Builder::new()
-        .prefix("amux-sandbox-")
+        .prefix("quorum-sandbox-")
         .suffix(".sb")
         .tempfile()
         .map_err(|e| Error::Other(format!("create sandbox profile tmp: {e}")))?;

@@ -4,7 +4,7 @@ import { IconButton } from "../ui/IconButton";
 import { Breadcrumb, type CrumbEntry } from "./Breadcrumb";
 import { basename, hueFromString } from "../../util/format";
 
-/** Top-of-window bar. Houses the breadcrumb (amux / repo / agent)
+/** Top-of-window bar. Houses the breadcrumb (Quorum / repo / agent)
  *  and the settings toggle. Drag + native double-click-to-zoom is
  *  handled by Tauri via the `data-tauri-drag-region` attribute — any
  *  click whose target carries that attribute is processed by the
@@ -31,7 +31,7 @@ export function TitleBar() {
   );
 }
 
-/** Derive the breadcrumb from active draft / agent. amux > repo > agent. */
+/** Derive the breadcrumb from active draft / agent. Quorum > repo > agent. */
 function useCrumb(): CrumbEntry[] {
   const workspace = useAppStore((s) => s.workspace);
   const selectedId = useAppStore((s) => s.selectedAgentId);
@@ -48,7 +48,7 @@ function useCrumb(): CrumbEntry[] {
   const repoLabel = repoPath ? basename(repoPath) : null;
   const repoHue = repoPath ? hueFromString(repoPath) : undefined;
 
-  const entries: CrumbEntry[] = [{ label: "amux" }];
+  const entries: CrumbEntry[] = [{ label: "Quorum" }];
   if (repoLabel) entries.push({ label: repoLabel, mono: true, swatchHue: repoHue });
   if (draft) entries.push({ label: draft.name, mono: true, active: true });
   else if (agent) entries.push({ label: agent.name, mono: true, active: true });
