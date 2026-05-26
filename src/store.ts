@@ -486,7 +486,7 @@ function handleManagedEvent(
 
   if (type === "result") {
     const subtype = String(ev.subtype ?? "");
-    const isError = ev.is_error === true || subtype !== "success";
+    const isError = ev.is_error === true;
     let patches = finalizeStreamingAssistant(state, agentId);
     const working = { ...state, ...patches } as AppState;
     const list = working.managedLogs[agentId] ?? [];
@@ -494,28 +494,24 @@ function handleManagedEvent(
     const hasAssistantText = list.slice(lastUserIdx + 1).some(
       (item) => item.kind === "assistant" && item.text.trim().length > 0,
     );
+    const resultText = typeof ev.result === "string" ? ev.result : "";
     if (isError) {
       patches = mergePatches(
         patches,
         appendItem(working, agentId, {
           kind: "result",
-          text:
-            typeof ev.result === "string"
-              ? ev.result
-              : `Turn failed (${subtype || "error"})`,
+          text: hasAssistantText
+            ? `Turn failed (${subtype || "error"})`
+            : resultText || `Turn failed (${subtype || "error"})`,
           is_error: true,
         }),
       );
-    } else if (
-      !hasAssistantText &&
-      typeof ev.result === "string" &&
-      ev.result.trim()
-    ) {
+    } else if (!hasAssistantText && resultText.trim()) {
       patches = mergePatches(
         patches,
         appendItem(working, agentId, {
           kind: "assistant",
-          text: ev.result,
+          text: resultText,
         }),
       );
     }
@@ -530,21 +526,6 @@ function handleManagedEvent(
       managedBusy: { ...state.managedBusy, [agentId]: false },
       tokens,
     };
-  }
-
-  if (type === "system" && typeof ev.subtype === "string") {
-    if (ev.subtype === "status" && typeof ev.status === "string") {
-      return appendItem(state, agentId, {
-        kind: "system",
-        text: `Claude status: ${ev.status}`,
-      });
-    }
-    if (ev.subtype !== "init") {
-      return appendItem(state, agentId, {
-        kind: "system",
-        text: `Claude ${ev.subtype}`,
-      });
-    }
   }
 
   return {};
