@@ -1,6 +1,8 @@
 import type { ComponentType, CSSProperties, ReactNode, SVGProps } from "react";
 import { createElement } from "react";
 import {
+  Archive,
+  ArchiveRestore,
   ArrowUp,
   Check,
   ChevronDown,
@@ -17,6 +19,7 @@ import {
   GitCommitHorizontal,
   GitMerge,
   GitPullRequest,
+  History,
   Inbox,
   Minus,
   MoreHorizontal,
@@ -102,6 +105,9 @@ const ICON_COMPONENTS = {
   trash: Trash2,
   thinking: Ellipsis,
   wrench: Wrench,
+  history: History,
+  archive: Archive,
+  archiveRestore: ArchiveRestore,
 } satisfies Record<string, ComponentType<IconComponentProps>>;
 
 // Originally rendered with fill="currentColor". Setting fill on the root SVG

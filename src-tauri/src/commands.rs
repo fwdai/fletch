@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use serde_json::Value;
 use tauri::{AppHandle, State};
 
 use crate::error::Result;
@@ -120,6 +121,34 @@ pub async fn discard_agent(
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
     sup.discard_agent(&agent_id).await
+}
+
+#[tauri::command]
+pub async fn archive_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+) -> Result<()> {
+    let sup = supervisor.inner().clone();
+    sup.archive_agent(app, &agent_id).await
+}
+
+#[tauri::command]
+pub async fn restore_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+) -> Result<()> {
+    let sup = supervisor.inner().clone();
+    sup.restore_agent(app, &agent_id).await
+}
+
+#[tauri::command]
+pub fn read_session_transcript(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Vec<Value>> {
+    supervisor.read_session_transcript(&agent_id)
 }
 
 #[tauri::command]

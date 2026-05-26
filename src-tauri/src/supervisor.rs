@@ -15,7 +15,8 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir, new_agent_record, repo_worktree_path, AgentRecord,
-    AgentStatus, AgentView, TrackedRepo, Workspace, WorkspaceManager,
+    AgentStatus, AgentView, ArchiveMetadata, ArchivedRepoSnapshot, DiffStats, TrackedRepo,
+    Workspace, WorkspaceManager,
 };
 
 #[derive(Clone, serde::Serialize)]
@@ -482,6 +483,250 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Move an agent into the History view: stop the process if any,
+    /// snapshot each tracked repo's SHA + diff stats, then tear down
+    /// the worktrees and branches. The claude session JSONL is left
+    /// alone — that's what makes restore possible.
+    ///
+    /// Rejects unless the agent is in `Stopped` or `Error`. The UI is
+    /// already wired to gate the button this way; the backend check is
+    /// a safety net.
+    pub async fn archive_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+        let record = self.workspace.agent(agent_id)?;
+        if record.archive.is_some() {
+            return Err(Error::Other("agent is already archived".into()));
+        }
+        if !matches!(record.status, AgentStatus::Stopped | AgentStatus::Error) {
+            return Err(Error::Other(
+                "agent must be stopped or in error before archiving".into(),
+            ));
+        }
+
+        let mut snapshots: Vec<ArchivedRepoSnapshot> = Vec::with_capacity(record.repos.len());
+        let mut total_adds: u32 = 0;
+        let mut total_dels: u32 = 0;
+
+        for repo in &record.repos {
+            // Resolve SHAs first so we capture state before any
+            // destructive step.
+            let branch_tip_sha = if let Some(b) = &repo.branch {
+                git::rev_parse(&repo.repo_path, b).await.ok()
+            } else {
+                None
+            };
+            let parent_branch_sha = if let Some(b) = &repo.parent_branch {
+                git::rev_parse(&repo.repo_path, b).await.ok()
+            } else {
+                None
+            };
+
+            let mut adds = 0u32;
+            let mut dels = 0u32;
+            if let (Some(from), Some(to)) = (&parent_branch_sha, &branch_tip_sha) {
+                if from != to {
+                    if let Ok((a, d)) = git::diff_shortstat(&repo.repo_path, from, to).await {
+                        adds = a;
+                        dels = d;
+                    }
+                }
+            }
+            total_adds = total_adds.saturating_add(adds);
+            total_dels = total_dels.saturating_add(dels);
+
+            snapshots.push(ArchivedRepoSnapshot {
+                repo_path: repo.repo_path.clone(),
+                subdir: repo.subdir.clone(),
+                branch_name: repo.branch.clone(),
+                branch_tip_sha,
+                parent_branch: repo.parent_branch.clone(),
+                parent_branch_sha,
+                diff_stats: DiffStats {
+                    additions: adds,
+                    deletions: dels,
+                },
+            });
+        }
+
+        // Tear down worktrees + branches (best-effort: a single failure
+        // shouldn't block archive, since the user's intent is "get rid
+        // of this", but we surface git errors via tracing).
+        for repo in &record.repos {
+            let worktree = match repo_worktree_path(agent_id, &repo.subdir) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(error = %e, subdir = %repo.subdir, "archive: worktree_path failed");
+                    continue;
+                }
+            };
+            let _ = git::worktree_prune(&repo.repo_path).await;
+            if let Err(e) = git::worktree_remove(&repo.repo_path, &worktree, true).await {
+                tracing::warn!(error = %e, subdir = %repo.subdir, "archive: worktree remove failed");
+            }
+            if let Some(branch) = &repo.branch {
+                if let Err(e) = git::branch_delete(&repo.repo_path, branch).await {
+                    tracing::warn!(%branch, error = %e, "archive: branch delete failed");
+                }
+            }
+        }
+
+        // Best-effort parent dir cleanup.
+        if let Ok(parent) = agent_parent_dir(agent_id) {
+            if parent.exists() {
+                let _ = std::fs::remove_dir_all(&parent);
+            }
+        }
+
+        let archive = ArchiveMetadata {
+            archived_at: chrono::Utc::now().to_rfc3339(),
+            repos: snapshots,
+            diff_stats: DiffStats {
+                additions: total_adds,
+                deletions: total_dels,
+            },
+        };
+
+        self.workspace.archive_agent(agent_id, archive)?;
+        // The frontend listens to `agent:status` to drive most UI;
+        // archive is structurally a deeper change, so we re-emit the
+        // workspace via a tiny event. Frontend already reloads on this
+        // signal via `get_workspace`.
+        let _ = app.emit("workspace:changed", ());
+        Ok(())
+    }
+
+    /// Pull an archived agent back into the live sidebar: recreate
+    /// branches and worktrees from snapshot SHAs, clear archive
+    /// metadata, transition to Spawning so the supervisor's start path
+    /// attaches to the existing claude session.
+    pub async fn restore_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+        let record = self.workspace.agent(agent_id)?;
+        let archive = record
+            .archive
+            .clone()
+            .ok_or_else(|| Error::Other("agent is not archived".into()))?;
+        if record.session_id.is_none() {
+            return Err(Error::Other(
+                "archived agent has no session id; cannot restore".into(),
+            ));
+        }
+
+        // Pre-flight: every snapshot must have a tip SHA, and that SHA
+        // must still be reachable. We do this before any mutation so
+        // we don't leave a half-restored agent on failure.
+        for snap in &archive.repos {
+            let sha = snap.branch_tip_sha.as_deref().ok_or_else(|| {
+                Error::Other(format!(
+                    "snapshot for repo `{}` has no branch tip SHA",
+                    snap.subdir
+                ))
+            })?;
+            git::rev_parse(&snap.repo_path, sha).await.map_err(|e| {
+                Error::Other(format!(
+                    "branch tip {} no longer reachable in {}: {e}",
+                    sha,
+                    snap.repo_path.display()
+                ))
+            })?;
+        }
+
+        // Ensure the agent parent dir exists.
+        let parent_dir = agent_parent_dir(agent_id)?;
+        std::fs::create_dir_all(&parent_dir)
+            .map_err(|e| Error::Other(format!("create parent dir: {e}")))?;
+
+        let mut restored: Vec<TrackedRepo> = Vec::with_capacity(archive.repos.len());
+        for snap in &archive.repos {
+            let tip_sha = snap.branch_tip_sha.as_deref().expect("checked above");
+            let desired_name = snap
+                .branch_name
+                .clone()
+                .unwrap_or_else(|| format!("quorum/{}-restored", agent_id));
+
+            // Resolve branch name collisions by appending -restored / -restored-N.
+            let mut chosen = desired_name.clone();
+            let mut bumps = 0;
+            loop {
+                let exists = git::branch_exists(&snap.repo_path, &chosen).await.unwrap_or(false);
+                if !exists {
+                    break;
+                }
+                bumps += 1;
+                chosen = if bumps == 1 {
+                    format!("{desired_name}-restored")
+                } else {
+                    format!("{desired_name}-restored-{bumps}")
+                };
+            }
+
+            git::branch_create_at(&snap.repo_path, &chosen, tip_sha).await?;
+
+            let worktree = repo_worktree_path(agent_id, &snap.subdir)?;
+            if let Some(parent) = worktree.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| Error::Other(format!("create worktree parent: {e}")))?;
+            }
+            git::worktree_add_branch(&snap.repo_path, &worktree, &chosen).await?;
+
+            restored.push(TrackedRepo {
+                repo_path: snap.repo_path.clone(),
+                subdir: snap.subdir.clone(),
+                branch: Some(chosen),
+                parent_branch: snap.parent_branch.clone(),
+            });
+        }
+
+        self.workspace.restore_agent(agent_id, restored)?;
+        emit_status(&app, agent_id, AgentStatus::Spawning, None);
+        let _ = app.emit("workspace:changed", ());
+
+        // Kick the resume path. start_process is the same one that
+        // resume_persisted_agents uses on app boot.
+        arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
+        let sup = self.clone();
+        let app_for_task = app.clone();
+        let id_for_task = agent_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = sup.start_process(&app_for_task, &id_for_task, false).await {
+                fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Read the persisted claude session JSONL for an archived (or
+    /// live) agent and return the events as a Vec<Value>. The frontend
+    /// feeds these through the same event handler it uses for live
+    /// stream-json output, so we don't need a parallel renderer.
+    ///
+    /// Returns an empty vec if the JSONL is missing (claude pruned it,
+    /// user deleted it, session never reached the first turn).
+    pub fn read_session_transcript(&self, agent_id: &str) -> Result<Vec<Value>> {
+        let record = self.workspace.agent(agent_id)?;
+        let session_id = record
+            .session_id
+            .as_deref()
+            .ok_or_else(|| Error::Other("agent has no session id".into()))?;
+        let path = match find_session_jsonl(session_id) {
+            Some(p) => p,
+            None => return Ok(Vec::new()),
+        };
+        let file = std::fs::File::open(&path)
+            .map_err(|e| Error::Other(format!("open transcript: {e}")))?;
+        let reader = std::io::BufReader::new(file);
+        let mut out = Vec::new();
+        use std::io::BufRead;
+        for line in reader.lines().map_while(std::result::Result::ok) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                out.push(v);
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn discard_agent(self: Arc<Self>, agent_id: &str) -> Result<()> {
         let record = self.workspace.agent(agent_id).ok();
         let repos = record.as_ref().map(|r| r.repos.clone()).unwrap_or_default();
@@ -524,6 +769,24 @@ impl Supervisor {
         self.workspace.remove_agent(agent_id)?;
         Ok(())
     }
+}
+
+/// Locate the claude session JSONL by scanning `~/.claude/projects/*/`
+/// for `<session-id>.jsonl`. Claude's path-encoding scheme isn't part
+/// of its public API, so we glob instead of recomputing the encoded
+/// directory name from the worktree path.
+fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let projects = home.join(".claude").join("projects");
+    let entries = std::fs::read_dir(&projects).ok()?;
+    let filename = format!("{session_id}.jsonl");
+    for entry in entries.flatten() {
+        let path = entry.path().join(&filename);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn spawn_pty_agent(

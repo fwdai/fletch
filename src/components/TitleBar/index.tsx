@@ -12,6 +12,8 @@ import { basename, hueFromString } from "../../util/format";
 export function TitleBar() {
   const settingsOpen = useAppStore((s) => s.settingsOpen);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
+  const historyOpen = useAppStore((s) => s.historyOpen);
+  const toggleHistory = useAppStore((s) => s.toggleHistory);
   const entries = useCrumb();
 
   return (
@@ -23,6 +25,13 @@ export function TitleBar() {
       </div>
       <Breadcrumb entries={entries} />
       <div className="tb-right">
+        <IconButton
+          tip="History"
+          active={historyOpen}
+          onClick={() => toggleHistory()}
+        >
+          <Icon name="history" />
+        </IconButton>
         <IconButton
           tip="Settings (⌘,)"
           active={settingsOpen}

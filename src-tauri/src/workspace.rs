@@ -57,6 +57,40 @@ pub struct TrackedRepo {
     pub parent_branch: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiffStats {
+    #[serde(default)]
+    pub additions: u32,
+    #[serde(default)]
+    pub deletions: u32,
+}
+
+/// Snapshot of one tracked repo at archive time. Captures enough to
+/// recreate the worktree and branch on restore.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchivedRepoSnapshot {
+    pub repo_path: PathBuf,
+    pub subdir: String,
+    #[serde(default)]
+    pub branch_name: Option<String>,
+    #[serde(default)]
+    pub branch_tip_sha: Option<String>,
+    #[serde(default)]
+    pub parent_branch: Option<String>,
+    #[serde(default)]
+    pub parent_branch_sha: Option<String>,
+    #[serde(default)]
+    pub diff_stats: DiffStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveMetadata {
+    pub archived_at: String,
+    pub repos: Vec<ArchivedRepoSnapshot>,
+    #[serde(default)]
+    pub diff_stats: DiffStats,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
     pub id: String,
@@ -77,6 +111,11 @@ pub struct AgentRecord {
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Some when the agent has been archived. Live agents have None.
+    /// Archived agents have no worktree, no branch, and no live process —
+    /// only a record (and claude's session JSONL on disk).
+    #[serde(default)]
+    pub archive: Option<ArchiveMetadata>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -317,6 +356,32 @@ impl WorkspaceManager {
             .ok_or_else(|| Error::AgentNotFound(id.to_string()))
     }
 
+    /// Mark an agent as archived. Stamps `archived_at`, stores the
+    /// snapshot of every tracked repo, and clears `repos` so the
+    /// frontend doesn't treat the (now-deleted) worktrees as live.
+    /// Status moves to `Stopped` so resume-on-launch ignores it.
+    pub fn archive_agent(&self, id: &str, archive: ArchiveMetadata) -> Result<()> {
+        self.mutate_agent(id, |a| {
+            a.archive = Some(archive);
+            a.repos = Vec::new();
+            a.status = AgentStatus::Stopped;
+            true
+        })?;
+        Ok(())
+    }
+
+    /// Clear archive metadata and re-seed `repos`. Status moves to
+    /// `Spawning` so the supervisor's resume path picks the agent up.
+    pub fn restore_agent(&self, id: &str, repos: Vec<TrackedRepo>) -> Result<()> {
+        self.mutate_agent(id, |a| {
+            a.archive = None;
+            a.repos = repos;
+            a.status = AgentStatus::Spawning;
+            true
+        })?;
+        Ok(())
+    }
+
     pub fn remove_agent(&self, id: &str) -> Result<()> {
         {
             let mut g = self.inner.write();
@@ -358,6 +423,7 @@ pub fn new_agent_record(
         session_id: Some(uuid::Uuid::new_v4().to_string()),
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
+        archive: None,
     }
 }
 
@@ -518,6 +584,97 @@ mod tests {
             .unwrap();
         let cur = wm.current().unwrap();
         assert_eq!(cur.agents[0].status, AgentStatus::Running);
+    }
+
+    #[test]
+    fn archive_then_restore_roundtrip() {
+        let td = tmpdir();
+        let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
+        let rec = new_agent_record(
+            "yosemite".into(),
+            "yosemite".into(),
+            mk_repo("/some/repo"),
+            "do the thing".into(),
+            AgentView::Custom,
+        );
+        let id = rec.id.clone();
+        wm.add_agent(rec).unwrap();
+
+        let archive = ArchiveMetadata {
+            archived_at: "2026-05-26T12:00:00Z".into(),
+            repos: vec![ArchivedRepoSnapshot {
+                repo_path: PathBuf::from("/some/repo"),
+                subdir: "repo".into(),
+                branch_name: Some("quorum/do-the-thing".into()),
+                branch_tip_sha: Some("deadbeef".into()),
+                parent_branch: Some("main".into()),
+                parent_branch_sha: Some("cafebabe".into()),
+                diff_stats: DiffStats {
+                    additions: 12,
+                    deletions: 3,
+                },
+            }],
+            diff_stats: DiffStats {
+                additions: 12,
+                deletions: 3,
+            },
+        };
+        wm.archive_agent(&id, archive).unwrap();
+
+        let cur = wm.current().unwrap();
+        let a = &cur.agents[0];
+        assert!(a.archive.is_some());
+        assert!(a.repos.is_empty());
+        assert_eq!(a.status, AgentStatus::Stopped);
+        // session_id preserved so restore can re-attach claude
+        assert!(a.session_id.is_some());
+
+        // Restore puts repos back and flips to Spawning
+        let restored = vec![TrackedRepo {
+            repo_path: PathBuf::from("/some/repo"),
+            subdir: "repo".into(),
+            branch: Some("quorum/do-the-thing".into()),
+            parent_branch: Some("main".into()),
+        }];
+        wm.restore_agent(&id, restored).unwrap();
+        let cur = wm.current().unwrap();
+        let a = &cur.agents[0];
+        assert!(a.archive.is_none());
+        assert_eq!(a.repos.len(), 1);
+        assert_eq!(a.status, AgentStatus::Spawning);
+    }
+
+    #[test]
+    fn archived_agents_survive_reload_without_reconcile() {
+        let td = tmpdir();
+        let app_dir = td.path().to_path_buf();
+        {
+            let wm = WorkspaceManager::new(app_dir.clone()).unwrap();
+            let rec = new_agent_record(
+                "yosemite".into(),
+                "yosemite".into(),
+                mk_repo("/r"),
+                "".into(),
+                AgentView::Custom,
+            );
+            let id = rec.id.clone();
+            wm.add_agent(rec).unwrap();
+            wm.archive_agent(
+                &id,
+                ArchiveMetadata {
+                    archived_at: "2026-05-26T12:00:00Z".into(),
+                    repos: vec![],
+                    diff_stats: DiffStats::default(),
+                },
+            )
+            .unwrap();
+        }
+        let wm2 = WorkspaceManager::new(app_dir).unwrap();
+        let cur = wm2.current().unwrap();
+        assert_eq!(cur.agents.len(), 1);
+        // Archived agent stays archived; reconcile shouldn't flip Stopped → Spawning
+        assert!(cur.agents[0].archive.is_some());
+        assert_eq!(cur.agents[0].status, AgentStatus::Stopped);
     }
 
     #[test]

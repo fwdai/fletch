@@ -17,6 +17,27 @@ export interface TrackedRepo {
   parent_branch?: string | null;
 }
 
+export interface DiffStats {
+  additions: number;
+  deletions: number;
+}
+
+export interface ArchivedRepoSnapshot {
+  repo_path: string;
+  subdir: string;
+  branch_name?: string | null;
+  branch_tip_sha?: string | null;
+  parent_branch?: string | null;
+  parent_branch_sha?: string | null;
+  diff_stats: DiffStats;
+}
+
+export interface ArchiveMetadata {
+  archived_at: string;
+  repos: ArchivedRepoSnapshot[];
+  diff_stats: DiffStats;
+}
+
 export interface AgentRecord {
   id: string;
   name: string;
@@ -29,6 +50,8 @@ export interface AgentRecord {
   session_id?: string | null;
   created_at: string;
   last_error?: string | null;
+  /** Set when the agent has been archived. Live agents have null. */
+  archive?: ArchiveMetadata | null;
 }
 
 export interface Workspace {
@@ -97,6 +120,15 @@ export const api = {
   stopAgent: (agentId: string) => invoke<void>("stop_agent", { agentId }),
   discardAgent: (agentId: string) =>
     invoke<void>("discard_agent", { agentId }),
+  archiveAgent: (agentId: string) =>
+    invoke<void>("archive_agent", { agentId }),
+  restoreAgent: (agentId: string) =>
+    invoke<void>("restore_agent", { agentId }),
+  readSessionTranscript: (agentId: string) =>
+    invoke<Array<Record<string, unknown> & { type?: string }>>(
+      "read_session_transcript",
+      { agentId },
+    ),
   addRepoToAgent: (agentId: string, repoPath: string) =>
     invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
   allocateDraftName: (used: string[]) =>
@@ -147,4 +179,8 @@ export function onAgentRepoAdded(
   return listen<AgentRepoAddedEvent>("agent:repo_added", (event) =>
     cb(event.payload),
   );
+}
+
+export function onWorkspaceChanged(cb: () => void): Promise<UnlistenFn> {
+  return listen<unknown>("workspace:changed", () => cb());
 }

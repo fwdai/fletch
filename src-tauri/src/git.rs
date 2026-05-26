@@ -149,6 +149,148 @@ pub async fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
     }
 }
 
+/// Resolve a ref to its full SHA. Returns the bare 40-char hex string.
+/// Errors if the ref is unknown or git is unhappy.
+pub async fn rev_parse(repo: &Path, refname: &str) -> Result<String> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", "--verify", refname])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "rev-parse {refname} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Run `git diff --shortstat <a>..<b>` and parse the additions /
+/// deletions counts. Returns zero counts if both refs resolve to the
+/// same commit (git prints nothing in that case).
+pub async fn diff_shortstat(
+    repo: &Path,
+    from_sha: &str,
+    to_sha: &str,
+) -> Result<(u32, u32)> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args([
+            "diff",
+            "--shortstat",
+            &format!("{from_sha}..{to_sha}"),
+        ])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "diff --shortstat failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(parse_shortstat(&line))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_shortstat_typical() {
+        assert_eq!(
+            parse_shortstat(" 3 files changed, 82 insertions(+), 12 deletions(-)"),
+            (82, 12)
+        );
+    }
+
+    #[test]
+    fn parse_shortstat_only_additions() {
+        assert_eq!(
+            parse_shortstat(" 1 file changed, 5 insertions(+)"),
+            (5, 0)
+        );
+    }
+
+    #[test]
+    fn parse_shortstat_only_deletions() {
+        assert_eq!(
+            parse_shortstat(" 2 files changed, 9 deletions(-)"),
+            (0, 9)
+        );
+    }
+
+    #[test]
+    fn parse_shortstat_empty() {
+        assert_eq!(parse_shortstat(""), (0, 0));
+    }
+}
+
+fn parse_shortstat(s: &str) -> (u32, u32) {
+    let mut adds = 0u32;
+    let mut dels = 0u32;
+    for chunk in s.split(',').map(|c| c.trim()) {
+        let mut parts = chunk.splitn(2, ' ');
+        let n: u32 = match parts.next().and_then(|t| t.parse().ok()) {
+            Some(v) => v,
+            None => continue,
+        };
+        let label = parts.next().unwrap_or("");
+        if label.starts_with("insertion") {
+            adds = n;
+        } else if label.starts_with("deletion") {
+            dels = n;
+        }
+    }
+    (adds, dels)
+}
+
+/// Create a branch at a specific commit. Errors if the branch already
+/// exists or the SHA isn't reachable.
+pub async fn branch_create_at(repo: &Path, name: &str, sha: &str) -> Result<()> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["branch", name, sha])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "branch {name} {sha} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Create a worktree at `worktree_path` checked out on an existing
+/// branch. Counterpart to `worktree_add_detached` — used by restore.
+pub async fn worktree_add_branch(
+    repo: &Path,
+    worktree_path: &Path,
+    branch: &str,
+) -> Result<()> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args([
+            "worktree",
+            "add",
+            worktree_path.to_str().ok_or_else(|| {
+                Error::InvalidPath(worktree_path.display().to_string())
+            })?,
+            branch,
+        ])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "worktree add {branch} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 /// Force-delete a local branch. Returns Ok even if the branch never
 /// existed in the first place — that's exactly the state the caller
 /// usually wants to converge on. Errors only for genuine git failures

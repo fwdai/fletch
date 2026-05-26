@@ -8,6 +8,7 @@ import {
   onAgentStatus,
   onAgentTask,
   onAgentView,
+  onWorkspaceChanged,
   type AgentRecord,
   type AgentView,
   type Workspace,
@@ -168,6 +169,12 @@ interface AppState {
   drafts: DraftAgent[];
   activeDraftId: string | null;
   settingsOpen: boolean;
+  /** True when the History view owns the main pane. Takes precedence
+   *  over `selectedAgentId` / `activeDraftId` for rendering. */
+  historyOpen: boolean;
+  /** When in history mode, the archived agent whose chat preview is
+   *  being shown. `null` = list view. */
+  selectedHistoryAgentId: string | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   leftWidth: number;
@@ -196,6 +203,11 @@ interface AppState {
   resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;
+  archive: (id: string) => Promise<void>;
+  restore: (id: string) => Promise<void>;
+  /** Read the on-disk claude JSONL for an archived agent and replay
+   *  it through the same handler that processes live events. */
+  loadHistoryTranscript: (id: string) => Promise<void>;
   clearError: () => void;
 
   // drafts
@@ -209,6 +221,8 @@ interface AppState {
 
   // UI
   toggleSettings: (open?: boolean) => void;
+  toggleHistory: (open?: boolean) => void;
+  selectHistoryAgent: (id: string | null) => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   setLeftWidth: (w: number) => void;
@@ -354,9 +368,23 @@ function handleManagedEvent(
   if (type === "user") {
     const message = (ev.message ?? {}) as Record<string, unknown>;
     const content = message.content;
-    if (Array.isArray(content)) {
-      let patches: Partial<AppState> = {};
-      let working: AppState = state;
+    let patches: Partial<AppState> = {};
+    let working: AppState = state;
+    const appendUserText = (text: string) => {
+      const list = working.managedLogs[agentId] ?? [];
+      const last = list[list.length - 1];
+      // Live mode appends the user message directly via sendUserMessage
+      // before this event arrives; skip if claude is echoing the same
+      // text right back.
+      if (last && last.kind === "user" && last.text === text) return;
+      const p = appendItem(working, agentId, { kind: "user", text });
+      working = { ...working, ...p } as AppState;
+      patches = mergePatches(patches, p);
+    };
+    if (typeof content === "string") {
+      // JSONL serializes simple user messages as a bare string.
+      if (content.trim().length > 0) appendUserText(content);
+    } else if (Array.isArray(content)) {
       for (const block of content as Array<Record<string, unknown>>) {
         if (block.type === "tool_result") {
           const p = appendItem(working, agentId, {
@@ -367,11 +395,12 @@ function handleManagedEvent(
           });
           working = { ...working, ...p } as AppState;
           patches = mergePatches(patches, p);
+        } else if (block.type === "text" && typeof block.text === "string") {
+          if (block.text.trim().length > 0) appendUserText(block.text);
         }
       }
-      return patches;
     }
-    return {};
+    return patches;
   }
 
   if (type === "result") {
@@ -430,6 +459,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   drafts: [],
   activeDraftId: null,
   settingsOpen: false,
+  historyOpen: false,
+  selectedHistoryAgentId: null,
   leftCollapsed: false,
   rightCollapsed: false,
   leftWidth: 312,
@@ -535,11 +566,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ workspace: next });
     });
 
+    // Archive / restore reshape `repos` and `archive` on the record,
+    // which `agent:status` alone doesn't cover. The backend emits this
+    // small ping after either operation; we reload the workspace.
+    await onWorkspaceChanged(async () => {
+      const fresh = await api.getWorkspace();
+      if (fresh) set({ workspace: fresh });
+    });
+
     const workspace = await api.getWorkspace();
     set({ workspace });
   },
 
-  selectAgent: (id) => set({ selectedAgentId: id, activeDraftId: null }),
+  selectAgent: (id) =>
+    set({
+      selectedAgentId: id,
+      activeDraftId: null,
+      historyOpen: false,
+      selectedHistoryAgentId: null,
+    }),
 
   addWorkspaceRepo: async (path) => {
     set({ busy: true, lastError: null });
@@ -676,6 +721,68 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  archive: async (id) => {
+    try {
+      await api.archiveAgent(id);
+      clearOutputBuffer(id);
+      const fresh = await api.getWorkspace();
+      set((s) => {
+        // Drop ephemeral state for the agent — the user can re-open
+        // the transcript through History, which loads it fresh from disk.
+        const { [id]: _l, ...restLogs } = s.managedLogs;
+        const { [id]: _b, ...restBusy } = s.managedBusy;
+        const { [id]: _t, ...restTokens } = s.tokens;
+        return {
+          workspace: fresh ?? s.workspace,
+          selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
+          managedLogs: restLogs,
+          managedBusy: restBusy,
+          tokens: restTokens,
+        };
+      });
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  restore: async (id) => {
+    try {
+      await api.restoreAgent(id);
+      const fresh = await api.getWorkspace();
+      // Keep the JSONL-replayed log in place — claude's `--resume` in
+      // stream-json mode emits new events on top of the existing
+      // conversation, so the chat view picks up exactly where the
+      // preview left off.
+      set((s) => ({
+        workspace: fresh ?? s.workspace,
+        historyOpen: false,
+        selectedHistoryAgentId: null,
+        selectedAgentId: id,
+      }));
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  loadHistoryTranscript: async (id) => {
+    try {
+      const events = await api.readSessionTranscript(id);
+      // Reset any prior log for this id, then replay each event
+      // through the same reducer that processes live stream-json.
+      set((s) => ({
+        managedLogs: { ...s.managedLogs, [id]: [] },
+        managedBusy: { ...s.managedBusy, [id]: false },
+      }));
+      for (const ev of events) {
+        set((state) =>
+          handleManagedEvent(state, id, ev as Record<string, unknown>),
+        );
+      }
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
   clearError: () => set({ lastError: null }),
 
   // ── drafts ─────────────────────────────────────────────────────────────────
@@ -765,6 +872,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ── UI ──────────────────────────────────────────────────────────────────────
   toggleSettings: (open) =>
     set((s) => ({ settingsOpen: open ?? !s.settingsOpen })),
+  toggleHistory: (open) =>
+    set((s) => {
+      const next = open ?? !s.historyOpen;
+      // Closing history clears any in-flight detail selection so the
+      // next open lands on the list.
+      return next
+        ? { historyOpen: true }
+        : { historyOpen: false, selectedHistoryAgentId: null };
+    }),
+  selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
   toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
   setLeftWidth: (w) => set({ leftWidth: w }),

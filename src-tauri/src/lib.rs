@@ -62,6 +62,9 @@ pub fn run() {
             commands::resume_agent,
             commands::stop_agent,
             commands::discard_agent,
+            commands::archive_agent,
+            commands::restore_agent,
+            commands::read_session_transcript,
             commands::add_repo_to_agent,
             commands::allocate_draft_name,
         ])
