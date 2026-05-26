@@ -22,7 +22,7 @@ A Tauri 2 app. Frontend is React 18 + TypeScript + Zustand + xterm.js. The Rust 
 
 - macOS 13+ (`sandbox-exec` is macOS-only)
 - Claude Code installed. The app looks for `claude` on `PATH`, via a login shell, and common install locations such as `~/.local/bin/claude`, `/opt/homebrew/bin/claude`, and `/usr/local/bin/claude`.
-- Node 20+, npm
+- [Bun](https://bun.com/) 1.3+
 - Rust (stable)
 
 That's it. No VM, no Docker, no Tart, no install dance.
@@ -30,8 +30,8 @@ That's it. No VM, no Docker, no Tart, no install dance.
 ## First-time setup
 
 ```bash
-npm install
-npm run tauri dev
+bun install
+bun tauri dev
 ```
 
 ## Project layout
