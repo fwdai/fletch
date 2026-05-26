@@ -1,10 +1,11 @@
 import { useState } from "react";
+import type { MouseEvent } from "react";
 import type { AgentRecord, AgentStatus } from "../../api";
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
 import { LANDMARK_NAMES } from "../../data/landmarks";
 import { DEFAULT_PROVIDER_ID } from "../../data/providers";
-import { LandmarkGlyph } from "../Icon";
+import { Icon, LandmarkGlyph } from "../Icon";
 import { formatAge, formatTokens } from "../../util/format";
 import { useMinuteClock } from "../../util/hooks";
 import { AgentStatsPopover, type AgentStats } from "./AgentStatsPopover";
@@ -35,6 +36,8 @@ export function AgentRow(props: Props) {
 
 function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
   const rawTokens = useAppStore((s) => s.tokens[agent.id]);
+  const stop = useAppStore((s) => s.stop);
+  const archive = useAppStore((s) => s.archive);
   const now = useMinuteClock();
   const [statsOpen, setStatsOpen] = useState(false);
 
@@ -54,6 +57,21 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
     contextPct: contextPctFromTokens(rawTokens),
   };
 
+  const stoppable =
+    agent.status === "spawning" ||
+    agent.status === "running" ||
+    agent.status === "idle";
+  const archivable = agent.status === "stopped" || agent.status === "error";
+
+  const onStop = (e: MouseEvent) => {
+    e.stopPropagation();
+    stop(agent.id);
+  };
+  const onArchive = (e: MouseEvent) => {
+    e.stopPropagation();
+    archive(agent.id);
+  };
+
   return (
     <div
       className={`agent ${active ? "active" : ""} ${showGlyph ? "with-glyph" : ""}`}
@@ -68,6 +86,28 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
         )}
         <span className="ag-name">{agent.name}</span>
         <span className="ag-provider-inline">· {DEFAULT_PROVIDER_ID}</span>
+        <span className="ag-actions">
+          {stoppable && (
+            <button
+              className="ag-act tip"
+              data-tip="Stop"
+              onClick={onStop}
+              aria-label="Stop"
+            >
+              <Icon name="stop" size={11} />
+            </button>
+          )}
+          {archivable && (
+            <button
+              className="ag-act tip"
+              data-tip="Archive"
+              onClick={onArchive}
+              aria-label="Archive"
+            >
+              <Icon name="archive" size={11} />
+            </button>
+          )}
+        </span>
       </div>
       <div className="agent-sub">
         <span className="a-branch">{taskOrBranch}</span>

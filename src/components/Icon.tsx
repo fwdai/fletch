@@ -1,6 +1,8 @@
 import type { ComponentType, CSSProperties, ReactNode, SVGProps } from "react";
 import { createElement } from "react";
 import {
+  Archive,
+  ArchiveRestore,
   ArrowUp,
   Check,
   ChevronDown,
@@ -17,6 +19,7 @@ import {
   GitCommitHorizontal,
   GitMerge,
   GitPullRequest,
+  History,
   Inbox,
   Minus,
   Moon,
@@ -104,6 +107,9 @@ const ICON_COMPONENTS = {
   trash: Trash2,
   thinking: Ellipsis,
   wrench: Wrench,
+  history: History,
+  archive: Archive,
+  archiveRestore: ArchiveRestore,
   moon: Moon,
   sun: Sun,
 } satisfies Record<string, ComponentType<IconComponentProps>>;

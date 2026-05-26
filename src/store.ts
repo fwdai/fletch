@@ -8,6 +8,7 @@ import {
   onAgentStatus,
   onAgentTask,
   onAgentView,
+  onWorkspaceChanged,
   type AgentRecord,
   type AgentView,
   type Workspace,
@@ -200,6 +201,12 @@ interface AppState {
   drafts: DraftAgent[];
   activeDraftId: string | null;
   settingsOpen: boolean;
+  /** True when the History view owns the main pane. Takes precedence
+   *  over `selectedAgentId` / `activeDraftId` for rendering. */
+  historyOpen: boolean;
+  /** When in history mode, the archived agent whose chat preview is
+   *  being shown. `null` = list view. */
+  selectedHistoryAgentId: string | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   leftWidth: number;
@@ -228,6 +235,11 @@ interface AppState {
   resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;
+  archive: (id: string) => Promise<void>;
+  restore: (id: string) => Promise<void>;
+  /** Read the on-disk claude JSONL for an archived agent and replay
+   *  it through the same handler that processes live events. */
+  loadHistoryTranscript: (id: string) => Promise<void>;
   clearError: () => void;
 
   // drafts
@@ -241,6 +253,8 @@ interface AppState {
 
   // UI
   toggleSettings: (open?: boolean) => void;
+  toggleHistory: (open?: boolean) => void;
+  selectHistoryAgent: (id: string | null) => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   setLeftWidth: (w: number) => void;
@@ -463,6 +477,10 @@ function handleManagedEvent(
   if (type === "user") {
     const message = asRecord(ev.message);
     const content = message.content;
+    // `contentText` covers both bare-string user messages (JSONL
+    // serializes simple turns that way) and arrays of text blocks.
+    // `appendUserIfMissing` dedupes against live mode, which adds
+    // the user message via `sendUserMessage` before claude echoes it.
     const text = contentText(content);
     let patches = appendUserIfMissing(state, agentId, text);
     let working: AppState = { ...state, ...patches } as AppState;
@@ -479,7 +497,6 @@ function handleManagedEvent(
           patches = mergePatches(patches, p);
         }
       }
-      return patches;
     }
     return patches;
   }
@@ -554,6 +571,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   drafts: [],
   activeDraftId: null,
   settingsOpen: false,
+  historyOpen: false,
+  selectedHistoryAgentId: null,
   leftCollapsed: false,
   rightCollapsed: false,
   leftWidth: 312,
@@ -665,11 +684,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
     });
 
+    // Archive / restore reshape `repos` and `archive` on the record,
+    // which `agent:status` alone doesn't cover. The backend emits this
+    // small ping after either operation; we reload the workspace.
+    await onWorkspaceChanged(async () => {
+      const fresh = await api.getWorkspace();
+      if (fresh) set({ workspace: fresh });
+    });
+
     const workspace = await api.getWorkspace();
     set({ workspace });
   },
 
-  selectAgent: (id) => set({ selectedAgentId: id, activeDraftId: null }),
+  selectAgent: (id) =>
+    set({
+      selectedAgentId: id,
+      activeDraftId: null,
+      historyOpen: false,
+      selectedHistoryAgentId: null,
+    }),
 
   addWorkspaceRepo: async (path) => {
     set({ busy: true, lastError: null });
@@ -809,6 +842,68 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  archive: async (id) => {
+    try {
+      await api.archiveAgent(id);
+      clearOutputBuffer(id);
+      const fresh = await api.getWorkspace();
+      set((s) => {
+        // Drop ephemeral state for the agent — the user can re-open
+        // the transcript through History, which loads it fresh from disk.
+        const { [id]: _l, ...restLogs } = s.managedLogs;
+        const { [id]: _b, ...restBusy } = s.managedBusy;
+        const { [id]: _t, ...restTokens } = s.tokens;
+        return {
+          workspace: fresh ?? s.workspace,
+          selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
+          managedLogs: restLogs,
+          managedBusy: restBusy,
+          tokens: restTokens,
+        };
+      });
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  restore: async (id) => {
+    try {
+      await api.restoreAgent(id);
+      const fresh = await api.getWorkspace();
+      // Keep the JSONL-replayed log in place — claude's `--resume` in
+      // stream-json mode emits new events on top of the existing
+      // conversation, so the chat view picks up exactly where the
+      // preview left off.
+      set((s) => ({
+        workspace: fresh ?? s.workspace,
+        historyOpen: false,
+        selectedHistoryAgentId: null,
+        selectedAgentId: id,
+      }));
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  loadHistoryTranscript: async (id) => {
+    try {
+      const events = await api.readSessionTranscript(id);
+      // Reset any prior log for this id, then replay each event
+      // through the same reducer that processes live stream-json.
+      set((s) => ({
+        managedLogs: { ...s.managedLogs, [id]: [] },
+        managedBusy: { ...s.managedBusy, [id]: false },
+      }));
+      for (const ev of events) {
+        set((state) =>
+          handleManagedEvent(state, id, ev as Record<string, unknown>),
+        );
+      }
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
   clearError: () => set({ lastError: null }),
 
   // ── drafts ─────────────────────────────────────────────────────────────────
@@ -904,6 +999,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ── UI ──────────────────────────────────────────────────────────────────────
   toggleSettings: (open) =>
     set((s) => ({ settingsOpen: open ?? !s.settingsOpen })),
+  toggleHistory: (open) =>
+    set((s) => {
+      const next = open ?? !s.historyOpen;
+      // Closing history clears any in-flight detail selection so the
+      // next open lands on the list.
+      return next
+        ? { historyOpen: true }
+        : { historyOpen: false, selectedHistoryAgentId: null };
+    }),
+  selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
   toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
   setLeftWidth: (w) => set({ leftWidth: w }),

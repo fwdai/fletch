@@ -74,9 +74,13 @@ export function Sidebar() {
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
   const [npOpen, setNpOpen] = useState(false);
 
+  const liveAgents = useMemo(
+    () => (workspace?.agents ?? []).filter((a) => !a.archive),
+    [workspace?.agents],
+  );
   const groups = useMemo(
-    () => groupByRepo(workspace?.repos ?? [], workspace?.agents ?? [], drafts),
-    [workspace?.repos, workspace?.agents, drafts],
+    () => groupByRepo(workspace?.repos ?? [], liveAgents, drafts),
+    [workspace?.repos, liveAgents, drafts],
   );
   const filtered = useMemo(() => applySearch(groups, query), [groups, query]);
 

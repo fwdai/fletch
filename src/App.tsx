@@ -27,6 +27,7 @@ export function App() {
   const activeDraftId = useAppStore((s) => s.activeDraftId);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
   const workspace = useAppStore((s) => s.workspace);
+  const historyOpen = useAppStore((s) => s.historyOpen);
 
   useEffect(() => { init(); }, [init]);
 
@@ -47,7 +48,8 @@ export function App() {
   const onRightDrag = useSplitter(rightWidth, setRightWidth, "right");
 
   const selectedAgent = workspace?.agents.find((a) => a.id === selectedAgentId);
-  const rightPaneVisible = !rightCollapsed && !activeDraftId && selectedAgent;
+  const rightPaneVisible =
+    !rightCollapsed && !activeDraftId && !historyOpen && selectedAgent;
 
   return (
     <div className="app">
@@ -64,7 +66,7 @@ export function App() {
         <Workspace />
 
         {rightPaneVisible && <div className="splitter" onMouseDown={onRightDrag} />}
-        {!activeDraftId && (
+        {!activeDraftId && !historyOpen && (
           <div
             className={`pane right ${rightCollapsed ? "collapsed" : ""}`}
             style={{ width: rightCollapsed ? 0 : rightWidth }}
