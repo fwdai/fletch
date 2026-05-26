@@ -12,6 +12,8 @@ import {
   type AgentView,
   type Workspace,
 } from "./api";
+import { DEFAULT_PROVIDER_ID } from "./data/providers";
+import { LANDMARK_NAMES, pickLandmark } from "./data/landmarks";
 
 type OutputHandler = (bytes: Uint8Array) => void;
 
@@ -73,6 +75,79 @@ export type ManagedItem =
   | { kind: "system"; text: string }
   | { kind: "result"; text: string; is_error?: boolean };
 
+// ---- Drafts ----------------------------------------------------------------
+// A draft is a new agent the user is about to spawn. It owns a landmark
+// name + chosen provider + base branch; the first message in the
+// composer spawns the real agent and sends the prompt.
+
+export interface DraftAgent {
+  id: string;
+  /** Repo (sidebar group) this draft lives under. */
+  repoPath: string;
+  /** Rolled landmark name; user can re-roll before sending. */
+  name: string;
+  /** Provider id (mocked — only "claude" currently spawns anything). */
+  provider: string;
+  /** Base branch to fork from. */
+  base: string;
+}
+
+// ---- Feature flags & appearance --------------------------------------------
+
+export type ThemeMode = "dark" | "light";
+export type Density = "comfortable" | "compact";
+export type WorkspaceView = "custom" | "native";
+
+export interface FeatureFlags {
+  git: boolean;
+  diff: boolean;
+  run: boolean;
+  terminal: boolean;
+  thinkingBudget: boolean;
+  autoEdit: boolean;
+  statusBar: boolean;
+  tokenUsage: boolean;
+}
+
+const DEFAULT_FEATURES: FeatureFlags = {
+  git: true,
+  diff: false,
+  run: false,
+  terminal: false,
+  thinkingBudget: true,
+  autoEdit: false,
+  statusBar: false,
+  tokenUsage: false,
+};
+
+const FEATURE_KEYS = Object.keys(DEFAULT_FEATURES) as (keyof FeatureFlags)[];
+
+function loadFeatures(): FeatureFlags {
+  try {
+    const raw = localStorage.getItem("amux:features");
+    if (!raw) return DEFAULT_FEATURES;
+    const parsed = JSON.parse(raw) as Partial<FeatureFlags>;
+    return { ...DEFAULT_FEATURES, ...parsed };
+  } catch {
+    return DEFAULT_FEATURES;
+  }
+}
+
+function loadProviderFlags(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem("amux:providers");
+    if (!raw) return {};
+    return JSON.parse(raw) as Record<string, boolean>;
+  } catch {
+    return {};
+  }
+}
+
+function loadString<T extends string>(key: string, fallback: T): T {
+  const v = localStorage.getItem(key);
+  return (v as T) || fallback;
+}
+
 interface AppState {
   workspace: Workspace | null;
   selectedAgentId: string | null;
@@ -87,11 +162,31 @@ interface AppState {
   /** True while a view switch is in flight — disable toggle UI. */
   switchInFlight: Record<string, boolean>;
   /** Most recent turn's `usage.input_tokens` — matches claude's
-   *  `/context`. Populated from the stream-json `result` event;
-   *  custom-view only (native view doesn't deliver structured events).
-   *  In-memory only — resets to empty on app restart. */
+   *  `/context`. */
   tokens: Record<string, number>;
 
+  // ── ephemeral UI state ────────────────────────────────────────────────────
+  drafts: DraftAgent[];
+  activeDraftId: string | null;
+  settingsOpen: boolean;
+  leftCollapsed: boolean;
+  rightCollapsed: boolean;
+  leftWidth: number;
+  rightWidth: number;
+
+  // ── appearance & feature flags ────────────────────────────────────────────
+  theme: ThemeMode;
+  accent: string;
+  density: Density;
+  showLandmarks: boolean;
+  features: FeatureFlags;
+  providerFlags: Record<string, boolean>;
+  /** View mode preference for the workspace pane. Persisted; falls
+   *  back to the agent's own `view` field for native vs. custom
+   *  switching. */
+  viewMode: WorkspaceView;
+
+  // ── actions ────────────────────────────────────────────────────────────────
   init: () => Promise<void>;
   selectAgent: (id: string | null) => void;
   addWorkspaceRepo: (path: string) => Promise<void>;
@@ -103,6 +198,31 @@ interface AppState {
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;
   clearError: () => void;
+
+  // drafts
+  createDraft: (repoPath: string) => void;
+  updateDraft: (id: string, patch: Partial<DraftAgent>) => void;
+  removeDraft: (id: string) => void;
+  selectDraft: (id: string | null) => void;
+  rerollDraftName: (id: string) => void;
+  /** Spawn the real agent for a draft and dispatch the first message. */
+  spawnFromDraft: (id: string, text: string, provider: string) => Promise<void>;
+
+  // UI
+  toggleSettings: (open?: boolean) => void;
+  toggleLeft: () => void;
+  toggleRight: () => void;
+  setLeftWidth: (w: number) => void;
+  setRightWidth: (w: number) => void;
+
+  // appearance
+  setTheme: (t: ThemeMode) => void;
+  setAccent: (a: string) => void;
+  setDensity: (d: Density) => void;
+  setShowLandmarks: (v: boolean) => void;
+  setFeature: <K extends keyof FeatureFlags>(k: K, v: FeatureFlags[K]) => void;
+  setProviderEnabled: (id: string, enabled: boolean) => void;
+  setViewMode: (v: WorkspaceView) => void;
 }
 
 function appendItem(
@@ -253,8 +373,6 @@ function handleManagedEvent(
         is_error: isError,
       }),
     );
-    // Pull the context-window size from `usage.input_tokens` — this is
-    // what claude's `/context` displays.
     const inputTokens = (ev.usage as Record<string, unknown> | undefined)
       ?.input_tokens;
     const tokens =
@@ -268,8 +386,18 @@ function handleManagedEvent(
     };
   }
 
-  // system / init / unknown — ignore in UI
   return {};
+}
+
+/** Landmarks already used by real or draft agents — passed to
+ *  `pickLandmark` so re-rolling avoids collisions. */
+function usedLandmarks(workspace: Workspace | null, drafts: DraftAgent[]): Set<string> {
+  const used = new Set<string>();
+  for (const a of workspace?.agents ?? []) {
+    if (LANDMARK_NAMES.includes(a.name)) used.add(a.name);
+  }
+  for (const d of drafts) used.add(d.name);
+  return used;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -282,6 +410,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   managedBusy: {},
   switchInFlight: {},
   tokens: {},
+
+  drafts: [],
+  activeDraftId: null,
+  settingsOpen: false,
+  leftCollapsed: false,
+  rightCollapsed: false,
+  leftWidth: 256,
+  rightWidth: 320,
+
+  theme: loadString<ThemeMode>("amux:theme", "dark"),
+  accent: loadString<string>("amux:accent", "copper"),
+  density: loadString<Density>("amux:density", "comfortable"),
+  showLandmarks: localStorage.getItem("amux:showLandmarks") !== "0",
+  features: loadFeatures(),
+  providerFlags: loadProviderFlags(),
+  viewMode: loadString<WorkspaceView>("amux:viewMode", "custom"),
 
   init: async () => {
     if (get().initialized) return;
@@ -345,8 +489,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
 
     await onAgentView((e) => {
-      // Backend changed the view (usually our own switchView call).
-      // Reflect on the record so the UI swaps components.
       const ws = get().workspace;
       if (!ws) return;
       set({
@@ -381,7 +523,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ workspace });
   },
 
-  selectAgent: (id) => set({ selectedAgentId: id }),
+  selectAgent: (id) => set({ selectedAgentId: id, activeDraftId: null }),
 
   addWorkspaceRepo: async (path) => {
     set({ busy: true, lastError: null });
@@ -415,9 +557,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           selectedAgentId: rec.id,
         };
         if (view === "custom") {
-          // No initial task / no branch yet — both arrive after the
-          // user's first message. Greet with what we have (the
-          // worktree id and the parent branch we forked from).
           const primaryParent = rec.repos[0]?.parent_branch;
           const parent = primaryParent ? ` from ${primaryParent}` : "";
           const greeting =
@@ -427,7 +566,6 @@ export const useAppStore = create<AppState>((set, get) => ({
             ...state.managedLogs,
             [rec.id]: [{ kind: "system", text: greeting }],
           };
-          // No turn is in flight at spawn — input is enabled.
           patches.managedBusy = { ...state.managedBusy, [rec.id]: false };
         }
         return patches;
@@ -460,24 +598,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   switchView: async (id, view) => {
-    // Important: `claude --print --resume` in stream-json input mode
-    // does NOT replay history on stdout — it loads the session and
-    // waits silently for the next stdin message. So we must NOT clear
-    // managedLogs on a switch — the log is the only record the user
-    // has of prior turns in the custom view.
-    //
-    // The PTY output buffer, on the other hand, *is* re-drawn fresh
-    // by claude's TUI on resume, so we clear it on switch-to-native
-    // to avoid stale frames stacking on top of the new render.
     if (view === "native") {
       clearOutputBuffer(id);
     }
     set((state) => ({
-      // Reset busy so the custom view's input box is enabled
-      // immediately after a switch (we're no longer waiting on a
-      // pre-switch turn).
       managedBusy: { ...state.managedBusy, [id]: false },
       switchInFlight: { ...state.switchInFlight, [id]: true },
+      viewMode: view,
     }));
     try {
       await api.switchView(id, view);
@@ -491,10 +618,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   resume: async (id) => {
-    // Same buffer-clearing logic as a view switch — claude's --resume
-    // doesn't replay events on stdout (custom view stays as-is), but
-    // its PTY redraws history from scratch on resume, so native's
-    // output buffer should start empty to avoid duplicated frames.
     clearOutputBuffer(id);
     set((state) => ({
       managedBusy: { ...state.managedBusy, [id]: false },
@@ -537,4 +660,125 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   clearError: () => set({ lastError: null }),
+
+  // ── drafts ─────────────────────────────────────────────────────────────────
+  createDraft: (repoPath) => {
+    const { workspace, drafts } = get();
+    const name = pickLandmark(usedLandmarks(workspace, drafts));
+    const draft: DraftAgent = {
+      id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      repoPath,
+      name,
+      provider: DEFAULT_PROVIDER_ID,
+      base: "main",
+    };
+    set((s) => ({
+      drafts: [...s.drafts, draft],
+      activeDraftId: draft.id,
+      selectedAgentId: null,
+    }));
+  },
+
+  updateDraft: (id, patch) =>
+    set((s) => ({
+      drafts: s.drafts.map((d) => (d.id === id ? { ...d, ...patch } : d)),
+    })),
+
+  removeDraft: (id) =>
+    set((s) => ({
+      drafts: s.drafts.filter((d) => d.id !== id),
+      activeDraftId: s.activeDraftId === id ? null : s.activeDraftId,
+    })),
+
+  selectDraft: (id) =>
+    set({
+      activeDraftId: id,
+      selectedAgentId: null,
+    }),
+
+  rerollDraftName: (id) => {
+    const { workspace, drafts } = get();
+    const used = usedLandmarks(workspace, drafts);
+    // exclude the current name so the reroll always changes
+    const current = drafts.find((d) => d.id === id);
+    if (current) used.delete(current.name);
+    const next = pickLandmark(new Set([...used, current?.name ?? ""]));
+    set({
+      drafts: drafts.map((d) => (d.id === id ? { ...d, name: next } : d)),
+    });
+  },
+
+  spawnFromDraft: async (id, text, _provider) => {
+    const draft = get().drafts.find((d) => d.id === id);
+    if (!draft) return;
+    set({ busy: true, lastError: null });
+    try {
+      const rec = await api.spawnAgent("custom", draft.repoPath);
+      const fresh = await api.getWorkspace();
+      set((state) => ({
+        workspace: fresh,
+        selectedAgentId: rec.id,
+        drafts: state.drafts.filter((d) => d.id !== id),
+        activeDraftId: null,
+        managedLogs: {
+          ...state.managedLogs,
+          [rec.id]: [{ kind: "user", text }],
+        },
+        managedBusy: { ...state.managedBusy, [rec.id]: true },
+      }));
+      // Fire-and-await the first message
+      await api.sendUserMessage(rec.id, text);
+    } catch (e) {
+      set({ lastError: String(e) });
+    } finally {
+      set({ busy: false });
+    }
+  },
+
+  // ── UI ──────────────────────────────────────────────────────────────────────
+  toggleSettings: (open) =>
+    set((s) => ({ settingsOpen: open ?? !s.settingsOpen })),
+  toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
+  toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
+  setLeftWidth: (w) => set({ leftWidth: w }),
+  setRightWidth: (w) => set({ rightWidth: w }),
+
+  // ── appearance ──────────────────────────────────────────────────────────────
+  setTheme: (t) => {
+    localStorage.setItem("amux:theme", t);
+    set({ theme: t });
+  },
+  setAccent: (a) => {
+    localStorage.setItem("amux:accent", a);
+    set({ accent: a });
+  },
+  setDensity: (d) => {
+    localStorage.setItem("amux:density", d);
+    set({ density: d });
+  },
+  setShowLandmarks: (v) => {
+    localStorage.setItem("amux:showLandmarks", v ? "1" : "0");
+    set({ showLandmarks: v });
+  },
+  setFeature: (k, v) =>
+    set((s) => {
+      const next = { ...s.features, [k]: v };
+      localStorage.setItem(
+        "amux:features",
+        JSON.stringify(
+          Object.fromEntries(FEATURE_KEYS.map((key) => [key, next[key]])),
+        ),
+      );
+      return { features: next };
+    }),
+  setProviderEnabled: (id, enabled) =>
+    set((s) => {
+      const next = { ...s.providerFlags, [id]: enabled };
+      localStorage.setItem("amux:providers", JSON.stringify(next));
+      return { providerFlags: next };
+    }),
+  setViewMode: (v) => {
+    localStorage.setItem("amux:viewMode", v);
+    set({ viewMode: v });
+  },
 }));

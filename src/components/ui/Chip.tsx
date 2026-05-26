@@ -1,0 +1,28 @@
+import type { MouseEvent, ReactNode } from "react";
+
+interface Props {
+  children: ReactNode;
+  onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
+  bordered?: boolean;
+  tip?: string;
+  className?: string;
+}
+
+/** Composer footer chip — model picker, thinking budget, attach,
+ *  base-branch selector. Visual sibling of `IconButton` but with a
+ *  text label slot. */
+export function Chip({ children, onClick, bordered, tip, className }: Props) {
+  const cls = [
+    "c-chip",
+    bordered ? "with-border" : "",
+    tip ? "tip" : "",
+    className ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <button type="button" className={cls} onClick={onClick} data-tip={tip}>
+      {children}
+    </button>
+  );
+}
