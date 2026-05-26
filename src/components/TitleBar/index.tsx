@@ -17,6 +17,10 @@ export function TitleBar() {
   return (
     <div className="tb" data-tauri-drag-region>
       <div className="tb-lights-gutter" data-tauri-drag-region />
+      <div className="tb-logo" data-tauri-drag-region>
+        Quorum
+        <span className="tb-badge">beta</span>
+      </div>
       <Breadcrumb entries={entries} />
       <div className="tb-right">
         <IconButton
@@ -48,7 +52,7 @@ function useCrumb(): CrumbEntry[] {
   const repoLabel = repoPath ? basename(repoPath) : null;
   const repoHue = repoPath ? hueFromString(repoPath) : undefined;
 
-  const entries: CrumbEntry[] = [{ label: "Quorum" }];
+  const entries: CrumbEntry[] = [];
   if (repoLabel) entries.push({ label: repoLabel, mono: true, swatchHue: repoHue });
   if (draft) entries.push({ label: draft.name, mono: true, active: true });
   else if (agent) entries.push({ label: agent.name, mono: true, active: true });
