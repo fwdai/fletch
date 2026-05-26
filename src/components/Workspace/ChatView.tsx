@@ -9,27 +9,90 @@ import { MessageItem } from "./messages/MessageItem";
  *  doesn't care about provider routing yet. */
 export function ChatView({ agent }: { agent: AgentRecord }) {
   const log = useAppStore((s) => s.managedLogs[agent.id]);
+  const transcriptLoading = useAppStore(
+    (s) => s.transcriptLoading[agent.id] ?? false,
+  );
+  const transcriptLoaded = useAppStore(
+    (s) => s.transcriptLoaded[agent.id] ?? false,
+  );
   const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
+  const switchInFlight = useAppStore(
+    (s) => s.switchInFlight[agent.id] ?? false,
+  );
   const send = useAppStore((s) => s.sendUserMessage);
+  const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const wasTranscriptLoading = useRef(false);
+  const hasSession = Boolean(agent.session_id);
+  const hasPriorConversation = agent.task.trim().length > 0;
+
+  useEffect(() => {
+    if (
+      !hasSession ||
+      transcriptLoaded ||
+      transcriptLoading ||
+      switchInFlight
+    ) {
+      return;
+    }
+    if (log !== undefined && !hasPriorConversation) {
+      return;
+    }
+    void loadHistoryTranscript(agent.id);
+  }, [
+    agent.id,
+    hasSession,
+    hasPriorConversation,
+    loadHistoryTranscript,
+    log,
+    switchInFlight,
+    transcriptLoaded,
+    transcriptLoading,
+  ]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    if (wasTranscriptLoading.current && !transcriptLoading) {
+      el.scrollTop = 0;
+      wasTranscriptLoading.current = false;
+      return;
+    }
+    wasTranscriptLoading.current = transcriptLoading;
+    if (transcriptLoading) return;
     el.scrollTop = el.scrollHeight;
-  }, [log]);
+  }, [log, transcriptLoading]);
 
+  const items = log ?? [];
   const canSend =
-    !busy && (agent.status === "running" || agent.status === "idle");
+    !transcriptLoading &&
+    !switchInFlight &&
+    !busy &&
+    (agent.status === "running" || agent.status === "idle");
 
   return (
     <div className="chat">
       <div className="chat-scroll" ref={scrollRef}>
         <div className="chat-inner fade-in" key={agent.id}>
-          {(log ?? []).map((item, i) => (
-            <MessageItem key={i} item={item} />
-          ))}
+          {transcriptLoading && items.length === 0 ? (
+            <div className="writing">
+              <span className="dots">
+                <i /><i /><i />
+              </span>
+              <span>Loading transcript…</span>
+            </div>
+          ) : items.length === 0 && hasPriorConversation ? (
+            <div
+              className="empty-msg"
+              style={{ margin: "40px auto", maxWidth: 360 }}
+            >
+              <div className="et">No transcript available</div>
+              <div>Claude's session file is not on disk for this agent.</div>
+            </div>
+          ) : (
+            items.map((item, i) => <MessageItem key={i} item={item} />)
+          )}
           {busy && (
             <div className="writing">
               <span className="dots">
@@ -46,7 +109,13 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           placeholder={
             canSend
               ? "Send a follow-up — ⌘↵ to send"
-              : busy ? "Waiting…" : "Agent is not ready"
+              : transcriptLoading
+                ? "Loading transcript…"
+                : switchInFlight
+                  ? "Switching view…"
+                : busy
+                  ? "Waiting…"
+                  : "Agent is not ready"
           }
           onSend={({ text }) => send(agent.id, text)}
         />

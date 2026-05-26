@@ -100,6 +100,15 @@ function contentText(content: unknown): string {
     .join("\n");
 }
 
+function transcriptTextContent(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  return asBlockList(content)
+    .filter((block) => block.type === "text" && typeof block.text === "string")
+    .map((block) => String(block.text).trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
 function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
   for (let i = items.length - 1; i >= 0; i -= 1) {
     if (predicate(items[i])) return i;
@@ -187,6 +196,12 @@ interface AppState {
   lastError: string | null;
   initialized: boolean;
   managedLogs: Record<string, ManagedItem[]>;
+  /** True while an on-disk Claude transcript is being replayed into
+   *  the custom-view log. */
+  transcriptLoading: Record<string, boolean>;
+  /** True once the current process has attempted transcript replay for
+   *  an agent. Prevents repeated reloads when a session has no JSONL. */
+  transcriptLoaded: Record<string, boolean>;
   /** True between user sending a turn and claude's `result` event for
    *  that turn. Drives the send-button disabled state and the
    *  "thinking…" indicator. */
@@ -287,7 +302,8 @@ function appendUserIfMissing(
   const trimmed = text.trim();
   if (!trimmed) return {};
   const list = state.managedLogs[agentId] ?? [];
-  if (list.some((item) => item.kind === "user" && item.text === trimmed)) {
+  const last = list[list.length - 1];
+  if (last?.kind === "user" && last.text === trimmed) {
     return {};
   }
   return appendItem(state, agentId, { kind: "user", text: trimmed });
@@ -379,6 +395,46 @@ function mergePatches(
       ...(a.managedLogs ?? {}),
       ...(b.managedLogs ?? {}),
     },
+  };
+}
+
+function transcriptEventsToItems(
+  events: Array<Record<string, unknown>>,
+): ManagedItem[] {
+  const items: ManagedItem[] = [];
+
+  for (const ev of events) {
+    const type = ev.type;
+    if (type !== "user" && type !== "assistant") continue;
+
+    const message = asRecord(ev.message);
+    const text = transcriptTextContent(message.content);
+    if (!text) continue;
+
+    const last = items[items.length - 1];
+    if (type === "user") {
+      if (last?.kind === "user" && last.text === text) continue;
+      items.push({ kind: "user", text });
+    } else {
+      if (last?.kind === "assistant" && last.text === text) continue;
+      items.push({ kind: "assistant", text });
+    }
+  }
+
+  return items;
+}
+
+function replayTranscriptEvents(
+  state: AppState,
+  agentId: string,
+  events: Array<Record<string, unknown>>,
+): Partial<AppState> {
+  return {
+    managedLogs: {
+      ...state.managedLogs,
+      [agentId]: transcriptEventsToItems(events),
+    },
+    managedBusy: { ...state.managedBusy, [agentId]: false },
   };
 }
 
@@ -564,6 +620,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   lastError: null,
   initialized: false,
   managedLogs: {},
+  transcriptLoading: {},
+  transcriptLoaded: {},
   managedBusy: {},
   switchInFlight: {},
   tokens: {},
@@ -789,6 +847,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
     try {
       await api.switchView(id, view);
+      if (view === "custom") {
+        await get().loadHistoryTranscript(id);
+      }
       localStorage.setItem("quorum:viewMode", view);
       set({ viewMode: view });
     } catch (e) {
@@ -827,12 +888,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       const fresh = await api.getWorkspace();
       set((s) => {
         const { [id]: _droppedLog, ...restLogs } = s.managedLogs;
+        const { [id]: _droppedTranscriptLoading, ...restTranscriptLoading } =
+          s.transcriptLoading;
+        const { [id]: _droppedTranscriptLoaded, ...restTranscriptLoaded } =
+          s.transcriptLoaded;
         const { [id]: _droppedBusy, ...restBusy } = s.managedBusy;
         const { [id]: _droppedTokens, ...restTokens } = s.tokens;
         return {
           workspace: fresh,
           selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
           managedLogs: restLogs,
+          transcriptLoading: restTranscriptLoading,
+          transcriptLoaded: restTranscriptLoaded,
           managedBusy: restBusy,
           tokens: restTokens,
         };
@@ -851,12 +918,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Drop ephemeral state for the agent — the user can re-open
         // the transcript through History, which loads it fresh from disk.
         const { [id]: _l, ...restLogs } = s.managedLogs;
+        const { [id]: _tl, ...restTranscriptLoading } = s.transcriptLoading;
+        const { [id]: _td, ...restTranscriptLoaded } = s.transcriptLoaded;
         const { [id]: _b, ...restBusy } = s.managedBusy;
         const { [id]: _t, ...restTokens } = s.tokens;
         return {
           workspace: fresh ?? s.workspace,
           selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
           managedLogs: restLogs,
+          transcriptLoading: restTranscriptLoading,
+          transcriptLoaded: restTranscriptLoaded,
           managedBusy: restBusy,
           tokens: restTokens,
         };
@@ -886,21 +957,29 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   loadHistoryTranscript: async (id) => {
+    if (get().transcriptLoading[id]) return;
+    set((s) => ({
+      transcriptLoading: { ...s.transcriptLoading, [id]: true },
+    }));
     try {
       const events = await api.readSessionTranscript(id);
-      // Reset any prior log for this id, then replay each event
-      // through the same reducer that processes live stream-json.
-      set((s) => ({
-        managedLogs: { ...s.managedLogs, [id]: [] },
-        managedBusy: { ...s.managedBusy, [id]: false },
-      }));
-      for (const ev of events) {
-        set((state) =>
-          handleManagedEvent(state, id, ev as Record<string, unknown>),
-        );
-      }
+      console.log("[custom-view] session transcript JSONL", {
+        agentId: id,
+        events,
+        items: transcriptEventsToItems(events),
+      });
+      // Reset any prior log for this id, then project Claude's saved
+      // JSONL into visible chat messages. Saved session JSONL includes
+      // thinking blocks, tool calls, and tool results; Custom view
+      // history should show the user/assistant conversation.
+      set((state) => replayTranscriptEvents(state, id, events));
     } catch (e) {
       set({ lastError: String(e) });
+    } finally {
+      set((s) => ({
+        transcriptLoading: { ...s.transcriptLoading, [id]: false },
+        transcriptLoaded: { ...s.transcriptLoaded, [id]: true },
+      }));
     }
   },
 
