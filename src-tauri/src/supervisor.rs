@@ -70,6 +70,7 @@ pub struct Supervisor {
     pub agents: Mutex<HashMap<String, Agent>>,
     pub generations: Mutex<HashMap<String, u64>>,
     pub activities: Mutex<HashMap<String, Box<dyn Activity>>>,
+    pub native_input_lines: Mutex<HashMap<String, String>>,
 }
 
 impl Supervisor {
@@ -79,6 +80,7 @@ impl Supervisor {
             agents: Mutex::new(HashMap::new()),
             generations: Mutex::new(HashMap::new()),
             activities: Mutex::new(HashMap::new()),
+            native_input_lines: Mutex::new(HashMap::new()),
         }
     }
 
@@ -384,10 +386,10 @@ impl Supervisor {
                 .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
             agent.write_pty(bytes)?;
         }
-        mark_user_turn_started(&self, app, agent_id);
-        let text = String::from_utf8_lossy(bytes);
-        let trimmed = text.trim_end_matches(['\r', '\n']);
-        on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), trimmed.to_string());
+        for submitted in observe_native_input(&self, agent_id, bytes) {
+            mark_user_turn_started(&self, app, agent_id);
+            on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), submitted);
+        }
         Ok(())
     }
 
@@ -432,6 +434,7 @@ impl Supervisor {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
+        self.native_input_lines.lock().remove(agent_id);
 
         self.workspace.update_agent_view(agent_id, new_view)?;
         let _ = app.emit(
@@ -467,6 +470,7 @@ impl Supervisor {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
+        self.native_input_lines.lock().remove(agent_id);
         match self
             .workspace
             .update_agent_status(agent_id, AgentStatus::Stopped, None)
@@ -487,6 +491,7 @@ impl Supervisor {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
+        self.native_input_lines.lock().remove(agent_id);
 
         // Tear down each tracked repo's worktree + branch.
         for repo in &repos {
@@ -601,6 +606,89 @@ fn spawn_managed_agent(
     )
 }
 
+fn observe_native_input(sup: &Supervisor, agent_id: &str, bytes: &[u8]) -> Vec<String> {
+    let mut submitted = Vec::new();
+    let mut lines = sup.native_input_lines.lock();
+    let line = lines.entry(agent_id.to_string()).or_default();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' | b'\n' => {
+                let trimmed = line.trim().to_string();
+                line.clear();
+                if !trimmed.is_empty() {
+                    submitted.push(trimmed);
+                }
+                i += 1;
+            }
+            0x7f | 0x08 => {
+                line.pop();
+                i += 1;
+            }
+            0x03 | 0x15 => {
+                line.clear();
+                i += 1;
+            }
+            0x1b => {
+                i = skip_escape_sequence(bytes, i);
+            }
+            b if b < 0x20 => {
+                i += 1;
+            }
+            _ => match std::str::from_utf8(&bytes[i..]) {
+                Ok(rest) => {
+                    if let Some(ch) = rest.chars().next() {
+                        line.push(ch);
+                        i += ch.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let valid = e.valid_up_to();
+                    if valid > 0 {
+                        if let Ok(s) = std::str::from_utf8(&bytes[i..i + valid]) {
+                            if let Some(ch) = s.chars().next() {
+                                line.push(ch);
+                                i += ch.len_utf8();
+                            } else {
+                                i += valid;
+                            }
+                        } else {
+                            i += valid;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            },
+        }
+    }
+
+    submitted
+}
+
+fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
+    let mut i = start + 1;
+    if i < bytes.len() && bytes[i] == b'[' {
+        i += 1;
+        while i < bytes.len() {
+            let b = bytes[i];
+            i += 1;
+            if (0x40..=0x7e).contains(&b) {
+                break;
+            }
+        }
+        return i;
+    }
+    if i < bytes.len() {
+        i + 1
+    } else {
+        i
+    }
+}
+
 /// Fire-and-forget handler for the user's first message: persists it
 /// as the agent's `task` and kicks branch creation for every
 /// branchless tracked repo.
@@ -612,6 +700,9 @@ fn on_first_user_message(
 ) {
     let trimmed = text.trim().to_string();
     if trimmed.is_empty() {
+        return;
+    }
+    if trimmed.starts_with('/') {
         return;
     }
 
@@ -832,6 +923,7 @@ fn apply_exit_if_current(
 
     sup.agents.lock().remove(agent_id);
     sup.activities.lock().remove(agent_id);
+    sup.native_input_lines.lock().remove(agent_id);
 
     let (status, err) = if success {
         (AgentStatus::Stopped, None)

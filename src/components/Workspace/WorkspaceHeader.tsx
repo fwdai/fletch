@@ -14,7 +14,6 @@ interface Props {
 }
 
 export function WorkspaceHeader({ agent }: Props) {
-  const viewMode = useAppStore((s) => s.viewMode);
   const switchView = useAppStore((s) => s.switchView);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id]);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
@@ -47,7 +46,7 @@ export function WorkspaceHeader({ agent }: Props) {
       </div>
 
       <ViewToggle
-        value={viewMode}
+        value={agent.view}
         onChange={(v) => switchView(agent.id, v)}
         disabled={switchInFlight}
       />
