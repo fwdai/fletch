@@ -99,6 +99,8 @@ export const api = {
     invoke<void>("discard_agent", { agentId }),
   addRepoToAgent: (agentId: string, repoPath: string) =>
     invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
+  allocateDraftName: (used: string[]) =>
+    invoke<string>("allocate_draft_name", { used }),
 };
 
 export function onAgentOutput(

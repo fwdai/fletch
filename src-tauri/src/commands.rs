@@ -5,12 +5,21 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use crate::error::Result;
+use crate::names;
 use crate::supervisor::Supervisor;
 use crate::workspace::{AgentRecord, AgentView, TrackedRepo, Workspace};
 
 #[tauri::command]
 pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace> {
     supervisor.current_workspace()
+}
+
+/// Allocate a fresh name from the shared place pool for a draft agent.
+/// Frontend passes the names already taken (real agents + other drafts) so
+/// the picker avoids collisions.
+#[tauri::command]
+pub fn allocate_draft_name(used: Vec<String>) -> String {
+    names::allocate(&used.into_iter().collect())
 }
 
 #[tauri::command]

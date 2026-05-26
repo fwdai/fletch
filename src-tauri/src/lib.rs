@@ -63,6 +63,7 @@ pub fn run() {
             commands::stop_agent,
             commands::discard_agent,
             commands::add_repo_to_agent,
+            commands::allocate_draft_name,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quorum");

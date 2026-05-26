@@ -1,4 +1,5 @@
-// Worktree names + tiny location glyphs.
+// Tiny location glyphs keyed by place name. The names themselves come
+// from the backend (`names.rs`); this file only owns the visual side.
 
 import type { ReactNode } from "react";
 import { createElement, Fragment } from "react";
@@ -41,20 +42,3 @@ export const LANDMARK_GLYPHS: Record<string, ReactNode> = {
 };
 
 export const LANDMARK_NAMES = Object.keys(LANDMARK_GLYPHS);
-
-export const LANDMARK_FALLBACK = [
-  "fjord",
-  "kunlun",
-  "iguazu",
-  "tasman",
-  "norfolk",
-  "saharan",
-];
-
-/** Pick a landmark name not currently in `used`. Falls back to the
- *  fallback pool if all primary landmarks are taken. */
-export function pickLandmark(used: Set<string>): string {
-  const free = LANDMARK_NAMES.filter((n) => !used.has(n));
-  const pool = free.length > 0 ? free : LANDMARK_FALLBACK;
-  return pool[Math.floor(Math.random() * pool.length)];
-}
