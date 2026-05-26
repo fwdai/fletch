@@ -1,10 +1,9 @@
 import { EMPTY_AGENTS, useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
-import { Composer } from "../Composer";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { ChatView } from "./ChatView";
-import { NativeView, useNativeSend } from "./NativeView";
+import { NativeView } from "./NativeView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
 import type { AgentRecord } from "../../api";
 
@@ -17,7 +16,6 @@ export function Workspace() {
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const drafts = useAppStore((s) => s.drafts);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
-  const viewMode = useAppStore((s) => s.viewMode);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
 
@@ -53,7 +51,7 @@ export function Workspace() {
   return (
     <div className="pane center fade-in" key={agent.id}>
       <WorkspaceHeader agent={agent} />
-      {viewMode === "native" ? (
+      {agent.view === "native" ? (
         <NativeBody agent={agent} />
       ) : (
         <ChatView agent={agent} />
@@ -63,21 +61,9 @@ export function Workspace() {
 }
 
 function NativeBody({ agent }: { agent: AgentRecord }) {
-  // Wraps NativeView + a Composer below it that writes to the PTY.
-  // Native and custom share the composer shell so the bottom of the
-  // window always feels the same.
-  const { canSend, send } = useNativeSend(agent);
   return (
     <div className="chat" style={{ background: "#1a1c20" }}>
       <NativeView agent={agent} />
-      <div className="composer-wrap" style={{ background: "var(--bg-1)" }}>
-        <Composer
-          defaultProvider="claude"
-          disabled={!canSend}
-          placeholder={canSend ? "Message claude — ⌘↵ to send" : "Agent is not ready"}
-          onSend={({ text }) => send(text)}
-        />
-      </div>
     </div>
   );
 }

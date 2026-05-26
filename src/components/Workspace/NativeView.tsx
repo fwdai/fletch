@@ -1,15 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { api, type AgentRecord } from "../../api";
 import { getOutputBuffer, registerOutputSink } from "../../store";
 
-/** Native view: claude's TUI is streamed verbatim into xterm. We
- *  ship newlines from the composer (via `Composer`) by writing
- *  `<text>\r` to the PTY. Claude's own input prompt remains visible
- *  inside the terminal — that's deliberate. The terminal fills the
- *  body; the composer below it is owned by `Workspace`. */
+/** Native view: Claude's Ink TUI is streamed verbatim into xterm.
+ *  xterm owns stdin too, so slash commands, paste, arrows, escape, and
+ *  other terminal interactions go straight to the PTY. */
 export function NativeView({ agent }: { agent: AgentRecord }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -20,16 +18,18 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
     const term = new Terminal({
       fontFamily: "ui-monospace, 'SF Mono', Menlo, monospace",
       fontSize: 13,
-      cursorBlink: false,
-      cursorStyle: "underline",
-      disableStdin: true,
+      cursorBlink: true,
+      cursorStyle: "block",
       theme: {
         background: "#1a1c20",
         foreground: "#e6e8eb",
-        cursor: "#1a1c20",
+        cursor: "#e6e8eb",
+        cursorAccent: "#1a1c20",
         selectionBackground: "#3a3f4a",
       },
       scrollback: 5000,
+      allowProposedApi: false,
+      macOptionIsMeta: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -48,6 +48,12 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
       api.resizeAgent(agent.id, cols, rows).catch(() => {});
     });
 
+    const onDataDisposer = term.onData((data) => {
+      api.writeToAgent(agent.id, data).catch((err) => {
+        console.error("writeToAgent failed", err);
+      });
+    });
+
     const unregister = registerOutputSink(agent.id, (bytes) => {
       term.write(bytes);
     });
@@ -56,12 +62,14 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
       try { fit.fit(); } catch { /* container may be hidden */ }
     });
     ro.observe(el);
+    term.focus();
 
     return () => {
       cancelAnimationFrame(initialFit);
       ro.disconnect();
       unregister();
       onResizeDisposer.dispose();
+      onDataDisposer.dispose();
       term.dispose();
     };
   }, [agent.id]);
@@ -72,39 +80,10 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
       style={{
         flex: 1,
         minHeight: 0,
-        padding: "12px 16px",
+        padding: "8px 10px",
         background: "#1a1c20",
+        overflow: "hidden",
       }}
     />
   );
-}
-
-/** Send a single message to the PTY (newlines collapsed to spaces so
- *  ink-based TUIs treat the whole text as one turn). Exported so the
- *  Workspace can wire its composer to it. */
-export async function sendToPty(agentId: string, text: string, setBusy?: (b: boolean) => void) {
-  const t = text.trim();
-  if (!t) return;
-  setBusy?.(true);
-  try {
-    const normalized = t.replace(/\r?\n/g, " ");
-    await api.writeToAgent(agentId, normalized + "\r");
-  } catch (err) {
-    console.error("writeToAgent failed", err);
-  } finally {
-    setBusy?.(false);
-  }
-}
-
-/** Wrapper that exposes a busy flag for the composer disabled state.
- *  Local to the Native body so the Workspace doesn't need to track
- *  per-keystroke writes. */
-export function useNativeSend(agent: AgentRecord) {
-  const [sending, setSending] = useState(false);
-  const canSend =
-    !sending && (agent.status === "running" || agent.status === "idle");
-  return {
-    canSend,
-    send: (text: string) => sendToPty(agent.id, text, setSending),
-  };
 }

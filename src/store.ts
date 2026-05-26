@@ -283,6 +283,25 @@ function mergePatches(
   };
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function sendWhenAgentReady(send: () => Promise<void>) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      await send();
+      return;
+    } catch (e) {
+      lastError = e;
+      if (!String(e).includes("agent not found")) {
+        throw e;
+      }
+      await sleep(250);
+    }
+  }
+  throw lastError;
+}
+
 function handleManagedEvent(
   state: AppState,
   agentId: string,
@@ -604,10 +623,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       managedBusy: { ...state.managedBusy, [id]: false },
       switchInFlight: { ...state.switchInFlight, [id]: true },
-      viewMode: view,
     }));
     try {
       await api.switchView(id, view);
+      localStorage.setItem("quorum:viewMode", view);
+      set({ viewMode: view });
     } catch (e) {
       set({ lastError: String(e) });
     } finally {
@@ -713,21 +733,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!draft) return;
     set({ busy: true, lastError: null });
     try {
-      const rec = await api.spawnAgent("custom", draft.repoPath);
+      const view = get().viewMode;
+      const rec = await api.spawnAgent(view, draft.repoPath);
       const fresh = await api.getWorkspace();
-      set((state) => ({
-        workspace: fresh,
-        selectedAgentId: rec.id,
-        drafts: state.drafts.filter((d) => d.id !== id),
-        activeDraftId: null,
-        managedLogs: {
-          ...state.managedLogs,
-          [rec.id]: [{ kind: "user", text }],
-        },
-        managedBusy: { ...state.managedBusy, [rec.id]: true },
-      }));
-      // Fire-and-await the first message
-      await api.sendUserMessage(rec.id, text);
+      set((state) => {
+        const patches: Partial<AppState> = {
+          workspace: fresh,
+          selectedAgentId: rec.id,
+          drafts: state.drafts.filter((d) => d.id !== id),
+          activeDraftId: null,
+        };
+        if (view === "custom") {
+          patches.managedLogs = {
+            ...state.managedLogs,
+            [rec.id]: [{ kind: "user", text }],
+          };
+          patches.managedBusy = { ...state.managedBusy, [rec.id]: true };
+        }
+        return patches;
+      });
+      if (view === "native") {
+        await sendWhenAgentReady(() =>
+          api.writeToAgent(rec.id, text.replace(/\r?\n/g, " ") + "\r"),
+        );
+      } else {
+        await sendWhenAgentReady(() => api.sendUserMessage(rec.id, text));
+      }
     } catch (e) {
       set({ lastError: String(e) });
     } finally {
