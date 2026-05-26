@@ -416,7 +416,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   settingsOpen: false,
   leftCollapsed: false,
   rightCollapsed: false,
-  leftWidth: 256,
+  leftWidth: 312,
   rightWidth: 320,
 
   theme: loadString<ThemeMode>("quorum:theme", "dark"),

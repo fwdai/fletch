@@ -113,7 +113,7 @@ button { cursor: default; }
  * top-left (~80px wide); we reserve that gutter via .tb-lights-gutter
  * so the right-side controls and the centered breadcrumb don't overlap. */
 .tb {
-  height: 32px; flex-shrink: 0;
+  height: 36px; flex-shrink: 0;
   display: flex; align-items: center;
   padding: 0 10px;
   border-bottom: 1px solid var(--bd-soft);
@@ -121,6 +121,33 @@ button { cursor: default; }
   z-index: 20;
 }
 .tb-lights-gutter { width: 76px; flex-shrink: 0; }
+.tb-logo {
+  margin-left: 12px;
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  color: var(--fg-0);
+  user-select: none;
+  pointer-events: none;
+}
+.tb-badge {
+  display: inline-flex; align-items: center;
+  height: 16px;
+  font-family: var(--font-sans);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  background: color-mix(in oklch, var(--fg-0) 7%, transparent);
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  line-height: 1;
+  position: relative;
+  top: 1px;
+}
 .tb-crumb {
   position: absolute; left: 50%; top: 50%;
   transform: translate(-50%, -50%);
@@ -258,7 +285,8 @@ button { cursor: default; }
 .proj { margin-bottom: 4px; }
 .proj-h {
   display: flex; align-items: center; gap: 7px;
-  padding: 7px 8px;
+  padding: 0 8px;
+  height: 32px;
   border-radius: var(--r-sm);
   font-size: 12.5px; color: var(--fg-0);
   font-weight: 500;
@@ -401,7 +429,8 @@ button { cursor: default; }
 .agent-new svg { width: 11px; height: 11px; }
 
 .side-foot {
-  padding: 10px 12px;
+  height: 52px;
+  padding: 0 12px;
   border-top: 1px solid var(--bd-soft);
   display: flex; align-items: center; gap: 10px;
   flex-shrink: 0;
