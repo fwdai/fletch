@@ -1,12 +1,12 @@
 [package]
-name = "amux"
+name = "quorum"
 version = "0.1.1"
 description = "Spawn coding agents in isolated sandboxes"
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "amux_lib"
+name = "quorum_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

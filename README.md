@@ -1,4 +1,4 @@
-# amux
+# Quorum
 
 > Run multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions against one repo, each in its own git worktree, sandbox, and terminal tab.
 
@@ -16,7 +16,7 @@
 
 ## Architecture (one paragraph)
 
-A Tauri 2 app. Frontend is React 18 + TypeScript + Zustand + xterm.js. The Rust backend owns a `Supervisor` that creates a git worktree, returns the agent record so the frontend can mount the terminal, then starts `sandbox-exec -f <profile> claude ...` in a local PTY and bridges PTY output to the frontend over Tauri events. Workspace state persists as JSON in `~/Library/Application Support/com.amux.desktop/`.
+A Tauri 2 app. Frontend is React 18 + TypeScript + Zustand + xterm.js. The Rust backend owns a `Supervisor` that creates a git worktree, returns the agent record so the frontend can mount the terminal, then starts `sandbox-exec -f <profile> claude ...` in a local PTY and bridges PTY output to the frontend over Tauri events. Workspace state persists as JSON in `~/Library/Application Support/com.quorum.desktop/`.
 
 ## Requirements
 

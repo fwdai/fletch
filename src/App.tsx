@@ -13,7 +13,7 @@ export function App() {
   return (
     <div className="app">
       <header className="bar">
-        <span className="logo">amux</span>
+        <span className="logo">Quorum</span>
       </header>
       <div className="body">
         <Sidebar />

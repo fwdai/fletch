@@ -97,8 +97,8 @@ export function AgentRow({ agent }: { agent: AgentRecord }) {
     const worktreeCount = agent.repos.length;
     const worktreeLine =
       worktreeCount === 1
-        ? `  • the worktree under ~/.amux/worktrees/${agent.id} (any uncommitted work)\n`
-        : `  • ${worktreeCount} worktrees under ~/.amux/worktrees/${agent.id} (any uncommitted work)\n`;
+        ? `  • the worktree under ~/.quorum/worktrees/${agent.id} (any uncommitted work)\n`
+        : `  • ${worktreeCount} worktrees under ~/.quorum/worktrees/${agent.id} (any uncommitted work)\n`;
     const ok = await ask(
       `Remove "${agent.name}"?\n\nThis will delete:\n` +
         worktreeLine +

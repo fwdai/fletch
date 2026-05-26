@@ -163,7 +163,7 @@ impl Supervisor {
     }
 
     /// Bring a second (or third…) repo into a live agent. Creates a
-    /// detached worktree at `~/.amux/worktrees/<agent-id>/<subdir>/`
+    /// detached worktree at `~/.quorum/worktrees/<agent-id>/<subdir>/`
     /// and appends a TrackedRepo entry. If the agent already has a
     /// task set, a branch is created in the new repo immediately;
     /// otherwise we defer (consistent with the primary).
@@ -635,7 +635,7 @@ fn on_first_user_message(
 }
 
 /// For every tracked repo on the agent that doesn't have a branch yet,
-/// derive a slug from the agent's task and create `amux/<slug>` inside
+/// derive a slug from the agent's task and create `quorum/<slug>` inside
 /// that repo's worktree. Runs in a background task. Idempotent —
 /// `set_repo_branch_if_empty` guards each write.
 fn create_branches_for_branchless_repos(
