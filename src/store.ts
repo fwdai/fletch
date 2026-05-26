@@ -75,6 +75,38 @@ export type ManagedItem =
   | { kind: "system"; text: string }
   | { kind: "result"; text: string; is_error?: boolean };
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+function asRecord(v: unknown): Record<string, unknown> {
+  return isRecord(v) ? v : {};
+}
+
+function asBlockList(v: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(v) ? v.filter(isRecord) : [];
+}
+
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  return asBlockList(content)
+    .map((block) => {
+      if (block.type === "text" && typeof block.text === "string") {
+        return block.text;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    if (predicate(items[i])) return i;
+  }
+  return -1;
+}
+
 // ---- Drafts ----------------------------------------------------------------
 // A draft is a new agent the user is about to spawn. It owns a landmark
 // name + chosen provider + base branch; the first message in the
@@ -247,6 +279,60 @@ function appendItem(
   return { managedLogs: { ...state.managedLogs, [agentId]: [...list, item] } };
 }
 
+function appendUserIfMissing(
+  state: AppState,
+  agentId: string,
+  text: string,
+): Partial<AppState> {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  const list = state.managedLogs[agentId] ?? [];
+  if (list.some((item) => item.kind === "user" && item.text === trimmed)) {
+    return {};
+  }
+  return appendItem(state, agentId, { kind: "user", text: trimmed });
+}
+
+function upsertToolUse(
+  state: AppState,
+  agentId: string,
+  tool: Extract<ManagedItem, { kind: "tool_use" }>,
+): Partial<AppState> {
+  const list = state.managedLogs[agentId] ?? [];
+  const idx = list.findIndex(
+    (item) => item.kind === "tool_use" && item.id === tool.id,
+  );
+  if (idx === -1) return appendItem(state, agentId, tool);
+  const next = [...list];
+  next[idx] = { ...tool };
+  return { managedLogs: { ...state.managedLogs, [agentId]: next } };
+}
+
+function updateToolInputDelta(
+  state: AppState,
+  agentId: string,
+  index: number,
+  partialJson: string,
+): Partial<AppState> {
+  const list = state.managedLogs[agentId] ?? [];
+  let seen = -1;
+  let idx = list.findIndex((item) => {
+    if (item.kind !== "tool_use") return false;
+    seen += 1;
+    return seen === index;
+  });
+  if (idx === -1) {
+    idx = findLastIndex(list, (item) => item.kind === "tool_use");
+  }
+  if (idx === -1) return {};
+  const item = list[idx];
+  if (item.kind !== "tool_use") return {};
+  const input = typeof item.input === "string" ? item.input + partialJson : partialJson;
+  const next = [...list];
+  next[idx] = { ...item, input };
+  return { managedLogs: { ...state.managedLogs, [agentId]: next } };
+}
+
 function updateLastAssistantStreaming(
   state: AppState,
   agentId: string,
@@ -323,17 +409,40 @@ function handleManagedEvent(
   const type = ev.type as string | undefined;
 
   if (type === "stream_event") {
-    const inner = (ev.event ?? {}) as Record<string, unknown>;
-    const delta = (inner.delta ?? {}) as Record<string, unknown>;
+    const inner = asRecord(ev.event);
+    if (inner.type === "content_block_start") {
+      const block = asRecord(inner.content_block);
+      if (block.type === "text" && typeof block.text === "string" && block.text) {
+        return updateLastAssistantStreaming(state, agentId, block.text);
+      }
+      if (block.type === "tool_use") {
+        return upsertToolUse(state, agentId, {
+          kind: "tool_use",
+          id: String(block.id ?? ""),
+          name: String(block.name ?? "tool"),
+          input: block.input ?? "",
+        });
+      }
+      return {};
+    }
+
+    const delta = asRecord(inner.delta);
     if (delta.type === "text_delta" && typeof delta.text === "string") {
       return updateLastAssistantStreaming(state, agentId, delta.text);
+    }
+    if (
+      delta.type === "input_json_delta" &&
+      typeof delta.partial_json === "string" &&
+      typeof inner.index === "number"
+    ) {
+      return updateToolInputDelta(state, agentId, inner.index, delta.partial_json);
     }
     return {};
   }
 
   if (type === "assistant") {
-    const message = (ev.message ?? {}) as Record<string, unknown>;
-    const content = (message.content ?? []) as Array<Record<string, unknown>>;
+    const message = asRecord(ev.message);
+    const content = asBlockList(message.content);
     let patches: Partial<AppState> = {};
     patches = mergePatches(patches, finalizeStreamingAssistant(state, agentId));
     let working: AppState = { ...state, ...patches } as AppState;
@@ -352,7 +461,7 @@ function handleManagedEvent(
           patches = mergePatches(patches, p);
         }
       } else if (block.type === "tool_use") {
-        const p = appendItem(working, agentId, {
+        const p = upsertToolUse(working, agentId, {
           kind: "tool_use",
           id: String(block.id ?? ""),
           name: String(block.name ?? "tool"),
@@ -366,25 +475,16 @@ function handleManagedEvent(
   }
 
   if (type === "user") {
-    const message = (ev.message ?? {}) as Record<string, unknown>;
+    const message = asRecord(ev.message);
     const content = message.content;
-    let patches: Partial<AppState> = {};
-    let working: AppState = state;
-    const appendUserText = (text: string) => {
-      const list = working.managedLogs[agentId] ?? [];
-      const last = list[list.length - 1];
-      // Live mode appends the user message directly via sendUserMessage
-      // before this event arrives; skip if claude is echoing the same
-      // text right back.
-      if (last && last.kind === "user" && last.text === text) return;
-      const p = appendItem(working, agentId, { kind: "user", text });
-      working = { ...working, ...p } as AppState;
-      patches = mergePatches(patches, p);
-    };
-    if (typeof content === "string") {
-      // JSONL serializes simple user messages as a bare string.
-      if (content.trim().length > 0) appendUserText(content);
-    } else if (Array.isArray(content)) {
+    // `contentText` covers both bare-string user messages (JSONL
+    // serializes simple turns that way) and arrays of text blocks.
+    // `appendUserIfMissing` dedupes against live mode, which adds
+    // the user message via `sendUserMessage` before claude echoes it.
+    const text = contentText(content);
+    let patches = appendUserIfMissing(state, agentId, text);
+    let working: AppState = { ...state, ...patches } as AppState;
+    if (Array.isArray(content)) {
       for (const block of content as Array<Record<string, unknown>>) {
         if (block.type === "tool_result") {
           const p = appendItem(working, agentId, {
@@ -395,8 +495,6 @@ function handleManagedEvent(
           });
           working = { ...working, ...p } as AppState;
           patches = mergePatches(patches, p);
-        } else if (block.type === "text" && typeof block.text === "string") {
-          if (block.text.trim().length > 0) appendUserText(block.text);
         }
       }
     }
@@ -405,21 +503,35 @@ function handleManagedEvent(
 
   if (type === "result") {
     const subtype = String(ev.subtype ?? "");
-    const isError = subtype !== "success";
-    const text =
-      typeof ev.result === "string"
-        ? ev.result
-        : `Turn complete (${subtype || "ok"})`;
+    const isError = ev.is_error === true;
     let patches = finalizeStreamingAssistant(state, agentId);
     const working = { ...state, ...patches } as AppState;
-    patches = mergePatches(
-      patches,
-      appendItem(working, agentId, {
-        kind: "result",
-        text,
-        is_error: isError,
-      }),
+    const list = working.managedLogs[agentId] ?? [];
+    const lastUserIdx = findLastIndex(list, (item) => item.kind === "user");
+    const hasAssistantText = list.slice(lastUserIdx + 1).some(
+      (item) => item.kind === "assistant" && item.text.trim().length > 0,
     );
+    const resultText = typeof ev.result === "string" ? ev.result : "";
+    if (isError) {
+      patches = mergePatches(
+        patches,
+        appendItem(working, agentId, {
+          kind: "result",
+          text: hasAssistantText
+            ? `Turn failed (${subtype || "error"})`
+            : resultText || `Turn failed (${subtype || "error"})`,
+          is_error: true,
+        }),
+      );
+    } else if (!hasAssistantText && resultText.trim()) {
+      patches = mergePatches(
+        patches,
+        appendItem(working, agentId, {
+          kind: "assistant",
+          text: resultText,
+        }),
+      );
+    }
     const inputTokens = (ev.usage as Record<string, unknown> | undefined)
       ?.input_tokens;
     const tokens =
@@ -563,7 +675,13 @@ export const useAppStore = create<AppState>((set, get) => ({
             : a,
         ),
       };
-      set({ workspace: next });
+      set((state) => ({
+        workspace: next,
+        managedBusy:
+          e.status === "error" || e.status === "stopped"
+            ? { ...state.managedBusy, [e.agent_id]: false }
+            : state.managedBusy,
+      }));
     });
 
     // Archive / restore reshape `repos` and `archive` on the record,
@@ -654,7 +772,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
       await api.sendUserMessage(id, text);
     } catch (e) {
-      set({ lastError: String(e) });
+      set((state) => ({
+        lastError: String(e),
+        managedBusy: { ...state.managedBusy, [id]: false },
+      }));
     }
   },
 
@@ -863,7 +984,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         await sendWhenAgentReady(() => api.sendUserMessage(rec.id, text));
       }
     } catch (e) {
-      set({ lastError: String(e) });
+      const selected = get().selectedAgentId;
+      set((state) => ({
+        lastError: String(e),
+        managedBusy: selected
+          ? { ...state.managedBusy, [selected]: false }
+          : state.managedBusy,
+      }));
     } finally {
       set({ busy: false });
     }

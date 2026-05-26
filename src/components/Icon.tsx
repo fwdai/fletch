@@ -22,6 +22,7 @@ import {
   History,
   Inbox,
   Minus,
+  Moon,
   MoreHorizontal,
   PanelLeft,
   PanelRight,
@@ -35,6 +36,7 @@ import {
   Settings,
   Sparkles,
   Square,
+  Sun,
   Terminal,
   Trash2,
   User,
@@ -108,6 +110,8 @@ const ICON_COMPONENTS = {
   history: History,
   archive: Archive,
   archiveRestore: ArchiveRestore,
+  moon: Moon,
+  sun: Sun,
 } satisfies Record<string, ComponentType<IconComponentProps>>;
 
 // Originally rendered with fill="currentColor". Setting fill on the root SVG
