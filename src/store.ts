@@ -13,7 +13,6 @@ import {
   type Workspace,
 } from "./api";
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
-import { LANDMARK_NAMES, pickLandmark } from "./data/landmarks";
 
 type OutputHandler = (bytes: Uint8Array) => void;
 
@@ -200,11 +199,11 @@ interface AppState {
   clearError: () => void;
 
   // drafts
-  createDraft: (repoPath: string) => void;
+  createDraft: (repoPath: string) => Promise<void>;
   updateDraft: (id: string, patch: Partial<DraftAgent>) => void;
   removeDraft: (id: string) => void;
   selectDraft: (id: string | null) => void;
-  rerollDraftName: (id: string) => void;
+  rerollDraftName: (id: string) => Promise<void>;
   /** Spawn the real agent for a draft and dispatch the first message. */
   spawnFromDraft: (id: string, text: string, provider: string) => Promise<void>;
 
@@ -408,13 +407,11 @@ function handleManagedEvent(
   return {};
 }
 
-/** Landmarks already used by real or draft agents — passed to
- *  `pickLandmark` so re-rolling avoids collisions. */
-function usedLandmarks(workspace: Workspace | null, drafts: DraftAgent[]): Set<string> {
+/** Names already taken by real or draft agents — passed to the backend
+ *  name allocator so picks avoid collisions. */
+function usedNames(workspace: Workspace | null, drafts: DraftAgent[]): Set<string> {
   const used = new Set<string>();
-  for (const a of workspace?.agents ?? []) {
-    if (LANDMARK_NAMES.includes(a.name)) used.add(a.name);
-  }
+  for (const a of workspace?.agents ?? []) used.add(a.name);
   for (const d of drafts) used.add(d.name);
   return used;
 }
@@ -682,9 +679,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearError: () => set({ lastError: null }),
 
   // ── drafts ─────────────────────────────────────────────────────────────────
-  createDraft: (repoPath) => {
+  createDraft: async (repoPath) => {
     const { workspace, drafts } = get();
-    const name = pickLandmark(usedLandmarks(workspace, drafts));
+    const used = [...usedNames(workspace, drafts)];
+    const name = await api.allocateDraftName(used);
     const draft: DraftAgent = {
       id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       repoPath,
@@ -716,16 +714,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedAgentId: null,
     }),
 
-  rerollDraftName: (id) => {
+  rerollDraftName: async (id) => {
     const { workspace, drafts } = get();
-    const used = usedLandmarks(workspace, drafts);
-    // exclude the current name so the reroll always changes
-    const current = drafts.find((d) => d.id === id);
-    if (current) used.delete(current.name);
-    const next = pickLandmark(new Set([...used, current?.name ?? ""]));
-    set({
-      drafts: drafts.map((d) => (d.id === id ? { ...d, name: next } : d)),
-    });
+    const used = usedNames(workspace, drafts);
+    // Keep the current name in `used` so the allocator picks a different one.
+    const next = await api.allocateDraftName([...used]);
+    set((s) => ({
+      drafts: s.drafts.map((d) => (d.id === id ? { ...d, name: next } : d)),
+    }));
   },
 
   spawnFromDraft: async (id, text, _provider) => {
