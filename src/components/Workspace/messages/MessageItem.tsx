@@ -1,3 +1,5 @@
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ManagedItem } from "../../../store";
 import { ToolUseItem } from "./ToolUseItem";
 import { ToolResultItem } from "./ToolResultItem";
@@ -11,7 +13,9 @@ export function MessageItem({ item }: { item: ManagedItem }) {
     case "assistant":
       return (
         <div className="m-agent">
-          {item.text}
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {item.text}
+          </ReactMarkdown>
           {item.streaming && <span className="term-cursor" style={{ marginLeft: 4 }} />}
         </div>
       );
