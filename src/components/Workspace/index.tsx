@@ -5,7 +5,6 @@ import { WorkspaceHeader } from "./WorkspaceHeader";
 import { ChatView } from "./ChatView";
 import { NativeView } from "./NativeView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
-import { History } from "../History";
 import type { AgentRecord } from "../../api";
 
 /** Center pane orchestrator. Decides whether to show: a draft empty
@@ -17,13 +16,8 @@ export function Workspace() {
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const drafts = useAppStore((s) => s.drafts);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
-  const historyOpen = useAppStore((s) => s.historyOpen);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
-
-  // History view takes precedence — clicking the history icon should
-  // swap the main pane regardless of what's selected.
-  if (historyOpen) return <History />;
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
   if (draft) return <EmptyWorkspace draft={draft} />;

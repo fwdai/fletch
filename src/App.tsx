@@ -6,6 +6,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
 import { RightPanel } from "./components/RightPanel";
 import { Settings } from "./components/Settings";
+import { History } from "./components/History";
 import { useSplitter } from "./util/splitter";
 import { useGlobalShortcuts } from "./util/shortcuts";
 
@@ -48,8 +49,7 @@ export function App() {
   const onRightDrag = useSplitter(rightWidth, setRightWidth, "right");
 
   const selectedAgent = workspace?.agents.find((a) => a.id === selectedAgentId);
-  const rightPaneVisible =
-    !rightCollapsed && !activeDraftId && !historyOpen && selectedAgent;
+  const rightPaneVisible = !rightCollapsed && !activeDraftId && selectedAgent;
 
   return (
     <div className="app">
@@ -66,7 +66,7 @@ export function App() {
         <Workspace />
 
         {rightPaneVisible && <div className="splitter" onMouseDown={onRightDrag} />}
-        {!activeDraftId && !historyOpen && (
+        {!activeDraftId && (
           <div
             className={`pane right ${rightCollapsed ? "collapsed" : ""}`}
             style={{ width: rightCollapsed ? 0 : rightWidth }}
@@ -78,6 +78,7 @@ export function App() {
         )}
       </div>
 
+      {historyOpen && <History />}
       <Settings />
 
       {lastError && (
