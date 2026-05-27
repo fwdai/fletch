@@ -23,3 +23,6 @@ src-tauri/resources/third-party/
 # Logs / local
 *.log
 .context/
+
+# Superpowers / Claude Code internal docs — never commit
+docs/superpowers/
