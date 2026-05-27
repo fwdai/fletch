@@ -205,6 +205,8 @@ pub async fn add_repo_to_agent(
         .await
 }
 
+/// Returns git state for the agent's primary repo.
+/// For multi-repo agents only the first repo's state is returned.
 #[tauri::command]
 pub async fn get_git_state(
     supervisor: State<'_, Arc<Supervisor>>,

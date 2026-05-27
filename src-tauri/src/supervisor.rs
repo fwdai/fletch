@@ -80,7 +80,7 @@ pub struct Supervisor {
     pub generations: Mutex<HashMap<String, u64>>,
     pub activities: Mutex<HashMap<String, Box<dyn Activity>>>,
     pub native_input_lines: Mutex<HashMap<String, String>>,
-    pub watcher_registry: parking_lot::Mutex<WatcherRegistry>,
+    pub watcher_registry: Mutex<WatcherRegistry>,
 }
 
 impl Supervisor {
@@ -91,7 +91,7 @@ impl Supervisor {
             generations: Mutex::new(HashMap::new()),
             activities: Mutex::new(HashMap::new()),
             native_input_lines: Mutex::new(HashMap::new()),
-            watcher_registry: parking_lot::Mutex::new(WatcherRegistry::new()),
+            watcher_registry: Mutex::new(WatcherRegistry::new()),
         }
     }
 
@@ -174,11 +174,7 @@ impl Supervisor {
 
             if let Err(e) = sup.watcher_registry.lock().register(
                 &format!("{}:git", id_for_task),
-                vec![
-                    primary_worktree.clone(),
-                    primary_worktree.join(".git/index"),
-                    primary_worktree.join(".git/HEAD"),
-                ],
+                vec![primary_worktree.clone()],
                 std::time::Duration::from_millis(300),
                 move || {
                     let app = watcher_app.clone();
@@ -210,6 +206,7 @@ impl Supervisor {
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
+                sup.watcher_registry.lock().unregister(&format!("{}:git", id_for_task));
                 let _ = git::worktree_remove(&repo_path, &primary_worktree, true).await;
                 let _ = std::fs::remove_dir_all(&parent_dir);
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
@@ -256,11 +253,7 @@ impl Supervisor {
 
         if let Err(e) = self.watcher_registry.lock().register(
             &format!("{}:git:{}", agent_id, subdir),
-            vec![
-                worktree.clone(),
-                worktree.join(".git/index"),
-                worktree.join(".git/HEAD"),
-            ],
+            vec![worktree.clone()],
             std::time::Duration::from_millis(300),
             move || {
                 let app = watcher_app.clone();
