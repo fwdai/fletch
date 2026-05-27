@@ -71,6 +71,12 @@ pub struct GitStateChangedPayload {
     pub state: GitState,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct PrStateChangedPayload {
+    pub agent_id: String,
+    pub state: Option<crate::gh::PrState>,
+}
+
 const WATCHDOG_TICK: Duration = Duration::from_millis(500);
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -919,6 +925,35 @@ impl Supervisor {
         Ok(out)
     }
 
+    /// Fetch the current PR state for an agent's primary repo and emit
+    /// a `pr:state_changed` event. Runs as a background task — never blocks the caller.
+    pub fn fetch_and_emit_pr_state(&self, app: AppHandle, agent_id: String) {
+        let workspace = self.workspace.clone();
+        tauri::async_runtime::spawn(async move {
+            let record = match workspace.agent(&agent_id) {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            let repo = match record.repos.first() {
+                Some(r) => r,
+                None => return,
+            };
+            // Only fetch if there's a branch (agent may still be on detached HEAD)
+            if repo.branch.is_none() {
+                return;
+            }
+            let worktree = match crate::workspace::repo_worktree_path(&agent_id, &repo.subdir) {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            let state = crate::gh::pr_view(&worktree).await.unwrap_or(None);
+            let _ = app.emit(
+                "pr:state_changed",
+                PrStateChangedPayload { agent_id, state },
+            );
+        });
+    }
+
     pub async fn discard_agent(self: Arc<Self>, agent_id: &str) -> Result<()> {
         let record = self.workspace.agent(agent_id).ok();
         let repos = record.as_ref().map(|r| r.repos.clone()).unwrap_or_default();
@@ -1349,7 +1384,10 @@ fn transition_active(
         },
     );
     if matches!(changed, Ok(true)) {
-        emit_status(app, agent_id, new, None);
+        emit_status(app, agent_id, new.clone(), None);
+        if matches!(new, AgentStatus::Idle) {
+            sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+        }
     }
 }
 
@@ -1400,6 +1438,9 @@ fn apply_exit_if_current(
         },
     );
     if matches!(changed, Ok(true)) {
+        if matches!(status, AgentStatus::Idle) {
+            sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+        }
         emit_status(app, agent_id, status, err);
     }
 }

@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
-import type { AgentRecord, GitState } from "../../api";
+import type { AgentRecord, GitState, PrState } from "../../api";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
 import { primaryFor, secondaryFor, type GitPanelState } from "./primaryActions";
 
-function deriveState(s: GitState | null): GitPanelState {
-  if (!s) return "loading";
-  if (s.files.some((f) => f.kind === "conflicted")) return "conflicts";
-  if (s.files.length > 0) return "changes";
-  if (s.ahead > 0) return "pushed";
+function deriveState(git: GitState | null, pr: PrState | null): GitPanelState {
+  if (!git) return "loading";
+  if (git.files.some((f) => f.kind === "conflicted")) return "conflicts";
+  if (pr?.state === "merged") return "merged";
+  if (pr?.state === "open") return "pr-open";
+  if (git.files.length > 0) return "changes";
+  if (git.ahead > 0) return "pushed";
   return "clean";
 }
 
@@ -17,13 +19,21 @@ function deriveState(s: GitState | null): GitPanelState {
  *  The panel is feature-flagged off by default in settings. */
 export function GitPanel({ agent }: { agent: AgentRecord }) {
   const gitState = useAppStore((s) => s.gitStates[agent.id] ?? null);
+  const prState = useAppStore((s) => s.prStates[agent.id] ?? null);
   const fetchGitState = useAppStore((s) => s.fetchGitState);
+  const fetchPrState = useAppStore((s) => s.fetchPrState);
+  const pushAgent = useAppStore((s) => s.pushAgent);
+  const pullAgent = useAppStore((s) => s.pullAgent);
+  const createPr = useAppStore((s) => s.createPr);
+  const mergePr = useAppStore((s) => s.mergePr);
+  const archive = useAppStore((s) => s.archive);
 
   useEffect(() => {
     void fetchGitState(agent.id);
-  }, [agent.id, fetchGitState]);
+    void fetchPrState(agent.id);
+  }, [agent.id, fetchGitState, fetchPrState]);
 
-  const panelState = deriveState(gitState);
+  const panelState = deriveState(gitState, prState);
 
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -35,6 +45,48 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
     });
   }, [gitState]);
   const [moreOpen, setMoreOpen] = useState(false);
+
+  function handlePrimaryClick() {
+    switch (panelState) {
+      case "pushed":
+        void createPr(agent.id, "", "");
+        break;
+      case "pr-open":
+        if (prState?.url) window.open(prState.url, "_blank");
+        break;
+      case "merged":
+        void archive(agent.id);
+        break;
+      default:
+        break;
+    }
+  }
+
+  function handleSecondaryClick(key: string) {
+    setMoreOpen(false);
+    switch (key) {
+      case "push":
+        void pushAgent(agent.id);
+        break;
+      case "pull":
+        void pullAgent(agent.id);
+        break;
+      case "open-pr":
+        void createPr(agent.id, "", "");
+        break;
+      case "merge":
+        void mergePr(agent.id);
+        break;
+      case "view-pr":
+        if (prState?.url) window.open(prState.url, "_blank");
+        break;
+      case "archive":
+        void archive(agent.id);
+        break;
+      default:
+        break;
+    }
+  }
 
   const primary = primaryFor(panelState);
   const secondary = secondaryFor(panelState);
@@ -76,13 +128,14 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         <div className="actions">
           <button
             type="button"
-            disabled={panelState === "loading"}
+            disabled={panelState === "loading" || panelState === "changes" || panelState === "conflicts"}
             className={`btn-t ${primary.danger ? "outline" : "primary"}`}
             style={
               primary.danger
                 ? { borderColor: "var(--danger)", color: "var(--danger)" }
                 : undefined
             }
+            onClick={handlePrimaryClick}
           >
             <Icon name={primary.icon} />
             {primary.label}
@@ -103,7 +156,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
                     style={{ top: "calc(100% + 6px)", right: 0, minWidth: 200 }}
                   >
                     {secondary.map((s) => (
-                      <div key={s.label} className="dd-item" onClick={() => setMoreOpen(false)}>
+                      <div key={s.key} className="dd-item" onClick={() => handleSecondaryClick(s.key)}>
                         <div className="di-i"><Icon name={s.icon} size={12} /></div>
                         <span className="di-l">{s.label}</span>
                         {s.kbd && <span className="di-m">{s.kbd}</span>}

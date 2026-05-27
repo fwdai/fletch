@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use crate::error::Result;
+use crate::gh::{self, PrState};
 use crate::git;
 use crate::git_state::{self, GitState};
 use crate::names;
@@ -203,6 +204,86 @@ pub async fn add_repo_to_agent(
     let sup = supervisor.inner().clone();
     sup.add_repo_to_agent(app, &agent_id, PathBuf::from(repo_path))
         .await
+}
+
+/// Push the primary repo's current branch to origin.
+#[tauri::command]
+pub async fn push_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+) -> Result<()> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let branch = repo.branch.as_deref()
+        .ok_or_else(|| crate::error::Error::Other("agent has no branch yet".into()))?
+        .to_string();
+    git::push(&worktree, &branch).await?;
+    // After successful push, fetch PR state in background
+    supervisor.inner().fetch_and_emit_pr_state(app, agent_id);
+    Ok(())
+}
+
+/// Pull latest into the primary repo's worktree.
+#[tauri::command]
+pub async fn pull_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<()> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    git::pull(&worktree).await
+}
+
+/// Create a PR for the agent's current branch.
+/// Pass empty title/body to auto-fill from commits.
+#[tauri::command]
+pub async fn create_pr(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    title: String,
+    body: String,
+) -> Result<PrState> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let base = repo.parent_branch.as_deref().unwrap_or("main");
+    gh::pr_create(&worktree, &title, &body, base).await
+}
+
+/// Merge the open PR for the agent's current branch.
+#[tauri::command]
+pub async fn merge_pr(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<()> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    gh::pr_merge(&worktree).await
+}
+
+/// Fetch and return the current PR state for the agent's branch.
+#[tauri::command]
+pub async fn get_pr_state(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Option<PrState>> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    // Only fetch if the agent has a branch
+    if repo.branch.is_none() {
+        return Ok(None);
+    }
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    gh::pr_view(&worktree).await
 }
 
 /// Returns git state for the agent's primary repo.

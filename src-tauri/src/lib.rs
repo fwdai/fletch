@@ -3,6 +3,7 @@ mod agent;
 mod branding;
 mod commands;
 mod error;
+mod gh;
 mod git;
 mod git_state;
 mod managed_session;
@@ -71,6 +72,11 @@ pub fn run() {
             commands::add_repo_to_agent,
             commands::allocate_draft_name,
             commands::get_git_state,
+            commands::push_agent,
+            commands::pull_agent,
+            commands::create_pr,
+            commands::merge_pr,
+            commands::get_pr_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quorum");

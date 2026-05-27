@@ -9,10 +9,12 @@ import {
   onAgentTask,
   onAgentView,
   onGitStateChanged,
+  onPrStateChanged,
   onWorkspaceChanged,
   type AgentRecord,
   type AgentView,
   type GitState,
+  type PrState,
   type Workspace,
 } from "./api";
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
@@ -168,6 +170,13 @@ interface AppState {
   gitStates: Record<string, GitState>;
   /** Fetch git state for an agent immediately (initial load before watcher fires). */
   fetchGitState: (agentId: string) => Promise<void>;
+  /** PR state per agent, keyed by agent_id. Updated by the pr:state_changed watcher event. */
+  prStates: Record<string, PrState | null>;
+  fetchPrState: (agentId: string) => Promise<void>;
+  pushAgent: (agentId: string) => Promise<void>;
+  pullAgent: (agentId: string) => Promise<void>;
+  createPr: (agentId: string, title: string, body: string) => Promise<PrState | null>;
+  mergePr: (agentId: string) => Promise<void>;
 
   drafts: DraftAgent[];
   activeDraftId: string | null;
@@ -338,6 +347,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   switchInFlight: {},
   tokens: {},
   gitStates: {},
+  prStates: {},
 
   drafts: [],
   activeDraftId: null,
@@ -479,6 +489,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     await onGitStateChanged((e) => {
       set((s) => ({ gitStates: { ...s.gitStates, [e.agent_id]: e.state } }));
+    });
+
+    await onPrStateChanged((e) => {
+      set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
     });
 
     const workspace = await api.getWorkspace();
@@ -629,6 +643,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _droppedBusy, ...restBusy } = s.managedBusy;
         const { [id]: _droppedTokens, ...restTokens } = s.tokens;
         const { [id]: _droppedGitState, ...restGitStates } = s.gitStates;
+        const { [id]: _droppedPrState, ...restPrStates } = s.prStates;
         return {
           workspace: fresh,
           selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
@@ -638,6 +653,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           managedBusy: restBusy,
           tokens: restTokens,
           gitStates: restGitStates,
+          prStates: restPrStates,
         };
       });
     } catch (e) {
@@ -659,6 +675,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _b, ...restBusy } = s.managedBusy;
         const { [id]: _t, ...restTokens } = s.tokens;
         const { [id]: _g, ...restGitStates } = s.gitStates;
+        const { [id]: _p, ...restPrStates } = s.prStates;
         return {
           workspace: fresh ?? s.workspace,
           selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
@@ -668,6 +685,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           managedBusy: restBusy,
           tokens: restTokens,
           gitStates: restGitStates,
+          prStates: restPrStates,
         };
       });
     } catch (e) {
@@ -737,6 +755,55 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch {
       // non-fatal — watcher will provide updates
+    }
+  },
+
+  fetchPrState: async (agentId) => {
+    try {
+      const state = await api.getPrState(agentId);
+      // Always write (including null) to distinguish "confirmed: no PR" from
+      // "not yet fetched" (absent key). Unlike fetchGitState which guards the
+      // write, PR state being null is meaningful.
+      set((s) => ({ prStates: { ...s.prStates, [agentId]: state } }));
+    } catch {
+      // non-fatal
+    }
+  },
+
+  pushAgent: async (agentId) => {
+    try {
+      await api.pushAgent(agentId);
+      // pr:state_changed event will update prStates automatically
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  pullAgent: async (agentId) => {
+    try {
+      await api.pullAgent(agentId);
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  createPr: async (agentId, title, body) => {
+    try {
+      const pr = await api.createPr(agentId, title, body);
+      set((s) => ({ prStates: { ...s.prStates, [agentId]: pr } }));
+      return pr;
+    } catch (e) {
+      set({ lastError: String(e) });
+      return null;
+    }
+  },
+
+  mergePr: async (agentId) => {
+    try {
+      await api.mergePr(agentId);
+      // pr:state_changed event will update prStates
+    } catch (e) {
+      set({ lastError: String(e) });
     }
   },
 

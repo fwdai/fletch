@@ -14,6 +14,7 @@ export interface PrimaryAction {
 }
 
 export interface SecondaryAction {
+  key: string;
   label: string;
   icon: IconName;
   kbd?: string;
@@ -43,31 +44,40 @@ export function secondaryFor(state: GitPanelState): SecondaryAction[] {
   switch (state) {
     case "changes":
       return [
-        { label: "Commit only", icon: "commit", kbd: "⌘K" },
-        { label: "Push only", icon: "push" },
-        { label: "Stash changes", icon: "inbox" },
-        { label: "Discard all", icon: "trash" },
+        { key: "commit", label: "Commit only", icon: "commit", kbd: "⌘K" },
+        { key: "push", label: "Push only", icon: "push" },
+        { key: "stash", label: "Stash changes", icon: "inbox" },
+        { key: "discard", label: "Discard all", icon: "trash" },
       ];
     case "pushed":
       return [
-        { label: "Open draft PR", icon: "pr" },
-        { label: "Push more commits", icon: "push" },
+        { key: "open-pr", label: "Open draft PR", icon: "pr" },
+        { key: "push", label: "Push more commits", icon: "push" },
+        { key: "pull", label: "Pull", icon: "inbox" },
       ];
     case "pr-open":
       return [
-        { label: "Push more commits", icon: "push" },
-        { label: "Request review", icon: "user" },
-        { label: "View on GitHub", icon: "github" },
+        { key: "push", label: "Push more commits", icon: "push" },
+        { key: "pull", label: "Pull", icon: "inbox" },
+        { key: "merge", label: "Merge PR", icon: "merge" },
+        { key: "view-pr", label: "View on GitHub", icon: "github" },
+        { key: "request-review", label: "Request review", icon: "user" },
       ];
     case "conflicts":
       return [
-        { label: "Abort merge", icon: "close" },
-        { label: "View on GitHub", icon: "github" },
+        { key: "abort", label: "Abort merge", icon: "close" },
+        { key: "view-pr", label: "View on GitHub", icon: "github" },
       ];
     case "merged":
       return [
-        { label: "Delete branch", icon: "trash" },
-        { label: "Start new agent", icon: "plus" },
+        { key: "archive", label: "Archive workspace", icon: "check" },
+        { key: "delete-branch", label: "Delete branch", icon: "trash" },
+        { key: "start-new", label: "Start new agent", icon: "plus" },
+      ];
+    case "clean":
+      return [
+        { key: "push", label: "Push", icon: "push" },
+        { key: "pull", label: "Pull", icon: "inbox" },
       ];
     default:
       return [];

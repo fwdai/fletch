@@ -133,6 +133,21 @@ export interface GitStateChangedEvent {
   state: GitState;
 }
 
+export type PrStatus = "open" | "merged" | "closed";
+
+export interface PrState {
+  number: number;
+  url: string;
+  state: PrStatus;
+  title: string;
+  mergeable: boolean;
+}
+
+export interface PrStateChangedEvent {
+  agent_id: string;
+  state: PrState | null;
+}
+
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
   getAgentDiffStats: (agentId: string) =>
@@ -171,6 +186,13 @@ export const api = {
     invoke<string>("allocate_draft_name", { used }),
   getGitState: (agentId: string) =>
     invoke<GitState | null>("get_git_state", { agentId }),
+  getPrState: (agentId: string) =>
+    invoke<PrState | null>("get_pr_state", { agentId }),
+  pushAgent: (agentId: string) => invoke<void>("push_agent", { agentId }),
+  pullAgent: (agentId: string) => invoke<void>("pull_agent", { agentId }),
+  createPr: (agentId: string, title: string, body: string) =>
+    invoke<PrState>("create_pr", { agentId, title, body }),
+  mergePr: (agentId: string) => invoke<void>("merge_pr", { agentId }),
 };
 
 export function onAgentOutput(
@@ -227,4 +249,10 @@ export function onGitStateChanged(
   cb: (e: GitStateChangedEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<GitStateChangedEvent>("git:state_changed", (event) => cb(event.payload));
+}
+
+export function onPrStateChanged(
+  cb: (e: PrStateChangedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<PrStateChangedEvent>("pr:state_changed", (event) => cb(event.payload));
 }
