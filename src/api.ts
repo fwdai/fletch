@@ -41,6 +41,9 @@ export interface ArchiveMetadata {
 export interface AgentRecord {
   id: string;
   name: string;
+  /** Which CLI backend powers this agent (claude, codex, ...). Maps to
+   *  the TS adapter registered under the same id. */
+  provider: string;
   /** Repos this agent has worktrees in. Always non-empty;
    *  `repos[0]` is the primary (the workspace repo at spawn). */
   repos: TrackedRepo[];
@@ -105,8 +108,8 @@ export const api = {
     invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>
     invoke<Workspace>("remove_workspace_repo", { repoPath }),
-  spawnAgent: (view: AgentView, repoPath: string) =>
-    invoke<AgentRecord>("spawn_agent", { view, repoPath }),
+  spawnAgent: (view: AgentView, repoPath: string, provider?: string) =>
+    invoke<AgentRecord>("spawn_agent", { view, repoPath, provider }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   sendUserMessage: (agentId: string, text: string) =>

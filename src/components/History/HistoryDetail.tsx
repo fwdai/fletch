@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../../store";
+import { applyPolicy, getAdapter } from "../../adapters";
 import { Icon, LandmarkGlyph } from "../Icon";
 import { IconButton } from "../ui/IconButton";
 import { basename } from "../../util/format";
@@ -62,7 +63,10 @@ export function HistoryDetail({ agentId }: Props) {
 
   const archive = agent.archive;
   const primary = archive.repos[0];
-  const items = log ?? [];
+  const items = useMemo(() => {
+    const adapter = getAdapter(agent.provider);
+    return applyPolicy(log ?? [], adapter.policy);
+  }, [log, agent.provider]);
   const transcriptEmpty = !loading && items.length === 0;
 
   const onRestore = async () => {

@@ -102,6 +102,7 @@ impl Supervisor {
         app: AppHandle,
         view: AgentView,
         repo_path: PathBuf,
+        provider: String,
     ) -> Result<AgentRecord> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -128,6 +129,7 @@ impl Supervisor {
         let record = new_agent_record(
             agent_id.clone(),
             name,
+            provider,
             primary,
             String::new(),
             view,

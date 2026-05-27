@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { AgentRecord } from "../../api";
 import { useAppStore } from "../../store";
+import { applyPolicy, getAdapter } from "../../adapters";
 import { Composer } from "../Composer";
 import { MessageItem } from "./messages/MessageItem";
 
@@ -64,7 +65,10 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     el.scrollTop = el.scrollHeight;
   }, [log, transcriptLoading]);
 
-  const items = log ?? [];
+  const items = useMemo(() => {
+    const adapter = getAdapter(agent.provider);
+    return applyPolicy(log ?? [], adapter.policy);
+  }, [log, agent.provider]);
   const canSend =
     !transcriptLoading &&
     !switchInFlight &&

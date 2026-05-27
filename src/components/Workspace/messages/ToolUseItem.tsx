@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ManagedItem } from "../../../store";
+import type { ChatItem } from "../../../store";
 import { Icon } from "../../Icon";
 import { firstLine } from "../../../util/format";
 
@@ -8,7 +8,7 @@ import { firstLine } from "../../../util/format";
 export function ToolUseItem({
   item,
 }: {
-  item: Extract<ManagedItem, { kind: "tool_use" }>;
+  item: Extract<ChatItem, { kind: "tool_call" }>;
 }) {
   const [open, setOpen] = useState(false);
   const summary = summarize(item.input);
