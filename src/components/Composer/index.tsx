@@ -16,8 +16,11 @@ interface Props {
   placeholder?: string;
   autoFocus?: boolean;
   disabled?: boolean;
+  stopping?: boolean;
   /** Fired on Cmd/Ctrl+Enter or send-button click. */
   onSend: (payload: { text: string; provider: string; thinking: ThinkingBudget }) => void;
+  /** Fired when the composer is showing an active stop control. */
+  onStop?: () => void;
 }
 
 export function Composer({
@@ -27,7 +30,9 @@ export function Composer({
   placeholder,
   autoFocus,
   disabled,
+  stopping = false,
   onSend,
+  onStop,
 }: Props) {
   const features = useAppStore((s) => s.features);
 
@@ -47,11 +52,22 @@ export function Composer({
 
   function send() {
     const trimmed = text.trim();
+    if (stopping) {
+      onStop?.();
+      return;
+    }
     if (!trimmed || disabled) return;
     onSend({ text: trimmed, provider, thinking });
     setText("");
     if (ta.current) ta.current.style.height = "auto";
   }
+
+  function stop() {
+    if (!stopping) return;
+    onStop?.();
+  }
+
+  const sendDisabled = stopping ? !onStop : disabled || !text.trim();
 
   return (
     <div className="composer">
@@ -110,12 +126,12 @@ export function Composer({
         </span>
         <button
           type="button"
-          className="send"
-          disabled={disabled || !text.trim()}
-          onClick={send}
-          aria-label="Send"
+          className={`send ${stopping ? "is-stop" : ""}`}
+          disabled={sendDisabled}
+          onClick={stopping ? stop : send}
+          aria-label={stopping ? "Stop" : "Send"}
         >
-          <Icon name="arrowUp" size={13} />
+          <Icon name={stopping ? "stop" : "arrowUp"} size={13} />
         </button>
       </div>
     </div>
