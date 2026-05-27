@@ -4,6 +4,7 @@ import { useAppStore } from "../../store";
 import { Icon, type IconName } from "../Icon";
 import { GitPanel } from "./GitPanel";
 import { RunPanel } from "./RunPanel";
+import { TermPanel } from "./TermPanel";
 
 type TabId = "git" | "diff" | "run" | "term";
 
@@ -62,7 +63,7 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
         {tab === "git" && <GitPanel agent={agent} />}
         {tab === "diff" && <Stub label="Diff" />}
         {tab === "run" && <RunPanel agent={agent} />}
-        {tab === "term" && <Stub label="Terminal" />}
+        {tab === "term" && <TermPanel agent={agent} />}
       </div>
     </>
   );
