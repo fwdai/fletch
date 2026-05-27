@@ -6,7 +6,7 @@ import { IconButton } from "../ui/IconButton";
 import { primaryFor, secondaryFor, type GitPanelState } from "./primaryActions";
 
 function deriveState(s: GitState | null): GitPanelState {
-  if (!s) return "clean";
+  if (!s) return "loading";
   if (s.files.some((f) => f.kind === "conflicted")) return "conflicts";
   if (s.files.length > 0) return "changes";
   if (s.ahead > 0) return "pushed";
@@ -25,16 +25,22 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 
   const panelState = deriveState(gitState);
 
-  const [selected, setSelected] = useState<string | null>(
-    gitState?.files[0]?.path ?? null,
-  );
+  const [selected, setSelected] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelected((prev) => {
+      const paths = gitState?.files.map((f) => f.path) ?? [];
+      if (prev && paths.includes(prev)) return prev;
+      return paths[0] ?? null;
+    });
+  }, [gitState]);
   const [moreOpen, setMoreOpen] = useState(false);
 
   const primary = primaryFor(panelState);
   const secondary = secondaryFor(panelState);
-  const branch = agent.repos[0]?.branch ?? "(no branch yet)";
-  const base = agent.repos[0]?.parent_branch ?? "main";
-  const showFiles = panelState !== "clean" && panelState !== "merged";
+  const branch = gitState?.branch || agent.repos[0]?.branch || "(no branch yet)";
+  const base = gitState?.parent_branch || agent.repos[0]?.parent_branch || "main";
+  const showFiles = panelState !== "clean" && panelState !== "merged" && panelState !== "loading";
   const showCommit = panelState === "changes";
 
   return (
@@ -142,7 +148,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         <div className="git-commit">
           <div className="cm-title">Commit message · auto-drafted</div>
           <div className="cm-card">
-            <div className="ct">{gitState ? "Drafting commit message…" : "No changes"}</div>
+            <div className="ct">Auto-draft not yet available</div>
             <div className="cb" />
           </div>
           <div className="cm-foot">
@@ -154,6 +160,12 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         </div>
       )}
 
+      {panelState === "loading" && (
+        <div className="empty-msg" style={{ marginTop: "auto" }}>
+          <div className="et">Loading…</div>
+          <div>Fetching git state.</div>
+        </div>
+      )}
       {panelState === "clean" && (
         <div className="empty-msg" style={{ marginTop: "auto" }}>
           <div className="et">All clean</div>

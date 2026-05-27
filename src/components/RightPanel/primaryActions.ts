@@ -1,7 +1,7 @@
 import type { IconName } from "../Icon";
 
 /** Derived git panel state — computed from live GitState, not stored. */
-export type GitPanelState = "clean" | "changes" | "pushed" | "conflicts" | "pr-open" | "merged";
+export type GitPanelState = "clean" | "changes" | "pushed" | "conflicts" | "pr-open" | "merged" | "loading";
 
 export interface PrimaryAction {
   label: string;
@@ -22,6 +22,8 @@ export interface SecondaryAction {
 /** Maps a git panel state to the panel's primary call-to-action. */
 export function primaryFor(state: GitPanelState): PrimaryAction {
   switch (state) {
+    case "loading":
+      return { label: "Loading…", icon: "refresh", statusLabel: "loading git state", statusKind: "ready" };
     case "changes":
       return { label: "Commit & open PR", icon: "pr", statusLabel: "changes uncommitted", statusKind: "warn" };
     case "pushed":
