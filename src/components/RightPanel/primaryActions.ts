@@ -1,7 +1,7 @@
 import type { IconName } from "../Icon";
 
 /** Derived git panel state — computed from live GitState, not stored. */
-export type GitPanelState = "clean" | "changes" | "pushed" | "conflicts" | "pr-open" | "merged" | "loading";
+export type GitPanelState = "clean" | "changes" | "pushed" | "conflicts" | "pr-open" | "pr-closed" | "merged" | "loading";
 
 export interface PrimaryAction {
   label: string;
@@ -20,22 +20,66 @@ export interface SecondaryAction {
   kbd?: string;
 }
 
-/** Maps a git panel state to the panel's primary call-to-action. */
-export function primaryFor(state: GitPanelState): PrimaryAction {
+export interface ActionCounts {
+  files?: number;
+  ahead?: number;
+  prNumber?: number;
+}
+
+/** Maps a git panel state to the panel's primary call-to-action.
+ *  Pass counts for dynamic status labels; falls back to generic copy. */
+export function primaryFor(state: GitPanelState, counts?: ActionCounts): PrimaryAction {
+  const { files = 0, ahead = 0, prNumber } = counts ?? {};
+  const prLabel = prNumber != null ? `PR #${prNumber}` : "PR";
+
   switch (state) {
     case "loading":
       return { label: "Loading…", icon: "refresh", statusLabel: "loading git state", statusKind: "ready" };
     case "changes":
-      return { label: "Commit & open PR", icon: "pr", statusLabel: "changes uncommitted", statusKind: "warn" };
+      return {
+        label: "Commit & open PR",
+        icon: "pr",
+        statusLabel: files === 1 ? "1 change uncommitted" : `${files} changes uncommitted`,
+        statusKind: "warn",
+      };
     case "pushed":
-      return { label: "Open PR", icon: "pr", statusLabel: "commit pushed, no PR yet", statusKind: "warn" };
+      return {
+        label: "Open PR",
+        icon: "pr",
+        statusLabel: ahead === 1 ? "1 commit pushed, no PR yet" : `${ahead} commits pushed, no PR yet`,
+        statusKind: "warn",
+      };
     case "pr-open":
-      return { label: "View PR ↗", icon: "external", statusLabel: "PR open", statusKind: "ready", statusExtra: "checks passing" };
+      return {
+        label: "View PR ↗",
+        icon: "external",
+        statusLabel: `${prLabel} · open`,
+        statusKind: "ready",
+        statusExtra: "checks passing",
+      };
     case "conflicts":
-      return { label: "Resolve conflicts", icon: "merge", statusLabel: "merge conflicts", statusKind: "alert", danger: true };
+      return {
+        label: "Resolve conflicts",
+        icon: "merge",
+        statusLabel: "merge conflicts detected",
+        statusKind: "alert",
+        danger: true,
+      };
+    case "pr-closed":
+      return {
+        label: "Open new PR",
+        icon: "pr",
+        statusLabel: `${prLabel} · closed`,
+        statusKind: "warn",
+      };
     case "merged":
-      return { label: "Archive workspace", icon: "check", statusLabel: "PR merged", statusKind: "ready" };
-    default:
+      return {
+        label: "Archive workspace",
+        icon: "check",
+        statusLabel: `${prLabel} · merged`,
+        statusKind: "ready",
+      };
+    default: // clean
       return { label: "Nothing to do", icon: "check", statusLabel: "working tree clean", statusKind: "ready" };
   }
 }
@@ -66,6 +110,12 @@ export function secondaryFor(state: GitPanelState): SecondaryAction[] {
     case "conflicts":
       return [
         { key: "abort", label: "Abort merge", icon: "close" },
+        { key: "view-pr", label: "View on GitHub", icon: "github" },
+      ];
+    case "pr-closed":
+      return [
+        { key: "open-pr", label: "Open new PR", icon: "pr" },
+        { key: "push", label: "Push more commits", icon: "push" },
         { key: "view-pr", label: "View on GitHub", icon: "github" },
       ];
     case "merged":
