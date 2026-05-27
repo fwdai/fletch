@@ -6,7 +6,6 @@ import { IconButton } from "../ui/IconButton";
 import { formatAge } from "../../util/format";
 import { useMinuteClock } from "../../util/hooks";
 import { ViewToggle } from "./ViewToggle";
-
 /** Header strip above the workspace body. Houses the left-sidebar
  *  toggle, the agent task + meta line, the Custom/Native view
  *  switcher, and the right-panel toggle. */
