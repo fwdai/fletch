@@ -52,7 +52,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         void createPr(agent.id, "", "");
         break;
       case "pr-open":
-        if (prState?.url) window.open(prState.url);
+        if (prState?.url) window.open(prState.url, "_blank");
         break;
       case "merged":
         void archive(agent.id);
@@ -78,7 +78,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         void mergePr(agent.id);
         break;
       case "view-pr":
-        if (prState?.url) window.open(prState.url);
+        if (prState?.url) window.open(prState.url, "_blank");
         break;
       case "archive":
         void archive(agent.id);
@@ -128,7 +128,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         <div className="actions">
           <button
             type="button"
-            disabled={panelState === "loading"}
+            disabled={panelState === "loading" || panelState === "changes" || panelState === "conflicts"}
             className={`btn-t ${primary.danger ? "outline" : "primary"}`}
             style={
               primary.danger

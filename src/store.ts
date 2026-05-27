@@ -761,6 +761,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   fetchPrState: async (agentId) => {
     try {
       const state = await api.getPrState(agentId);
+      // Always write (including null) to distinguish "confirmed: no PR" from
+      // "not yet fetched" (absent key). Unlike fetchGitState which guards the
+      // write, PR state being null is meaningful.
       set((s) => ({ prStates: { ...s.prStates, [agentId]: state } }));
     } catch {
       // non-fatal
