@@ -76,6 +76,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         <div className="actions">
           <button
             type="button"
+            disabled={panelState === "loading"}
             className={`btn-t ${primary.danger ? "outline" : "primary"}`}
             style={
               primary.danger

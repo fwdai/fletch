@@ -628,6 +628,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           s.transcriptLoaded;
         const { [id]: _droppedBusy, ...restBusy } = s.managedBusy;
         const { [id]: _droppedTokens, ...restTokens } = s.tokens;
+        const { [id]: _droppedGitState, ...restGitStates } = s.gitStates;
         return {
           workspace: fresh,
           selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
@@ -636,6 +637,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           transcriptLoaded: restTranscriptLoaded,
           managedBusy: restBusy,
           tokens: restTokens,
+          gitStates: restGitStates,
         };
       });
     } catch (e) {
@@ -656,6 +658,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _td, ...restTranscriptLoaded } = s.transcriptLoaded;
         const { [id]: _b, ...restBusy } = s.managedBusy;
         const { [id]: _t, ...restTokens } = s.tokens;
+        const { [id]: _g, ...restGitStates } = s.gitStates;
         return {
           workspace: fresh ?? s.workspace,
           selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
@@ -664,6 +667,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           transcriptLoaded: restTranscriptLoaded,
           managedBusy: restBusy,
           tokens: restTokens,
+          gitStates: restGitStates,
         };
       });
     } catch (e) {
