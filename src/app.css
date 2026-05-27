@@ -490,7 +490,7 @@ button { cursor: default; }
 .center-h {
   display: flex; align-items: center; gap: 10px;
   padding: 0 16px;
-  height: 44px; flex-shrink: 0;
+  height: 48px; flex-shrink: 0;
   border-bottom: 1px solid var(--bd-soft);
   background: var(--bg-1);
 }
@@ -814,7 +814,7 @@ button { cursor: default; }
 .right-h {
   display: flex; align-items: center; gap: 2px;
   padding: 0 8px 0 16px;
-  height: 44px; flex-shrink: 0;
+  height: 48px; flex-shrink: 0;
   border-bottom: 1px solid var(--bd-soft);
   background: var(--bg-1);
 }
