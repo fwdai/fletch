@@ -660,6 +660,7 @@ button { cursor: default; }
   text-transform: uppercase;
   color: var(--fg-3);
   font-style: normal;
+  margin-right: 8px;
   margin-bottom: 4px;
   font-weight: 500;
 }
@@ -753,6 +754,13 @@ button { cursor: default; }
 .send:active:not(:disabled) { transform: scale(.94); }
 .send svg { width: 13px; height: 13px; }
 .send:disabled { background: var(--hover); color: var(--fg-3); }
+.send.is-stop {
+  background: var(--danger);
+  color: oklch(0.98 0.005 60);
+}
+.send.is-stop:hover:not(:disabled) {
+  background: oklch(from var(--danger) calc(l + 0.04) c h);
+}
 
 /* dropdown */
 .dd {

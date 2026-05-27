@@ -735,6 +735,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       set((state) => ({
         workspace: next,
+        managedLogs:
+          e.status === "stopped" && (state.managedBusy[e.agent_id] ?? false)
+            ? {
+                ...state.managedLogs,
+                [e.agent_id]: [
+                  ...(state.managedLogs[e.agent_id] ?? []),
+                  { kind: "system", text: "Agent was interrupted." },
+                ],
+              }
+            : state.managedLogs,
         managedBusy:
           e.status === "error" || e.status === "stopped"
             ? { ...state.managedBusy, [e.agent_id]: false }
@@ -969,10 +979,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         items: transcriptEventsToItems(events),
       });
       // Reset any prior log for this id, then project Claude's saved
-      // JSONL into visible chat messages. Saved session JSONL includes
-      // thinking blocks, tool calls, and tool results; Custom view
-      // history should show the user/assistant conversation.
-      set((state) => replayTranscriptEvents(state, id, events));
+      // JSONL into visible chat messages. If Claude has not written
+      // the JSONL yet, do not erase an active in-memory turn.
+      const items = transcriptEventsToItems(events);
+      set((state) =>
+        items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0
+          ? {}
+          : replayTranscriptEvents(state, id, events),
+      );
     } catch (e) {
       set({ lastError: String(e) });
     } finally {

@@ -10,6 +10,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -98,19 +99,40 @@ impl ManagedSession {
         {
             let child_for_wait = child_arc.clone();
             thread::spawn(move || {
-                let mut taken = match child_for_wait.lock().take() {
-                    Some(c) => c,
-                    None => return,
-                };
-                let exit = match taken.wait() {
-                    Ok(status) => ManagedExit {
-                        success: status.success(),
-                        message: format!("{status}"),
-                    },
-                    Err(e) => ManagedExit {
-                        success: false,
-                        message: format!("wait failed: {e}"),
-                    },
+                let exit = loop {
+                    let status = {
+                        let mut guard = child_for_wait.lock();
+                        let Some(child) = guard.as_mut() else {
+                            return;
+                        };
+                        match child.try_wait() {
+                            Ok(Some(status)) => {
+                                let _ = guard.take();
+                                Some(Ok(status))
+                            }
+                            Ok(None) => None,
+                            Err(e) => {
+                                let _ = guard.take();
+                                Some(Err(e))
+                            }
+                        }
+                    };
+
+                    match status {
+                        Some(Ok(status)) => {
+                            break ManagedExit {
+                                success: status.success(),
+                                message: format!("{status}"),
+                            };
+                        }
+                        Some(Err(e)) => {
+                            break ManagedExit {
+                                success: false,
+                                message: format!("wait failed: {e}"),
+                            };
+                        }
+                        None => thread::sleep(Duration::from_millis(50)),
+                    }
                 };
                 tracing::info!(success = exit.success, message = %exit.message, "managed: exited");
                 on_exit(exit);
