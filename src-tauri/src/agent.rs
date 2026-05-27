@@ -145,6 +145,19 @@ impl Agent {
         }
     }
 
+    /// Interrupt the agent's current turn without terminating the process.
+    /// For PTY agents this writes Ctrl+C; for managed agents this sends SIGINT.
+    pub fn interrupt(&self) {
+        match self {
+            Self::Pty(a) => {
+                let _ = a.pty.interrupt();
+            }
+            Self::Managed(a) => {
+                a.session.interrupt();
+            }
+        }
+    }
+
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         match self {
             Self::Pty(a) => a.pty.resize(cols, rows),

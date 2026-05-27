@@ -146,6 +146,12 @@ impl PtySession {
             .map_err(|e| Error::Other(format!("pty write: {e}")))
     }
 
+    /// Write Ctrl+C to the PTY to interrupt the currently running command
+    /// without exiting the shell/process.
+    pub fn interrupt(&self) -> Result<()> {
+        self.write(&[0x03])
+    }
+
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         self.master
             .lock()
