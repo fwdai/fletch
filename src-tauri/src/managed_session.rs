@@ -168,6 +168,23 @@ impl ManagedSession {
             .map_err(|e| Error::Other(format!("managed flush: {e}")))
     }
 
+    /// Send SIGINT to the child process to interrupt the current turn
+    /// without killing it. Claude in stream-json mode handles SIGINT by
+    /// aborting the current turn and emitting a result event, then
+    /// returning to idle. If the process does not survive SIGINT the
+    /// exit handler will transition the agent to Idle automatically.
+    pub fn interrupt(&self) {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            if let Some(child) = self.child.lock().as_ref() {
+                let id = child.id();
+                let _ = kill(Pid::from_raw(id as i32), Signal::SIGINT);
+            }
+        }
+    }
+
     pub fn kill(&self) -> Result<()> {
         // Close stdin to signal EOF (claude exits cleanly that way),
         // then kill if it's still alive.
