@@ -468,20 +468,16 @@ impl Supervisor {
     }
 
     pub async fn stop_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
-        let live = self.agents.lock().remove(agent_id);
-        if let Some(agent) = live {
-            let _ = agent.shutdown();
+        // Interrupt the current turn without exiting the process.
+        // The natural result-event + turn-watchdog path will transition
+        // the agent to Idle once the interrupt is processed. If the
+        // process does exit (e.g. it doesn't survive SIGINT), the exit
+        // handler in apply_exit_if_current will also move it to Idle.
+        let _ = app;
+        let agents = self.agents.lock();
+        if let Some(agent) = agents.get(agent_id) {
+            agent.interrupt();
         }
-        self.activities.lock().remove(agent_id);
-        self.native_input_lines.lock().remove(agent_id);
-        match self
-            .workspace
-            .update_agent_status(agent_id, AgentStatus::Stopped, None)
-        {
-            Ok(_) | Err(Error::AgentNotFound(_)) => {}
-            Err(e) => return Err(e),
-        }
-        emit_status(&app, agent_id, AgentStatus::Stopped, None);
         Ok(())
     }
 
