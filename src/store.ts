@@ -10,6 +10,7 @@ import {
   onAgentView,
   onGitStateChanged,
   onPrStateChanged,
+  onShellOutput,
   onWorkspaceChanged,
   type AgentRecord,
   type AgentView,
@@ -62,6 +63,30 @@ export function registerOutputSink(
   outputSinks.set(agentId, handler);
   return () => {
     if (outputSinks.get(agentId) === handler) outputSinks.delete(agentId);
+  };
+}
+
+// ---- Per-agent shell PTY output buffer ----------------------------------
+// Mirrors the agent output buffer. Used by TermPanel to repaint after
+// tab switch.
+const shellSinks = new Map<string, OutputHandler>();
+const shellBuffers = new Map<string, Uint8Array>();
+
+export function getShellBuffer(agentId: string): Uint8Array | undefined {
+  return shellBuffers.get(agentId);
+}
+
+export function clearShellBuffer(agentId: string) {
+  shellBuffers.delete(agentId);
+}
+
+export function registerShellSink(
+  agentId: string,
+  handler: OutputHandler,
+): () => void {
+  shellSinks.set(agentId, handler);
+  return () => {
+    if (shellSinks.get(agentId) === handler) shellSinks.delete(agentId);
   };
 }
 
@@ -375,6 +400,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       const chunk = new Uint8Array(e.bytes);
       appendToBuffer(e.agent_id, chunk);
       const sink = outputSinks.get(e.agent_id);
+      if (sink) sink(chunk);
+    });
+
+    await onShellOutput((e) => {
+      const chunk = new Uint8Array(e.bytes);
+      const existing = shellBuffers.get(e.agent_id);
+      let next: Uint8Array;
+      if (!existing) {
+        next = chunk;
+      } else {
+        next = new Uint8Array(existing.length + chunk.length);
+        next.set(existing, 0);
+        next.set(chunk, existing.length);
+      }
+      if (next.length > MAX_BUFFER_BYTES) {
+        next = next.slice(next.length - MAX_BUFFER_BYTES);
+      }
+      shellBuffers.set(e.agent_id, next);
+      const sink = shellSinks.get(e.agent_id);
       if (sink) sink(chunk);
     });
 
