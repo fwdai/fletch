@@ -2,6 +2,7 @@ import type { ToolPresenter } from "./types";
 import { ToolBlock, getStringField, renderToolResult } from "./util";
 
 export const grepPresenter: ToolPresenter = {
+  icon: "search",
   summary: (call) => {
     const pattern = getStringField(call.input, "pattern");
     const path = getStringField(call.input, "path");

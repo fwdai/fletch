@@ -7,6 +7,7 @@ import {
 } from "./util";
 
 export const bashPresenter: ToolPresenter = {
+  icon: "terminal",
   summary: (call) => {
     const cmd = getStringField(call.input, "command");
     return cmd ? firstLineOf(cmd, 140) : "(no command)";

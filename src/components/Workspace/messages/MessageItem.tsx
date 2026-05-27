@@ -26,6 +26,7 @@ export function MessageItem({ item }: { item: ViewItem }) {
       return (
         <ToolRow
           name={item.call.name}
+          icon={presenter.icon}
           isError={item.result?.is_error}
           summary={presenter.summary(item.call, item.result)}
           expanded={presenter.expanded(item.call, item.result)}
@@ -40,6 +41,7 @@ export function MessageItem({ item }: { item: ViewItem }) {
       return (
         <ToolRow
           name={item.name}
+          icon={presenter.icon}
           summary={presenter.summary(item, null)}
           expanded={presenter.expanded(item, null)}
         />

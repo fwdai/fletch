@@ -1,15 +1,17 @@
 import { useState, type ReactNode } from "react";
-import { Icon } from "../../Icon";
+import { Icon, type IconName } from "../../Icon";
 
 /** Shared chrome for every tool presenter: icon, name, one-line summary,
  *  click-to-expand. Presenters supply the summary and expanded bodies. */
 export function ToolRow({
   name,
+  icon = "wrench",
   isError,
   summary,
   expanded,
 }: {
   name: string;
+  icon?: IconName;
   isError?: boolean;
   summary: ReactNode;
   expanded: ReactNode;
@@ -24,7 +26,7 @@ export function ToolRow({
         onClick={() => setOpen((o) => !o)}
         style={{ width: "100%", textAlign: "left", color: dangerColor }}
       >
-        <Icon name="wrench" size={12} className="t-icon" />
+        <Icon name={icon} size={12} className="t-icon" />
         <span className="t-name" style={{ color: dangerColor }}>
           {name}
         </span>
