@@ -5,10 +5,13 @@ use std::time::Duration;
 use notify_debouncer_mini::notify::{self, RecommendedWatcher};
 use notify_debouncer_mini::{new_debouncer, Debouncer};
 
+#[allow(dead_code)]
+#[derive(Default)]
 pub struct WatcherRegistry {
     watchers: HashMap<String, Debouncer<RecommendedWatcher>>,
 }
 
+#[allow(dead_code)]
 impl WatcherRegistry {
     pub fn new() -> Self {
         Self {
@@ -31,11 +34,12 @@ impl WatcherRegistry {
         // Drop any existing watcher under this key before creating the new one.
         self.watchers.remove(key);
 
+        let key_for_log = key.to_string();
         let mut debouncer = new_debouncer(debounce, move |result| {
             match result {
                 Ok(_events) => handler(),
                 Err(e) => {
-                    tracing::warn!("watcher error: {:?}", e);
+                    tracing::warn!(key = %key_for_log, "watcher error: {:?}", e);
                 }
             }
         })?;
@@ -61,8 +65,3 @@ impl WatcherRegistry {
     }
 }
 
-impl Default for WatcherRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}

@@ -1,6 +1,5 @@
 mod activity;
 mod agent;
-mod watcher;
 mod branding;
 mod commands;
 mod error;
@@ -10,6 +9,7 @@ mod names;
 mod pty_session;
 mod sandbox;
 mod supervisor;
+mod watcher;
 mod workspace;
 
 use std::sync::Arc;
