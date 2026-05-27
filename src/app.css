@@ -490,7 +490,7 @@ button { cursor: default; }
 .center-h {
   display: flex; align-items: center; gap: 10px;
   padding: 0 16px;
-  height: 44px; flex-shrink: 0;
+  height: 48px; flex-shrink: 0;
   border-bottom: 1px solid var(--bd-soft);
   background: var(--bg-1);
 }
@@ -645,6 +645,15 @@ button { cursor: default; }
   margin: 18px 0;
   border: 0;
   border-top: 1px solid var(--bd-soft);
+}
+
+.m-agent.m-agent-dim,
+.m-agent.m-agent-dim h1,
+.m-agent.m-agent-dim h2,
+.m-agent.m-agent-dim h3,
+.m-agent.m-agent-dim h4,
+.m-agent.m-agent-dim th {
+  color: var(--fg-2);
 }
 
 .m-reasoning {
@@ -805,7 +814,7 @@ button { cursor: default; }
 .right-h {
   display: flex; align-items: center; gap: 2px;
   padding: 0 8px 0 16px;
-  height: 44px; flex-shrink: 0;
+  height: 48px; flex-shrink: 0;
   border-bottom: 1px solid var(--bd-soft);
   background: var(--bg-1);
 }

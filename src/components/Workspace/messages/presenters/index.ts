@@ -1,4 +1,5 @@
 import type { ToolPresenter } from "./types";
+import { agentPresenter } from "./Agent";
 import { bashPresenter } from "./Bash";
 import { readPresenter } from "./Read";
 import { editPresenter } from "./Edit";
@@ -12,6 +13,7 @@ export type { ToolPresenter, ToolCall, ToolResult } from "./types";
 // that emit different names for the same conceptual tool can either
 // register an alias here or normalize the name in their reducer.
 export const PRESENTERS: Record<string, ToolPresenter> = {
+  Agent: agentPresenter,
   Bash: bashPresenter,
   Read: readPresenter,
   Edit: editPresenter,
