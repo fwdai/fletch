@@ -1,4 +1,5 @@
-import type { AgentRecord, AgentStatus } from "../../api";
+import { useEffect, useState } from "react";
+import { api, type AgentRecord, type AgentStatus, type DiffStats } from "../../api";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
@@ -21,9 +22,30 @@ export function WorkspaceHeader({ agent }: Props) {
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const toggleRight = useAppStore((s) => s.toggleRight);
   const now = useMinuteClock();
+  const [diffStats, setDiffStats] = useState<DiffStats | null>(null);
 
   const branch = agent.repos[0]?.branch ?? "—";
   const age = formatAge(agent.created_at, now);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const next = await api.getAgentDiffStats(agent.id);
+        if (!cancelled) setDiffStats(next);
+      } catch {
+        if (!cancelled) setDiffStats(null);
+      }
+    };
+
+    load();
+    const interval = window.setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [agent.id, branch, agent.status]);
 
   return (
     <div className="center-h">
@@ -37,10 +59,10 @@ export function WorkspaceHeader({ agent }: Props) {
       <div className="task">
         <div className="t-name">
           <StatusDot status={agent.status} />
-          <span>{agent.task || agent.name}</span>
+          <span>{agent.name}</span>
         </div>
         <div className="t-meta">
-          {agent.name} · {branch}
+          {branch} · <DiffLabel stats={diffStats} />
           {age && <> · <span>{age}</span></>}
         </div>
       </div>
@@ -59,6 +81,21 @@ export function WorkspaceHeader({ agent }: Props) {
         <Icon name="sidebarR" />
       </IconButton>
     </div>
+  );
+}
+
+function DiffLabel({ stats }: { stats: DiffStats | null }) {
+  const additions = stats ? String(stats.additions) : "--";
+  const deletions = stats ? String(stats.deletions) : "--";
+  const changed = Boolean(
+    stats && (stats.additions > 0 || stats.deletions > 0),
+  );
+
+  return (
+    <span className={`t-diff ${changed ? "has-changes" : ""}`}>
+      <span className="t-diff-add">+{additions}</span>{" "}
+      <span className="t-diff-del">-{deletions}</span>
+    </span>
   );
 }
 

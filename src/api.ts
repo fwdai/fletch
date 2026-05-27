@@ -101,6 +101,8 @@ export interface AgentRepoAddedEvent {
 
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
+  getAgentDiffStats: (agentId: string) =>
+    invoke<DiffStats>("get_agent_diff_stats", { agentId }),
   addWorkspaceRepo: (repoPath: string) =>
     invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>

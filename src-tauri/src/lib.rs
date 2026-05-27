@@ -52,6 +52,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_workspace,
+            commands::get_agent_diff_stats,
             commands::add_workspace_repo,
             commands::remove_workspace_repo,
             commands::spawn_agent,
