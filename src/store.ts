@@ -8,9 +8,11 @@ import {
   onAgentStatus,
   onAgentTask,
   onAgentView,
+  onGitStateChanged,
   onWorkspaceChanged,
   type AgentRecord,
   type AgentView,
+  type GitState,
   type Workspace,
 } from "./api";
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
@@ -162,6 +164,10 @@ interface AppState {
    *  `result` event. Persists across agents so the right-rail
    *  cost panel can show a stable number after a turn completes. */
   tokens: Record<string, number>;
+  /** Git state per agent, keyed by agent_id. Updated by the git:state_changed watcher event. */
+  gitStates: Record<string, GitState>;
+  /** Fetch git state for an agent immediately (initial load before watcher fires). */
+  fetchGitState: (agentId: string) => Promise<void>;
 
   drafts: DraftAgent[];
   activeDraftId: string | null;
@@ -331,6 +337,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   managedBusy: {},
   switchInFlight: {},
   tokens: {},
+  gitStates: {},
 
   drafts: [],
   activeDraftId: null,
@@ -468,6 +475,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     await onWorkspaceChanged(async () => {
       const fresh = await api.getWorkspace();
       if (fresh) set({ workspace: fresh });
+    });
+
+    await onGitStateChanged((e) => {
+      set((s) => ({ gitStates: { ...s.gitStates, [e.agent_id]: e.state } }));
     });
 
     const workspace = await api.getWorkspace();
@@ -711,6 +722,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         transcriptLoading: { ...s.transcriptLoading, [id]: false },
         transcriptLoaded: { ...s.transcriptLoaded, [id]: true },
       }));
+    }
+  },
+
+  fetchGitState: async (agentId) => {
+    try {
+      const state = await api.getGitState(agentId);
+      if (state) {
+        set((s) => ({ gitStates: { ...s.gitStates, [agentId]: state } }));
+      }
+    } catch {
+      // non-fatal — watcher will provide updates
     }
   },
 

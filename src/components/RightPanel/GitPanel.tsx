@@ -1,24 +1,41 @@
-import { useState } from "react";
-import type { AgentRecord } from "../../api";
-import { MOCK_GIT_FILES, MOCK_COMMIT_MESSAGE, type MockGitState } from "../../data/mocks";
+import { useEffect, useState } from "react";
+import type { AgentRecord, GitState } from "../../api";
+import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
-import { primaryFor, secondaryFor } from "./primaryActions";
+import { primaryFor, secondaryFor, type GitPanelState } from "./primaryActions";
 
-/** State-aware git panel. The single primary action morphs based on
- *  the current state; secondary actions live in the "…" menu. All
- *  data here is mocked until git IPC commands land — the panel is
- *  feature-flagged off by default in settings. */
-export function GitPanel({ agent, state }: { agent: AgentRecord; state: MockGitState }) {
-  const [selected, setSelected] = useState(MOCK_GIT_FILES[0]?.path);
+function deriveState(s: GitState | null): GitPanelState {
+  if (!s) return "clean";
+  if (s.files.some((f) => f.kind === "conflicted")) return "conflicts";
+  if (s.files.length > 0) return "changes";
+  if (s.ahead > 0) return "pushed";
+  return "clean";
+}
+
+/** State-aware git panel driven by live git state from the Tauri backend.
+ *  The panel is feature-flagged off by default in settings. */
+export function GitPanel({ agent }: { agent: AgentRecord }) {
+  const gitState = useAppStore((s) => s.gitStates[agent.id] ?? null);
+  const fetchGitState = useAppStore((s) => s.fetchGitState);
+
+  useEffect(() => {
+    void fetchGitState(agent.id);
+  }, [agent.id, fetchGitState]);
+
+  const panelState = deriveState(gitState);
+
+  const [selected, setSelected] = useState<string | null>(
+    gitState?.files[0]?.path ?? null,
+  );
   const [moreOpen, setMoreOpen] = useState(false);
 
-  const primary = primaryFor(state);
-  const secondary = secondaryFor(state);
+  const primary = primaryFor(panelState);
+  const secondary = secondaryFor(panelState);
   const branch = agent.repos[0]?.branch ?? "(no branch yet)";
   const base = agent.repos[0]?.parent_branch ?? "main";
-  const showFiles = state !== "clean" && state !== "merged";
-  const showCommit = state === "changes";
+  const showFiles = panelState !== "clean" && panelState !== "merged";
+  const showCommit = panelState === "changes";
 
   return (
     <>
@@ -29,8 +46,8 @@ export function GitPanel({ agent, state }: { agent: AgentRecord; state: MockGitS
           <span className="base">← {base}</span>
         </div>
         <div className="git-stats">
-          <span><span className="num">{state === "pushed" || state === "pr-open" ? 1 : 0}</span> ahead</span>
-          <span><span className="num">0</span> behind</span>
+          <span><span className="num">{gitState?.ahead ?? 0}</span> ahead</span>
+          <span><span className="num">{gitState?.behind ?? 0}</span> behind</span>
         </div>
       </div>
 
@@ -96,24 +113,24 @@ export function GitPanel({ agent, state }: { agent: AgentRecord; state: MockGitS
       {showFiles && (
         <>
           <div className="git-files-h">
-            <span>Changes · {MOCK_GIT_FILES.length}</span>
+            <span>Changes · {gitState?.files.length ?? 0}</span>
             <div className="actions">
               <IconButton size="xs" tip="Stage all"><Icon name="check" /></IconButton>
               <IconButton size="xs" tip="Refresh"><Icon name="refresh" /></IconButton>
             </div>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
-            {MOCK_GIT_FILES.map((f) => (
+            {(gitState?.files ?? []).map((f) => (
               <div
                 key={f.path}
                 className={`git-file ${selected === f.path ? "active" : ""}`}
                 onClick={() => setSelected(f.path)}
               >
-                <span className={`gs ${f.status}`}>{f.status}</span>
+                <span className={`gs ${f.kind}`}>{f.kind[0].toUpperCase()}</span>
                 <span className="gn">{f.path}</span>
                 <span className="gx">
-                  {f.add > 0 && <span className="add">+{f.add}</span>}
-                  {f.rem > 0 && <span className="rem">−{f.rem}</span>}
+                  {f.additions > 0 && <span className="add">+{f.additions}</span>}
+                  {f.deletions > 0 && <span className="rem">−{f.deletions}</span>}
                 </span>
               </div>
             ))}
@@ -125,8 +142,8 @@ export function GitPanel({ agent, state }: { agent: AgentRecord; state: MockGitS
         <div className="git-commit">
           <div className="cm-title">Commit message · auto-drafted</div>
           <div className="cm-card">
-            <div className="ct">{MOCK_COMMIT_MESSAGE.title}</div>
-            <div className="cb">{MOCK_COMMIT_MESSAGE.body}</div>
+            <div className="ct">{gitState ? "Drafting commit message…" : "No changes"}</div>
+            <div className="cb" />
           </div>
           <div className="cm-foot">
             <IconButton size="xs" tip="Regenerate"><Icon name="sparkle" /></IconButton>
@@ -137,7 +154,7 @@ export function GitPanel({ agent, state }: { agent: AgentRecord; state: MockGitS
         </div>
       )}
 
-      {state === "clean" && (
+      {panelState === "clean" && (
         <div className="empty-msg" style={{ marginTop: "auto" }}>
           <div className="et">All clean</div>
           <div>No uncommitted changes. Type a follow-up to start working.</div>

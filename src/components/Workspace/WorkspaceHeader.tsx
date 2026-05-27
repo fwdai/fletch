@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { api, type AgentRecord, type AgentStatus, type DiffStats } from "../../api";
+import { type AgentRecord, type AgentStatus, type DiffStats } from "../../api";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
@@ -21,30 +20,10 @@ export function WorkspaceHeader({ agent }: Props) {
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const toggleRight = useAppStore((s) => s.toggleRight);
   const now = useMinuteClock();
-  const [diffStats, setDiffStats] = useState<DiffStats | null>(null);
+  const gitState = useAppStore((s) => s.gitStates[agent.id] ?? null);
 
   const branch = agent.repos[0]?.branch ?? "—";
   const age = formatAge(agent.created_at, now);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const next = await api.getAgentDiffStats(agent.id);
-        if (!cancelled) setDiffStats(next);
-      } catch {
-        if (!cancelled) setDiffStats(null);
-      }
-    };
-
-    load();
-    const interval = window.setInterval(load, 30_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [agent.id, branch, agent.status]);
 
   return (
     <div className="center-h">
@@ -61,7 +40,7 @@ export function WorkspaceHeader({ agent }: Props) {
           <span>{agent.name}</span>
         </div>
         <div className="t-meta">
-          {branch} · <DiffLabel stats={diffStats} />
+          {branch} · <DiffLabel stats={gitState ? { additions: gitState.additions, deletions: gitState.deletions } : null} />
           {age && <> · <span>{age}</span></>}
         </div>
       </div>

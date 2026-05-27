@@ -1,5 +1,7 @@
 import type { IconName } from "../Icon";
-import type { MockGitState } from "../../data/mocks";
+
+/** Derived git panel state — computed from live GitState, not stored. */
+export type GitPanelState = "clean" | "changes" | "pushed" | "conflicts" | "pr-open" | "merged";
 
 export interface PrimaryAction {
   label: string;
@@ -17,8 +19,8 @@ export interface SecondaryAction {
   kbd?: string;
 }
 
-/** Maps a mocked git state to the panel's primary call-to-action. */
-export function primaryFor(state: MockGitState): PrimaryAction {
+/** Maps a git panel state to the panel's primary call-to-action. */
+export function primaryFor(state: GitPanelState): PrimaryAction {
   switch (state) {
     case "changes":
       return { label: "Commit & open PR", icon: "pr", statusLabel: "changes uncommitted", statusKind: "warn" };
@@ -35,7 +37,7 @@ export function primaryFor(state: MockGitState): PrimaryAction {
   }
 }
 
-export function secondaryFor(state: MockGitState): SecondaryAction[] {
+export function secondaryFor(state: GitPanelState): SecondaryAction[] {
   switch (state) {
     case "changes":
       return [

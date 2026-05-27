@@ -102,6 +102,37 @@ export interface AgentRepoAddedEvent {
   repo: TrackedRepo;
 }
 
+export type StatusKind =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflicted";
+
+export interface FileStatus {
+  path: string;
+  kind: StatusKind;
+  staged: boolean;
+  additions: number;
+  deletions: number;
+}
+
+export interface GitState {
+  branch: string;
+  parent_branch: string;
+  ahead: number;
+  behind: number;
+  files: FileStatus[];
+  additions: number;
+  deletions: number;
+}
+
+export interface GitStateChangedEvent {
+  agent_id: string;
+  state: GitState;
+}
+
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
   getAgentDiffStats: (agentId: string) =>
@@ -138,6 +169,8 @@ export const api = {
     invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
   allocateDraftName: (used: string[]) =>
     invoke<string>("allocate_draft_name", { used }),
+  getGitState: (agentId: string) =>
+    invoke<GitState | null>("get_git_state", { agentId }),
 };
 
 export function onAgentOutput(
@@ -188,4 +221,10 @@ export function onAgentRepoAdded(
 
 export function onWorkspaceChanged(cb: () => void): Promise<UnlistenFn> {
   return listen<unknown>("workspace:changed", () => cb());
+}
+
+export function onGitStateChanged(
+  cb: (e: GitStateChangedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<GitStateChangedEvent>("git:state_changed", (event) => cb(event.payload));
 }
