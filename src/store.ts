@@ -456,7 +456,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               }
             : state.managedLogs,
         managedBusy:
-          e.status === "error" || e.status === "stopped"
+          e.status === "error" || e.status === "stopped" || e.status === "idle"
             ? { ...state.managedBusy, [e.agent_id]: false }
             : state.managedBusy,
       }));
@@ -540,7 +540,18 @@ export const useAppStore = create<AppState>((set, get) => ({
         },
         managedBusy: { ...state.managedBusy, [id]: true },
       }));
-      await api.sendUserMessage(id, text);
+      try {
+        await api.sendUserMessage(id, text);
+      } catch (e) {
+        if (String(e).includes("agent not found")) {
+          // Dead idle agent (finished its prior task) — resume the
+          // process in --resume mode, then deliver the message once ready.
+          await api.resumeAgent(id);
+          await sendWhenAgentReady(() => api.sendUserMessage(id, text));
+        } else {
+          throw e;
+        }
+      }
     } catch (e) {
       set((state) => ({
         lastError: String(e),
