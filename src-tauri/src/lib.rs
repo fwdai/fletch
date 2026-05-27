@@ -4,11 +4,13 @@ mod branding;
 mod commands;
 mod error;
 mod git;
+mod git_state;
 mod managed_session;
 mod names;
 mod pty_session;
 mod sandbox;
 mod supervisor;
+mod watcher;
 mod workspace;
 
 use std::sync::Arc;
@@ -68,6 +70,7 @@ pub fn run() {
             commands::read_session_transcript,
             commands::add_repo_to_agent,
             commands::allocate_draft_name,
+            commands::get_git_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quorum");

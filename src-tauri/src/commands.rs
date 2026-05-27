@@ -7,6 +7,7 @@ use tauri::{AppHandle, State};
 
 use crate::error::Result;
 use crate::git;
+use crate::git_state::{self, GitState};
 use crate::names;
 use crate::supervisor::Supervisor;
 use crate::workspace::{
@@ -202,4 +203,25 @@ pub async fn add_repo_to_agent(
     let sup = supervisor.inner().clone();
     sup.add_repo_to_agent(app, &agent_id, PathBuf::from(repo_path))
         .await
+}
+
+/// Returns git state for the agent's primary repo.
+/// For multi-repo agents only the first repo's state is returned.
+#[tauri::command]
+pub async fn get_git_state(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Option<GitState>> {
+    let record = match supervisor.workspace.agent(&agent_id) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+    let repo = match record.repos.first() {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let parent = repo.parent_branch.as_deref().unwrap_or("main");
+    let state = git_state::query(&worktree, parent).await?;
+    Ok(Some(state))
 }

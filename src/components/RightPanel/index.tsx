@@ -58,7 +58,7 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
         </div>
       </div>
       <div className="right-body">
-        {tab === "git" && <GitPanel agent={agent} state="clean" />}
+        {tab === "git" && <GitPanel agent={agent} />}
         {tab === "diff" && <Stub label="Diff" />}
         {tab === "run" && <Stub label="Run" />}
         {tab === "term" && <Stub label="Terminal" />}
