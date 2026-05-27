@@ -647,6 +647,15 @@ button { cursor: default; }
   border-top: 1px solid var(--bd-soft);
 }
 
+.m-agent.m-agent-dim,
+.m-agent.m-agent-dim h1,
+.m-agent.m-agent-dim h2,
+.m-agent.m-agent-dim h3,
+.m-agent.m-agent-dim h4,
+.m-agent.m-agent-dim th {
+  color: var(--fg-2);
+}
+
 .m-reasoning {
   font-size: 13px; line-height: 1.65;
   color: var(--fg-2);

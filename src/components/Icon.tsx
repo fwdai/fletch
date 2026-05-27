@@ -43,6 +43,7 @@ import {
   User,
   Wrench,
   X,
+  Zap,
 } from "lucide-react";
 import { LANDMARK_GLYPHS } from "../data/landmarks";
 
@@ -114,6 +115,7 @@ const ICON_COMPONENTS = {
   archiveRestore: ArchiveRestore,
   moon: Moon,
   sun: Sun,
+  zap: Zap,
 } satisfies Record<string, ComponentType<IconComponentProps>>;
 
 // Originally rendered with fill="currentColor". Setting fill on the root SVG
