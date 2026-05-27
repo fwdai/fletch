@@ -210,6 +210,7 @@ pub async fn add_repo_to_agent(
 #[tauri::command]
 pub async fn push_agent(
     supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
     agent_id: String,
 ) -> Result<()> {
     let record = supervisor.workspace.agent(&agent_id)?;
@@ -217,8 +218,12 @@ pub async fn push_agent(
         .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
     let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
     let branch = repo.branch.as_deref()
-        .ok_or_else(|| crate::error::Error::Other("agent has no branch yet".into()))?;
-    git::push(&worktree, branch).await
+        .ok_or_else(|| crate::error::Error::Other("agent has no branch yet".into()))?
+        .to_string();
+    git::push(&worktree, &branch).await?;
+    // After successful push, fetch PR state in background
+    supervisor.inner().fetch_and_emit_pr_state(app, agent_id);
+    Ok(())
 }
 
 /// Pull latest into the primary repo's worktree.
