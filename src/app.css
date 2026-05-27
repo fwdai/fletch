@@ -315,11 +315,11 @@ button { cursor: default; }
   margin-left: 11px;
   border-left: 1px solid var(--bd-soft);
   padding: 2px 0;
-  overflow: hidden;
+  overflow: visible;
   max-height: 1200px;
   transition: max-height .25s var(--ease), opacity .2s var(--ease);
 }
-.agents.closed { max-height: 0; opacity: 0; padding: 0; }
+.agents.closed { max-height: 0; opacity: 0; padding: 0; overflow: hidden; }
 
 .agent {
   display: block;
@@ -379,6 +379,11 @@ button { cursor: default; }
 }
 .ag-act:hover { background: var(--bg-3); color: var(--fg-0); }
 .ag-act:active { background: var(--selected); }
+.ag-act.tip[data-tip]:hover::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
 .agent-sub {
   display: flex; align-items: center; gap: 8px;
   margin-top: 3px;
