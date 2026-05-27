@@ -17,7 +17,7 @@ interface Props {
   autoFocus?: boolean;
   disabled?: boolean;
   stopping?: boolean;
-  /** Fired on Cmd/Ctrl+Enter or send-button click. */
+  /** Fired on Enter (without Shift) or send-button click. */
   onSend: (payload: { text: string; provider: string; thinking: ThinkingBudget }) => void;
   /** Fired when the composer is showing an active stop control. */
   onStop?: () => void;
@@ -74,7 +74,7 @@ export function Composer({
       <textarea
         ref={ta}
         className="composer-input"
-        placeholder={placeholder || "Send a follow-up · ⌘↵ to send"}
+        placeholder={placeholder || "Message agent · /commands · @ to attach · # for PRs"}
         value={text}
         rows={1}
         disabled={disabled}
@@ -83,7 +83,7 @@ export function Composer({
           grow(e.target);
         }}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             send();
           }
@@ -121,9 +121,6 @@ export function Composer({
           <Icon name="attach" size={11} />
         </Chip>
         <span style={{ flex: 1 }} />
-        <span style={{ fontSize: 10, color: "var(--fg-3)", padding: "0 6px" }}>
-          <span className="kbd">⌘</span> <span className="kbd">↵</span>
-        </span>
         <button
           type="button"
           className={`send ${stopping ? "is-stop" : ""}`}
