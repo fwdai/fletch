@@ -1,0 +1,9 @@
+{"type":"user","content":"add a button"}
+{"type":"response.output_text.delta","delta":"Add"}
+{"type":"response.output_text.delta","delta":"ing it now."}
+{"type":"response.function_call.started","call_id":"fc_1","name":"edit","arguments":""}
+{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"file\""}
+{"type":"response.function_call_arguments.delta","output_index":0,"delta":":\"App.tsx\"}"}
+{"type":"function_call","call_id":"fc_1","name":"edit","arguments":{"file":"App.tsx"}}
+{"type":"function_call_output","call_id":"fc_1","output":{"content":"ok","is_error":false}}
+{"type":"response.completed"}

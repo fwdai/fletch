@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi there"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-name>/login</command-name><command-message>login</command-message><command-args></command-args>\n<local-command-stdout>Login successful</local-command-stdout>"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>Hook stderr: x</system-reminder>what's next?"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All set."}]}}
+{"type":"summary","summary":"unrelated"}

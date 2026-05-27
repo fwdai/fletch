@@ -45,10 +45,16 @@ pub async fn spawn_agent(
     app: AppHandle,
     view: Option<AgentView>,
     repo_path: String,
+    provider: Option<String>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
-    sup.spawn_agent(app, view.unwrap_or_default(), PathBuf::from(repo_path))
-        .await
+    sup.spawn_agent(
+        app,
+        view.unwrap_or_default(),
+        PathBuf::from(repo_path),
+        provider.unwrap_or_else(|| "claude".to_string()),
+    )
+    .await
 }
 
 #[tauri::command]

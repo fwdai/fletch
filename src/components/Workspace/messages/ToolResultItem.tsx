@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ManagedItem } from "../../../store";
+import type { ChatItem } from "../../../store";
 import { firstLine } from "../../../util/format";
 
 /** Companion to ToolUseItem — shows the tool's textual output,
@@ -7,7 +7,7 @@ import { firstLine } from "../../../util/format";
 export function ToolResultItem({
   item,
 }: {
-  item: Extract<ManagedItem, { kind: "tool_result" }>;
+  item: Extract<ChatItem, { kind: "tool_result" }>;
 }) {
   const [open, setOpen] = useState(false);
   const text = renderResult(item.content);

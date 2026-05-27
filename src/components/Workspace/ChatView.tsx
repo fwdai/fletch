@@ -1,8 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { AgentRecord } from "../../api";
 import { useAppStore } from "../../store";
+import { applyPolicy, getAdapter } from "../../adapters";
 import { Composer } from "../Composer";
 import { MessageItem } from "./messages/MessageItem";
+import { pairToolItems } from "./messages/pair";
 
 /** Custom-view body: scrolling chat log + composer at the bottom.
  *  The composer here dispatches the user's message via the store; it
@@ -65,7 +67,11 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     el.scrollTop = el.scrollHeight;
   }, [log, transcriptLoading]);
 
-  const items = log ?? [];
+  const items = useMemo(() => {
+    const adapter = getAdapter(agent.provider);
+    const visible = applyPolicy(log ?? [], adapter.policy);
+    return pairToolItems(visible);
+  }, [log, agent.provider]);
   const canSend =
     !transcriptLoading &&
     !switchInFlight &&

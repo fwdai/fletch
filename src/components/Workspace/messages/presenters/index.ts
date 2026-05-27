@@ -1,0 +1,24 @@
+import type { ToolPresenter } from "./types";
+import { bashPresenter } from "./Bash";
+import { readPresenter } from "./Read";
+import { editPresenter } from "./Edit";
+import { writePresenter } from "./Write";
+import { grepPresenter } from "./Grep";
+import { defaultPresenter } from "./default";
+
+export type { ToolPresenter, ToolCall, ToolResult } from "./types";
+
+// Registry keyed by the tool name reported on `tool_call.name`. Adapters
+// that emit different names for the same conceptual tool can either
+// register an alias here or normalize the name in their reducer.
+export const PRESENTERS: Record<string, ToolPresenter> = {
+  Bash: bashPresenter,
+  Read: readPresenter,
+  Edit: editPresenter,
+  Write: writePresenter,
+  Grep: grepPresenter,
+};
+
+export function getPresenter(toolName: string): ToolPresenter {
+  return PRESENTERS[toolName] ?? defaultPresenter;
+}

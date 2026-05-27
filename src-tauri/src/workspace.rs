@@ -91,10 +91,22 @@ pub struct ArchiveMetadata {
     pub diff_stats: DiffStats,
 }
 
+/// Default for AgentRecord.provider — assumes pre-existing records on
+/// disk all came from the only backend that was wired before the
+/// multi-agent refactor.
+fn default_provider() -> String {
+    "claude".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
     pub id: String,
     pub name: String,
+    /// Which CLI backend powers this agent. Currently only "claude" has a
+    /// Rust transport; other providers will land here as their backends
+    /// ship. Missing in older workspace JSON → defaults to "claude".
+    #[serde(default = "default_provider")]
+    pub provider: String,
     /// The repos this agent has worktrees in. Always non-empty;
     /// `repos[0]` is the primary (the repo the user spawned against).
     #[serde(default)]
@@ -409,6 +421,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 pub fn new_agent_record(
     id: String,
     name: String,
+    provider: String,
     primary: TrackedRepo,
     task: String,
     view: AgentView,
@@ -416,6 +429,7 @@ pub fn new_agent_record(
     AgentRecord {
         id,
         name,
+        provider,
         repos: vec![primary],
         task,
         status: AgentStatus::Spawning,
@@ -499,6 +513,7 @@ mod tests {
             let mut running = new_agent_record(
                 "yosemite".into(),
                 "a".into(),
+                "claude".into(),
                 mk_repo("/r"),
                 "c".into(),
                 AgentView::Custom,
@@ -509,6 +524,7 @@ mod tests {
             let mut stopped = new_agent_record(
                 "dolomites".into(),
                 "s".into(),
+                "claude".into(),
                 mk_repo("/r2"),
                 "sc".into(),
                 AgentView::Custom,
@@ -553,6 +569,7 @@ mod tests {
         wm.add_agent(new_agent_record(
             "yosemite".into(),
             "a".into(),
+            "claude".into(),
             mk_repo(repo.to_str().unwrap()),
             "".into(),
             AgentView::Custom,
@@ -573,6 +590,7 @@ mod tests {
         let rec = new_agent_record(
             "test-id".into(),
             "a".into(),
+            "claude".into(),
             mk_repo("/r"),
             "c".into(),
             AgentView::Custom,
@@ -593,6 +611,7 @@ mod tests {
         let rec = new_agent_record(
             "yosemite".into(),
             "yosemite".into(),
+            "claude".into(),
             mk_repo("/some/repo"),
             "do the thing".into(),
             AgentView::Custom,
@@ -653,6 +672,7 @@ mod tests {
             let rec = new_agent_record(
                 "yosemite".into(),
                 "yosemite".into(),
+                "claude".into(),
                 mk_repo("/r"),
                 "".into(),
                 AgentView::Custom,

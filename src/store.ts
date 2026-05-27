@@ -14,6 +14,7 @@ import {
   type Workspace,
 } from "./api";
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
+import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 
 type OutputHandler = (bytes: Uint8Array) => void;
 
@@ -60,61 +61,10 @@ export function registerOutputSink(
   };
 }
 
-// ---- Custom-view structured message log ---------------------------------
-
-export type ManagedItem =
-  | { kind: "user"; text: string }
-  | { kind: "assistant"; text: string; streaming?: boolean }
-  | { kind: "tool_use"; id: string; name: string; input: unknown }
-  | {
-      kind: "tool_result";
-      tool_use_id: string;
-      content: unknown;
-      is_error?: boolean;
-    }
-  | { kind: "system"; text: string }
-  | { kind: "result"; text: string; is_error?: boolean };
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === "object" && !Array.isArray(v);
-}
-
-function asRecord(v: unknown): Record<string, unknown> {
-  return isRecord(v) ? v : {};
-}
-
-function asBlockList(v: unknown): Array<Record<string, unknown>> {
-  return Array.isArray(v) ? v.filter(isRecord) : [];
-}
-
-function contentText(content: unknown): string {
-  if (typeof content === "string") return content;
-  return asBlockList(content)
-    .map((block) => {
-      if (block.type === "text" && typeof block.text === "string") {
-        return block.text;
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n");
-}
-
-function transcriptTextContent(content: unknown): string {
-  if (typeof content === "string") return content.trim();
-  return asBlockList(content)
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => String(block.text).trim())
-    .filter(Boolean)
-    .join("\n");
-}
-
-function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
-  for (let i = items.length - 1; i >= 0; i -= 1) {
-    if (predicate(items[i])) return i;
-  }
-  return -1;
-}
+// ---- Re-export the normalized ChatItem so component files don't need to
+//      import from "./adapters" directly; managedLogs is typed in terms
+//      of this. -----------------------------------------------------------
+export type { ChatItem } from "./adapters";
 
 // ---- Drafts ----------------------------------------------------------------
 // A draft is a new agent the user is about to spawn. It owns a landmark
@@ -195,7 +145,7 @@ interface AppState {
   busy: boolean;
   lastError: string | null;
   initialized: boolean;
-  managedLogs: Record<string, ManagedItem[]>;
+  managedLogs: Record<string, ChatItem[]>;
   /** True while an on-disk Claude transcript is being replayed into
    *  the custom-view log. */
   transcriptLoading: Record<string, boolean>;
@@ -208,15 +158,16 @@ interface AppState {
   managedBusy: Record<string, boolean>;
   /** True while a view switch is in flight — disable toggle UI. */
   switchInFlight: Record<string, boolean>;
-  /** Most recent turn's `usage.input_tokens` — matches claude's
-   *  `/context`. */
+  /** Last observed input-token count from the agent's most recent
+   *  `result` event. Persists across agents so the right-rail
+   *  cost panel can show a stable number after a turn completes. */
   tokens: Record<string, number>;
 
-  // ── ephemeral UI state ────────────────────────────────────────────────────
   drafts: DraftAgent[];
   activeDraftId: string | null;
   settingsOpen: boolean;
-  /** True when the History view owns the main pane. Takes precedence
+  /** When true the workspace pane shows archived-session history instead
+   *  of the selected agent / draft. Treated as a separate "mode" that wins
    *  over `selectedAgentId` / `activeDraftId` for rendering. */
   historyOpen: boolean;
   /** When in history mode, the archived agent whose chat preview is
@@ -252,8 +203,8 @@ interface AppState {
   discard: (id: string) => Promise<void>;
   archive: (id: string) => Promise<void>;
   restore: (id: string) => Promise<void>;
-  /** Read the on-disk claude JSONL for an archived agent and replay
-   *  it through the same handler that processes live events. */
+  /** Read the on-disk JSONL for an agent and replay it through the
+   *  same adapter that processes live events. */
   loadHistoryTranscript: (id: string) => Promise<void>;
   clearError: () => void;
 
@@ -285,157 +236,68 @@ interface AppState {
   setViewMode: (v: WorkspaceView) => void;
 }
 
-function appendItem(
-  state: AppState,
-  agentId: string,
-  item: ManagedItem,
-): Partial<AppState> {
-  const list = state.managedLogs[agentId] ?? [];
-  return { managedLogs: { ...state.managedLogs, [agentId]: [...list, item] } };
+function providerFor(state: AppState, agentId: string): string | undefined {
+  return state.workspace?.agents.find((a) => a.id === agentId)?.provider;
 }
 
-function appendUserIfMissing(
+/** Apply one raw event to an agent's log via its provider adapter. Catches
+ *  adapter throws so a single malformed event can't poison the whole log. */
+function applyEvent(
   state: AppState,
   agentId: string,
-  text: string,
+  rawEvent: RawEvent,
 ): Partial<AppState> {
-  const trimmed = text.trim();
-  if (!trimmed) return {};
-  const list = state.managedLogs[agentId] ?? [];
-  const last = list[list.length - 1];
-  if (last?.kind === "user" && last.text === trimmed) {
+  const adapter = getAdapter(providerFor(state, agentId));
+  const prev = state.managedLogs[agentId] ?? [];
+  let next: ChatItem[];
+  try {
+    next = adapter.reduce(prev, rawEvent);
+  } catch (err) {
+    console.error("[adapters] reduce threw", {
+      provider: adapter.id,
+      type: rawEvent.type,
+      err,
+    });
     return {};
   }
-  return appendItem(state, agentId, { kind: "user", text: trimmed });
-}
+  if (next === prev) return {};
 
-function upsertToolUse(
-  state: AppState,
-  agentId: string,
-  tool: Extract<ManagedItem, { kind: "tool_use" }>,
-): Partial<AppState> {
-  const list = state.managedLogs[agentId] ?? [];
-  const idx = list.findIndex(
-    (item) => item.kind === "tool_use" && item.id === tool.id,
-  );
-  if (idx === -1) return appendItem(state, agentId, tool);
-  const next = [...list];
-  next[idx] = { ...tool };
-  return { managedLogs: { ...state.managedLogs, [agentId]: next } };
-}
+  // `result` events signal turn end for claude; mirror that state on the
+  // store so the composer re-enables. Adapter-agnostic: any notice with
+  // subtype "turn_end" appended this tick clears managedBusy.
+  const turnEnded =
+    next.length > prev.length &&
+    next[next.length - 1]?.kind === "notice" &&
+    (next[next.length - 1] as { subtype?: string }).subtype === "turn_end";
 
-function updateToolInputDelta(
-  state: AppState,
-  agentId: string,
-  index: number,
-  partialJson: string,
-): Partial<AppState> {
-  const list = state.managedLogs[agentId] ?? [];
-  let seen = -1;
-  let idx = list.findIndex((item) => {
-    if (item.kind !== "tool_use") return false;
-    seen += 1;
-    return seen === index;
-  });
-  if (idx === -1) {
-    idx = findLastIndex(list, (item) => item.kind === "tool_use");
-  }
-  if (idx === -1) return {};
-  const item = list[idx];
-  if (item.kind !== "tool_use") return {};
-  const input = typeof item.input === "string" ? item.input + partialJson : partialJson;
-  const next = [...list];
-  next[idx] = { ...item, input };
-  return { managedLogs: { ...state.managedLogs, [agentId]: next } };
-}
+  const tokens = extractInputTokens(rawEvent);
 
-function updateLastAssistantStreaming(
-  state: AppState,
-  agentId: string,
-  appendText: string,
-): Partial<AppState> {
-  const list = state.managedLogs[agentId] ?? [];
-  const lastIdx = list.length - 1;
-  const last = list[lastIdx];
-  if (last && last.kind === "assistant" && last.streaming) {
-    const next = [...list];
-    next[lastIdx] = { ...last, text: last.text + appendText };
-    return { managedLogs: { ...state.managedLogs, [agentId]: next } };
-  }
-  return appendItem(state, agentId, {
-    kind: "assistant",
-    text: appendText,
-    streaming: true,
-  });
-}
-
-function finalizeStreamingAssistant(
-  state: AppState,
-  agentId: string,
-): Partial<AppState> {
-  const list = state.managedLogs[agentId] ?? [];
-  const lastIdx = list.length - 1;
-  const last = list[lastIdx];
-  if (last && last.kind === "assistant" && last.streaming) {
-    const next = [...list];
-    next[lastIdx] = { ...last, streaming: false };
-    return { managedLogs: { ...state.managedLogs, [agentId]: next } };
-  }
-  return {};
-}
-
-function mergePatches(
-  a: Partial<AppState>,
-  b: Partial<AppState>,
-): Partial<AppState> {
   return {
-    ...a,
-    ...b,
-    managedLogs: {
-      ...(a.managedLogs ?? {}),
-      ...(b.managedLogs ?? {}),
-    },
+    managedLogs: { ...state.managedLogs, [agentId]: next },
+    managedBusy: turnEnded
+      ? { ...state.managedBusy, [agentId]: false }
+      : state.managedBusy,
+    tokens:
+      tokens !== undefined
+        ? { ...state.tokens, [agentId]: tokens }
+        : state.tokens,
   };
 }
 
-function transcriptEventsToItems(
-  events: Array<Record<string, unknown>>,
-): ManagedItem[] {
-  const items: ManagedItem[] = [];
-
-  for (const ev of events) {
-    const type = ev.type;
-    if (type !== "user" && type !== "assistant") continue;
-
-    const message = asRecord(ev.message);
-    const text = transcriptTextContent(message.content);
-    if (!text) continue;
-
-    const last = items[items.length - 1];
-    if (type === "user") {
-      if (last?.kind === "user" && last.text === text) continue;
-      items.push({ kind: "user", text });
-    } else {
-      if (last?.kind === "assistant" && last.text === text) continue;
-      items.push({ kind: "assistant", text });
-    }
-  }
-
-  return items;
+function extractInputTokens(ev: RawEvent): number | undefined {
+  if (ev.type !== "result") return undefined;
+  const usage = ev.usage as Record<string, unknown> | undefined;
+  const n = usage?.input_tokens;
+  return typeof n === "number" && n > 0 ? n : undefined;
 }
 
-function replayTranscriptEvents(
-  state: AppState,
-  agentId: string,
-  events: Array<Record<string, unknown>>,
-): Partial<AppState> {
-  return {
-    managedLogs: {
-      ...state.managedLogs,
-      [agentId]: transcriptEventsToItems(events),
-    },
-    managedBusy: { ...state.managedBusy, [agentId]: false },
-  };
+/** Names already taken by real or draft agents — passed to the backend
+ *  name allocator so picks avoid collisions. */
+function usedNames(workspace: Workspace | null, drafts: DraftAgent[]): Set<string> {
+  const used = new Set<string>();
+  for (const a of workspace?.agents ?? []) used.add(a.name);
+  for (const d of drafts) used.add(d.name);
+  return used;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -455,162 +317,6 @@ async function sendWhenAgentReady(send: () => Promise<void>) {
     }
   }
   throw lastError;
-}
-
-function handleManagedEvent(
-  state: AppState,
-  agentId: string,
-  ev: Record<string, unknown>,
-): Partial<AppState> {
-  const type = ev.type as string | undefined;
-
-  if (type === "stream_event") {
-    const inner = asRecord(ev.event);
-    if (inner.type === "content_block_start") {
-      const block = asRecord(inner.content_block);
-      if (block.type === "text" && typeof block.text === "string" && block.text) {
-        return updateLastAssistantStreaming(state, agentId, block.text);
-      }
-      if (block.type === "tool_use") {
-        return upsertToolUse(state, agentId, {
-          kind: "tool_use",
-          id: String(block.id ?? ""),
-          name: String(block.name ?? "tool"),
-          input: block.input ?? "",
-        });
-      }
-      return {};
-    }
-
-    const delta = asRecord(inner.delta);
-    if (delta.type === "text_delta" && typeof delta.text === "string") {
-      return updateLastAssistantStreaming(state, agentId, delta.text);
-    }
-    if (
-      delta.type === "input_json_delta" &&
-      typeof delta.partial_json === "string" &&
-      typeof inner.index === "number"
-    ) {
-      return updateToolInputDelta(state, agentId, inner.index, delta.partial_json);
-    }
-    return {};
-  }
-
-  if (type === "assistant") {
-    const message = asRecord(ev.message);
-    const content = asBlockList(message.content);
-    let patches: Partial<AppState> = {};
-    patches = mergePatches(patches, finalizeStreamingAssistant(state, agentId));
-    let working: AppState = { ...state, ...patches } as AppState;
-    for (const block of content) {
-      if (block.type === "text" && typeof block.text === "string") {
-        const list = working.managedLogs[agentId] ?? [];
-        const last = list[list.length - 1];
-        if (
-          !(last && last.kind === "assistant" && last.text === block.text)
-        ) {
-          const p = appendItem(working, agentId, {
-            kind: "assistant",
-            text: block.text,
-          });
-          working = { ...working, ...p } as AppState;
-          patches = mergePatches(patches, p);
-        }
-      } else if (block.type === "tool_use") {
-        const p = upsertToolUse(working, agentId, {
-          kind: "tool_use",
-          id: String(block.id ?? ""),
-          name: String(block.name ?? "tool"),
-          input: block.input,
-        });
-        working = { ...working, ...p } as AppState;
-        patches = mergePatches(patches, p);
-      }
-    }
-    return patches;
-  }
-
-  if (type === "user") {
-    const message = asRecord(ev.message);
-    const content = message.content;
-    // `contentText` covers both bare-string user messages (JSONL
-    // serializes simple turns that way) and arrays of text blocks.
-    // `appendUserIfMissing` dedupes against live mode, which adds
-    // the user message via `sendUserMessage` before claude echoes it.
-    const text = contentText(content);
-    let patches = appendUserIfMissing(state, agentId, text);
-    let working: AppState = { ...state, ...patches } as AppState;
-    if (Array.isArray(content)) {
-      for (const block of content as Array<Record<string, unknown>>) {
-        if (block.type === "tool_result") {
-          const p = appendItem(working, agentId, {
-            kind: "tool_result",
-            tool_use_id: String(block.tool_use_id ?? ""),
-            content: block.content,
-            is_error: block.is_error === true,
-          });
-          working = { ...working, ...p } as AppState;
-          patches = mergePatches(patches, p);
-        }
-      }
-    }
-    return patches;
-  }
-
-  if (type === "result") {
-    const subtype = String(ev.subtype ?? "");
-    const isError = ev.is_error === true;
-    let patches = finalizeStreamingAssistant(state, agentId);
-    const working = { ...state, ...patches } as AppState;
-    const list = working.managedLogs[agentId] ?? [];
-    const lastUserIdx = findLastIndex(list, (item) => item.kind === "user");
-    const hasAssistantText = list.slice(lastUserIdx + 1).some(
-      (item) => item.kind === "assistant" && item.text.trim().length > 0,
-    );
-    const resultText = typeof ev.result === "string" ? ev.result : "";
-    if (isError) {
-      patches = mergePatches(
-        patches,
-        appendItem(working, agentId, {
-          kind: "result",
-          text: hasAssistantText
-            ? `Turn failed (${subtype || "error"})`
-            : resultText || `Turn failed (${subtype || "error"})`,
-          is_error: true,
-        }),
-      );
-    } else if (!hasAssistantText && resultText.trim()) {
-      patches = mergePatches(
-        patches,
-        appendItem(working, agentId, {
-          kind: "assistant",
-          text: resultText,
-        }),
-      );
-    }
-    const inputTokens = (ev.usage as Record<string, unknown> | undefined)
-      ?.input_tokens;
-    const tokens =
-      typeof inputTokens === "number" && inputTokens > 0
-        ? { ...state.tokens, [agentId]: inputTokens }
-        : state.tokens;
-    return {
-      ...patches,
-      managedBusy: { ...state.managedBusy, [agentId]: false },
-      tokens,
-    };
-  }
-
-  return {};
-}
-
-/** Names already taken by real or draft agents — passed to the backend
- *  name allocator so picks avoid collisions. */
-function usedNames(workspace: Workspace | null, drafts: DraftAgent[]): Set<string> {
-  const used = new Set<string>();
-  for (const a of workspace?.agents ?? []) used.add(a.name);
-  for (const d of drafts) used.add(d.name);
-  return used;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -656,7 +362,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
 
     await onAgentEvent((e) => {
-      set((state) => handleManagedEvent(state, e.agent_id, e.event));
+      set((state) => applyEvent(state, e.agent_id, e.event as RawEvent));
     });
 
     await onAgentBranch((e) => {
@@ -741,7 +447,11 @@ export const useAppStore = create<AppState>((set, get) => ({
                 ...state.managedLogs,
                 [e.agent_id]: [
                   ...(state.managedLogs[e.agent_id] ?? []),
-                  { kind: "system", text: "Agent was interrupted." },
+                  {
+                    kind: "notice",
+                    subtype: "info",
+                    text: "Agent was interrupted.",
+                  },
                 ],
               }
             : state.managedLogs,
@@ -804,15 +514,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           selectedAgentId: rec.id,
         };
         if (view === "custom") {
-          const primaryParent = rec.repos[0]?.parent_branch;
-          const parent = primaryParent ? ` from ${primaryParent}` : "";
-          const greeting =
-            `Worktree ${rec.id} ready${parent}. ` +
-            `Claude is waiting — send a message to begin.`;
-          patches.managedLogs = {
-            ...state.managedLogs,
-            [rec.id]: [{ kind: "system", text: greeting }],
-          };
+          patches.managedLogs = { ...state.managedLogs, [rec.id]: [] };
           patches.managedBusy = { ...state.managedBusy, [rec.id]: false };
         }
         return patches;
@@ -833,7 +535,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...state.managedLogs,
           [id]: [
             ...(state.managedLogs[id] ?? []),
-            { kind: "user", text },
+            { kind: "user_message", text },
           ],
         },
         managedBusy: { ...state.managedBusy, [id]: true },
@@ -972,21 +674,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       transcriptLoading: { ...s.transcriptLoading, [id]: true },
     }));
     try {
-      const events = await api.readSessionTranscript(id);
-      console.log("[custom-view] session transcript JSONL", {
-        agentId: id,
-        events,
-        items: transcriptEventsToItems(events),
+      const rawLines = await api.readSessionTranscript(id);
+      const adapter = getAdapter(providerFor(get(), id));
+      const events = adapter.normalizeTranscript(rawLines);
+      let items: ChatItem[] = [];
+      for (const ev of events) {
+        items = adapter.reduce(items, ev);
+      }
+      set((state) => {
+        // If the on-disk JSONL produced nothing but we have an active
+        // in-memory turn, leave the log alone — claude hasn't flushed
+        // yet and we don't want to erase a turn that's still in flight.
+        if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {
+          return {};
+        }
+        return {
+          managedLogs: { ...state.managedLogs, [id]: items },
+          managedBusy: { ...state.managedBusy, [id]: false },
+        };
       });
-      // Reset any prior log for this id, then project Claude's saved
-      // JSONL into visible chat messages. If Claude has not written
-      // the JSONL yet, do not erase an active in-memory turn.
-      const items = transcriptEventsToItems(events);
-      set((state) =>
-        items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0
-          ? {}
-          : replayTranscriptEvents(state, id, events),
-      );
     } catch (e) {
       set({ lastError: String(e) });
     } finally {
@@ -1045,13 +751,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
-  spawnFromDraft: async (id, text, _provider) => {
+  spawnFromDraft: async (id, text, provider) => {
     const draft = get().drafts.find((d) => d.id === id);
     if (!draft) return;
     set({ busy: true, lastError: null });
     try {
       const view = get().viewMode;
-      const rec = await api.spawnAgent(view, draft.repoPath);
+      const rec = await api.spawnAgent(view, draft.repoPath, provider);
       const fresh = await api.getWorkspace();
       set((state) => {
         const patches: Partial<AppState> = {
@@ -1063,7 +769,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (view === "custom") {
           patches.managedLogs = {
             ...state.managedLogs,
-            [rec.id]: [{ kind: "user", text }],
+            [rec.id]: [{ kind: "user_message", text }],
           };
           patches.managedBusy = { ...state.managedBusy, [rec.id]: true };
         }
