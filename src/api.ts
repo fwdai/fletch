@@ -193,12 +193,31 @@ export const api = {
   createPr: (agentId: string, title: string, body: string) =>
     invoke<PrState>("create_pr", { agentId, title, body }),
   mergePr: (agentId: string) => invoke<void>("merge_pr", { agentId }),
+  openAgentShell: (agentId: string) =>
+    invoke<void>("open_agent_shell", { agentId }),
+  closeAgentShell: (agentId: string) =>
+    invoke<void>("close_agent_shell", { agentId }),
+  writeToShell: (agentId: string, data: string) =>
+    invoke<void>("write_to_shell", { agentId, data }),
+  resizeShell: (agentId: string, cols: number, rows: number) =>
+    invoke<void>("resize_shell", { agentId, cols, rows }),
 };
 
 export function onAgentOutput(
   cb: (e: AgentOutputEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<AgentOutputEvent>("agent:output", (event) => cb(event.payload));
+}
+
+export interface ShellOutputEvent {
+  agent_id: string;
+  bytes: number[];
+}
+
+export function onShellOutput(
+  cb: (e: ShellOutputEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ShellOutputEvent>("shell:output", (event) => cb(event.payload));
 }
 
 export function onAgentEvent(

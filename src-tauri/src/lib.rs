@@ -77,6 +77,10 @@ pub fn run() {
             commands::create_pr,
             commands::merge_pr,
             commands::get_pr_state,
+            commands::open_agent_shell,
+            commands::close_agent_shell,
+            commands::write_to_shell,
+            commands::resize_shell,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quorum");
