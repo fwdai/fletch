@@ -3,7 +3,7 @@ import { ToolBlock, getStringField, renderToolResult } from "./util";
 import { basename } from "../../../../util/format";
 
 export const writePresenter: ToolPresenter = {
-  icon: "file",
+  icon: "notebookPen",
   summary: (call) => {
     const path = getStringField(call.input, "file_path");
     return path ? basename(path) : "(no path)";
