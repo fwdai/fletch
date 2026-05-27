@@ -330,6 +330,7 @@ pub async fn push(worktree: &Path, branch: &str) -> Result<()> {
 }
 
 /// Pull latest from the tracking remote branch.
+/// Requires `push -u` to have been called first to establish an upstream.
 pub async fn pull(worktree: &Path) -> Result<()> {
     let out = Command::new("git")
         .current_dir(worktree)

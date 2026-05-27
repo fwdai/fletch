@@ -80,7 +80,7 @@ pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
         if stderr.to_lowercase().contains("no pull requests found") {
             return Ok(None);
         }
-        return Err(Error::Git(stderr.trim().to_string()));
+        return Err(Error::Gh(stderr.trim().to_string()));
     }
 
     let raw: GhPrRaw = serde_json::from_slice(&out.stdout)?;
@@ -92,14 +92,16 @@ pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
 /// If `title` is empty the `--fill` flag is used so `gh` auto-fills the
 /// title and body from the commit log. Otherwise `--title` / `--body` are
 /// passed explicitly.
+///
+/// `gh pr create` does not support `--json`, so we run it for its side-effect
+/// (creating the PR) and then call `pr_view` to fetch the full `PrState`.
 pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> Result<PrState> {
-    let mut args = vec!["pr", "create", "--json", "number,url,state,title,mergeable"];
+    let mut args = vec!["pr", "create", "--base", base];
     if title.is_empty() {
         args.push("--fill");
     } else {
         args.extend_from_slice(&["--title", title, "--body", body]);
     }
-    args.extend_from_slice(&["--base", base]);
 
     let out = Command::new("gh")
         .current_dir(worktree)
@@ -108,13 +110,15 @@ pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> 
         .await?;
 
     if !out.status.success() {
-        return Err(Error::Git(
+        return Err(Error::Gh(
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
         ));
     }
 
-    let raw: GhPrRaw = serde_json::from_slice(&out.stdout)?;
-    Ok(raw.into())
+    // `gh pr create` only prints the PR URL on success; fetch full state.
+    pr_view(worktree).await?.ok_or_else(|| {
+        Error::Gh("PR was created but could not be fetched".into())
+    })
 }
 
 /// Merge the open PR for the branch checked out in `worktree` using a merge
@@ -127,10 +131,75 @@ pub async fn pr_merge(worktree: &Path) -> Result<()> {
         .await?;
 
     if !out.status.success() {
-        return Err(Error::Git(
+        return Err(Error::Gh(
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
         ));
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pr_raw_open_mergeable() {
+        let raw = GhPrRaw {
+            number: 42,
+            url: "https://github.com/owner/repo/pull/42".into(),
+            state: "OPEN".into(),
+            title: "My PR".into(),
+            mergeable: "MERGEABLE".into(),
+        };
+        let pr = PrState::from(raw);
+        assert!(matches!(pr.state, PrStatus::Open));
+        assert!(pr.mergeable);
+        assert_eq!(pr.number, 42);
+    }
+
+    #[test]
+    fn pr_raw_merged_conflicting() {
+        let raw = GhPrRaw {
+            number: 1,
+            url: "u".into(),
+            state: "MERGED".into(),
+            title: "t".into(),
+            mergeable: "CONFLICTING".into(),
+        };
+        let pr = PrState::from(raw);
+        assert!(matches!(pr.state, PrStatus::Merged));
+        assert!(!pr.mergeable);
+    }
+
+    #[test]
+    fn pr_raw_closed_unknown() {
+        let raw = GhPrRaw {
+            number: 2,
+            url: "u".into(),
+            state: "CLOSED".into(),
+            title: "t".into(),
+            mergeable: "UNKNOWN".into(),
+        };
+        let pr = PrState::from(raw);
+        assert!(matches!(pr.state, PrStatus::Closed));
+        assert!(!pr.mergeable);
+    }
+
+    #[test]
+    fn pr_raw_unknown_state_defaults_to_open() {
+        let raw = GhPrRaw {
+            number: 3,
+            url: "u".into(),
+            state: "SOMETHING_NEW".into(),
+            title: "t".into(),
+            mergeable: "MERGEABLE".into(),
+        };
+        let pr = PrState::from(raw);
+        assert!(matches!(pr.state, PrStatus::Open));
+    }
 }
