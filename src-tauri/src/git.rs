@@ -312,6 +312,39 @@ pub async fn worktree_add_branch(
     Ok(())
 }
 
+/// Push the current branch to `origin`. Uses `-u` to set the upstream
+/// tracking ref on the first push.
+pub async fn push(worktree: &Path, branch: &str) -> Result<()> {
+    let out = Command::new("git")
+        .current_dir(worktree)
+        .args(["push", "-u", "origin", branch])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "push failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Pull latest from the tracking remote branch.
+pub async fn pull(worktree: &Path) -> Result<()> {
+    let out = Command::new("git")
+        .current_dir(worktree)
+        .args(["pull"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "pull failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 /// Force-delete a local branch. Returns Ok even if the branch never
 /// existed in the first place — that's exactly the state the caller
 /// usually wants to converge on. Errors only for genuine git failures
