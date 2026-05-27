@@ -4,6 +4,7 @@ mod branding;
 mod commands;
 mod error;
 mod git;
+mod git_state;
 mod managed_session;
 mod names;
 mod pty_session;
