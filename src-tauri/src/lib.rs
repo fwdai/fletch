@@ -1,5 +1,6 @@
 mod activity;
 mod agent;
+mod watcher;
 mod branding;
 mod commands;
 mod error;
