@@ -129,6 +129,10 @@ async fn run_status(worktree_path: &Path) -> Result<String> {
         .args(["status", "--porcelain=v1"])
         .output()
         .await?;
+    if !out.status.success() {
+        tracing::warn!("git status --porcelain=v1 failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        return Ok(String::new());
+    }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -138,6 +142,10 @@ async fn run_numstat(worktree_path: &Path) -> Result<String> {
         .args(["diff", "--numstat", "HEAD"])
         .output()
         .await?;
+    if !out.status.success() {
+        tracing::warn!("git diff --numstat failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        return Ok(String::new());
+    }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -168,14 +176,15 @@ fn parse_porcelain(output: &str) -> Vec<FileStatus> {
         let kind = status_kind(x, y);
         let staged = x != ' ' && x != '?';
 
-        // For renamed files, the path may look like `new -> old` or
-        // `new\told` — take only the part before the separator.
+        // For renamed files, git porcelain v1 formats the path as
+        // `old_name -> new_name` (arrow) or `old_name\tnew_name` (tab).
+        // We want the new name (destination), which is the part after the separator.
         let path = if matches!(kind, StatusKind::Renamed) {
             // Try tab separator first, then " -> "
             if let Some(pos) = path_part.find('\t') {
-                path_part[..pos].to_string()
+                path_part[pos + 1..].to_string()
             } else if let Some(pos) = path_part.find(" -> ") {
-                path_part[..pos].to_string()
+                path_part[pos + 4..].to_string()
             } else {
                 path_part.to_string()
             }
@@ -223,6 +232,13 @@ fn parse_numstat(output: &str) -> HashMap<String, (u32, u32)> {
         let path = match parts.next() {
             Some(p) => p.to_string(),
             None => continue,
+        };
+        // For renames, numstat emits `OLD => NEW` as the path field.
+        // Index by the new name so lookups by current filename succeed.
+        let path = if let Some(pos) = path.find(" => ") {
+            path[pos + 4..].to_string()
+        } else {
+            path
         };
         // Binary files show `-\t-\t<path>`
         let adds: u32 = adds_str.parse().unwrap_or(0);
@@ -325,7 +341,8 @@ mod tests {
 
     #[test]
     fn porcelain_renamed_arrow() {
-        let input = "R  new_name.rs -> old_name.rs\n";
+        // git porcelain v1 format: `R  <old-name> -> <new-name>`
+        let input = "R  old_name.rs -> new_name.rs\n";
         let files = parse_porcelain(input);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "new_name.rs");
@@ -334,8 +351,8 @@ mod tests {
 
     #[test]
     fn porcelain_renamed_tab() {
-        // Some git versions use a tab between new and old path
-        let input = "R  new_name.rs\told_name.rs\n";
+        // Some git versions use a tab: `R  <old-name>\t<new-name>`
+        let input = "R  old_name.rs\tnew_name.rs\n";
         let files = parse_porcelain(input);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "new_name.rs");
@@ -374,6 +391,16 @@ mod tests {
     #[test]
     fn numstat_empty() {
         assert!(parse_numstat("").is_empty());
+    }
+
+    #[test]
+    fn numstat_renamed_file() {
+        // git diff --numstat HEAD emits renames as `<add>\t<del>\tOLD => NEW`
+        let input = "5\t2\told_name.rs => new_name.rs\n";
+        let map = parse_numstat(input);
+        assert_eq!(map.get("new_name.rs"), Some(&(5, 2)));
+        // Old name should not be present
+        assert!(map.get("old_name.rs => new_name.rs").is_none());
     }
 
     #[test]
