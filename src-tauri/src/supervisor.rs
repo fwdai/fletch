@@ -1193,7 +1193,9 @@ fn apply_exit_if_current(
     sup.native_input_lines.lock().remove(agent_id);
 
     let (status, err) = if success {
-        (AgentStatus::Stopped, None)
+        // Clean exit means the agent is resumable — keep it Idle so the
+        // user can send follow-up messages without a manual Resume step.
+        (AgentStatus::Idle, None)
     } else {
         (AgentStatus::Error, Some(format!("Agent process exited: {message}")))
     };
