@@ -441,6 +441,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       set((state) => ({
         workspace: next,
+        managedLogs:
+          e.status === "stopped" && (state.managedBusy[e.agent_id] ?? false)
+            ? {
+                ...state.managedLogs,
+                [e.agent_id]: [
+                  ...(state.managedLogs[e.agent_id] ?? []),
+                  {
+                    kind: "notice",
+                    subtype: "info",
+                    text: "Agent was interrupted.",
+                  },
+                ],
+              }
+            : state.managedLogs,
         managedBusy:
           e.status === "error" || e.status === "stopped"
             ? { ...state.managedBusy, [e.agent_id]: false }
@@ -667,10 +681,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       for (const ev of events) {
         items = adapter.reduce(items, ev);
       }
-      set((state) => ({
-        managedLogs: { ...state.managedLogs, [id]: items },
-        managedBusy: { ...state.managedBusy, [id]: false },
-      }));
+      set((state) => {
+        // If the on-disk JSONL produced nothing but we have an active
+        // in-memory turn, leave the log alone — claude hasn't flushed
+        // yet and we don't want to erase a turn that's still in flight.
+        if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {
+          return {};
+        }
+        return {
+          managedLogs: { ...state.managedLogs, [id]: items },
+          managedBusy: { ...state.managedBusy, [id]: false },
+        };
+      });
     } catch (e) {
       set({ lastError: String(e) });
     } finally {

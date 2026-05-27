@@ -490,19 +490,25 @@ impl Supervisor {
     /// the worktrees and branches. The claude session JSONL is left
     /// alone — that's what makes restore possible.
     ///
-    /// Rejects unless the agent is in `Stopped` or `Error`. The UI is
-    /// already wired to gate the button this way; the backend check is
-    /// a safety net.
+    /// Rejects while the agent is actively spawning or running a turn.
+    /// Idle agents are safe to archive; we shut down the waiting
+    /// process before taking repo snapshots.
     pub async fn archive_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
         if record.archive.is_some() {
             return Err(Error::Other("agent is already archived".into()));
         }
-        if !matches!(record.status, AgentStatus::Stopped | AgentStatus::Error) {
+        if matches!(record.status, AgentStatus::Spawning | AgentStatus::Running) {
             return Err(Error::Other(
-                "agent must be stopped or in error before archiving".into(),
+                "agent must be idle, stopped, or in error before archiving".into(),
             ));
         }
+
+        if let Some(agent) = self.agents.lock().remove(agent_id) {
+            let _ = agent.shutdown();
+        }
+        self.activities.lock().remove(agent_id);
+        self.native_input_lines.lock().remove(agent_id);
 
         let mut snapshots: Vec<ArchivedRepoSnapshot> = Vec::with_capacity(record.repos.len());
         let mut total_adds: u32 = 0;

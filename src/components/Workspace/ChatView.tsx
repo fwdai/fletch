@@ -22,6 +22,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     (s) => s.switchInFlight[agent.id] ?? false,
   );
   const send = useAppStore((s) => s.sendUserMessage);
+  const stop = useAppStore((s) => s.stop);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -38,7 +39,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     ) {
       return;
     }
-    if (log !== undefined && !hasPriorConversation) {
+    if (log !== undefined || !hasPriorConversation) {
       return;
     }
     void loadHistoryTranscript(agent.id);
@@ -88,7 +89,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               </span>
               <span>Loading transcript…</span>
             </div>
-          ) : items.length === 0 && hasPriorConversation ? (
+          ) : items.length === 0 && hasPriorConversation && !busy ? (
             <div
               className="empty-msg"
               style={{ margin: "40px auto", maxWidth: 360 }}
@@ -123,7 +124,9 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                   ? "Waiting…"
                   : "Agent is not ready"
           }
+          stopping={busy}
           onSend={({ text }) => send(agent.id, text)}
+          onStop={() => stop(agent.id)}
         />
       </div>
     </div>
