@@ -4,6 +4,7 @@ import { useAppStore } from "../../store";
 import { applyPolicy, getAdapter } from "../../adapters";
 import { Composer } from "../Composer";
 import { MessageItem } from "./messages/MessageItem";
+import { pairToolItems } from "./messages/pair";
 
 /** Custom-view body: scrolling chat log + composer at the bottom.
  *  The composer here dispatches the user's message via the store; it
@@ -67,7 +68,8 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
 
   const items = useMemo(() => {
     const adapter = getAdapter(agent.provider);
-    return applyPolicy(log ?? [], adapter.policy);
+    const visible = applyPolicy(log ?? [], adapter.policy);
+    return pairToolItems(visible);
   }, [log, agent.provider]);
   const canSend =
     !transcriptLoading &&

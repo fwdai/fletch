@@ -5,6 +5,7 @@ import { Icon, LandmarkGlyph } from "../Icon";
 import { IconButton } from "../ui/IconButton";
 import { basename } from "../../util/format";
 import { MessageItem } from "../Workspace/messages/MessageItem";
+import { pairToolItems } from "../Workspace/messages/pair";
 
 interface Props {
   agentId: string;
@@ -65,7 +66,8 @@ export function HistoryDetail({ agentId }: Props) {
   const primary = archive.repos[0];
   const items = useMemo(() => {
     const adapter = getAdapter(agent.provider);
-    return applyPolicy(log ?? [], adapter.policy);
+    const visible = applyPolicy(log ?? [], adapter.policy);
+    return pairToolItems(visible);
   }, [log, agent.provider]);
   const transcriptEmpty = !loading && items.length === 0;
 

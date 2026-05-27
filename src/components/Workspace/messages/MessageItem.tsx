@@ -1,12 +1,14 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatItem } from "../../../store";
-import { ToolUseItem } from "./ToolUseItem";
+import type { ViewItem } from "./pair";
 import { ToolResultItem } from "./ToolResultItem";
+import { ToolRow } from "./ToolRow";
+import { getPresenter } from "./presenters";
 
-/** Dispatcher for a single normalized message in the chat log. Each kind
- *  has its own visual treatment defined in app.css under `.m-*`. */
-export function MessageItem({ item }: { item: ChatItem }) {
+/** Dispatcher for one rendered row. Accepts either a raw ChatItem or
+ *  the derived `tool_pair` from pairToolItems(). */
+export function MessageItem({ item }: { item: ViewItem }) {
   switch (item.kind) {
     case "user_message":
       return <div className="m-user">{item.text}</div>;
@@ -19,8 +21,30 @@ export function MessageItem({ item }: { item: ChatItem }) {
           )}
         </div>
       );
-    case "tool_call":
-      return <ToolUseItem item={item} />;
+    case "tool_pair": {
+      const presenter = getPresenter(item.call.name);
+      return (
+        <ToolRow
+          name={item.call.name}
+          isError={item.result?.is_error}
+          summary={presenter.summary(item.call, item.result)}
+          expanded={presenter.expanded(item.call, item.result)}
+        />
+      );
+    }
+    case "tool_call": {
+      // Bare tool_call without pairing — happens only if the caller
+      // bypasses pairToolItems(). Render through the presenter anyway,
+      // with a null result.
+      const presenter = getPresenter(item.name);
+      return (
+        <ToolRow
+          name={item.name}
+          summary={presenter.summary(item, null)}
+          expanded={presenter.expanded(item, null)}
+        />
+      );
+    }
     case "tool_result":
       return <ToolResultItem item={item} />;
     case "notice":
