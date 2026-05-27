@@ -273,7 +273,7 @@ button { cursor: default; }
 .side-section { padding: 12px 4px 4px; }
 .side-section-h {
   display: flex; align-items: center; gap: 4px;
-  padding: 4px 8px;
+  padding: 2px 6px;
   font-size: 10px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--fg-3);
@@ -281,11 +281,18 @@ button { cursor: default; }
 .side-section-h .grow { flex: 1; }
 .side-section-h .actions { display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
 .side-section:hover .side-section-h .actions { opacity: 1; }
+.side-section-h .actions .btn-i.xs { width: 22px; height: 22px; }
+.side-section-h .actions .btn-i.xs svg { width: 15px; height: 15px; }
+.side-section-h .actions .btn-i.tip[data-tip]:hover::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
 
 .proj { margin-bottom: 4px; }
 .proj-h {
   display: flex; align-items: center; gap: 7px;
-  padding: 0 8px;
+  padding: 0 6px;
   height: 32px;
   border-radius: var(--r-sm);
   font-size: 12.5px; color: var(--fg-0);
@@ -299,7 +306,7 @@ button { cursor: default; }
 .proj-h .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-h .pcount { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3); }
 .proj-h .padd {
-  width: 18px; height: 18px;
+  width: 22px; height: 22px;
   border-radius: 4px;
   display: none;
   align-items: center; justify-content: center;
@@ -309,7 +316,12 @@ button { cursor: default; }
 .proj-h:hover .padd { display: inline-flex; }
 .proj-h:hover .pcount { display: none; }
 .proj-h .padd:hover { background: var(--selected); color: var(--accent); }
-.proj-h .padd svg { width: 11px; height: 11px; }
+.proj-h .padd[data-tip="New agent"] svg { width: 15px; height: 15px; }
+.proj-h .padd.tip[data-tip]:hover::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
 
 .agents {
   margin-left: 11px;
@@ -372,13 +384,16 @@ button { cursor: default; }
 .agent.active .ag-actions { opacity: 1; }
 .ag-act {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px;
+  width: 22px; height: 22px;
+  margin: -1px 0;
   border-radius: 4px;
   color: var(--fg-2);
   transition: background .1s, color .1s;
 }
 .ag-act:hover { background: var(--bg-3); color: var(--fg-0); }
 .ag-act:active { background: var(--selected); }
+.ag-act svg { transition: width .1s, height .1s; }
+.ag-act[aria-label="Archive"]:hover svg { width: 14px; height: 14px; }
 .ag-act.tip[data-tip]:hover::after {
   left: auto;
   right: 0;
@@ -442,14 +457,14 @@ button { cursor: default; }
 .agent-new {
   display: flex; align-items: center; gap: 8px;
   margin: 1px 0 2px 6px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border-radius: var(--r-sm);
   font-size: 12px; color: var(--fg-3);
   width: calc(100% - 6px);
   text-align: left;
 }
 .agent-new:hover { background: var(--hover); color: var(--fg-1); }
-.agent-new svg { width: 11px; height: 11px; }
+.agent-new svg { width: 15px; height: 15px; }
 
 .side-foot {
   height: 52px;
