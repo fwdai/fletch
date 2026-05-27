@@ -16,13 +16,14 @@ interface Tab {
 }
 
 /** Right rail: tabs for Git / Diff / Run / Terminal (each
- *  feature-flagged in settings). For now only Git renders real (well,
- *  mocked) content — the others show a stub. */
+ *  feature-flagged in settings). For now only Git renders real content —
+ *  the others show a stub. */
 export function RightPanel({ agent }: { agent: AgentRecord }) {
-  const features = useAppStore((s) => s.features);
+  const features  = useAppStore((s) => s.features);
+  const gitFiles  = useAppStore((s) => s.gitStates[agent.id]?.files.length ?? 0);
 
   const tabs: Tab[] = [
-    features.git && { id: "git", label: "Git", icon: "branch", count: 0 },
+    features.git && { id: "git", label: "Git", icon: "branch", count: gitFiles },
     features.diff && { id: "diff", label: "Diff", icon: "code" },
     features.run && { id: "run", label: "Run", icon: "play" },
     features.terminal && { id: "term", label: "Terminal", icon: "terminal" },

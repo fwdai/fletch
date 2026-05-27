@@ -849,6 +849,8 @@ button { cursor: default; }
 
 .git-stats { display: flex; gap: 14px; font-size: 11.5px; color: var(--fg-2); }
 .git-stats .num { color: var(--fg-0); font-family: var(--font-mono); }
+.git-stats .add { color: var(--success); font-family: var(--font-mono); }
+.git-stats .rem { color: var(--danger); font-family: var(--font-mono); }
 
 .git-primary {
   padding: 14px 18px;
@@ -891,10 +893,12 @@ button { cursor: default; }
 .git-file:hover { background: var(--hover); }
 .git-file.active { background: var(--selected); color: var(--fg-0); }
 .git-file .gs { width: 14px; text-align: center; font-size: 10px; font-weight: 600; }
-.git-file .gs.M { color: var(--warn); }
-.git-file .gs.A { color: var(--success); }
-.git-file .gs.D { color: var(--danger); }
-.git-file .gs.R { color: var(--info); }
+.git-file .gs.modified   { color: var(--warn); }
+.git-file .gs.added      { color: var(--success); }
+.git-file .gs.deleted    { color: var(--danger); }
+.git-file .gs.renamed    { color: var(--info); }
+.git-file .gs.untracked  { color: var(--fg-3); }
+.git-file .gs.conflicted { color: var(--danger); }
 .git-file .gn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-file .gx { font-size: 10px; display: flex; gap: 4px; flex-shrink: 0; }
 .git-file .gx .add { color: var(--success); }
@@ -914,6 +918,80 @@ button { cursor: default; }
 .git-commit .cm-foot .grow { flex: 1; }
 .git-commit .cm-foot .hint { font-size: 10.5px; color: var(--fg-3); }
 
+/* Merged / conflict banner cards */
+.git-state-card {
+  margin: 0 18px 18px;
+  padding: 11px 13px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  line-height: 1.45;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.git-state-card svg { flex-shrink: 0; margin-top: 1px; }
+.git-state-card.merged {
+  border: 1px solid color-mix(in oklch, var(--success), transparent 70%);
+  background: color-mix(in oklch, var(--success), transparent 92%);
+  color: var(--success);
+}
+.git-state-card.conflict {
+  border: 1px solid color-mix(in oklch, var(--danger), transparent 70%);
+  background: color-mix(in oklch, var(--danger), transparent 92%);
+  color: var(--danger);
+}
+.git-state-card .mono { font-family: var(--font-mono); font-size: 11px; }
+
+/* PR card */
+.git-pr-card {
+  padding: 14px 18px;
+  border-top: 1px solid var(--bd-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.git-pr-card .gpc-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-0);
+  line-height: 1.4;
+}
+.git-pr-card .gpc-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+}
+.git-pr-card .gpc-badge {
+  padding: 1px 7px;
+  border-radius: 100px;
+  font-size: 10px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+}
+.git-pr-card .gpc-badge.ready {
+  background: color-mix(in oklch, var(--success), transparent 85%);
+  color: var(--success);
+}
+.git-pr-card .gpc-badge.warn {
+  background: color-mix(in oklch, var(--warn), transparent 85%);
+  color: var(--warn);
+}
+.git-pr-card .gpc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+  text-decoration: none;
+  width: fit-content;
+}
+.git-pr-card .gpc-link:hover { color: var(--fg-0); }
+.git-pr-card .gpc-link svg { width: 11px; height: 11px; }
 /* run panel — styles ported from Quorum v2 prototype */
 .run-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
 
