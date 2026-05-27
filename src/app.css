@@ -512,6 +512,9 @@ button { cursor: default; }
   font-family: var(--font-mono);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.center-h .t-diff { color: var(--fg-3); }
+.center-h .t-diff.has-changes .t-diff-add { color: var(--success); }
+.center-h .t-diff.has-changes .t-diff-del { color: var(--danger); }
 
 .view-toggle {
   display: flex;

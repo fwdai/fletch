@@ -1,18 +1,53 @@
 //! Tauri IPC command handlers — the thin frontend-facing surface.
 
+use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
-use serde_json::Value;
 use tauri::{AppHandle, State};
 
 use crate::error::Result;
+use crate::git;
 use crate::names;
 use crate::supervisor::Supervisor;
-use crate::workspace::{AgentRecord, AgentView, TrackedRepo, Workspace};
+use crate::workspace::{
+    repo_worktree_path, AgentRecord, AgentView, DiffStats, TrackedRepo, Workspace,
+};
 
 #[tauri::command]
 pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace> {
     supervisor.current_workspace()
+}
+
+#[tauri::command]
+pub async fn get_agent_diff_stats(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<DiffStats> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let mut stats = DiffStats::default();
+
+    for repo in &record.repos {
+        let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+        let base_ref = repo.parent_branch.as_deref().unwrap_or("HEAD");
+        let diff = match git::worktree_diff_shortstat(&worktree, base_ref).await {
+            Ok(diff) => diff,
+            Err(err) if base_ref != "HEAD" => {
+                tracing::warn!(
+                    error = %err,
+                    agent_id = %agent_id,
+                    subdir = %repo.subdir,
+                    base_ref = %base_ref,
+                    "agent diff: falling back to HEAD"
+                );
+                git::worktree_diff_shortstat(&worktree, "HEAD").await?
+            }
+            Err(err) => return Err(err),
+        };
+        stats.additions = stats.additions.saturating_add(diff.0);
+        stats.deletions = stats.deletions.saturating_add(diff.1);
+    }
+
+    Ok(stats)
 }
 
 /// Allocate a fresh name from the shared place pool for a draft agent.

@@ -193,6 +193,27 @@ pub async fn diff_shortstat(
     Ok(parse_shortstat(&line))
 }
 
+/// Run `git diff --shortstat <base>` from a live worktree. This compares the
+/// current working tree, including uncommitted changes, against the base ref.
+pub async fn worktree_diff_shortstat(
+    worktree: &Path,
+    base_ref: &str,
+) -> Result<(u32, u32)> {
+    let out = Command::new("git")
+        .current_dir(worktree)
+        .args(["diff", "--shortstat", base_ref])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "diff --shortstat {base_ref} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(parse_shortstat(&line))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
