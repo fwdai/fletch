@@ -59,9 +59,11 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
 
   const stoppable =
     agent.status === "spawning" ||
-    agent.status === "running" ||
-    agent.status === "idle";
-  const archivable = agent.status === "stopped" || agent.status === "error";
+    agent.status === "running";
+  const archivable =
+    agent.status === "idle" ||
+    agent.status === "stopped" ||
+    agent.status === "error";
 
   const onStop = (e: MouseEvent) => {
     e.stopPropagation();
