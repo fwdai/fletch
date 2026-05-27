@@ -70,6 +70,7 @@ pub fn run() {
             commands::read_session_transcript,
             commands::add_repo_to_agent,
             commands::allocate_draft_name,
+            commands::get_git_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quorum");

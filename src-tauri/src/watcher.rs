@@ -5,13 +5,11 @@ use std::time::Duration;
 use notify_debouncer_mini::notify::{self, RecommendedWatcher};
 use notify_debouncer_mini::{new_debouncer, Debouncer};
 
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct WatcherRegistry {
     watchers: HashMap<String, Debouncer<RecommendedWatcher>>,
 }
 
-#[allow(dead_code)]
 impl WatcherRegistry {
     pub fn new() -> Self {
         Self {
