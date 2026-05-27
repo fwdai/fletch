@@ -87,7 +87,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             autoFocus
             defaultProvider={draft.provider}
             baseBranch={draft.base}
-            placeholder="Describe the task. ⌘↵ to spawn."
+            placeholder="Describe the task for the agent. ↵ to spawn."
             onSend={({ text, provider }) =>
               spawnFromDraft(draft.id, text, provider)
             }

@@ -115,7 +115,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           disabled={!canSend}
           placeholder={
             canSend
-              ? "Send a follow-up — ⌘↵ to send"
+              ? undefined
               : transcriptLoading
                 ? "Loading transcript…"
                 : switchInFlight
