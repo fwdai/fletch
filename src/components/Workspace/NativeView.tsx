@@ -75,15 +75,20 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
   }, [agent.id]);
 
   return (
-    <div
-      ref={containerRef}
-      style={{
-        flex: 1,
-        minHeight: 0,
-        padding: "8px 10px",
-        background: "#1a1c20",
-        overflow: "hidden",
-      }}
-    />
+    // xterm host is an absolute fill of the flex slot; inset via offsets,
+    // not padding, which FitAddon doesn't account for.
+    <div style={{ position: "relative", flex: 1, minHeight: 0, background: "#1a1c20" }}>
+      <div
+        ref={containerRef}
+        style={{
+          position: "absolute",
+          top: 8,
+          bottom: 8,
+          left: 10,
+          right: 10,
+          overflow: "hidden",
+        }}
+      />
+    </div>
   );
 }
