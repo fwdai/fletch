@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 
-const ALLOWED_TABLES: &[&str] = &["agents", "agent_repos", "messages", "workspace_repos"];
+const ALLOWED_TABLES: &[&str] = &[
+    "accounts", "agents", "messages", "projects", "repos", "settings", "worktrees",
+];
 
 fn validate_table(table: &str) -> Result<()> {
     if ALLOWED_TABLES.contains(&table) {
@@ -292,6 +294,57 @@ pub fn db_count(conn: &Connection, table: &str, query: Value) -> Result<i64> {
     Ok(count)
 }
 
+/// INSERT ... ON CONFLICT(conflict_col) DO UPDATE SET ...
+/// `data` contains all columns for the insert. On conflict, every column
+/// in `data` except the conflict column is updated.
+pub fn db_upsert(
+    conn: &Connection,
+    table: &str,
+    data: Value,
+    conflict_column: &str,
+) -> Result<String> {
+    validate_table(table)?;
+    validate_column(conflict_column)?;
+    let obj = data
+        .as_object()
+        .ok_or_else(|| Error::Other("data must be a JSON object".into()))?;
+
+    if obj.is_empty() {
+        return Err(Error::Other("cannot upsert with empty data".into()));
+    }
+
+    let mut columns = Vec::new();
+    let mut placeholders = Vec::new();
+    let mut update_clauses = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    for (i, (col, val)) in obj.iter().enumerate() {
+        validate_column(col)?;
+        columns.push(col.as_str());
+        placeholders.push(format!("?{}", i + 1));
+        params.push(json_to_sql(val)?);
+        if col != conflict_column {
+            update_clauses.push(format!("{col} = excluded.{col}"));
+        }
+    }
+
+    let sql = format!(
+        "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT({conflict_column}) DO UPDATE SET {}",
+        columns.join(", "),
+        placeholders.join(", "),
+        update_clauses.join(", ")
+    );
+
+    conn.prepare(&sql)?.execute(params_from_iter(params))?;
+
+    let id = obj
+        .get(conflict_column)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(id)
+}
+
 pub fn db_query(
     conn: &Connection,
     sql: &str,
@@ -332,15 +385,29 @@ mod tests {
         init(dir.path()).unwrap()
     }
 
+    fn make_project(conn: &Connection) -> String {
+        db_insert(conn, "projects", json!({ "name": "test-project" })).unwrap()
+    }
+
+    fn make_agent(conn: &Connection, project_id: &str) -> String {
+        db_insert(
+            conn,
+            "agents",
+            json!({ "project_id": project_id, "name": "test-agent", "provider": "claude" }),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn insert_and_select() {
         let db = test_db();
         let conn = db.lock();
+        let pid = make_project(&conn);
 
         let id = db_insert(
             &conn,
             "agents",
-            json!({ "name": "test-agent", "provider": "claude" }),
+            json!({ "project_id": pid, "name": "test-agent", "provider": "claude" }),
         )
         .unwrap();
 
@@ -355,13 +422,8 @@ mod tests {
     fn update_and_delete() {
         let db = test_db();
         let conn = db.lock();
-
-        let id = db_insert(
-            &conn,
-            "agents",
-            json!({ "name": "a", "provider": "claude" }),
-        )
-        .unwrap();
+        let pid = make_project(&conn);
+        let id = make_agent(&conn, &pid);
 
         let changed = db_update(
             &conn,
@@ -403,13 +465,8 @@ mod tests {
     fn fts_search() {
         let db = test_db();
         let conn = db.lock();
-
-        let agent_id = db_insert(
-            &conn,
-            "agents",
-            json!({ "name": "search-test", "provider": "claude" }),
-        )
-        .unwrap();
+        let pid = make_project(&conn);
+        let agent_id = make_agent(&conn, &pid);
 
         db_insert(
             &conn,
@@ -465,11 +522,12 @@ mod tests {
     fn auto_generates_uuid_and_timestamp() {
         let db = test_db();
         let conn = db.lock();
+        let pid = make_project(&conn);
 
         let id = db_insert(
             &conn,
             "agents",
-            json!({ "name": "auto", "provider": "claude" }),
+            json!({ "project_id": pid, "name": "auto", "provider": "claude" }),
         )
         .unwrap();
 
@@ -485,13 +543,8 @@ mod tests {
     fn cascade_deletes_messages_with_agent() {
         let db = test_db();
         let conn = db.lock();
-
-        let agent_id = db_insert(
-            &conn,
-            "agents",
-            json!({ "name": "cascade", "provider": "claude" }),
-        )
-        .unwrap();
+        let pid = make_project(&conn);
+        let agent_id = make_agent(&conn, &pid);
 
         db_insert(
             &conn,
@@ -515,18 +568,19 @@ mod tests {
     fn null_where_clause() {
         let db = test_db();
         let conn = db.lock();
+        let pid = make_project(&conn);
 
         db_insert(
             &conn,
             "agents",
-            json!({ "name": "with-error", "provider": "claude", "last_error": "boom" }),
+            json!({ "project_id": pid, "name": "with-error", "provider": "claude", "last_error": "boom" }),
         )
         .unwrap();
 
         db_insert(
             &conn,
             "agents",
-            json!({ "name": "no-error", "provider": "claude" }),
+            json!({ "project_id": pid, "name": "no-error", "provider": "claude" }),
         )
         .unwrap();
 
@@ -538,5 +592,74 @@ mod tests {
         .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["name"], "no-error");
+    }
+
+    #[test]
+    fn upsert_settings() {
+        let db = test_db();
+        let conn = db.lock();
+
+        db_upsert(
+            &conn,
+            "settings",
+            json!({ "key": "theme", "value": "dark" }),
+            "key",
+        )
+        .unwrap();
+
+        let rows = db_select(&conn, "settings", json!({ "where": { "key": "theme" } })).unwrap();
+        assert_eq!(rows[0]["value"], "dark");
+
+        db_upsert(
+            &conn,
+            "settings",
+            json!({ "key": "theme", "value": "light" }),
+            "key",
+        )
+        .unwrap();
+
+        let rows = db_select(&conn, "settings", json!({ "where": { "key": "theme" } })).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["value"], "light");
+    }
+
+    #[test]
+    fn project_repo_agent_worktree_hierarchy() {
+        let db = test_db();
+        let conn = db.lock();
+
+        let pid = db_insert(&conn, "projects", json!({ "name": "my-app" })).unwrap();
+
+        let repo_id = db_insert(
+            &conn,
+            "repos",
+            json!({ "project_id": pid, "path": "/code/my-app" }),
+        )
+        .unwrap();
+
+        let agent_id = db_insert(
+            &conn,
+            "agents",
+            json!({ "project_id": pid, "name": "olympus", "provider": "claude" }),
+        )
+        .unwrap();
+
+        db_insert(
+            &conn,
+            "worktrees",
+            json!({
+                "agent_id": agent_id,
+                "repo_id": repo_id,
+                "subdir": "my-app",
+                "parent_branch": "main"
+            }),
+        )
+        .unwrap();
+
+        // Deleting the project cascades to repos, agents, worktrees
+        db_delete(&conn, "projects", json!({ "where": { "id": pid } })).unwrap();
+        assert_eq!(db_count(&conn, "repos", json!({})).unwrap(), 0);
+        assert_eq!(db_count(&conn, "agents", json!({})).unwrap(), 0);
+        assert_eq!(db_count(&conn, "worktrees", json!({})).unwrap(), 0);
     }
 }

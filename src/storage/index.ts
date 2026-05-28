@@ -1,4 +1,7 @@
-export { dbInsert, dbSelect, dbSelectOne, dbUpdate, dbDelete, dbCount, dbQuery } from "./db";
-export type { AgentRow, AgentRepoRow } from "./agents";
+export { dbInsert, dbSelect, dbSelectOne, dbUpdate, dbDelete, dbUpsert, dbCount, dbQuery } from "./db";
+export type { AccountRow } from "./accounts";
+export type { AgentRow } from "./agents";
 export type { MessageRow, SearchResult } from "./messages";
-export type { WorkspaceRepoRow } from "./workspace";
+export type { ProjectRow, RepoRow } from "./projects";
+export type { SettingRow } from "./settings";
+export type { WorktreeRow } from "./worktrees";

@@ -2,6 +2,7 @@ import { dbSelect, dbSelectOne, dbInsert, dbUpdate, dbDelete, dbCount } from "./
 
 export interface AgentRow {
   id: string;
+  project_id: string;
   name: string;
   provider: string;
   task: string;
@@ -13,23 +14,9 @@ export interface AgentRow {
   archived_at: number | null;
 }
 
-export interface AgentRepoRow {
-  id: string;
-  agent_id: string;
-  repo_path: string;
-  subdir: string;
-  branch: string | null;
-  parent_branch: string | null;
-  is_primary: number;
-  branch_tip_sha: string | null;
-  parent_branch_sha: string | null;
-  diff_additions: number;
-  diff_deletions: number;
-}
-
-export async function listAgents(status?: string): Promise<AgentRow[]> {
+export async function listAgents(projectId?: string): Promise<AgentRow[]> {
   const where: Record<string, unknown> = {};
-  if (status) where.status = status;
+  if (projectId) where.project_id = projectId;
   return dbSelect<AgentRow>("agents", {
     where,
     orderBy: "created_at",
@@ -37,16 +24,12 @@ export async function listAgents(status?: string): Promise<AgentRow[]> {
   });
 }
 
-export async function listLiveAgents(): Promise<AgentRow[]> {
-  return dbSelect<AgentRow>("agents", {
-    where: { archived_at: null },
-    orderBy: "created_at",
-    orderDirection: "desc",
-  });
+export async function listLiveAgents(projectId?: string): Promise<AgentRow[]> {
+  const all = await listAgents(projectId);
+  return all.filter((a) => a.archived_at == null);
 }
 
 export async function listArchivedAgents(): Promise<AgentRow[]> {
-  // archived_at IS NOT NULL — can't express with generic CRUD, use non-null filter in TS
   const all = await dbSelect<AgentRow>("agents", {
     orderBy: "created_at",
     orderDirection: "desc",
@@ -79,29 +62,4 @@ export async function countAgents(
   where?: Record<string, unknown>,
 ): Promise<number> {
   return dbCount("agents", where);
-}
-
-// ── Agent repos ─────────────────────────────────────────────────────────────
-
-export async function listAgentRepos(agentId: string): Promise<AgentRepoRow[]> {
-  return dbSelect<AgentRepoRow>("agent_repos", {
-    where: { agent_id: agentId },
-  });
-}
-
-export async function insertAgentRepo(
-  data: Omit<AgentRepoRow, "id" | "branch_tip_sha" | "parent_branch_sha" | "diff_additions" | "diff_deletions">,
-): Promise<string> {
-  return dbInsert("agent_repos", data as Record<string, unknown>);
-}
-
-export async function updateAgentRepo(
-  id: string,
-  data: Partial<AgentRepoRow>,
-): Promise<void> {
-  await dbUpdate("agent_repos", { id }, data as Record<string, unknown>);
-}
-
-export async function deleteAgentRepos(agentId: string): Promise<void> {
-  await dbDelete("agent_repos", { agent_id: agentId });
 }

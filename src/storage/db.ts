@@ -46,6 +46,18 @@ export async function dbCount(
   return invoke<number>("db_count", { table, query });
 }
 
+export async function dbUpsert(
+  table: string,
+  data: Record<string, unknown>,
+  conflictColumn: string,
+): Promise<string> {
+  return invoke<string>("db_upsert", {
+    table,
+    data,
+    conflictColumn,
+  });
+}
+
 export async function dbQuery<T>(
   sql: string,
   params: unknown[] = [],

@@ -1,15 +1,36 @@
 -- Quorum persistence schema
 
--- Pinned sidebar repos
-CREATE TABLE workspace_repos (
+CREATE TABLE accounts (
     id TEXT PRIMARY KEY,
-    repo_path TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
+    email TEXT,
+    avatar_url TEXT,
     created_at INTEGER NOT NULL
 );
 
--- Agent records (replaces agents array in workspaces.json)
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE repos (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    path TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_repos_project_id ON repos(project_id);
+
 CREATE TABLE agents (
     id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     provider TEXT NOT NULL DEFAULT 'claude',
     task TEXT NOT NULL DEFAULT '',
@@ -23,30 +44,29 @@ CREATE TABLE agents (
     archived_at INTEGER
 );
 
+CREATE INDEX idx_agents_project_id ON agents(project_id);
 CREATE INDEX idx_agents_status ON agents(status);
 CREATE INDEX idx_agents_created_at ON agents(created_at);
-CREATE INDEX idx_agents_archived_at ON agents(archived_at);
 
--- Repos tracked per agent (one agent can have multiple worktrees)
-CREATE TABLE agent_repos (
+CREATE TABLE worktrees (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    repo_path TEXT NOT NULL,
+    repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
     subdir TEXT NOT NULL,
     branch TEXT,
     parent_branch TEXT,
-    is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
     -- Populated at archive time, NULL for live agents
     branch_tip_sha TEXT,
     parent_branch_sha TEXT,
     diff_additions INTEGER NOT NULL DEFAULT 0,
     diff_deletions INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(agent_id, subdir)
+    created_at INTEGER NOT NULL,
+    UNIQUE(agent_id, repo_id)
 );
 
-CREATE INDEX idx_agent_repos_agent_id ON agent_repos(agent_id);
+CREATE INDEX idx_worktrees_agent_id ON worktrees(agent_id);
+CREATE INDEX idx_worktrees_repo_id ON worktrees(repo_id);
 
--- Conversation messages
 CREATE TABLE messages (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
