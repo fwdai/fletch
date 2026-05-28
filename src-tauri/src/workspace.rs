@@ -104,6 +104,11 @@ fn default_provider() -> String {
 pub struct AgentRecord {
     pub id: String,
     pub name: String,
+    /// The project this agent belongs to. Populated by `add_agent`
+    /// (looked up from the primary repo path) and re-read from the
+    /// `agents.project_id` column.
+    #[serde(default)]
+    pub project_id: String,
     /// Which CLI backend powers this agent. Currently only "claude" has a
     /// Rust transport; other providers will land here as their backends
     /// ship. Missing in older workspace JSON → defaults to "claude".
@@ -295,7 +300,7 @@ impl WorkspaceManager {
         Ok(names::allocate(&used))
     }
 
-    pub fn add_agent(&self, record: AgentRecord) -> Result<()> {
+    pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {
         let conn = self.db.lock();
 
         // Look up project_id from the primary repo path.
@@ -305,6 +310,7 @@ impl WorkspaceManager {
         } else {
             return Err(Error::Other("agent must have at least one repo".into()));
         };
+        record.project_id = project_id.clone();
 
         // Parse created_at ISO string to millis.
         let created_millis = chrono::DateTime::parse_from_rfc3339(&record.created_at)
@@ -531,7 +537,7 @@ impl WorkspaceManager {
 
     fn query_all_agents(conn: &Connection) -> Vec<AgentRecord> {
         let mut stmt = match conn.prepare(
-            "SELECT id, name, provider, task, status, view, session_id,
+            "SELECT id, project_id, name, provider, task, status, view, session_id,
                     created_at, last_error, archived_at
              FROM agents ORDER BY created_at",
         ) {
@@ -542,18 +548,20 @@ impl WorkspaceManager {
         let agents: Vec<AgentRecord> = stmt
             .query_map([], |row| {
                 let id: String = row.get(0)?;
-                let name: String = row.get(1)?;
-                let provider: String = row.get(2)?;
-                let task: String = row.get(3)?;
-                let status_str: String = row.get(4)?;
-                let view_str: String = row.get(5)?;
-                let session_id: Option<String> = row.get(6)?;
-                let created_millis: i64 = row.get(7)?;
-                let last_error: Option<String> = row.get(8)?;
-                let archived_millis: Option<i64> = row.get(9)?;
+                let project_id: String = row.get(1)?;
+                let name: String = row.get(2)?;
+                let provider: String = row.get(3)?;
+                let task: String = row.get(4)?;
+                let status_str: String = row.get(5)?;
+                let view_str: String = row.get(6)?;
+                let session_id: Option<String> = row.get(7)?;
+                let created_millis: i64 = row.get(8)?;
+                let last_error: Option<String> = row.get(9)?;
+                let archived_millis: Option<i64> = row.get(10)?;
 
                 Ok((
                     id,
+                    project_id,
                     name,
                     provider,
                     task,
@@ -572,6 +580,7 @@ impl WorkspaceManager {
             .map(
                 |(
                     id,
+                    project_id,
                     name,
                     provider,
                     task,
@@ -597,6 +606,7 @@ impl WorkspaceManager {
 
                     AgentRecord {
                         id,
+                        project_id,
                         name,
                         provider,
                         repos,
@@ -811,7 +821,7 @@ impl WorkspaceManager {
     fn load_agent(conn: &Connection, id: &str) -> Result<AgentRecord> {
         let row = conn
             .query_row(
-                "SELECT id, name, provider, task, status, view, session_id,
+                "SELECT id, project_id, name, provider, task, status, view, session_id,
                         created_at, last_error, archived_at
                  FROM agents WHERE id = ?1",
                 [id],
@@ -823,10 +833,11 @@ impl WorkspaceManager {
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, i64>(7)?,
-                        row.get::<_, Option<String>>(8)?,
-                        row.get::<_, Option<i64>>(9)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<i64>>(10)?,
                     ))
                 },
             )
@@ -834,6 +845,7 @@ impl WorkspaceManager {
 
         let (
             agent_id,
+            project_id,
             name,
             provider,
             task,
@@ -858,6 +870,7 @@ impl WorkspaceManager {
 
         Ok(AgentRecord {
             id: agent_id,
+            project_id,
             name,
             provider,
             repos,
@@ -883,6 +896,9 @@ pub fn new_agent_record(
 ) -> AgentRecord {
     AgentRecord {
         id,
+        // Populated by WorkspaceManager::add_agent (looked up from the
+        // primary repo path) — empty here because callers don't know it.
+        project_id: String::new(),
         name,
         provider,
         repos: vec![primary],
@@ -1009,7 +1025,7 @@ mod tests {
                 AgentView::Custom,
             );
             running.status = AgentStatus::Running;
-            wm.add_agent(running).unwrap();
+            wm.add_agent(&mut running).unwrap();
 
             let mut stopped = new_agent_record(
                 "dolomites".into(),
@@ -1020,7 +1036,7 @@ mod tests {
                 AgentView::Custom,
             );
             stopped.status = AgentStatus::Stopped;
-            wm.add_agent(stopped).unwrap();
+            wm.add_agent(&mut stopped).unwrap();
         }
 
         // Second instance — reconciliation should flip Running → Spawning.
@@ -1065,7 +1081,7 @@ mod tests {
         wm.add_workspace_repo(repo.clone()).unwrap();
 
         let repo_str = repo.to_str().unwrap();
-        let rec = new_agent_record(
+        let mut rec = new_agent_record(
             "yosemite".into(),
             "a".into(),
             "claude".into(),
@@ -1073,7 +1089,7 @@ mod tests {
             "".into(),
             AgentView::Custom,
         );
-        wm.add_agent(rec).unwrap();
+        wm.add_agent(&mut rec).unwrap();
         wm.remove_workspace_repo(&repo).unwrap();
         let cur = wm.current().unwrap();
         // The repo record is deleted, but the agent remains (its worktree
@@ -1091,7 +1107,7 @@ mod tests {
         wm.add_workspace_repo(repo).unwrap();
 
         seed_repo(&db, "/r");
-        let rec = new_agent_record(
+        let mut rec = new_agent_record(
             "test-id".into(),
             "a".into(),
             "claude".into(),
@@ -1100,7 +1116,7 @@ mod tests {
             AgentView::Custom,
         );
         let id = rec.id.clone();
-        wm.add_agent(rec).unwrap();
+        wm.add_agent(&mut rec).unwrap();
 
         wm.update_agent_status(&id, AgentStatus::Running, None)
             .unwrap();
@@ -1114,7 +1130,7 @@ mod tests {
         seed_repo(&db, "/some/repo");
         let wm = WorkspaceManager::new(db);
 
-        let rec = new_agent_record(
+        let mut rec = new_agent_record(
             "yosemite".into(),
             "yosemite".into(),
             "claude".into(),
@@ -1123,7 +1139,7 @@ mod tests {
             AgentView::Custom,
         );
         let id = rec.id.clone();
-        wm.add_agent(rec).unwrap();
+        wm.add_agent(&mut rec).unwrap();
 
         let archive = ArchiveMetadata {
             archived_at: "2026-05-26T12:00:00+00:00".into(),
@@ -1180,7 +1196,7 @@ mod tests {
 
         {
             let wm = WorkspaceManager::new(db.clone());
-            let rec = new_agent_record(
+            let mut rec = new_agent_record(
                 "yosemite".into(),
                 "yosemite".into(),
                 "claude".into(),
@@ -1189,7 +1205,7 @@ mod tests {
                 AgentView::Custom,
             );
             let id = rec.id.clone();
-            wm.add_agent(rec).unwrap();
+            wm.add_agent(&mut rec).unwrap();
             wm.archive_agent(
                 &id,
                 ArchiveMetadata {

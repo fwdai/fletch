@@ -1174,7 +1174,14 @@ button { cursor: default; }
   background: var(--bd-soft);
   border: 1px solid var(--bd-soft);
   border-radius: var(--r-sm);
-  overflow: hidden;
+}
+.rs-group-rows > .rs-row:first-child {
+  border-top-left-radius: calc(var(--r-sm) - 1px);
+  border-top-right-radius: calc(var(--r-sm) - 1px);
+}
+.rs-group-rows > .rs-row:last-child {
+  border-bottom-left-radius: calc(var(--r-sm) - 1px);
+  border-bottom-right-radius: calc(var(--r-sm) - 1px);
 }
 .rs-row {
   display: flex; align-items: center; gap: 12px;
@@ -1222,9 +1229,17 @@ button { cursor: default; }
   width: 22px; height: 22px; border-radius: var(--r-xs);
   background: transparent; border: 0; color: var(--fg-3);
   display: inline-flex; align-items: center; justify-content: center;
-  transition: background .1s, color .1s, transform .1s;
+  transition: background .1s, color .1s;
 }
-.rs-revert:hover { background: var(--hover); color: var(--fg-0); transform: rotate(-180deg); }
+.rs-revert:hover { background: var(--hover); color: var(--fg-0); }
+/* Rotate only the inner icon, so the tooltip ::after on the button
+ * doesn't rotate with it (and the button doesn't form a stacking context
+ * that would trap the tooltip under the next row). */
+.rs-revert-ic {
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: transform .1s;
+}
+.rs-revert:hover .rs-revert-ic { transform: rotate(-180deg); }
 
 .run-sheet-f {
   display: flex; align-items: center; justify-content: space-between;

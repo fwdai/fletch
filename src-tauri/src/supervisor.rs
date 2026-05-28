@@ -229,7 +229,7 @@ impl Supervisor {
             parent_branch,
         };
 
-        let record = new_agent_record(
+        let mut record = new_agent_record(
             agent_id.clone(),
             name,
             provider,
@@ -240,7 +240,7 @@ impl Supervisor {
         let parent_dir = agent_parent_dir(&agent_id)?;
         let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
 
-        self.workspace.add_agent(record.clone())?;
+        self.workspace.add_agent(&mut record)?;
         emit_status(&app, &agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.clone());
 
