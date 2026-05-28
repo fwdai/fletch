@@ -21,6 +21,7 @@ import {
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 import { getAllSettings, setSetting } from "./storage/settings";
+import { deleteMessages, insertMessage } from "./storage/messages";
 
 type OutputHandler = (bytes: Uint8Array) => void;
 
@@ -320,6 +321,53 @@ function extractInputTokens(ev: RawEvent): number | undefined {
   const usage = ev.usage as Record<string, unknown> | undefined;
   const n = usage?.input_tokens;
   return typeof n === "number" && n > 0 ? n : undefined;
+}
+
+/** Capture the full conversation from Claude's session JSONL into the
+ *  messages table. Replaces any previously captured messages for this
+ *  agent. Fire-and-forget — errors are logged, not surfaced. */
+async function captureTranscript(agentId: string, provider?: string) {
+  try {
+    const rawLines = await api.readSessionTranscript(agentId);
+    if (rawLines.length === 0) return;
+
+    const adapter = getAdapter(provider);
+    const events = adapter.normalizeTranscript(rawLines);
+    let items: ChatItem[] = [];
+    for (const ev of events) {
+      items = adapter.reduce(items, ev);
+    }
+    if (items.length === 0) return;
+
+    await deleteMessages(agentId);
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const content =
+        item.kind === "user_message" || item.kind === "agent_message"
+          ? item.text
+          : item.kind === "notice"
+            ? item.text
+            : JSON.stringify(
+                "input" in item ? item.input : "content" in item ? item.content : null,
+              );
+      await insertMessage({
+        agent_id: agentId,
+        kind: item.kind,
+        content: content || "",
+        metadata_json:
+          item.kind === "tool_call"
+            ? JSON.stringify({ name: item.name, id: item.id })
+            : item.kind === "tool_result"
+              ? JSON.stringify({ tool_use_id: item.tool_use_id, is_error: item.is_error })
+              : item.kind === "notice"
+                ? JSON.stringify({ subtype: item.subtype })
+                : null,
+        sequence: i,
+      });
+    }
+  } catch (e) {
+    console.warn("[captureTranscript] failed for", agentId, e);
+  }
 }
 
 /** Names already taken by real or draft agents — passed to the backend
@@ -714,6 +762,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   archive: async (id) => {
     try {
+      const provider = providerFor(get(), id);
+      await captureTranscript(id, provider);
       await api.archiveAgent(id);
       clearOutputBuffer(id);
       const fresh = await api.getWorkspace();
@@ -853,6 +903,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await api.mergePr(agentId);
       // pr:state_changed event will update prStates
+      captureTranscript(agentId, providerFor(get(), agentId));
     } catch (e) {
       set({ lastError: String(e) });
     }
