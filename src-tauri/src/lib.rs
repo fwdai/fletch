@@ -2,6 +2,7 @@ mod activity;
 mod agent;
 mod branding;
 mod commands;
+mod database;
 mod error;
 mod gh;
 mod git;
@@ -14,11 +15,79 @@ mod supervisor;
 mod watcher;
 mod workspace;
 
+use parking_lot::Mutex;
+use rusqlite::Connection;
+use serde_json::Value;
 use std::sync::Arc;
 use tauri::Manager;
 
 use crate::supervisor::Supervisor;
 use crate::workspace::WorkspaceManager;
+
+type DbState = Arc<Mutex<Connection>>;
+
+#[tauri::command]
+async fn db_insert(
+    table: String,
+    data: Value,
+    state: tauri::State<'_, DbState>,
+) -> Result<String, String> {
+    let conn = state.lock();
+    database::db_insert(&conn, &table, data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn db_select(
+    table: String,
+    query: Value,
+    state: tauri::State<'_, DbState>,
+) -> Result<Value, String> {
+    let conn = state.lock();
+    let rows = database::db_select(&conn, &table, query).map_err(|e| e.to_string())?;
+    serde_json::to_value(rows).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn db_update(
+    table: String,
+    query: Value,
+    data: Value,
+    state: tauri::State<'_, DbState>,
+) -> Result<usize, String> {
+    let conn = state.lock();
+    database::db_update(&conn, &table, query, data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn db_delete(
+    table: String,
+    query: Value,
+    state: tauri::State<'_, DbState>,
+) -> Result<usize, String> {
+    let conn = state.lock();
+    database::db_delete(&conn, &table, query).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn db_count(
+    table: String,
+    query: Value,
+    state: tauri::State<'_, DbState>,
+) -> Result<i64, String> {
+    let conn = state.lock();
+    database::db_count(&conn, &table, query).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn db_query(
+    sql: String,
+    params: Vec<Value>,
+    state: tauri::State<'_, DbState>,
+) -> Result<Value, String> {
+    let conn = state.lock();
+    let rows = database::db_query(&conn, &sql, params).map_err(|e| e.to_string())?;
+    serde_json::to_value(rows).map_err(|e| e.to_string())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -35,6 +104,10 @@ pub fn run() {
         .setup(|app| {
             let app_data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data)?;
+
+            let db = database::init(&app_data)
+                .expect("failed to initialize database");
+            app.manage(db);
 
             let workspace = Arc::new(WorkspaceManager::new(app_data)?);
             let supervisor = Arc::new(Supervisor::new(workspace));
@@ -54,6 +127,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            db_insert,
+            db_select,
+            db_update,
+            db_delete,
+            db_count,
+            db_query,
             commands::get_workspace,
             commands::get_agent_diff_stats,
             commands::add_workspace_repo,
