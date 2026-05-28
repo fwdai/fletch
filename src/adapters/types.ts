@@ -34,6 +34,7 @@ export type NoticeSubtype =
   | "info"
   | "reasoning"
   | "slash_command"
+  | "compact_summary"
   | "hook_output";
 
 export type RawEvent = Record<string, unknown> & { type?: string };

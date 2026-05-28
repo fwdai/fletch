@@ -19,6 +19,7 @@ import {
   type Workspace,
 } from "./api";
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
+import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 import { getAllSettings, setSetting } from "./storage/settings";
 import { deleteMessages, insertMessage } from "./storage/messages";
@@ -177,6 +178,9 @@ interface AppState {
    *  that turn. Drives the send-button disabled state and the
    *  "thinking…" indicator. */
   managedBusy: Record<string, boolean>;
+  /** Optional label shown alongside the busy indicator, e.g. "Compacting"
+   *  for `/compact`. Cleared when the turn ends. */
+  managedBusyLabel: Record<string, string | undefined>;
   /** True while a view switch is in flight — disable toggle UI. */
   switchInFlight: Record<string, boolean>;
   /** Last observed input-token count from the agent's most recent
@@ -272,6 +276,31 @@ function providerFor(state: AppState, agentId: string): string | undefined {
   return state.workspace?.agents.find((a) => a.id === agentId)?.provider;
 }
 
+// Labels shown alongside the busy spinner when a known slash command is
+// dispatched. The key is the bare command name (no leading slash). Any
+// command not listed falls back to the generic "thinking" indicator.
+const SLASH_BUSY_LABELS: Record<string, string> = {
+  compact: "Compacting",
+  init: "Initializing",
+  help: "Helping",
+};
+
+/** If `text` is a `/<name>` matching a known passthrough command for the
+ *  given provider, return its bare name; otherwise null. The result is
+ *  used both to swap the optimistic user_message for a slash_command
+ *  notice and to set a busy label. */
+function passthroughSlashName(
+  providerId: string | undefined,
+  text: string,
+): string | null {
+  if (!providerId || !text.startsWith("/")) return null;
+  const first = text.split(/\s/)[0].slice(1);
+  const match = commandsFor(providerId).find(
+    (c) => c.kind === "passthrough" && c.name === first,
+  );
+  return match ? match.name : null;
+}
+
 /** Apply one raw event to an agent's log via its provider adapter. Catches
  *  adapter throws so a single malformed event can't poison the whole log. */
 function applyEvent(
@@ -309,6 +338,9 @@ function applyEvent(
     managedBusy: turnEnded
       ? { ...state.managedBusy, [agentId]: false }
       : state.managedBusy,
+    managedBusyLabel: turnEnded
+      ? { ...state.managedBusyLabel, [agentId]: undefined }
+      : state.managedBusyLabel,
     tokens:
       tokens !== undefined
         ? { ...state.tokens, [agentId]: tokens }
@@ -408,6 +440,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   transcriptLoading: {},
   transcriptLoaded: {},
   managedBusy: {},
+  managedBusyLabel: {},
   switchInFlight: {},
   tokens: {},
   gitStates: {},
@@ -654,16 +687,23 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   sendUserMessage: async (id, text) => {
     try {
-      set((state) => ({
-        managedLogs: {
-          ...state.managedLogs,
-          [id]: [
-            ...(state.managedLogs[id] ?? []),
-            { kind: "user_message", text },
-          ],
-        },
-        managedBusy: { ...state.managedBusy, [id]: true },
-      }));
+      set((state) => {
+        const slashName = passthroughSlashName(providerFor(state, id), text);
+        const entry: ChatItem = slashName
+          ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
+          : { kind: "user_message", text };
+        return {
+          managedLogs: {
+            ...state.managedLogs,
+            [id]: [...(state.managedLogs[id] ?? []), entry],
+          },
+          managedBusy: { ...state.managedBusy, [id]: true },
+          managedBusyLabel: {
+            ...state.managedBusyLabel,
+            [id]: slashName ? SLASH_BUSY_LABELS[slashName] : undefined,
+          },
+        };
+      });
       try {
         await api.sendUserMessage(id, text);
       } catch (e) {

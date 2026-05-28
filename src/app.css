@@ -720,6 +720,7 @@ button { cursor: default; }
 /* composer */
 .composer-wrap { padding: 0 20px 20px; display: flex; justify-content: center; }
 .composer {
+  position: relative;
   width: 100%; max-width: 860px;
   background: var(--bg-2);
   border: 1px solid var(--bd-strong);
@@ -727,6 +728,22 @@ button { cursor: default; }
   box-shadow: var(--shadow-2);
   transition: border-color .15s, box-shadow .15s;
 }
+.slash-menu { max-height: 260px; overflow-y: auto; }
+.slash-item { gap: 12px; }
+.slash-item .slash-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-0);
+  flex-shrink: 0;
+}
+.slash-item .slash-hint { color: var(--fg-3); }
+.slash-item .slash-desc {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg-2);
+}
+.slash-item.active { background: var(--hover); color: var(--fg-0); }
+.slash-item.active .slash-desc { color: var(--fg-1); }
 .composer:focus-within {
   border-color: color-mix(in oklch, var(--accent), transparent 50%);
   box-shadow: var(--shadow-2), 0 0 0 4px color-mix(in oklch, var(--accent), transparent 88%);

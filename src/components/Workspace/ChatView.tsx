@@ -18,6 +18,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     (s) => s.transcriptLoaded[agent.id] ?? false,
   );
   const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
+  const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
   const switchInFlight = useAppStore(
     (s) => s.switchInFlight[agent.id] ?? false,
   );
@@ -105,7 +106,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               <span className="dots">
                 <i /><i /><i />
               </span>
-              <span>{agent.name} is thinking</span>
+              <span>{busyLabel ?? `${agent.name} is thinking`}</span>
             </div>
           )}
         </div>
