@@ -1,7 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AgentRecord } from "../../api";
 import { Icon } from "../Icon";
+import {
+  deleteProjectSetting,
+  getProjectSettings,
+  setProjectSetting,
+} from "../../storage/projectSettings";
 import { RunSettingsSheet, type SetupRow } from "./RunSettingsSheet";
+
+// Settings keys we persist are prefixed so the project_settings table can
+// hold overrides from other panels (env, build, etc.) without collisions.
+const RUN_KEY_PREFIX = "run.";
+const runKey = (id: string) => `${RUN_KEY_PREFIX}${id}`;
 
 // ── Static mock data (UI pass — replaced by real data in wiring PR) ──────────
 // Rows match the Quorum v2 prototype exactly: 3 groups, 8 rows.
@@ -58,6 +68,29 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
 
+  // Load persisted overrides for this project. Re-loads when the
+  // selected agent (and thus project) changes.
+  useEffect(() => {
+    let cancelled = false;
+    if (!agent.project_id) {
+      setOverrides({});
+      return;
+    }
+    getProjectSettings(agent.project_id).then((all) => {
+      if (cancelled) return;
+      const loaded: Record<string, string> = {};
+      for (const [k, v] of Object.entries(all)) {
+        if (k.startsWith(RUN_KEY_PREFIX)) {
+          loaded[k.slice(RUN_KEY_PREFIX.length)] = v;
+        }
+      }
+      setOverrides(loaded);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [agent.project_id]);
+
   const valueOf = (id: string) => {
     const row = RUN_SETUP.find((r) => r.id === id);
     return overrides[id] ?? row?.value ?? "";
@@ -67,7 +100,41 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   const port   = valueOf("port");
 
   const onApply = (next: Record<string, string>) => {
-    setOverrides(next);
+    // Persist only true overrides — anything that matches the inferred
+    // default is treated as "no override" and removed from the DB.
+    const projectId = agent.project_id;
+    const cleaned: Record<string, string> = {};
+    if (projectId) {
+      const previous = overrides;
+      for (const row of RUN_SETUP) {
+        const nextVal = next[row.id];
+        const wasSet = previous[row.id] !== undefined;
+        const isOverride = nextVal !== undefined && nextVal !== row.value;
+
+        if (isOverride) {
+          cleaned[row.id] = nextVal;
+          if (previous[row.id] !== nextVal) {
+            setProjectSetting(projectId, runKey(row.id), nextVal).catch(
+              (err) => console.error("setProjectSetting failed", err),
+            );
+          }
+        } else if (wasSet) {
+          deleteProjectSetting(projectId, runKey(row.id)).catch((err) =>
+            console.error("deleteProjectSetting failed", err),
+          );
+        }
+      }
+    } else {
+      // No project — keep in-memory only (shouldn't happen in practice).
+      for (const row of RUN_SETUP) {
+        const nextVal = next[row.id];
+        if (nextVal !== undefined && nextVal !== row.value) {
+          cleaned[row.id] = nextVal;
+        }
+      }
+    }
+
+    setOverrides(cleaned);
     setSettingsOpen(false);
     setRunning(true);
   };
@@ -83,7 +150,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           onClick={() => setRunning((v) => !v)}
           aria-label={running ? "Stop" : "Start"}
         >
-          <Icon name={running ? "stop" : "play"} size={11} />
+          <Icon name={running ? "stop" : "play"} size={12} />
         </button>
 
         <div className="run-cmd">

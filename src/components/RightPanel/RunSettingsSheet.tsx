@@ -191,7 +191,9 @@ function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps) {
         )}
         {hasOverride && !editing && (
           <button className="rs-revert tip" data-tip="Revert to detected" onClick={onRevert}>
-            <Icon name="refresh" size={11} />
+            <span className="rs-revert-ic">
+              <Icon name="refresh" size={11} />
+            </span>
           </button>
         )}
       </div>

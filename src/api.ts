@@ -40,6 +40,9 @@ export interface ArchiveMetadata {
 
 export interface AgentRecord {
   id: string;
+  /** Project this agent belongs to. Used to scope project-level
+   *  settings (e.g. Run panel overrides). */
+  project_id: string;
   name: string;
   /** Which CLI backend powers this agent (claude, codex, ...). Maps to
    *  the TS adapter registered under the same id. */

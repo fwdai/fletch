@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::error::{Error, Result};
 
 const ALLOWED_TABLES: &[&str] = &[
-    "accounts", "agents", "messages", "projects", "repos", "settings", "worktrees",
+    "accounts", "agents", "messages", "project_settings", "projects", "repos", "settings", "worktrees",
 ];
 
 fn validate_table(table: &str) -> Result<()> {
@@ -30,6 +30,7 @@ fn validate_column(col: &str) -> Result<()> {
 fn get_migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("../migrations/0001_initial_schema.sql")),
+        M::up(include_str!("../migrations/0002_project_settings.sql")),
     ])
 }
 
@@ -304,7 +305,13 @@ pub fn db_upsert(
     conflict_column: &str,
 ) -> Result<String> {
     validate_table(table)?;
-    validate_column(conflict_column)?;
+    let conflict_cols: Vec<&str> = conflict_column.split(',').map(|s| s.trim()).collect();
+    if conflict_cols.is_empty() {
+        return Err(Error::Other("conflict_column must not be empty".into()));
+    }
+    for col in &conflict_cols {
+        validate_column(col)?;
+    }
     let obj = data
         .as_object()
         .ok_or_else(|| Error::Other("data must be a JSON object".into()))?;
@@ -323,22 +330,32 @@ pub fn db_upsert(
         columns.push(col.as_str());
         placeholders.push(format!("?{}", i + 1));
         params.push(json_to_sql(val)?);
-        if col != conflict_column {
+        if !conflict_cols.contains(&col.as_str()) {
             update_clauses.push(format!("{col} = excluded.{col}"));
         }
     }
 
-    let sql = format!(
-        "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT({conflict_column}) DO UPDATE SET {}",
-        columns.join(", "),
-        placeholders.join(", "),
-        update_clauses.join(", ")
-    );
+    let conflict_target = conflict_cols.join(", ");
+    let sql = if update_clauses.is_empty() {
+        format!(
+            "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT({conflict_target}) DO NOTHING",
+            columns.join(", "),
+            placeholders.join(", "),
+        )
+    } else {
+        format!(
+            "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT({conflict_target}) DO UPDATE SET {}",
+            columns.join(", "),
+            placeholders.join(", "),
+            update_clauses.join(", ")
+        )
+    };
 
     conn.prepare(&sql)?.execute(params_from_iter(params))?;
 
-    let id = obj
-        .get(conflict_column)
+    let id = conflict_cols
+        .first()
+        .and_then(|c| obj.get(*c))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
