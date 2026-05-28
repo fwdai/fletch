@@ -10,6 +10,7 @@ use crate::gh::{self, PrState};
 use crate::git;
 use crate::git_state::{self, GitState};
 use crate::names;
+use crate::run_session::RunStateSnapshot;
 use crate::supervisor::Supervisor;
 use crate::workspace::{
     repo_worktree_path, AgentRecord, AgentView, DiffStats, TrackedRepo, Workspace,
@@ -327,6 +328,38 @@ pub fn resize_shell(
     rows: u16,
 ) -> Result<()> {
     supervisor.resize_shell(&agent_id, cols, rows)
+}
+
+/// Start the Run-panel process for an agent.
+/// Runs setup-then-run on first start, then run only on subsequent.
+#[tauri::command]
+pub fn run_start(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+) -> Result<()> {
+    let sup = supervisor.inner().clone();
+    sup.run_start(app, &agent_id)
+}
+
+/// Stop the Run-panel process for an agent. Idempotent.
+#[tauri::command]
+pub fn run_stop(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+) -> Result<()> {
+    supervisor.run_stop(app, &agent_id)
+}
+
+/// Snapshot of the Run-panel state and accumulated log buffer for
+/// rehydrating the panel on mount.
+#[tauri::command]
+pub fn run_state(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<RunStateSnapshot> {
+    Ok(supervisor.run_state(&agent_id))
 }
 
 /// Returns git state for the agent's primary repo.

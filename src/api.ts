@@ -151,6 +151,27 @@ export interface PrStateChangedEvent {
   state: PrState | null;
 }
 
+export type RunPhase = "idle" | "setup" | "running" | "stopped";
+
+export interface RunStateSnapshot {
+  phase: RunPhase;
+  last_error: string | null;
+  /** Raw PTY bytes accumulated since the panel was last cleared.
+   *  Sent as a JSON array of u8 values; decode with TextDecoder. */
+  log: number[];
+}
+
+export interface RunOutputEvent {
+  agent_id: string;
+  bytes: number[];
+}
+
+export interface RunStateEvent {
+  agent_id: string;
+  phase: RunPhase;
+  last_error: string | null;
+}
+
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
   getAgentDiffStats: (agentId: string) =>
@@ -204,6 +225,10 @@ export const api = {
     invoke<void>("write_to_shell", { agentId, data }),
   resizeShell: (agentId: string, cols: number, rows: number) =>
     invoke<void>("resize_shell", { agentId, cols, rows }),
+  runStart: (agentId: string) => invoke<void>("run_start", { agentId }),
+  runStop: (agentId: string) => invoke<void>("run_stop", { agentId }),
+  runState: (agentId: string) =>
+    invoke<RunStateSnapshot>("run_state", { agentId }),
 };
 
 export function onAgentOutput(
@@ -277,4 +302,16 @@ export function onPrStateChanged(
   cb: (e: PrStateChangedEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<PrStateChangedEvent>("pr:state_changed", (event) => cb(event.payload));
+}
+
+export function onRunOutput(
+  cb: (e: RunOutputEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<RunOutputEvent>("run:output", (event) => cb(event.payload));
+}
+
+export function onRunState(
+  cb: (e: RunStateEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<RunStateEvent>("run:state", (event) => cb(event.payload));
 }

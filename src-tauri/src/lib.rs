@@ -10,6 +10,7 @@ mod git_state;
 mod managed_session;
 mod names;
 mod pty_session;
+mod run_session;
 mod sandbox;
 mod supervisor;
 mod watcher;
@@ -172,6 +173,9 @@ pub fn run() {
             commands::close_agent_shell,
             commands::write_to_shell,
             commands::resize_shell,
+            commands::run_start,
+            commands::run_stop,
+            commands::run_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quorum");

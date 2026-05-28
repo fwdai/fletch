@@ -15,6 +15,9 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::git_state::{self, GitState};
 use crate::pty_session::{PtySession, PtySpawn};
+use crate::run_session::{
+    self, shell_args, user_shell, RunPhase, RunSession, RunStateSnapshot,
+};
 use crate::watcher::WatcherRegistry;
 use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir, new_agent_record, repo_worktree_path, AgentRecord,
@@ -84,6 +87,19 @@ pub struct PrStateChangedPayload {
     pub state: Option<crate::gh::PrState>,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct RunOutputPayload {
+    pub agent_id: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct RunStatePayload {
+    pub agent_id: String,
+    pub phase: RunPhase,
+    pub last_error: Option<String>,
+}
+
 const WATCHDOG_TICK: Duration = Duration::from_millis(500);
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -95,6 +111,9 @@ pub struct Supervisor {
     pub native_input_lines: Mutex<HashMap<String, String>>,
     pub watcher_registry: Mutex<WatcherRegistry>,
     pub shells: Mutex<HashMap<String, PtySession>>,
+    /// Per-agent run-panel processes (dev server + setup). Reused
+    /// across start/stop cycles so the log buffer survives.
+    pub runs: Mutex<HashMap<String, Arc<RunSession>>>,
 }
 
 impl Supervisor {
@@ -107,6 +126,7 @@ impl Supervisor {
             native_input_lines: Mutex::new(HashMap::new()),
             watcher_registry: Mutex::new(WatcherRegistry::new()),
             shells: Mutex::new(HashMap::new()),
+            runs: Mutex::new(HashMap::new()),
         }
     }
 
@@ -185,6 +205,121 @@ impl Supervisor {
             .get(agent_id)
             .ok_or_else(|| Error::Other("no shell for agent".into()))?
             .resize(cols, rows)
+    }
+
+    /// Start the Run-panel process for an agent.
+    ///
+    /// If the agent has never completed setup before, runs the setup
+    /// command first; on exit 0 marks setup complete and chains into
+    /// the run command. On setup failure → does NOT proceed to run.
+    /// If setup is already complete, starts the run command directly.
+    ///
+    /// No-op if a run is already in progress for this agent.
+    pub fn run_start(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+        let record = self.workspace.agent(agent_id)?;
+        if record.archive.is_some() {
+            return Err(Error::Other("agent is archived".into()));
+        }
+        let primary = record
+            .repos
+            .first()
+            .ok_or_else(|| Error::Other("agent has no repos".into()))?;
+        let cwd = repo_worktree_path(agent_id, &primary.subdir)?;
+
+        let (setup_cmd, run_cmd) = self.read_run_commands(&record.project_id);
+        let setup_done = self.workspace.is_setup_completed(agent_id)?;
+
+        let session = {
+            let mut runs = self.runs.lock();
+            runs.entry(agent_id.to_string())
+                .or_insert_with(|| Arc::new(RunSession::new()))
+                .clone()
+        };
+
+        if session.is_active() {
+            return Ok(()); // already running, idempotent
+        }
+
+        let needs_setup = !setup_done && !setup_cmd.trim().is_empty();
+        let (first_phase, first_cmd, chains_to_run) = if needs_setup {
+            (RunPhase::Setup, setup_cmd.clone(), true)
+        } else {
+            (RunPhase::Running, run_cmd.clone(), false)
+        };
+
+        let gen = session.begin_phase(first_phase);
+        emit_run_state(&app, agent_id, first_phase, None);
+        write_header(&app, agent_id, &session, &first_cmd);
+
+        spawn_run_phase(
+            self.clone(),
+            app,
+            agent_id.to_string(),
+            session,
+            gen,
+            cwd,
+            first_phase,
+            first_cmd,
+            if chains_to_run { Some(run_cmd) } else { None },
+        )
+    }
+
+    /// Stop the Run-panel process for an agent. Idempotent.
+    pub fn run_stop(&self, app: AppHandle, agent_id: &str) -> Result<()> {
+        let session = {
+            let runs = self.runs.lock();
+            runs.get(agent_id).cloned()
+        };
+        let Some(session) = session else {
+            return Ok(());
+        };
+        let prior = session.stop();
+        if matches!(prior, RunPhase::Setup | RunPhase::Running) {
+            emit_run_state(&app, agent_id, RunPhase::Stopped, None);
+        }
+        Ok(())
+    }
+
+    /// Snapshot of the current state and accumulated log for the
+    /// panel to rehydrate on mount.
+    pub fn run_state(&self, agent_id: &str) -> RunStateSnapshot {
+        let session = {
+            let runs = self.runs.lock();
+            runs.get(agent_id).cloned()
+        };
+        match session {
+            Some(s) => s.snapshot(),
+            None => RunStateSnapshot {
+                phase: RunPhase::Idle,
+                last_error: None,
+                log: Vec::new(),
+            },
+        }
+    }
+
+    /// Read the setup + run commands from project_settings, falling
+    /// back to the same inferred defaults the panel UI shows. Keys
+    /// match the RunPanel storage scheme (`run.install`, `run.dev`).
+    fn read_run_commands(&self, project_id: &str) -> (String, String) {
+        let conn = self.workspace.db_handle();
+        let install_default = "pnpm install".to_string();
+        let dev_default = "pnpm dev".to_string();
+        if project_id.is_empty() {
+            return (install_default, dev_default);
+        }
+        let read = |key: &str| -> Option<String> {
+            let conn = conn.lock();
+            conn.query_row(
+                "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
+                rusqlite::params![project_id, key],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        };
+        (
+            read("run.install").unwrap_or(install_default),
+            read("run.dev").unwrap_or(dev_default),
+        )
     }
 
     pub fn current_workspace(&self) -> Option<Workspace> {
@@ -748,6 +883,9 @@ impl Supervisor {
         self.activities.lock().remove(agent_id);
         self.native_input_lines.lock().remove(agent_id);
         self.shells.lock().remove(agent_id);
+        if let Some(run) = self.runs.lock().remove(agent_id) {
+            run.stop();
+        }
         self.watcher_registry.lock().unregister_prefix(agent_id);
 
         let mut snapshots: Vec<ArchivedRepoSnapshot> = Vec::with_capacity(record.repos.len());
@@ -1052,6 +1190,9 @@ impl Supervisor {
         self.activities.lock().remove(agent_id);
         self.native_input_lines.lock().remove(agent_id);
         self.shells.lock().remove(agent_id);
+        if let Some(run) = self.runs.lock().remove(agent_id) {
+            run.stop();
+        }
         self.watcher_registry.lock().unregister_prefix(agent_id);
 
         // Tear down each tracked repo's worktree + branch.
@@ -1531,6 +1672,171 @@ fn apply_exit_if_current(
         }
         emit_status(app, agent_id, status, err);
     }
+}
+
+fn emit_run_state(
+    app: &AppHandle,
+    agent_id: &str,
+    phase: RunPhase,
+    last_error: Option<String>,
+) {
+    let _ = app.emit(
+        "run:state",
+        RunStatePayload {
+            agent_id: agent_id.to_string(),
+            phase,
+            last_error,
+        },
+    );
+}
+
+fn emit_run_output(app: &AppHandle, agent_id: &str, bytes: Vec<u8>) {
+    let _ = app.emit(
+        "run:output",
+        RunOutputPayload {
+            agent_id: agent_id.to_string(),
+            bytes,
+        },
+    );
+}
+
+/// Inject a "$ <cmd>" header line into the log so each phase has a
+/// visible boundary, then emit it like any other PTY output.
+fn write_header(app: &AppHandle, agent_id: &str, session: &Arc<RunSession>, cmd: &str) {
+    // Dim ANSI for the prompt — the frontend strips ANSI for v1,
+    // so the line still reads fine without color support.
+    let line = format!("\x1b[2m$ {cmd}\x1b[0m\r\n");
+    let bytes = line.into_bytes();
+    session.append_log(&bytes);
+    emit_run_output(app, agent_id, bytes);
+}
+
+/// Spawn one phase's PTY (setup or run). Wires up output streaming
+/// and the exit handler that chains setup→run or transitions to
+/// Stopped on natural exit. Out-of-band stops are handled via the
+/// generation check.
+fn spawn_run_phase(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+    session: Arc<RunSession>,
+    gen: u64,
+    cwd: std::path::PathBuf,
+    phase: RunPhase,
+    cmd: String,
+    chain_run_cmd: Option<String>,
+) -> Result<()> {
+    let shell = user_shell();
+    let args = shell_args(&cmd);
+
+    let session_out = session.clone();
+    let app_out = app.clone();
+    let id_out = agent_id.clone();
+
+    let sup_exit = sup.clone();
+    let app_exit = app.clone();
+    let id_exit = agent_id.clone();
+    let session_exit = session.clone();
+    let cwd_exit = cwd.clone();
+
+    let pty = run_session::spawn_command(
+        &shell,
+        &args,
+        &cwd,
+        move |bytes| {
+            session_out.append_log(&bytes);
+            emit_run_output(&app_out, &id_out, bytes);
+        },
+        move |exit| {
+            handle_run_phase_exit(
+                sup_exit.clone(),
+                app_exit.clone(),
+                id_exit.clone(),
+                session_exit.clone(),
+                gen,
+                phase,
+                exit,
+                cwd_exit.clone(),
+                chain_run_cmd.clone(),
+            );
+        },
+    )?;
+
+    session.attach_pty(pty);
+    Ok(())
+}
+
+fn handle_run_phase_exit(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+    session: Arc<RunSession>,
+    gen: u64,
+    phase: RunPhase,
+    exit: crate::pty_session::PtyExit,
+    cwd: std::path::PathBuf,
+    chain_run_cmd: Option<String>,
+) {
+    // If the user clicked Stop (or started a fresh run), our
+    // generation is stale — just drop this event.
+    if !session.is_current_generation(gen) {
+        tracing::debug!(
+            agent_id = %agent_id,
+            phase = ?phase,
+            "ignoring stale run-phase exit"
+        );
+        return;
+    }
+
+    if matches!(phase, RunPhase::Setup) && exit.success {
+        // Setup finished cleanly — persist the flag and chain into
+        // the run command (if we have one).
+        if let Err(e) = sup.workspace.mark_setup_completed(&agent_id) {
+            tracing::warn!(error = %e, agent_id = %agent_id, "mark_setup_completed failed");
+        }
+        if let Some(run_cmd) = chain_run_cmd {
+            session.transition_phase(RunPhase::Running);
+            emit_run_state(&app, &agent_id, RunPhase::Running, None);
+            write_header(&app, &agent_id, &session, &run_cmd);
+            if let Err(e) = spawn_run_phase(
+                sup,
+                app.clone(),
+                agent_id.clone(),
+                session.clone(),
+                gen,
+                cwd,
+                RunPhase::Running,
+                run_cmd,
+                None,
+            ) {
+                let msg = format!("Failed to start run command: {e}");
+                session.mark_stopped(Some(msg.clone()));
+                emit_run_state(&app, &agent_id, RunPhase::Stopped, Some(msg));
+            }
+            return;
+        }
+        // No run command to chain into — treat as clean stop.
+        session.mark_stopped(None);
+        emit_run_state(&app, &agent_id, RunPhase::Stopped, None);
+        return;
+    }
+
+    // Setup failed → do NOT proceed to run. Surface the error.
+    if matches!(phase, RunPhase::Setup) && !exit.success {
+        let msg = format!("Setup failed: {}", exit.message);
+        session.mark_stopped(Some(msg.clone()));
+        emit_run_state(&app, &agent_id, RunPhase::Stopped, Some(msg));
+        return;
+    }
+
+    // Run-phase exit — natural end or crash. Either way → Stopped.
+    let err = if exit.success {
+        None
+    } else {
+        Some(format!("Run exited: {}", exit.message))
+    };
+    session.mark_stopped(err.clone());
+    emit_run_state(&app, &agent_id, RunPhase::Stopped, err);
 }
 
 fn emit_status(

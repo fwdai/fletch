@@ -1,5 +1,11 @@
-import { useEffect, useState } from "react";
-import type { AgentRecord } from "../../api";
+import { useEffect, useRef, useState } from "react";
+import {
+  api,
+  onRunOutput,
+  onRunState,
+  type AgentRecord,
+  type RunPhase,
+} from "../../api";
 import { Icon } from "../Icon";
 import {
   deleteProjectSetting,
@@ -8,17 +14,14 @@ import {
 } from "../../storage/projectSettings";
 import { RunSettingsSheet, type SetupRow } from "./RunSettingsSheet";
 
-// Settings keys we persist are prefixed so the project_settings table can
-// hold overrides from other panels (env, build, etc.) without collisions.
+// Settings keys are namespaced under `run.` so the project_settings
+// table can hold overrides from other panels without colliding.
 const RUN_KEY_PREFIX = "run.";
 const runKey = (id: string) => `${RUN_KEY_PREFIX}${id}`;
 
-// ── Static mock data (UI pass — replaced by real data in wiring PR) ──────────
-// Rows match the Quorum v2 prototype exactly: 3 groups, 8 rows.
-// Each entry carries an inferred value + WHERE it was detected from, so the
-// run-settings sheet can surface that as the "auto-detected" baseline and the
-// user can override any one of them.
-
+// Inferred defaults the panel shows when a project has no overrides.
+// The backend reads `run.install` / `run.dev` from project_settings and
+// falls back to these same strings — keep them in sync.
 const RUN_SETUP: SetupRow[] = [
   { id: "pm",      group: "Environment", key: "Package manager", value: "pnpm 9.7.1",   source: "package.json · packageManager" },
   { id: "node",    group: "Environment", key: "Node version",    value: "v22.4.0",      source: ".nvmrc" },
@@ -30,46 +33,26 @@ const RUN_SETUP: SetupRow[] = [
   { id: "env",     group: "Server",      key: "Env file",        value: ".env.local",   source: "auto-detected" },
 ];
 
-interface LogEntry { c: string; t: string; }
-
-const RUN_LOGS: LogEntry[] = [
-  { c: "term-dim",     t: "$ pnpm dev" },
-  { c: "",             t: "" },
-  { c: "term-bold",    t: "  ▲ Next.js 15.4.0" },
-  { c: "term-dim",     t: "  - Local:        http://localhost:3000" },
-  { c: "term-dim",     t: "  - Workspace:    ~/dev/atlas-web/.quorum/patagonia" },
-  { c: "term-dim",     t: "  - Environments: .env.local" },
-  { c: "",             t: "" },
-  { c: "term-success", t: " ✓ Ready in 1.4s" },
-  { c: "term-dim",     t: " ○ Compiling /billing ..." },
-  { c: "term-success", t: " ✓ Compiled /billing in 482ms (1290 modules)" },
-  { c: "term-dim",     t: " GET /billing 200 in 612ms" },
-  { c: "term-dim",     t: " GET /api/billing/customer 200 in 84ms" },
-  { c: "term-warn",    t: " ⚠ Fast Refresh had to perform a full reload due to a runtime error" },
-  { c: "term-success", t: " ✓ Compiled /api/billing/portal in 211ms" },
-  { c: "term-dim",     t: " POST /api/billing/checkout 303 in 142ms" },
-  { c: "term-info",    t: "   → redirect: https://billing.stripe.com/session/..." },
-];
-
-const LOG_CLASS: Record<string, string> = {
-  "term-prompt":  "p",
-  "term-dim":     "d",
-  "term-success": "s",
-  "term-warn":    "w",
-  "term-error":   "e",
-  "term-info":    "i",
-  "term-bold":    "b",
-};
-
-// ── Component ────────────────────────────────────────────────────────────────
+// Strip ANSI escape sequences before rendering. v1 keeps log rendering
+// dead-simple (plain text with pre-wrap); colorization can come later.
+// Covers CSI (ESC [ ... letter) and OSC (ESC ] ... BEL / ST).
+const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
 
 export function RunPanel({ agent }: { agent: AgentRecord }) {
-  const [running, setRunning] = useState(true);
+  const [phase, setPhase] = useState<RunPhase>("idle");
+  const [lastError, setLastError] = useState<string | null>(null);
+  const [log, setLog] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const logRef = useRef<HTMLDivElement | null>(null);
+  // Streaming UTF-8 decoder so a multi-byte rune split across two
+  // PTY chunks doesn't produce a replacement character. Reset each
+  // time we re-subscribe (agent switch).
+  const decoderRef = useRef<TextDecoder | null>(null);
 
-  // Load persisted overrides for this project. Re-loads when the
-  // selected agent (and thus project) changes.
+  // Load persisted command overrides for this project. Re-loads when
+  // the selected agent (and thus project) changes.
   useEffect(() => {
     let cancelled = false;
     if (!agent.project_id) {
@@ -91,17 +74,74 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     };
   }, [agent.project_id]);
 
+  // Subscribe to run output and state events for this agent.
+  // Rehydrate snapshot on mount/agent-switch so the panel preserves
+  // logs from prior starts (and across panel mounts).
+  useEffect(() => {
+    let cancelled = false;
+    const cleanups: Array<() => void> = [];
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    decoderRef.current = decoder;
+
+    api.runState(agent.id).then((snap) => {
+      if (cancelled) return;
+      setPhase(snap.phase);
+      setLastError(snap.last_error);
+      // Snapshot is a one-shot buffer — decode it without streaming
+      // mode using its own decoder so it doesn't pollute the live
+      // stream decoder.
+      const snapDecoder = new TextDecoder("utf-8", { fatal: false });
+      setLog(stripAnsi(snapDecoder.decode(new Uint8Array(snap.log))));
+    });
+
+    onRunOutput((e) => {
+      if (e.agent_id !== agent.id) return;
+      const chunk = stripAnsi(
+        decoder.decode(new Uint8Array(e.bytes), { stream: true }),
+      );
+      setLog((prev) => prev + chunk);
+    }).then((un) => cleanups.push(un));
+
+    onRunState((e) => {
+      if (e.agent_id !== agent.id) return;
+      setPhase(e.phase);
+      setLastError(e.last_error);
+    }).then((un) => cleanups.push(un));
+
+    return () => {
+      cancelled = true;
+      for (const c of cleanups) c();
+    };
+  }, [agent.id]);
+
+  // Auto-scroll to bottom on log append.
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [log]);
+
   const valueOf = (id: string) => {
     const row = RUN_SETUP.find((r) => r.id === id);
     return overrides[id] ?? row?.value ?? "";
   };
 
   const devCmd = valueOf("dev");
-  const port   = valueOf("port");
+  const port = valueOf("port");
+  const isActive = phase === "setup" || phase === "running";
+  const linkLive = phase === "running";
+
+  const onPlay = () => {
+    if (isActive) {
+      void api.runStop(agent.id);
+    } else {
+      void api.runStart(agent.id);
+    }
+  };
 
   const onApply = (next: Record<string, string>) => {
-    // Persist only true overrides — anything that matches the inferred
-    // default is treated as "no override" and removed from the DB.
+    // Persist only true overrides — values that match the inferred
+    // default are removed from the DB so the row reads as "auto".
     const projectId = agent.project_id;
     const cleaned: Record<string, string> = {};
     if (projectId) {
@@ -125,7 +165,6 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         }
       }
     } else {
-      // No project — keep in-memory only (shouldn't happen in practice).
       for (const row of RUN_SETUP) {
         const nextVal = next[row.id];
         if (nextVal !== undefined && nextVal !== row.value) {
@@ -136,21 +175,22 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
 
     setOverrides(cleaned);
     setSettingsOpen(false);
-    setRunning(true);
   };
 
   const hasOverrides = Object.keys(overrides).length > 0;
+  const buttonLabel = isActive ? "Stop" : "Start";
 
   return (
     <div className="run-wrap">
       {/* ── Bar ── */}
       <div className="run-bar v2">
         <button
-          className={`run-go ${running ? "live" : "stopped"}`}
-          onClick={() => setRunning((v) => !v)}
-          aria-label={running ? "Stop" : "Start"}
+          className={`run-go ${isActive ? "live" : "stopped"}`}
+          onClick={onPlay}
+          aria-label={buttonLabel}
+          title={phase === "setup" ? "Setup running — click to stop" : buttonLabel}
         >
-          <Icon name={running ? "stop" : "play"} size={12} />
+          <Icon name={isActive ? "stop" : "play"} size={12} />
         </button>
 
         <div className="run-cmd">
@@ -162,8 +202,8 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           href={`http://localhost:${port}`}
           target="_blank"
           rel="noreferrer"
-          className={`run-link${running ? "" : " disabled"}`}
-          onClick={(e) => { if (!running) e.preventDefault(); }}
+          className={`run-link${linkLive ? "" : " disabled"}`}
+          onClick={(e) => { if (!linkLive) e.preventDefault(); }}
         >
           <span className="colon">:</span>
           <span className="port">{port}</span>
@@ -181,13 +221,12 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       </div>
 
       {/* ── Logs ── */}
-      <div className="run-logs">
-        {RUN_LOGS.map((l, i) => {
-          const cls = LOG_CLASS[l.c] ?? "";
-          const text = l.t.split('localhost:3000').join(`localhost:${port}`);
-          return <div key={i} className={cls || undefined}>{text}</div>;
-        })}
-        {running && (
+      <div className="run-logs" ref={logRef}>
+        {log.length > 0 && <div>{log}</div>}
+        {lastError && phase === "stopped" && (
+          <div className="e">{lastError}</div>
+        )}
+        {isActive && (
           <div className="p">
             {"› "}
             <span className="term-cursor" />
