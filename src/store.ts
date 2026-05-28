@@ -20,6 +20,7 @@ import {
 } from "./api";
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
+import { getAllSettings, setSetting } from "./storage/settings";
 
 type OutputHandler = (bytes: Uint8Array) => void;
 
@@ -140,32 +141,22 @@ const DEFAULT_FEATURES: FeatureFlags = {
   tokenUsage: false,
 };
 
-const FEATURE_KEYS = Object.keys(DEFAULT_FEATURES) as (keyof FeatureFlags)[];
-
-function loadFeatures(): FeatureFlags {
+function parseFeatures(raw: string | undefined): FeatureFlags {
+  if (!raw) return DEFAULT_FEATURES;
   try {
-    const raw = localStorage.getItem("quorum:features");
-    if (!raw) return DEFAULT_FEATURES;
-    const parsed = JSON.parse(raw) as Partial<FeatureFlags>;
-    return { ...DEFAULT_FEATURES, ...parsed };
+    return { ...DEFAULT_FEATURES, ...(JSON.parse(raw) as Partial<FeatureFlags>) };
   } catch {
     return DEFAULT_FEATURES;
   }
 }
 
-function loadProviderFlags(): Record<string, boolean> {
+function parseProviderFlags(raw: string | undefined): Record<string, boolean> {
+  if (!raw) return {};
   try {
-    const raw = localStorage.getItem("quorum:providers");
-    if (!raw) return {};
     return JSON.parse(raw) as Record<string, boolean>;
   } catch {
     return {};
   }
-}
-
-function loadString<T extends string>(key: string, fallback: T): T {
-  const v = localStorage.getItem(key);
-  return (v as T) || fallback;
 }
 
 interface AppState {
@@ -384,17 +375,33 @@ export const useAppStore = create<AppState>((set, get) => ({
   leftWidth: 312,
   rightWidth: 320,
 
-  theme: loadString<ThemeMode>("quorum:theme", "dark"),
-  accent: loadString<string>("quorum:accent", "copper"),
-  density: loadString<Density>("quorum:density", "comfortable"),
-  showLandmarks: localStorage.getItem("quorum:showLandmarks") !== "0",
-  features: loadFeatures(),
-  providerFlags: loadProviderFlags(),
-  viewMode: loadString<WorkspaceView>("quorum:viewMode", "custom"),
+  theme: "dark" as ThemeMode,
+  accent: "copper",
+  density: "comfortable" as Density,
+  showLandmarks: true,
+  features: DEFAULT_FEATURES,
+  providerFlags: {},
+  viewMode: "custom" as WorkspaceView,
 
   init: async () => {
     if (get().initialized) return;
     set({ initialized: true });
+
+    // Load persisted settings from DB.
+    try {
+      const s = await getAllSettings();
+      set({
+        theme: (s.theme as ThemeMode) || "dark",
+        accent: s.accent || "copper",
+        density: (s.density as Density) || "comfortable",
+        showLandmarks: s.showLandmarks !== "false",
+        features: parseFeatures(s.features),
+        providerFlags: parseProviderFlags(s.providers),
+        viewMode: (s.viewMode as WorkspaceView) || "custom",
+      });
+    } catch {
+      // First launch or DB not ready — defaults are fine.
+    }
 
     await onAgentOutput((e) => {
       const chunk = new Uint8Array(e.bytes);
@@ -642,8 +649,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (view === "custom") {
         await get().loadHistoryTranscript(id);
       }
-      localStorage.setItem("quorum:viewMode", view);
       set({ viewMode: view });
+      setSetting("viewMode", view);
     } catch (e) {
       set({ lastError: String(e) });
     } finally {
@@ -963,40 +970,35 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // ── appearance ──────────────────────────────────────────────────────────────
   setTheme: (t) => {
-    localStorage.setItem("quorum:theme", t);
     set({ theme: t });
+    setSetting("theme", t);
   },
   setAccent: (a) => {
-    localStorage.setItem("quorum:accent", a);
     set({ accent: a });
+    setSetting("accent", a);
   },
   setDensity: (d) => {
-    localStorage.setItem("quorum:density", d);
     set({ density: d });
+    setSetting("density", d);
   },
   setShowLandmarks: (v) => {
-    localStorage.setItem("quorum:showLandmarks", v ? "1" : "0");
     set({ showLandmarks: v });
+    setSetting("showLandmarks", String(v));
   },
   setFeature: (k, v) =>
     set((s) => {
       const next = { ...s.features, [k]: v };
-      localStorage.setItem(
-        "quorum:features",
-        JSON.stringify(
-          Object.fromEntries(FEATURE_KEYS.map((key) => [key, next[key]])),
-        ),
-      );
+      setSetting("features", next);
       return { features: next };
     }),
   setProviderEnabled: (id, enabled) =>
     set((s) => {
       const next = { ...s.providerFlags, [id]: enabled };
-      localStorage.setItem("quorum:providers", JSON.stringify(next));
+      setSetting("providers", next);
       return { providerFlags: next };
     }),
   setViewMode: (v) => {
-    localStorage.setItem("quorum:viewMode", v);
     set({ viewMode: v });
+    setSetting("viewMode", v);
   },
 }));
