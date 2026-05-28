@@ -223,6 +223,13 @@ impl WorkspaceManager {
         mgr
     }
 
+    /// Direct access to the connection — used by supervisor pieces
+    /// (e.g. Run panel's project-settings lookup) that don't have a
+    /// dedicated typed method on this manager yet.
+    pub fn db_handle(&self) -> Arc<Mutex<Connection>> {
+        self.db.clone()
+    }
+
     pub fn current(&self) -> Option<Workspace> {
         let conn = self.db.lock();
 
@@ -464,8 +471,11 @@ impl WorkspaceManager {
             .map(|dt| dt.timestamp_millis())
             .unwrap_or_else(|_| now_millis());
 
+        // Clear setup_completed_at too — restore recreates the worktree
+        // from scratch, so node_modules etc. won't be there.
         conn.execute(
-            "UPDATE agents SET archived_at = ?1, status = 'stopped' WHERE id = ?2",
+            "UPDATE agents SET archived_at = ?1, status = 'stopped',
+                    setup_completed_at = NULL WHERE id = ?2",
             rusqlite::params![archived_millis, id],
         )?;
 
@@ -511,6 +521,32 @@ impl WorkspaceManager {
             )?;
         }
 
+        Ok(())
+    }
+
+    /// Has the Run panel's setup command ever succeeded for this agent?
+    /// Cleared on archive so a restored agent re-runs setup against the
+    /// freshly-recreated worktree.
+    pub fn is_setup_completed(&self, id: &str) -> Result<bool> {
+        let conn = self.db.lock();
+        let value: Option<i64> = conn
+            .query_row(
+                "SELECT setup_completed_at FROM agents WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|_| Error::AgentNotFound(id.to_string()))?;
+        Ok(value.is_some())
+    }
+
+    /// Stamp the setup command as having succeeded. Idempotent.
+    pub fn mark_setup_completed(&self, id: &str) -> Result<()> {
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE agents SET setup_completed_at = ?1 WHERE id = ?2",
+            rusqlite::params![now_millis(), id],
+        )?;
         Ok(())
     }
 

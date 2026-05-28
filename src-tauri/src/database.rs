@@ -31,6 +31,7 @@ fn get_migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("../migrations/0001_initial_schema.sql")),
         M::up(include_str!("../migrations/0002_project_settings.sql")),
+        M::up(include_str!("../migrations/0003_run_setup_completed.sql")),
     ])
 }
 
