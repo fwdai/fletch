@@ -13,7 +13,6 @@ mod pty_session;
 mod run_session;
 mod sandbox;
 mod supervisor;
-mod watcher;
 mod workspace;
 
 use parking_lot::Mutex;
@@ -164,6 +163,7 @@ pub fn run() {
             commands::add_repo_to_agent,
             commands::allocate_draft_name,
             commands::get_git_state,
+            commands::get_all_shortstats,
             commands::push_agent,
             commands::pull_agent,
             commands::create_pr,

@@ -8,7 +8,7 @@ use tauri::{AppHandle, State};
 use crate::error::Result;
 use crate::gh::{self, PrState};
 use crate::git;
-use crate::git_state::{self, GitState};
+use crate::git_state::{self, GitState, ShortStats};
 use crate::names;
 use crate::run_session::RunStateSnapshot;
 use crate::supervisor::Supervisor;
@@ -381,4 +381,53 @@ pub async fn get_git_state(
     let parent = repo.parent_branch.as_deref().unwrap_or("main");
     let state = git_state::query(&worktree, parent).await?;
     Ok(Some(state))
+}
+
+/// Returns a compact shortstat (additions / deletions / file count) for
+/// every live agent's primary repo, keyed by agent id. Used by the
+/// app-wide background poll that powers per-agent shortstats in the
+/// sidebar and the right-rail file-count badge. The focused panel calls
+/// `get_git_state` separately for its own full state. Agents whose
+/// state can't be queried (missing repo, archived, git error) are omitted.
+///
+/// Queries run in parallel so total latency is bounded by the slowest
+/// agent's git invocation, not the sum. The reply contains only the
+/// three numbers per agent — no file list — to keep the IPC payload
+/// flat as the agent count grows.
+#[tauri::command]
+pub async fn get_all_shortstats(
+    supervisor: State<'_, Arc<Supervisor>>,
+) -> Result<std::collections::HashMap<String, ShortStats>> {
+    let workspace = match supervisor.workspace.current() {
+        Some(w) => w,
+        None => return Ok(Default::default()),
+    };
+    let mut set = tokio::task::JoinSet::new();
+    for agent in workspace.agents {
+        if agent.archive.is_some() {
+            continue;
+        }
+        let Some(repo) = agent.repos.first() else { continue };
+        let Ok(worktree) = repo_worktree_path(&agent.id, &repo.subdir) else { continue };
+        let parent = repo.parent_branch.clone().unwrap_or_else(|| "main".to_string());
+        let agent_id = agent.id.clone();
+        set.spawn(async move {
+            let state = git_state::query(&worktree, &parent).await.ok()?;
+            Some((
+                agent_id,
+                ShortStats {
+                    additions: state.additions,
+                    deletions: state.deletions,
+                    file_count: state.files.len() as u32,
+                },
+            ))
+        });
+    }
+    let mut out = std::collections::HashMap::new();
+    while let Some(res) = set.join_next().await {
+        if let Ok(Some((id, stats))) = res {
+            out.insert(id, stats);
+        }
+    }
+    Ok(out)
 }

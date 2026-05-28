@@ -20,7 +20,16 @@ interface Tab {
  *  the others show a stub. */
 export function RightPanel({ agent }: { agent: AgentRecord }) {
   const features  = useAppStore((s) => s.features);
-  const gitFiles  = useAppStore((s) => s.gitStates[agent.id]?.files.length ?? 0);
+  // Tab badge: prefer the live file list from `gitStates` (refreshed at 1s
+  // while the Git tab is open); fall back to `gitShortstats` (refreshed at
+  // 5s app-wide) so the badge is still meaningful when the Git tab isn't
+  // currently active.
+  const gitFiles  = useAppStore(
+    (s) =>
+      s.gitStates[agent.id]?.files.length ??
+      s.gitShortstats[agent.id]?.file_count ??
+      0,
+  );
 
   const tabs: Tab[] = [
     features.git && { id: "git", label: "Git", icon: "branch", count: gitFiles },

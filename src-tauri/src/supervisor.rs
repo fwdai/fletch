@@ -13,12 +13,10 @@ use crate::agent::{Agent, SpawnSpec};
 use crate::branding;
 use crate::error::{Error, Result};
 use crate::git;
-use crate::git_state::{self, GitState};
 use crate::pty_session::{PtySession, PtySpawn};
 use crate::run_session::{
     self, shell_args, user_shell, RunPhase, RunSession, RunStateSnapshot,
 };
-use crate::watcher::WatcherRegistry;
 use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir, new_agent_record, repo_worktree_path, AgentRecord,
     AgentStatus, AgentView, ArchiveMetadata, ArchivedRepoSnapshot, DiffStats, TrackedRepo,
@@ -69,11 +67,6 @@ pub struct AgentRepoAddedPayload {
     pub repo: TrackedRepo,
 }
 
-#[derive(Clone, serde::Serialize)]
-pub struct GitStateChangedPayload {
-    pub agent_id: String,
-    pub state: GitState,
-}
 
 #[derive(Clone, serde::Serialize)]
 pub struct ShellOutputPayload {
@@ -109,7 +102,6 @@ pub struct Supervisor {
     pub generations: Mutex<HashMap<String, u64>>,
     pub activities: Mutex<HashMap<String, Box<dyn Activity>>>,
     pub native_input_lines: Mutex<HashMap<String, String>>,
-    pub watcher_registry: Mutex<WatcherRegistry>,
     pub shells: Mutex<HashMap<String, PtySession>>,
     /// Per-agent run-panel processes (dev server + setup). Reused
     /// across start/stop cycles so the log buffer survives.
@@ -124,7 +116,6 @@ impl Supervisor {
             generations: Mutex::new(HashMap::new()),
             activities: Mutex::new(HashMap::new()),
             native_input_lines: Mutex::new(HashMap::new()),
-            watcher_registry: Mutex::new(WatcherRegistry::new()),
             shells: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
         }
@@ -356,7 +347,6 @@ impl Supervisor {
         let parent_branch = git::current_branch(&repo_path).await.ok().flatten();
         let subdir = allocate_repo_subdir(&repo_path, &[]);
 
-        let parent_branch_for_task = parent_branch.clone();
         let primary = TrackedRepo {
             repo_path: repo_path.clone(),
             subdir: subdir.clone(),
@@ -393,47 +383,9 @@ impl Supervisor {
                 return;
             }
 
-            // Register git state watcher for this agent's primary repo.
-            let watcher_agent_id = id_for_task.clone();
-            let watcher_app = app_for_task.clone();
-            let watcher_worktree = primary_worktree.clone();
-            let watcher_parent = parent_branch_for_task.clone().unwrap_or_else(|| "main".to_string());
-
-            if let Err(e) = sup.watcher_registry.lock().register(
-                &format!("{}:git", id_for_task),
-                vec![primary_worktree.clone()],
-                std::time::Duration::from_millis(300),
-                move || {
-                    let app = watcher_app.clone();
-                    let agent_id = watcher_agent_id.clone();
-                    let worktree = watcher_worktree.clone();
-                    let parent = watcher_parent.clone();
-                    tauri::async_runtime::spawn(async move {
-                        match git_state::query(&worktree, &parent).await {
-                            Ok(state) => {
-                                let _ = app.emit(
-                                    "git:state_changed",
-                                    GitStateChangedPayload { agent_id, state },
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    agent_id = %agent_id,
-                                    error = %e,
-                                    "git watcher: query failed"
-                                );
-                            }
-                        }
-                    });
-                },
-            ) {
-                tracing::warn!(agent_id = %id_for_task, error = %e, "failed to register git watcher");
-            }
-
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
-                sup.watcher_registry.lock().unregister(&format!("{}:git", id_for_task));
                 let _ = git::worktree_remove(&repo_path, &primary_worktree, true).await;
                 let _ = std::fs::remove_dir_all(&parent_dir);
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
@@ -472,35 +424,6 @@ impl Supervisor {
         let parent_branch = git::current_branch(&repo_path).await.ok().flatten();
 
         git::worktree_add_detached(&repo_path, &worktree).await?;
-
-        let watcher_parent = parent_branch.clone().unwrap_or_else(|| "main".to_string());
-        let watcher_worktree = worktree.clone();
-        let watcher_app = app.clone();
-        let watcher_agent_id = agent_id.to_string();
-
-        if let Err(e) = self.watcher_registry.lock().register(
-            &format!("{}:git:{}", agent_id, subdir),
-            vec![worktree.clone()],
-            std::time::Duration::from_millis(300),
-            move || {
-                let app = watcher_app.clone();
-                let agent_id = watcher_agent_id.clone();
-                let wt = watcher_worktree.clone();
-                let parent = watcher_parent.clone();
-                tauri::async_runtime::spawn(async move {
-                    match git_state::query(&wt, &parent).await {
-                        Ok(state) => {
-                            let _ = app.emit("git:state_changed", GitStateChangedPayload { agent_id, state });
-                        }
-                        Err(e) => {
-                            tracing::warn!(agent_id = %agent_id, error = %e, "git watcher: query failed");
-                        }
-                    }
-                });
-            },
-        ) {
-            tracing::warn!(agent_id = %agent_id, error = %e, "failed to register git watcher for repo {subdir}");
-        }
 
         let repo = TrackedRepo {
             repo_path: repo_path.clone(),
@@ -654,41 +577,6 @@ impl Supervisor {
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = sup.start_process(&app, &id, false).await {
                     fail_spawn(&sup, &app, &id, e.to_string());
-                    return;
-                }
-
-                // Re-register git watchers for all repos after persisted resume.
-                for repo in &record.repos {
-                    if let Ok(worktree) = repo_worktree_path(&id, &repo.subdir) {
-                        let watcher_app = app.clone();
-                        let watcher_id = id.clone();
-                        let watcher_worktree = worktree.clone();
-                        let watcher_parent = repo.parent_branch.clone().unwrap_or_else(|| "main".to_string());
-
-                        if let Err(e) = sup.watcher_registry.lock().register(
-                            &format!("{}:git:{}", id, repo.subdir),
-                            vec![worktree],
-                            std::time::Duration::from_millis(300),
-                            move || {
-                                let app = watcher_app.clone();
-                                let agent_id = watcher_id.clone();
-                                let wt = watcher_worktree.clone();
-                                let parent = watcher_parent.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    match git_state::query(&wt, &parent).await {
-                                        Ok(state) => {
-                                            let _ = app.emit("git:state_changed", GitStateChangedPayload { agent_id, state });
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(agent_id = %agent_id, error = %e, "git watcher: query failed (resume)");
-                                        }
-                                    }
-                                });
-                            },
-                        ) {
-                            tracing::warn!(agent_id = %id, subdir = %repo.subdir, error = %e, "resume_persisted: failed to register git watcher");
-                        }
-                    }
                 }
             });
         }
@@ -714,42 +602,6 @@ impl Supervisor {
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
 
         self.start_process(&app, agent_id, false).await?;
-
-        // Re-register git watchers for all repos after user-triggered resume.
-        let record = self.workspace.agent(agent_id)?;
-        for repo in &record.repos {
-            if let Ok(worktree) = repo_worktree_path(agent_id, &repo.subdir) {
-                let watcher_app = app.clone();
-                let watcher_agent_id = agent_id.to_string();
-                let watcher_worktree = worktree.clone();
-                let watcher_parent = repo.parent_branch.clone().unwrap_or_else(|| "main".to_string());
-
-                if let Err(e) = self.watcher_registry.lock().register(
-                    &format!("{}:git:{}", agent_id, repo.subdir),
-                    vec![worktree],
-                    std::time::Duration::from_millis(300),
-                    move || {
-                        let app = watcher_app.clone();
-                        let agent_id = watcher_agent_id.clone();
-                        let wt = watcher_worktree.clone();
-                        let parent = watcher_parent.clone();
-                        tauri::async_runtime::spawn(async move {
-                            match git_state::query(&wt, &parent).await {
-                                Ok(state) => {
-                                    let _ = app.emit("git:state_changed", GitStateChangedPayload { agent_id, state });
-                                }
-                                Err(e) => {
-                                    tracing::warn!(agent_id = %agent_id, error = %e, "git watcher: query failed (resume_agent)");
-                                }
-                            }
-                        });
-                    },
-                ) {
-                    tracing::warn!(agent_id = %agent_id, subdir = %repo.subdir, error = %e, "resume_agent: failed to register git watcher");
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -886,7 +738,6 @@ impl Supervisor {
         if let Some(run) = self.runs.lock().remove(agent_id) {
             run.stop();
         }
-        self.watcher_registry.lock().unregister_prefix(agent_id);
 
         let mut snapshots: Vec<ArchivedRepoSnapshot> = Vec::with_capacity(record.repos.len());
         let mut total_adds: u32 = 0;
@@ -1074,43 +925,6 @@ impl Supervisor {
         tauri::async_runtime::spawn(async move {
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, false).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
-                return;
-            }
-
-            // Re-register git watchers for all restored repos.
-            if let Ok(record) = sup.workspace.agent(&id_for_task) {
-                for repo in &record.repos {
-                    if let Ok(worktree) = repo_worktree_path(&id_for_task, &repo.subdir) {
-                        let watcher_app = app_for_task.clone();
-                        let watcher_agent_id = id_for_task.clone();
-                        let watcher_worktree = worktree.clone();
-                        let watcher_parent = repo.parent_branch.clone().unwrap_or_else(|| "main".to_string());
-
-                        if let Err(e) = sup.watcher_registry.lock().register(
-                            &format!("{}:git:{}", id_for_task, repo.subdir),
-                            vec![worktree],
-                            std::time::Duration::from_millis(300),
-                            move || {
-                                let app = watcher_app.clone();
-                                let agent_id = watcher_agent_id.clone();
-                                let wt = watcher_worktree.clone();
-                                let parent = watcher_parent.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    match git_state::query(&wt, &parent).await {
-                                        Ok(state) => {
-                                            let _ = app.emit("git:state_changed", GitStateChangedPayload { agent_id, state });
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(agent_id = %agent_id, error = %e, "git watcher: query failed");
-                                        }
-                                    }
-                                });
-                            },
-                        ) {
-                            tracing::warn!(agent_id = %id_for_task, subdir = %repo.subdir, error = %e, "restore: failed to register git watcher");
-                        }
-                    }
-                }
             }
         });
 
@@ -1193,7 +1007,6 @@ impl Supervisor {
         if let Some(run) = self.runs.lock().remove(agent_id) {
             run.stop();
         }
-        self.watcher_registry.lock().unregister_prefix(agent_id);
 
         // Tear down each tracked repo's worktree + branch.
         for repo in &repos {

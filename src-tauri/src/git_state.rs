@@ -23,6 +23,16 @@ pub struct GitState {
     pub deletions: u32,
 }
 
+/// Compact projection of GitState used by the app-wide bulk poll —
+/// enough to render per-agent shortstats and the right-rail tab badge
+/// without shipping every agent's full file list over the IPC channel.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShortStats {
+    pub additions: u32,
+    pub deletions: u32,
+    pub file_count: u32,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FileStatus {
     pub path: String,
