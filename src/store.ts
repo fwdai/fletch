@@ -475,7 +475,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   leftCollapsed: false,
   rightCollapsed: false,
   leftWidth: 312,
-  rightWidth: 320,
+  rightWidth: 520,
 
   theme: "dark" as ThemeMode,
   accent: "copper",
