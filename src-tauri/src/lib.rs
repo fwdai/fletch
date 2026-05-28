@@ -69,6 +69,17 @@ async fn db_delete(
 }
 
 #[tauri::command]
+async fn db_upsert(
+    table: String,
+    data: Value,
+    conflict_column: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<String, String> {
+    let conn = state.lock();
+    database::db_upsert(&conn, &table, data, &conflict_column).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn db_count(
     table: String,
     query: Value,
@@ -131,6 +142,7 @@ pub fn run() {
             db_select,
             db_update,
             db_delete,
+            db_upsert,
             db_count,
             db_query,
             commands::get_workspace,
