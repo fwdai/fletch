@@ -78,8 +78,15 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   // Rehydrate snapshot on mount/agent-switch so the panel preserves
   // logs from prior starts (and across panel mounts).
   useEffect(() => {
+    // `onRunOutput` / `onRunState` return promises that resolve to
+    // the unlisten fn. StrictMode runs effects twice in dev, and the
+    // cleanup may fire before those promises resolve — so we track a
+    // cancelled flag and dispose any unlistener that arrives late.
+    // Without this, the first mount's listener leaks and every event
+    // is delivered twice.
     let cancelled = false;
-    const cleanups: Array<() => void> = [];
+    let unlistenOutput: (() => void) | null = null;
+    let unlistenState: (() => void) | null = null;
     const decoder = new TextDecoder("utf-8", { fatal: false });
     decoderRef.current = decoder;
 
@@ -100,17 +107,30 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         decoder.decode(new Uint8Array(e.bytes), { stream: true }),
       );
       setLog((prev) => prev + chunk);
-    }).then((un) => cleanups.push(un));
+    }).then((un) => {
+      if (cancelled) {
+        un();
+        return;
+      }
+      unlistenOutput = un;
+    });
 
     onRunState((e) => {
       if (e.agent_id !== agent.id) return;
       setPhase(e.phase);
       setLastError(e.last_error);
-    }).then((un) => cleanups.push(un));
+    }).then((un) => {
+      if (cancelled) {
+        un();
+        return;
+      }
+      unlistenState = un;
+    });
 
     return () => {
       cancelled = true;
-      for (const c of cleanups) c();
+      unlistenOutput?.();
+      unlistenState?.();
     };
   }, [agent.id]);
 
