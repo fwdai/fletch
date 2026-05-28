@@ -220,10 +220,14 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
           </button>
         </div>
       )}
-      <div
-        ref={containerRef}
-        style={{ flex: 1, minHeight: 0, padding: "14px 18px", overflow: "hidden" }}
-      />
+      {/* xterm host is an absolute fill of the flex slot; inset via offsets,
+          not padding, which FitAddon doesn't account for. */}
+      <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+        <div
+          ref={containerRef}
+          style={{ position: "absolute", inset: "14px 4px 14px 12px", overflow: "hidden" }}
+        />
+      </div>
     </div>
   );
 }
