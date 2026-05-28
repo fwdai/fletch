@@ -67,6 +67,14 @@ function NoticeView({
       </div>
     );
   }
+  if (item.subtype === "compact_summary") {
+    return (
+      <div className="m-reasoning" style={{ fontStyle: "italic" }}>
+        <div className="label">system</div>
+        {item.text}
+      </div>
+    );
+  }
   const isError = item.is_error || item.subtype === "error";
   return (
     <div

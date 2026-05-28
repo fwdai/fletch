@@ -5,6 +5,6 @@ export const claudePolicy: DisplayPolicy = {
   "notice:hook_output": "hide",
   "notice:info": "show",
   "notice:reasoning": "hide",
-  "notice:slash_command": "show",
+  "notice:slash_command": "hide",
   "notice:error": "show",
 };

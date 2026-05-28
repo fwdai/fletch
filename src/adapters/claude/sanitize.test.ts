@@ -69,6 +69,16 @@ describe("sanitizeUserText", () => {
     expect(out.notices).toEqual([]);
   });
 
+  it("converts a post-compact continuation preamble into a compact_summary notice", () => {
+    const raw =
+      "This session is being continued from a previous conversation that ran out of context.\n\nSummary: lorem ipsum…";
+    const out = sanitizeUserText(raw);
+    expect(out.text).toBe("");
+    expect(out.notices).toEqual([
+      { kind: "notice", subtype: "compact_summary", text: "Conversation compacted" },
+    ]);
+  });
+
   it("drops empty system-reminders without emitting notices", () => {
     const raw = "<system-reminder>   </system-reminder>";
     const out = sanitizeUserText(raw);

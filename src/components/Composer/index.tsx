@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../../store";
 import { DEFAULT_PROVIDER_ID } from "../../data/providers";
+import { filterCommands, type SlashCommand } from "../../data/slashCommands";
 import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
 import { ModelPicker } from "./ModelPicker";
+import { SlashMenu } from "./SlashMenu";
 
 type ThinkingBudget = "low" | "medium" | "high";
 
@@ -21,6 +23,10 @@ interface Props {
   onSend: (payload: { text: string; provider: string; thinking: ThinkingBudget }) => void;
   /** Fired when the composer is showing an active stop control. */
   onStop?: () => void;
+  /** Fired when the user picks an app-defined slash command. The
+   *  `action` identifier comes from the `SlashCommand` entry. The text
+   *  is NOT sent to the agent; the parent decides what to do. */
+  onLocalCommand?: (action: string) => void;
 }
 
 export function Composer({
@@ -33,13 +39,30 @@ export function Composer({
   stopping = false,
   onSend,
   onStop,
+  onLocalCommand,
 }: Props) {
   const features = useAppStore((s) => s.features);
 
   const [text, setText] = useState("");
   const [provider, setProvider] = useState(defaultProvider);
   const [thinking, setThinking] = useState<ThinkingBudget>("high");
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(0);
   const ta = useRef<HTMLTextAreaElement>(null);
+
+  const slashQuery =
+    !slashDismissed && text.startsWith("/") && !text.includes("\n")
+      ? text.slice(1).split(/\s/)[0]
+      : null;
+  const slashMatches = useMemo(
+    () => (slashQuery === null ? [] : filterCommands(provider, slashQuery)),
+    [provider, slashQuery],
+  );
+  const slashOpen = slashMatches.length > 0;
+
+  useEffect(() => {
+    setSlashIndex(0);
+  }, [slashQuery, provider]);
 
   useEffect(() => {
     if (autoFocus) ta.current?.focus();
@@ -67,10 +90,38 @@ export function Composer({
     onStop?.();
   }
 
+  function pickSlash(cmd: SlashCommand) {
+    if (cmd.kind === "local") {
+      setText("");
+      setSlashDismissed(true);
+      if (ta.current) ta.current.style.height = "auto";
+      onLocalCommand?.(cmd.action);
+      return;
+    }
+    const next = `/${cmd.name} `;
+    setText(next);
+    setSlashDismissed(true);
+    requestAnimationFrame(() => {
+      const el = ta.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.length, next.length);
+      grow(el);
+    });
+  }
+
   const sendDisabled = stopping ? !onStop : disabled || !text.trim();
 
   return (
     <div className="composer">
+      {slashOpen && (
+        <SlashMenu
+          commands={slashMatches}
+          highlight={slashIndex}
+          onPick={pickSlash}
+          onHighlight={setSlashIndex}
+        />
+      )}
       <textarea
         ref={ta}
         className="composer-input"
@@ -80,9 +131,35 @@ export function Composer({
         disabled={disabled}
         onChange={(e) => {
           setText(e.target.value);
+          setSlashDismissed(false);
           grow(e.target);
         }}
         onKeyDown={(e) => {
+          if (slashOpen) {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setSlashIndex((i) => (i + 1) % slashMatches.length);
+              return;
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setSlashIndex(
+                (i) => (i - 1 + slashMatches.length) % slashMatches.length,
+              );
+              return;
+            }
+            if (e.key === "Enter" || e.key === "Tab") {
+              e.preventDefault();
+              const cmd = slashMatches[slashIndex];
+              if (cmd) pickSlash(cmd);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setSlashDismissed(true);
+              return;
+            }
+          }
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             send();

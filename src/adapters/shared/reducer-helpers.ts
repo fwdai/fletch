@@ -112,5 +112,18 @@ export function dedupAgainstLast(
   if (last && last.kind === candidate.kind && last.text === candidate.text) {
     return items;
   }
+  // Suppress an echoed user_message whose text matches the slash_command
+  // notice we optimistically inserted when sending. The notice text is
+  // `/<name>` with no args; allow `/<name>` or `/<name> <args>` echoes.
+  if (
+    candidate.kind === "user_message" &&
+    last &&
+    last.kind === "notice" &&
+    last.subtype === "slash_command" &&
+    (candidate.text === last.text ||
+      candidate.text.startsWith(last.text + " "))
+  ) {
+    return items;
+  }
   return [...items, candidate];
 }
