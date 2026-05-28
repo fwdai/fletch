@@ -346,6 +346,96 @@ pub async fn pull(worktree: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Stage all working-tree changes (including untracked) and create a commit.
+/// Errors if there is nothing to commit or if git is unhappy.
+pub async fn commit(worktree: &Path, message: &str) -> Result<()> {
+    let add = Command::new("git")
+        .current_dir(worktree)
+        .args(["add", "-A"])
+        .output()
+        .await?;
+    if !add.status.success() {
+        return Err(Error::Git(format!(
+            "add -A failed: {}",
+            String::from_utf8_lossy(&add.stderr).trim()
+        )));
+    }
+    let out = Command::new("git")
+        .current_dir(worktree)
+        .args(["commit", "-m", message])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "commit failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Discard every uncommitted change in the working tree, including
+/// untracked files and directories. Equivalent to a hard reset plus a
+/// `clean -fd`. Destructive — caller is responsible for confirming.
+pub async fn discard_all(worktree: &Path) -> Result<()> {
+    let reset = Command::new("git")
+        .current_dir(worktree)
+        .args(["reset", "--hard", "HEAD"])
+        .output()
+        .await?;
+    if !reset.status.success() {
+        return Err(Error::Git(format!(
+            "reset --hard failed: {}",
+            String::from_utf8_lossy(&reset.stderr).trim()
+        )));
+    }
+    let clean = Command::new("git")
+        .current_dir(worktree)
+        .args(["clean", "-fd"])
+        .output()
+        .await?;
+    if !clean.status.success() {
+        return Err(Error::Git(format!(
+            "clean -fd failed: {}",
+            String::from_utf8_lossy(&clean.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Stash all working-tree changes including untracked files. No message —
+/// git generates the default "WIP on <branch>" label.
+pub async fn stash_push(worktree: &Path) -> Result<()> {
+    let out = Command::new("git")
+        .current_dir(worktree)
+        .args(["stash", "push", "--include-untracked"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "stash push failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Abort an in-progress merge, restoring the pre-merge working tree.
+pub async fn merge_abort(worktree: &Path) -> Result<()> {
+    let out = Command::new("git")
+        .current_dir(worktree)
+        .args(["merge", "--abort"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "merge --abort failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 /// Force-delete a local branch. Returns Ok even if the branch never
 /// existed in the first place — that's exactly the state the caller
 /// usually wants to converge on. Errors only for genuine git failures

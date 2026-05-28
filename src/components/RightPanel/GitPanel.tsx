@@ -109,6 +109,12 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   const createPr   = useAppStore((s) => s.createPr);
   const mergePr    = useAppStore((s) => s.mergePr);
   const archive    = useAppStore((s) => s.archive);
+  const commitChanges    = useAppStore((s) => s.commitChanges);
+  const commitAndOpenPr  = useAppStore((s) => s.commitAndOpenPr);
+  const stashChanges     = useAppStore((s) => s.stashChanges);
+  const discardChanges   = useAppStore((s) => s.discardChanges);
+  const abortMerge       = useAppStore((s) => s.abortMerge);
+  const deleteBranch     = useAppStore((s) => s.deleteBranch);
 
   // Poll git state for the focused agent at 1s while this panel is mounted.
   const pollGitState = useCallback(
@@ -133,9 +139,22 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   }, [gitState]);
 
   const [moreOpen, setMoreOpen] = useState(false);
+  const [commitMessage, setCommitMessage] = useState("");
+  // Reset the draft message when switching agents so it doesn't leak
+  // into another worktree.
+  useEffect(() => { setCommitMessage(""); }, [agent.id]);
+
+  const canCommit = commitMessage.trim().length > 0;
 
   function handlePrimaryClick() {
     switch (panelState) {
+      case "changes":
+        if (!canCommit) return;
+        void (async () => {
+          const ok = await commitAndOpenPr(agent.id, commitMessage.trim());
+          if (ok) setCommitMessage("");
+        })();
+        break;
       case "pushed":
       case "pr-closed":
         void createPr(agent.id, "", "");
@@ -160,6 +179,17 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
       case "merge":      void mergePr(agent.id);               break;
       case "view-pr":    prState?.url && window.open(prState.url, "_blank"); break;
       case "archive":    void archive(agent.id);               break;
+      case "commit":
+        if (!canCommit) return;
+        void (async () => {
+          const ok = await commitChanges(agent.id, commitMessage.trim());
+          if (ok) setCommitMessage("");
+        })();
+        break;
+      case "stash":         void stashChanges(agent.id);   break;
+      case "discard":       void discardChanges(agent.id); break;
+      case "abort":         void abortMerge(agent.id);     break;
+      case "delete-branch": void deleteBranch(agent.id);   break;
       default:           break;
     }
   }
@@ -220,7 +250,12 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         <div className="actions">
           <button
             type="button"
-            disabled={panelState === "loading" || panelState === "changes" || panelState === "conflicts" || panelState === "clean"}
+            disabled={
+              panelState === "loading"
+              || panelState === "conflicts"
+              || panelState === "clean"
+              || (panelState === "changes" && !canCommit)
+            }
             className={`btn-t ${primary.danger ? "outline" : "primary"}`}
             style={primary.danger ? { borderColor: "var(--danger)", color: "var(--danger)" } : undefined}
             onClick={handlePrimaryClick}
@@ -280,19 +315,26 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         </>
       )}
 
-      {/* Commit message card — shown when there are uncommitted changes */}
+      {/* Commit message editor — shown when there are uncommitted changes */}
       {showCommit && (
         <div className="git-commit">
-          <div className="cm-title">Commit message · auto-drafted</div>
-          <div className="cm-card">
-            <div className="ct">Auto-draft not yet available</div>
-            <div className="cb" />
-          </div>
+          <div className="cm-title">Commit message</div>
+          <textarea
+            className="cm-input"
+            placeholder="Describe your changes…"
+            value={commitMessage}
+            onChange={(e) => setCommitMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                handlePrimaryClick();
+              }
+            }}
+            rows={3}
+          />
           <div className="cm-foot">
-            <IconButton size="xs" tip="Regenerate"><Icon name="sparkle" /></IconButton>
-            <IconButton size="xs" tip="Edit message"><Icon name="edit" /></IconButton>
             <span className="grow" />
-            <span className="hint">⌘↵ to commit + push</span>
+            <span className="hint">⌘↵ to commit &amp; open PR</span>
           </div>
         </div>
       )}

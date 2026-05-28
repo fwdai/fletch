@@ -220,6 +220,15 @@ export const api = {
     invoke<PrState | null>("get_pr_state", { agentId }),
   pushAgent: (agentId: string) => invoke<void>("push_agent", { agentId }),
   pullAgent: (agentId: string) => invoke<void>("pull_agent", { agentId }),
+  commitAgent: (agentId: string, message: string) =>
+    invoke<void>("commit_agent", { agentId, message }),
+  discardAgentChanges: (agentId: string) =>
+    invoke<void>("discard_agent_changes", { agentId }),
+  stashAgent: (agentId: string) => invoke<void>("stash_agent", { agentId }),
+  abortMergeAgent: (agentId: string) =>
+    invoke<void>("abort_merge_agent", { agentId }),
+  deleteBranchAgent: (agentId: string) =>
+    invoke<void>("delete_branch_agent", { agentId }),
   createPr: (agentId: string, title: string, body: string) =>
     invoke<PrState>("create_pr", { agentId, title, body }),
   mergePr: (agentId: string) => invoke<void>("merge_pr", { agentId }),
