@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../store";
 import { DEFAULT_PROVIDER_ID } from "../../data/providers";
 import { filterCommands, type SlashCommand } from "../../data/slashCommands";
@@ -6,6 +7,8 @@ import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
 import { ModelPicker } from "./ModelPicker";
 import { SlashMenu } from "./SlashMenu";
+import { AttachmentList } from "./AttachmentList";
+import { useFileDrop } from "./useFileDrop";
 
 type ThinkingBudget = "low" | "medium" | "high";
 
@@ -19,8 +22,15 @@ interface Props {
   autoFocus?: boolean;
   disabled?: boolean;
   stopping?: boolean;
-  /** Fired on Enter (without Shift) or send-button click. */
-  onSend: (payload: { text: string; provider: string; thinking: ThinkingBudget }) => void;
+  /** Fired on Enter (without Shift) or send-button click. `attachments`
+   *  holds absolute paths of staged files; the agent receives them as
+   *  separate content blocks, kept out of the typed message body. */
+  onSend: (payload: {
+    text: string;
+    provider: string;
+    thinking: ThinkingBudget;
+    attachments: string[];
+  }) => void;
   /** Fired when the composer is showing an active stop control. */
   onStop?: () => void;
   /** Fired when the user picks an app-defined slash command. The
@@ -46,9 +56,26 @@ export function Composer({
   const [text, setText] = useState("");
   const [provider, setProvider] = useState(defaultProvider);
   const [thinking, setThinking] = useState<ThinkingBudget>("high");
+  const [attachments, setAttachments] = useState<string[]>([]);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const ta = useRef<HTMLTextAreaElement>(null);
+
+  function addPaths(paths: string[]) {
+    setAttachments((cur) => {
+      const next = [...cur];
+      for (const p of paths) if (!next.includes(p)) next.push(p);
+      return next;
+    });
+  }
+
+  const isDropTarget = useFileDrop(addPaths);
+
+  async function browse() {
+    const sel = await open({ multiple: true });
+    if (!sel) return;
+    addPaths(Array.isArray(sel) ? sel : [sel]);
+  }
 
   const slashQuery =
     !slashDismissed && text.startsWith("/") && !text.includes("\n")
@@ -79,9 +106,10 @@ export function Composer({
       onStop?.();
       return;
     }
-    if (!trimmed || disabled) return;
-    onSend({ text: trimmed, provider, thinking });
+    if ((!trimmed && attachments.length === 0) || disabled) return;
+    onSend({ text: trimmed, provider, thinking, attachments });
     setText("");
+    setAttachments([]);
     if (ta.current) ta.current.style.height = "auto";
   }
 
@@ -110,16 +138,30 @@ export function Composer({
     });
   }
 
-  const sendDisabled = stopping ? !onStop : disabled || !text.trim();
+  const sendDisabled = stopping
+    ? !onStop
+    : disabled || (!text.trim() && attachments.length === 0);
 
   return (
-    <div className="composer">
+    <div className={`composer${isDropTarget ? " is-drop-target" : ""}`}>
+      {isDropTarget && (
+        <div className="composer-drop-overlay">
+          <Icon name="upload" size={20} />
+          <span>Drop files to attach</span>
+        </div>
+      )}
       {slashOpen && (
         <SlashMenu
           commands={slashMatches}
           highlight={slashIndex}
           onPick={pickSlash}
           onHighlight={setSlashIndex}
+        />
+      )}
+      {attachments.length > 0 && (
+        <AttachmentList
+          paths={attachments}
+          onRemove={(p) => setAttachments((cur) => cur.filter((x) => x !== p))}
         />
       )}
       <textarea
@@ -194,7 +236,7 @@ export function Composer({
             <span style={{ fontFamily: "var(--font-mono)" }}>{baseBranch}</span>
           </Chip>
         )}
-        <Chip tip="Attach">
+        <Chip tip="Attach" onClick={browse}>
           <Icon name="attach" size={11} />
         </Chip>
         <span style={{ flex: 1 }} />

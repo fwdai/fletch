@@ -136,9 +136,9 @@ impl Agent {
         }
     }
 
-    pub fn send_user_message(&self, text: &str) -> Result<()> {
+    pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
         match self {
-            Self::Managed(a) => a.session.send_user_message(text),
+            Self::Managed(a) => a.session.send_user_message(text, attachments),
             Self::Pty(_) => Err(Error::Other(
                 "send_user_message called on pty agent".into(),
             )),

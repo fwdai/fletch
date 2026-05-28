@@ -145,12 +145,22 @@ impl ManagedSession {
         })
     }
 
-    pub fn send_user_message(&self, text: &str) -> Result<()> {
+    pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
+        // The typed message stays its own block; each attachment is sent as
+        // a separate reference block so paths never pollute the user's prose.
+        // The agent reads each path via its own file tools.
+        let mut content: Vec<serde_json::Value> = Vec::new();
+        if !text.is_empty() {
+            content.push(json!({"type": "text", "text": text}));
+        }
+        for path in attachments {
+            content.push(json!({"type": "text", "text": format!("Attached file: {path}")}));
+        }
         let envelope = json!({
             "type": "user",
             "message": {
                 "role": "user",
-                "content": [{"type": "text", "text": text}]
+                "content": content
             }
         });
         let mut line = envelope.to_string();

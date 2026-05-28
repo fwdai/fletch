@@ -252,7 +252,11 @@ interface AppState {
   addWorkspaceRepo: (path: string) => Promise<void>;
   removeWorkspaceRepo: (path: string) => Promise<void>;
   spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
-  sendUserMessage: (id: string, text: string) => Promise<void>;
+  sendUserMessage: (
+    id: string,
+    text: string,
+    attachments?: string[],
+  ) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
   resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
@@ -271,7 +275,12 @@ interface AppState {
   selectDraft: (id: string | null) => void;
   rerollDraftName: (id: string) => Promise<void>;
   /** Spawn the real agent for a draft and dispatch the first message. */
-  spawnFromDraft: (id: string, text: string, provider: string) => Promise<void>;
+  spawnFromDraft: (
+    id: string,
+    text: string,
+    provider: string,
+    attachments?: string[],
+  ) => Promise<void>;
 
   // UI
   toggleSettings: (open?: boolean) => void;
@@ -702,7 +711,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  sendUserMessage: async (id, text) => {
+  sendUserMessage: async (id, text, attachments = []) => {
     try {
       set((state) => {
         const slashName = passthroughSlashName(providerFor(state, id), text);
@@ -722,13 +731,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
       });
       try {
-        await api.sendUserMessage(id, text);
+        await api.sendUserMessage(id, text, attachments);
       } catch (e) {
         if (String(e).includes("agent not found")) {
           // Dead idle agent (finished its prior task) — resume the
           // process in --resume mode, then deliver the message once ready.
           await api.resumeAgent(id);
-          await sendWhenAgentReady(() => api.sendUserMessage(id, text));
+          await sendWhenAgentReady(() =>
+            api.sendUserMessage(id, text, attachments),
+          );
         } else {
           throw e;
         }
@@ -1092,7 +1103,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
-  spawnFromDraft: async (id, text, provider) => {
+  spawnFromDraft: async (id, text, provider, attachments = []) => {
     const draft = get().drafts.find((d) => d.id === id);
     if (!draft) return;
     set({ busy: true, lastError: null });
@@ -1121,7 +1132,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           api.writeToAgent(rec.id, text.replace(/\r?\n/g, " ") + "\r"),
         );
       } else {
-        await sendWhenAgentReady(() => api.sendUserMessage(rec.id, text));
+        await sendWhenAgentReady(() =>
+          api.sendUserMessage(rec.id, text, attachments),
+        );
       }
     } catch (e) {
       const selected = get().selectedAgentId;

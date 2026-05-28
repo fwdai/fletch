@@ -112,9 +112,10 @@ pub fn send_user_message(
     app: AppHandle,
     agent_id: String,
     text: String,
+    attachments: Vec<String>,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.send_user_message(&app, &agent_id, &text)
+    sup.send_user_message(&app, &agent_id, &text, &attachments)
 }
 
 #[tauri::command]
