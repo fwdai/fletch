@@ -121,6 +121,15 @@ export interface FileStatus {
   deletions: number;
 }
 
+/** Compact projection of GitState used by the app-wide bulk poll —
+ *  enough for sidebar shortstats and tab badges without shipping every
+ *  agent's file list over IPC. */
+export interface ShortStats {
+  additions: number;
+  deletions: number;
+  file_count: number;
+}
+
 export interface GitState {
   branch: string;
   parent_branch: string;
@@ -129,11 +138,6 @@ export interface GitState {
   files: FileStatus[];
   additions: number;
   deletions: number;
-}
-
-export interface GitStateChangedEvent {
-  agent_id: string;
-  state: GitState;
 }
 
 export type PrStatus = "open" | "merged" | "closed";
@@ -210,6 +214,8 @@ export const api = {
     invoke<string>("allocate_draft_name", { used }),
   getGitState: (agentId: string) =>
     invoke<GitState | null>("get_git_state", { agentId }),
+  getAllShortstats: () =>
+    invoke<Record<string, ShortStats>>("get_all_shortstats"),
   getPrState: (agentId: string) =>
     invoke<PrState | null>("get_pr_state", { agentId }),
   pushAgent: (agentId: string) => invoke<void>("push_agent", { agentId }),
@@ -290,12 +296,6 @@ export function onAgentRepoAdded(
 
 export function onWorkspaceChanged(cb: () => void): Promise<UnlistenFn> {
   return listen<unknown>("workspace:changed", () => cb());
-}
-
-export function onGitStateChanged(
-  cb: (e: GitStateChangedEvent) => void,
-): Promise<UnlistenFn> {
-  return listen<GitStateChangedEvent>("git:state_changed", (event) => cb(event.payload));
 }
 
 export function onPrStateChanged(

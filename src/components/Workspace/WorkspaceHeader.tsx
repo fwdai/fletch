@@ -20,7 +20,10 @@ export function WorkspaceHeader({ agent }: Props) {
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const toggleRight = useAppStore((s) => s.toggleRight);
   const now = useMinuteClock();
-  const gitState = useAppStore((s) => s.gitStates[agent.id] ?? null);
+  // Use shortstats (5s app-wide poll) rather than full git state, since
+  // the header shows shortstats regardless of which right-rail tab is
+  // open — and `gitStates` only refreshes while the Git tab is mounted.
+  const shortstats = useAppStore((s) => s.gitShortstats[agent.id] ?? null);
 
   const branch = agent.repos[0]?.branch ?? "—";
   const age = formatAge(agent.created_at, now);
@@ -40,7 +43,7 @@ export function WorkspaceHeader({ agent }: Props) {
           <span>{agent.name}</span>
         </div>
         <div className="t-meta">
-          {branch} · <DiffLabel stats={gitState ? { additions: gitState.additions, deletions: gitState.deletions } : null} />
+          {branch} · <DiffLabel stats={shortstats} />
           {age && <> · <span>{age}</span></>}
         </div>
       </div>

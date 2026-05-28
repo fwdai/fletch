@@ -8,7 +8,6 @@ import {
   onAgentStatus,
   onAgentTask,
   onAgentView,
-  onGitStateChanged,
   onPrStateChanged,
   onShellOutput,
   onWorkspaceChanged,
@@ -16,6 +15,7 @@ import {
   type AgentView,
   type GitState,
   type PrState,
+  type ShortStats,
   type Workspace,
 } from "./api";
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
@@ -187,10 +187,21 @@ interface AppState {
    *  `result` event. Persists across agents so the right-rail
    *  cost panel can show a stable number after a turn completes. */
   tokens: Record<string, number>;
-  /** Git state per agent, keyed by agent_id. Updated by the git:state_changed watcher event. */
+  /** Full git state, keyed by agent_id — branch, ahead/behind, file list,
+   *  totals. Only populated for the focused agent (by GitPanel's 1s poll
+   *  while it's mounted). For sidebar shortstats / right-rail badges of
+   *  other agents, read from `gitShortstats` instead. */
   gitStates: Record<string, GitState>;
-  /** Fetch git state for an agent immediately (initial load before watcher fires). */
+  /** Compact per-agent shortstats (additions / deletions / file count),
+   *  keyed by agent_id. Updated for every live agent on the app-wide 5s
+   *  poll — kept in its own map so the focused agent's richer `gitStates`
+   *  entry isn't clobbered by a slower bulk reply. */
+  gitShortstats: Record<string, ShortStats>;
+  /** Fetch full git state for one agent (used by the focused panel's poll). */
   fetchGitState: (agentId: string) => Promise<void>;
+  /** Fetch compact shortstats for every live agent in one round-trip
+   *  (used by the app-wide background poll). */
+  fetchAllShortstats: () => Promise<void>;
   /** PR state per agent, keyed by agent_id. Updated by the pr:state_changed watcher event. */
   prStates: Record<string, PrState | null>;
   fetchPrState: (agentId: string) => Promise<void>;
@@ -444,6 +455,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   switchInFlight: {},
   tokens: {},
   gitStates: {},
+  gitShortstats: {},
   prStates: {},
 
   drafts: [],
@@ -619,10 +631,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (fresh) set({ workspace: fresh });
     });
 
-    await onGitStateChanged((e) => {
-      set((s) => ({ gitStates: { ...s.gitStates, [e.agent_id]: e.state } }));
-    });
-
     await onPrStateChanged((e) => {
       set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
     });
@@ -782,6 +790,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _droppedBusy, ...restBusy } = s.managedBusy;
         const { [id]: _droppedTokens, ...restTokens } = s.tokens;
         const { [id]: _droppedGitState, ...restGitStates } = s.gitStates;
+        const { [id]: _droppedShortstats, ...restShortstats } = s.gitShortstats;
         const { [id]: _droppedPrState, ...restPrStates } = s.prStates;
         return {
           workspace: fresh,
@@ -792,6 +801,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           managedBusy: restBusy,
           tokens: restTokens,
           gitStates: restGitStates,
+          gitShortstats: restShortstats,
           prStates: restPrStates,
         };
       });
@@ -816,6 +826,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _b, ...restBusy } = s.managedBusy;
         const { [id]: _t, ...restTokens } = s.tokens;
         const { [id]: _g, ...restGitStates } = s.gitStates;
+        const { [id]: _s, ...restShortstats } = s.gitShortstats;
         const { [id]: _p, ...restPrStates } = s.prStates;
         return {
           workspace: fresh ?? s.workspace,
@@ -826,6 +837,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           managedBusy: restBusy,
           tokens: restTokens,
           gitStates: restGitStates,
+          gitShortstats: restShortstats,
           prStates: restPrStates,
         };
       });
@@ -895,7 +907,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         set((s) => ({ gitStates: { ...s.gitStates, [agentId]: state } }));
       }
     } catch {
-      // non-fatal — watcher will provide updates
+      // non-fatal — next poll tick will retry
+    }
+  },
+
+  fetchAllShortstats: async () => {
+    try {
+      const map = await api.getAllShortstats();
+      // Replace wholesale — agents archived/removed between ticks fall
+      // out naturally. This map is independent of `gitStates`, so the
+      // focused panel's full-state poll can't be clobbered.
+      set({ gitShortstats: map });
+    } catch {
+      // non-fatal — next poll tick will retry
     }
   },
 

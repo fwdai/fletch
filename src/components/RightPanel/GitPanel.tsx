@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { AgentRecord, FileStatus, GitState, PrState } from "../../api";
 import { useAppStore } from "../../store";
+import { usePoll } from "../../util/hooks";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
 import { primaryFor, secondaryFor, type GitPanelState } from "./primaryActions";
@@ -109,10 +110,16 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   const mergePr    = useAppStore((s) => s.mergePr);
   const archive    = useAppStore((s) => s.archive);
 
+  // Poll git state for the focused agent at 1s while this panel is mounted.
+  const pollGitState = useCallback(
+    () => fetchGitState(agent.id),
+    [agent.id, fetchGitState],
+  );
+  usePoll(pollGitState, 1000, [pollGitState]);
+
   useEffect(() => {
-    void fetchGitState(agent.id);
     void fetchPrState(agent.id);
-  }, [agent.id, fetchGitState, fetchPrState]);
+  }, [agent.id, fetchPrState]);
 
   const panelState = deriveState(gitState, prState);
 
@@ -253,10 +260,6 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         <>
           <div className="git-files-h">
             <span>Changes · {gitState?.files.length ?? 0}</span>
-            <div className="actions">
-              <IconButton size="xs" tip="Stage all"><Icon name="check" /></IconButton>
-              <IconButton size="xs" tip="Refresh"><Icon name="refresh" /></IconButton>
-            </div>
           </div>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
             {(gitState?.files ?? []).map((f) => (

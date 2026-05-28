@@ -9,9 +9,11 @@ import { Settings } from "./components/Settings";
 import { History } from "./components/History";
 import { useSplitter } from "./util/splitter";
 import { useGlobalShortcuts } from "./util/shortcuts";
+import { usePoll } from "./util/hooks";
 
 export function App() {
   const init = useAppStore((s) => s.init);
+  const fetchAllShortstats = useAppStore((s) => s.fetchAllShortstats);
 
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
@@ -31,6 +33,12 @@ export function App() {
   const historyOpen = useAppStore((s) => s.historyOpen);
 
   useEffect(() => { init(); }, [init]);
+
+  // App-wide poll: refresh compact shortstats for every live agent so the
+  // sidebar / right-rail badges stay current without waiting for a focused
+  // panel to mount. Queries run in parallel on the backend; the reply is a
+  // flat number-only map so payload stays small as agent count grows.
+  usePoll(fetchAllShortstats, 5000, [fetchAllShortstats]);
 
   // Apply theme + density via html classes; accent via CSS vars.
   useEffect(() => {
