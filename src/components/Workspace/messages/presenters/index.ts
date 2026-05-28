@@ -5,6 +5,7 @@ import { readPresenter } from "./Read";
 import { editPresenter } from "./Edit";
 import { writePresenter } from "./Write";
 import { grepPresenter } from "./Grep";
+import { globPresenter } from "./Glob";
 import { defaultPresenter } from "./default";
 
 export type { ToolPresenter, ToolCall, ToolResult } from "./types";
@@ -19,6 +20,7 @@ export const PRESENTERS: Record<string, ToolPresenter> = {
   Edit: editPresenter,
   Write: writePresenter,
   Grep: grepPresenter,
+  Glob: globPresenter,
 };
 
 export function getPresenter(toolName: string): ToolPresenter {
