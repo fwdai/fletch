@@ -630,13 +630,14 @@ impl Supervisor {
         app: &AppHandle,
         agent_id: &str,
         text: &str,
+        attachments: &[String],
     ) -> Result<()> {
         {
             let agents = self.agents.lock();
             let agent = agents
                 .get(agent_id)
                 .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
-            agent.send_user_message(text)?;
+            agent.send_user_message(text, attachments)?;
         }
         mark_user_turn_started(&self, app, agent_id);
         on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), text.to_string());
