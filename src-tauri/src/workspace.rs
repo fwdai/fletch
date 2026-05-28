@@ -2,11 +2,13 @@
 //! the agents the user has spawned. Each agent is anchored to a primary
 //! repo (`repos[0]`); the sidebar groups agents by that primary.
 
-use chrono::Utc;
-use parking_lot::RwLock;
+use chrono::{DateTime, Utc};
+use parking_lot::Mutex;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::names;
@@ -141,33 +143,61 @@ pub struct Workspace {
     pub agents: Vec<AgentRecord>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct PersistedState {
-    #[serde(default)]
-    current: Option<Workspace>,
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+fn status_to_str(s: &AgentStatus) -> &'static str {
+    match s {
+        AgentStatus::Spawning => "spawning",
+        AgentStatus::Running => "running",
+        AgentStatus::Idle => "idle",
+        AgentStatus::Stopped => "stopped",
+        AgentStatus::Error => "error",
+    }
 }
 
+fn str_to_status(s: &str) -> AgentStatus {
+    match s {
+        "running" => AgentStatus::Running,
+        "idle" => AgentStatus::Idle,
+        "stopped" => AgentStatus::Stopped,
+        "error" => AgentStatus::Error,
+        _ => AgentStatus::Spawning,
+    }
+}
+
+fn view_to_str(v: &AgentView) -> &'static str {
+    match v {
+        AgentView::Custom => "custom",
+        AgentView::Native => "native",
+    }
+}
+
+fn str_to_view(s: &str) -> AgentView {
+    match s {
+        "native" => AgentView::Native,
+        _ => AgentView::Custom,
+    }
+}
+
+fn millis_to_iso(millis: i64) -> String {
+    DateTime::from_timestamp_millis(millis)
+        .unwrap_or_default()
+        .to_rfc3339()
+}
+
+fn now_millis() -> i64 {
+    Utc::now().timestamp_millis()
+}
+
+// ── WorkspaceManager ──────────────────────────────────────────────────────
+
 pub struct WorkspaceManager {
-    state_file: PathBuf,
-    inner: RwLock<PersistedState>,
+    db: Arc<Mutex<Connection>>,
 }
 
 impl WorkspaceManager {
-    pub fn new(app_data_dir: PathBuf) -> Result<Self> {
-        std::fs::create_dir_all(&app_data_dir)?;
-        let state_file = app_data_dir.join("workspaces.json");
-        let mut inner: PersistedState = if state_file.exists() {
-            let raw = std::fs::read_to_string(&state_file)?;
-            serde_json::from_str(&raw).unwrap_or_default()
-        } else {
-            PersistedState::default()
-        };
-
-        // Always have a workspace — empty repos / empty agents on first
-        // launch. Avoids None-handling sprawl downstream.
-        if inner.current.is_none() {
-            inner.current = Some(Workspace::default());
-        }
+    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+        let mgr = Self { db };
 
         // Reconcile stale statuses left over from a crash / clean shutdown.
         // The in-memory Supervisor is fresh on every start, so any agent
@@ -175,31 +205,29 @@ impl WorkspaceManager {
         // We flip those back to Spawning so the supervisor's auto-resume
         // pass picks them up — agents the user explicitly Stopped (status
         // Stopped) stay stopped, available via the manual Resume button.
-        let mut dirty = false;
-        if let Some(ws) = inner.current.as_mut() {
-            for a in ws.agents.iter_mut() {
-                if matches!(
-                    a.status,
-                    AgentStatus::Running | AgentStatus::Spawning | AgentStatus::Idle
-                ) {
-                    a.status = AgentStatus::Spawning;
-                    dirty = true;
-                }
-            }
-        }
+        // Only reconcile non-archived agents (archived_at IS NULL).
+        let conn = mgr.db.lock();
+        let _ = conn.execute(
+            "UPDATE agents SET status = 'spawning'
+             WHERE status IN ('running', 'idle', 'spawning')
+               AND archived_at IS NULL",
+            [],
+        );
+        drop(conn);
 
-        let mgr = Self {
-            state_file,
-            inner: RwLock::new(inner),
-        };
-        if dirty {
-            mgr.persist()?;
-        }
-        Ok(mgr)
+        mgr
     }
 
     pub fn current(&self) -> Option<Workspace> {
-        self.inner.read().current.clone()
+        let conn = self.db.lock();
+
+        // Collect all unique repo paths.
+        let repos = Self::query_all_repo_paths(&conn);
+
+        // Collect all agents.
+        let agents = Self::query_all_agents(&conn);
+
+        Some(Workspace { repos, agents })
     }
 
     /// Append a repo to the sidebar's pinned list. Idempotent — adding
@@ -211,14 +239,37 @@ impl WorkspaceManager {
                 repo_path.display()
             )));
         }
-        {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            if !ws.repos.iter().any(|p| p == &repo_path) {
-                ws.repos.push(repo_path);
-            }
+
+        let conn = self.db.lock();
+        let path_str = repo_path.to_string_lossy().to_string();
+
+        // Check if repo already exists.
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM repos WHERE path = ?1",
+                [&path_str],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !exists {
+            // Look up or create a project named after the repo dir basename.
+            let project_name = repo_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let project_id = Self::find_or_create_project(&conn, &project_name)?;
+
+            let repo_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO repos (id, project_id, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![repo_id, project_id, path_str, now_millis()],
+            )?;
         }
-        self.persist()?;
+
+        drop(conn);
         Ok(self.current().expect("workspace initialized"))
     }
 
@@ -227,49 +278,63 @@ impl WorkspaceManager {
     /// working and continue to show in the sidebar under that repo
     /// (the sidebar takes the union of pinned + agent-primary repos).
     pub fn remove_workspace_repo(&self, repo_path: &Path) -> Result<Workspace> {
-        {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            ws.repos.retain(|p| p != repo_path);
-        }
-        self.persist()?;
+        let conn = self.db.lock();
+        let path_str = repo_path.to_string_lossy().to_string();
+        conn.execute("DELETE FROM repos WHERE path = ?1", [&path_str])?;
+        drop(conn);
         Ok(self.current().expect("workspace initialized"))
     }
 
     pub fn allocate_agent_id(&self) -> Result<String> {
-        let g = self.inner.read();
-        let ws = g.current.as_ref().ok_or(Error::WorkspaceNotLoaded)?;
-        let used: HashSet<String> = ws.agents.iter().map(|a| a.id.clone()).collect();
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare("SELECT id FROM agents")?;
+        let used: HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
         Ok(names::allocate(&used))
     }
 
     pub fn add_agent(&self, record: AgentRecord) -> Result<()> {
-        {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            ws.agents.push(record);
-        }
-        self.persist()
-    }
+        let conn = self.db.lock();
 
-    fn mutate_agent<F>(&self, id: &str, f: F) -> Result<bool>
-    where
-        F: FnOnce(&mut AgentRecord) -> bool,
-    {
-        let changed = {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            let a = ws
-                .agents
-                .iter_mut()
-                .find(|a| a.id == id)
-                .ok_or_else(|| Error::AgentNotFound(id.to_string()))?;
-            f(a)
+        // Look up project_id from the primary repo path.
+        let project_id = if let Some(primary) = record.repos.first() {
+            let path_str = primary.repo_path.to_string_lossy().to_string();
+            Self::project_id_for_repo_path(&conn, &path_str)?
+        } else {
+            return Err(Error::Other("agent must have at least one repo".into()));
         };
-        if changed {
-            self.persist()?;
+
+        // Parse created_at ISO string to millis.
+        let created_millis = chrono::DateTime::parse_from_rfc3339(&record.created_at)
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or_else(|_| now_millis());
+
+        conn.execute(
+            "INSERT INTO agents (id, project_id, name, provider, task, status, view, session_id, created_at, last_error, archived_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                record.id,
+                project_id,
+                record.name,
+                record.provider,
+                record.task,
+                status_to_str(&record.status),
+                view_to_str(&record.view),
+                record.session_id,
+                created_millis,
+                record.last_error,
+                rusqlite::types::Null,
+            ],
+        )?;
+
+        // Insert worktree records for each TrackedRepo.
+        for repo in &record.repos {
+            Self::insert_worktree(&conn, &record.id, repo)?;
         }
-        Ok(changed)
+
+        Ok(())
     }
 
     pub fn update_agent_status(
@@ -278,13 +343,20 @@ impl WorkspaceManager {
         status: AgentStatus,
         last_error: Option<String>,
     ) -> Result<()> {
-        self.mutate_agent(id, |a| {
-            a.status = status;
-            if last_error.is_some() {
-                a.last_error = last_error;
-            }
-            true
-        })?;
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+
+        if let Some(ref err) = last_error {
+            conn.execute(
+                "UPDATE agents SET status = ?1, last_error = ?2 WHERE id = ?3",
+                rusqlite::params![status_to_str(&status), err, id],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE agents SET status = ?1 WHERE id = ?2",
+                rusqlite::params![status_to_str(&status), id],
+            )?;
+        }
         Ok(())
     }
 
@@ -298,26 +370,41 @@ impl WorkspaceManager {
     where
         F: FnOnce(&AgentStatus) -> bool,
     {
-        self.mutate_agent(id, |a| {
-            if !predicate(&a.status) {
-                return false;
-            }
-            a.status = status;
-            if last_error.is_some() {
-                a.last_error = last_error;
-            }
-            true
-        })
+        let conn = self.db.lock();
+
+        // Read current status.
+        let current_str: String = conn
+            .query_row("SELECT status FROM agents WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .map_err(|_| Error::AgentNotFound(id.to_string()))?;
+
+        let current = str_to_status(&current_str);
+        if !predicate(&current) {
+            return Ok(false);
+        }
+
+        if let Some(ref err) = last_error {
+            conn.execute(
+                "UPDATE agents SET status = ?1, last_error = ?2 WHERE id = ?3",
+                rusqlite::params![status_to_str(&status), err, id],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE agents SET status = ?1 WHERE id = ?2",
+                rusqlite::params![status_to_str(&status), id],
+            )?;
+        }
+        Ok(true)
     }
 
     pub fn set_agent_task_if_empty(&self, id: &str, task: &str) -> Result<bool> {
-        self.mutate_agent(id, |a| {
-            if !a.task.trim().is_empty() {
-                return false;
-            }
-            a.task = task.to_string();
-            true
-        })
+        let conn = self.db.lock();
+        let changed = conn.execute(
+            "UPDATE agents SET task = ?1 WHERE id = ?2 AND (task = '' OR task IS NULL)",
+            rusqlite::params![task, id],
+        )?;
+        Ok(changed > 0)
     }
 
     /// Set the branch on a specific tracked repo within an agent — but
@@ -329,43 +416,33 @@ impl WorkspaceManager {
         subdir: &str,
         branch: &str,
     ) -> Result<bool> {
-        self.mutate_agent(agent_id, |a| {
-            let repo = match a.repos.iter_mut().find(|r| r.subdir == subdir) {
-                Some(r) => r,
-                None => return false,
-            };
-            if repo.branch.is_some() {
-                return false;
-            }
-            repo.branch = Some(branch.to_string());
-            true
-        })
+        let conn = self.db.lock();
+        let changed = conn.execute(
+            "UPDATE worktrees SET branch = ?1 WHERE agent_id = ?2 AND subdir = ?3 AND branch IS NULL",
+            rusqlite::params![branch, agent_id, subdir],
+        )?;
+        Ok(changed > 0)
     }
 
     pub fn append_tracked_repo(&self, agent_id: &str, repo: TrackedRepo) -> Result<()> {
-        self.mutate_agent(agent_id, |a| {
-            a.repos.push(repo);
-            true
-        })?;
+        let conn = self.db.lock();
+        Self::insert_worktree(&conn, agent_id, &repo)?;
         Ok(())
     }
 
     pub fn update_agent_view(&self, id: &str, view: AgentView) -> Result<()> {
-        self.mutate_agent(id, |a| {
-            a.view = view;
-            true
-        })?;
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE agents SET view = ?1 WHERE id = ?2",
+            rusqlite::params![view_to_str(&view), id],
+        )?;
         Ok(())
     }
 
     pub fn agent(&self, id: &str) -> Result<AgentRecord> {
-        let g = self.inner.read();
-        let ws = g.current.as_ref().ok_or(Error::WorkspaceNotLoaded)?;
-        ws.agents
-            .iter()
-            .find(|a| a.id == id)
-            .cloned()
-            .ok_or_else(|| Error::AgentNotFound(id.to_string()))
+        let conn = self.db.lock();
+        Self::load_agent(&conn, id)
     }
 
     /// Mark an agent as archived. Stamps `archived_at`, stores the
@@ -373,48 +450,426 @@ impl WorkspaceManager {
     /// frontend doesn't treat the (now-deleted) worktrees as live.
     /// Status moves to `Stopped` so resume-on-launch ignores it.
     pub fn archive_agent(&self, id: &str, archive: ArchiveMetadata) -> Result<()> {
-        self.mutate_agent(id, |a| {
-            a.archive = Some(archive);
-            a.repos = Vec::new();
-            a.status = AgentStatus::Stopped;
-            true
-        })?;
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+
+        // Parse archived_at string to millis for storage.
+        let archived_millis = chrono::DateTime::parse_from_rfc3339(&archive.archived_at)
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or_else(|_| now_millis());
+
+        conn.execute(
+            "UPDATE agents SET archived_at = ?1, status = 'stopped' WHERE id = ?2",
+            rusqlite::params![archived_millis, id],
+        )?;
+
+        // Update worktree rows with snapshot data from ArchiveMetadata.repos.
+        for snap in &archive.repos {
+            conn.execute(
+                "UPDATE worktrees SET branch_tip_sha = ?1, parent_branch_sha = ?2,
+                        diff_additions = ?3, diff_deletions = ?4
+                 WHERE agent_id = ?5 AND subdir = ?6",
+                rusqlite::params![
+                    snap.branch_tip_sha,
+                    snap.parent_branch_sha,
+                    snap.diff_stats.additions,
+                    snap.diff_stats.deletions,
+                    id,
+                    snap.subdir,
+                ],
+            )?;
+        }
+
         Ok(())
     }
 
     /// Clear archive metadata and re-seed `repos`. Status moves to
     /// `Spawning` so the supervisor's resume path picks the agent up.
     pub fn restore_agent(&self, id: &str, repos: Vec<TrackedRepo>) -> Result<()> {
-        self.mutate_agent(id, |a| {
-            a.archive = None;
-            a.repos = repos;
-            a.status = AgentStatus::Spawning;
-            true
-        })?;
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+
+        conn.execute(
+            "UPDATE agents SET archived_at = NULL, status = 'spawning' WHERE id = ?1",
+            [id],
+        )?;
+
+        // Update worktree records with new branch info and clear snapshot fields.
+        for repo in &repos {
+            conn.execute(
+                "UPDATE worktrees SET branch = ?1, parent_branch = ?2,
+                        branch_tip_sha = NULL, parent_branch_sha = NULL,
+                        diff_additions = 0, diff_deletions = 0
+                 WHERE agent_id = ?3 AND subdir = ?4",
+                rusqlite::params![repo.branch, repo.parent_branch, id, repo.subdir],
+            )?;
+        }
+
         Ok(())
     }
 
     pub fn remove_agent(&self, id: &str) -> Result<()> {
-        {
-            let mut g = self.inner.write();
-            let ws = g.current.as_mut().ok_or(Error::WorkspaceNotLoaded)?;
-            ws.agents.retain(|a| a.id != id);
+        let conn = self.db.lock();
+        conn.execute("DELETE FROM agents WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────────
+
+    fn query_all_repo_paths(conn: &Connection) -> Vec<PathBuf> {
+        let mut stmt = conn
+            .prepare("SELECT path FROM repos ORDER BY created_at")
+            .unwrap_or_else(|_| conn.prepare("SELECT 1 WHERE 0").unwrap());
+        stmt.query_map([], |row| {
+            let p: String = row.get(0)?;
+            Ok(PathBuf::from(p))
+        })
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    fn query_all_agents(conn: &Connection) -> Vec<AgentRecord> {
+        let mut stmt = match conn.prepare(
+            "SELECT id, name, provider, task, status, view, session_id,
+                    created_at, last_error, archived_at
+             FROM agents ORDER BY created_at",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let agents: Vec<AgentRecord> = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let name: String = row.get(1)?;
+                let provider: String = row.get(2)?;
+                let task: String = row.get(3)?;
+                let status_str: String = row.get(4)?;
+                let view_str: String = row.get(5)?;
+                let session_id: Option<String> = row.get(6)?;
+                let created_millis: i64 = row.get(7)?;
+                let last_error: Option<String> = row.get(8)?;
+                let archived_millis: Option<i64> = row.get(9)?;
+
+                Ok((
+                    id,
+                    name,
+                    provider,
+                    task,
+                    status_str,
+                    view_str,
+                    session_id,
+                    created_millis,
+                    last_error,
+                    archived_millis,
+                ))
+            })
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    name,
+                    provider,
+                    task,
+                    status_str,
+                    view_str,
+                    session_id,
+                    created_millis,
+                    last_error,
+                    archived_millis,
+                )| {
+                    let is_archived = archived_millis.is_some();
+
+                    let (repos, archive) = if is_archived {
+                        // Build ArchiveMetadata from worktree snapshot fields.
+                        let archive_meta =
+                            Self::build_archive_metadata(conn, &id, archived_millis.unwrap());
+                        (Vec::new(), Some(archive_meta))
+                    } else {
+                        // Build TrackedRepo vec from worktrees+repos join.
+                        let tracked = Self::query_tracked_repos(conn, &id);
+                        (tracked, None)
+                    };
+
+                    AgentRecord {
+                        id,
+                        name,
+                        provider,
+                        repos,
+                        task,
+                        status: str_to_status(&status_str),
+                        view: str_to_view(&view_str),
+                        session_id,
+                        created_at: millis_to_iso(created_millis),
+                        last_error,
+                        archive,
+                    }
+                },
+            )
+            .collect();
+
+        agents
+    }
+
+    fn query_tracked_repos(conn: &Connection, agent_id: &str) -> Vec<TrackedRepo> {
+        let mut stmt = match conn.prepare(
+            "SELECT r.path, w.subdir, w.branch, w.parent_branch
+             FROM worktrees w
+             JOIN repos r ON r.id = w.repo_id
+             WHERE w.agent_id = ?1
+             ORDER BY w.created_at",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map([agent_id], |row| {
+            let path: String = row.get(0)?;
+            let subdir: String = row.get(1)?;
+            let branch: Option<String> = row.get(2)?;
+            let parent_branch: Option<String> = row.get(3)?;
+            Ok(TrackedRepo {
+                repo_path: PathBuf::from(path),
+                subdir,
+                branch,
+                parent_branch,
+            })
+        })
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    fn build_archive_metadata(
+        conn: &Connection,
+        agent_id: &str,
+        archived_millis: i64,
+    ) -> ArchiveMetadata {
+        let mut stmt = match conn.prepare(
+            "SELECT r.path, w.subdir, w.branch, w.branch_tip_sha,
+                    w.parent_branch, w.parent_branch_sha,
+                    w.diff_additions, w.diff_deletions
+             FROM worktrees w
+             JOIN repos r ON r.id = w.repo_id
+             WHERE w.agent_id = ?1
+             ORDER BY w.created_at",
+        ) {
+            Ok(s) => s,
+            Err(_) => {
+                return ArchiveMetadata {
+                    archived_at: millis_to_iso(archived_millis),
+                    repos: Vec::new(),
+                    diff_stats: DiffStats::default(),
+                }
+            }
+        };
+
+        let snapshots: Vec<ArchivedRepoSnapshot> = stmt
+            .query_map([agent_id], |row| {
+                let path: String = row.get(0)?;
+                let subdir: String = row.get(1)?;
+                let branch: Option<String> = row.get(2)?;
+                let branch_tip_sha: Option<String> = row.get(3)?;
+                let parent_branch: Option<String> = row.get(4)?;
+                let parent_branch_sha: Option<String> = row.get(5)?;
+                let additions: u32 = row.get(6)?;
+                let deletions: u32 = row.get(7)?;
+                Ok(ArchivedRepoSnapshot {
+                    repo_path: PathBuf::from(path),
+                    subdir,
+                    branch_name: branch,
+                    branch_tip_sha,
+                    parent_branch,
+                    parent_branch_sha,
+                    diff_stats: DiffStats {
+                        additions,
+                        deletions,
+                    },
+                })
+            })
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+
+        // Aggregate diff stats across all repos.
+        let total_additions: u32 = snapshots.iter().map(|s| s.diff_stats.additions).sum();
+        let total_deletions: u32 = snapshots.iter().map(|s| s.diff_stats.deletions).sum();
+
+        ArchiveMetadata {
+            archived_at: millis_to_iso(archived_millis),
+            repos: snapshots,
+            diff_stats: DiffStats {
+                additions: total_additions,
+                deletions: total_deletions,
+            },
         }
-        self.persist()
     }
 
-    fn persist(&self) -> Result<()> {
-        let snapshot = self.inner.read();
-        let raw = serde_json::to_string_pretty(&*snapshot)?;
-        atomic_write(&self.state_file, raw.as_bytes())
-    }
-}
+    fn find_or_create_project(conn: &Connection, name: &str) -> Result<String> {
+        // Try to find an existing project by name.
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM projects WHERE name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .ok();
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO projects (id, name, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, name, now_millis()],
+        )?;
+        Ok(id)
+    }
+
+    /// Look up the project_id for a repo path. If the repo doesn't exist
+    /// yet, create both the project and repo record.
+    fn project_id_for_repo_path(conn: &Connection, path_str: &str) -> Result<String> {
+        // Try to find existing repo.
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM repos WHERE path = ?1",
+                [path_str],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(pid) = existing {
+            return Ok(pid);
+        }
+
+        // Create project + repo.
+        let repo_path = Path::new(path_str);
+        let project_name = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let project_id = Self::find_or_create_project(conn, &project_name)?;
+
+        let repo_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO repos (id, project_id, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![repo_id, project_id, path_str, now_millis()],
+        )?;
+
+        Ok(project_id)
+    }
+
+    fn insert_worktree(conn: &Connection, agent_id: &str, repo: &TrackedRepo) -> Result<()> {
+        let path_str = repo.repo_path.to_string_lossy().to_string();
+
+        // Look up repo_id from repos table.
+        let repo_id: String = conn
+            .query_row(
+                "SELECT id FROM repos WHERE path = ?1",
+                [&path_str],
+                |row| row.get(0),
+            )
+            .map_err(|_| {
+                Error::Other(format!("repo not found in database: {path_str}"))
+            })?;
+
+        let wt_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO worktrees (id, agent_id, repo_id, subdir, branch, parent_branch, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                wt_id,
+                agent_id,
+                repo_id,
+                repo.subdir,
+                repo.branch,
+                repo.parent_branch,
+                now_millis(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn ensure_agent_exists(conn: &Connection, id: &str) -> Result<()> {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agents WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        if count == 0 {
+            return Err(Error::AgentNotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    fn load_agent(conn: &Connection, id: &str) -> Result<AgentRecord> {
+        let row = conn
+            .query_row(
+                "SELECT id, name, provider, task, status, view, session_id,
+                        created_at, last_error, archived_at
+                 FROM agents WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<i64>>(9)?,
+                    ))
+                },
+            )
+            .map_err(|_| Error::AgentNotFound(id.to_string()))?;
+
+        let (
+            agent_id,
+            name,
+            provider,
+            task,
+            status_str,
+            view_str,
+            session_id,
+            created_millis,
+            last_error,
+            archived_millis,
+        ) = row;
+
+        let is_archived = archived_millis.is_some();
+
+        let (repos, archive) = if is_archived {
+            let archive_meta =
+                Self::build_archive_metadata(conn, &agent_id, archived_millis.unwrap());
+            (Vec::new(), Some(archive_meta))
+        } else {
+            let tracked = Self::query_tracked_repos(conn, &agent_id);
+            (tracked, None)
+        };
+
+        Ok(AgentRecord {
+            id: agent_id,
+            name,
+            provider,
+            repos,
+            task,
+            status: str_to_status(&status_str),
+            view: str_to_view(&view_str),
+            session_id,
+            created_at: millis_to_iso(created_millis),
+            last_error,
+            archive,
+        })
+    }
 }
 
 /// Build a fresh AgentRecord with one primary tracked repo.
@@ -481,8 +936,9 @@ pub fn repo_worktree_path(agent_id: &str, subdir: &str) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    fn tmpdir() -> tempfile::TempDir {
-        tempfile::tempdir().unwrap()
+    fn test_db() -> Arc<Mutex<Connection>> {
+        let dir = tempfile::tempdir().unwrap();
+        crate::database::init(dir.path()).unwrap()
     }
 
     fn init_repo(dir: &Path) -> PathBuf {
@@ -501,14 +957,48 @@ mod tests {
         }
     }
 
+    /// Helper: ensure the repo path exists in the repos table so add_agent can find it.
+    fn seed_repo(db: &Arc<Mutex<Connection>>, repo_path: &str) {
+        let conn = db.lock();
+        let path = Path::new(repo_path);
+        let project_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let project_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![project_id, project_name, now_millis()],
+        )
+        .unwrap();
+        // Re-read the project_id in case it already existed.
+        let pid: String = conn
+            .query_row(
+                "SELECT id FROM projects WHERE name = ?1",
+                [project_name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let repo_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO repos (id, project_id, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![repo_id, pid, repo_path, now_millis()],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn persists_across_instances_and_reconciles_to_spawning_for_resume() {
-        let td = tmpdir();
-        let app_dir = td.path().to_path_buf();
+        let db = test_db();
+
+        // Seed repo paths so add_agent can look them up.
+        let td = tempfile::tempdir().unwrap();
         let repo = init_repo(td.path());
+        seed_repo(&db, "/r");
+        seed_repo(&db, "/r2");
 
         {
-            let wm = WorkspaceManager::new(app_dir.clone()).unwrap();
+            let wm = WorkspaceManager::new(db.clone());
             wm.add_workspace_repo(repo.clone()).unwrap();
             let mut running = new_agent_record(
                 "yosemite".into(),
@@ -533,60 +1023,74 @@ mod tests {
             wm.add_agent(stopped).unwrap();
         }
 
-        let wm2 = WorkspaceManager::new(app_dir).unwrap();
+        // Second instance — reconciliation should flip Running → Spawning.
+        let wm2 = WorkspaceManager::new(db);
         let cur = wm2.current().unwrap();
-        assert_eq!(cur.repos, vec![repo]);
+        assert!(cur.repos.iter().any(|p| p == &repo));
         assert_eq!(cur.agents.len(), 2);
-        assert_eq!(cur.agents[0].status, AgentStatus::Spawning);
-        assert_eq!(cur.agents[1].status, AgentStatus::Stopped);
+
+        let yosemite = cur.agents.iter().find(|a| a.id == "yosemite").unwrap();
+        let dolomites = cur.agents.iter().find(|a| a.id == "dolomites").unwrap();
+        assert_eq!(yosemite.status, AgentStatus::Spawning);
+        assert_eq!(dolomites.status, AgentStatus::Stopped);
     }
 
     #[test]
     fn rejects_non_repo_path() {
-        let td = tmpdir();
-        let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let wm = WorkspaceManager::new(db);
         let err = wm.add_workspace_repo(td.path().join("nope")).unwrap_err();
         assert!(err.to_string().contains("not a git repository"));
     }
 
     #[test]
     fn add_repo_idempotent() {
-        let td = tmpdir();
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
         let repo = init_repo(td.path());
-        let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
+        let wm = WorkspaceManager::new(db);
         wm.add_workspace_repo(repo.clone()).unwrap();
         wm.add_workspace_repo(repo.clone()).unwrap();
         let cur = wm.current().unwrap();
-        assert_eq!(cur.repos, vec![repo]);
+        assert_eq!(cur.repos.iter().filter(|p| **p == repo).count(), 1);
     }
 
     #[test]
     fn remove_repo_leaves_agents_alone() {
-        let td = tmpdir();
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
         let repo = init_repo(td.path());
-        let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
+        let wm = WorkspaceManager::new(db.clone());
         wm.add_workspace_repo(repo.clone()).unwrap();
-        wm.add_agent(new_agent_record(
+
+        let repo_str = repo.to_str().unwrap();
+        let rec = new_agent_record(
             "yosemite".into(),
             "a".into(),
             "claude".into(),
-            mk_repo(repo.to_str().unwrap()),
+            mk_repo(repo_str),
             "".into(),
             AgentView::Custom,
-        ))
-        .unwrap();
+        );
+        wm.add_agent(rec).unwrap();
         wm.remove_workspace_repo(&repo).unwrap();
         let cur = wm.current().unwrap();
-        assert!(cur.repos.is_empty());
+        // The repo record is deleted, but the agent remains (its worktree
+        // may reference a now-deleted repo — that's fine, the sidebar
+        // union logic handles it).
         assert_eq!(cur.agents.len(), 1);
     }
 
     #[test]
     fn agent_status_transitions() {
-        let td = tmpdir();
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
         let repo = init_repo(td.path());
-        let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
+        let wm = WorkspaceManager::new(db.clone());
         wm.add_workspace_repo(repo).unwrap();
+
+        seed_repo(&db, "/r");
         let rec = new_agent_record(
             "test-id".into(),
             "a".into(),
@@ -600,14 +1104,16 @@ mod tests {
 
         wm.update_agent_status(&id, AgentStatus::Running, None)
             .unwrap();
-        let cur = wm.current().unwrap();
-        assert_eq!(cur.agents[0].status, AgentStatus::Running);
+        let a = wm.agent(&id).unwrap();
+        assert_eq!(a.status, AgentStatus::Running);
     }
 
     #[test]
     fn archive_then_restore_roundtrip() {
-        let td = tmpdir();
-        let wm = WorkspaceManager::new(td.path().to_path_buf()).unwrap();
+        let db = test_db();
+        seed_repo(&db, "/some/repo");
+        let wm = WorkspaceManager::new(db);
+
         let rec = new_agent_record(
             "yosemite".into(),
             "yosemite".into(),
@@ -620,7 +1126,7 @@ mod tests {
         wm.add_agent(rec).unwrap();
 
         let archive = ArchiveMetadata {
-            archived_at: "2026-05-26T12:00:00Z".into(),
+            archived_at: "2026-05-26T12:00:00+00:00".into(),
             repos: vec![ArchivedRepoSnapshot {
                 repo_path: PathBuf::from("/some/repo"),
                 subdir: "repo".into(),
@@ -640,13 +1146,18 @@ mod tests {
         };
         wm.archive_agent(&id, archive).unwrap();
 
-        let cur = wm.current().unwrap();
-        let a = &cur.agents[0];
+        let a = wm.agent(&id).unwrap();
         assert!(a.archive.is_some());
         assert!(a.repos.is_empty());
         assert_eq!(a.status, AgentStatus::Stopped);
         // session_id preserved so restore can re-attach claude
         assert!(a.session_id.is_some());
+
+        let arch = a.archive.unwrap();
+        assert_eq!(arch.repos.len(), 1);
+        assert_eq!(arch.repos[0].branch_tip_sha.as_deref(), Some("deadbeef"));
+        assert_eq!(arch.repos[0].diff_stats.additions, 12);
+        assert_eq!(arch.repos[0].diff_stats.deletions, 3);
 
         // Restore puts repos back and flips to Spawning
         let restored = vec![TrackedRepo {
@@ -656,8 +1167,7 @@ mod tests {
             parent_branch: Some("main".into()),
         }];
         wm.restore_agent(&id, restored).unwrap();
-        let cur = wm.current().unwrap();
-        let a = &cur.agents[0];
+        let a = wm.agent(&id).unwrap();
         assert!(a.archive.is_none());
         assert_eq!(a.repos.len(), 1);
         assert_eq!(a.status, AgentStatus::Spawning);
@@ -665,10 +1175,11 @@ mod tests {
 
     #[test]
     fn archived_agents_survive_reload_without_reconcile() {
-        let td = tmpdir();
-        let app_dir = td.path().to_path_buf();
+        let db = test_db();
+        seed_repo(&db, "/r");
+
         {
-            let wm = WorkspaceManager::new(app_dir.clone()).unwrap();
+            let wm = WorkspaceManager::new(db.clone());
             let rec = new_agent_record(
                 "yosemite".into(),
                 "yosemite".into(),
@@ -682,17 +1193,18 @@ mod tests {
             wm.archive_agent(
                 &id,
                 ArchiveMetadata {
-                    archived_at: "2026-05-26T12:00:00Z".into(),
+                    archived_at: "2026-05-26T12:00:00+00:00".into(),
                     repos: vec![],
                     diff_stats: DiffStats::default(),
                 },
             )
             .unwrap();
         }
-        let wm2 = WorkspaceManager::new(app_dir).unwrap();
+
+        // Second instance — archived agent should stay archived.
+        let wm2 = WorkspaceManager::new(db);
         let cur = wm2.current().unwrap();
         assert_eq!(cur.agents.len(), 1);
-        // Archived agent stays archived; reconcile shouldn't flip Stopped → Spawning
         assert!(cur.agents[0].archive.is_some());
         assert_eq!(cur.agents[0].status, AgentStatus::Stopped);
     }

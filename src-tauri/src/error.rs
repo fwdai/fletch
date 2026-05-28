@@ -12,9 +12,6 @@ pub enum Error {
     #[error("agent not found: {0}")]
     AgentNotFound(String),
 
-    #[error("workspace not loaded")]
-    WorkspaceNotLoaded,
-
     #[error("invalid path: {0}")]
     InvalidPath(String),
 

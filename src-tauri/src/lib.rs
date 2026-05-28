@@ -118,9 +118,9 @@ pub fn run() {
 
             let db = database::init(&app_data)
                 .expect("failed to initialize database");
-            app.manage(db);
+            app.manage(db.clone());
 
-            let workspace = Arc::new(WorkspaceManager::new(app_data)?);
+            let workspace = Arc::new(WorkspaceManager::new(db));
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
 
