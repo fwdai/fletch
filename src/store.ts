@@ -207,6 +207,15 @@ interface AppState {
   fetchPrState: (agentId: string) => Promise<void>;
   pushAgent: (agentId: string) => Promise<void>;
   pullAgent: (agentId: string) => Promise<void>;
+  commitChanges: (agentId: string, message: string) => Promise<boolean>;
+  /** Commit all changes, push, and open a PR — the "Commit & open PR"
+   *  primary CTA wired from the git panel. Returns false on any step
+   *  failure so the UI can leave the textarea content in place. */
+  commitAndOpenPr: (agentId: string, message: string) => Promise<boolean>;
+  stashChanges: (agentId: string) => Promise<void>;
+  discardChanges: (agentId: string) => Promise<void>;
+  abortMerge: (agentId: string) => Promise<void>;
+  deleteBranch: (agentId: string) => Promise<void>;
   createPr: (agentId: string, title: string, body: string) => Promise<PrState | null>;
   mergePr: (agentId: string) => Promise<void>;
 
@@ -947,6 +956,68 @@ export const useAppStore = create<AppState>((set, get) => ({
   pullAgent: async (agentId) => {
     try {
       await api.pullAgent(agentId);
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  commitChanges: async (agentId, message) => {
+    try {
+      await api.commitAgent(agentId, message);
+      await get().fetchGitState(agentId);
+      return true;
+    } catch (e) {
+      set({ lastError: String(e) });
+      return false;
+    }
+  },
+
+  commitAndOpenPr: async (agentId, message) => {
+    try {
+      await api.commitAgent(agentId, message);
+      await api.pushAgent(agentId);
+      const pr = await api.createPr(agentId, "", "");
+      set((s) => ({ prStates: { ...s.prStates, [agentId]: pr } }));
+      await get().fetchGitState(agentId);
+      return true;
+    } catch (e) {
+      set({ lastError: String(e) });
+      await get().fetchGitState(agentId);
+      return false;
+    }
+  },
+
+  stashChanges: async (agentId) => {
+    try {
+      await api.stashAgent(agentId);
+      await get().fetchGitState(agentId);
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  discardChanges: async (agentId) => {
+    try {
+      await api.discardAgentChanges(agentId);
+      await get().fetchGitState(agentId);
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  abortMerge: async (agentId) => {
+    try {
+      await api.abortMergeAgent(agentId);
+      await get().fetchGitState(agentId);
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  deleteBranch: async (agentId) => {
+    try {
+      await api.deleteBranchAgent(agentId);
+      await get().fetchGitState(agentId);
     } catch (e) {
       set({ lastError: String(e) });
     }

@@ -227,6 +227,75 @@ pub async fn push_agent(
     Ok(())
 }
 
+/// Stage all working-tree changes and commit them with the given message.
+#[tauri::command]
+pub async fn commit_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    message: String,
+) -> Result<()> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    git::commit(&worktree, &message).await
+}
+
+/// Discard every uncommitted change in the worktree (destructive).
+#[tauri::command]
+pub async fn discard_agent_changes(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<()> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    git::discard_all(&worktree).await
+}
+
+/// Stash all working-tree changes including untracked files.
+#[tauri::command]
+pub async fn stash_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<()> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    git::stash_push(&worktree).await
+}
+
+/// Abort an in-progress merge in the agent's worktree.
+#[tauri::command]
+pub async fn abort_merge_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<()> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    git::merge_abort(&worktree).await
+}
+
+/// Force-delete the agent's local branch from its parent repository.
+/// Used by the merged-state UI to clean up after a PR lands. Safe-noops
+/// if the branch is already gone (matches `git::branch_delete` semantics).
+#[tauri::command]
+pub async fn delete_branch_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<()> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let branch = repo.branch.as_deref()
+        .ok_or_else(|| crate::error::Error::Other("agent has no branch yet".into()))?;
+    git::branch_delete(&repo.repo_path, branch).await
+}
+
 /// Pull latest into the primary repo's worktree.
 #[tauri::command]
 pub async fn pull_agent(
