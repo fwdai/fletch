@@ -104,21 +104,14 @@ export function Sidebar() {
       <SidebarHeader query={query} onChange={setQuery} />
       <div className="side-scroll">
         <div className="side-section">
-          <div className="side-section-h">
-            <span>Projects</span>
-            <span className="grow" />
-            <div className="actions">
-              <button
-                className="btn-i xs tip"
-                data-tip="Add project"
-                data-tip-down=""
-                onClick={() => setNpOpen(true)}
-                aria-label="Add project"
-              >
-                <Icon name="plus" />
-              </button>
-            </div>
-          </div>
+          <button
+            className="add-proj-cta"
+            onClick={() => setNpOpen(true)}
+            aria-label="Add project"
+          >
+            <Icon name="plus" size={13} />
+            <span>Add project</span>
+          </button>
 
           {filtered.length === 0 ? (
             <div className="empty-msg" style={{ padding: "28px 12px" }}>
