@@ -1572,6 +1572,20 @@ button { cursor: default; }
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* xterm host: an absolute fill of its flex slot, inset via offsets (callers
+   set `inset`) rather than padding — FitAddon measures the slot but not
+   padding, so padding would oversize the terminal and clip rows. */
+.xterm-slot {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.xterm-host {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
 /* Right-rail terminal panel */
 .term-panel {
   display: flex;

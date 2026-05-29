@@ -1,94 +1,53 @@
-import { useEffect, useRef } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
 import { api, type AgentRecord } from "../../api";
 import { getOutputBuffer, registerOutputSink } from "../../store";
+import { useXterm } from "../../util/useXterm";
+
+/** Fixed dark background for the native TUI view — used by both the xterm
+ *  theme and the host slot so they never drift out of sync. */
+const NATIVE_BG = "#1a1c20";
 
 /** Native view: Claude's Ink TUI is streamed verbatim into xterm.
  *  xterm owns stdin too, so slash commands, paste, arrows, escape, and
  *  other terminal interactions go straight to the PTY. */
 export function NativeView({ agent }: { agent: AgentRecord }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    const term = new Terminal({
-      fontFamily: "ui-monospace, 'SF Mono', Menlo, monospace",
+  const containerRef = useXterm(
+    {
       fontSize: 13,
-      cursorBlink: true,
-      cursorStyle: "block",
       theme: {
-        background: "#1a1c20",
+        background: NATIVE_BG,
         foreground: "#e6e8eb",
         cursor: "#e6e8eb",
-        cursorAccent: "#1a1c20",
+        cursorAccent: NATIVE_BG,
         selectionBackground: "#3a3f4a",
       },
       scrollback: 5000,
-      allowProposedApi: false,
-      macOptionIsMeta: true,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(el);
+    },
+    (term) => {
+      const buffered = getOutputBuffer(agent.id);
+      if (buffered && buffered.length > 0) term.write(buffered);
 
-    const initialFit = requestAnimationFrame(() => {
-      try { fit.fit(); } catch { /* not measurable yet */ }
-    });
-
-    const buffered = getOutputBuffer(agent.id);
-    if (buffered && buffered.length > 0) {
-      term.write(buffered);
-    }
-
-    const onResizeDisposer = term.onResize(({ cols, rows }) => {
-      api.resizeAgent(agent.id, cols, rows).catch(() => {});
-    });
-
-    const onDataDisposer = term.onData((data) => {
-      api.writeToAgent(agent.id, data).catch((err) => {
-        console.error("writeToAgent failed", err);
+      const onResize = term.onResize(({ cols, rows }) => {
+        api.resizeAgent(agent.id, cols, rows).catch(() => {});
       });
-    });
+      const onData = term.onData((data) => {
+        api.writeToAgent(agent.id, data).catch((err) => {
+          console.error("writeToAgent failed", err);
+        });
+      });
+      const unregister = registerOutputSink(agent.id, (bytes) => term.write(bytes));
 
-    const unregister = registerOutputSink(agent.id, (bytes) => {
-      term.write(bytes);
-    });
-
-    const ro = new ResizeObserver(() => {
-      try { fit.fit(); } catch { /* container may be hidden */ }
-    });
-    ro.observe(el);
-    term.focus();
-
-    return () => {
-      cancelAnimationFrame(initialFit);
-      ro.disconnect();
-      unregister();
-      onResizeDisposer.dispose();
-      onDataDisposer.dispose();
-      term.dispose();
-    };
-  }, [agent.id]);
+      return () => {
+        unregister();
+        onResize.dispose();
+        onData.dispose();
+      };
+    },
+    [agent.id],
+  );
 
   return (
-    // xterm host is an absolute fill of the flex slot; inset via offsets,
-    // not padding, which FitAddon doesn't account for.
-    <div style={{ position: "relative", flex: 1, minHeight: 0, background: "#1a1c20" }}>
-      <div
-        ref={containerRef}
-        style={{
-          position: "absolute",
-          top: 8,
-          bottom: 8,
-          left: 10,
-          right: 10,
-          overflow: "hidden",
-        }}
-      />
+    <div className="xterm-slot" style={{ background: NATIVE_BG }}>
+      <div ref={containerRef} className="xterm-host" style={{ inset: "8px 4px 8px 10px" }} />
     </div>
   );
 }
