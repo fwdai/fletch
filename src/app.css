@@ -551,7 +551,7 @@ button { cursor: default; }
 .chat-inner {
   max-width: 860px; margin: 0 auto; width: 100%;
   padding: 0 20px;
-  display: flex; flex-direction: column; gap: 22px;
+  display: flex; flex-direction: column; gap: 8px;
 }
 @media (max-width: 1100px) {
   .chat-inner { padding: 0 24px; }
@@ -572,11 +572,13 @@ button { cursor: default; }
   font-size: 13.5px; line-height: 1.55;
   color: var(--fg-0);
   white-space: pre-wrap;
+  margin-bottom: 16px;
 }
 
 .m-agent {
   font-size: 14.5px; line-height: 1.7;
   color: var(--fg-0);
+  margin-bottom: 16px;
 }
 .m-agent > *:first-child { margin-top: 0; }
 .m-agent > *:last-child { margin-bottom: 0; }
