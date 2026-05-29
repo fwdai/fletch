@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import type { AgentRecord } from "../../api";
 import { useAppStore } from "../../store";
 import { applyPolicy, getAdapter } from "../../adapters";
+import { providerLabel } from "../../data/providers";
 import { Composer } from "../Composer";
 import { MessageItem } from "./messages/MessageItem";
 import { pairToolItems } from "./messages/pair";
@@ -106,7 +107,9 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               <span className="dots">
                 <i /><i /><i />
               </span>
-              <span>{busyLabel ?? `${agent.name} is thinking`}</span>
+              <span>
+                {busyLabel ?? `${providerLabel(agent.provider)} is thinking`}
+              </span>
             </div>
           )}
         </div>

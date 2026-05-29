@@ -22,6 +22,13 @@ export const PROVIDERS: Provider[] = [
 
 export const DEFAULT_PROVIDER_ID = "claude";
 
+/** Human-readable name for a provider id (e.g. "claude" → "Claude Code").
+ *  Falls back to the raw id when unknown so we never render an empty label. */
+export function providerLabel(id: string | null | undefined): string {
+  if (!id) return PROVIDERS.find((p) => p.id === DEFAULT_PROVIDER_ID)!.label;
+  return PROVIDERS.find((p) => p.id === id)?.label ?? id;
+}
+
 export interface Accent {
   id: string;
   label: string;
