@@ -28,7 +28,6 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const wasTranscriptLoading = useRef(false);
   const hasSession = Boolean(agent.session_id);
   const hasPriorConversation = agent.task.trim().length > 0;
 
@@ -59,12 +58,6 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    if (wasTranscriptLoading.current && !transcriptLoading) {
-      el.scrollTop = 0;
-      wasTranscriptLoading.current = false;
-      return;
-    }
-    wasTranscriptLoading.current = transcriptLoading;
     if (transcriptLoading) return;
     el.scrollTop = el.scrollHeight;
   }, [log, transcriptLoading]);
