@@ -84,6 +84,15 @@ export function DiffCount({
   );
 }
 
+/** Muted trailing note for a tool summary, e.g. "20 lines". Renders nothing
+ *  when empty. */
+export function SummaryNote({ children }: { children: ReactNode }) {
+  if (children == null || children === "") return null;
+  return (
+    <span style={{ color: "var(--fg-3)", marginLeft: 6 }}>{children}</span>
+  );
+}
+
 /** Type-narrowing helper: pull a string field from an unknown input bag. */
 export function getStringField(input: unknown, field: string): string {
   if (input && typeof input === "object" && field in input) {
