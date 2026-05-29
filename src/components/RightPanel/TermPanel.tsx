@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import { Terminal, type ITheme } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
-import "@xterm/xterm/css/xterm.css";
 import { open } from "@tauri-apps/plugin-shell";
 import { api, type AgentRecord } from "../../api";
 import { getShellBuffer, registerShellSink } from "../../store";
+import { useXterm } from "../../util/useXterm";
 import { Icon } from "../Icon";
 
 /** Resolve a CSS custom property to a #rrggbb hex string.
@@ -67,90 +66,67 @@ function resolveTheme(): ITheme {
 }
 
 export function TermPanel({ agent }: { agent: AgentRecord }) {
-  const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
   // ── Terminal setup ──────────────────────────────────────────────
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    api.openAgentShell(agent.id).catch((err) => {
-      console.error("openAgentShell failed", err);
-    });
-
-    const term = new Terminal({
-      fontFamily: "ui-monospace, 'SF Mono', Menlo, monospace",
+  const containerRef = useXterm(
+    {
       fontSize: 12,
       lineHeight: 1.2,
-      cursorBlink: true,
-      cursorStyle: "block",
       theme: resolveTheme(),
       scrollback: 20000,
-      allowProposedApi: false,
-      macOptionIsMeta: true,
-    });
-
-    const fit = new FitAddon();
-    const searchAddon = new SearchAddon();
-    term.loadAddon(fit);
-    term.loadAddon(searchAddon);
-    term.loadAddon(new WebLinksAddon((_, url) => open(url)));
-    term.open(el);
-
-    termRef.current = term;
-    searchAddonRef.current = searchAddon;
-
-    // Intercept Ctrl/Cmd+F so it opens the search bar instead of being
-    // sent to the PTY as a raw byte sequence.
-    term.attachCustomKeyEventHandler((e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "f" && e.type === "keydown") {
-        setSearchOpen(true);
-        return false; // prevent xterm from forwarding to PTY
-      }
-      return true;
-    });
-
-    const initialFit = requestAnimationFrame(() => {
-      try { fit.fit(); } catch { /* not measurable yet */ }
-    });
-
-    const buffered = getShellBuffer(agent.id);
-    if (buffered && buffered.length > 0) term.write(buffered);
-
-    const onResizeDisposer = term.onResize(({ cols, rows }) => {
-      api.resizeShell(agent.id, cols, rows).catch(() => {});
-    });
-    const onDataDisposer = term.onData((data) => {
-      api.writeToShell(agent.id, data).catch((err) => {
-        console.error("writeToShell failed", err);
+    },
+    (term) => {
+      api.openAgentShell(agent.id).catch((err) => {
+        console.error("openAgentShell failed", err);
       });
-    });
-    const unregister = registerShellSink(agent.id, (bytes) => term.write(bytes));
 
-    const ro = new ResizeObserver(() => {
-      try { fit.fit(); } catch { /* container may be hidden */ }
-    });
-    ro.observe(el);
-    term.focus();
+      const searchAddon = new SearchAddon();
+      term.loadAddon(searchAddon);
+      term.loadAddon(new WebLinksAddon((_, url) => open(url)));
 
-    return () => {
-      termRef.current = null;
-      searchAddonRef.current = null;
-      cancelAnimationFrame(initialFit);
-      ro.disconnect();
-      unregister();
-      onResizeDisposer.dispose();
-      onDataDisposer.dispose();
-      term.dispose();
-      // NOTE: do NOT call closeAgentShell here — VS Code behavior:
-      // shell stays alive across tab switches, only dies when agent is
-      // archived/discarded (handled by backend) or app quits.
-    };
-  }, [agent.id]);
+      termRef.current = term;
+      searchAddonRef.current = searchAddon;
+
+      // Intercept Ctrl/Cmd+F so it opens the search bar instead of being
+      // sent to the PTY as a raw byte sequence.
+      term.attachCustomKeyEventHandler((e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === "f" && e.type === "keydown") {
+          setSearchOpen(true);
+          return false; // prevent xterm from forwarding to PTY
+        }
+        return true;
+      });
+
+      const buffered = getShellBuffer(agent.id);
+      if (buffered && buffered.length > 0) term.write(buffered);
+
+      const onResize = term.onResize(({ cols, rows }) => {
+        api.resizeShell(agent.id, cols, rows).catch(() => {});
+      });
+      const onData = term.onData((data) => {
+        api.writeToShell(agent.id, data).catch((err) => {
+          console.error("writeToShell failed", err);
+        });
+      });
+      const unregister = registerShellSink(agent.id, (bytes) => term.write(bytes));
+
+      return () => {
+        termRef.current = null;
+        searchAddonRef.current = null;
+        unregister();
+        onResize.dispose();
+        onData.dispose();
+        // NOTE: do NOT call closeAgentShell here — VS Code behavior:
+        // shell stays alive across tab switches, only dies when agent is
+        // archived/discarded (handled by backend) or app quits.
+      };
+    },
+    [agent.id],
+  );
 
   // ── Theme reactivity ────────────────────────────────────────────
   // Watch <html> class for dark ↔ light switches and re-apply the theme
@@ -220,13 +196,8 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
           </button>
         </div>
       )}
-      {/* xterm host is an absolute fill of the flex slot; inset via offsets,
-          not padding, which FitAddon doesn't account for. */}
-      <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
-        <div
-          ref={containerRef}
-          style={{ position: "absolute", inset: "14px 4px 14px 12px", overflow: "hidden" }}
-        />
+      <div className="xterm-slot">
+        <div ref={containerRef} className="xterm-host" style={{ inset: "14px 4px 14px 12px" }} />
       </div>
     </div>
   );
