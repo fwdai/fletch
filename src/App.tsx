@@ -77,7 +77,18 @@ export function App() {
         {!activeDraftId && (
           <div
             className={`pane right ${rightCollapsed ? "collapsed" : ""}`}
-            style={{ width: rightCollapsed ? 0 : rightWidth }}
+            style={{
+              // Default to the stored width, but never wider than a 50:50
+              // split with the center pane. `100%` resolves against `.main`,
+              // so subtracting the left pane leaves the center+right region;
+              // half of that is the even-split cap. Window/left resizes
+              // recompute it automatically (no measurement needed).
+              width: rightCollapsed
+                ? 0
+                : `min(${rightWidth}px, calc((100% - ${
+                    leftCollapsed ? 0 : leftWidth
+                  }px) / 2))`,
+            }}
           >
             {!rightCollapsed && selectedAgent && (
               <RightPanel agent={selectedAgent} />

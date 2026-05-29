@@ -1,5 +1,6 @@
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
+import { QMark } from "../QMark";
 import { IconButton } from "../ui/IconButton";
 import { Breadcrumb, type CrumbEntry } from "./Breadcrumb";
 import { basename, hueFromString } from "../../util/format";
@@ -19,8 +20,11 @@ export function TitleBar() {
   return (
     <div className="tb" data-tauri-drag-region>
       <div className="tb-lights-gutter" data-tauri-drag-region />
-      <div className="tb-logo" data-tauri-drag-region>
-        Quorum
+      <div className="tb-logo" data-tauri-drag-region aria-label="Quorum">
+        <span className="tb-wordmark" aria-hidden="true">
+          <QMark className="tb-qmark" />
+          uorum
+        </span>
         <span className="tb-badge">beta</span>
       </div>
       <Breadcrumb entries={entries} />

@@ -124,7 +124,7 @@ button { cursor: default; }
 .tb-logo {
   margin-left: 12px;
   display: inline-flex; align-items: center; gap: 8px;
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 16px;
   font-weight: 600;
   letter-spacing: 0.005em;
@@ -132,16 +132,24 @@ button { cursor: default; }
   user-select: none;
   pointer-events: none;
 }
+.tb-wordmark { display: inline-flex; align-items: baseline; }
+.tb-qmark {
+  width: 0.92em; height: 0.92em;
+  align-self: center;
+  /* small gap so the mark reads as the leading glyph of "uorum" */
+  margin-right: 1px;
+  position: relative; top: 0.01em;
+}
 .tb-badge {
   display: inline-flex; align-items: center;
   height: 16px;
   font-family: var(--font-sans);
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-2);
-  background: color-mix(in oklch, var(--fg-0) 7%, transparent);
+  background: var(--bg-3);
   padding: 0 5px;
   border-radius: var(--r-xs);
   line-height: 1;
