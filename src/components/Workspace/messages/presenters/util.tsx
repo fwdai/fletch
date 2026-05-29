@@ -84,6 +84,13 @@ export function DiffCount({
   );
 }
 
+/** Count the non-empty lines of text in a tool result's content. */
+export function countResultLines(result: { content: unknown } | null): number {
+  if (!result) return 0;
+  const text = renderToolResult(result.content).replace(/\n+$/, "");
+  return text === "" ? 0 : text.split("\n").length;
+}
+
 /** Muted trailing note for a tool summary, e.g. "20 lines". Renders nothing
  *  when empty. */
 export function SummaryNote({ children }: { children: ReactNode }) {

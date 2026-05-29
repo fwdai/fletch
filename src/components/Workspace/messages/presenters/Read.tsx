@@ -2,23 +2,17 @@ import type { ToolPresenter } from "./types";
 import {
   ToolBlock,
   SummaryNote,
+  countResultLines,
   getStringField,
   renderToolResult,
 } from "./util";
 import { basename } from "../../../../util/format";
 
-/** Count the lines of content actually returned by the read. */
-function countLines(result: { content: unknown } | null): number {
-  if (!result) return 0;
-  const text = renderToolResult(result.content).replace(/\n$/, "");
-  return text === "" ? 0 : text.split("\n").length;
-}
-
 export const readPresenter: ToolPresenter = {
   icon: "file",
   summary: (call, result) => {
     const path = getStringField(call.input, "file_path");
-    const lines = countLines(result);
+    const lines = countResultLines(result);
     return (
       <>
         {path ? basename(path) : "(no path)"}
