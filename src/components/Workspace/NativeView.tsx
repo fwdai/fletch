@@ -47,7 +47,7 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
 
   return (
     <div className="xterm-slot" style={{ background: NATIVE_BG }}>
-      <div ref={containerRef} className="xterm-host" style={{ inset: "8px 10px" }} />
+      <div ref={containerRef} className="xterm-host" style={{ inset: "8px 4px 8px 10px" }} />
     </div>
   );
 }
