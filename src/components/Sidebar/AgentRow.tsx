@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { AgentRecord, AgentStatus } from "../../api";
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
+import { Icon } from "../Icon";
 import { LANDMARK_NAMES } from "../../data/landmarks";
 import { DEFAULT_PROVIDER_ID } from "../../data/providers";
 import { LandmarkGlyph } from "../Icon";
@@ -88,6 +89,13 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
 // ── draft (not-yet-spawned) ──────────────────────────────────────────────────
 
 function DraftRow({ draft, active, showGlyph, onClick }: DraftRowProps) {
+  const removeDraft = useAppStore((s) => s.removeDraft);
+
+  function onDiscard(e: React.MouseEvent) {
+    e.stopPropagation();
+    removeDraft(draft.id);
+  }
+
   return (
     <div
       className={`agent ${active ? "active" : ""} ${showGlyph ? "with-glyph" : ""}`}
@@ -104,6 +112,9 @@ function DraftRow({ draft, active, showGlyph, onClick }: DraftRowProps) {
         <span className="ag-provider-inline" style={{ color: "var(--accent)" }}>
           · new
         </span>
+        <button className="ag-discard" onClick={onDiscard} title="Discard">
+          <Icon name="close" />
+        </button>
       </div>
       <div className="agent-sub">
         <span className="a-branch">Define task…</span>

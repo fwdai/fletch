@@ -354,6 +354,21 @@ button { cursor: default; }
 }
 .agent-sub .a-time:hover { background: var(--hover); color: var(--fg-1); }
 .agent-sub .a-changes { color: var(--accent); font-size: 8px; }
+.ag-discard {
+  margin-left: auto;
+  display: none;
+  align-items: center; justify-content: center;
+  width: 16px; height: 16px;
+  padding: 0;
+  background: none; border: none;
+  color: var(--fg-3);
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.ag-discard svg { width: 10px; height: 10px; stroke-width: 2; }
+.agent:hover .ag-discard { display: flex; }
+.ag-discard:hover { background: var(--hover); color: var(--fg-1); }
 
 .ag-stats-pop {
   position: absolute;
