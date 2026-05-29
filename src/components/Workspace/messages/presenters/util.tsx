@@ -61,6 +61,45 @@ export function stringifyInput(input: unknown, indent = 0): string {
   }
 }
 
+/** Compact "+X −Y" line-count badge for file-editing tools. Renders nothing
+ *  when there is no net change. Colors mirror the git panel's add/rem tokens. */
+export function DiffCount({
+  additions,
+  deletions,
+}: {
+  additions: number;
+  deletions: number;
+}) {
+  if (additions === 0 && deletions === 0) return null;
+  return (
+    <span style={{ fontFamily: "var(--font-mono)", marginLeft: 6 }}>
+      {additions > 0 && (
+        <span style={{ color: "var(--success)" }}>+{additions}</span>
+      )}
+      {additions > 0 && deletions > 0 && " "}
+      {deletions > 0 && (
+        <span style={{ color: "var(--danger)" }}>−{deletions}</span>
+      )}
+    </span>
+  );
+}
+
+/** Count the non-empty lines of text in a tool result's content. */
+export function countResultLines(result: { content: unknown } | null): number {
+  if (!result) return 0;
+  const text = renderToolResult(result.content).replace(/\n+$/, "");
+  return text === "" ? 0 : text.split("\n").length;
+}
+
+/** Muted trailing note for a tool summary, e.g. "20 lines". Renders nothing
+ *  when empty. */
+export function SummaryNote({ children }: { children: ReactNode }) {
+  if (children == null || children === "") return null;
+  return (
+    <span style={{ color: "var(--fg-3)", marginLeft: 6 }}>{children}</span>
+  );
+}
+
 /** Type-narrowing helper: pull a string field from an unknown input bag. */
 export function getStringField(input: unknown, field: string): string {
   if (input && typeof input === "object" && field in input) {

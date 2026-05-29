@@ -1,12 +1,22 @@
 import type { ToolPresenter } from "./types";
-import { ToolBlock, getStringField, renderToolResult } from "./util";
+import { ToolBlock, DiffCount, getStringField, renderToolResult } from "./util";
 import { basename } from "../../../../util/format";
+import { lineDiffCounts } from "../../../../util/lineDiff";
 
 export const writePresenter: ToolPresenter = {
   icon: "notebookPen",
   summary: (call) => {
     const path = getStringField(call.input, "file_path");
-    return path ? basename(path) : "(no path)";
+    const content = getStringField(call.input, "content");
+    // Write replaces the whole file; the prior version isn't in the call, so
+    // every line counts as an addition.
+    const { additions, deletions } = lineDiffCounts("", content);
+    return (
+      <>
+        {path ? basename(path) : "(no path)"}
+        <DiffCount additions={additions} deletions={deletions} />
+      </>
+    );
   },
   expanded: (call, result) => {
     const path = getStringField(call.input, "file_path");

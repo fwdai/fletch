@@ -1,12 +1,28 @@
 import type { ToolPresenter } from "./types";
-import { ToolBlock, getStringField, renderToolResult } from "./util";
+import {
+  ToolBlock,
+  SummaryNote,
+  countResultLines,
+  getStringField,
+  renderToolResult,
+} from "./util";
 import { basename } from "../../../../util/format";
 
 export const readPresenter: ToolPresenter = {
   icon: "file",
-  summary: (call) => {
+  summary: (call, result) => {
     const path = getStringField(call.input, "file_path");
-    return path ? basename(path) : "(no path)";
+    const lines = countResultLines(result);
+    return (
+      <>
+        {path ? basename(path) : "(no path)"}
+        {lines > 0 && (
+          <SummaryNote>
+            {lines} {lines === 1 ? "line" : "lines"}
+          </SummaryNote>
+        )}
+      </>
+    );
   },
   expanded: (call, result) => {
     const path = getStringField(call.input, "file_path");
