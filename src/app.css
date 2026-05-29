@@ -280,41 +280,42 @@ button { cursor: default; }
 
 .side-scroll { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
 
-.side-section { padding: 12px 4px 4px; }
-.side-section-h {
-  display: flex; align-items: center; gap: 4px;
-  padding: 2px 6px;
-  font-size: 10px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--fg-3);
-}
-.side-section-h .grow { flex: 1; }
-.side-section-h .actions { display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
-.side-section:hover .side-section-h .actions { opacity: 1; }
-.side-section-h .actions .btn-i.xs { width: 22px; height: 22px; }
-.side-section-h .actions .btn-i.xs svg { width: 15px; height: 15px; }
-.side-section-h .actions .btn-i.tip[data-tip]:hover::after {
-  left: auto;
-  right: 0;
-  transform: none;
-}
-
-.proj { margin-bottom: 4px; }
-.proj-h {
-  display: flex; align-items: center; gap: 7px;
-  padding: 0 6px;
+.side-section { padding: 4px; }
+.add-proj-cta {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  width: 100%;
   height: 32px;
+  margin-bottom: 12px;
+  border: 1px dashed var(--bd);
+  border-radius: var(--r-md);
+  color: var(--fg-2);
+  font-size: 12px; font-weight: 500;
+  transition: border-color .12s, color .12s, background .12s;
+}
+.add-proj-cta:hover {
+  border-color: var(--accent-line);
+  color: var(--fg-1);
+  background: var(--hover);
+}
+.add-proj-cta svg { width: 13px; height: 13px; }
+
+.proj { margin-bottom: 16px; }
+.proj-h {
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 8px;
+  height: 28px;
   border-radius: var(--r-sm);
-  font-size: 12.5px; color: var(--fg-0);
-  font-weight: 500;
+  font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--fg-2);
   transition: background .1s;
   position: relative;
 }
 .proj-h:hover { background: var(--hover); }
-.proj-h .chev { width: 11px; height: 11px; color: var(--fg-3); transition: transform .15s var(--ease); flex-shrink: 0; }
+.proj-h .chev { width: 10px; height: 10px; color: var(--fg-3); transition: transform .15s var(--ease); flex-shrink: 0; }
 .proj-h.open .chev { transform: rotate(90deg); }
 .proj-h .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.proj-h .pcount { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3); }
+.proj-h .pcount { width: 22px; text-align: center; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3); }
 .proj-h .padd {
   width: 22px; height: 22px;
   border-radius: 4px;
@@ -326,7 +327,7 @@ button { cursor: default; }
 .proj-h:hover .padd { display: inline-flex; }
 .proj-h:hover .pcount { display: none; }
 .proj-h .padd:hover { background: var(--selected); color: var(--accent); }
-.proj-h .padd[data-tip="New agent"] svg { width: 15px; height: 15px; }
+.proj-h .padd[data-tip="New agent"] svg { width: 15px; height: 15px; flex-shrink: 0; }
 .proj-h .padd.tip[data-tip]:hover::after {
   left: auto;
   right: 0;
@@ -334,8 +335,7 @@ button { cursor: default; }
 }
 
 .agents {
-  margin-left: 11px;
-  border-left: 1px solid var(--bd-soft);
+  margin-left: 0;
   padding: 2px 0;
   overflow: visible;
   max-height: 1200px;
@@ -357,7 +357,7 @@ button { cursor: default; }
 .agent.active { background: var(--selected); color: var(--fg-0); }
 .agent.active::before {
   content: ""; position: absolute;
-  left: -7px; top: 8px; bottom: 8px;
+  left: -6px; top: 8px; bottom: 8px;
   width: 2px; border-radius: 0 2px 2px 0;
   background: var(--accent);
 }

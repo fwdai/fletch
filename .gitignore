@@ -26,3 +26,6 @@ src-tauri/resources/third-party/
 
 # Superpowers / Claude Code internal docs — never commit
 docs/superpowers/
+
+# Superpowers brainstorming visual companion (local-only)
+.superpowers/

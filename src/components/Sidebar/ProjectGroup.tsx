@@ -53,7 +53,7 @@ export function ProjectGroup({
         onClick={onToggle}
         title={repoPath}
       >
-        <Icon name="chevR" size={11} className="chev" />
+        <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
         <button
@@ -62,7 +62,7 @@ export function ProjectGroup({
           data-tip-down=""
           onClick={onAddAgent}
         >
-          <Icon name="plus" />
+          <Icon name="plus" size={11} />
         </button>
         {removable && (
           <button
