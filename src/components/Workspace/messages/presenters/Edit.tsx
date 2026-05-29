@@ -1,12 +1,21 @@
 import type { ToolPresenter } from "./types";
-import { ToolBlock, getStringField, renderToolResult } from "./util";
+import { ToolBlock, DiffCount, getStringField, renderToolResult } from "./util";
 import { basename } from "../../../../util/format";
+import { lineDiffCounts } from "../../../../util/lineDiff";
 
 export const editPresenter: ToolPresenter = {
   icon: "edit",
   summary: (call) => {
     const path = getStringField(call.input, "file_path");
-    return path ? basename(path) : "(no path)";
+    const oldStr = getStringField(call.input, "old_string");
+    const newStr = getStringField(call.input, "new_string");
+    const { additions, deletions } = lineDiffCounts(oldStr, newStr);
+    return (
+      <>
+        {path ? basename(path) : "(no path)"}
+        <DiffCount additions={additions} deletions={deletions} />
+      </>
+    );
   },
   expanded: (call, result) => {
     const path = getStringField(call.input, "file_path");

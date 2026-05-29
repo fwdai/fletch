@@ -61,6 +61,29 @@ export function stringifyInput(input: unknown, indent = 0): string {
   }
 }
 
+/** Compact "+X −Y" line-count badge for file-editing tools. Renders nothing
+ *  when there is no net change. Colors mirror the git panel's add/rem tokens. */
+export function DiffCount({
+  additions,
+  deletions,
+}: {
+  additions: number;
+  deletions: number;
+}) {
+  if (additions === 0 && deletions === 0) return null;
+  return (
+    <span style={{ fontFamily: "var(--font-mono)", marginLeft: 6 }}>
+      {additions > 0 && (
+        <span style={{ color: "var(--success)" }}>+{additions}</span>
+      )}
+      {additions > 0 && deletions > 0 && " "}
+      {deletions > 0 && (
+        <span style={{ color: "var(--danger)" }}>−{deletions}</span>
+      )}
+    </span>
+  );
+}
+
 /** Type-narrowing helper: pull a string field from an unknown input bag. */
 export function getStringField(input: unknown, field: string): string {
   if (input && typeof input === "object" && field in input) {

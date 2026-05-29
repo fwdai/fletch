@@ -3,6 +3,7 @@ import { agentPresenter } from "./Agent";
 import { bashPresenter } from "./Bash";
 import { readPresenter } from "./Read";
 import { editPresenter } from "./Edit";
+import { multiEditPresenter } from "./MultiEdit";
 import { writePresenter } from "./Write";
 import { grepPresenter } from "./Grep";
 import { globPresenter } from "./Glob";
@@ -18,6 +19,7 @@ export const PRESENTERS: Record<string, ToolPresenter> = {
   Bash: bashPresenter,
   Read: readPresenter,
   Edit: editPresenter,
+  MultiEdit: multiEditPresenter,
   Write: writePresenter,
   Grep: grepPresenter,
   Glob: globPresenter,

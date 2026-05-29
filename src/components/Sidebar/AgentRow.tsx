@@ -3,7 +3,6 @@ import type { MouseEvent } from "react";
 import type { AgentRecord, AgentStatus } from "../../api";
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
-import { Icon } from "../Icon";
 import { LANDMARK_NAMES } from "../../data/landmarks";
 import { DEFAULT_PROVIDER_ID } from "../../data/providers";
 import { Icon, LandmarkGlyph } from "../Icon";
