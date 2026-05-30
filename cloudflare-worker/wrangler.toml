@@ -5,5 +5,5 @@ compatibility_date = "2025-01-01"
 # Custom domain that backs the updater endpoint in src-tauri/tauri.conf.json
 # (plugins.updater.endpoints). You must own this domain and have it on Cloudflare.
 routes = [
-  { pattern = "updates.quorum.app", custom_domain = true }
+  { pattern = "updater.quorum.fwdai.org", custom_domain = true }
 ]
