@@ -2,11 +2,12 @@ import { useState } from "react";
 import type { AgentRecord } from "../../api";
 import { useAppStore } from "../../store";
 import { Icon, type IconName } from "../Icon";
+import { FilePanel } from "./FilePanel";
 import { GitPanel } from "./GitPanel";
 import { RunPanel } from "./RunPanel";
 import { TermPanel } from "./TermPanel";
 
-type TabId = "git" | "diff" | "run" | "term";
+type TabId = "files" | "git" | "diff" | "run" | "term";
 
 interface Tab {
   id: TabId;
@@ -32,6 +33,7 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
   );
 
   const tabs: Tab[] = [
+    features.files && { id: "files", label: "Files", icon: "folder" },
     features.git && { id: "git", label: "Git", icon: "branch", count: gitFiles },
     features.diff && { id: "diff", label: "Diff", icon: "code" },
     features.run && { id: "run", label: "Run", icon: "play" },
@@ -70,6 +72,13 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
         </div>
       </div>
       <div className="right-body">
+        {tab === "files" && (
+          <FilePanel
+            agent={agent}
+            canViewDiff={features.diff}
+            onViewDiff={() => setTab("diff")}
+          />
+        )}
         {tab === "git" && <GitPanel agent={agent} />}
         {tab === "diff" && <Stub label="Diff" />}
         {tab === "run" && <RunPanel agent={agent} />}

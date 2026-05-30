@@ -29,3 +29,6 @@ docs/superpowers/
 
 # Superpowers brainstorming visual companion (local-only)
 .superpowers/
+
+# Material Icon Theme SVGs copied at build (see vite.config.ts)
+public/file-icons/

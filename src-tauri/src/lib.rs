@@ -181,6 +181,9 @@ pub fn run() {
             commands::run_start,
             commands::run_stop,
             commands::run_state,
+            commands::list_worktree_tree,
+            commands::read_worktree_file,
+            commands::write_worktree_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quorum");

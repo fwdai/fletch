@@ -140,6 +140,29 @@ export interface GitState {
   deletions: number;
 }
 
+/** One file in the worktree, as returned by `list_worktree_tree`.
+ *  `status` is the single-letter git status vs the parent branch
+ *  ("M" | "A" | "D" | "R"), or null when the file is unchanged. */
+export interface WorktreeFile {
+  path: string;
+  status: string | null;
+  additions: number;
+  deletions: number;
+}
+
+/** A worktree file's contents plus the metadata the File-panel editor
+ *  needs. `chg_add` / `chg_mod` are 1-indexed line numbers the agent
+ *  added / modified (drives the change gutter). */
+export interface WorktreeFileContents {
+  text: string;
+  lang: string;
+  status: string | null;
+  chg_add: number[];
+  chg_mod: number[];
+  binary: boolean;
+  too_large: boolean;
+}
+
 export type PrStatus = "open" | "merged" | "closed";
 
 export interface PrState {
@@ -244,6 +267,12 @@ export const api = {
   runStop: (agentId: string) => invoke<void>("run_stop", { agentId }),
   runState: (agentId: string) =>
     invoke<RunStateSnapshot>("run_state", { agentId }),
+  listWorktreeTree: (agentId: string) =>
+    invoke<WorktreeFile[]>("list_worktree_tree", { agentId }),
+  readWorktreeFile: (agentId: string, path: string) =>
+    invoke<WorktreeFileContents>("read_worktree_file", { agentId, path }),
+  writeWorktreeFile: (agentId: string, path: string, contents: string) =>
+    invoke<void>("write_worktree_file", { agentId, path, contents }),
 };
 
 export function onAgentOutput(
