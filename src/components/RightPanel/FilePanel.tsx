@@ -19,7 +19,9 @@ import { highlightToHtml } from "../../util/highlight";
 import { useHljsTheme } from "../../util/codeTheme";
 import { langLabel } from "../../data/languages";
 import { FileIcon } from "./FileIcon";
+import { FileContextMenu, type ContextMenuEntry } from "./FileContextMenu";
 import { Icon } from "../Icon";
+import { basename, joinPath, parentDir } from "../../util/format";
 
 // ── tree model ──────────────────────────────────────────────────────────
 type DirNode = { type: "dir"; name: string; path: string; children: TreeNode[] };
@@ -32,6 +34,15 @@ type FileNode = {
   deletions: number;
 };
 type TreeNode = DirNode | FileNode;
+
+// An in-progress inline edit: renaming an existing node, or creating a new
+// file/folder inside `parentDir` ("" = repo root).
+type EditState =
+  | { mode: "rename"; path: string; isDir: boolean }
+  | { mode: "newFile" | "newFolder"; parentDir: string };
+
+// An open context menu, anchored at the cursor over `node`.
+type MenuState = { x: number; y: number; node: TreeNode };
 
 interface FilePanelProps {
   agent: AgentRecord;
@@ -46,6 +57,12 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
   const [query, setQuery] = useState("");
   const [changedOnly, setChangedOnly] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [edit, setEdit] = useState<EditState | null>(null);
+  const [opError, setOpError] = useState<string | null>(null);
+  // Newly-created directories that are still empty. git lists files, not dirs,
+  // so without this a brand-new folder would vanish on the next poll.
+  const [pendingDirs, setPendingDirs] = useState<Set<string>>(() => new Set());
 
   // Reset per-agent so one worktree's open file / search doesn't leak.
   useEffect(() => {
@@ -55,6 +72,10 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
     setLoaded(false);
     setFiles([]);
     setExpanded(new Set());
+    setMenu(null);
+    setEdit(null);
+    setOpError(null);
+    setPendingDirs(new Set());
   }, [agent.id]);
 
   const refresh = useCallback(async () => {
@@ -73,7 +94,22 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
   }, [openPath, refresh]);
   usePoll(pollTree, 2000, [pollTree]);
 
-  const fullTree = useMemo(() => buildTree(files), [files]);
+  const fullTree = useMemo(
+    () => buildTree(files, [...pendingDirs]),
+    [files, pendingDirs],
+  );
+
+  // Once a real file lands inside a tracked empty-dir, git lists the dir via
+  // that file, so we can stop injecting it (and keep the set from growing).
+  useEffect(() => {
+    setPendingDirs((s) => {
+      if (!s.size) return s;
+      const next = new Set(
+        [...s].filter((d) => !files.some((file) => file.path === d || file.path.startsWith(`${d}/`))),
+      );
+      return next.size === s.size ? s : next;
+    });
+  }, [files]);
 
   // Default every directory open the first time files arrive.
   const seededRef = useRef(false);
@@ -98,6 +134,132 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
       else n.add(path);
       return n;
     });
+
+  const expand = (path: string) =>
+    setExpanded((s) => new Set(s).add(path));
+
+  // ── file operations ───────────────────────────────────────────────────
+  const allPaths = useMemo(() => new Set(files.map((f) => f.path)), [files]);
+
+  // Begin a create: open the target dir so the inline input is visible.
+  const beginCreate = (mode: "newFile" | "newFolder", dir: string) => {
+    setOpError(null);
+    if (dir) expand(dir);
+    setEdit({ mode, parentDir: dir });
+  };
+
+  const cancelEdit = () => setEdit(null);
+
+  // Commit the active inline edit. `value` is the raw input; empty / unchanged
+  // values quietly cancel. On a backend error we surface it and keep editing.
+  const commitEdit = async (value: string) => {
+    const name = value.trim();
+    if (!edit) return;
+    if (!name) { setEdit(null); return; }
+    setOpError(null);
+    try {
+      if (edit.mode === "rename") {
+        const from = edit.path;
+        const dest = joinPath(parentDir(from), name);
+        if (dest === from) { setEdit(null); return; }
+        await api.renameWorktreePath(agent.id, from, dest);
+        // An empty folder we're tracking moves with the rename; re-point it (and
+        // any tracked descendants) or it would vanish and leave a phantom.
+        if (edit.isDir) {
+          setPendingDirs((s) => {
+            const n = new Set<string>();
+            for (const d of s) {
+              if (d === from) n.add(dest);
+              else if (d.startsWith(`${from}/`)) n.add(dest + d.slice(from.length));
+              else n.add(d);
+            }
+            return n;
+          });
+        }
+      } else if (edit.mode === "newFile") {
+        const dest = joinPath(edit.parentDir, name);
+        await api.createWorktreeFile(agent.id, dest);
+        setEdit(null);
+        await refresh();
+        setOpenPath(dest);
+        return;
+      } else {
+        const dest = joinPath(edit.parentDir, name);
+        await api.createWorktreeDir(agent.id, dest);
+        setPendingDirs((s) => new Set(s).add(dest));
+        expand(dest);
+      }
+      setEdit(null);
+      await refresh();
+    } catch (e) {
+      setOpError(errMsg(e));
+    }
+  };
+
+  const doDelete = async (node: TreeNode) => {
+    setOpError(null);
+    try {
+      await api.deleteWorktreePath(agent.id, node.path);
+      // Drop any tracked empty-dir under what we just removed.
+      setPendingDirs((s) => {
+        const n = new Set(s);
+        for (const d of n) {
+          if (d === node.path || d.startsWith(`${node.path}/`)) n.delete(d);
+        }
+        return n;
+      });
+      await refresh();
+    } catch (e) {
+      setOpError(errMsg(e));
+    }
+  };
+
+  const doDuplicate = async (node: FileNode) => {
+    setOpError(null);
+    try {
+      const dest = duplicatePath(node.path, allPaths);
+      await api.copyWorktreeFile(agent.id, node.path, dest);
+      await refresh();
+    } catch (e) {
+      setOpError(errMsg(e));
+    }
+  };
+
+  const copyPath = (node: TreeNode) => {
+    navigator.clipboard?.writeText(node.path).catch(() => {});
+  };
+
+  // Build the context-menu entries for a right-clicked node.
+  const menuEntries = (node: TreeNode): ContextMenuEntry[] => {
+    // New File / New Folder target the folder itself, or a file's parent dir.
+    const target = node.type === "dir" ? node.path : parentDir(node.path);
+    const newItems: ContextMenuEntry[] = [
+      { icon: "file", label: "New File…", onClick: () => beginCreate("newFile", target) },
+      { icon: "folder", label: "New Folder…", onClick: () => beginCreate("newFolder", target) },
+    ];
+    const common: ContextMenuEntry[] = [
+      { icon: "edit", label: "Rename…", onClick: () => { setOpError(null); setEdit({ mode: "rename", path: node.path, isDir: node.type === "dir" }); } },
+      { icon: "copy", label: "Copy Path", onClick: () => copyPath(node) },
+    ];
+    const del: ContextMenuEntry = {
+      icon: "trash",
+      label: "Delete",
+      danger: true,
+      confirmLabel: node.type === "dir" ? "Delete folder & contents?" : "Confirm Delete?",
+      onClick: () => void doDelete(node),
+    };
+    if (node.type === "dir") {
+      return [...newItems, "sep", ...common, "sep", del];
+    }
+    return [
+      ...common,
+      { icon: "copy", label: "Duplicate", onClick: () => void doDuplicate(node) },
+      "sep",
+      ...newItems,
+      "sep",
+      del,
+    ];
+  };
 
   // ── editor ──────────────────────────────────────────────────────────
   if (openPath) {
@@ -143,6 +305,20 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
         </button>
         <button
           className="btn-i xs"
+          title="New file"
+          onClick={() => beginCreate("newFile", "")}
+        >
+          <Icon name="file" />
+        </button>
+        <button
+          className="btn-i xs"
+          title="New folder"
+          onClick={() => beginCreate("newFolder", "")}
+        >
+          <Icon name="folder" />
+        </button>
+        <button
+          className="btn-i xs"
           title="Collapse all"
           onClick={() => setExpanded(new Set())}
         >
@@ -150,8 +326,21 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
         </button>
       </div>
 
+      {opError && (
+        <div className="fp-op-error" role="alert">
+          <Icon name="close" size={11} />
+          <span>{opError}</span>
+          <button className="fp-clear" onClick={() => setOpError(null)} aria-label="Dismiss">
+            <Icon name="close" size={10} />
+          </button>
+        </div>
+      )}
+
       <div className="fp-tree">
-        {tree.length === 0 ? (
+        {edit && edit.mode !== "rename" && edit.parentDir === "" && (
+          <CreateRow mode={edit.mode} depth={0} onCommit={commitEdit} onCancel={cancelEdit} />
+        )}
+        {tree.length === 0 && !edit ? (
           <div className="empty-msg" style={{ margin: "auto" }}>
             <div className="et">{loaded ? "No matching files" : "Loading…"}</div>
             {loaded && (
@@ -168,12 +357,25 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
               depth={0}
               expanded={expanded}
               forceOpen={filtering}
+              edit={edit}
               onToggle={toggleDir}
               onOpen={setOpenPath}
+              onMenu={(n, x, y) => setMenu({ node: n, x, y })}
+              onCommit={commitEdit}
+              onCancel={cancelEdit}
             />
           ))
         )}
       </div>
+
+      {menu && (
+        <FileContextMenu
+          x={menu.x}
+          y={menu.y}
+          entries={menuEntries(menu.node)}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
   );
 }
@@ -184,36 +386,65 @@ interface TreeRowProps {
   depth: number;
   expanded: Set<string>;
   forceOpen: boolean;
+  edit: EditState | null;
   onToggle: (path: string) => void;
   onOpen: (path: string) => void;
+  onMenu: (node: TreeNode, x: number, y: number) => void;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
 }
 
-function TreeRow({ node, depth, expanded, forceOpen, onToggle, onOpen }: TreeRowProps) {
+function TreeRow({
+  node, depth, expanded, forceOpen, edit, onToggle, onOpen, onMenu, onCommit, onCancel,
+}: TreeRowProps) {
   const pad = 10 + depth * 13;
+  const renaming = edit?.mode === "rename" && edit.path === node.path;
 
   if (node.type === "dir") {
     const isOpen = forceOpen || expanded.has(node.path);
+    const creatingHere =
+      edit && edit.mode !== "rename" && edit.parentDir === node.path;
     return (
       <>
-        <button className="fp-row dir" style={{ paddingLeft: pad }} onClick={() => onToggle(node.path)}>
+        <button
+          className="fp-row dir"
+          style={{ paddingLeft: pad }}
+          onClick={() => onToggle(node.path)}
+          onContextMenu={(e) => { e.preventDefault(); onMenu(node, e.clientX, e.clientY); }}
+        >
           <span className={`fp-twisty ${isOpen ? "open" : ""}`}>
             <Icon name="chevR" size={11} />
           </span>
           <FileIcon name={node.name} folder open={isOpen} />
-          <span className="fp-name">{node.name}</span>
+          {renaming ? (
+            <NameInput initial={node.name} onCommit={onCommit} onCancel={onCancel} />
+          ) : (
+            <span className="fp-name">{node.name}</span>
+          )}
         </button>
-        {isOpen &&
-          node.children.map((c) => (
-            <TreeRow
-              key={c.path}
-              node={c}
-              depth={depth + 1}
-              expanded={expanded}
-              forceOpen={forceOpen}
-              onToggle={onToggle}
-              onOpen={onOpen}
-            />
-          ))}
+        {(isOpen || creatingHere) && (
+          <>
+            {creatingHere && edit && (
+              <CreateRow mode={edit.mode} depth={depth + 1} onCommit={onCommit} onCancel={onCancel} />
+            )}
+            {isOpen &&
+              node.children.map((c) => (
+                <TreeRow
+                  key={c.path}
+                  node={c}
+                  depth={depth + 1}
+                  expanded={expanded}
+                  forceOpen={forceOpen}
+                  edit={edit}
+                  onToggle={onToggle}
+                  onOpen={onOpen}
+                  onMenu={onMenu}
+                  onCommit={onCommit}
+                  onCancel={onCancel}
+                />
+              ))}
+          </>
+        )}
       </>
     );
   }
@@ -224,12 +455,82 @@ function TreeRow({ node, depth, expanded, forceOpen, onToggle, onOpen }: TreeRow
       className={`fp-row file ${node.status ? "changed s-" + st : ""}`}
       style={{ paddingLeft: pad + 13 }}
       onClick={() => onOpen(node.path)}
+      onContextMenu={(e) => { e.preventDefault(); onMenu(node, e.clientX, e.clientY); }}
       title={node.path}
     >
       <FileIcon name={node.name} />
-      <span className="fp-name">{node.name}</span>
-      {node.status && <span className={`fp-badge s-${st}`}>{node.status}</span>}
+      {renaming ? (
+        <NameInput initial={node.name} onCommit={onCommit} onCancel={onCancel} />
+      ) : (
+        <span className="fp-name">{node.name}</span>
+      )}
+      {node.status && !renaming && <span className={`fp-badge s-${st}`}>{node.status}</span>}
     </button>
+  );
+}
+
+// ── inline name input (rename + create) ──────────────────────────────────
+interface NameInputProps {
+  initial: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}
+
+function NameInput({ initial, onCommit, onCancel }: NameInputProps) {
+  const ref = useRef<HTMLInputElement>(null);
+  // Commit and cancel both unmount the input, which fires onBlur — guard so a
+  // single edit resolves exactly once.
+  const doneRef = useRef(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    // Select the basename but not the extension, matching VS Code's rename.
+    const dot = initial.lastIndexOf(".");
+    if (dot > 0) el.setSelectionRange(0, dot);
+    else el.select();
+  }, [initial]);
+
+  const commit = (v: string) => { if (!doneRef.current) { doneRef.current = true; onCommit(v); } };
+  const cancel = () => { if (!doneRef.current) { doneRef.current = true; onCancel(); } };
+
+  return (
+    <input
+      ref={ref}
+      className="fp-name-input"
+      defaultValue={initial}
+      spellCheck={false}
+      autoCapitalize="off"
+      autoCorrect="off"
+      onClick={(e) => { e.stopPropagation(); }}
+      onMouseDown={(e) => { e.stopPropagation(); }}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") { e.preventDefault(); commit(e.currentTarget.value); }
+        else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+      }}
+      onBlur={(e) => commit(e.currentTarget.value)}
+    />
+  );
+}
+
+// A transient "new file / new folder" row holding just the name input.
+interface CreateRowProps {
+  mode: "newFile" | "newFolder";
+  depth: number;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}
+
+function CreateRow({ mode, depth, onCommit, onCancel }: CreateRowProps) {
+  const pad = 10 + depth * 13;
+  const isFolder = mode === "newFolder";
+  return (
+    <div className="fp-row file fp-creating" style={{ paddingLeft: pad + 13 }}>
+      <FileIcon name="" folder={isFolder} open={isFolder} />
+      <NameInput initial="" onCommit={onCommit} onCancel={onCancel} />
+    </div>
   );
 }
 
@@ -243,9 +544,8 @@ interface FileViewerProps {
 }
 
 function FileViewer({ agent, path, canViewDiff, onViewDiff, onBack }: FileViewerProps) {
-  const parts = path.split("/");
-  const name = parts.pop() as string;
-  const dir = parts.join("/");
+  const name = basename(path);
+  const dir = parentDir(path);
 
   const [contents, setContents] = useState<WorktreeFileContents | null>(null);
   const [error, setError] = useState(false);
@@ -563,9 +863,31 @@ function ViewerHeader({ name, dir, status, dirty, onBack, actions }: ViewerHeade
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+/** A non-colliding "… copy" path for Duplicate, e.g. `a/foo.ts` →
+ *  `a/foo copy.ts`, then `a/foo copy 2.ts`, … against `existing`. */
+export function duplicatePath(path: string, existing: Set<string>): string {
+  const dir = parentDir(path);
+  const base = basename(path);
+  const dot = base.lastIndexOf(".");
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  const ext = dot > 0 ? base.slice(dot) : "";
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? " copy" : ` copy ${n}`;
+    const candidate = joinPath(dir, `${stem}${suffix}${ext}`);
+    if (!existing.has(candidate)) return candidate;
+  }
+}
+
+/** Best-effort message from a rejected Tauri command (errors serialize to a
+ *  display string). */
+function errMsg(e: unknown): string {
+  return typeof e === "string" ? e : e instanceof Error ? e.message : "Operation failed";
+}
+
 /** Build a sorted nested tree (dirs first, then files; alpha within each)
- *  from a flat list of worktree files. */
-function buildTree(files: WorktreeFile[]): TreeNode[] {
+ *  from a flat list of worktree files. `extraDirs` injects directories that
+ *  carry no files yet (freshly-created empty folders). */
+export function buildTree(files: WorktreeFile[], extraDirs: string[] = []): TreeNode[] {
   const roots: TreeNode[] = [];
   // path → DirNode, so we can attach children as we walk each file's segments.
   const dirIndex = new Map<string, DirNode>();
@@ -573,11 +895,11 @@ function buildTree(files: WorktreeFile[]): TreeNode[] {
   const childrenOf = (path: string): TreeNode[] =>
     path === "" ? roots : (dirIndex.get(path) as DirNode).children;
 
-  for (const f of files) {
-    const segs = f.path.split("/");
+  // Ensure a directory path (and its ancestors) exist as DirNodes.
+  const ensureDir = (dir: string): void => {
+    const segs = dir.split("/");
     let prefix = "";
-    // create intermediate directories
-    for (let i = 0; i < segs.length - 1; i++) {
+    for (let i = 0; i < segs.length; i++) {
       const parent = prefix;
       prefix = prefix ? `${prefix}/${segs[i]}` : segs[i];
       if (!dirIndex.has(prefix)) {
@@ -586,6 +908,11 @@ function buildTree(files: WorktreeFile[]): TreeNode[] {
         childrenOf(parent).push(node);
       }
     }
+  };
+
+  for (const f of files) {
+    const segs = f.path.split("/");
+    if (segs.length > 1) ensureDir(segs.slice(0, -1).join("/"));
     const parent = segs.length > 1 ? segs.slice(0, -1).join("/") : "";
     childrenOf(parent).push({
       type: "file",
@@ -596,6 +923,8 @@ function buildTree(files: WorktreeFile[]): TreeNode[] {
       deletions: f.deletions,
     });
   }
+
+  for (const d of extraDirs) if (d) ensureDir(d);
 
   sortNodes(roots);
   return roots;

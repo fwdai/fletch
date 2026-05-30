@@ -190,8 +190,8 @@ button { cursor: default; }
 .btn-i svg { width: 14px; height: 14px; }
 .btn-i.sm { width: 22px; height: 22px; }
 .btn-i.sm svg { width: 12px; height: 12px; }
-.btn-i.xs { width: 18px; height: 18px; }
-.btn-i.xs svg { width: 11px; height: 11px; }
+.btn-i.xs { width: 22px; height: 22px; }
+.btn-i.xs svg { width: 16px; height: 16px; }
 
 .btn-t {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1994,6 +1994,40 @@ button { cursor: default; }
 .fp-badge.s-a { background: color-mix(in oklch, var(--success), transparent 82%); color: var(--success); }
 .fp-badge.s-d { background: color-mix(in oklch, var(--danger), transparent 82%);  color: var(--danger); }
 .fp-badge.s-r { background: color-mix(in oklch, var(--info), transparent 82%);    color: var(--info); }
+
+/* ── inline rename / create input ── */
+.fp-name-input {
+  flex: 1; min-width: 0;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-xs);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  padding: 0 4px; height: 19px;
+  outline: none;
+}
+.fp-name-input:focus { box-shadow: 0 0 0 2px var(--accent-soft); }
+.fp-creating { cursor: default; }
+
+/* ── file-tree context menu (uses .dd / .dd-item base styling) ── */
+.fp-ctx { min-width: 184px; }
+.fp-ctx-item { width: 100%; border: 0; background: transparent; text-align: left; cursor: default; }
+.fp-ctx-item.danger { color: var(--danger); }
+.fp-ctx-item.danger:hover { background: color-mix(in oklch, var(--danger), transparent 88%); color: var(--danger); }
+.fp-ctx-item.danger .di-i { color: var(--danger); }
+
+/* ── inline op-error bar ── */
+.fp-op-error {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 8px 4px; padding: 5px 8px;
+  border: 1px solid color-mix(in oklch, var(--danger), transparent 70%);
+  background: color-mix(in oklch, var(--danger), transparent 92%);
+  color: var(--danger);
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+}
+.fp-op-error span { flex: 1; min-width: 0; }
+.fp-op-error .fp-clear { color: var(--danger); }
 
 /* ── viewer header ── */
 .fp-viewer-h {
