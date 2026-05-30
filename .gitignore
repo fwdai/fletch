@@ -24,6 +24,10 @@ src-tauri/resources/third-party/
 *.log
 .context/
 
+# Local signing/release secrets — never commit (use .env.example as a template)
+.env
+.env.local
+
 # Superpowers / Claude Code internal docs — never commit
 docs/superpowers/
 
