@@ -5,6 +5,17 @@ export function basename(p: string): string {
   return parts[parts.length - 1] ?? p;
 }
 
+/** The directory portion of a path ("" for a top-level entry). */
+export function parentDir(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i === -1 ? "" : p.slice(0, i);
+}
+
+/** Join a directory and a name, tolerating the empty (root) directory. */
+export function joinPath(dir: string, name: string): string {
+  return dir ? `${dir}/${name}` : name;
+}
+
 /** Stable hue (0–360) derived from a string — used to color a project
  *  swatch consistently across reloads. */
 export function hueFromString(s: string): number {

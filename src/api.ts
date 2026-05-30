@@ -273,6 +273,16 @@ export const api = {
     invoke<WorktreeFileContents>("read_worktree_file", { agentId, path }),
   writeWorktreeFile: (agentId: string, path: string, contents: string) =>
     invoke<void>("write_worktree_file", { agentId, path, contents }),
+  renameWorktreePath: (agentId: string, from: string, to: string) =>
+    invoke<void>("rename_worktree_path", { agentId, from, to }),
+  deleteWorktreePath: (agentId: string, path: string) =>
+    invoke<void>("delete_worktree_path", { agentId, path }),
+  createWorktreeFile: (agentId: string, path: string) =>
+    invoke<void>("create_worktree_file", { agentId, path }),
+  createWorktreeDir: (agentId: string, path: string) =>
+    invoke<void>("create_worktree_dir", { agentId, path }),
+  copyWorktreeFile: (agentId: string, from: string, to: string) =>
+    invoke<void>("copy_worktree_file", { agentId, from, to }),
 };
 
 export function onAgentOutput(

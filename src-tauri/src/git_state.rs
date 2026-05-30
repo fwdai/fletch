@@ -189,18 +189,22 @@ fn parse_porcelain(output: &str) -> Vec<FileStatus> {
         // For renamed files, git porcelain v1 formats the path as
         // `old_name -> new_name` (arrow) or `old_name\tnew_name` (tab).
         // We want the new name (destination), which is the part after the separator.
-        let path = if matches!(kind, StatusKind::Renamed) {
+        let raw = if matches!(kind, StatusKind::Renamed) {
             // Try tab separator first, then " -> "
             if let Some(pos) = path_part.find('\t') {
-                path_part[pos + 1..].to_string()
+                &path_part[pos + 1..]
             } else if let Some(pos) = path_part.find(" -> ") {
-                path_part[pos + 4..].to_string()
+                &path_part[pos + 4..]
             } else {
-                path_part.to_string()
+                path_part
             }
         } else {
-            path_part.to_string()
+            path_part
         };
+        // Paths with spaces / non-ASCII come back C-quoted (e.g. `"a b.rs"`);
+        // decode them back to the real on-disk path. Without this, the quotes
+        // leak into the tree and break path-based operations like delete.
+        let path = unquote_path(raw);
 
         files.push(FileStatus {
             path,
@@ -211,6 +215,54 @@ fn parse_porcelain(output: &str) -> Vec<FileStatus> {
         });
     }
     files
+}
+
+/// Decode a path as printed by `git status --porcelain` (without `-z`). Git
+/// wraps paths containing spaces, quotes, or non-ASCII bytes in double quotes
+/// and C-style escapes them (`\"`, `\\`, `\t`, octal `\NNN`, …). Plain,
+/// unquoted paths pass through unchanged.
+fn unquote_path(s: &str) -> String {
+    let bytes = s.as_bytes();
+    if bytes.len() < 2 || bytes[0] != b'"' || bytes[bytes.len() - 1] != b'"' {
+        return s.to_string();
+    }
+    let inner = &bytes[1..bytes.len() - 1];
+    let mut out: Vec<u8> = Vec::with_capacity(inner.len());
+    let mut i = 0;
+    while i < inner.len() {
+        if inner[i] == b'\\' && i + 1 < inner.len() {
+            match inner[i + 1] {
+                b'a' => { out.push(0x07); i += 2; }
+                b'b' => { out.push(0x08); i += 2; }
+                b't' => { out.push(b'\t'); i += 2; }
+                b'n' => { out.push(b'\n'); i += 2; }
+                b'v' => { out.push(0x0b); i += 2; }
+                b'f' => { out.push(0x0c); i += 2; }
+                b'r' => { out.push(b'\r'); i += 2; }
+                b'"' => { out.push(b'"'); i += 2; }
+                b'\\' => { out.push(b'\\'); i += 2; }
+                d @ b'0'..=b'7' => {
+                    // Up to three octal digits encode one byte (UTF-8 sequences
+                    // arrive as several such escapes).
+                    let mut val = (d - b'0') as u32;
+                    let mut j = i + 2;
+                    let mut n = 1;
+                    while j < inner.len() && n < 3 && inner[j].is_ascii_digit() && inner[j] < b'8' {
+                        val = val * 8 + (inner[j] - b'0') as u32;
+                        j += 1;
+                        n += 1;
+                    }
+                    out.push(val as u8);
+                    i = j;
+                }
+                _ => { out.push(inner[i]); i += 1; }
+            }
+        } else {
+            out.push(inner[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn status_kind(x: char, y: char) -> StatusKind {
@@ -246,10 +298,13 @@ fn parse_numstat(output: &str) -> HashMap<String, (u32, u32)> {
         // For renames, numstat emits `OLD => NEW` as the path field.
         // Index by the new name so lookups by current filename succeed.
         let path = if let Some(pos) = path.find(" => ") {
-            path[pos + 4..].to_string()
+            &path[pos + 4..]
         } else {
-            path
+            &path
         };
+        // numstat quotes non-ASCII paths just like `git status`; decode so the
+        // key matches the (unquoted) path in the file list it's merged into.
+        let path = unquote_path(path);
         // Binary files show `-\t-\t<path>`
         let adds: u32 = adds_str.parse().unwrap_or(0);
         let dels: u32 = dels_str.parse().unwrap_or(0);
@@ -381,6 +436,41 @@ mod tests {
         assert!(parse_porcelain("").is_empty());
     }
 
+    #[test]
+    fn porcelain_unquotes_path_with_space() {
+        // `git status` C-quotes paths containing spaces.
+        let input = "?? \"src/foo copy.ts\"\n";
+        let files = parse_porcelain(input);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/foo copy.ts");
+        assert!(matches!(files[0].kind, StatusKind::Untracked));
+    }
+
+    #[test]
+    fn porcelain_unquotes_non_ascii_octal_escapes() {
+        // "café.ts" → octal-escaped UTF-8 bytes inside quotes.
+        let input = " M \"caf\\303\\251.ts\"\n";
+        let files = parse_porcelain(input);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "café.ts");
+    }
+
+    #[test]
+    fn porcelain_unquotes_renamed_destination() {
+        let input = "R  \"old name.rs\" -> \"new name.rs\"\n";
+        let files = parse_porcelain(input);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "new name.rs");
+        assert!(matches!(files[0].kind, StatusKind::Renamed));
+    }
+
+    #[test]
+    fn unquote_passes_through_plain_paths() {
+        assert_eq!(unquote_path("src/main.rs"), "src/main.rs");
+        assert_eq!(unquote_path("\"a b.rs\""), "a b.rs");
+        assert_eq!(unquote_path("\"a\\\"b.rs\""), "a\"b.rs");
+    }
+
     // --- parse_numstat ---
 
     #[test]
@@ -419,5 +509,14 @@ mod tests {
         let map = parse_numstat(input);
         assert_eq!(map.get("src/foo.rs"), Some(&(42, 7)));
         assert_eq!(map.get("assets/logo.png"), Some(&(0, 0)));
+    }
+
+    #[test]
+    fn numstat_unquotes_non_ascii_path() {
+        // numstat C-quotes non-ASCII paths; the key must match the unquoted
+        // path used in the file list, or line counts silently drop to 0.
+        let input = "4\t0\t\"caf\\303\\251.ts\"\n";
+        let map = parse_numstat(input);
+        assert_eq!(map.get("café.ts"), Some(&(4, 0)));
     }
 }

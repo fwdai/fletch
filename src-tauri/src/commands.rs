@@ -589,8 +589,9 @@ fn primary_worktree(
 }
 
 /// List the agent's worktree files (tracked + untracked), each tagged with
-/// its git status vs the parent branch. Deleted files are included so the
-/// tree can still surface them.
+/// its git status vs the parent branch. This mirrors what's actually on disk
+/// — like a regular file explorer — so files the agent deleted are dropped
+/// rather than lingering as struck-through entries.
 #[tauri::command]
 pub async fn list_worktree_tree(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -607,7 +608,15 @@ pub async fn list_worktree_tree(
         git::list_files(&worktree).await.unwrap_or_default().into_iter().collect();
     if let Some(s) = &state {
         for f in &s.files {
-            paths.insert(f.path.clone());
+            // A deleted file is gone from disk, so a file tree shouldn't show
+            // it — and `ls-files --cached` still lists it (it's in the index),
+            // so we must actively remove it. Everything else (untracked adds,
+            // modifications) belongs in the tree.
+            if matches!(f.kind, StatusKind::Deleted) {
+                paths.remove(&f.path);
+            } else {
+                paths.insert(f.path.clone());
+            }
         }
     }
 
@@ -705,6 +714,99 @@ pub async fn write_worktree_file(
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&abs, contents)?;
+    Ok(())
+}
+
+/// Resolve a not-yet-existing destination inside the worktree: reject path
+/// traversal, refuse to clobber an existing entry, and create its parent
+/// directory. The create / rename / copy commands all share this so the
+/// no-clobber + path-safety contract lives in exactly one place.
+fn resolve_new_path(worktree: &Path, rel: &str) -> Result<PathBuf> {
+    let abs = safe_join(worktree, rel)?;
+    if abs.exists() {
+        return Err(Error::Other(format!("\"{rel}\" already exists")));
+    }
+    if let Some(dir) = abs.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    Ok(abs)
+}
+
+/// Rename/move a worktree path (file or directory). Refuses to clobber an
+/// existing destination so a rename can never silently overwrite a sibling.
+#[tauri::command]
+pub async fn rename_worktree_path(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    from: String,
+    to: String,
+) -> Result<()> {
+    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
+    let src = safe_join(&worktree, &from)?;
+    let dst = resolve_new_path(&worktree, &to)?;
+    std::fs::rename(&src, &dst)?;
+    Ok(())
+}
+
+/// Delete a worktree path. Files are removed directly; directories are
+/// removed recursively (the UI guards this behind a confirm step). Deleting a
+/// path that's already gone is a no-op, so concurrent deletes don't error.
+#[tauri::command]
+pub async fn delete_worktree_path(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    path: String,
+) -> Result<()> {
+    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
+    let abs = safe_join(&worktree, &path)?;
+    if abs.is_dir() {
+        std::fs::remove_dir_all(&abs)?;
+    } else if abs.exists() {
+        std::fs::remove_file(&abs)?;
+    }
+    Ok(())
+}
+
+/// Create a new empty file, making parent directories as needed. Refuses to
+/// overwrite an existing path.
+#[tauri::command]
+pub async fn create_worktree_file(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    path: String,
+) -> Result<()> {
+    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
+    let abs = resolve_new_path(&worktree, &path)?;
+    std::fs::write(&abs, "")?;
+    Ok(())
+}
+
+/// Create a new directory. Refuses to clobber an existing path.
+#[tauri::command]
+pub async fn create_worktree_dir(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    path: String,
+) -> Result<()> {
+    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
+    let abs = resolve_new_path(&worktree, &path)?;
+    std::fs::create_dir_all(&abs)?;
+    Ok(())
+}
+
+/// Copy a worktree file to a new path (the explorer's "Duplicate"). Refuses
+/// to overwrite an existing destination.
+#[tauri::command]
+pub async fn copy_worktree_file(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    from: String,
+    to: String,
+) -> Result<()> {
+    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
+    let src = safe_join(&worktree, &from)?;
+    let dst = resolve_new_path(&worktree, &to)?;
+    std::fs::copy(&src, &dst)?;
     Ok(())
 }
 
