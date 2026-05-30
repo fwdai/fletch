@@ -1868,3 +1868,383 @@ button { cursor: default; }
 }
 .history-foot .kbd { margin-right: 5px; }
 .history-foot .dim { color: var(--fg-3); }
+
+/* ───────────────────────────────────────────────────────────────────────
+   File panel — VS Code-style worktree browser + editor (right rail "Files")
+   ─────────────────────────────────────────────────────────────────────── */
+.fp-wrap {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--bg-1);
+}
+
+/* toolbar: search + changed-filter + collapse */
+.fp-toolbar {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.fp-search {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 8px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-3);
+  transition: border-color .12s;
+}
+.fp-search:focus-within { border-color: var(--accent-line); color: var(--fg-2); }
+.fp-search svg { flex-shrink: 0; }
+.fp-search input {
+  flex: 1; min-width: 0;
+  border: 0; outline: 0; background: transparent;
+  font-family: var(--font-sans); font-size: 12px;
+  color: var(--fg-0);
+}
+.fp-search input::placeholder { color: var(--fg-3); }
+.fp-clear {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex-shrink: 0;
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--fg-3); border-radius: 50%;
+}
+.fp-clear:hover { background: var(--hover); color: var(--fg-0); }
+
+.fp-filter {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 9px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-2);
+  font-family: var(--font-sans); font-size: 11px; font-weight: 500;
+  cursor: pointer;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.fp-filter:hover { color: var(--fg-0); border-color: var(--bd); }
+.fp-filter .fp-filter-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--fg-3);
+}
+.fp-filter .fp-filter-count {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--fg-3);
+}
+.fp-filter.on {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.fp-filter.on .fp-filter-dot { background: var(--accent); }
+.fp-filter.on .fp-filter-count { color: var(--accent); }
+
+/* tree */
+.fp-tree {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  padding: 6px 0 14px;
+  display: flex; flex-direction: column;
+}
+.fp-row {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%;
+  height: 26px; flex-shrink: 0; padding-right: 12px;
+  border: 0; background: transparent; cursor: pointer;
+  text-align: left;
+  color: var(--fg-1);
+  font-family: var(--font-mono); font-size: 12px;
+  letter-spacing: -0.005em;
+  position: relative;
+}
+.fp-row:hover { background: var(--hover); color: var(--fg-0); }
+.fp-twisty {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 12px; flex-shrink: 0;
+  color: var(--fg-3);
+  transition: transform .12s var(--ease);
+}
+.fp-twisty.open { transform: rotate(90deg); }
+/* Material Icon Theme glyphs (file tree + viewer header) */
+.fp-ico-img { width: 16px; height: 16px; flex-shrink: 0; display: block; }
+.fp-row.dir .fp-name { color: var(--fg-1); font-weight: 500; }
+.fp-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* changed files — colored name + status badge (VS Code style) */
+/* VS Code keeps the file-type icon's own color and tints only the name. */
+.fp-row.file.changed .fp-name { font-weight: 500; }
+.fp-row.s-m .fp-name { color: var(--warn); }
+.fp-row.s-a .fp-name { color: var(--success); }
+.fp-row.s-d .fp-name { color: var(--danger); text-decoration: line-through; text-decoration-thickness: 1px; }
+.fp-row.s-r .fp-name { color: var(--info); }
+
+.fp-badge {
+  flex-shrink: 0;
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
+  width: 15px; height: 15px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-xs);
+}
+.fp-badge.s-m { background: color-mix(in oklch, var(--warn), transparent 82%);    color: var(--warn); }
+.fp-badge.s-a { background: color-mix(in oklch, var(--success), transparent 82%); color: var(--success); }
+.fp-badge.s-d { background: color-mix(in oklch, var(--danger), transparent 82%);  color: var(--danger); }
+.fp-badge.s-r { background: color-mix(in oklch, var(--info), transparent 82%);    color: var(--info); }
+
+/* ── viewer header ── */
+.fp-viewer-h {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px 8px 8px;
+  border-bottom: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+}
+.fp-back {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; flex-shrink: 0;
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--fg-2); border-radius: var(--r-sm);
+}
+.fp-back:hover { background: var(--hover); color: var(--fg-0); }
+.fp-vh-actions { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.fp-crumb {
+  flex: 1; min-width: 0;
+  display: flex; align-items: baseline; gap: 1px;
+  font-family: var(--font-mono); font-size: 12px;
+  overflow: hidden; white-space: nowrap;
+}
+.fp-crumb-dir { color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; }
+.fp-crumb-file { color: var(--fg-0); font-weight: 500; flex-shrink: 0; }
+.fp-crumb-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: var(--warn); margin-left: 6px; align-self: center;
+}
+
+/* ── viewer meta line ── */
+.fp-meta {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 12px;
+  font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--fg-2);
+  border-top: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+}
+.fp-meta-lang { color: var(--fg-1); }
+.fp-meta-dot { color: var(--fg-3); }
+.fp-meta-grow { flex: 1; }
+.fp-meta-unsaved { color: var(--warn); font-weight: 500; }
+.fp-meta-saved { color: var(--success); font-weight: 500; }
+.fp-meta-edited { color: var(--fg-2); }
+.fp-meta-failed { color: var(--danger); font-weight: 500; }
+.fp-meta-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 20px; padding: 0 7px;
+  border: 1px solid var(--bd-soft); border-radius: var(--r-xs);
+  background: transparent; cursor: pointer;
+  color: var(--fg-2);
+  font-family: var(--font-sans); font-size: 10.5px; font-weight: 500;
+}
+.fp-meta-btn:hover { background: var(--hover); color: var(--fg-0); border-color: var(--bd); }
+
+/* syntax-theme picker (bottom-right of the editor footer) */
+.fp-theme-select {
+  height: 20px; max-width: 130px;
+  padding: 0 4px 0 6px;
+  border: 1px solid var(--bd-soft); border-radius: var(--r-xs);
+  background: transparent; color: var(--fg-2);
+  font-family: var(--font-sans); font-size: 10.5px; font-weight: 500;
+  cursor: pointer;
+}
+.fp-theme-select:hover { color: var(--fg-0); border-color: var(--bd); }
+.fp-theme-select:focus-visible { outline: 1px solid var(--accent-line); }
+
+/* save button (primary when dirty) */
+.fp-save {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 20px; padding: 0 8px;
+  border: 1px solid transparent; border-radius: var(--r-xs);
+  background: var(--accent); color: oklch(0.16 0.02 60);
+  font-family: var(--font-sans); font-size: 10.5px; font-weight: 600;
+  cursor: pointer;
+}
+.theme-light .fp-save { color: oklch(0.98 0.005 60); }
+.fp-save:hover:not(.disabled) { background: oklch(from var(--accent) calc(l + 0.04) c h); }
+.fp-save .fp-save-kbd {
+  font-family: var(--font-mono); font-size: 9px; opacity: .65;
+  padding-left: 1px;
+}
+.fp-save.disabled {
+  background: transparent; color: var(--fg-3);
+  border-color: var(--bd-soft); cursor: default;
+}
+
+/* ── viewer banners (added / deleted file) ── */
+.fp-banner {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  font-size: 11.5px;
+}
+.fp-banner.del {
+  color: var(--danger);
+  background: color-mix(in oklch, var(--danger), transparent 92%);
+  border-bottom: 1px solid color-mix(in oklch, var(--danger), transparent 80%);
+}
+.fp-banner.add {
+  color: var(--success);
+  background: color-mix(in oklch, var(--success), transparent 92%);
+  border-bottom: 1px solid color-mix(in oklch, var(--success), transparent 80%);
+}
+
+/* ── editor (textarea + highlight overlay + gutter) ── */
+.fp-editor {
+  flex: 1; min-height: 0;
+  display: flex;
+  overflow: hidden;
+  position: relative;
+}
+/* a thin amber rail down the left edge while there are unsaved changes */
+.fp-wrap.is-dirty .fp-editor::before {
+  content: ""; position: absolute; inset: 0 auto 0 0;
+  width: 2px; background: var(--warn); z-index: 3;
+}
+
+.fp-gutter {
+  flex-shrink: 0;
+  width: 48px;
+  overflow: hidden;
+  border-right: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+}
+/* match the editor's top+bottom padding so the gutter's scrollTop range
+   is identical to the textarea's — keeps line numbers in lockstep. */
+.fp-gutter-inner { padding-top: 8px; padding-bottom: 16px; }
+.fp-gline {
+  display: grid; grid-template-columns: 1fr 4px;
+  height: 18px; align-items: center;
+}
+.fp-num {
+  text-align: right; padding-right: 9px;
+  font-family: var(--font-mono); font-size: 10px; line-height: 18px;
+  color: var(--fg-3); user-select: none;
+}
+.fp-bar { width: 2px; height: 18px; margin-left: 1px; align-self: stretch; }
+.fp-bar.add { background: var(--success); }
+.fp-bar.mod { background: var(--warn); }
+.fp-bar.rem { background: var(--danger); }
+
+.fp-edit-main { flex: 1; min-width: 0; position: relative; }
+
+/* shared metrics for the two stacked layers — MUST match exactly.
+   The highlight <pre> and the <textarea> must advance every glyph
+   identically, so we lock both to a pure monospace grid: no kerning, no
+   ligatures, and neutral text-rendering (the inherited `optimizeLegibility`
+   enables kerning/ligatures that a textarea won't replicate, which makes the
+   caret/selection drift from the colored text as lines get longer). */
+.fp-hl, .fp-ta {
+  position: absolute; inset: 0;
+  margin: 0; border: 0;
+  padding: 8px 14px 16px 12px;
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 18px;
+  letter-spacing: 0; tab-size: 2; -moz-tab-size: 2;
+  white-space: pre; word-wrap: normal;
+  text-rendering: optimizeSpeed;
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0, "kern" 0;
+}
+.fp-hl {
+  /* `auto` (not `hidden`) so the highlight layer reserves the SAME scrollbar
+     space as the textarea — otherwise the textarea's horizontal scrollbar eats
+     vertical client space and the highlight under-scrolls at the bottom,
+     drifting the caret off the code. Scrolled programmatically; its own
+     scrollbars are made invisible below. */
+  overflow: auto;
+  pointer-events: none;
+  color: var(--fg-1);
+  background: transparent;
+}
+.fp-hl code { font: inherit; background: transparent; }
+/* reserve identical scrollbar metrics to .fp-ta, but render them invisible */
+.fp-hl::-webkit-scrollbar { width: 10px; height: 10px; }
+.fp-hl::-webkit-scrollbar-thumb,
+.fp-hl::-webkit-scrollbar-track,
+.fp-hl::-webkit-scrollbar-corner { background: transparent; }
+.fp-ta {
+  overflow: auto;
+  overscroll-behavior: none;   /* no rubber-band bounce at the scroll edges */
+  resize: none; outline: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--accent);
+  z-index: 2;
+}
+.fp-ta::selection { background: color-mix(in oklch, var(--accent), transparent 70%); }
+.fp-ta::-webkit-scrollbar { width: 10px; height: 10px; }
+.fp-ta::-webkit-scrollbar-thumb { background: var(--bd-soft); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+.fp-ta::-webkit-scrollbar-thumb:hover { background: var(--bd-strong); background-clip: padding-box; }
+
+/* syntax tokens — design palette mapped onto highlight.js classes, so any
+   language renders in the mockup's colors (violet kw / olive str / etc.) */
+.fp-hl.cq .hljs-keyword,
+.fp-hl.cq .hljs-keyword.hljs-type { color: oklch(0.78 0.11 295); font-weight: 500; } /* keywords — violet */
+.fp-hl.cq .hljs-string,
+.fp-hl.cq .hljs-regexp,
+.fp-hl.cq .hljs-symbol,
+.fp-hl.cq .hljs-char.escape_,
+.fp-hl.cq .hljs-meta .hljs-string { color: oklch(0.78 0.13 110); }                    /* strings — olive */
+.fp-hl.cq .hljs-comment,
+.fp-hl.cq .hljs-quote { color: var(--fg-3); font-style: italic; }
+.fp-hl.cq .hljs-number,
+.fp-hl.cq .hljs-literal { color: oklch(0.78 0.13 50); }                                /* numbers — copper */
+.fp-hl.cq .hljs-built_in,
+.fp-hl.cq .hljs-title.function_,
+.fp-hl.cq .hljs-attr,
+.fp-hl.cq .hljs-variable.language_,
+.fp-hl.cq .hljs-selector-tag { color: oklch(0.8 0.1 220); }                            /* builtins — ocean */
+.fp-hl.cq .hljs-title,
+.fp-hl.cq .hljs-title.class_,
+.fp-hl.cq .hljs-type,
+.fp-hl.cq .hljs-attribute,
+.fp-hl.cq .hljs-tag,
+.fp-hl.cq .hljs-name,
+.fp-hl.cq .hljs-section,
+.fp-hl.cq .hljs-selector-class,
+.fp-hl.cq .hljs-selector-id,
+.fp-hl.cq .hljs-doctag { color: oklch(0.82 0.07 200); }                                /* types — pale ocean */
+.fp-hl.cq .hljs-meta,
+.fp-hl.cq .hljs-punctuation,
+.fp-hl.cq .hljs-operator,
+.fp-hl.cq .hljs-bullet { color: var(--fg-2); }
+.fp-hl.cq .hljs-deletion { color: var(--danger); }
+.fp-hl.cq .hljs-addition { color: var(--success); }
+
+.theme-light .fp-hl.cq .hljs-keyword,
+.theme-light .fp-hl.cq .hljs-keyword.hljs-type { color: oklch(0.4 0.18 295); }
+.theme-light .fp-hl.cq .hljs-string,
+.theme-light .fp-hl.cq .hljs-regexp,
+.theme-light .fp-hl.cq .hljs-symbol,
+.theme-light .fp-hl.cq .hljs-char.escape_,
+.theme-light .fp-hl.cq .hljs-meta .hljs-string { color: oklch(0.42 0.14 110); }
+.theme-light .fp-hl.cq .hljs-number,
+.theme-light .fp-hl.cq .hljs-literal { color: oklch(0.5 0.16 50); }
+.theme-light .fp-hl.cq .hljs-built_in,
+.theme-light .fp-hl.cq .hljs-title.function_,
+.theme-light .fp-hl.cq .hljs-attr,
+.theme-light .fp-hl.cq .hljs-variable.language_,
+.theme-light .fp-hl.cq .hljs-selector-tag { color: oklch(0.45 0.13 220); }
+.theme-light .fp-hl.cq .hljs-title,
+.theme-light .fp-hl.cq .hljs-title.class_,
+.theme-light .fp-hl.cq .hljs-type,
+.theme-light .fp-hl.cq .hljs-attribute,
+.theme-light .fp-hl.cq .hljs-tag,
+.theme-light .fp-hl.cq .hljs-name,
+.theme-light .fp-hl.cq .hljs-section,
+.theme-light .fp-hl.cq .hljs-selector-class,
+.theme-light .fp-hl.cq .hljs-selector-id,
+.theme-light .fp-hl.cq .hljs-doctag { color: oklch(0.4 0.09 200); }

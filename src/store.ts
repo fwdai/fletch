@@ -123,6 +123,7 @@ export type WorkspaceView = "custom" | "native";
 
 export interface FeatureFlags {
   git: boolean;
+  files: boolean;
   diff: boolean;
   run: boolean;
   terminal: boolean;
@@ -134,6 +135,7 @@ export interface FeatureFlags {
 
 const DEFAULT_FEATURES: FeatureFlags = {
   git: true,
+  files: true,
   diff: false,
   run: false,
   terminal: false,
@@ -236,6 +238,10 @@ interface AppState {
 
   // ── appearance & feature flags ────────────────────────────────────────────
   theme: ThemeMode;
+  /** Syntax-highlighting theme for the File panel editor. "quorum" = the
+   *  built-in palette; other ids map to a highlight.js theme family that
+   *  follows the app's light/dark mode. See data/codeThemes.ts. */
+  codeTheme: string;
   accent: string;
   density: Density;
   showLandmarks: boolean;
@@ -293,6 +299,7 @@ interface AppState {
 
   // appearance
   setTheme: (t: ThemeMode) => void;
+  setCodeTheme: (id: string) => void;
   setAccent: (a: string) => void;
   setDensity: (d: Density) => void;
   setShowLandmarks: (v: boolean) => void;
@@ -487,6 +494,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   rightWidth: 520,
 
   theme: "dark" as ThemeMode,
+  codeTheme: "quorum",
   accent: "copper",
   density: "comfortable" as Density,
   showLandmarks: true,
@@ -503,6 +511,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const s = await getAllSettings();
       set({
         theme: (s.theme as ThemeMode) || "dark",
+        codeTheme: s.codeTheme || "quorum",
         accent: s.accent || "copper",
         density: (s.density as Density) || "comfortable",
         showLandmarks: s.showLandmarks !== "false",
@@ -1171,6 +1180,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTheme: (t) => {
     set({ theme: t });
     setSetting("theme", t);
+  },
+  setCodeTheme: (id) => {
+    set({ codeTheme: id });
+    setSetting("codeTheme", id);
   },
   setAccent: (a) => {
     set({ accent: a });

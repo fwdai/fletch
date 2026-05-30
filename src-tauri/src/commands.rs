@@ -1,14 +1,16 @@
 //! Tauri IPC command handlers — the thin frontend-facing surface.
 
+use serde::Serialize;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::gh::{self, PrState};
 use crate::git;
-use crate::git_state::{self, GitState, ShortStats};
+use crate::git_state::{self, FileStatus, GitState, ShortStats, StatusKind};
 use crate::names;
 use crate::run_session::RunStateSnapshot;
 use crate::supervisor::Supervisor;
@@ -500,4 +502,237 @@ pub async fn get_all_shortstats(
         }
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// File panel — browse the worktree, view & edit file contents.
+// ---------------------------------------------------------------------------
+
+/// Largest file the viewer will load. Bigger files report `too_large` so
+/// the UI shows a "no preview" notice instead of choking the editor.
+const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// One entry in the worktree file list. Directories are derived on the
+/// frontend from the path segments; only files are sent over IPC.
+#[derive(Serialize)]
+pub struct WorktreeFile {
+    pub path: String,
+    /// Git status vs the parent branch: "M" | "A" | "D" | "R" (None = clean).
+    pub status: Option<String>,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+/// A single file's contents plus the metadata the editor needs.
+#[derive(Serialize)]
+pub struct WorktreeFileContents {
+    pub text: String,
+    /// File-extension hint (e.g. "ts", "rs", "py"); "" when unknown.
+    pub lang: String,
+    pub status: Option<String>,
+    /// 1-indexed line numbers the agent added / modified (change gutter).
+    pub chg_add: Vec<u32>,
+    pub chg_mod: Vec<u32>,
+    pub binary: bool,
+    pub too_large: bool,
+}
+
+/// Collapse a rich git status into the single-letter code the panel renders.
+/// Untracked reads as added; conflicted reads as modified.
+fn status_code(kind: &StatusKind) -> &'static str {
+    match kind {
+        StatusKind::Modified | StatusKind::Conflicted => "M",
+        StatusKind::Added | StatusKind::Untracked => "A",
+        StatusKind::Deleted => "D",
+        StatusKind::Renamed => "R",
+    }
+}
+
+/// Map a path's extension to a language hint for the highlighter.
+fn lang_for(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// Join a caller-supplied relative path onto the worktree root, rejecting
+/// anything that could escape it (absolute paths, `..`, drive prefixes).
+fn safe_join(worktree: &Path, rel: &str) -> Result<PathBuf> {
+    let p = Path::new(rel);
+    let escapes = p.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    });
+    if p.is_absolute() || escapes || rel.is_empty() {
+        return Err(Error::InvalidPath(rel.to_string()));
+    }
+    Ok(worktree.join(p))
+}
+
+/// Resolve the agent's primary worktree and its parent ref.
+fn primary_worktree(
+    supervisor: &Supervisor,
+    agent_id: &str,
+) -> Result<(PathBuf, String)> {
+    let record = supervisor.workspace.agent(agent_id)?;
+    let repo = record
+        .repos
+        .first()
+        .ok_or_else(|| Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(agent_id, &repo.subdir)?;
+    let parent = repo.parent_branch.clone().unwrap_or_else(|| "main".to_string());
+    Ok((worktree, parent))
+}
+
+/// List the agent's worktree files (tracked + untracked), each tagged with
+/// its git status vs the parent branch. Deleted files are included so the
+/// tree can still surface them.
+#[tauri::command]
+pub async fn list_worktree_tree(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Vec<WorktreeFile>> {
+    let (worktree, parent) = primary_worktree(&supervisor, &agent_id)?;
+
+    let state = git_state::query(&worktree, &parent).await.ok();
+    let status_for = |path: &str| -> Option<&FileStatus> {
+        state.as_ref()?.files.iter().find(|f| f.path == path)
+    };
+
+    let mut paths: BTreeSet<String> =
+        git::list_files(&worktree).await.unwrap_or_default().into_iter().collect();
+    if let Some(s) = &state {
+        for f in &s.files {
+            paths.insert(f.path.clone());
+        }
+    }
+
+    Ok(paths
+        .into_iter()
+        .map(|path| {
+            let st = status_for(&path);
+            WorktreeFile {
+                status: st.map(|f| status_code(&f.kind).to_string()),
+                additions: st.map(|f| f.additions).unwrap_or(0),
+                deletions: st.map(|f| f.deletions).unwrap_or(0),
+                path,
+            }
+        })
+        .collect())
+}
+
+/// Read a worktree file for the viewer/editor: contents, language hint,
+/// git status, and the changed-line numbers driving the gutter.
+#[tauri::command]
+pub async fn read_worktree_file(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    path: String,
+) -> Result<WorktreeFileContents> {
+    let (worktree, parent) = primary_worktree(&supervisor, &agent_id)?;
+    let abs = safe_join(&worktree, &path)?;
+    let lang = lang_for(&path);
+
+    let state = git_state::query(&worktree, &parent).await.ok();
+    let status = state
+        .as_ref()
+        .and_then(|s| s.files.iter().find(|f| f.path == path))
+        .map(|f| status_code(&f.kind).to_string());
+
+    let empty = |text: String, binary: bool, too_large: bool| WorktreeFileContents {
+        text,
+        lang: lang.clone(),
+        status: status.clone(),
+        chg_add: vec![],
+        chg_mod: vec![],
+        binary,
+        too_large,
+    };
+
+    // Deleted by the agent: the file is gone from disk, so show its prior
+    // contents from the parent ref (the design lets you re-create it).
+    if status.as_deref() == Some("D") {
+        let text = git::show_file(&worktree, &parent, &path).await.unwrap_or_default();
+        return Ok(empty(text, false, false));
+    }
+
+    if !abs.is_file() {
+        return Ok(empty(String::new(), false, false));
+    }
+    if std::fs::metadata(&abs)?.len() > MAX_FILE_BYTES {
+        return Ok(empty(String::new(), false, true));
+    }
+    let bytes = std::fs::read(&abs)?;
+    if bytes.contains(&0) {
+        return Ok(empty(String::new(), true, false));
+    }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+
+    let (chg_add, chg_mod) = if matches!(status.as_deref(), Some("M") | Some("R")) {
+        git::file_changed_lines(&worktree, &parent, &path)
+            .await
+            .unwrap_or_default()
+    } else {
+        (vec![], vec![])
+    };
+
+    Ok(WorktreeFileContents {
+        text,
+        lang,
+        status,
+        chg_add,
+        chg_mod,
+        binary: false,
+        too_large: false,
+    })
+}
+
+/// Overwrite a worktree file with new contents (the editor's Save / Revert).
+#[tauri::command]
+pub async fn write_worktree_file(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    path: String,
+    contents: String,
+) -> Result<()> {
+    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
+    let abs = safe_join(&worktree, &path)?;
+    if let Some(dir) = abs.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&abs, contents)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod safe_join_tests {
+    use super::safe_join;
+    use std::path::Path;
+
+    #[test]
+    fn accepts_nested_relative_path() {
+        let wt = Path::new("/tmp/wt");
+        assert_eq!(
+            safe_join(wt, "src/server/checkout.ts").unwrap(),
+            wt.join("src/server/checkout.ts")
+        );
+    }
+
+    #[test]
+    fn rejects_parent_traversal() {
+        let wt = Path::new("/tmp/wt");
+        assert!(safe_join(wt, "../secrets").is_err());
+        assert!(safe_join(wt, "src/../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn rejects_absolute_and_empty() {
+        let wt = Path::new("/tmp/wt");
+        assert!(safe_join(wt, "/etc/passwd").is_err());
+        assert!(safe_join(wt, "").is_err());
+    }
 }
