@@ -23,6 +23,12 @@ import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 import { getAllSettings, setSetting } from "./storage/settings";
 import { deleteMessages, insertMessage } from "./storage/messages";
+import {
+  getOrCreateAccount,
+  saveAccountProfile,
+  toProfile,
+  type AccountProfile,
+} from "./storage/accounts";
 
 type OutputHandler = (bytes: Uint8Array) => void;
 
@@ -120,6 +126,7 @@ export interface DraftAgent {
 export type ThemeMode = "dark" | "light";
 export type Density = "comfortable" | "compact";
 export type WorkspaceView = "custom" | "native";
+export type SettingsSection = "general" | "account" | "providers";
 
 export interface FeatureFlags {
   git: boolean;
@@ -223,7 +230,14 @@ interface AppState {
 
   drafts: DraftAgent[];
   activeDraftId: string | null;
+  /** Quick-settings popover (gear / ⌘,). */
   settingsOpen: boolean;
+  /** Dedicated full-screen settings surface (General / Account / Providers).
+   *  Replaces the workspace panes while open. */
+  settingsScreenOpen: boolean;
+  settingsSection: SettingsSection;
+  /** Local account profile, loaded on init. `null` until the row is read. */
+  account: AccountProfile | null;
   /** When true the workspace pane shows archived-session history instead
    *  of the selected agent / draft. Treated as a separate "mode" that wins
    *  over `selectedAgentId` / `activeDraftId` for rendering. */
@@ -290,6 +304,12 @@ interface AppState {
 
   // UI
   toggleSettings: (open?: boolean) => void;
+  openSettingsScreen: (section?: SettingsSection) => void;
+  closeSettingsScreen: () => void;
+  setSettingsSection: (section: SettingsSection) => void;
+  saveAccount: (
+    patch: Pick<AccountProfile, "firstName" | "lastName" | "email">,
+  ) => Promise<void>;
   toggleHistory: (open?: boolean) => void;
   selectHistoryAgent: (id: string | null) => void;
   toggleLeft: () => void;
@@ -486,6 +506,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   drafts: [],
   activeDraftId: null,
   settingsOpen: false,
+  settingsScreenOpen: false,
+  settingsSection: "general" as SettingsSection,
+  account: null,
   historyOpen: false,
   selectedHistoryAgentId: null,
   leftCollapsed: false,
@@ -521,6 +544,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     } catch {
       // First launch or DB not ready — defaults are fine.
+    }
+
+    // Load (or lazily create) the single local account profile.
+    try {
+      const row = await getOrCreateAccount();
+      set({ account: toProfile(row) });
+    } catch {
+      // Non-fatal — Account screen shows empty fields until a save succeeds.
     }
 
     await onAgentOutput((e) => {
@@ -1161,6 +1192,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ── UI ──────────────────────────────────────────────────────────────────────
   toggleSettings: (open) =>
     set((s) => ({ settingsOpen: open ?? !s.settingsOpen })),
+  openSettingsScreen: (section) =>
+    set((s) => ({
+      settingsScreenOpen: true,
+      settingsSection: section ?? s.settingsSection,
+      // The full screen takes over — dismiss the quick popover behind it.
+      settingsOpen: false,
+    })),
+  closeSettingsScreen: () => set({ settingsScreenOpen: false }),
+  setSettingsSection: (section) => set({ settingsSection: section }),
+  saveAccount: async (patch) => {
+    const current = get().account;
+    if (!current) return;
+    try {
+      await saveAccountProfile(current.id, patch);
+      set({ account: { ...current, ...patch } });
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
   toggleHistory: (open) =>
     set((s) => {
       const next = open ?? !s.historyOpen;
