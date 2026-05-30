@@ -22,7 +22,7 @@ wrangler deploy
 
 ## Custom domain
 
-`wrangler.toml` binds the Worker to `updates.quorum.app`, which is the URL in
+`wrangler.toml` binds the Worker to `updater.quorum.fwdai.org`, which is the URL in
 `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`. The domain must be on
 your Cloudflare account; Wrangler provisions the custom-domain route on deploy.
 If you use a different host, update both `wrangler.toml` and `tauri.conf.json`.
