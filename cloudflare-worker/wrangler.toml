@@ -7,3 +7,7 @@ compatibility_date = "2025-01-01"
 routes = [
   { pattern = "updater.quorum.fwdai.org", custom_domain = true }
 ]
+
+# Keep dashboard-managed settings in the config so they survive `wrangler deploy`.
+[observability]
+enabled = false
