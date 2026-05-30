@@ -43,6 +43,19 @@ export function formatAge(iso: string, nowMs: number): string {
   return `${days}d`;
 }
 
+/** Up-to-two-letter avatar initials: first + last initial, falling back to
+ *  the email's first character, then a neutral placeholder. */
+export function accountInitials(
+  first: string,
+  last: string,
+  email = "",
+): string {
+  const combined = `${first.trim()[0] ?? ""}${last.trim()[0] ?? ""}`.toUpperCase();
+  if (combined) return combined;
+  const e = email.trim()[0];
+  return e ? e.toUpperCase() : "?";
+}
+
 export function formatTokens(n: number): string {
   if (n < 1_000) return `${n}`;
   if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;

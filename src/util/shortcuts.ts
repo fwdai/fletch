@@ -8,6 +8,7 @@ export function useGlobalShortcuts() {
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const toggleRight = useAppStore((s) => s.toggleRight);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
+  const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
   const setTheme = useAppStore((s) => s.setTheme);
   const theme = useAppStore((s) => s.theme);
   const createDraft = useAppStore((s) => s.createDraft);
@@ -43,9 +44,10 @@ export function useGlobalShortcuts() {
         if (active) createDraft(active);
       } else if (e.key === "Escape" && !inField) {
         toggleSettings(false);
+        closeSettingsScreen();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleLeft, toggleRight, toggleSettings, setTheme, theme, createDraft, workspace, selectedAgentId]);
+  }, [toggleLeft, toggleRight, toggleSettings, closeSettingsScreen, setTheme, theme, createDraft, workspace, selectedAgentId]);
 }

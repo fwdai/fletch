@@ -65,6 +65,7 @@ function Popover({ onClose }: { onClose: () => void }) {
   const setDensity = useAppStore((s) => s.setDensity);
   const showLandmarks = useAppStore((s) => s.showLandmarks);
   const setShowLandmarks = useAppStore((s) => s.setShowLandmarks);
+  const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
 
   return (
     <div className="settings-pop">
@@ -146,6 +147,13 @@ function Popover({ onClose }: { onClose: () => void }) {
           </SettingsRow>
         ))}
       </SettingsSection>
+
+      <button className="sp-allbtn" onClick={() => openSettingsScreen("general")}>
+        <Icon name="settings" size={13} />
+        <span>All settings</span>
+        <span className="grow" />
+        <Icon name="chevR" size={12} />
+      </button>
     </div>
   );
 }

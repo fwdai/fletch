@@ -6,6 +6,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
 import { RightPanel } from "./components/RightPanel";
 import { Settings } from "./components/Settings";
+import { SettingsScreen } from "./components/SettingsScreen";
 import { History } from "./components/History";
 import { useSplitter } from "./util/splitter";
 import { useGlobalShortcuts } from "./util/shortcuts";
@@ -31,6 +32,7 @@ export function App() {
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
   const workspace = useAppStore((s) => s.workspace);
   const historyOpen = useAppStore((s) => s.historyOpen);
+  const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
 
   useEffect(() => { init(); }, [init]);
 
@@ -63,37 +65,43 @@ export function App() {
     <div className="app">
       <TitleBar />
       <div className="main">
-        <div
-          className={`pane left ${leftCollapsed ? "collapsed" : ""}`}
-          style={{ width: leftCollapsed ? 0 : leftWidth }}
-        >
-          {!leftCollapsed && <Sidebar />}
-        </div>
-        {!leftCollapsed && <div className="splitter" onMouseDown={onLeftDrag} />}
+        {settingsScreenOpen ? (
+          <SettingsScreen />
+        ) : (
+          <>
+            <div
+              className={`pane left ${leftCollapsed ? "collapsed" : ""}`}
+              style={{ width: leftCollapsed ? 0 : leftWidth }}
+            >
+              {!leftCollapsed && <Sidebar />}
+            </div>
+            {!leftCollapsed && <div className="splitter" onMouseDown={onLeftDrag} />}
 
-        <Workspace />
+            <Workspace />
 
-        {rightPaneVisible && <div className="splitter" onMouseDown={onRightDrag} />}
-        {!activeDraftId && (
-          <div
-            className={`pane right ${rightCollapsed ? "collapsed" : ""}`}
-            style={{
-              // Default to the stored width, but never wider than a 50:50
-              // split with the center pane. `100%` resolves against `.main`,
-              // so subtracting the left pane leaves the center+right region;
-              // half of that is the even-split cap. Window/left resizes
-              // recompute it automatically (no measurement needed).
-              width: rightCollapsed
-                ? 0
-                : `min(${rightWidth}px, calc((100% - ${
-                    leftCollapsed ? 0 : leftWidth
-                  }px) / 2))`,
-            }}
-          >
-            {!rightCollapsed && selectedAgent && (
-              <RightPanel agent={selectedAgent} />
+            {rightPaneVisible && <div className="splitter" onMouseDown={onRightDrag} />}
+            {!activeDraftId && (
+              <div
+                className={`pane right ${rightCollapsed ? "collapsed" : ""}`}
+                style={{
+                  // Default to the stored width, but never wider than a 50:50
+                  // split with the center pane. `100%` resolves against `.main`,
+                  // so subtracting the left pane leaves the center+right region;
+                  // half of that is the even-split cap. Window/left resizes
+                  // recompute it automatically (no measurement needed).
+                  width: rightCollapsed
+                    ? 0
+                    : `min(${rightWidth}px, calc((100% - ${
+                        leftCollapsed ? 0 : leftWidth
+                      }px) / 2))`,
+                }}
+              >
+                {!rightCollapsed && selectedAgent && (
+                  <RightPanel agent={selectedAgent} />
+                )}
+              </div>
             )}
-          </div>
+          </>
         )}
       </div>
 
