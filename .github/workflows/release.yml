@@ -2,9 +2,9 @@ name: Release
 
 # Manual only. Bump `version` in src-tauri/tauri.conf.json (and keep
 # package.json + Cargo.toml in sync) before running. This builds, signs, and
-# notarizes a universal macOS app and creates a DRAFT GitHub release with the
-# .dmg, the updater artifact (.app.tar.gz + .sig), and latest.json. Publishing
-# the draft makes it available to the in-app auto-updater.
+# notarizes a universal macOS app and creates a PUBLISHED GitHub release with
+# the .dmg, the updater artifact (.app.tar.gz + .sig), and latest.json.
+# Publishing makes it available to the in-app auto-updater.
 on:
   workflow_dispatch:
 
@@ -35,7 +35,7 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build, sign, notarize and draft release
+      - name: Build, sign, notarize and publish release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,7 +53,13 @@ jobs:
           tagName: v__VERSION__
           releaseName: Quorum v__VERSION__
           releaseBody: See the assets to download and install this version.
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           tauriScript: bun run tauri
           args: --target universal-apple-darwin
+
+      # Kick off a Cloudflare Workers Builds deploy of the marketing site
+      # (fwdai/quorum-web) so it rebuilds against the freshly published release.
+      # WEB_DEPLOY_HOOK is the deploy-hook URL from the Worker's Settings > Builds.
+      - name: Trigger website redeploy
+        run: curl -fsS -X POST "${{ secrets.WEB_DEPLOY_HOOK }}"
