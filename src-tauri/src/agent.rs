@@ -20,8 +20,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
-use crate::codex_session::{CodexSession, CodexSpawn};
 use crate::error::{Error, Result};
+use crate::exec_session::{ExecCallbacks, ExecSession, ExecSpawn};
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
@@ -31,9 +31,10 @@ const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 pub enum Agent {
     Pty(PtyAgent),
     Managed(ManagedAgent),
-    /// Codex's per-turn `exec` runner. Holds no live process between
-    /// turns; each user message spawns a fresh `codex exec`.
-    CodexManaged(CodexManagedAgent),
+    /// A per-turn runner (codex, cursor): holds no live process between
+    /// turns; each user message spawns a fresh process. The agent
+    /// sandboxes itself, so there's no sandbox-exec profile.
+    PerTurn(PerTurnAgent),
 }
 
 pub struct PtyAgent {
@@ -46,17 +47,17 @@ pub struct ManagedAgent {
     _profile_file: tempfile::NamedTempFile,
 }
 
-pub struct CodexManagedAgent {
-    session: CodexSession,
+pub struct PerTurnAgent {
+    session: ExecSession,
 }
 
-/// Parameters for spawning a Codex runner. Unlike `SpawnSpec` there's
-/// no sandbox profile (codex sandboxes itself) and the session id is
-/// optional — codex assigns one on the first turn.
-pub struct CodexSpawnSpec {
-    /// Codex's working directory — the primary repo's worktree.
+/// Parameters for spawning a per-turn runner. Unlike `SpawnSpec` there's
+/// no sandbox profile (the agent sandboxes itself) and the session id is
+/// optional — these agents assign one on the first turn.
+pub struct PerTurnSpec {
+    /// The agent's working directory — the primary repo's worktree.
     pub cwd: PathBuf,
-    /// Codex thread id to resume, if one has been captured already.
+    /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
 }
 
@@ -148,14 +149,10 @@ impl Agent {
         }))
     }
 
-    /// Build a Codex per-turn runner. Spawns no process yet — the first
-    /// `codex exec` is launched when the first user message arrives.
-    /// `on_turn_exit(success)` fires when a turn's process exits (and that
-    /// turn is still the current one) — the per-turn analogue of the
-    /// turn-end signal, so an interrupted or failed turn that never emits
-    /// `turn.completed` still leaves the agent promptly.
+    /// Build a Codex per-turn runner (`codex exec [resume <id>] --json`).
+    /// See `spawn_per_turn` for the shared lifecycle.
     pub fn spawn_codex<F, G, H>(
-        spec: CodexSpawnSpec,
+        spec: PerTurnSpec,
         on_event: F,
         on_session_id: G,
         on_turn_exit: H,
@@ -167,33 +164,94 @@ impl Agent {
     {
         let home = dirs::home_dir()
             .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let codex = resolve_codex(&home)?;
+        let program = PathBuf::from(resolve_codex(&home)?);
+        Self::spawn_per_turn(
+            program,
+            spec,
+            codex_build_args,
+            codex_session_id,
+            ExecCallbacks {
+                on_event,
+                on_session_id,
+                on_exit: on_turn_exit,
+            },
+        )
+    }
 
+    /// Build a Cursor per-turn runner
+    /// (`cursor-agent -p --output-format stream-json [--resume <id>]`).
+    /// Cursor emits Claude-shaped stream-json events, so it reuses the
+    /// Claude reducer + `result`-based turn-end on the frontend.
+    pub fn spawn_cursor<F, G, H>(
+        spec: PerTurnSpec,
+        on_event: F,
+        on_session_id: G,
+        on_turn_exit: H,
+    ) -> Result<Self>
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+        G: Fn(String) + Send + Sync + 'static,
+        H: Fn(bool) + Send + Sync + 'static,
+    {
+        let home = dirs::home_dir()
+            .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let program = PathBuf::from(resolve_cursor(&home)?);
+        Self::spawn_per_turn(
+            program,
+            spec,
+            cursor_build_args,
+            cursor_session_id,
+            ExecCallbacks {
+                on_event,
+                on_session_id,
+                on_exit: on_turn_exit,
+            },
+        )
+    }
+
+    /// Shared per-turn runner. Spawns no process yet — the first turn is
+    /// launched when the first user message arrives. `on_exit(success)`
+    /// fires when a turn's process exits (and that turn is still current)
+    /// — the per-turn analogue of a turn-end signal, so an interrupted or
+    /// failed turn that never emits an in-band turn-end still leaves the
+    /// agent promptly.
+    fn spawn_per_turn<A, I, F, G, H>(
+        program: PathBuf,
+        spec: PerTurnSpec,
+        build_args: A,
+        extract_session_id: I,
+        cb: ExecCallbacks<F, G, H>,
+    ) -> Result<Self>
+    where
+        A: Fn(&str, Option<&str>) -> Vec<String> + Send + Sync + 'static,
+        I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
+        F: Fn(Value) + Send + Sync + 'static,
+        G: Fn(String) + Send + Sync + 'static,
+        H: Fn(bool) + Send + Sync + 'static,
+    {
         tracing::info!(
-            codex = %codex,
+            program = %program.display(),
             cwd = %spec.cwd.display(),
             resume = spec.session_id.is_some(),
-            "preparing codex runner"
+            "preparing per-turn runner"
         );
-
-        let session = CodexSession::new(
-            CodexSpawn {
-                codex: PathBuf::from(codex),
+        let session = ExecSession::new(
+            ExecSpawn {
+                program,
                 cwd: spec.cwd,
                 session_id: spec.session_id,
             },
-            on_event,
-            on_session_id,
-            on_turn_exit,
+            build_args,
+            extract_session_id,
+            cb,
         );
-
-        Ok(Self::CodexManaged(CodexManagedAgent { session }))
+        Ok(Self::PerTurn(PerTurnAgent { session }))
     }
 
     pub fn write_pty(&self, bytes: &[u8]) -> Result<()> {
         match self {
             Self::Pty(a) => a.pty.write(bytes),
-            Self::Managed(_) | Self::CodexManaged(_) => Err(Error::Other(
+            Self::Managed(_) | Self::PerTurn(_) => Err(Error::Other(
                 "write_pty called on a managed agent".into(),
             )),
         }
@@ -202,7 +260,7 @@ impl Agent {
     pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
         match self {
             Self::Managed(a) => a.session.send_user_message(text, attachments),
-            Self::CodexManaged(a) => a.session.send_user_message(text, attachments),
+            Self::PerTurn(a) => a.session.send_user_message(text, attachments),
             Self::Pty(_) => Err(Error::Other(
                 "send_user_message called on pty agent".into(),
             )),
@@ -219,7 +277,7 @@ impl Agent {
             Self::Managed(a) => {
                 a.session.interrupt();
             }
-            Self::CodexManaged(a) => {
+            Self::PerTurn(a) => {
                 a.session.interrupt();
             }
         }
@@ -228,7 +286,7 @@ impl Agent {
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         match self {
             Self::Pty(a) => a.pty.resize(cols, rows),
-            Self::Managed(_) | Self::CodexManaged(_) => Ok(()),
+            Self::Managed(_) | Self::PerTurn(_) => Ok(()),
         }
     }
 
@@ -342,6 +400,79 @@ fn resolve_claude(home: &Path) -> Result<String> {
 
 fn resolve_codex(home: &Path) -> Result<String> {
     resolve_agent_bin("codex", "Codex", home)
+}
+
+fn resolve_cursor(home: &Path) -> Result<String> {
+    resolve_agent_bin("cursor-agent", "Cursor", home)
+}
+
+// ── per-turn provider configs ────────────────────────────────────────────
+
+/// Codex: `codex exec [resume <id>] --json …`. Approvals off + codex's own
+/// workspace-write sandbox on, via `-c` (works on both `exec` and
+/// `exec resume`, unlike the `-s`/`-a` flags). Quorum does not wrap codex
+/// in sandbox-exec; codex sandboxes itself.
+fn codex_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["exec".into()];
+    if let Some(id) = session_id {
+        args.push("resume".into());
+        args.push(id.to_string());
+    }
+    args.push("--json".into());
+    args.push("--skip-git-repo-check".into());
+    args.push("-c".into());
+    args.push("approval_policy=\"never\"".into());
+    args.push("-c".into());
+    args.push("sandbox_mode=\"workspace-write\"".into());
+    args.push(prompt.to_string());
+    args
+}
+
+/// Codex assigns its thread id on the first turn via `thread.started`.
+fn codex_session_id(event: &Value) -> Option<String> {
+    if event.get("type").and_then(|t| t.as_str()) != Some("thread.started") {
+        return None;
+    }
+    event
+        .get("thread_id")
+        .and_then(|t| t.as_str())
+        .map(str::to_string)
+}
+
+/// Cursor: `cursor-agent -p --output-format stream-json --force [--resume <id>] <prompt>`.
+/// `--force` runs commands without approval prompts; `--trust` trusts the
+/// workspace in headless mode. Cursor's own sandbox applies; cwd comes from
+/// the child process working directory.
+fn cursor_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-p".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--force".into(),
+        "--trust".into(),
+    ];
+    if let Some(id) = session_id {
+        args.push("--resume".into());
+        args.push(id.to_string());
+    }
+    // Prompt is positional and must come after options.
+    args.push(prompt.to_string());
+    args
+}
+
+/// Cursor assigns its session id on the first turn, reported on the
+/// `system`/`init` event (and echoed on every later event).
+fn cursor_session_id(event: &Value) -> Option<String> {
+    if event.get("type").and_then(|t| t.as_str()) != Some("system") {
+        return None;
+    }
+    if event.get("subtype").and_then(|s| s.as_str()) != Some("init") {
+        return None;
+    }
+    event
+        .get("session_id")
+        .and_then(|s| s.as_str())
+        .map(str::to_string)
 }
 
 /// Locate an agent CLI by name: PATH first, then the user's login shell

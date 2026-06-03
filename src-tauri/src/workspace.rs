@@ -934,6 +934,13 @@ impl WorkspaceManager {
     }
 }
 
+/// Per-turn agents run one process per turn, assign their own session id
+/// (captured from their first turn's events rather than generated up
+/// front), and render only in the structured (Custom) view for now.
+pub fn is_per_turn_provider(provider: &str) -> bool {
+    matches!(provider, "codex" | "cursor")
+}
+
 /// Build a fresh AgentRecord with one primary tracked repo.
 pub fn new_agent_record(
     id: String,
@@ -944,9 +951,10 @@ pub fn new_agent_record(
     view: AgentView,
 ) -> AgentRecord {
     // Claude attaches to a session id we generate up front (passed as
-    // `--session-id`). Codex assigns its own thread id on the first turn
-    // (captured from `thread.started`), so it starts with none.
-    let session_id = if provider == "codex" {
+    // `--session-id`). Per-turn agents (codex, cursor) assign their own id
+    // on the first turn (captured from their events), so they start with
+    // none.
+    let session_id = if is_per_turn_provider(&provider) {
         None
     } else {
         Some(uuid::Uuid::new_v4().to_string())
