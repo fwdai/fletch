@@ -210,7 +210,7 @@ impl Agent {
     }
 
     /// Build an OpenCode per-turn runner
-    /// (`opencode run --format json --dangerously-skip-permissions [-s <id>]`).
+    /// (`opencode run --format json --dangerously-skip-permissions [--session <id>]`).
     /// OpenCode emits its own step/part event schema (see `src/adapters/opencode`),
     /// so the frontend reduces it with a dedicated reducer; the lifecycle is the
     /// shared `spawn_per_turn`.
@@ -511,7 +511,7 @@ fn cursor_session_id(event: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// OpenCode: `opencode run --format json --dangerously-skip-permissions [-s <id>] <prompt>`.
+/// OpenCode: `opencode run --format json --dangerously-skip-permissions [--session <id>] <prompt>`.
 /// `--dangerously-skip-permissions` auto-approves tools (incl. shell + file
 /// writes) so turns run unattended; verified end-to-end against opencode
 /// 1.15.12. OpenCode runs in the child's cwd (no `--dir` needed) and assigns

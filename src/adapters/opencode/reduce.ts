@@ -143,14 +143,6 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       ];
     }
 
-    // Synthetic user turn from transcript replay (not wired in v1 — see
-    // ./normalize.ts); kept for symmetry with the other adapters.
-    case "user": {
-      const text = typeof ev.text === "string" ? ev.text : "";
-      if (!text) return prev;
-      return dedupAgainstLast(prev, { kind: "user_message", text });
-    }
-
     default:
       return prev;
   }

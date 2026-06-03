@@ -8,10 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-use crate::activity::{
-    Activity, ClaudeManagedActivity, ClaudeNativeActivity, CodexManagedActivity,
-    OpenCodeManagedActivity,
-};
+use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
 use crate::agent::{Agent, PerTurnSpec, SpawnSpec};
 use crate::branding;
 use crate::error::{Error, Result};
@@ -510,15 +507,15 @@ impl Supervisor {
         };
 
         let mut activity: Box<dyn Activity> = match provider.as_str() {
-            "codex" => Box::new(CodexManagedActivity::new()),
+            "codex" => Box::new(ManagedActivity::codex()),
             // cursor emits Claude-shaped stream-json, incl. a `result`
             // turn-end event — reuse the Claude managed detector.
-            "cursor" => Box::new(ClaudeManagedActivity::new()),
+            "cursor" => Box::new(ManagedActivity::claude()),
             // opencode ends a turn on a `step_finish` with reason "stop".
-            "opencode" => Box::new(OpenCodeManagedActivity::new()),
+            "opencode" => Box::new(ManagedActivity::opencode()),
             _ => match record.view {
                 AgentView::Native => Box::new(ClaudeNativeActivity::new()),
-                AgentView::Custom => Box::new(ClaudeManagedActivity::new()),
+                AgentView::Custom => Box::new(ManagedActivity::claude()),
             },
         };
         if effective_fresh {
