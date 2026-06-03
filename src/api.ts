@@ -135,6 +135,9 @@ export interface GitState {
   parent_branch: string;
   ahead: number;
   behind: number;
+  /** Commits on HEAD not yet on the upstream — how many a push would send.
+   *  Distinct from `ahead` (measured vs the base branch). */
+  unpushed: number;
   files: FileStatus[];
   additions: number;
   deletions: number;
@@ -241,8 +244,9 @@ export const api = {
     invoke<Record<string, ShortStats>>("get_all_shortstats"),
   getPrState: (agentId: string) =>
     invoke<PrState | null>("get_pr_state", { agentId }),
-  pushAgent: (agentId: string) => invoke<void>("push_agent", { agentId }),
+  pushAgent: (agentId: string) => invoke<string>("push_agent", { agentId }),
   pullAgent: (agentId: string) => invoke<void>("pull_agent", { agentId }),
+  rebaseAgent: (agentId: string) => invoke<void>("rebase_agent", { agentId }),
   commitAgent: (agentId: string, message: string) =>
     invoke<void>("commit_agent", { agentId, message }),
   discardAgentChanges: (agentId: string) =>

@@ -18,6 +18,11 @@ pub struct GitState {
     pub parent_branch: String,
     pub ahead: u32,
     pub behind: u32,
+    /// Commits on HEAD not yet on the upstream (origin) branch — i.e. how many
+    /// commits a push would actually send. Distinct from `ahead`, which is
+    /// measured against the base branch. When there is no upstream yet (branch
+    /// never pushed), this falls back to `ahead`.
+    pub unpushed: u32,
     pub files: Vec<FileStatus>,
     pub additions: u32,
     pub deletions: u32,
@@ -70,6 +75,7 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
                 parent_branch: parent_branch.to_string(),
                 ahead: 0,
                 behind: 0,
+                unpushed: 0,
                 files: vec![],
                 additions: 0,
                 deletions: 0,
@@ -77,8 +83,11 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
         }
     };
 
-    // 2. Ahead / behind
+    // 2. Ahead / behind (vs base), and unpushed (vs upstream)
     let (ahead, behind) = query_ahead_behind(worktree_path, parent_branch).await;
+    // No upstream yet → nothing has been pushed, so every base-ahead commit is
+    // effectively unpushed.
+    let unpushed = query_unpushed(worktree_path).await.unwrap_or(ahead);
 
     // 3. File list from `git status --porcelain=v1`
     let mut files = match run_status(worktree_path).await {
@@ -108,6 +117,7 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
         parent_branch: parent_branch.to_string(),
         ahead,
         behind,
+        unpushed,
         files,
         additions,
         deletions,
@@ -117,6 +127,23 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
 // ---------------------------------------------------------------------------
 // Private helpers — subprocess runners
 // ---------------------------------------------------------------------------
+
+/// Count commits on HEAD not yet on the upstream branch. Returns `None` when
+/// there is no upstream configured (branch never pushed), so the caller can
+/// fall back appropriately.
+async fn query_unpushed(worktree_path: &Path) -> Option<u32> {
+    let out = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["rev-list", "--count", "@{upstream}..HEAD"])
+        .output()
+        .await
+        .ok()?;
+    // Non-zero exit means no upstream is configured for the branch.
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
 
 async fn query_ahead_behind(worktree_path: &Path, parent_branch: &str) -> (u32, u32) {
     let out = Command::new("git")
