@@ -209,6 +209,38 @@ impl Agent {
         )
     }
 
+    /// Build an OpenCode per-turn runner
+    /// (`opencode run --format json --dangerously-skip-permissions [-s <id>]`).
+    /// OpenCode emits its own step/part event schema (see `src/adapters/opencode`),
+    /// so the frontend reduces it with a dedicated reducer; the lifecycle is the
+    /// shared `spawn_per_turn`.
+    pub fn spawn_opencode<F, G, H>(
+        spec: PerTurnSpec,
+        on_event: F,
+        on_session_id: G,
+        on_turn_exit: H,
+    ) -> Result<Self>
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+        G: Fn(String) + Send + Sync + 'static,
+        H: Fn(bool) + Send + Sync + 'static,
+    {
+        let home = dirs::home_dir()
+            .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let program = PathBuf::from(resolve_opencode(&home)?);
+        Self::spawn_per_turn(
+            program,
+            spec,
+            opencode_build_args,
+            opencode_session_id,
+            ExecCallbacks {
+                on_event,
+                on_session_id,
+                on_exit: on_turn_exit,
+            },
+        )
+    }
+
     /// Shared per-turn runner. Spawns no process yet — the first turn is
     /// launched when the first user message arrives. `on_exit(success)`
     /// fires when a turn's process exits (and that turn is still current)
@@ -406,6 +438,10 @@ fn resolve_cursor(home: &Path) -> Result<String> {
     resolve_agent_bin("cursor-agent", "Cursor", home)
 }
 
+fn resolve_opencode(home: &Path) -> Result<String> {
+    resolve_agent_bin("opencode", "OpenCode", home)
+}
+
 // ── per-turn provider configs ────────────────────────────────────────────
 
 /// Codex: `codex exec [resume <id>] --json …`. Approvals off + codex's own
@@ -471,6 +507,37 @@ fn cursor_session_id(event: &Value) -> Option<String> {
     }
     event
         .get("session_id")
+        .and_then(|s| s.as_str())
+        .map(str::to_string)
+}
+
+/// OpenCode: `opencode run --format json --dangerously-skip-permissions [-s <id>] <prompt>`.
+/// `--dangerously-skip-permissions` auto-approves tools (incl. shell + file
+/// writes) so turns run unattended; verified end-to-end against opencode
+/// 1.15.12. OpenCode runs in the child's cwd (no `--dir` needed) and assigns
+/// its own session id on the first turn. The prompt is positional and must
+/// come after the flags.
+fn opencode_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "--format".into(),
+        "json".into(),
+        "--dangerously-skip-permissions".into(),
+    ];
+    if let Some(id) = session_id {
+        args.push("--session".into());
+        args.push(id.to_string());
+    }
+    args.push(prompt.to_string());
+    args
+}
+
+/// OpenCode stamps the session id (`ses_…`) on the top-level `sessionID`
+/// field of every event, so the first event of the first turn carries it.
+/// `maybe_capture_session_id` captures it once and ignores the later echoes.
+fn opencode_session_id(event: &Value) -> Option<String> {
+    event
+        .get("sessionID")
         .and_then(|s| s.as_str())
         .map(str::to_string)
 }

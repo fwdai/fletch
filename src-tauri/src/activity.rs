@@ -125,6 +125,55 @@ impl Activity for CodexManagedActivity {
     }
 }
 
+/// Custom view: opencode runs as a per-turn `opencode run --format json`
+/// process. It emits one or more `step_finish` events per turn (one per
+/// reasoning/tool step); the *final* one carries `part.reason == "stop"`,
+/// which is the end-of-turn signal. Intermediate steps use `tool-calls`, so
+/// we must not treat those as turn-end. Silence is the backstop, and the
+/// per-turn process exit (handled separately) covers abnormal endings.
+pub struct OpenCodeManagedActivity {
+    last_event_at: Option<Instant>,
+    explicit_turn_end: bool,
+}
+
+impl OpenCodeManagedActivity {
+    pub fn new() -> Self {
+        Self {
+            last_event_at: None,
+            explicit_turn_end: false,
+        }
+    }
+}
+
+impl Activity for OpenCodeManagedActivity {
+    fn observe_event(&mut self, event: &Value) {
+        self.last_event_at = Some(Instant::now());
+        if event.get("type").and_then(|v| v.as_str()) == Some("step_finish") {
+            let reason = event
+                .get("part")
+                .and_then(|p| p.get("reason"))
+                .and_then(|r| r.as_str());
+            if reason == Some("stop") {
+                self.explicit_turn_end = true;
+            }
+        }
+    }
+
+    fn turn_ended(&self) -> bool {
+        if self.explicit_turn_end {
+            return true;
+        }
+        self.last_event_at
+            .map(|t| t.elapsed() >= MANAGED_SILENCE_BACKSTOP)
+            .unwrap_or(false)
+    }
+
+    fn reset_for_new_turn(&mut self) {
+        self.last_event_at = Some(Instant::now());
+        self.explicit_turn_end = false;
+    }
+}
+
 /// Native view: claude runs in a PTY rendering its full TUI. There's
 /// no clean external turn-end event, so we use the silence between
 /// PTY chunks. Claude's TUI animates its "working" state with
@@ -196,6 +245,31 @@ mod tests {
     fn codex_resets_after_new_turn() {
         let mut a = CodexManagedActivity::new();
         a.observe_event(&serde_json::json!({"type": "turn.completed"}));
+        assert!(a.turn_ended());
+        a.reset_for_new_turn();
+        assert!(!a.turn_ended());
+    }
+
+    #[test]
+    fn opencode_ends_only_on_step_finish_stop() {
+        let mut a = OpenCodeManagedActivity::new();
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "step_start"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "tool_use"}));
+        assert!(!a.turn_ended());
+        // Intermediate step finishing for a tool call must NOT end the turn.
+        a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "tool-calls"}}));
+        assert!(!a.turn_ended());
+        // The final step stops.
+        a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn opencode_resets_after_new_turn() {
+        let mut a = OpenCodeManagedActivity::new();
+        a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}}));
         assert!(a.turn_ended());
         a.reset_for_new_turn();
         assert!(!a.turn_ended());

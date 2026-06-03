@@ -8,7 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-use crate::activity::{Activity, ClaudeManagedActivity, ClaudeNativeActivity, CodexManagedActivity};
+use crate::activity::{
+    Activity, ClaudeManagedActivity, ClaudeNativeActivity, CodexManagedActivity,
+    OpenCodeManagedActivity,
+};
 use crate::agent::{Agent, PerTurnSpec, SpawnSpec};
 use crate::branding;
 use crate::error::{Error, Result};
@@ -511,6 +514,8 @@ impl Supervisor {
             // cursor emits Claude-shaped stream-json, incl. a `result`
             // turn-end event — reuse the Claude managed detector.
             "cursor" => Box::new(ClaudeManagedActivity::new()),
+            // opencode ends a turn on a `step_finish` with reason "stop".
+            "opencode" => Box::new(OpenCodeManagedActivity::new()),
             _ => match record.view {
                 AgentView::Native => Box::new(ClaudeNativeActivity::new()),
                 AgentView::Custom => Box::new(ClaudeManagedActivity::new()),
@@ -1000,7 +1005,13 @@ impl Supervisor {
         // Cursor stores chats in an internal, undocumented format (no
         // `export`), so transcript replay isn't wired for it in v1 — live
         // turns render fine and `--resume` still continues the conversation.
-        if record.provider == "cursor" {
+        //
+        // OpenCode does have an `export` command, but its on-disk schema
+        // differs from the live event stream the reducer consumes, so
+        // wiring it is a follow-up. Re-attaching replays from the
+        // provider-agnostic SQLite event log; `--session <id>` resumes the
+        // conversation.
+        if record.provider == "cursor" || record.provider == "opencode" {
             return Ok(Vec::new());
         }
 
@@ -1332,6 +1343,7 @@ fn spawn_per_turn_agent(
     let spec = PerTurnSpec { cwd, session_id };
     match provider {
         "cursor" => Agent::spawn_cursor(spec, on_event, on_session_id, on_turn_exit),
+        "opencode" => Agent::spawn_opencode(spec, on_event, on_session_id, on_turn_exit),
         _ => Agent::spawn_codex(spec, on_event, on_session_id, on_turn_exit),
     }
 }
