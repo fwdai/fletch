@@ -109,6 +109,18 @@ export function getStringField(input: unknown, field: string): string {
   return "";
 }
 
+/** Read a shell command from a tool input, accepting both Claude's `Bash`
+ *  shape (`command` is a string) and Codex's `shell` shape (`command` is an
+ *  argv array like ["bash", "-lc", "…"]). */
+export function getCommandField(input: unknown, field = "command"): string {
+  if (input && typeof input === "object" && field in input) {
+    const v = (input as Record<string, unknown>)[field];
+    if (typeof v === "string") return v;
+    if (Array.isArray(v)) return v.map((part) => String(part)).join(" ");
+  }
+  return "";
+}
+
 /** Truncate at the first newline, with an ellipsis if there's more. */
 export function firstLineOf(text: string, max = 120): string {
   const nl = text.indexOf("\n");
