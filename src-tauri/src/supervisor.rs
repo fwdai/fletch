@@ -9,7 +9,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::activity::{Activity, ClaudeManagedActivity, ClaudeNativeActivity, CodexManagedActivity};
-use crate::agent::{Agent, CodexSpawnSpec, SpawnSpec};
+use crate::agent::{Agent, PerTurnSpec, SpawnSpec};
 use crate::branding;
 use crate::error::{Error, Result};
 use crate::git;
@@ -18,9 +18,9 @@ use crate::run_session::{
     self, shell_args, user_shell, RunPhase, RunSession, RunStateSnapshot,
 };
 use crate::workspace::{
-    agent_parent_dir, allocate_repo_subdir, new_agent_record, repo_worktree_path, AgentRecord,
-    AgentStatus, AgentView, ArchiveMetadata, ArchivedRepoSnapshot, DiffStats, TrackedRepo,
-    Workspace, WorkspaceManager,
+    agent_parent_dir, allocate_repo_subdir, is_per_turn_provider, new_agent_record,
+    repo_worktree_path, AgentRecord, AgentStatus, AgentView, ArchiveMetadata, ArchivedRepoSnapshot,
+    DiffStats, TrackedRepo, Workspace, WorkspaceManager,
 };
 
 #[derive(Clone, serde::Serialize)]
@@ -339,11 +339,10 @@ impl Supervisor {
             )));
         }
 
-        // Codex only renders in the structured (Custom) view for now: its
-        // per-turn `exec` runtime emits stream-json events, not the PTY
-        // bytes the native view expects. The native codex TUI view is a
-        // follow-up.
-        let view = if provider == "codex" {
+        // Per-turn agents (codex, cursor) only render in the structured
+        // (Custom) view for now: they emit stream-json events, not the PTY
+        // bytes the native view expects. Native TUI views are a follow-up.
+        let view = if is_per_turn_provider(&provider) {
             AgentView::Custom
         } else {
             view
@@ -473,12 +472,13 @@ impl Supervisor {
         fresh: bool,
     ) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
-        let is_codex = record.provider == "codex";
-        // Claude carries a session id we generated at create time; Codex
-        // is assigned one by the CLI on its first turn, so it may be None
-        // until then.
+        let provider = record.provider.clone();
+        let per_turn = is_per_turn_provider(&provider);
+        // Claude carries a session id we generated at create time; per-turn
+        // agents (codex, cursor) are assigned one by the CLI on their first
+        // turn, so it may be None until then.
         let session_id = record.session_id.clone();
-        if !is_codex && session_id.is_none() {
+        if !per_turn && session_id.is_none() {
             return Err(Error::Other("agent record missing session_id".into()));
         }
         let primary = record
@@ -506,26 +506,29 @@ impl Supervisor {
             *entry
         };
 
-        let mut activity: Box<dyn Activity> = if is_codex {
-            Box::new(CodexManagedActivity::new())
-        } else {
-            match record.view {
+        let mut activity: Box<dyn Activity> = match provider.as_str() {
+            "codex" => Box::new(CodexManagedActivity::new()),
+            // cursor emits Claude-shaped stream-json, incl. a `result`
+            // turn-end event — reuse the Claude managed detector.
+            "cursor" => Box::new(ClaudeManagedActivity::new()),
+            _ => match record.view {
                 AgentView::Native => Box::new(ClaudeNativeActivity::new()),
                 AgentView::Custom => Box::new(ClaudeManagedActivity::new()),
-            }
+            },
         };
         if effective_fresh {
             activity.reset_for_new_turn();
         }
         self.activities.lock().insert(agent_id_str.clone(), activity);
 
-        let agent = if is_codex {
-            // Codex is a per-turn `exec` runner — no process spawns until
-            // the first user message. It's always rendered in the
-            // structured (Custom) view; the native PTY view isn't wired
-            // for codex yet. No sandbox profile: codex sandboxes itself
-            // rather than running under sandbox-exec.
-            spawn_codex_agent(
+        let agent = if per_turn {
+            // Per-turn runner (codex, cursor) — no process spawns until the
+            // first user message. Always rendered in the structured
+            // (Custom) view; the native PTY view isn't wired for these yet.
+            // No sandbox profile: the agent sandboxes itself rather than
+            // running under sandbox-exec.
+            spawn_per_turn_agent(
+                &provider,
                 cwd,
                 session_id.clone(),
                 app.clone(),
@@ -595,10 +598,11 @@ impl Supervisor {
             if !matches!(record.status, AgentStatus::Spawning) {
                 continue;
             }
-            // Codex agents legitimately have no session id until their
+            // Per-turn agents legitimately have no session id until their
             // first turn assigns one, so only treat a missing id as
             // corruption for providers that generate it up front (claude).
-            let missing_session = record.provider != "codex" && record.session_id.is_none();
+            let missing_session =
+                !is_per_turn_provider(&record.provider) && record.session_id.is_none();
             if missing_session || record.repos.is_empty() {
                 let err = "Agent record incomplete (no session id / no repos). Remove and respawn.".to_string();
                 let _ = self.workspace.update_agent_status(
@@ -631,9 +635,10 @@ impl Supervisor {
         if self.agents.lock().contains_key(agent_id) {
             return Ok(());
         }
-        // Codex is assigned a session id on its first turn, so a missing
-        // one is only an error for providers that generate it up front.
-        if record.provider != "codex" && record.session_id.is_none() {
+        // Per-turn agents are assigned a session id on their first turn, so
+        // a missing one is only an error for providers that generate it up
+        // front.
+        if !is_per_turn_provider(&record.provider) && record.session_id.is_none() {
             return Err(Error::Other(
                 "Agent has no session id; remove and respawn.".into(),
             ));
@@ -704,10 +709,11 @@ impl Supervisor {
         if record.view == new_view {
             return Ok(());
         }
-        // Codex has no native PTY view yet — keep it on the structured one.
-        if record.provider == "codex" && new_view == AgentView::Native {
+        // Per-turn agents (codex, cursor) have no native PTY view yet —
+        // keep them on the structured one.
+        if is_per_turn_provider(&record.provider) && new_view == AgentView::Native {
             return Err(Error::Other(
-                "Codex agents only support the structured view".into(),
+                "This agent only supports the structured view".into(),
             ));
         }
 
@@ -990,11 +996,19 @@ impl Supervisor {
     /// the session never reached its first turn).
     pub fn read_session_transcript(&self, agent_id: &str) -> Result<Vec<Value>> {
         let record = self.workspace.agent(agent_id)?;
+
+        // Cursor stores chats in an internal, undocumented format (no
+        // `export`), so transcript replay isn't wired for it in v1 — live
+        // turns render fine and `--resume` still continues the conversation.
+        if record.provider == "cursor" {
+            return Ok(Vec::new());
+        }
+
         let session_id = match record.session_id.as_deref() {
             Some(s) => s,
-            // Codex's id is only assigned on the first turn; before that
-            // there's nothing to replay.
-            None if record.provider == "codex" => return Ok(Vec::new()),
+            // A per-turn agent's id is only assigned on the first turn;
+            // before that there's nothing to replay.
+            None if is_per_turn_provider(&record.provider) => return Ok(Vec::new()),
             None => return Err(Error::Other("agent has no session id".into())),
         };
 
@@ -1248,17 +1262,18 @@ fn spawn_managed_agent(
     )
 }
 
-/// Build a Codex agent. A codex `exec` process exits at the end of
-/// *every* turn — that's normal, not the agent dying — so unlike the
-/// pty/managed spawners we don't wire `apply_exit_if_current` (which
-/// would remove the agent from the map). Instead the per-turn exit is
-/// reported via `on_turn_exit`, which ends the turn (Idle) without
-/// tearing the agent down. This covers turns that exit without a
-/// `turn.completed` event (interrupt, crash) so the agent doesn't sit
-/// Running until the silence backstop. The session-id callback persists
-/// the thread id codex assigns on the first turn so later turns (and
-/// re-attach after restart) resume it.
-fn spawn_codex_agent(
+/// Build a per-turn agent (codex, cursor). Their process exits at the end
+/// of *every* turn — that's normal, not the agent dying — so unlike the
+/// pty/managed spawners we don't wire `apply_exit_if_current` (which would
+/// remove the agent from the map). Instead the per-turn exit is reported
+/// via `on_turn_exit`, which ends the turn (Idle) without tearing the
+/// agent down. This covers turns that exit without an in-band turn-end
+/// event (interrupt, crash) so the agent doesn't sit Running until the
+/// silence backstop. The session-id callback persists the id the agent
+/// assigns on its first turn so later turns (and re-attach after restart)
+/// resume it.
+fn spawn_per_turn_agent(
+    provider: &str,
     cwd: PathBuf,
     session_id: Option<String>,
     app: AppHandle,
@@ -1274,47 +1289,51 @@ fn spawn_codex_agent(
     let app_for_exit = app;
     let id_for_exit = agent_id;
     let sup_for_exit = sup;
-    Agent::spawn_codex(
-        CodexSpawnSpec { cwd, session_id },
-        move |event| {
-            if let Some(activity) = sup_for_event.activities.lock().get_mut(&id_for_event) {
-                activity.observe_event(&event);
-            }
-            if let Err(e) = app_for_event.emit(
-                "agent:event",
-                AgentEventPayload {
-                    agent_id: id_for_event.clone(),
-                    event,
-                },
-            ) {
-                tracing::warn!(error = %e, agent_id = %id_for_event, "emit agent:event failed");
-            }
-        },
-        move |sid| {
-            if let Err(e) = sup_for_sid.workspace.set_agent_session_id(&id_for_sid, &sid) {
-                tracing::warn!(error = %e, agent_id = %id_for_sid, "persist codex session id failed");
-            }
-        },
-        move |_success| {
-            // The turn's process exited. Ignore if a respawn/teardown has
-            // since bumped the generation (e.g. the session was dropped).
-            let current = sup_for_exit
-                .generations
-                .lock()
-                .get(&id_for_exit)
-                .copied()
-                .unwrap_or(0);
-            if current != gen {
-                return;
-            }
-            // End the turn. Idempotent with the `turn.completed` watchdog
-            // path; the win is the interrupt/crash case where no such
-            // event arrives. We don't surface non-success as Error: a
-            // user-initiated Stop (SIGINT) is also non-success, and real
-            // codex errors are reported in-band as events.
-            transition_active(&sup_for_exit, &app_for_exit, &id_for_exit, AgentStatus::Idle);
-        },
-    )
+
+    let on_event = move |event: Value| {
+        if let Some(activity) = sup_for_event.activities.lock().get_mut(&id_for_event) {
+            activity.observe_event(&event);
+        }
+        if let Err(e) = app_for_event.emit(
+            "agent:event",
+            AgentEventPayload {
+                agent_id: id_for_event.clone(),
+                event,
+            },
+        ) {
+            tracing::warn!(error = %e, agent_id = %id_for_event, "emit agent:event failed");
+        }
+    };
+    let on_session_id = move |sid: String| {
+        if let Err(e) = sup_for_sid.workspace.set_agent_session_id(&id_for_sid, &sid) {
+            tracing::warn!(error = %e, agent_id = %id_for_sid, "persist session id failed");
+        }
+    };
+    let on_turn_exit = move |_success: bool| {
+        // The turn's process exited. Ignore if a respawn/teardown has since
+        // bumped the generation (e.g. the session was dropped).
+        let current = sup_for_exit
+            .generations
+            .lock()
+            .get(&id_for_exit)
+            .copied()
+            .unwrap_or(0);
+        if current != gen {
+            return;
+        }
+        // End the turn. Idempotent with the in-band turn-end watchdog path;
+        // the win is the interrupt/crash case where no such event arrives.
+        // We don't surface non-success as Error: a user-initiated Stop
+        // (SIGINT) is also non-success, and real agent errors are reported
+        // in-band as events.
+        transition_active(&sup_for_exit, &app_for_exit, &id_for_exit, AgentStatus::Idle);
+    };
+
+    let spec = PerTurnSpec { cwd, session_id };
+    match provider {
+        "cursor" => Agent::spawn_cursor(spec, on_event, on_session_id, on_turn_exit),
+        _ => Agent::spawn_codex(spec, on_event, on_session_id, on_turn_exit),
+    }
 }
 
 fn observe_native_input(sup: &Supervisor, agent_id: &str, bytes: &[u8]) -> Vec<String> {

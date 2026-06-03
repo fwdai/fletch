@@ -22,7 +22,8 @@ import { DEFAULT_PROVIDER_ID } from "./data/providers";
 import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 import { getAllSettings, setSetting } from "./storage/settings";
-import { deleteMessages, insertMessage } from "./storage/messages";
+import { deleteMessages, insertMessage, listMessages } from "./storage/messages";
+import { messageRowFor, messagesToChatItems } from "./storage/transcript";
 import {
   getOrCreateAccount,
   saveAccountProfile,
@@ -415,51 +416,25 @@ function extractInputTokens(ev: RawEvent): number | undefined {
   return typeof n === "number" && n > 0 ? n : undefined;
 }
 
-/** Capture the full conversation from Claude's session JSONL into the
- *  messages table. Replaces any previously captured messages for this
- *  agent. Fire-and-forget — errors are logged, not surfaced. */
-async function captureTranscript(agentId: string, provider?: string) {
+/** Persist a chat log to our own sqlite (replace-all per agent). This is
+ *  the provider-agnostic history store: it survives restart even for
+ *  agents whose own on-disk transcript we can't read (e.g. cursor).
+ *  Fire-and-forget — errors are logged, not surfaced. */
+async function persistTranscript(agentId: string, items: ChatItem[]): Promise<void> {
+  if (items.length === 0) return;
   try {
-    const rawLines = await api.readSessionTranscript(agentId);
-    if (rawLines.length === 0) return;
-
-    const adapter = getAdapter(provider);
-    const events = adapter.normalizeTranscript(rawLines);
-    let items: ChatItem[] = [];
-    for (const ev of events) {
-      items = adapter.reduce(items, ev);
-    }
-    if (items.length === 0) return;
-
     await deleteMessages(agentId);
     for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      const content =
-        item.kind === "user_message" || item.kind === "agent_message"
-          ? item.text
-          : item.kind === "notice"
-            ? item.text
-            : JSON.stringify(
-                "input" in item ? item.input : "content" in item ? item.content : null,
-              );
-      await insertMessage({
-        agent_id: agentId,
-        kind: item.kind,
-        content: content || "",
-        metadata_json:
-          item.kind === "tool_call"
-            ? JSON.stringify({ name: item.name, id: item.id })
-            : item.kind === "tool_result"
-              ? JSON.stringify({ tool_use_id: item.tool_use_id, is_error: item.is_error })
-              : item.kind === "notice"
-                ? JSON.stringify({ subtype: item.subtype })
-                : null,
-        sequence: i,
-      });
+      await insertMessage(messageRowFor(items[i], i, agentId));
     }
   } catch (e) {
-    console.warn("[captureTranscript] failed for", agentId, e);
+    console.warn("[persistTranscript] failed for", agentId, e);
   }
+}
+
+/** Snapshot an agent's current in-memory chat log to sqlite. */
+async function captureTranscript(agentId: string): Promise<void> {
+  await persistTranscript(agentId, useAppStore.getState().managedLogs[agentId] ?? []);
 }
 
 /** Names already taken by real or draft agents — passed to the backend
@@ -691,6 +666,13 @@ export const useAppStore = create<AppState>((set, get) => ({
               ? { ...state.managedBusy, [e.agent_id]: false }
               : state.managedBusy,
       }));
+
+      // A turn just ended — snapshot the (now-complete) log to sqlite so
+      // history survives restart for every provider, including those whose
+      // own on-disk store we can't read (cursor).
+      if (e.status === "idle") {
+        void captureTranscript(e.agent_id);
+      }
     });
 
     // Archive / restore reshape `repos` and `archive` on the record,
@@ -884,8 +866,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   archive: async (id) => {
     try {
-      const provider = providerFor(get(), id);
-      await captureTranscript(id, provider);
+      await captureTranscript(id);
       await api.archiveAgent(id);
       clearOutputBuffer(id);
       const fresh = await api.getWorkspace();
@@ -949,6 +930,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       let items: ChatItem[] = [];
       for (const ev of events) {
         items = adapter.reduce(items, ev);
+      }
+      // Fall back to our own persisted history when the agent's on-disk
+      // transcript is unavailable (e.g. cursor, whose store we can't read).
+      // This is provider-agnostic: it's whatever we last rendered + saved.
+      if (items.length === 0) {
+        items = messagesToChatItems(await listMessages(id));
       }
       set((state) => {
         // If the on-disk JSONL produced nothing but we have an active
@@ -1119,7 +1106,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await api.mergePr(agentId);
       // pr:state_changed event will update prStates
-      captureTranscript(agentId, providerFor(get(), agentId));
+      void captureTranscript(agentId);
     } catch (e) {
       set({ lastError: String(e) });
     }

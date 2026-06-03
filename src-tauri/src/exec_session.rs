@@ -1,17 +1,19 @@
-//! Per-turn runner for Codex "custom view" agents.
+//! Generic per-turn runner for agents that run one turn per process.
 //!
 //! Unlike Claude's persistent stream-json pipe (`managed_session.rs`),
-//! Codex's `exec` subcommand runs **one turn to completion and exits**.
-//! So each user message spawns a fresh `codex exec [resume <id>]`
-//! process; the process exiting is the *turn* boundary, not the agent
-//! dying. Turn-end is signalled in-band by codex's `turn.completed`
-//! event (see `CodexManagedActivity`), so the per-turn child exit is
-//! purely internal cleanup and never tears the agent down.
+//! some agents (codex, cursor-agent) run **one turn to completion and
+//! exit**. Each user message spawns a fresh process; the process exiting
+//! is the *turn* boundary, not the agent dying, so the per-turn child
+//! exit is internal cleanup (reported via `on_exit`) and never tears the
+//! agent down. The agent itself persists across turns.
 //!
-//! Codex assigns its own session ("thread") id, emitted as
-//! `thread.started` on the first turn. We capture it, hand it to the
-//! `on_session_id` callback (the supervisor persists it), and reuse it
-//! via `codex exec resume <id>` on every later turn.
+//! The two provider-specific bits are injected:
+//!   - `build_args(prompt, session_id)` → the argv for one turn (fresh
+//!     when `session_id` is `None`, resume otherwise).
+//!   - `extract_session_id(event)` → the id from whichever event carries
+//!     it (codex's `thread.started`, cursor's `system/init`). These
+//!     agents assign their own session id rather than taking ours, so we
+//!     capture it from the first turn and reuse it to resume.
 
 use parking_lot::Mutex;
 use std::io::{BufRead, BufReader};
@@ -29,20 +31,20 @@ use crate::error::{Error, Result};
 type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
 type SessionIdCb = Arc<dyn Fn(String) + Send + Sync>;
 type ExitCb = Arc<dyn Fn(bool) + Send + Sync>;
+type ArgsBuilder = Arc<dyn Fn(&str, Option<&str>) -> Vec<String> + Send + Sync>;
+type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 
-pub struct CodexSpawn {
-    /// Resolved path to the `codex` binary.
-    pub codex: PathBuf,
-    /// The agent's primary worktree — codex reads it as the workspace
-    /// root (we set it as the child's cwd rather than passing `-C`,
-    /// since `exec resume` doesn't accept `-C`).
+pub struct ExecSpawn {
+    /// Resolved path to the agent binary.
+    pub program: PathBuf,
+    /// The agent's primary worktree — set as the child's cwd.
     pub cwd: PathBuf,
-    /// Codex thread id to resume, if we've already captured one.
+    /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
 }
 
-pub struct CodexSession {
-    codex: PathBuf,
+pub struct ExecSession {
+    program: PathBuf,
     cwd: PathBuf,
     session_id: Arc<Mutex<Option<String>>>,
     child: Arc<Mutex<Option<Child>>>,
@@ -50,52 +52,47 @@ pub struct CodexSession {
     /// turn is still the latest — so a superseded turn's late exit can't
     /// flip the status of the turn that replaced it.
     turn_seq: Arc<AtomicU64>,
+    build_args: ArgsBuilder,
+    extract_session_id: IdExtractor,
     on_event: EventCb,
     on_session_id: SessionIdCb,
     on_exit: ExitCb,
 }
 
-impl CodexSession {
+pub struct ExecCallbacks<F, G, H> {
+    pub on_event: F,
+    pub on_session_id: G,
+    pub on_exit: H,
+}
+
+impl ExecSession {
     /// Build the session. Spawns **no** process — the first child is
     /// created when the first user message arrives.
-    pub fn new<F, G, H>(spec: CodexSpawn, on_event: F, on_session_id: G, on_exit: H) -> Self
+    pub fn new<A, I, F, G, H>(
+        spec: ExecSpawn,
+        build_args: A,
+        extract_session_id: I,
+        cb: ExecCallbacks<F, G, H>,
+    ) -> Self
     where
+        A: Fn(&str, Option<&str>) -> Vec<String> + Send + Sync + 'static,
+        I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
         H: Fn(bool) + Send + Sync + 'static,
     {
         Self {
-            codex: spec.codex,
+            program: spec.program,
             cwd: spec.cwd,
             session_id: Arc::new(Mutex::new(spec.session_id)),
             child: Arc::new(Mutex::new(None)),
             turn_seq: Arc::new(AtomicU64::new(0)),
-            on_event: Arc::new(on_event),
-            on_session_id: Arc::new(on_session_id),
-            on_exit: Arc::new(on_exit),
+            build_args: Arc::new(build_args),
+            extract_session_id: Arc::new(extract_session_id),
+            on_event: Arc::new(cb.on_event),
+            on_session_id: Arc::new(cb.on_session_id),
+            on_exit: Arc::new(cb.on_exit),
         }
-    }
-
-    fn build_args(&self, prompt: &str) -> Vec<String> {
-        let mut args: Vec<String> = vec!["exec".into()];
-        // Resume an existing thread once codex has handed us its id;
-        // otherwise this is the first turn and codex starts fresh.
-        if let Some(id) = self.session_id.lock().as_ref() {
-            args.push("resume".into());
-            args.push(id.clone());
-        }
-        args.push("--json".into());
-        args.push("--skip-git-repo-check".into());
-        // Approvals off + codex's own workspace-write sandbox on. Passed
-        // as `-c` config (works on both `exec` and `exec resume`, unlike
-        // the `-s`/`-a` flags which only exist on `exec`). Quorum does
-        // not wrap codex in sandbox-exec; codex sandboxes itself.
-        args.push("-c".into());
-        args.push("approval_policy=\"never\"".into());
-        args.push("-c".into());
-        args.push("sandbox_mode=\"workspace-write\"".into());
-        args.push(prompt.to_string());
-        args
     }
 
     pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
@@ -111,8 +108,8 @@ impl CodexSession {
         }
 
         // The typed message plus one reference line per attachment, so
-        // file paths never pollute the user's prose. Mirrors the Claude
-        // managed path; codex reads each path with its own file tools.
+        // file paths never pollute the user's prose; the agent reads each
+        // path with its own file tools.
         let mut prompt = text.to_string();
         for path in attachments {
             if !prompt.is_empty() {
@@ -121,8 +118,11 @@ impl CodexSession {
             prompt.push_str(&format!("Attached file: {path}"));
         }
 
-        let args = self.build_args(&prompt);
-        let mut cmd = Command::new(&self.codex);
+        let args = {
+            let id = self.session_id.lock();
+            (self.build_args)(&prompt, id.as_deref())
+        };
+        let mut cmd = Command::new(&self.program);
         cmd.args(&args);
         cmd.current_dir(&self.cwd);
         cmd.stdin(Stdio::null());
@@ -130,28 +130,29 @@ impl CodexSession {
         cmd.stderr(Stdio::piped());
 
         tracing::info!(
-            codex = %self.codex.display(),
+            program = %self.program.display(),
             cwd = %self.cwd.display(),
             resume = self.session_id.lock().is_some(),
-            "spawning codex exec turn"
+            "spawning per-turn agent process"
         );
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| Error::Other(format!("codex spawn: {e}")))?;
+            .map_err(|e| Error::Other(format!("agent spawn: {e}")))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| Error::Other("codex: child stdout missing".into()))?;
+            .ok_or_else(|| Error::Other("agent: child stdout missing".into()))?;
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| Error::Other("codex: child stderr missing".into()))?;
+            .ok_or_else(|| Error::Other("agent: child stderr missing".into()))?;
 
         *self.child.lock() = Some(child);
 
         let on_event = self.on_event.clone();
         let on_session_id = self.on_session_id.clone();
+        let extract_session_id = self.extract_session_id.clone();
         let session_id = self.session_id.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
@@ -160,35 +161,37 @@ impl CodexSession {
                     Ok(l) if l.trim().is_empty() => continue,
                     Ok(l) => match serde_json::from_str::<Value>(&l) {
                         Ok(v) => {
-                            maybe_capture_session_id(&v, &session_id, &on_session_id);
+                            maybe_capture_session_id(
+                                &v,
+                                &extract_session_id,
+                                &session_id,
+                                &on_session_id,
+                            );
                             on_event(v);
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, raw = %l, "codex: bad json line");
+                            tracing::warn!(error = %e, raw = %l, "agent: bad json line");
                         }
                     },
                     Err(e) => {
-                        tracing::warn!(error = %e, "codex: stdout read error");
+                        tracing::warn!(error = %e, "agent: stdout read error");
                         break;
                     }
                 }
             }
-            tracing::debug!("codex: turn stdout closed");
+            tracing::debug!("agent: turn stdout closed");
         });
 
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(std::result::Result::ok) {
-                tracing::warn!(stderr = %line, "codex: stderr");
+                tracing::warn!(stderr = %line, "agent: stderr");
             }
         });
 
-        // Reap the per-turn child when it exits so it doesn't linger as a
-        // zombie, and report the exit so the supervisor can end the turn.
-        // This is the per-turn analogue of a turn-end signal: a turn that
-        // exits without emitting `turn.completed` (interrupt, crash, error)
-        // still leaves the agent promptly instead of waiting for the
-        // silence backstop. The agent itself stays alive across turns.
+        // Reap the per-turn child when it exits, and report the exit so the
+        // supervisor can end the turn — covering turns that exit without an
+        // in-band turn-end event (interrupt, crash). The agent stays alive.
         let child_for_wait = self.child.clone();
         let turn_seq = self.turn_seq.clone();
         let on_exit = self.on_exit.clone();
@@ -203,20 +206,18 @@ impl CodexSession {
                 match c.try_wait() {
                     Ok(Some(status)) => {
                         let _ = guard.take();
-                        tracing::debug!(status = %status, "codex: turn exited");
+                        tracing::debug!(status = %status, "agent: turn exited");
                         Some(status.success())
                     }
                     Ok(None) => None,
                     Err(e) => {
                         let _ = guard.take();
-                        tracing::warn!(error = %e, "codex: wait failed");
+                        tracing::warn!(error = %e, "agent: wait failed");
                         Some(false)
                     }
                 }
             };
             if let Some(success) = exited {
-                // Only the current turn reports — a superseded turn's exit
-                // must not flip the status of the turn that replaced it.
                 if turn_seq.load(Ordering::SeqCst) == seq {
                     on_exit(success);
                 }
@@ -228,8 +229,8 @@ impl CodexSession {
         Ok(())
     }
 
-    /// Interrupt the in-flight turn (SIGINT). Codex exits the current
-    /// `exec` process; the agent stays alive for the next message.
+    /// Interrupt the in-flight turn (SIGINT). The agent stays alive for
+    /// the next message.
     pub fn interrupt(&self) {
         #[cfg(unix)]
         {
@@ -250,30 +251,27 @@ impl CodexSession {
     }
 }
 
-/// On the first turn codex emits `{"type":"thread.started","thread_id":…}`.
-/// Capture the id once for resume, and notify the caller so it can be
-/// persisted to the agent record.
+/// Capture the agent-assigned session id the first time it appears, and
+/// notify the caller so it can be persisted for resume.
 fn maybe_capture_session_id(
     event: &Value,
+    extract: &IdExtractor,
     session_id: &Arc<Mutex<Option<String>>>,
     on_session_id: &SessionIdCb,
 ) {
-    if event.get("type").and_then(|t| t.as_str()) != Some("thread.started") {
-        return;
-    }
-    let Some(tid) = event.get("thread_id").and_then(|t| t.as_str()) else {
+    let Some(id) = extract(event) else {
         return;
     };
     let mut guard = session_id.lock();
-    if guard.as_deref() == Some(tid) {
+    if guard.as_deref() == Some(id.as_str()) {
         return;
     }
-    *guard = Some(tid.to_string());
+    *guard = Some(id.clone());
     drop(guard);
-    on_session_id(tid.to_string());
+    on_session_id(id);
 }
 
-impl Drop for CodexSession {
+impl Drop for ExecSession {
     fn drop(&mut self) {
         let _ = self.kill();
     }
@@ -286,20 +284,38 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    /// Write an executable shell script that ignores its args and prints
-    /// canned JSONL — a stand-in for `codex exec` so we can exercise the
-    /// per-turn spawn + event plumbing without the real binary or API.
-    fn fake_codex(dir: &std::path::Path, body: &str) -> PathBuf {
-        let script = dir.join("fakecodex.sh");
+    fn fake_agent(dir: &std::path::Path, body: &str) -> PathBuf {
+        let script = dir.join("fakeagent.sh");
         std::fs::write(&script, format!("#!/bin/sh\ncat <<'EOF'\n{body}\nEOF\n")).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         script
     }
 
+    // A codex-style config: id from `thread.started`, end on `turn.completed`.
+    fn codex_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+        let mut a = vec!["exec".to_string()];
+        if let Some(id) = session_id {
+            a.push("resume".into());
+            a.push(id.to_string());
+        }
+        a.push("--json".into());
+        a.push(prompt.to_string());
+        a
+    }
+    fn codex_id(ev: &Value) -> Option<String> {
+        if ev.get("type").and_then(|t| t.as_str()) == Some("thread.started") {
+            ev.get("thread_id")
+                .and_then(|t| t.as_str())
+                .map(str::to_string)
+        } else {
+            None
+        }
+    }
+
     #[test]
-    fn spawns_a_turn_forwards_events_and_captures_session_id() {
+    fn spawns_a_turn_forwards_events_captures_id_and_reports_exit() {
         let dir = tempfile::tempdir().unwrap();
-        let script = fake_codex(
+        let script = fake_agent(
             dir.path(),
             r#"{"type":"thread.started","thread_id":"abc-123"}
 {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hi"}}
@@ -309,20 +325,24 @@ mod tests {
         let (etx, erx) = mpsc::channel();
         let (stx, srx) = mpsc::channel();
         let (xtx, xrx) = mpsc::channel();
-        let session = CodexSession::new(
-            CodexSpawn {
-                codex: script,
+        let session = ExecSession::new(
+            ExecSpawn {
+                program: script,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
             },
-            move |ev| {
-                let _ = etx.send(ev);
-            },
-            move |sid| {
-                let _ = stx.send(sid);
-            },
-            move |success| {
-                let _ = xtx.send(success);
+            codex_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: move |ev| {
+                    let _ = etx.send(ev);
+                },
+                on_session_id: move |sid| {
+                    let _ = stx.send(sid);
+                },
+                on_exit: move |success| {
+                    let _ = xtx.send(success);
+                },
             },
         );
 
@@ -340,27 +360,15 @@ mod tests {
             }
         }
 
-        // The thread id was reported to the callback and stored internally
-        // so the next turn resumes it.
         assert_eq!(srx.recv_timeout(Duration::from_secs(1)).unwrap(), "abc-123");
         assert_eq!(session.session_id.lock().as_deref(), Some("abc-123"));
-
         assert_eq!(events.len(), 3);
-        assert_eq!(events[0].get("type").unwrap(), "thread.started");
-        assert_eq!(events[2].get("type").unwrap(), "turn.completed");
-
-        // The per-turn process exit is reported so the supervisor can end
-        // the turn even if `turn.completed` were absent.
         assert_eq!(xrx.recv_timeout(Duration::from_secs(2)).unwrap(), true);
     }
 
     #[test]
-    fn resume_turn_passes_the_session_id_as_an_arg() {
+    fn resume_turn_passes_the_session_id_via_the_args_builder() {
         let dir = tempfile::tempdir().unwrap();
-        // This fake records its own argv to a file (avoiding JSON-escaping
-        // the quoted `-c` args) and emits one valid event so the turn
-        // completes. CodexSession runs it with cwd = dir, so argv.txt
-        // lands there.
         let script = dir.path().join("argecho.sh");
         std::fs::write(
             &script,
@@ -370,26 +378,27 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let (etx, erx) = mpsc::channel();
-        let session = CodexSession::new(
-            CodexSpawn {
-                codex: script,
+        let session = ExecSession::new(
+            ExecSpawn {
+                program: script,
                 cwd: dir.path().to_path_buf(),
                 session_id: Some("prev-thread".into()),
             },
-            move |ev| {
-                let _ = etx.send(ev);
+            codex_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: move |ev| {
+                    let _ = etx.send(ev);
+                },
+                on_session_id: |_sid| {},
+                on_exit: |_success| {},
             },
-            |_sid| {},
-            |_success| {},
         );
 
         session.send_user_message("again", &[]).unwrap();
-
-        // Wait for the turn to finish so argv.txt is fully written.
         erx.recv_timeout(Duration::from_secs(5)).unwrap();
         let args = std::fs::read_to_string(dir.path().join("argv.txt")).unwrap();
         assert!(args.contains("exec resume prev-thread"), "argv was: {args}");
         assert!(args.contains("--json"));
-        assert!(args.contains("sandbox_mode=\"workspace-write\""), "argv was: {args}");
     }
 }
