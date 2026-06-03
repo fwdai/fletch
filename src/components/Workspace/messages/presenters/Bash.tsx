@@ -2,6 +2,7 @@ import type { ToolPresenter } from "./types";
 import {
   ToolBlock,
   firstLineOf,
+  getCommandField,
   getStringField,
   renderToolResult,
 } from "./util";
@@ -9,11 +10,11 @@ import {
 export const bashPresenter: ToolPresenter = {
   icon: "terminal",
   summary: (call) => {
-    const cmd = getStringField(call.input, "command");
+    const cmd = getCommandField(call.input);
     return cmd ? firstLineOf(cmd, 140) : "(no command)";
   },
   expanded: (call, result) => {
-    const cmd = getStringField(call.input, "command");
+    const cmd = getCommandField(call.input);
     const description = getStringField(call.input, "description");
     return (
       <>

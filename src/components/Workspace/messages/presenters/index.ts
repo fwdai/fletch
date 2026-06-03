@@ -17,6 +17,8 @@ export type { ToolPresenter, ToolCall, ToolResult } from "./types";
 export const PRESENTERS: Record<string, ToolPresenter> = {
   Agent: agentPresenter,
   Bash: bashPresenter,
+  // Codex names its shell tool `shell`; same UI as Claude's `Bash`.
+  shell: bashPresenter,
   Read: readPresenter,
   Edit: editPresenter,
   MultiEdit: multiEditPresenter,
