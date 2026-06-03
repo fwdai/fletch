@@ -7,6 +7,7 @@ import {
   type AvailableAgent,
 } from "../../data/providerDetail";
 import { Icon } from "../Icon";
+import { ProviderIcon } from "../ProviderIcon";
 import { SetHead, SetGroup, SetToggle } from "./primitives";
 
 export function ProvidersPane() {
@@ -59,17 +60,6 @@ export function ProvidersPane() {
   );
 }
 
-function Monogram({ short, hue, size = 30 }: { short: string; hue: number; size?: number }) {
-  return (
-    <span
-      className="set-mono-tile"
-      style={{ width: size, height: size, ["--h" as string]: hue }}
-    >
-      {short}
-    </span>
-  );
-}
-
 function ProviderRow({
   provider,
   enabled,
@@ -87,7 +77,7 @@ function ProviderRow({
     <div className={`set-prov ${enabled ? "" : "off"} ${open ? "open" : ""}`}>
       <div className="set-prov-main">
         <span className="set-prov-status" title="Authenticated" />
-        <Monogram short={provider.short} hue={provider.hue} />
+        <ProviderIcon slug={provider.id} short={provider.short} hue={provider.hue} />
         <div className="set-prov-id">
           <div className="set-prov-name">
             {provider.label}
@@ -154,7 +144,7 @@ function AvailableRow({ agent }: { agent: AvailableAgent }) {
           className={`set-prov-status ${detected ? "idle" : "none"}`}
           title={detected ? "Detected" : "Not installed"}
         />
-        <Monogram short={agent.short} hue={agent.hue} />
+        <ProviderIcon slug={agent.id} short={agent.short} hue={agent.hue} />
         <div className="set-prov-id">
           <div className="set-prov-name">
             {agent.label}

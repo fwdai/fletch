@@ -12,15 +12,23 @@ export interface Provider {
 }
 
 export const PROVIDERS: Provider[] = [
-  { id: "claude",   label: "Claude Code",  short: "CC", version: "v1.0.42",     hue: 28,  sub: "Opus 4.7 · Sonnet 4.6" },
-  { id: "codex",    label: "Codex",        short: "CX", version: "v0.133.0",    hue: 145, sub: "ChatGPT Plus" },
-  { id: "cursor",   label: "Cursor Agent", short: "CR", version: "v2026.05.24", hue: 215, sub: "Pro Subscription" },
-  { id: "gemini",   label: "Gemini CLI",   short: "GM", version: "v0.18",       hue: 260, sub: "Gemini 2.5 Pro" },
-  { id: "opencode", label: "OpenCode",     short: "OC", version: "v1.15.10",    hue: 195, sub: "1 upstream connected" },
-  { id: "pi",       label: "Pi Coder",     short: "PI", version: "v0.4",        hue: 320, sub: "Pi · experimental" },
+  { id: "claude",      label: "Claude Code",  short: "CC", version: "v1.0.42",     hue: 28,  sub: "Opus 4.7 · Sonnet 4.6" },
+  { id: "codex",       label: "Codex",        short: "CX", version: "v0.133.0",    hue: 145, sub: "ChatGPT Plus" },
+  { id: "cursor",      label: "Cursor Agent", short: "CR", version: "v2026.05.24", hue: 215, sub: "Pro Subscription" },
+  { id: "antigravity", label: "Antigravity",  short: "AG", version: "v1.0",        hue: 260, sub: "Gemini 3 Pro" },
+  { id: "opencode",    label: "OpenCode",     short: "OC", version: "v1.15.10",    hue: 195, sub: "1 upstream connected" },
+  { id: "pi",          label: "Pi Coder",     short: "PI", version: "v0.4",        hue: 320, sub: "Pi · experimental" },
 ];
 
 export const DEFAULT_PROVIDER_ID = "claude";
+
+/** URL for a provider/agent's brand icon on the website CDN. Icons live at
+ *  /agents/<slug>.svg (slug === provider id), so a rebrand only needs the SVG
+ *  re-uploaded — no app release. The webview's disk cache serves it offline
+ *  after the first load; consumers fall back to the abbreviation monogram when
+ *  the image is missing or hasn't loaded yet. */
+export const agentIconUrl = (slug: string) =>
+  `https://quorum.fwdai.org/agents/${slug}.svg`;
 
 /** Human-readable name for a provider id (e.g. "claude" → "Claude Code").
  *  Falls back to the raw id when unknown so we never render an empty label. */
