@@ -43,69 +43,61 @@ pub trait Activity: Send {
     fn reset_for_new_turn(&mut self);
 }
 
-/// Custom view: claude runs in `--print --output-format stream-json`.
-/// The `result` event is the official end-of-turn signal; we trust it
-/// and use silence only as a backstop in case it ever fails to fire.
-pub struct ClaudeManagedActivity {
+/// Custom view: agents that stream structured events and signal end-of-turn
+/// with one specific event. The turn-end *signal* is the only thing that
+/// varies between providers, so it's injected as a predicate; the rest of the
+/// state machine (trust the explicit signal, fall back to silence if it never
+/// fires) is shared. Construct via the provider helpers below.
+pub struct ManagedActivity {
     last_event_at: Option<Instant>,
     explicit_turn_end: bool,
+    /// Returns true for the event that marks the end of a turn.
+    is_turn_end: fn(&Value) -> bool,
 }
 
-impl ClaudeManagedActivity {
-    pub fn new() -> Self {
+impl ManagedActivity {
+    fn new(is_turn_end: fn(&Value) -> bool) -> Self {
         Self {
             last_event_at: None,
             explicit_turn_end: false,
+            is_turn_end,
         }
+    }
+
+    /// Claude (`--print --output-format stream-json`) ends a turn with a
+    /// `result` event. Cursor emits Claude-shaped stream-json, so it shares
+    /// this detector.
+    pub fn claude() -> Self {
+        Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("result"))
+    }
+
+    /// Codex (`codex exec --json`) ends a turn with `turn.completed`. (The
+    /// per-turn process exit is handled separately and does not feed this
+    /// detector.)
+    pub fn codex() -> Self {
+        Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("turn.completed"))
+    }
+
+    /// OpenCode (`opencode run --format json`) emits one or more `step_finish`
+    /// events per turn (one per reasoning/tool step); only the final one
+    /// carries `part.reason == "stop"`. Intermediate steps use `tool-calls`
+    /// and must not be treated as turn-end.
+    pub fn opencode() -> Self {
+        Self::new(|event| {
+            event.get("type").and_then(|v| v.as_str()) == Some("step_finish")
+                && event
+                    .get("part")
+                    .and_then(|p| p.get("reason"))
+                    .and_then(|r| r.as_str())
+                    == Some("stop")
+        })
     }
 }
 
-impl Activity for ClaudeManagedActivity {
+impl Activity for ManagedActivity {
     fn observe_event(&mut self, event: &Value) {
         self.last_event_at = Some(Instant::now());
-        if event.get("type").and_then(|v| v.as_str()) == Some("result") {
-            self.explicit_turn_end = true;
-        }
-    }
-
-    fn turn_ended(&self) -> bool {
-        if self.explicit_turn_end {
-            return true;
-        }
-        self.last_event_at
-            .map(|t| t.elapsed() >= MANAGED_SILENCE_BACKSTOP)
-            .unwrap_or(false)
-    }
-
-    fn reset_for_new_turn(&mut self) {
-        self.last_event_at = Some(Instant::now());
-        self.explicit_turn_end = false;
-    }
-}
-
-/// Custom view: codex runs as a per-turn `codex exec --json` process.
-/// `turn.completed` is its official end-of-turn signal; we trust it and
-/// fall back to silence only if it never arrives. (The per-turn process
-/// exiting is handled separately by `CodexSession`; it does not feed
-/// this detector.)
-pub struct CodexManagedActivity {
-    last_event_at: Option<Instant>,
-    explicit_turn_end: bool,
-}
-
-impl CodexManagedActivity {
-    pub fn new() -> Self {
-        Self {
-            last_event_at: None,
-            explicit_turn_end: false,
-        }
-    }
-}
-
-impl Activity for CodexManagedActivity {
-    fn observe_event(&mut self, event: &Value) {
-        self.last_event_at = Some(Instant::now());
-        if event.get("type").and_then(|v| v.as_str()) == Some("turn.completed") {
+        if (self.is_turn_end)(event) {
             self.explicit_turn_end = true;
         }
     }
@@ -163,7 +155,7 @@ mod tests {
 
     #[test]
     fn managed_ends_on_result_event() {
-        let mut a = ClaudeManagedActivity::new();
+        let mut a = ManagedActivity::claude();
         assert!(!a.turn_ended());
         a.observe_event(&serde_json::json!({"type": "assistant"}));
         assert!(!a.turn_ended());
@@ -173,7 +165,7 @@ mod tests {
 
     #[test]
     fn managed_resets_after_new_turn() {
-        let mut a = ClaudeManagedActivity::new();
+        let mut a = ManagedActivity::claude();
         a.observe_event(&serde_json::json!({"type": "result"}));
         assert!(a.turn_ended());
         a.reset_for_new_turn();
@@ -182,7 +174,7 @@ mod tests {
 
     #[test]
     fn codex_ends_on_turn_completed_event() {
-        let mut a = CodexManagedActivity::new();
+        let mut a = ManagedActivity::codex();
         assert!(!a.turn_ended());
         a.observe_event(&serde_json::json!({"type": "turn.started"}));
         assert!(!a.turn_ended());
@@ -194,8 +186,33 @@ mod tests {
 
     #[test]
     fn codex_resets_after_new_turn() {
-        let mut a = CodexManagedActivity::new();
+        let mut a = ManagedActivity::codex();
         a.observe_event(&serde_json::json!({"type": "turn.completed"}));
+        assert!(a.turn_ended());
+        a.reset_for_new_turn();
+        assert!(!a.turn_ended());
+    }
+
+    #[test]
+    fn opencode_ends_only_on_step_finish_stop() {
+        let mut a = ManagedActivity::opencode();
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "step_start"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "tool_use"}));
+        assert!(!a.turn_ended());
+        // Intermediate step finishing for a tool call must NOT end the turn.
+        a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "tool-calls"}}));
+        assert!(!a.turn_ended());
+        // The final step stops.
+        a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn opencode_resets_after_new_turn() {
+        let mut a = ManagedActivity::opencode();
+        a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}}));
         assert!(a.turn_ended());
         a.reset_for_new_turn();
         assert!(!a.turn_ended());

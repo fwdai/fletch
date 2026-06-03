@@ -16,7 +16,7 @@ export const PROVIDERS: Provider[] = [
   { id: "codex",       label: "Codex",        short: "CX", version: "v0.133.0",    hue: 145, sub: "ChatGPT Plus" },
   { id: "cursor",      label: "Cursor Agent", short: "CR", version: "v2026.05.24", hue: 215, sub: "Pro Subscription" },
   { id: "antigravity", label: "Antigravity",  short: "AG", version: "v1.0",        hue: 260, sub: "Gemini 3 Pro" },
-  { id: "opencode",    label: "OpenCode",     short: "OC", version: "v1.15.10",    hue: 195, sub: "1 upstream connected" },
+  { id: "opencode",    label: "OpenCode",     short: "OC", version: "v1.15.12",    hue: 195, sub: "1 upstream connected" },
   { id: "pi",          label: "Pi Coder",     short: "PI", version: "v0.4",        hue: 320, sub: "Pi · experimental" },
 ];
 

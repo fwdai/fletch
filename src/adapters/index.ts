@@ -1,6 +1,7 @@
 import { claudeAdapter } from "./claude";
 import { codexAdapter } from "./codex";
 import { cursorAdapter } from "./cursor";
+import { opencodeAdapter } from "./opencode";
 import type { ChatAdapter } from "./types";
 
 export type { ChatAdapter, ChatItem, DisplayPolicy, NoticeSubtype, RawEvent } from "./types";
@@ -10,6 +11,7 @@ export const ADAPTERS: Record<string, ChatAdapter> = {
   claude: claudeAdapter,
   codex: codexAdapter,
   cursor: cursorAdapter,
+  opencode: opencodeAdapter,
 };
 
 export const DEFAULT_ADAPTER_ID = "claude";
