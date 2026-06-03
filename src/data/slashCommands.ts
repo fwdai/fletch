@@ -41,7 +41,7 @@ export const PROVIDER_COMMANDS: Record<string, SlashCommand[]> = {
   ],
   codex: [],
   cursor: [],
-  gemini: [],
+  antigravity: [],
   opencode: [],
   pi: [],
 };

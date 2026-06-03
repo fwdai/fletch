@@ -44,11 +44,11 @@ export const PROVIDER_DETAIL: Record<string, ProviderDetail> = {
     earlyAccess: true,
     installed: true,
   },
-  gemini: {
+  antigravity: {
     account: "alex@joineve.ai",
-    plan: "Gemini Advanced",
-    path: "~/.gemini/bin/gemini",
-    models: "Gemini 2.5 Pro · Flash",
+    plan: "Google AI Pro",
+    path: "/Applications/Antigravity.app/…/antigravity",
+    models: "Gemini 3 Pro · Flash",
     installed: true,
   },
   opencode: {
@@ -81,23 +81,5 @@ export const AVAILABLE_AGENTS: AvailableAgent[] = [
     version: "v0.4",
     state: "detected",
     note: "Detected on PATH — not configured yet.",
-  },
-  {
-    id: "aider",
-    label: "Aider",
-    short: "AI",
-    hue: 95,
-    version: "v0.71.1",
-    state: "detected",
-    note: "Detected on PATH — not configured yet.",
-  },
-  {
-    id: "amp",
-    label: "Amp",
-    short: "AM",
-    hue: 175,
-    version: null,
-    state: "install",
-    note: "Sourcegraph's agentic coding CLI.",
   },
 ];

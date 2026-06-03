@@ -2591,21 +2591,29 @@ button { cursor: default; }
   background: var(--fg-3); box-shadow: none;
 }
 
-.set-mono-tile {
+.chip-mono {
   flex-shrink: 0;
+  position: relative;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 9px;
-  background: oklch(0.42 0.08 var(--h) / .28);
-  color: oklch(0.84 0.12 var(--h));
-  box-shadow: inset 0 0 0 1px oklch(0.6 0.1 var(--h) / .4);
-  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
-  letter-spacing: -0.02em;
+  border-radius: 7px;
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: .02em;
+  border: 1px solid color-mix(in oklch, var(--ph, var(--accent)) 50%, transparent);
+  background: color-mix(in oklch, oklch(.65 .13 var(--ph-h, 50)) 16%, var(--bg-2));
+  color: oklch(.82 .1 var(--ph-h, 50));
 }
-.theme-light .set-mono-tile {
-  background: oklch(0.88 0.06 var(--h) / .6);
-  color: oklch(0.44 0.15 var(--h));
-  box-shadow: inset 0 0 0 1px oklch(0.7 0.11 var(--h) / .5);
+/* Theme-aware ink for the chip — drives `currentColor` in inlined icons and
+   the monogram text, so monochrome marks are dark in light mode, light in dark. */
+.theme-light .chip-mono { color: oklch(.45 .14 var(--ph-h, 50)); }
+.chip-mono-svg {
+  display: inline-flex;
+  width: 70%; height: 70%;
+  /* Neutral, theme-aware ink for monochrome (currentColor) icons — white in
+     dark, near-black in light — so they don't pick up the chip's hue tint.
+     Full-color logos with hardcoded fills are unaffected. */
+  color: var(--fg-0);
 }
+.chip-mono-svg svg { width: 100%; height: 100%; display: block; }
 
 .set-prov-id { flex: 1; min-width: 0; }
 .set-prov-name {
