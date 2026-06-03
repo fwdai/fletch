@@ -214,8 +214,12 @@ interface AppState {
   /** PR state per agent, keyed by agent_id. Updated by the pr:state_changed watcher event. */
   prStates: Record<string, PrState | null>;
   fetchPrState: (agentId: string) => Promise<void>;
-  pushAgent: (agentId: string) => Promise<void>;
-  pullAgent: (agentId: string) => Promise<void>;
+  /** Resolves to "up-to-date" | "pushed" on success, null on error. */
+  pushAgent: (agentId: string) => Promise<string | null>;
+  /** Resolves true on success, false on error. */
+  pullAgent: (agentId: string) => Promise<boolean>;
+  /** Resolves true on success, false on error. */
+  rebaseAgent: (agentId: string) => Promise<boolean>;
   commitChanges: (agentId: string, message: string) => Promise<boolean>;
   /** Commit all changes, push, and open a PR — the "Commit & open PR"
    *  primary CTA wired from the git panel. Returns false on any step
@@ -997,18 +1001,36 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   pushAgent: async (agentId) => {
     try {
-      await api.pushAgent(agentId);
+      // "up-to-date" | "pushed" — lets the UI confirm the outcome.
+      const summary = await api.pushAgent(agentId);
+      await get().fetchGitState(agentId);
       // pr:state_changed event will update prStates automatically
+      return summary;
     } catch (e) {
       set({ lastError: String(e) });
+      return null;
     }
   },
 
   pullAgent: async (agentId) => {
     try {
       await api.pullAgent(agentId);
+      await get().fetchGitState(agentId);
+      return true;
     } catch (e) {
       set({ lastError: String(e) });
+      return false;
+    }
+  },
+
+  rebaseAgent: async (agentId) => {
+    try {
+      await api.rebaseAgent(agentId);
+      await get().fetchGitState(agentId);
+      return true;
+    } catch (e) {
+      set({ lastError: String(e) });
+      return false;
     }
   },
 

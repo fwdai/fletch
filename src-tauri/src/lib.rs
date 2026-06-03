@@ -168,6 +168,7 @@ pub fn run() {
             commands::get_all_shortstats,
             commands::push_agent,
             commands::pull_agent,
+            commands::rebase_agent,
             commands::commit_agent,
             commands::discard_agent_changes,
             commands::stash_agent,

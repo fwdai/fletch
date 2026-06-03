@@ -314,7 +314,10 @@ pub async fn worktree_add_branch(
 
 /// Push the current branch to `origin`. Uses `-u` to set the upstream
 /// tracking ref on the first push.
-pub async fn push(worktree: &Path, branch: &str) -> Result<()> {
+/// Returns `"up-to-date"` when the remote already had everything (a no-op
+/// push), otherwise `"pushed"`. Lets the UI confirm the outcome instead of
+/// silently doing nothing when there was nothing to send.
+pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
     let out = Command::new("git")
         .current_dir(worktree)
         .args(["push", "-u", "origin", branch])
@@ -326,7 +329,17 @@ pub async fn push(worktree: &Path, branch: &str) -> Result<()> {
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    Ok(())
+    // git reports "Everything up-to-date" on stderr when there was nothing new.
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    if combined.contains("Everything up-to-date") {
+        Ok("up-to-date".to_string())
+    } else {
+        Ok("pushed".to_string())
+    }
 }
 
 /// Pull latest from the tracking remote branch.
@@ -340,6 +353,31 @@ pub async fn pull(worktree: &Path) -> Result<()> {
     if !out.status.success() {
         return Err(Error::Git(format!(
             "pull failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Rebase the current branch onto `base` (e.g. "main"). Used by the clean-state
+/// panel action to bring the worktree up to date with its base branch when the
+/// base has moved ahead. Aborts the rebase on conflict so the worktree is never
+/// left mid-rebase — the caller surfaces the error.
+pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
+    let out = Command::new("git")
+        .current_dir(worktree)
+        .args(["rebase", base])
+        .output()
+        .await?;
+    if !out.status.success() {
+        // Don't leave the worktree in a detached mid-rebase state.
+        let _ = Command::new("git")
+            .current_dir(worktree)
+            .args(["rebase", "--abort"])
+            .output()
+            .await;
+        return Err(Error::Git(format!(
+            "rebase onto {base} failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }

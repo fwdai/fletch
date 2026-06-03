@@ -216,7 +216,7 @@ pub async fn push_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     app: AppHandle,
     agent_id: String,
-) -> Result<()> {
+) -> Result<String> {
     let record = supervisor.workspace.agent(&agent_id)?;
     let repo = record.repos.first()
         .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
@@ -224,10 +224,10 @@ pub async fn push_agent(
     let branch = repo.branch.as_deref()
         .ok_or_else(|| crate::error::Error::Other("agent has no branch yet".into()))?
         .to_string();
-    git::push(&worktree, &branch).await?;
+    let summary = git::push(&worktree, &branch).await?;
     // After successful push, fetch PR state in background
     supervisor.inner().fetch_and_emit_pr_state(app, agent_id);
-    Ok(())
+    Ok(summary)
 }
 
 /// Stage all working-tree changes and commit them with the given message.
@@ -310,6 +310,21 @@ pub async fn pull_agent(
         .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
     let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
     git::pull(&worktree).await
+}
+
+/// Rebase the agent's branch onto its parent (base) branch. Used by the
+/// clean-state panel action to catch up when the base has advanced.
+#[tauri::command]
+pub async fn rebase_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<()> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record.repos.first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let base = repo.parent_branch.as_deref().unwrap_or("main");
+    git::rebase_onto(&worktree, base).await
 }
 
 /// Create a PR for the agent's current branch.
