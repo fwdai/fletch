@@ -1,99 +1,170 @@
-// TODO(codex-real-impl): event shapes here are inferred from OpenAI's
-// public Responses-API streaming docs and are not yet verified against
-// real `codex` CLI output. When codex's Rust transport ships and we can
-// observe its actual events, replace these stubs with the verified
-// mapping and add comprehensive fixtures.
+// Reducer for Codex's `codex exec --json` event stream.
 //
-// The interface contract is the same as Claude's reducer; only the
-// per-event parsing differs.
+// Verified against codex-cli 0.135.0. Codex emits a thread / turn / item
+// model (NOT the OpenAI Responses-API shapes an earlier stub guessed):
+//
+//   {"type":"thread.started","thread_id":"…"}            // session id
+//   {"type":"turn.started"}
+//   {"type":"item.started",  "item":{"id","type","status":"in_progress",…}}
+//   {"type":"item.completed","item":{"id","type","status",…}}
+//   {"type":"turn.completed","usage":{…}}                // end of turn
+//
+// Observed `item.type` values: `agent_message` ({text}), `command_execution`
+// ({command, aggregated_output, exit_code, status}), `mcp_tool_call`
+// ({server, tool, arguments, result, error, status}). There are no
+// token-level text deltas in exec mode — items arrive whole, so assistant
+// text and tool calls render on their `item.completed`.
 
 import type { ChatItem, RawEvent } from "../types";
 import { asRecord } from "../shared/json";
 import {
-  appendToolInputDelta,
   dedupAgainstLast,
-  extendLastAssistant,
   finalizeStreamingItems,
   upsertToolCall,
 } from "../shared/reducer-helpers";
 
+/** Human label for a tool-call item. */
+function toolName(item: Record<string, unknown>): string {
+  const type = typeof item.type === "string" ? item.type : "";
+  if (type === "command_execution") return "shell";
+  if (type === "mcp_tool_call") {
+    const server = typeof item.server === "string" ? item.server : "";
+    const tool = typeof item.tool === "string" ? item.tool : "tool";
+    return server ? `${server}.${tool}` : tool;
+  }
+  return type || "tool";
+}
+
+/** The input/arguments to display for a tool-call item. */
+function toolInput(item: Record<string, unknown>): unknown {
+  if (item.type === "command_execution") return item.command ?? "";
+  if (item.type === "mcp_tool_call") return item.arguments ?? {};
+  return {};
+}
+
+/** Did a finished tool item fail? */
+function isToolError(item: Record<string, unknown>): boolean {
+  if (item.status === "failed") return true;
+  if (item.type === "command_execution") {
+    return typeof item.exit_code === "number" && item.exit_code !== 0;
+  }
+  if (item.type === "mcp_tool_call") {
+    return item.error != null;
+  }
+  return false;
+}
+
+/** The result payload to show for a finished tool item. */
+function toolResult(item: Record<string, unknown>): unknown {
+  if (item.type === "command_execution") return item.aggregated_output ?? "";
+  if (item.type === "mcp_tool_call") return item.error ?? item.result ?? "";
+  return "";
+}
+
+const TOOL_TYPES = new Set(["command_execution", "mcp_tool_call"]);
+
 export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const type = typeof ev.type === "string" ? ev.type : undefined;
 
-  // Responses-style streaming text deltas.
-  if (type === "response.output_text.delta") {
-    const delta = typeof ev.delta === "string" ? ev.delta : "";
-    return delta ? extendLastAssistant(prev, delta) : prev;
-  }
+  switch (type) {
+    // Session id capture happens in the Rust transport; nothing to render.
+    // `thread.started` also re-fires on every per-turn process, so it must
+    // never reset the transcript.
+    case "thread.started":
+    case "turn.started":
+      return prev;
 
-  // Finalized assistant text.
-  if (type === "response.output_text.done" || type === "message") {
-    let items = finalizeStreamingItems(prev);
-    const text =
-      typeof ev.text === "string"
-        ? ev.text
-        : typeof (ev as { content?: unknown }).content === "string"
-          ? ((ev as { content: string }).content)
-          : "";
-    if (!text) return items;
-    items = dedupAgainstLast(items, { kind: "agent_message", text });
-    return items;
-  }
+    // User turns never appear in the live `exec` stream (the composer adds
+    // them optimistically on send) — they only arrive via transcript replay
+    // (`normalizeTranscript` emits this synthetic shape from the rollout).
+    case "user": {
+      const text = typeof ev.text === "string" ? ev.text : "";
+      if (!text) return prev;
+      return dedupAgainstLast(prev, { kind: "user_message", text });
+    }
 
-  // Function/tool calls in Responses-API form.
-  if (type === "response.function_call.started" || type === "function_call") {
-    const id = String(ev.call_id ?? ev.id ?? "");
-    if (!id) return prev;
-    return upsertToolCall(prev, {
-      kind: "tool_call",
-      id,
-      name: String(ev.name ?? "tool"),
-      input: ev.arguments ?? "",
-      streaming: type === "response.function_call.started",
-    });
-  }
+    // A tool item begins executing — show it streaming until completion.
+    case "item.started":
+    case "item.updated": {
+      const item = asRecord(ev.item);
+      const id = typeof item.id === "string" ? item.id : "";
+      const itemType = typeof item.type === "string" ? item.type : "";
+      if (!id || !TOOL_TYPES.has(itemType)) return prev;
+      return upsertToolCall(prev, {
+        kind: "tool_call",
+        id,
+        name: toolName(item),
+        input: toolInput(item),
+        streaming: true,
+      });
+    }
 
-  if (type === "response.function_call_arguments.delta") {
-    const idx = typeof ev.output_index === "number" ? ev.output_index : 0;
-    const partial = typeof ev.delta === "string" ? ev.delta : "";
-    return partial ? appendToolInputDelta(prev, idx, partial) : prev;
-  }
+    case "item.completed": {
+      const item = asRecord(ev.item);
+      const id = typeof item.id === "string" ? item.id : "";
+      const itemType = typeof item.type === "string" ? item.type : "";
 
-  if (type === "function_call_output") {
-    const output = asRecord(ev.output);
-    return [
-      ...prev,
-      {
-        kind: "tool_result",
-        tool_use_id: String(ev.call_id ?? ""),
-        content: output.content ?? ev.output ?? "",
-        is_error: output.is_error === true,
-      },
-    ];
-  }
+      if (itemType === "agent_message") {
+        const items = finalizeStreamingItems(prev);
+        const text = typeof item.text === "string" ? item.text : "";
+        if (!text) return items;
+        return dedupAgainstLast(items, { kind: "agent_message", text });
+      }
 
-  // User echo (codex transcripts often include the user prompt).
-  if (type === "user") {
-    const text =
-      typeof ev.content === "string"
-        ? ev.content
-        : typeof (asRecord(ev.message) as { content?: unknown }).content ===
-            "string"
-          ? String((asRecord(ev.message) as { content: string }).content)
-          : "";
-    if (!text) return prev;
-    return dedupAgainstLast(prev, { kind: "user_message", text });
-  }
+      if (itemType === "reasoning") {
+        const text = typeof item.text === "string" ? item.text : "";
+        if (!text) return prev;
+        return [...prev, { kind: "notice", subtype: "reasoning", text }];
+      }
 
-  // Turn completion.
-  if (type === "response.completed" || type === "result") {
-    let items = finalizeStreamingItems(prev);
-    items = [
-      ...items,
-      { kind: "notice", subtype: "turn_end", text: "success" },
-    ];
-    return items;
-  }
+      if (TOOL_TYPES.has(itemType) && id) {
+        // Settle the (possibly streaming) tool_call with final args, then
+        // append its result.
+        let items = upsertToolCall(prev, {
+          kind: "tool_call",
+          id,
+          name: toolName(item),
+          input: toolInput(item),
+          streaming: false,
+        });
+        items = [
+          ...items,
+          {
+            kind: "tool_result",
+            tool_use_id: id,
+            content: toolResult(item),
+            is_error: isToolError(item),
+          },
+        ];
+        return items;
+      }
 
-  return prev;
+      return prev;
+    }
+
+    case "turn.completed": {
+      const items = finalizeStreamingItems(prev);
+      return [...items, { kind: "notice", subtype: "turn_end", text: "success" }];
+    }
+
+    // `turn.failed` / `error` surface as a visible error notice.
+    case "turn.failed":
+    case "error": {
+      const items = finalizeStreamingItems(prev);
+      const message =
+        typeof ev.message === "string"
+          ? ev.message
+          : typeof (asRecord(ev.error) as { message?: unknown }).message ===
+              "string"
+            ? String((asRecord(ev.error) as { message: string }).message)
+            : "Codex reported an error.";
+      return [
+        ...items,
+        { kind: "notice", subtype: "error", text: message, is_error: true },
+      ];
+    }
+
+    default:
+      return prev;
+  }
 }

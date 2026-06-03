@@ -443,6 +443,19 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Persist the agent's session id. Used for Codex, whose thread id
+    /// is assigned by the CLI and captured from its first turn's events
+    /// (Claude's id is generated up front, so it never changes here).
+    pub fn set_agent_session_id(&self, id: &str, session_id: &str) -> Result<()> {
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE agents SET session_id = ?1 WHERE id = ?2",
+            rusqlite::params![session_id, id],
+        )?;
+        Ok(())
+    }
+
     pub fn update_agent_view(&self, id: &str, view: AgentView) -> Result<()> {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
@@ -930,6 +943,14 @@ pub fn new_agent_record(
     task: String,
     view: AgentView,
 ) -> AgentRecord {
+    // Claude attaches to a session id we generate up front (passed as
+    // `--session-id`). Codex assigns its own thread id on the first turn
+    // (captured from `thread.started`), so it starts with none.
+    let session_id = if provider == "codex" {
+        None
+    } else {
+        Some(uuid::Uuid::new_v4().to_string())
+    };
     AgentRecord {
         id,
         // Populated by WorkspaceManager::add_agent (looked up from the
@@ -941,7 +962,7 @@ pub fn new_agent_record(
         task,
         status: AgentStatus::Spawning,
         view,
-        session_id: Some(uuid::Uuid::new_v4().to_string()),
+        session_id,
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         archive: None,

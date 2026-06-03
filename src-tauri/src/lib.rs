@@ -1,6 +1,7 @@
 mod activity;
 mod agent;
 mod branding;
+mod codex_session;
 mod commands;
 mod database;
 mod error;
