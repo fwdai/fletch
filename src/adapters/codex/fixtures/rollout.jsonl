@@ -1,0 +1,12 @@
+{"type":"session_meta","payload":{"id":"019e8cc9","cwd":"/tmp/codex-spike","cli_version":"0.135.0"}}
+{"type":"turn_context","payload":{"cwd":"/tmp/codex-spike"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions noise>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md noise"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"run echo hello","images":[]}}
+{"type":"response_item","payload":{"type":"reasoning","summary":[],"encrypted_content":"gAAAA"}}
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"echo hello\",\"workdir\":\"/tmp\"}","call_id":"call_1"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"Process exited with code 0\nOutput:\nhello\n"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10}}}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"It printed hello."}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"It printed hello."}}

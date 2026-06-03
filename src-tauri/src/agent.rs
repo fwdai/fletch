@@ -1,15 +1,18 @@
 //! Per-agent lifecycle.
 //!
-//! An agent is a git worktree + a sandboxed `claude` process running
-//! inside it. The process runs either in a PTY (native view — xterm
-//! shows claude's TUI; the app overlays its own input over claude's
-//! prompt) or as a stream-json subprocess (custom view — the app
-//! renders structured chat messages itself).
+//! An agent is a git worktree + a coding-agent process running inside
+//! it. There are three runner shapes:
 //!
-//! Both shapes attach to the *same* conversation via claude's
-//! `--session-id <uuid>` on first spawn and `--resume <uuid>` on
-//! subsequent spawns (view switches). Only one process is alive at a
-//! time per agent.
+//! - **Pty** (claude native view): a sandboxed `claude` process in a PTY
+//!   rendering its TUI; the app overlays its own input over the prompt.
+//! - **Managed** (claude custom view): a sandboxed, persistent
+//!   `claude --print` stream-json subprocess; the app renders structured
+//!   chat. Both claude shapes attach to the same conversation via
+//!   `--session-id <uuid>` on first spawn and `--resume <uuid>` after.
+//! - **CodexManaged** (codex custom view): codex's `exec` runs one turn
+//!   and exits, so there's no persistent process — each user message
+//!   spawns a fresh `codex exec [resume <id>]` (see `codex_session`).
+//!   Codex sandboxes itself rather than running under sandbox-exec.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,6 +20,7 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use crate::codex_session::{CodexSession, CodexSpawn};
 use crate::error::{Error, Result};
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
@@ -27,6 +31,9 @@ const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 pub enum Agent {
     Pty(PtyAgent),
     Managed(ManagedAgent),
+    /// Codex's per-turn `exec` runner. Holds no live process between
+    /// turns; each user message spawns a fresh `codex exec`.
+    CodexManaged(CodexManagedAgent),
 }
 
 pub struct PtyAgent {
@@ -37,6 +44,20 @@ pub struct PtyAgent {
 pub struct ManagedAgent {
     session: ManagedSession,
     _profile_file: tempfile::NamedTempFile,
+}
+
+pub struct CodexManagedAgent {
+    session: CodexSession,
+}
+
+/// Parameters for spawning a Codex runner. Unlike `SpawnSpec` there's
+/// no sandbox profile (codex sandboxes itself) and the session id is
+/// optional — codex assigns one on the first turn.
+pub struct CodexSpawnSpec {
+    /// Codex's working directory — the primary repo's worktree.
+    pub cwd: PathBuf,
+    /// Codex thread id to resume, if one has been captured already.
+    pub session_id: Option<String>,
 }
 
 pub struct SpawnSpec<'a> {
@@ -127,11 +148,53 @@ impl Agent {
         }))
     }
 
+    /// Build a Codex per-turn runner. Spawns no process yet — the first
+    /// `codex exec` is launched when the first user message arrives.
+    /// `on_turn_exit(success)` fires when a turn's process exits (and that
+    /// turn is still the current one) — the per-turn analogue of the
+    /// turn-end signal, so an interrupted or failed turn that never emits
+    /// `turn.completed` still leaves the agent promptly.
+    pub fn spawn_codex<F, G, H>(
+        spec: CodexSpawnSpec,
+        on_event: F,
+        on_session_id: G,
+        on_turn_exit: H,
+    ) -> Result<Self>
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+        G: Fn(String) + Send + Sync + 'static,
+        H: Fn(bool) + Send + Sync + 'static,
+    {
+        let home = dirs::home_dir()
+            .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let codex = resolve_codex(&home)?;
+
+        tracing::info!(
+            codex = %codex,
+            cwd = %spec.cwd.display(),
+            resume = spec.session_id.is_some(),
+            "preparing codex runner"
+        );
+
+        let session = CodexSession::new(
+            CodexSpawn {
+                codex: PathBuf::from(codex),
+                cwd: spec.cwd,
+                session_id: spec.session_id,
+            },
+            on_event,
+            on_session_id,
+            on_turn_exit,
+        );
+
+        Ok(Self::CodexManaged(CodexManagedAgent { session }))
+    }
+
     pub fn write_pty(&self, bytes: &[u8]) -> Result<()> {
         match self {
             Self::Pty(a) => a.pty.write(bytes),
-            Self::Managed(_) => Err(Error::Other(
-                "write_pty called on managed agent".into(),
+            Self::Managed(_) | Self::CodexManaged(_) => Err(Error::Other(
+                "write_pty called on a managed agent".into(),
             )),
         }
     }
@@ -139,6 +202,7 @@ impl Agent {
     pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
         match self {
             Self::Managed(a) => a.session.send_user_message(text, attachments),
+            Self::CodexManaged(a) => a.session.send_user_message(text, attachments),
             Self::Pty(_) => Err(Error::Other(
                 "send_user_message called on pty agent".into(),
             )),
@@ -155,13 +219,16 @@ impl Agent {
             Self::Managed(a) => {
                 a.session.interrupt();
             }
+            Self::CodexManaged(a) => {
+                a.session.interrupt();
+            }
         }
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         match self {
             Self::Pty(a) => a.pty.resize(cols, rows),
-            Self::Managed(_) => Ok(()),
+            Self::Managed(_) | Self::CodexManaged(_) => Ok(()),
         }
     }
 
@@ -270,24 +337,42 @@ fn prepare_managed_args(
 }
 
 fn resolve_claude(home: &Path) -> Result<String> {
-    if let Some(path) = command_in_path("claude") {
+    resolve_agent_bin("claude", "Claude Code", home)
+}
+
+fn resolve_codex(home: &Path) -> Result<String> {
+    resolve_agent_bin("codex", "Codex", home)
+}
+
+/// Locate an agent CLI by name: PATH first, then the user's login shell
+/// (catches nvm / fnm / volta / homebrew setups the GUI process's bare
+/// PATH misses), then the usual install dirs. `label` is the
+/// human-facing product name used only in the not-found error.
+fn resolve_agent_bin(name: &str, label: &str, home: &Path) -> Result<String> {
+    if let Some(path) = command_in_path(name) {
         return Ok(path);
     }
-
-    if let Some(path) = command_from_login_shell("claude") {
+    if let Some(path) = command_from_login_shell(name) {
         return Ok(path);
     }
-
-    for candidate in common_claude_paths(home) {
+    for candidate in common_bin_paths(name, home) {
         if candidate.is_file() {
             return Ok(candidate.to_string_lossy().into_owned());
         }
     }
+    Err(Error::Other(format!(
+        "Could not find the `{name}` executable. Install {label} or make it available on PATH."
+    )))
+}
 
-    Err(Error::Other(
-        "Could not find the `claude` executable. Install Claude Code or make it available on PATH."
-            .into(),
-    ))
+fn common_bin_paths(name: &str, home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(format!(".local/bin/{name}")),
+        home.join(format!(".npm-global/bin/{name}")),
+        home.join(format!(".bun/bin/{name}")),
+        PathBuf::from(format!("/opt/homebrew/bin/{name}")),
+        PathBuf::from(format!("/usr/local/bin/{name}")),
+    ]
 }
 
 fn command_in_path(name: &str) -> Option<String> {
@@ -315,12 +400,3 @@ fn command_from_login_shell(name: &str) -> Option<String> {
     }
 }
 
-fn common_claude_paths(home: &Path) -> Vec<PathBuf> {
-    vec![
-        home.join(".local/bin/claude"),
-        home.join(".npm-global/bin/claude"),
-        home.join(".bun/bin/claude"),
-        PathBuf::from("/opt/homebrew/bin/claude"),
-        PathBuf::from("/usr/local/bin/claude"),
-    ]
-}

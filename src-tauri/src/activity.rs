@@ -83,6 +83,48 @@ impl Activity for ClaudeManagedActivity {
     }
 }
 
+/// Custom view: codex runs as a per-turn `codex exec --json` process.
+/// `turn.completed` is its official end-of-turn signal; we trust it and
+/// fall back to silence only if it never arrives. (The per-turn process
+/// exiting is handled separately by `CodexSession`; it does not feed
+/// this detector.)
+pub struct CodexManagedActivity {
+    last_event_at: Option<Instant>,
+    explicit_turn_end: bool,
+}
+
+impl CodexManagedActivity {
+    pub fn new() -> Self {
+        Self {
+            last_event_at: None,
+            explicit_turn_end: false,
+        }
+    }
+}
+
+impl Activity for CodexManagedActivity {
+    fn observe_event(&mut self, event: &Value) {
+        self.last_event_at = Some(Instant::now());
+        if event.get("type").and_then(|v| v.as_str()) == Some("turn.completed") {
+            self.explicit_turn_end = true;
+        }
+    }
+
+    fn turn_ended(&self) -> bool {
+        if self.explicit_turn_end {
+            return true;
+        }
+        self.last_event_at
+            .map(|t| t.elapsed() >= MANAGED_SILENCE_BACKSTOP)
+            .unwrap_or(false)
+    }
+
+    fn reset_for_new_turn(&mut self) {
+        self.last_event_at = Some(Instant::now());
+        self.explicit_turn_end = false;
+    }
+}
+
 /// Native view: claude runs in a PTY rendering its full TUI. There's
 /// no clean external turn-end event, so we use the silence between
 /// PTY chunks. Claude's TUI animates its "working" state with
@@ -133,6 +175,27 @@ mod tests {
     fn managed_resets_after_new_turn() {
         let mut a = ClaudeManagedActivity::new();
         a.observe_event(&serde_json::json!({"type": "result"}));
+        assert!(a.turn_ended());
+        a.reset_for_new_turn();
+        assert!(!a.turn_ended());
+    }
+
+    #[test]
+    fn codex_ends_on_turn_completed_event() {
+        let mut a = CodexManagedActivity::new();
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "turn.started"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "item.completed"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "turn.completed", "usage": {}}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn codex_resets_after_new_turn() {
+        let mut a = CodexManagedActivity::new();
+        a.observe_event(&serde_json::json!({"type": "turn.completed"}));
         assert!(a.turn_ended());
         a.reset_for_new_turn();
         assert!(!a.turn_ended());

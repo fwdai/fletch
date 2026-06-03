@@ -678,10 +678,18 @@ export const useAppStore = create<AppState>((set, get) => ({
                 ],
               }
             : state.managedLogs,
+        // `running` is the backend's authoritative "a turn is in flight"
+        // signal — re-assert busy here so a stale `idle` (e.g. the one
+        // start_process emits just before the first turn lands) can't
+        // leave the spinner off. `idle`/`error`/`stopped` clear it.
         managedBusy:
-          e.status === "error" || e.status === "stopped" || e.status === "idle"
-            ? { ...state.managedBusy, [e.agent_id]: false }
-            : state.managedBusy,
+          e.status === "running"
+            ? { ...state.managedBusy, [e.agent_id]: true }
+            : e.status === "error" ||
+                e.status === "stopped" ||
+                e.status === "idle"
+              ? { ...state.managedBusy, [e.agent_id]: false }
+              : state.managedBusy,
       }));
     });
 

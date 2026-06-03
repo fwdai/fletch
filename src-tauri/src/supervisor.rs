@@ -3,13 +3,13 @@
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-use crate::activity::{Activity, ClaudeManagedActivity, ClaudeNativeActivity};
-use crate::agent::{Agent, SpawnSpec};
+use crate::activity::{Activity, ClaudeManagedActivity, ClaudeNativeActivity, CodexManagedActivity};
+use crate::agent::{Agent, CodexSpawnSpec, SpawnSpec};
 use crate::branding;
 use crate::error::{Error, Result};
 use crate::git;
@@ -339,6 +339,16 @@ impl Supervisor {
             )));
         }
 
+        // Codex only renders in the structured (Custom) view for now: its
+        // per-turn `exec` runtime emits stream-json events, not the PTY
+        // bytes the native view expects. The native codex TUI view is a
+        // follow-up.
+        let view = if provider == "codex" {
+            AgentView::Custom
+        } else {
+            view
+        };
+
         let agent_id = self.workspace.allocate_agent_id()?;
         let name = agent_id.clone();
 
@@ -463,16 +473,19 @@ impl Supervisor {
         fresh: bool,
     ) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
-        let session_id = record
-            .session_id
-            .clone()
-            .ok_or_else(|| Error::Other("agent record missing session_id".into()))?;
+        let is_codex = record.provider == "codex";
+        // Claude carries a session id we generated at create time; Codex
+        // is assigned one by the CLI on its first turn, so it may be None
+        // until then.
+        let session_id = record.session_id.clone();
+        if !is_codex && session_id.is_none() {
+            return Err(Error::Other("agent record missing session_id".into()));
+        }
         let primary = record
             .repos
             .first()
             .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?;
         let cwd = repo_worktree_path(agent_id, &primary.subdir)?;
-        let sandbox_root = agent_parent_dir(agent_id)?;
 
         // Claude only writes a session file once the first turn lands.
         // If task is still empty (no first user message has ever been
@@ -493,40 +506,63 @@ impl Supervisor {
             *entry
         };
 
-        let mut activity: Box<dyn Activity> = match record.view {
-            AgentView::Native => Box::new(ClaudeNativeActivity::new()),
-            AgentView::Custom => Box::new(ClaudeManagedActivity::new()),
+        let mut activity: Box<dyn Activity> = if is_codex {
+            Box::new(CodexManagedActivity::new())
+        } else {
+            match record.view {
+                AgentView::Native => Box::new(ClaudeNativeActivity::new()),
+                AgentView::Custom => Box::new(ClaudeManagedActivity::new()),
+            }
         };
         if effective_fresh {
             activity.reset_for_new_turn();
         }
         self.activities.lock().insert(agent_id_str.clone(), activity);
 
-        let spec = SpawnSpec {
-            agent_id: &agent_id_str,
-            cwd,
-            sandbox_root,
-            session_id: &session_id,
-            fresh: effective_fresh,
-            cols: 120,
-            rows: 32,
-        };
-
-        let agent = match record.view {
-            AgentView::Native => spawn_pty_agent(
-                spec,
+        let agent = if is_codex {
+            // Codex is a per-turn `exec` runner — no process spawns until
+            // the first user message. It's always rendered in the
+            // structured (Custom) view; the native PTY view isn't wired
+            // for codex yet. No sandbox profile: codex sandboxes itself
+            // rather than running under sandbox-exec.
+            spawn_codex_agent(
+                cwd,
+                session_id.clone(),
                 app.clone(),
                 agent_id_str.clone(),
                 self.clone(),
                 my_gen,
-            )?,
-            AgentView::Custom => spawn_managed_agent(
-                spec,
-                app.clone(),
-                agent_id_str.clone(),
-                self.clone(),
-                my_gen,
-            )?,
+            )?
+        } else {
+            let session_id = session_id
+                .as_deref()
+                .expect("non-codex agents always have a session id");
+            let sandbox_root = agent_parent_dir(agent_id)?;
+            let spec = SpawnSpec {
+                agent_id: &agent_id_str,
+                cwd,
+                sandbox_root,
+                session_id,
+                fresh: effective_fresh,
+                cols: 120,
+                rows: 32,
+            };
+            match record.view {
+                AgentView::Native => spawn_pty_agent(
+                    spec,
+                    app.clone(),
+                    agent_id_str.clone(),
+                    self.clone(),
+                    my_gen,
+                )?,
+                AgentView::Custom => spawn_managed_agent(
+                    spec,
+                    app.clone(),
+                    agent_id_str.clone(),
+                    self.clone(),
+                    my_gen,
+                )?,
+            }
         };
 
         self.agents.lock().insert(agent_id_str.clone(), agent);
@@ -559,7 +595,11 @@ impl Supervisor {
             if !matches!(record.status, AgentStatus::Spawning) {
                 continue;
             }
-            if record.session_id.is_none() || record.repos.is_empty() {
+            // Codex agents legitimately have no session id until their
+            // first turn assigns one, so only treat a missing id as
+            // corruption for providers that generate it up front (claude).
+            let missing_session = record.provider != "codex" && record.session_id.is_none();
+            if missing_session || record.repos.is_empty() {
                 let err = "Agent record incomplete (no session id / no repos). Remove and respawn.".to_string();
                 let _ = self.workspace.update_agent_status(
                     &record.id,
@@ -591,7 +631,9 @@ impl Supervisor {
         if self.agents.lock().contains_key(agent_id) {
             return Ok(());
         }
-        if record.session_id.is_none() {
+        // Codex is assigned a session id on its first turn, so a missing
+        // one is only an error for providers that generate it up front.
+        if record.provider != "codex" && record.session_id.is_none() {
             return Err(Error::Other(
                 "Agent has no session id; remove and respawn.".into(),
             ));
@@ -662,6 +704,12 @@ impl Supervisor {
         if record.view == new_view {
             return Ok(());
         }
+        // Codex has no native PTY view yet — keep it on the structured one.
+        if record.provider == "codex" && new_view == AgentView::Native {
+            return Err(Error::Other(
+                "Codex agents only support the structured view".into(),
+            ));
+        }
 
         if let Some(agent) = self.agents.lock().remove(agent_id) {
             let _ = agent.shutdown();
@@ -698,11 +746,11 @@ impl Supervisor {
     }
 
     pub async fn stop_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
-        // Interrupt the current turn without exiting the process.
-        // The natural result-event + turn-watchdog path will transition
-        // the agent to Idle once the interrupt is processed. If the
-        // process does exit (e.g. it doesn't survive SIGINT), the exit
-        // handler in apply_exit_if_current will also move it to Idle.
+        // Interrupt the current turn. How it returns to Idle depends on
+        // the runner: claude (managed) emits a `result` event and, if it
+        // exits, `apply_exit_if_current` moves it to Idle; codex's
+        // per-turn `exec` exits on SIGINT and its `on_turn_exit` handler
+        // ends the turn (it emits no `turn.completed` when interrupted).
         let _ = app;
         let agents = self.agents.lock();
         if let Some(agent) = agents.get(agent_id) {
@@ -932,37 +980,37 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Read the persisted claude session JSONL for an archived (or
-    /// live) agent and return the events as a Vec<Value>. The frontend
-    /// feeds these through the same event handler it uses for live
-    /// stream-json output, so we don't need a parallel renderer.
+    /// Read the persisted session JSONL for an archived (or live) agent
+    /// and return its raw lines as a Vec<Value>. The frontend's
+    /// per-provider adapter normalizes these into renderable events, so
+    /// we don't need a parallel renderer here. Claude's file lives under
+    /// `~/.claude/projects`; codex's rollout under `$CODEX_HOME/sessions`.
     ///
-    /// Returns an empty vec if the JSONL is missing (claude pruned it,
-    /// user deleted it, session never reached the first turn).
+    /// Returns an empty vec if the file is missing (pruned, deleted, or
+    /// the session never reached its first turn).
     pub fn read_session_transcript(&self, agent_id: &str) -> Result<Vec<Value>> {
         let record = self.workspace.agent(agent_id)?;
-        let session_id = record
-            .session_id
-            .as_deref()
-            .ok_or_else(|| Error::Other("agent has no session id".into()))?;
-        let path = match find_session_jsonl(session_id) {
-            Some(p) => p,
-            None => return Ok(Vec::new()),
+        let session_id = match record.session_id.as_deref() {
+            Some(s) => s,
+            // Codex's id is only assigned on the first turn; before that
+            // there's nothing to replay.
+            None if record.provider == "codex" => return Ok(Vec::new()),
+            None => return Err(Error::Other("agent has no session id".into())),
         };
-        let file = std::fs::File::open(&path)
-            .map_err(|e| Error::Other(format!("open transcript: {e}")))?;
-        let reader = std::io::BufReader::new(file);
-        let mut out = Vec::new();
-        use std::io::BufRead;
-        for line in reader.lines().map_while(std::result::Result::ok) {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                out.push(v);
-            }
+
+        // Each provider persists its conversation in a different place and
+        // format. The frontend's per-provider adapter (`normalizeTranscript`)
+        // translates these raw lines into renderable events, so here we just
+        // locate the file and hand back its JSONL.
+        let path = if record.provider == "codex" {
+            find_codex_rollout(session_id)
+        } else {
+            find_session_jsonl(session_id)
+        };
+        match path {
+            Some(p) => read_jsonl_values(&p),
+            None => Ok(Vec::new()),
         }
-        Ok(out)
     }
 
     /// Fetch the current PR state for an agent's primary repo and emit
@@ -1060,6 +1108,66 @@ fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
     None
 }
 
+/// Locate codex's rollout file for a thread id. Codex stores sessions at
+/// `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
+/// defaults to `~/.codex`); the id suffix is the thread id we captured.
+fn find_codex_rollout(session_id: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))?;
+    // Anchor on the `-<id>.jsonl` boundary (filenames are
+    // `rollout-<ts>-<id>.jsonl`) so one thread id can't match another whose
+    // name merely ends with the same characters.
+    let suffix = format!("-{session_id}.jsonl");
+    // Walk the YYYY/MM/DD tree (three dir levels) and match the suffix.
+    fn dirs_in(p: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(p)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect()
+    }
+    let sessions = home.join("sessions");
+    for year in dirs_in(&sessions) {
+        for month in dirs_in(&year) {
+            for day in dirs_in(&month) {
+                for entry in std::fs::read_dir(&day).into_iter().flatten().flatten() {
+                    let path = entry.path();
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with(&suffix))
+                    {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Read a JSONL file into a vec of parsed values, skipping blank or
+/// unparseable lines.
+fn read_jsonl_values(path: &Path) -> Result<Vec<Value>> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path)
+        .map_err(|e| Error::Other(format!("open transcript: {e}")))?;
+    let reader = std::io::BufReader::new(file);
+    let mut out = Vec::new();
+    for line in reader.lines().map_while(std::result::Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            out.push(v);
+        }
+    }
+    Ok(out)
+}
+
 fn spawn_pty_agent(
     spec: SpawnSpec<'_>,
     app: AppHandle,
@@ -1136,6 +1244,75 @@ fn spawn_managed_agent(
         },
         move |exit| {
             apply_exit_if_current(&sup_for_exit, &app_for_exit, &id_for_exit, gen, exit.success, exit.message);
+        },
+    )
+}
+
+/// Build a Codex agent. A codex `exec` process exits at the end of
+/// *every* turn — that's normal, not the agent dying — so unlike the
+/// pty/managed spawners we don't wire `apply_exit_if_current` (which
+/// would remove the agent from the map). Instead the per-turn exit is
+/// reported via `on_turn_exit`, which ends the turn (Idle) without
+/// tearing the agent down. This covers turns that exit without a
+/// `turn.completed` event (interrupt, crash) so the agent doesn't sit
+/// Running until the silence backstop. The session-id callback persists
+/// the thread id codex assigns on the first turn so later turns (and
+/// re-attach after restart) resume it.
+fn spawn_codex_agent(
+    cwd: PathBuf,
+    session_id: Option<String>,
+    app: AppHandle,
+    agent_id: String,
+    sup: Arc<Supervisor>,
+    gen: u64,
+) -> Result<Agent> {
+    let app_for_event = app.clone();
+    let id_for_event = agent_id.clone();
+    let sup_for_event = sup.clone();
+    let id_for_sid = agent_id.clone();
+    let sup_for_sid = sup.clone();
+    let app_for_exit = app;
+    let id_for_exit = agent_id;
+    let sup_for_exit = sup;
+    Agent::spawn_codex(
+        CodexSpawnSpec { cwd, session_id },
+        move |event| {
+            if let Some(activity) = sup_for_event.activities.lock().get_mut(&id_for_event) {
+                activity.observe_event(&event);
+            }
+            if let Err(e) = app_for_event.emit(
+                "agent:event",
+                AgentEventPayload {
+                    agent_id: id_for_event.clone(),
+                    event,
+                },
+            ) {
+                tracing::warn!(error = %e, agent_id = %id_for_event, "emit agent:event failed");
+            }
+        },
+        move |sid| {
+            if let Err(e) = sup_for_sid.workspace.set_agent_session_id(&id_for_sid, &sid) {
+                tracing::warn!(error = %e, agent_id = %id_for_sid, "persist codex session id failed");
+            }
+        },
+        move |_success| {
+            // The turn's process exited. Ignore if a respawn/teardown has
+            // since bumped the generation (e.g. the session was dropped).
+            let current = sup_for_exit
+                .generations
+                .lock()
+                .get(&id_for_exit)
+                .copied()
+                .unwrap_or(0);
+            if current != gen {
+                return;
+            }
+            // End the turn. Idempotent with the `turn.completed` watchdog
+            // path; the win is the interrupt/crash case where no such
+            // event arrives. We don't surface non-success as Error: a
+            // user-initiated Stop (SIGINT) is also non-success, and real
+            // codex errors are reported in-band as events.
+            transition_active(&sup_for_exit, &app_for_exit, &id_for_exit, AgentStatus::Idle);
         },
     )
 }

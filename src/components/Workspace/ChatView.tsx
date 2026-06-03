@@ -90,7 +90,10 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               style={{ margin: "40px auto", maxWidth: 360 }}
             >
               <div className="et">No transcript available</div>
-              <div>Claude's session file is not on disk for this agent.</div>
+              <div>
+                {providerLabel(agent.provider)}'s session file is not on disk
+                for this agent.
+              </div>
             </div>
           ) : (
             items.map((item, i) => <MessageItem key={i} item={item} />)
@@ -109,6 +112,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
       </div>
       <div className="composer-wrap">
         <Composer
+          defaultProvider={agent.provider}
           disabled={!canSend}
           placeholder={
             canSend

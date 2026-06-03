@@ -1,9 +1,6 @@
-{"type":"user","content":"add a button"}
-{"type":"response.output_text.delta","delta":"Add"}
-{"type":"response.output_text.delta","delta":"ing it now."}
-{"type":"response.function_call.started","call_id":"fc_1","name":"edit","arguments":""}
-{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"file\""}
-{"type":"response.function_call_arguments.delta","output_index":0,"delta":":\"App.tsx\"}"}
-{"type":"function_call","call_id":"fc_1","name":"edit","arguments":{"file":"App.tsx"}}
-{"type":"function_call_output","call_id":"fc_1","output":{"content":"ok","is_error":false}}
-{"type":"response.completed"}
+{"type":"thread.started","thread_id":"019e8cc9-89c0-7850-9738-2e1919708482"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc 'echo hello'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc 'echo hello'","aggregated_output":"hello\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"It printed `hello`."}}
+{"type":"turn.completed","usage":{"input_tokens":61043,"cached_input_tokens":39936,"output_tokens":179,"reasoning_output_tokens":69}}
