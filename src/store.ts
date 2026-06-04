@@ -264,6 +264,11 @@ interface AppState {
   showLandmarks: boolean;
   features: FeatureFlags;
   providerFlags: Record<string, boolean>;
+  /** Live-probed version strings keyed by provider id. Populated async on
+   *  init; falls back to hardcoded defaults in PROVIDERS when missing. */
+  providerVersions: Record<string, string>;
+  /** Resolved binary paths keyed by provider id, from the version probe. */
+  providerPaths: Record<string, string>;
   /** View mode preference for the workspace pane. Persisted; falls
    *  back to the agent's own `view` field for native vs. custom
    *  switching. */
@@ -509,6 +514,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   showLandmarks: true,
   features: DEFAULT_FEATURES,
   providerFlags: {},
+  providerVersions: {},
+  providerPaths: {},
   viewMode: "custom" as WorkspaceView,
 
   init: async () => {
@@ -539,6 +546,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch {
       // Non-fatal — Account screen shows empty fields until a save succeeds.
     }
+
+    // Probe installed provider CLIs for real versions + paths (async, non-blocking).
+    api.probeProviderVersions().then((probes) => {
+      const versions: Record<string, string> = {};
+      const paths: Record<string, string> = {};
+      for (const probe of probes) {
+        if (probe.version) versions[probe.id] = probe.version;
+        if (probe.path) paths[probe.id] = probe.path;
+      }
+      set({ providerVersions: versions, providerPaths: paths });
+    }).catch(() => {
+      // Non-fatal — UI falls back to hardcoded versions.
+    });
 
     await onAgentOutput((e) => {
       const chunk = new Uint8Array(e.bytes);

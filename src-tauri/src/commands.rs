@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
+use crate::agent::ProviderProbe;
 use crate::error::{Error, Result};
 use crate::gh::{self, PrState};
 use crate::git;
@@ -833,6 +834,14 @@ pub async fn copy_worktree_file(
     let dst = resolve_new_path(&worktree, &to)?;
     std::fs::copy(&src, &dst)?;
     Ok(())
+}
+
+/// Probe every known provider's CLI binary: resolve its path, run `--version`,
+/// and return what was found. Missing or uninstalled providers return `None`
+/// for both fields; the frontend falls back to hardcoded defaults.
+#[tauri::command]
+pub async fn probe_provider_versions() -> Vec<ProviderProbe> {
+    crate::agent::probe_all_providers().await
 }
 
 #[cfg(test)]

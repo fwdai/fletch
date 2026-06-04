@@ -194,6 +194,7 @@ pub fn run() {
             commands::create_worktree_file,
             commands::create_worktree_dir,
             commands::copy_worktree_file,
+            commands::probe_provider_versions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quorum");

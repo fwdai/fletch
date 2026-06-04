@@ -202,6 +202,12 @@ export interface RunStateEvent {
   last_error: string | null;
 }
 
+export interface ProviderProbe {
+  id: string;
+  version: string | null;
+  path: string | null;
+}
+
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
   getAgentDiffStats: (agentId: string) =>
@@ -297,6 +303,8 @@ export const api = {
     invoke<void>("create_worktree_dir", { agentId, path }),
   copyWorktreeFile: (agentId: string, from: string, to: string) =>
     invoke<void>("copy_worktree_file", { agentId, from, to }),
+  probeProviderVersions: () =>
+    invoke<ProviderProbe[]>("probe_provider_versions"),
 };
 
 export function onAgentOutput(

@@ -13,6 +13,8 @@ import { SetHead, SetGroup, SetToggle } from "./primitives";
 export function ProvidersPane() {
   const providerFlags = useAppStore((s) => s.providerFlags);
   const setProviderEnabled = useAppStore((s) => s.setProviderEnabled);
+  const providerVersions = useAppStore((s) => s.providerVersions);
+  const providerPaths = useAppStore((s) => s.providerPaths);
 
   const installed = PROVIDERS.filter((p) => PROVIDER_DETAIL[p.id]?.installed);
   const enabledCount = installed.filter((p) => providerFlags[p.id] !== false).length;
@@ -44,6 +46,8 @@ export function ProvidersPane() {
               provider={p}
               enabled={providerFlags[p.id] !== false}
               onToggle={() => setProviderEnabled(p.id, providerFlags[p.id] === false)}
+              liveVersion={providerVersions[p.id]}
+              livePath={providerPaths[p.id]}
             />
           ))}
         </div>
@@ -64,10 +68,14 @@ function ProviderRow({
   provider,
   enabled,
   onToggle,
+  liveVersion,
+  livePath,
 }: {
   provider: Provider;
   enabled: boolean;
   onToggle: () => void;
+  liveVersion?: string;
+  livePath?: string;
 }) {
   const [open, setOpen] = useState(false);
   const d = PROVIDER_DETAIL[provider.id];
@@ -81,23 +89,9 @@ function ProviderRow({
         <div className="set-prov-id">
           <div className="set-prov-name">
             {provider.label}
-            {d.earlyAccess && <span className="set-badge ea">Early Access</span>}
-            <span className="set-prov-ver mono">{provider.version}</span>
-            {d.update && (
-              <span
-                className="set-prov-update tip"
-                data-tip-down
-                data-tip={`Update to ${d.update}`}
-              >
-                <Icon name="arrowUp" size={11} />
-              </span>
-            )}
+            <span className="set-prov-ver mono">{liveVersion ?? provider.version}</span>
           </div>
-          <div className="set-prov-sub">
-            Authenticated as <span className="set-prov-acct mono">{d.account}</span>
-            <span className="set-dot">·</span>
-            <span>{d.plan}</span>
-          </div>
+          <div className="set-prov-sub mono">{livePath ?? d.path}</div>
         </div>
         <button
           className={`set-prov-chev ${open ? "open" : ""}`}
@@ -111,14 +105,10 @@ function ProviderRow({
 
       {open && (
         <div className="set-prov-detail">
-          <ProvDetailRow k="Binary" v={d.path} mono />
+          <ProvDetailRow k="Binary" v={livePath ?? d.path} mono />
           <ProvDetailRow k="Models" v={d.models} />
-          <ProvDetailRow k="Plan" v={d.plan} />
           <div className="set-prov-detail-actions">
-            <button className="btn-t outline sm-t">Re-authenticate</button>
             <button className="btn-t ghost sm-t">View logs</button>
-            <span className="grow" />
-            <button className="btn-t ghost sm-t danger">Sign out</button>
           </div>
         </div>
       )}

@@ -764,6 +764,76 @@ fn command_from_login_shell(name: &str) -> Option<String> {
     }
 }
 
+// ── Version probing ───────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct ProviderProbe {
+    pub id: String,
+    pub version: Option<String>,
+    pub path: Option<String>,
+}
+
+/// Probe every known provider in parallel and return their resolved path +
+/// version string. Missing/uninstalled providers return `None` for both fields;
+/// the frontend falls back to the hardcoded defaults in that case.
+pub async fn probe_all_providers() -> Vec<ProviderProbe> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+
+    // (id, bin_name, human_label)
+    let mut targets: Vec<(&str, &str, &str)> = vec![("claude", "claude", "Claude Code")];
+    for d in PER_TURN_AGENTS {
+        targets.push((d.id, d.bin, d.label));
+    }
+
+    let mut handles = Vec::new();
+    for (id, bin, label) in targets {
+        let home = home.clone();
+        let id = id.to_string();
+        let bin = bin.to_string();
+        let label = label.to_string();
+        handles.push(tokio::task::spawn_blocking(move || {
+            let path = resolve_agent_bin(&bin, &label, &home).ok();
+            let version = path.as_deref().and_then(probe_version);
+            ProviderProbe { id, version, path }
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        if let Ok(probe) = handle.await {
+            results.push(probe);
+        }
+    }
+    results
+}
+
+/// Run `<bin> --version` and extract the first semver-like token from stdout
+/// (or stderr as fallback). Returns `None` if the binary errors or emits no
+/// recognisable version.
+fn probe_version(bin: &str) -> Option<String> {
+    let out = Command::new(bin).arg("--version").output().ok()?;
+    let text = if !out.stdout.is_empty() {
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    } else {
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    parse_semver(&text)
+}
+
+/// Extract the first `N.N[.N[.N]]` token from arbitrary version output.
+/// Strips a leading `v` from each word before testing so `v1.0.42` and
+/// `1.0.42` both match. Returns the token with a `v` prefix.
+fn parse_semver(s: &str) -> Option<String> {
+    for word in s.split_whitespace() {
+        let word = word.trim_start_matches('v');
+        // Accept anything that is purely digit-and-dot with at least one dot.
+        if word.contains('.') && word.chars().all(|c| c.is_ascii_digit() || c == '.') && !word.starts_with('.') && !word.ends_with('.') {
+            return Some(format!("v{word}"));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

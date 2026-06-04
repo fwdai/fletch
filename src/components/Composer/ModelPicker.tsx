@@ -18,6 +18,7 @@ interface Props {
 export function ModelPicker({ value, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const providerFlags = useAppStore((s) => s.providerFlags);
+  const providerVersions = useAppStore((s) => s.providerVersions);
   const selected = PROVIDERS.find((p) => p.id === value) ?? PROVIDERS[0];
   const enabled = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
 
@@ -58,7 +59,7 @@ export function ModelPicker({ value, onChange }: Props) {
                   <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={18} />
                   <span className="di-l">{p.label}</span>
                   {wired ? (
-                    <span className="di-m">{p.version}</span>
+                    <span className="di-m">{providerVersions[p.id] ?? p.version}</span>
                   ) : (
                     <span className="set-badge soon">Coming soon</span>
                   )}
