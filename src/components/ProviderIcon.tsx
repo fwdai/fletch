@@ -76,6 +76,11 @@ export function ProviderIcon({ slug, short, hue, size = 30 }: ProviderIconProps)
       style={{
         width: size,
         height: size,
+        // Scale the corner radius and monogram with `size` so the chip stays
+        // proportionate at any scale. The ratios reproduce the CSS defaults
+        // (7px radius, 10.5px text) exactly at the 30px settings size.
+        borderRadius: Math.max(3, Math.round(size * 0.233)),
+        fontSize: Math.round(size * 0.35 * 10) / 10,
         ["--ph-h" as string]: hue,
         ["--ph" as string]: "oklch(.65 .13 var(--ph-h))",
       }}
