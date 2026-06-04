@@ -2,6 +2,7 @@ import { useState } from "react";
 import { PROVIDERS } from "../../data/providers";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
+import { ProviderIcon } from "../ProviderIcon";
 import { Chip } from "../ui/Chip";
 import { Scrim } from "../ui/Scrim";
 
@@ -22,9 +23,11 @@ export function ModelPicker({ value, onChange }: Props) {
   return (
     <div style={{ position: "relative" }}>
       <Chip bordered onClick={() => setOpen((v) => !v)}>
-        <span
-          className="dot"
-          style={{ background: `oklch(0.7 0.1 ${selected.hue})` }}
+        <ProviderIcon
+          slug={selected.id}
+          short={selected.short}
+          hue={selected.hue}
+          size={15}
         />
         <span style={{ fontWeight: 500 }}>{selected.label}</span>
         <Icon name="chevD" size={9} />
@@ -44,16 +47,7 @@ export function ModelPicker({ value, onChange }: Props) {
                   setOpen(false);
                 }}
               >
-                <div className="di-i">
-                  <span
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: "50%",
-                      background: `oklch(0.7 0.1 ${p.hue})`,
-                    }}
-                  />
-                </div>
+                <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={18} />
                 <span className="di-l">{p.label}</span>
                 <span className="di-m">{p.version}</span>
               </div>
