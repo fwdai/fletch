@@ -734,11 +734,41 @@ impl Supervisor {
         text: &str,
         attachments: &[String],
     ) -> Result<()> {
-        // Record the user turn as a provider-agnostic canonical event before
-        // sending to the agent, so it's logged ahead of the response. This is
-        // persist-only: the frontend renders the user message optimistically
-        // on send, and replays this event through the reducer on restore — so
-        // it must not be emitted live (that would double-render).
+        self.deliver_user_message(agent_id, text, attachments)?;
+        mark_user_turn_started(&self, app, agent_id);
+        on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), text.to_string());
+        Ok(())
+    }
+
+    /// Deliver a user turn to the running agent, then persist it as the
+    /// provider-agnostic canonical `user_message` event.
+    ///
+    /// Order matters: we persist *after* the agent has accepted the message,
+    /// never before. A freshly spawned agent isn't in the in-memory map yet,
+    /// so a send aimed at it fails with `AgentNotFound`; the frontend retries
+    /// until the agent is ready (`sendWhenAgentReady`). Persisting up front
+    /// would record one duplicate `user_message` event per failed retry, and
+    /// those surface as the same prompt rendered N times when the conversation
+    /// is replayed from history on reopen.
+    ///
+    /// Persist-only: the frontend renders the user message optimistically on
+    /// send and replays this event through the reducer on restore, so it must
+    /// not be emitted live (that would double-render). It still lands ahead of
+    /// the response — `send_user_message` only queues the write, so the agent's
+    /// own events arrive (and persist) strictly later.
+    fn deliver_user_message(
+        &self,
+        agent_id: &str,
+        text: &str,
+        attachments: &[String],
+    ) -> Result<()> {
+        {
+            let agents = self.agents.lock();
+            let agent = agents
+                .get(agent_id)
+                .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
+            agent.send_user_message(text, attachments)?;
+        }
         let user_event = serde_json::json!({
             "type": "user_message",
             "text": text,
@@ -747,15 +777,6 @@ impl Supervisor {
         if let Err(e) = self.workspace.append_session_event(agent_id, &user_event) {
             tracing::warn!(error = %e, agent_id = %agent_id, "append user_message event failed");
         }
-        {
-            let agents = self.agents.lock();
-            let agent = agents
-                .get(agent_id)
-                .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
-            agent.send_user_message(text, attachments)?;
-        }
-        mark_user_turn_started(&self, app, agent_id);
-        on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), text.to_string());
         Ok(())
     }
 
@@ -2006,5 +2027,28 @@ mod tests {
             .lock()
             .insert("yosemite".to_string(), AgentStatus::Running);
         assert_eq!(sup.live_status("yosemite"), Some(AgentStatus::Running));
+    }
+
+    #[test]
+    fn delivery_to_unready_agent_persists_no_user_message() {
+        // A freshly spawned agent has a session row but isn't in the live
+        // agents map yet. The frontend retries the send until the agent is
+        // ready; if we persisted before delivery, every failed retry would
+        // record a duplicate user_message event and the prompt would render
+        // N times on reopen. Nothing must be persisted for a failed delivery.
+        let sup = test_supervisor();
+        let mut record = record_with_status("yosemite", AgentStatus::Spawning);
+        sup.workspace.add_agent(&mut record).unwrap();
+
+        let err = sup
+            .deliver_user_message("yosemite", "hello", &[])
+            .unwrap_err();
+        assert!(matches!(err, Error::AgentNotFound(_)));
+
+        let events = sup.workspace.read_session_events("yosemite").unwrap();
+        assert!(
+            events.is_empty(),
+            "failed delivery must not persist a user_message event, got {events:?}",
+        );
     }
 }
