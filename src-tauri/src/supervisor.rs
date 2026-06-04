@@ -513,6 +513,8 @@ impl Supervisor {
             "cursor" => Box::new(ManagedActivity::claude()),
             // opencode ends a turn on a `step_finish` with reason "stop".
             "opencode" => Box::new(ManagedActivity::opencode()),
+            // pi ends a turn on a single `agent_end` event.
+            "pi" => Box::new(ManagedActivity::pi()),
             _ => match record.view {
                 AgentView::Native => Box::new(ClaudeNativeActivity::new()),
                 AgentView::Custom => Box::new(ManagedActivity::claude()),
@@ -1008,7 +1010,11 @@ impl Supervisor {
         // wiring it is a follow-up. Re-attaching replays from the
         // provider-agnostic SQLite event log; `--session <id>` resumes the
         // conversation.
-        if record.provider == "cursor" || record.provider == "opencode" {
+        //
+        // Pi persists a `session.jsonl` of its live events, so transcript
+        // replay is wireable later; for v1 it falls back to the SQLite log
+        // like the others, and `--session <id>` resumes the conversation.
+        if matches!(record.provider.as_str(), "cursor" | "opencode" | "pi") {
             return Ok(Vec::new());
         }
 
@@ -1341,6 +1347,7 @@ fn spawn_per_turn_agent(
     match provider {
         "cursor" => Agent::spawn_cursor(spec, on_event, on_session_id, on_turn_exit),
         "opencode" => Agent::spawn_opencode(spec, on_event, on_session_id, on_turn_exit),
+        "pi" => Agent::spawn_pi(spec, on_event, on_session_id, on_turn_exit),
         _ => Agent::spawn_codex(spec, on_event, on_session_id, on_turn_exit),
     }
 }

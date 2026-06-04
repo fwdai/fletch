@@ -75,7 +75,7 @@ export interface AvailableAgent {
 export const AVAILABLE_AGENTS: AvailableAgent[] = [
   {
     id: "pi",
-    label: "Pi Coder",
+    label: "Pi",
     short: "PI",
     hue: 320,
     version: "v0.4",
