@@ -1155,7 +1155,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ busy: true, lastError: null });
     try {
       const view = get().viewMode;
-      const rec = await api.spawnAgent(view, draft.repoPath, provider);
+      const rec = await api.spawnAgent(view, draft.repoPath, provider, draft.name);
       const fresh = await api.getWorkspace();
       set((state) => {
         const patches: Partial<AppState> = {

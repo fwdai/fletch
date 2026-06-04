@@ -390,6 +390,7 @@ impl Supervisor {
         view: AgentView,
         repo_path: PathBuf,
         provider: String,
+        name: Option<String>,
     ) -> Result<AgentRecord> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -407,7 +408,13 @@ impl Supervisor {
             AgentView::Custom
         };
 
-        let agent_id = self.workspace.allocate_agent_id()?;
+        // Use the name the draft already showed in the sidebar so it locks in
+        // rather than being regenerated; only allocate a fresh one when the
+        // caller didn't supply it (the draft-less spawn path).
+        let agent_id = match name {
+            Some(n) if !n.trim().is_empty() => n,
+            _ => self.workspace.allocate_agent_id()?,
+        };
         let name = agent_id.clone();
 
         // Parent_branch captured per-repo; primary's parent is the

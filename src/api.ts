@@ -210,8 +210,13 @@ export const api = {
     invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>
     invoke<Workspace>("remove_workspace_repo", { repoPath }),
-  spawnAgent: (view: AgentView, repoPath: string, provider?: string) =>
-    invoke<AgentRecord>("spawn_agent", { view, repoPath, provider }),
+  spawnAgent: (
+    view: AgentView,
+    repoPath: string,
+    provider?: string,
+    name?: string,
+  ) =>
+    invoke<AgentRecord>("spawn_agent", { view, repoPath, provider, name }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   sendUserMessage: (agentId: string, text: string, attachments: string[] = []) =>
