@@ -86,6 +86,9 @@ pub struct PerTurnDescriptor {
     /// in follow-up PRs, at which point its flag flips to `true`.
     native_view: bool,
     transcript_replay: bool,
+    /// True if this event is a finalized/durable form worth persisting to
+    /// session_events; false for ephemeral streaming/lifecycle events.
+    pub is_durable: fn(&Value) -> bool,
 }
 
 /// What an agent can do *right now*. These are rollout flags, not fixed
@@ -138,6 +141,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // Codex persists a `rollout-*.jsonl`; `find_codex_rollout` + the
         // frontend codex adapter replay it.
         transcript_replay: true,
+        is_durable: codex_is_durable,
     },
     PerTurnDescriptor {
         id: "cursor",
@@ -152,6 +156,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // Cursor's on-disk chat format is undocumented; restore from the
         // SQLite log until a native transcript path is wired.
         transcript_replay: false,
+        // Cursor emits Claude-shaped events for most types, but uses a
+        // dedicated tool_call event (started/completed) rather than
+        // Claude's assistant.content tool_use + user.content tool_result.
+        is_durable: cursor_is_durable,
     },
     PerTurnDescriptor {
         id: "opencode",
@@ -164,6 +172,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // OpenCode's `export` schema differs from its live stream; restore
         // from the SQLite log until that's mapped.
         transcript_replay: false,
+        is_durable: opencode_is_durable,
     },
     PerTurnDescriptor {
         id: "pi",
@@ -176,6 +185,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // Pi persists a `session.jsonl` that's wireable later; restore from
         // the SQLite log until then.
         transcript_replay: false,
+        is_durable: pi_is_durable,
     },
 ];
 
@@ -497,7 +507,73 @@ fn resolve_claude(home: &Path) -> Result<String> {
     resolve_agent_bin("claude", "Claude Code", home)
 }
 
-// ── per-turn provider configs ────────────────────────────────────────────
+// ── durable-event classification ─────────────────────────────────────────
+
+/// Extract the `type` string from a raw provider event. Used by all
+/// per-provider durability predicates.
+fn event_type(ev: &Value) -> Option<&str> {
+    ev.get("type").and_then(|t| t.as_str())
+}
+
+fn claude_is_durable(ev: &Value) -> bool {
+    matches!(event_type(ev), Some("assistant" | "user" | "result"))
+}
+
+fn codex_is_durable(ev: &Value) -> bool {
+    matches!(
+        event_type(ev),
+        Some("item.completed" | "turn.completed" | "turn.failed" | "error")
+    )
+}
+
+fn opencode_is_durable(ev: &Value) -> bool {
+    match event_type(ev) {
+        Some("text" | "step_finish" | "error") => true,
+        // A tool_use is durable only once settled; pending/running are ephemeral.
+        Some("tool_use") => {
+            let status = ev
+                .get("part")
+                .and_then(|p| p.get("state"))
+                .and_then(|s| s.get("status"))
+                .and_then(|s| s.as_str());
+            matches!(status, Some("completed" | "error"))
+        }
+        _ => false,
+    }
+}
+
+fn cursor_is_durable(ev: &Value) -> bool {
+    match event_type(ev) {
+        // Cursor reuses Claude's stream-json for these.
+        Some("assistant" | "user" | "result") => true,
+        // Tool calls are a dedicated event; only the settled "completed" form
+        // is durable ("started" is the in-progress/streaming form). Errors are
+        // encoded inside the completed payload.
+        Some("tool_call") => ev.get("subtype").and_then(|s| s.as_str()) == Some("completed"),
+        _ => false,
+    }
+}
+
+fn pi_is_durable(ev: &Value) -> bool {
+    matches!(
+        event_type(ev),
+        Some("message_end" | "tool_execution_end" | "agent_end")
+    )
+}
+
+/// True if this raw provider event is a durable, finalized form worth
+/// persisting to the session_events log (replayed through the reducer on
+/// restore). Ephemeral streaming deltas and no-op lifecycle events return
+/// false. Unknown providers default to storing everything (lossless).
+pub fn is_durable_event(provider: &str, ev: &Value) -> bool {
+    match per_turn_descriptor(provider) {
+        Some(d) => (d.is_durable)(ev),
+        None if provider == "claude" => claude_is_durable(ev),
+        None => true,
+    }
+}
+
+// ── per-turn provider configs ─────────────────────────────────────────────
 
 /// Codex: `codex exec [resume <id>] --json …`. Approvals off + codex's own
 /// workspace-write sandbox on, via `-c` (works on both `exec` and
@@ -682,6 +758,92 @@ fn command_from_login_shell(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    // ── is_durable_event ──────────────────────────────────────────────────
+
+    #[test]
+    fn claude_durability() {
+        assert!(is_durable_event("claude", &json!({"type": "assistant"})));
+        assert!(is_durable_event("claude", &json!({"type": "user"})));
+        assert!(is_durable_event("claude", &json!({"type": "result"})));
+        assert!(!is_durable_event("claude", &json!({"type": "stream_event"})));
+        assert!(!is_durable_event("claude", &json!({"type": "system"})));
+    }
+
+    #[test]
+    fn codex_durability() {
+        assert!(is_durable_event("codex", &json!({"type": "item.completed"})));
+        assert!(is_durable_event("codex", &json!({"type": "turn.completed"})));
+        assert!(is_durable_event("codex", &json!({"type": "turn.failed"})));
+        assert!(is_durable_event("codex", &json!({"type": "error"})));
+        assert!(!is_durable_event("codex", &json!({"type": "item.started"})));
+        assert!(!is_durable_event("codex", &json!({"type": "turn.started"})));
+    }
+
+    #[test]
+    fn opencode_durability() {
+        assert!(is_durable_event("opencode", &json!({"type": "text"})));
+        assert!(is_durable_event("opencode", &json!({"type": "step_finish"})));
+        assert!(is_durable_event("opencode", &json!({"type": "error"})));
+        assert!(!is_durable_event("opencode", &json!({"type": "step_start"})));
+        // tool_use settled → durable
+        assert!(is_durable_event(
+            "opencode",
+            &json!({"type": "tool_use", "part": {"state": {"status": "completed"}}})
+        ));
+        assert!(is_durable_event(
+            "opencode",
+            &json!({"type": "tool_use", "part": {"state": {"status": "error"}}})
+        ));
+        // tool_use in-flight → ephemeral
+        assert!(!is_durable_event(
+            "opencode",
+            &json!({"type": "tool_use", "part": {"state": {"status": "running"}}})
+        ));
+        assert!(!is_durable_event(
+            "opencode",
+            &json!({"type": "tool_use", "part": {"state": {"status": "pending"}}})
+        ));
+    }
+
+    #[test]
+    fn pi_durability() {
+        assert!(is_durable_event("pi", &json!({"type": "message_end"})));
+        assert!(is_durable_event("pi", &json!({"type": "tool_execution_end"})));
+        assert!(is_durable_event("pi", &json!({"type": "agent_end"})));
+        assert!(!is_durable_event("pi", &json!({"type": "message_update"})));
+    }
+
+    #[test]
+    fn cursor_durability() {
+        // Claude-shaped events are durable.
+        assert!(is_durable_event("cursor", &json!({"type": "assistant"})));
+        assert!(is_durable_event("cursor", &json!({"type": "user"})));
+        assert!(is_durable_event("cursor", &json!({"type": "result"})));
+        // tool_call/completed is the settled, durable form.
+        assert!(is_durable_event(
+            "cursor",
+            &json!({"type": "tool_call", "subtype": "completed"})
+        ));
+        // tool_call/started is the in-progress/streaming form — ephemeral.
+        assert!(!is_durable_event(
+            "cursor",
+            &json!({"type": "tool_call", "subtype": "started"})
+        ));
+        // Lifecycle events are ephemeral.
+        assert!(!is_durable_event("cursor", &json!({"type": "stream_event"})));
+        assert!(!is_durable_event("cursor", &json!({"type": "system"})));
+    }
+
+    #[test]
+    fn unknown_provider_stores_everything() {
+        // Lossless fallback: unknown provider → always durable.
+        assert!(is_durable_event("zzz", &json!({"type": "anything"})));
+        assert!(is_durable_event("zzz", &json!({})));
+    }
+
+    // ── descriptor table ──────────────────────────────────────────────────
 
     #[test]
     fn every_per_turn_agent_resolves_to_its_descriptor() {

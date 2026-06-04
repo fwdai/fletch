@@ -86,6 +86,7 @@ pub async fn spawn_agent(
     view: Option<AgentView>,
     repo_path: String,
     provider: Option<String>,
+    name: Option<String>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
     sup.spawn_agent(
@@ -93,6 +94,7 @@ pub async fn spawn_agent(
         view.unwrap_or_default(),
         PathBuf::from(repo_path),
         provider.unwrap_or_else(|| "claude".to_string()),
+        name,
     )
     .await
 }
@@ -196,6 +198,14 @@ pub fn read_session_transcript(
     agent_id: String,
 ) -> Result<Vec<Value>> {
     supervisor.read_session_transcript(&agent_id)
+}
+
+#[tauri::command]
+pub fn read_session_events(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Vec<Value>> {
+    supervisor.workspace.read_session_events(&agent_id)
 }
 
 #[tauri::command]

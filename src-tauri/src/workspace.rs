@@ -150,24 +150,27 @@ pub struct Workspace {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-fn status_to_str(s: &AgentStatus) -> &'static str {
-    match s {
-        AgentStatus::Spawning => "spawning",
-        AgentStatus::Running => "running",
-        AgentStatus::Idle => "idle",
-        AgentStatus::Stopped => "stopped",
-        AgentStatus::Error => "error",
+/// Runtime status is not stored. Derive it from durable dispositions plus
+/// whether a live process currently exists (supervisor-supplied). At the
+/// storage layer `running` is always false (nothing is live mid-query), so a
+/// resting, non-stopped, non-errored workspace derives to `Spawning` — the
+/// auto-resume state that the old load-time reconciliation used to write.
+pub fn derive_status(
+    archived: bool,
+    stopped: bool,
+    running: bool,
+    last_error: Option<&str>,
+) -> AgentStatus {
+    if running {
+        return AgentStatus::Running;
     }
-}
-
-fn str_to_status(s: &str) -> AgentStatus {
-    match s {
-        "running" => AgentStatus::Running,
-        "idle" => AgentStatus::Idle,
-        "stopped" => AgentStatus::Stopped,
-        "error" => AgentStatus::Error,
-        _ => AgentStatus::Spawning,
+    if archived || stopped {
+        return AgentStatus::Stopped;
     }
+    if last_error.is_some() {
+        return AgentStatus::Error;
+    }
+    AgentStatus::Spawning
 }
 
 fn view_to_str(v: &AgentView) -> &'static str {
@@ -202,25 +205,12 @@ pub struct WorkspaceManager {
 
 impl WorkspaceManager {
     pub fn new(db: Arc<Mutex<Connection>>) -> Self {
-        let mgr = Self { db };
-
-        // Reconcile stale statuses left over from a crash / clean shutdown.
-        // The in-memory Supervisor is fresh on every start, so any agent
-        // marked Running / Idle / Spawning on disk has no live process.
-        // We flip those back to Spawning so the supervisor's auto-resume
-        // pass picks them up — agents the user explicitly Stopped (status
-        // Stopped) stay stopped, available via the manual Resume button.
-        // Only reconcile non-archived agents (archived_at IS NULL).
-        let conn = mgr.db.lock();
-        let _ = conn.execute(
-            "UPDATE agents SET status = 'spawning'
-             WHERE status IN ('running', 'idle', 'spawning')
-               AND archived_at IS NULL",
-            [],
-        );
-        drop(conn);
-
-        mgr
+        // Status is derived, not stored, so there is nothing to reconcile at
+        // load time: a resting, non-stopped, non-errored workspace already
+        // derives to `Spawning` (the supervisor's auto-resume state), while
+        // user-stopped workspaces keep their `stopped_at` and derive to
+        // `Stopped` until the manual Resume button clears it.
+        Self { db }
     }
 
     /// Direct access to the connection — used by supervisor pieces
@@ -299,7 +289,7 @@ impl WorkspaceManager {
 
     pub fn allocate_agent_id(&self) -> Result<String> {
         let conn = self.db.lock();
-        let mut stmt = conn.prepare("SELECT id FROM agents")?;
+        let mut stmt = conn.prepare("SELECT id FROM workspaces")?;
         let used: HashSet<String> = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
@@ -324,21 +314,33 @@ impl WorkspaceManager {
             .map(|dt| dt.timestamp_millis())
             .unwrap_or_else(|_| now_millis());
 
+        // The workspace is the durable work-area (identity + task metadata).
         conn.execute(
-            "INSERT INTO agents (id, project_id, name, provider, task, status, view, session_id, created_at, last_error, archived_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO workspaces (id, project_id, name, task, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
                 record.id,
                 project_id,
                 record.name,
-                record.provider,
                 record.task,
-                status_to_str(&record.status),
+                created_millis,
+            ],
+        )?;
+
+        // Exactly one provider run per workspace today. The runtime status is
+        // not persisted — it derives from the workspace/session dispositions.
+        let session_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                session_id,
+                record.id,
+                record.provider,
                 view_to_str(&record.view),
                 record.session_id,
-                created_millis,
                 record.last_error,
-                rusqlite::types::Null,
+                created_millis,
             ],
         )?;
 
@@ -358,63 +360,14 @@ impl WorkspaceManager {
     ) -> Result<()> {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
-
-        if let Some(ref err) = last_error {
-            conn.execute(
-                "UPDATE agents SET status = ?1, last_error = ?2 WHERE id = ?3",
-                rusqlite::params![status_to_str(&status), err, id],
-            )?;
-        } else {
-            conn.execute(
-                "UPDATE agents SET status = ?1 WHERE id = ?2",
-                rusqlite::params![status_to_str(&status), id],
-            )?;
-        }
+        Self::apply_status(&conn, id, &status, last_error.as_deref())?;
         Ok(())
-    }
-
-    pub fn update_agent_status_if<F>(
-        &self,
-        id: &str,
-        status: AgentStatus,
-        last_error: Option<String>,
-        predicate: F,
-    ) -> Result<bool>
-    where
-        F: FnOnce(&AgentStatus) -> bool,
-    {
-        let conn = self.db.lock();
-
-        // Read current status.
-        let current_str: String = conn
-            .query_row("SELECT status FROM agents WHERE id = ?1", [id], |row| {
-                row.get(0)
-            })
-            .map_err(|_| Error::AgentNotFound(id.to_string()))?;
-
-        let current = str_to_status(&current_str);
-        if !predicate(&current) {
-            return Ok(false);
-        }
-
-        if let Some(ref err) = last_error {
-            conn.execute(
-                "UPDATE agents SET status = ?1, last_error = ?2 WHERE id = ?3",
-                rusqlite::params![status_to_str(&status), err, id],
-            )?;
-        } else {
-            conn.execute(
-                "UPDATE agents SET status = ?1 WHERE id = ?2",
-                rusqlite::params![status_to_str(&status), id],
-            )?;
-        }
-        Ok(true)
     }
 
     pub fn set_agent_task_if_empty(&self, id: &str, task: &str) -> Result<bool> {
         let conn = self.db.lock();
         let changed = conn.execute(
-            "UPDATE agents SET task = ?1 WHERE id = ?2 AND (task = '' OR task IS NULL)",
+            "UPDATE workspaces SET task = ?1 WHERE id = ?2 AND (task = '' OR task IS NULL)",
             rusqlite::params![task, id],
         )?;
         Ok(changed > 0)
@@ -431,7 +384,7 @@ impl WorkspaceManager {
     ) -> Result<bool> {
         let conn = self.db.lock();
         let changed = conn.execute(
-            "UPDATE worktrees SET branch = ?1 WHERE agent_id = ?2 AND subdir = ?3 AND branch IS NULL",
+            "UPDATE worktrees SET branch = ?1 WHERE workspace_id = ?2 AND subdir = ?3 AND branch IS NULL",
             rusqlite::params![branch, agent_id, subdir],
         )?;
         Ok(changed > 0)
@@ -450,7 +403,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE agents SET session_id = ?1 WHERE id = ?2",
+            "UPDATE sessions SET provider_session_id = ?1 WHERE workspace_id = ?2",
             rusqlite::params![session_id, id],
         )?;
         Ok(())
@@ -460,7 +413,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE agents SET view = ?1 WHERE id = ?2",
+            "UPDATE sessions SET view = ?1 WHERE workspace_id = ?2",
             rusqlite::params![view_to_str(&view), id],
         )?;
         Ok(())
@@ -485,9 +438,11 @@ impl WorkspaceManager {
             .unwrap_or_else(|_| now_millis());
 
         // Clear setup_completed_at too — restore recreates the worktree
-        // from scratch, so node_modules etc. won't be there.
+        // from scratch, so node_modules etc. won't be there. Stamping
+        // archived_at is enough to derive `Stopped`; there is no status
+        // column to flip.
         conn.execute(
-            "UPDATE agents SET archived_at = ?1, status = 'stopped',
+            "UPDATE workspaces SET archived_at = ?1,
                     setup_completed_at = NULL WHERE id = ?2",
             rusqlite::params![archived_millis, id],
         )?;
@@ -497,7 +452,7 @@ impl WorkspaceManager {
             conn.execute(
                 "UPDATE worktrees SET branch_tip_sha = ?1, parent_branch_sha = ?2,
                         diff_additions = ?3, diff_deletions = ?4
-                 WHERE agent_id = ?5 AND subdir = ?6",
+                 WHERE workspace_id = ?5 AND subdir = ?6",
                 rusqlite::params![
                     snap.branch_tip_sha,
                     snap.parent_branch_sha,
@@ -512,14 +467,18 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// Clear archive metadata and re-seed `repos`. Status moves to
-    /// `Spawning` so the supervisor's resume path picks the agent up.
+    /// Clear archive metadata and re-seed `repos`. Clearing `archived_at`
+    /// (with no `stopped_at`/error) makes the workspace derive back to
+    /// `Spawning`, so the supervisor's resume path picks the agent up.
     pub fn restore_agent(&self, id: &str, repos: Vec<TrackedRepo>) -> Result<()> {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
 
+        // Clearing both dispositions (archived + user-stopped) is what the
+        // old `status = 'spawning'` write effectively meant: a freshly
+        // restored workspace should auto-resume, not stay stopped.
         conn.execute(
-            "UPDATE agents SET archived_at = NULL, status = 'spawning' WHERE id = ?1",
+            "UPDATE workspaces SET archived_at = NULL, stopped_at = NULL WHERE id = ?1",
             [id],
         )?;
 
@@ -529,7 +488,7 @@ impl WorkspaceManager {
                 "UPDATE worktrees SET branch = ?1, parent_branch = ?2,
                         branch_tip_sha = NULL, parent_branch_sha = NULL,
                         diff_additions = 0, diff_deletions = 0
-                 WHERE agent_id = ?3 AND subdir = ?4",
+                 WHERE workspace_id = ?3 AND subdir = ?4",
                 rusqlite::params![repo.branch, repo.parent_branch, id, repo.subdir],
             )?;
         }
@@ -544,7 +503,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         let value: Option<i64> = conn
             .query_row(
-                "SELECT setup_completed_at FROM agents WHERE id = ?1",
+                "SELECT setup_completed_at FROM workspaces WHERE id = ?1",
                 [id],
                 |row| row.get(0),
             )
@@ -557,7 +516,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE agents SET setup_completed_at = ?1 WHERE id = ?2",
+            "UPDATE workspaces SET setup_completed_at = ?1 WHERE id = ?2",
             rusqlite::params![now_millis(), id],
         )?;
         Ok(())
@@ -565,11 +524,135 @@ impl WorkspaceManager {
 
     pub fn remove_agent(&self, id: &str) -> Result<()> {
         let conn = self.db.lock();
-        conn.execute("DELETE FROM agents WHERE id = ?1", [id])?;
+        // Cascades to the workspace's sessions, worktrees, and session_events.
+        conn.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
         Ok(())
     }
 
+    // ── Session event log ─────────────────────────────────────────────────
+
+    /// Append one raw provider event to the workspace's current session log.
+    /// seq is the next per-session value; the read+insert run in one
+    /// transaction so concurrent appends can't collide.
+    pub fn append_session_event(
+        &self,
+        workspace_id: &str,
+        event: &serde_json::Value,
+    ) -> Result<()> {
+        let conn = self.db.lock();
+
+        // Resolve the current session — each workspace has exactly one today.
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        let Some(sid) = sid else {
+            // No session row yet — nothing to log.
+            return Ok(());
+        };
+
+        let event_json = serde_json::to_string(event)
+            .map_err(|e| crate::error::Error::Other(format!("serialize event: {e}")))?;
+
+        let tx = conn.unchecked_transaction()?;
+        let seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM session_events WHERE session_id = ?1",
+            [&sid],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO session_events (session_id, seq, event_json, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![sid, seq, event_json, now_millis()],
+        )?;
+        tx.commit()?;
+
+        Ok(())
+    }
+
+    /// All raw events for the workspace's current session, in seq order.
+    pub fn read_session_events(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let conn = self.db.lock();
+
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        let Some(sid) = sid else {
+            return Ok(vec![]);
+        };
+
+        let mut stmt = conn.prepare(
+            "SELECT event_json FROM session_events WHERE session_id = ?1 ORDER BY seq ASC",
+        )?;
+
+        let texts: Vec<String> = stmt
+            .query_map([&sid], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<_, rusqlite::Error>>()?;
+
+        texts
+            .into_iter()
+            .map(|text| {
+                serde_json::from_str(&text)
+                    .map_err(|e| Error::Other(format!("deserialize event: {e}")))
+            })
+            .collect()
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────────
+
+    /// Translate a requested runtime status into durable disposition writes.
+    /// There is no status column — only the workspace's `stopped_at` and the
+    /// session's `last_error` are persisted; everything else is derived.
+    fn apply_status(
+        conn: &Connection,
+        id: &str,
+        status: &AgentStatus,
+        last_error: Option<&str>,
+    ) -> Result<()> {
+        match status {
+            // User-stopped — stamp it once (don't clobber an earlier stop time).
+            AgentStatus::Stopped => {
+                conn.execute(
+                    "UPDATE workspaces SET stopped_at = ?1
+                     WHERE id = ?2 AND stopped_at IS NULL",
+                    rusqlite::params![now_millis(), id],
+                )?;
+            }
+            // Resuming or active — clear the stop disposition and any stale error.
+            AgentStatus::Spawning | AgentStatus::Running => {
+                conn.execute(
+                    "UPDATE workspaces SET stopped_at = NULL WHERE id = ?1",
+                    [id],
+                )?;
+                conn.execute(
+                    "UPDATE sessions SET last_error = NULL WHERE workspace_id = ?1",
+                    [id],
+                )?;
+            }
+            // Record the failure on the session row.
+            AgentStatus::Error => {
+                conn.execute(
+                    "UPDATE sessions SET last_error = ?1 WHERE workspace_id = ?2",
+                    rusqlite::params![last_error, id],
+                )?;
+            }
+            // Idle is a pure runtime state with no durable representation.
+            AgentStatus::Idle => {}
+        }
+        Ok(())
+    }
 
     fn query_all_repo_paths(conn: &Connection) -> Vec<PathBuf> {
         let mut stmt = conn
@@ -585,10 +668,16 @@ impl WorkspaceManager {
     }
 
     fn query_all_agents(conn: &Connection) -> Vec<AgentRecord> {
+        // Identity + task metadata live on `workspaces`; the provider run
+        // (provider / view / session id / last_error) lives on the single
+        // `sessions` row. Status is derived, never selected.
         let mut stmt = match conn.prepare(
-            "SELECT id, project_id, name, provider, task, status, view, session_id,
-                    created_at, last_error, archived_at
-             FROM agents ORDER BY created_at",
+            "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
+                    w.stopped_at, w.archived_at,
+                    s.provider, s.view, s.provider_session_id, s.last_error
+             FROM workspaces w
+             LEFT JOIN sessions s ON s.workspace_id = w.id
+             ORDER BY w.created_at",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
@@ -599,27 +688,27 @@ impl WorkspaceManager {
                 let id: String = row.get(0)?;
                 let project_id: String = row.get(1)?;
                 let name: String = row.get(2)?;
-                let provider: String = row.get(3)?;
-                let task: String = row.get(4)?;
-                let status_str: String = row.get(5)?;
-                let view_str: String = row.get(6)?;
-                let session_id: Option<String> = row.get(7)?;
-                let created_millis: i64 = row.get(8)?;
-                let last_error: Option<String> = row.get(9)?;
-                let archived_millis: Option<i64> = row.get(10)?;
+                let task: String = row.get(3)?;
+                let created_millis: i64 = row.get(4)?;
+                let stopped_millis: Option<i64> = row.get(5)?;
+                let archived_millis: Option<i64> = row.get(6)?;
+                let provider: Option<String> = row.get(7)?;
+                let view_str: Option<String> = row.get(8)?;
+                let session_id: Option<String> = row.get(9)?;
+                let last_error: Option<String> = row.get(10)?;
 
                 Ok((
                     id,
                     project_id,
                     name,
-                    provider,
                     task,
-                    status_str,
+                    created_millis,
+                    stopped_millis,
+                    archived_millis,
+                    provider,
                     view_str,
                     session_id,
-                    created_millis,
                     last_error,
-                    archived_millis,
                 ))
             })
             .ok()
@@ -631,14 +720,14 @@ impl WorkspaceManager {
                     id,
                     project_id,
                     name,
-                    provider,
                     task,
-                    status_str,
+                    created_millis,
+                    stopped_millis,
+                    archived_millis,
+                    provider,
                     view_str,
                     session_id,
-                    created_millis,
                     last_error,
-                    archived_millis,
                 )| {
                     let is_archived = archived_millis.is_some();
 
@@ -653,15 +742,22 @@ impl WorkspaceManager {
                         (tracked, None)
                     };
 
+                    let status = derive_status(
+                        is_archived,
+                        stopped_millis.is_some(),
+                        false,
+                        last_error.as_deref(),
+                    );
+
                     AgentRecord {
                         id,
                         project_id,
                         name,
-                        provider,
+                        provider: provider.unwrap_or_else(default_provider),
                         repos,
                         task,
-                        status: str_to_status(&status_str),
-                        view: str_to_view(&view_str),
+                        status,
+                        view: str_to_view(view_str.as_deref().unwrap_or("custom")),
                         session_id,
                         created_at: millis_to_iso(created_millis),
                         last_error,
@@ -679,7 +775,7 @@ impl WorkspaceManager {
             "SELECT r.path, w.subdir, w.branch, w.parent_branch
              FROM worktrees w
              JOIN repos r ON r.id = w.repo_id
-             WHERE w.agent_id = ?1
+             WHERE w.workspace_id = ?1
              ORDER BY w.created_at",
         ) {
             Ok(s) => s,
@@ -714,7 +810,7 @@ impl WorkspaceManager {
                     w.diff_additions, w.diff_deletions
              FROM worktrees w
              JOIN repos r ON r.id = w.repo_id
-             WHERE w.agent_id = ?1
+             WHERE w.workspace_id = ?1
              ORDER BY w.created_at",
         ) {
             Ok(s) => s,
@@ -840,7 +936,7 @@ impl WorkspaceManager {
 
         let wt_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO worktrees (id, agent_id, repo_id, subdir, branch, parent_branch, created_at)
+            "INSERT INTO worktrees (id, workspace_id, repo_id, subdir, branch, parent_branch, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 wt_id,
@@ -857,7 +953,7 @@ impl WorkspaceManager {
 
     fn ensure_agent_exists(conn: &Connection, id: &str) -> Result<()> {
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM agents WHERE id = ?1",
+            "SELECT COUNT(*) FROM workspaces WHERE id = ?1",
             [id],
             |row| row.get(0),
         )?;
@@ -868,11 +964,16 @@ impl WorkspaceManager {
     }
 
     fn load_agent(conn: &Connection, id: &str) -> Result<AgentRecord> {
+        // Identity/task from `workspaces`; provider run from the single
+        // `sessions` row. Status is derived from durable dispositions.
         let row = conn
             .query_row(
-                "SELECT id, project_id, name, provider, task, status, view, session_id,
-                        created_at, last_error, archived_at
-                 FROM agents WHERE id = ?1",
+                "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
+                        w.stopped_at, w.archived_at,
+                        s.provider, s.view, s.provider_session_id, s.last_error
+                 FROM workspaces w
+                 LEFT JOIN sessions s ON s.workspace_id = w.id
+                 WHERE w.id = ?1",
                 [id],
                 |row| {
                     Ok((
@@ -880,13 +981,13 @@ impl WorkspaceManager {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, String>(6)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
                         row.get::<_, Option<String>>(7)?,
-                        row.get::<_, i64>(8)?,
+                        row.get::<_, Option<String>>(8)?,
                         row.get::<_, Option<String>>(9)?,
-                        row.get::<_, Option<i64>>(10)?,
+                        row.get::<_, Option<String>>(10)?,
                     ))
                 },
             )
@@ -896,14 +997,14 @@ impl WorkspaceManager {
             agent_id,
             project_id,
             name,
-            provider,
             task,
-            status_str,
+            created_millis,
+            stopped_millis,
+            archived_millis,
+            provider,
             view_str,
             session_id,
-            created_millis,
             last_error,
-            archived_millis,
         ) = row;
 
         let is_archived = archived_millis.is_some();
@@ -917,15 +1018,22 @@ impl WorkspaceManager {
             (tracked, None)
         };
 
+        let status = derive_status(
+            is_archived,
+            stopped_millis.is_some(),
+            false,
+            last_error.as_deref(),
+        );
+
         Ok(AgentRecord {
             id: agent_id,
             project_id,
             name,
-            provider,
+            provider: provider.unwrap_or_else(default_provider),
             repos,
             task,
-            status: str_to_status(&status_str),
-            view: str_to_view(&view_str),
+            status,
+            view: str_to_view(view_str.as_deref().unwrap_or("custom")),
             session_id,
             created_at: millis_to_iso(created_millis),
             last_error,
@@ -1082,6 +1190,8 @@ mod tests {
         {
             let wm = WorkspaceManager::new(db.clone());
             wm.add_workspace_repo(repo.clone()).unwrap();
+            // A resting agent has no durable disposition — it derives to
+            // `Spawning` (the auto-resume state) without any reconciliation.
             let mut running = new_agent_record(
                 "yosemite".into(),
                 "a".into(),
@@ -1090,9 +1200,10 @@ mod tests {
                 "c".into(),
                 AgentView::Custom,
             );
-            running.status = AgentStatus::Running;
             wm.add_agent(&mut running).unwrap();
 
+            // An agent the user explicitly Stopped stamps `stopped_at`, so it
+            // stays Stopped across reloads (available via manual Resume).
             let mut stopped = new_agent_record(
                 "dolomites".into(),
                 "s".into(),
@@ -1101,11 +1212,13 @@ mod tests {
                 "sc".into(),
                 AgentView::Custom,
             );
-            stopped.status = AgentStatus::Stopped;
             wm.add_agent(&mut stopped).unwrap();
+            wm.update_agent_status("dolomites", AgentStatus::Stopped, None)
+                .unwrap();
         }
 
-        // Second instance — reconciliation should flip Running → Spawning.
+        // Second instance — status is derived, so the resting agent comes
+        // back as Spawning and the stopped one stays Stopped.
         let wm2 = WorkspaceManager::new(db);
         let cur = wm2.current().unwrap();
         assert!(cur.repos.iter().any(|p| p == &repo));
@@ -1115,6 +1228,35 @@ mod tests {
         let dolomites = cur.agents.iter().find(|a| a.id == "dolomites").unwrap();
         assert_eq!(yosemite.status, AgentStatus::Spawning);
         assert_eq!(dolomites.status, AgentStatus::Stopped);
+    }
+
+    #[test]
+    fn status_derivation() {
+        // Archived workspaces are stopped regardless of error/run state.
+        assert_eq!(
+            derive_status(true, false, false, None),
+            AgentStatus::Stopped
+        );
+        // User-stopped workspaces are stopped.
+        assert_eq!(
+            derive_status(false, true, false, None),
+            AgentStatus::Stopped
+        );
+        // A recorded error with no live process surfaces as Error.
+        assert_eq!(
+            derive_status(false, false, false, Some("boom")),
+            AgentStatus::Error
+        );
+        // A live process wins over a stale error.
+        assert_eq!(
+            derive_status(false, false, true, Some("boom")),
+            AgentStatus::Running
+        );
+        // A resting, clean workspace derives to Spawning (auto-resume).
+        assert_eq!(
+            derive_status(false, false, false, None),
+            AgentStatus::Spawning
+        );
     }
 
     #[test]
@@ -1184,10 +1326,32 @@ mod tests {
         let id = rec.id.clone();
         wm.add_agent(&mut rec).unwrap();
 
+        // Fresh agent derives Spawning (no durable disposition).
+        assert_eq!(wm.agent(&id).unwrap().status, AgentStatus::Spawning);
+
+        // Stopping stamps a durable disposition → derives Stopped.
+        wm.update_agent_status(&id, AgentStatus::Stopped, None)
+            .unwrap();
+        assert_eq!(wm.agent(&id).unwrap().status, AgentStatus::Stopped);
+
+        // Resuming clears the stop disposition → back to Spawning.
         wm.update_agent_status(&id, AgentStatus::Running, None)
             .unwrap();
+        assert_eq!(wm.agent(&id).unwrap().status, AgentStatus::Spawning);
+
+        // Recording an error surfaces as Error (no live process at rest).
+        wm.update_agent_status(&id, AgentStatus::Error, Some("boom".into()))
+            .unwrap();
         let a = wm.agent(&id).unwrap();
-        assert_eq!(a.status, AgentStatus::Running);
+        assert_eq!(a.status, AgentStatus::Error);
+        assert_eq!(a.last_error.as_deref(), Some("boom"));
+
+        // Resuming again clears the error → back to Spawning.
+        wm.update_agent_status(&id, AgentStatus::Spawning, None)
+            .unwrap();
+        let a = wm.agent(&id).unwrap();
+        assert_eq!(a.status, AgentStatus::Spawning);
+        assert!(a.last_error.is_none());
     }
 
     #[test]
@@ -1289,6 +1453,178 @@ mod tests {
         assert_eq!(cur.agents.len(), 1);
         assert!(cur.agents[0].archive.is_some());
         assert_eq!(cur.agents[0].status, AgentStatus::Stopped);
+    }
+
+    // ── session event log ─────────────────────────────────────────────────
+
+    /// Seed a minimal workspace+session row and return (workspace_id, wm).
+    fn make_workspace_with_session(db: &Arc<Mutex<Connection>>) -> (String, WorkspaceManager) {
+        let td = tempfile::tempdir().unwrap();
+        let repo = init_repo(td.path());
+        let repo_str = repo.to_str().unwrap().to_string();
+        let wm = WorkspaceManager::new(db.clone());
+        wm.add_workspace_repo(repo.clone()).unwrap();
+
+        let mut rec = new_agent_record(
+            uuid::Uuid::new_v4().to_string(),
+            "evt-test".into(),
+            "claude".into(),
+            TrackedRepo {
+                repo_path: repo,
+                subdir: "repo".into(),
+                branch: None,
+                parent_branch: None,
+            },
+            "task".into(),
+            AgentView::Custom,
+        );
+        // add_agent needs the repo pre-seeded in repos; add_workspace_repo
+        // handles that above. But we also need the repo in the repos table
+        // for the worktree join — seed it explicitly so the lookup succeeds.
+        let _ = seed_repo_path(db, &repo_str);
+        wm.add_agent(&mut rec).unwrap();
+        let id = rec.id.clone();
+        (id, wm)
+    }
+
+    fn seed_repo_path(db: &Arc<Mutex<Connection>>, repo_path: &str) {
+        // No-op if already there; used to guarantee the row exists for the
+        // worktree FK before add_agent runs the lookup.
+        let conn = db.lock();
+        let path = std::path::Path::new(repo_path);
+        let project_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let project_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![project_id, project_name, now_millis()],
+        )
+        .unwrap();
+        let pid: String = conn
+            .query_row(
+                "SELECT id FROM projects WHERE name = ?1",
+                [project_name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let repo_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO repos (id, project_id, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![repo_id, pid, repo_path, now_millis()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn append_and_read_preserves_order_and_content() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        let ev1 = serde_json::json!({"type": "user", "text": "hello"});
+        let ev2 = serde_json::json!({"type": "assistant", "text": "hi"});
+        let ev3 = serde_json::json!({"type": "result", "cost": 0.001});
+
+        wm.append_session_event(&ws_id, &ev1).unwrap();
+        wm.append_session_event(&ws_id, &ev2).unwrap();
+        wm.append_session_event(&ws_id, &ev3).unwrap();
+
+        let events = wm.read_session_events(&ws_id).unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0], ev1);
+        assert_eq!(events[1], ev2);
+        assert_eq!(events[2], ev3);
+    }
+
+    #[test]
+    fn seq_increments_in_order() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        wm.append_session_event(&ws_id, &serde_json::json!({"type": "a"}))
+            .unwrap();
+        wm.append_session_event(&ws_id, &serde_json::json!({"type": "b"}))
+            .unwrap();
+
+        // Verify seq values via raw SQL.
+        let conn = db.lock();
+        let sid: String = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 LIMIT 1",
+                [&ws_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let seqs: Vec<i64> = conn
+            .prepare("SELECT seq FROM session_events WHERE session_id = ?1 ORDER BY seq")
+            .unwrap()
+            .query_map([&sid], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(seqs, vec![1, 2]);
+    }
+
+    #[test]
+    fn read_with_no_events_returns_empty() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        let events = wm.read_session_events(&ws_id).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn append_to_workspace_with_no_session_is_noop() {
+        let db = test_db();
+        // Create a workspace row directly, but no matching sessions row.
+        {
+            let conn = db.lock();
+            let pid = conn
+                .query_row(
+                    "SELECT id FROM projects LIMIT 1",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap_or_else(|_| {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    conn.execute(
+                        "INSERT INTO projects (id, name, created_at) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![id, "orphan", now_millis()],
+                    )
+                    .unwrap();
+                    id
+                });
+            let ws_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO workspaces (id, project_id, name, task, created_at) VALUES (?1, ?2, 'orphan', '', ?3)",
+                rusqlite::params![ws_id, pid, now_millis()],
+            )
+            .unwrap();
+        }
+
+        // Pick any workspace that has no session row — the orphan one above.
+        let conn = db.lock();
+        let ws_id: String = conn
+            .query_row(
+                "SELECT w.id FROM workspaces w
+                 LEFT JOIN sessions s ON s.workspace_id = w.id
+                 WHERE s.id IS NULL LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        let wm = WorkspaceManager::new(db.clone());
+        // Must not error.
+        wm.append_session_event(&ws_id, &serde_json::json!({"type": "x"}))
+            .unwrap();
+
+        // And read must return empty.
+        let events = wm.read_session_events(&ws_id).unwrap();
+        assert!(events.is_empty());
     }
 
     #[test]

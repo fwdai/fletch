@@ -70,11 +70,11 @@ describe("claudeAdapter — transcript replay", () => {
     // assistant 'All set.'
     expect(items).toEqual([
       { kind: "user_message", text: "hello" },
-      { kind: "agent_message", text: "Hi there" },
+      { kind: "agent_message", text: "Hi there", streaming: false },
       { kind: "notice", subtype: "slash_command", text: "/login" },
       { kind: "user_message", text: "what's next?" },
       { kind: "notice", subtype: "hook_output", text: "Hook stderr: x" },
-      { kind: "agent_message", text: "All set." },
+      { kind: "agent_message", text: "All set.", streaming: false },
     ]);
   });
 

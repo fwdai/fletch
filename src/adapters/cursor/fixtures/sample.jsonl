@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","session_id":"sid","model":"Composer 2.5 Fast"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Run: echo hi"}]}}
+{"type":"tool_call","subtype":"started","call_id":"tool_x","tool_call":{"shellToolCall":{"args":{"command":"echo hi"}}}}
+{"type":"tool_call","subtype":"completed","call_id":"tool_x","tool_call":{"shellToolCall":{"args":{"command":"echo hi"},"result":{"success":{"exitCode":0,"stdout":"hi\n"}}}}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"It printed hi."}]}}
+{"type":"result","subtype":"success"}

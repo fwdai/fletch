@@ -8,7 +8,8 @@ use std::sync::Arc;
 use crate::error::{Error, Result};
 
 const ALLOWED_TABLES: &[&str] = &[
-    "accounts", "agents", "messages", "project_settings", "projects", "repos", "settings", "worktrees",
+    "accounts", "project_settings", "projects", "repos",
+    "sessions", "settings", "workspaces", "worktrees",
 ];
 
 fn validate_table(table: &str) -> Result<()> {
@@ -30,9 +31,6 @@ fn validate_column(col: &str) -> Result<()> {
 fn get_migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("../migrations/0001_initial_schema.sql")),
-        M::up(include_str!("../migrations/0002_project_settings.sql")),
-        M::up(include_str!("../migrations/0003_run_setup_completed.sql")),
-        M::up(include_str!("../migrations/0004_account_profile.sql")),
     ])
 }
 
@@ -408,11 +406,11 @@ mod tests {
         db_insert(conn, "projects", json!({ "name": "test-project" })).unwrap()
     }
 
-    fn make_agent(conn: &Connection, project_id: &str) -> String {
+    fn make_workspace(conn: &Connection, project_id: &str) -> String {
         db_insert(
             conn,
-            "agents",
-            json!({ "project_id": project_id, "name": "test-agent", "provider": "claude" }),
+            "workspaces",
+            json!({ "project_id": project_id, "name": "test-workspace" }),
         )
         .unwrap()
     }
@@ -425,16 +423,15 @@ mod tests {
 
         let id = db_insert(
             &conn,
-            "agents",
-            json!({ "project_id": pid, "name": "test-agent", "provider": "claude" }),
+            "workspaces",
+            json!({ "project_id": pid, "name": "test-workspace" }),
         )
         .unwrap();
 
-        let rows = db_select(&conn, "agents", json!({ "where": { "id": id } })).unwrap();
+        let rows = db_select(&conn, "workspaces", json!({ "where": { "id": id } })).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["name"], "test-agent");
-        assert_eq!(rows[0]["provider"], "claude");
-        assert_eq!(rows[0]["status"], "spawning");
+        assert_eq!(rows[0]["name"], "test-workspace");
+        assert_eq!(rows[0]["task"], "");
     }
 
     #[test]
@@ -442,24 +439,24 @@ mod tests {
         let db = test_db();
         let conn = db.lock();
         let pid = make_project(&conn);
-        let id = make_agent(&conn, &pid);
+        let id = make_workspace(&conn, &pid);
 
         let changed = db_update(
             &conn,
-            "agents",
+            "workspaces",
             json!({ "where": { "id": id } }),
-            json!({ "status": "running" }),
+            json!({ "name": "renamed" }),
         )
         .unwrap();
         assert_eq!(changed, 1);
 
-        let rows = db_select(&conn, "agents", json!({ "where": { "id": id } })).unwrap();
-        assert_eq!(rows[0]["status"], "running");
+        let rows = db_select(&conn, "workspaces", json!({ "where": { "id": id } })).unwrap();
+        assert_eq!(rows[0]["name"], "renamed");
 
-        let deleted = db_delete(&conn, "agents", json!({ "where": { "id": id } })).unwrap();
+        let deleted = db_delete(&conn, "workspaces", json!({ "where": { "id": id } })).unwrap();
         assert_eq!(deleted, 1);
 
-        let count = db_count(&conn, "agents", json!({})).unwrap();
+        let count = db_count(&conn, "workspaces", json!({})).unwrap();
         assert_eq!(count, 0);
     }
 
@@ -475,66 +472,17 @@ mod tests {
         let db = test_db();
         let conn = db.lock();
         assert!(
-            db_select(&conn, "agents", json!({ "where": { "id; DROP TABLE agents": "x" } }))
+            db_select(&conn, "workspaces", json!({ "where": { "id; DROP TABLE workspaces": "x" } }))
                 .is_err()
         );
-    }
-
-    #[test]
-    fn fts_search() {
-        let db = test_db();
-        let conn = db.lock();
-        let pid = make_project(&conn);
-        let agent_id = make_agent(&conn, &pid);
-
-        db_insert(
-            &conn,
-            "messages",
-            json!({
-                "agent_id": agent_id,
-                "kind": "agent_message",
-                "content": "I decided to use polling instead of websockets because the server doesn't support persistent connections",
-                "sequence": 1
-            }),
-        )
-        .unwrap();
-
-        db_insert(
-            &conn,
-            "messages",
-            json!({
-                "agent_id": agent_id,
-                "kind": "user_message",
-                "content": "Why did you choose that approach?",
-                "sequence": 2
-            }),
-        )
-        .unwrap();
-
-        let results = db_query(
-            &conn,
-            "SELECT m.id, m.agent_id, m.kind, m.content, m.sequence \
-             FROM messages m \
-             JOIN messages_fts ON messages_fts.rowid = m.rowid \
-             WHERE messages_fts MATCH ?1 \
-             ORDER BY rank",
-            vec![json!("polling websockets")],
-        )
-        .unwrap();
-
-        assert_eq!(results.len(), 1);
-        assert!(results[0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("polling"));
     }
 
     #[test]
     fn db_query_rejects_non_select() {
         let db = test_db();
         let conn = db.lock();
-        assert!(db_query(&conn, "DELETE FROM agents", vec![]).is_err());
-        assert!(db_query(&conn, "DROP TABLE agents", vec![]).is_err());
+        assert!(db_query(&conn, "DELETE FROM workspaces", vec![]).is_err());
+        assert!(db_query(&conn, "DROP TABLE workspaces", vec![]).is_err());
     }
 
     #[test]
@@ -545,72 +493,91 @@ mod tests {
 
         let id = db_insert(
             &conn,
-            "agents",
-            json!({ "project_id": pid, "name": "auto", "provider": "claude" }),
+            "workspaces",
+            json!({ "project_id": pid, "name": "auto" }),
         )
         .unwrap();
 
         assert!(!id.is_empty());
         assert!(uuid::Uuid::parse_str(&id).is_ok());
 
-        let rows = db_select(&conn, "agents", json!({ "where": { "id": id } })).unwrap();
+        let rows = db_select(&conn, "workspaces", json!({ "where": { "id": id } })).unwrap();
         let created = rows[0]["created_at"].as_i64().unwrap();
         assert!(created > 0);
     }
 
-    #[test]
-    fn cascade_deletes_messages_with_agent() {
-        let db = test_db();
-        let conn = db.lock();
-        let pid = make_project(&conn);
-        let agent_id = make_agent(&conn, &pid);
-
-        db_insert(
-            &conn,
-            "messages",
-            json!({ "agent_id": agent_id, "kind": "user_message", "content": "hello", "sequence": 1 }),
-        )
-        .unwrap();
-
-        db_delete(&conn, "agents", json!({ "where": { "id": agent_id } })).unwrap();
-
-        let count = db_count(
-            &conn,
-            "messages",
-            json!({ "where": { "agent_id": agent_id } }),
-        )
-        .unwrap();
-        assert_eq!(count, 0);
-    }
 
     #[test]
     fn null_where_clause() {
+        // sessions has last_error — verify null WHERE matching using that column
         let db = test_db();
         let conn = db.lock();
         let pid = make_project(&conn);
+        let ws_id = make_workspace(&conn, &pid);
 
         db_insert(
             &conn,
-            "agents",
-            json!({ "project_id": pid, "name": "with-error", "provider": "claude", "last_error": "boom" }),
+            "sessions",
+            json!({ "workspace_id": ws_id, "provider": "claude", "last_error": "boom" }),
         )
         .unwrap();
 
         db_insert(
             &conn,
-            "agents",
-            json!({ "project_id": pid, "name": "no-error", "provider": "claude" }),
+            "sessions",
+            json!({ "workspace_id": ws_id, "provider": "claude" }),
         )
         .unwrap();
 
         let rows = db_select(
             &conn,
-            "agents",
+            "sessions",
             json!({ "where": { "last_error": null } }),
         )
         .unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["name"], "no-error");
+        assert_eq!(rows[0]["provider"], "claude");
+        assert!(rows[0]["last_error"].is_null());
+    }
+
+    #[test]
+    fn schema_has_split_entities() {
+        let db = test_db();
+        let conn = db.lock();
+        let names: std::collections::HashSet<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        for t in ["workspaces", "sessions", "worktrees", "session_events", "repos", "projects", "project_settings", "accounts", "settings"] {
+            assert!(names.contains(t), "missing table {t}");
+        }
+        assert!(!names.contains("agents"), "stale table agents still present");
+        assert!(!names.contains("messages"), "stale table messages still present");
+    }
+
+    #[test]
+    fn workspace_hierarchy_cascades() {
+        let db = test_db();
+        let conn = db.lock();
+        let pid = db_insert(&conn, "projects", json!({ "name": "p" })).unwrap();
+        let ws = db_insert(&conn, "workspaces", json!({ "project_id": pid, "name": "halifax" })).unwrap();
+        let sess = db_insert(&conn, "sessions", json!({ "workspace_id": ws, "provider": "claude" })).unwrap();
+        // session_events is written via dedicated functions, not the generic
+        // layer, so it isn't in ALLOWED_TABLES — insert/count with raw SQL.
+        conn.execute(
+            "INSERT INTO session_events (session_id, seq, event_json, created_at) VALUES (?1, 1, '{}', 0)",
+            [&sess],
+        )
+        .unwrap();
+        db_delete(&conn, "workspaces", json!({ "where": { "id": ws } })).unwrap();
+        assert_eq!(db_count(&conn, "sessions", json!({})).unwrap(), 0);
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 0);
     }
 
     #[test]
@@ -656,10 +623,10 @@ mod tests {
         )
         .unwrap();
 
-        let agent_id = db_insert(
+        let ws_id = db_insert(
             &conn,
-            "agents",
-            json!({ "project_id": pid, "name": "olympus", "provider": "claude" }),
+            "workspaces",
+            json!({ "project_id": pid, "name": "olympus" }),
         )
         .unwrap();
 
@@ -667,7 +634,7 @@ mod tests {
             &conn,
             "worktrees",
             json!({
-                "agent_id": agent_id,
+                "workspace_id": ws_id,
                 "repo_id": repo_id,
                 "subdir": "my-app",
                 "parent_branch": "main"
@@ -675,10 +642,10 @@ mod tests {
         )
         .unwrap();
 
-        // Deleting the project cascades to repos, agents, worktrees
+        // Deleting the project cascades to repos, workspaces, worktrees
         db_delete(&conn, "projects", json!({ "where": { "id": pid } })).unwrap();
         assert_eq!(db_count(&conn, "repos", json!({})).unwrap(), 0);
-        assert_eq!(db_count(&conn, "agents", json!({})).unwrap(), 0);
+        assert_eq!(db_count(&conn, "workspaces", json!({})).unwrap(), 0);
         assert_eq!(db_count(&conn, "worktrees", json!({})).unwrap(), 0);
     }
 }

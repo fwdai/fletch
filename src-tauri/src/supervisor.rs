@@ -101,6 +101,11 @@ pub struct Supervisor {
     pub agents: Mutex<HashMap<String, Agent>>,
     pub generations: Mutex<HashMap<String, u64>>,
     pub activities: Mutex<HashMap<String, Box<dyn Activity>>>,
+    /// In-memory source of truth for live runtime status
+    /// (Spawning/Running/Idle). The DB only persists durable
+    /// dispositions, so a record loaded from it always derives `Spawning`
+    /// for a live agent; this map carries the real current status.
+    pub statuses: Mutex<HashMap<String, AgentStatus>>,
     pub native_input_lines: Mutex<HashMap<String, String>>,
     pub shells: Mutex<HashMap<String, PtySession>>,
     /// Per-agent run-panel processes (dev server + setup). Reused
@@ -115,10 +120,57 @@ impl Supervisor {
             agents: Mutex::new(HashMap::new()),
             generations: Mutex::new(HashMap::new()),
             activities: Mutex::new(HashMap::new()),
+            statuses: Mutex::new(HashMap::new()),
             native_input_lines: Mutex::new(HashMap::new()),
             shells: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Record + broadcast a runtime status transition. The in-memory map is
+    /// the source of truth for live status (Spawning/Running/Idle); the DB
+    /// only persists durable dispositions (last_error via update_agent_status).
+    fn set_status(
+        &self,
+        app: &AppHandle,
+        agent_id: &str,
+        status: AgentStatus,
+        last_error: Option<String>,
+    ) {
+        self.statuses
+            .lock()
+            .insert(agent_id.to_string(), status.clone());
+        // Persist durable side-effects: Error stores last_error; Spawning/Running
+        // clear stale stopped/error; Idle persists nothing.
+        match status {
+            AgentStatus::Error => {
+                let _ = self.workspace.update_agent_status(
+                    agent_id,
+                    AgentStatus::Error,
+                    last_error.clone(),
+                );
+            }
+            AgentStatus::Spawning | AgentStatus::Running => {
+                let _ = self
+                    .workspace
+                    .update_agent_status(agent_id, status.clone(), None);
+            }
+            _ => {}
+        }
+        emit_status(app, agent_id, status, last_error);
+    }
+
+    /// The live (in-memory) runtime status, if the supervisor is tracking
+    /// this agent. `None` once the agent is gone (exited / archived).
+    fn live_status(&self, agent_id: &str) -> Option<AgentStatus> {
+        self.statuses.lock().get(agent_id).cloned()
+    }
+
+    /// The status to report for an agent: the live in-memory value when
+    /// present, otherwise the DB-derived at-rest status on the record.
+    fn effective_status(&self, agent_id: &str, record: &AgentRecord) -> AgentStatus {
+        self.live_status(agent_id)
+            .unwrap_or_else(|| record.status.clone())
     }
 
     pub fn open_agent_shell(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
@@ -314,7 +366,14 @@ impl Supervisor {
     }
 
     pub fn current_workspace(&self) -> Option<Workspace> {
-        self.workspace.current()
+        let mut ws = self.workspace.current()?;
+        // The DB-derived `status` reports `Spawning` for any live agent;
+        // overlay the supervisor's in-memory runtime status so the snapshot
+        // reflects the real Running/Idle/Spawning state.
+        for record in &mut ws.agents {
+            record.status = self.effective_status(&record.id, record);
+        }
+        Some(ws)
     }
 
     pub fn add_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
@@ -331,6 +390,7 @@ impl Supervisor {
         view: AgentView,
         repo_path: PathBuf,
         provider: String,
+        name: Option<String>,
     ) -> Result<AgentRecord> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -348,7 +408,13 @@ impl Supervisor {
             AgentView::Custom
         };
 
-        let agent_id = self.workspace.allocate_agent_id()?;
+        // Use the name the draft already showed in the sidebar so it locks in
+        // rather than being regenerated; only allocate a fresh one when the
+        // caller didn't supply it (the draft-less spawn path).
+        let agent_id = match name {
+            Some(n) if !n.trim().is_empty() => n,
+            _ => self.workspace.allocate_agent_id()?,
+        };
         let name = agent_id.clone();
 
         // Parent_branch captured per-repo; primary's parent is the
@@ -375,7 +441,7 @@ impl Supervisor {
         let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
 
         self.workspace.add_agent(&mut record)?;
-        emit_status(&app, &agent_id, AgentStatus::Spawning, None);
+        self.set_status(&app, &agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.clone());
 
         let sup = self.clone();
@@ -572,15 +638,11 @@ impl Supervisor {
 
         // Initial status is always Idle now — at process start there's
         // never an in-flight turn (we no longer pass a task as a spawn
-        // arg). The user's first send flips it to Running.
-        let changed = self.workspace.update_agent_status_if(
-            &agent_id_str,
-            AgentStatus::Idle,
-            None,
-            |status| matches!(status, AgentStatus::Spawning),
-        );
-        if matches!(changed, Ok(true)) {
-            emit_status(&app, &agent_id_str, AgentStatus::Idle, None);
+        // arg). The user's first send flips it to Running. Only promote
+        // out of the live Spawning state (a turn that already started
+        // mustn't be clobbered).
+        if matches!(self.live_status(&agent_id_str), Some(AgentStatus::Spawning)) {
+            self.set_status(&app, &agent_id_str, AgentStatus::Idle, None);
         }
 
         spawn_turn_watchdog(self.clone(), app, agent_id_str, my_gen);
@@ -605,12 +667,7 @@ impl Supervisor {
                 !is_per_turn_provider(&record.provider) && record.session_id.is_none();
             if missing_session || record.repos.is_empty() {
                 let err = "Agent record incomplete (no session id / no repos). Remove and respawn.".to_string();
-                let _ = self.workspace.update_agent_status(
-                    &record.id,
-                    AgentStatus::Error,
-                    Some(err.clone()),
-                );
-                emit_status(&app, &record.id, AgentStatus::Error, Some(err));
+                self.set_status(&app, &record.id, AgentStatus::Error, Some(err));
                 continue;
             }
 
@@ -643,9 +700,7 @@ impl Supervisor {
                 "Agent has no session id; remove and respawn.".into(),
             ));
         }
-        self.workspace
-            .update_agent_status(agent_id, AgentStatus::Spawning, None)?;
-        emit_status(&app, agent_id, AgentStatus::Spawning, None);
+        self.set_status(&app, agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
 
         self.start_process(&app, agent_id, false).await?;
@@ -679,6 +734,19 @@ impl Supervisor {
         text: &str,
         attachments: &[String],
     ) -> Result<()> {
+        // Record the user turn as a provider-agnostic canonical event before
+        // sending to the agent, so it's logged ahead of the response. This is
+        // persist-only: the frontend renders the user message optimistically
+        // on send, and replays this event through the reducer on restore — so
+        // it must not be emitted live (that would double-render).
+        let user_event = serde_json::json!({
+            "type": "user_message",
+            "text": text,
+            "attachments": attachments,
+        });
+        if let Err(e) = self.workspace.append_session_event(agent_id, &user_event) {
+            tracing::warn!(error = %e, agent_id = %agent_id, "append user_message event failed");
+        }
         {
             let agents = self.agents.lock();
             let agent = agents
@@ -731,21 +799,14 @@ impl Supervisor {
                 view: new_view,
             },
         );
-        self.workspace
-            .update_agent_status(agent_id, AgentStatus::Spawning, None)?;
-        emit_status(&app, agent_id, AgentStatus::Spawning, None);
+        self.set_status(&app, agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         if let Err(e) = self.start_process(&app, agent_id, false).await {
             let err = e.to_string();
-            let _ = self.workspace.update_agent_status(
-                agent_id,
-                AgentStatus::Error,
-                Some(err.clone()),
-            );
-            emit_status(&app, agent_id, AgentStatus::Error, Some(err));
+            self.set_status(&app, agent_id, AgentStatus::Error, Some(err));
             return Err(e);
         }
         Ok(())
@@ -778,7 +839,10 @@ impl Supervisor {
         if record.archive.is_some() {
             return Err(Error::Other("agent is already archived".into()));
         }
-        if matches!(record.status, AgentStatus::Spawning | AgentStatus::Running) {
+        if matches!(
+            self.effective_status(agent_id, &record),
+            AgentStatus::Spawning | AgentStatus::Running
+        ) {
             return Err(Error::Other(
                 "agent must be idle, stopped, or in error before archiving".into(),
             ));
@@ -788,6 +852,7 @@ impl Supervisor {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
+        self.statuses.lock().remove(agent_id);
         self.native_input_lines.lock().remove(agent_id);
         self.shells.lock().remove(agent_id);
         if let Some(run) = self.runs.lock().remove(agent_id) {
@@ -968,7 +1033,7 @@ impl Supervisor {
         }
 
         self.workspace.restore_agent(agent_id, restored)?;
-        emit_status(&app, agent_id, AgentStatus::Spawning, None);
+        self.set_status(&app, agent_id, AgentStatus::Spawning, None);
         let _ = app.emit("workspace:changed", ());
 
         // Kick the resume path. start_process is the same one that
@@ -1067,6 +1132,7 @@ impl Supervisor {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
+        self.statuses.lock().remove(agent_id);
         self.native_input_lines.lock().remove(agent_id);
         self.shells.lock().remove(agent_id);
         if let Some(run) = self.runs.lock().remove(agent_id) {
@@ -1234,9 +1300,16 @@ fn spawn_managed_agent(
     let app_for_event = app.clone();
     let id_for_event = agent_id.clone();
     let sup_for_event = sup.clone();
-    let sup_for_exit = sup;
+    let sup_for_exit = sup.clone();
     let app_for_exit = app.clone();
     let id_for_exit = agent_id.clone();
+    // Resolve the provider once at spawn (one DB read, not per event) so the
+    // event closure can decide which events are durable.
+    let provider = sup
+        .workspace
+        .agent(&agent_id)
+        .map(|r| r.provider)
+        .unwrap_or_else(|_| "claude".to_string());
     Agent::spawn_managed(
         spec,
         move |event| {
@@ -1246,6 +1319,12 @@ fn spawn_managed_agent(
                 .get_mut(&id_for_event)
             {
                 activity.observe_event(&event);
+            }
+
+            if crate::agent::is_durable_event(&provider, &event) {
+                if let Err(e) = sup_for_event.workspace.append_session_event(&id_for_event, &event) {
+                    tracing::warn!(error = %e, agent_id = %id_for_event, "append_session_event failed");
+                }
             }
 
             if let Err(e) = app_for_event.emit(
@@ -1286,6 +1365,7 @@ fn spawn_per_turn_agent(
     let app_for_event = app.clone();
     let id_for_event = agent_id.clone();
     let sup_for_event = sup.clone();
+    let provider_for_event = provider.to_string();
     let id_for_sid = agent_id.clone();
     let sup_for_sid = sup.clone();
     let app_for_exit = app;
@@ -1295,6 +1375,11 @@ fn spawn_per_turn_agent(
     let on_event = move |event: Value| {
         if let Some(activity) = sup_for_event.activities.lock().get_mut(&id_for_event) {
             activity.observe_event(&event);
+        }
+        if crate::agent::is_durable_event(&provider_for_event, &event) {
+            if let Err(e) = sup_for_event.workspace.append_session_event(&id_for_event, &event) {
+                tracing::warn!(error = %e, agent_id = %id_for_event, "append_session_event failed");
+            }
         }
         if let Err(e) = app_for_event.emit(
             "agent:event",
@@ -1578,21 +1663,15 @@ fn spawn_turn_watchdog(
 fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: String) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(SPAWN_TIMEOUT).await;
-        let still_spawning = sup
-            .workspace
-            .agent(&agent_id)
-            .map(|r| matches!(r.status, AgentStatus::Spawning))
-            .unwrap_or(false);
+        // Only time out an agent still in the live Spawning state. One that
+        // has progressed to Running/Idle has a non-Spawning in-memory entry
+        // and must not be killed.
+        let still_spawning = matches!(sup.live_status(&agent_id), Some(AgentStatus::Spawning));
         if !still_spawning {
             return;
         }
         let err = "Spawn timed out after 15s — process did not become ready.".to_string();
-        let _ = sup.workspace.update_agent_status(
-            &agent_id,
-            AgentStatus::Error,
-            Some(err.clone()),
-        );
-        emit_status(&app, &agent_id, AgentStatus::Error, Some(err));
+        sup.set_status(&app, &agent_id, AgentStatus::Error, Some(err));
         if let Some(agent) = sup.agents.lock().remove(&agent_id) {
             let _ = agent.shutdown();
         }
@@ -1601,10 +1680,7 @@ fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: String) {
 }
 
 fn fail_spawn(sup: &Supervisor, app: &AppHandle, agent_id: &str, err: String) {
-    let _ = sup
-        .workspace
-        .update_agent_status(agent_id, AgentStatus::Error, Some(err.clone()));
-    emit_status(app, agent_id, AgentStatus::Error, Some(err));
+    sup.set_status(app, agent_id, AgentStatus::Error, Some(err));
 }
 
 fn transition_active(
@@ -1613,19 +1689,17 @@ fn transition_active(
     agent_id: &str,
     new: AgentStatus,
 ) {
-    let changed = sup.workspace.update_agent_status_if(
-        agent_id,
-        new.clone(),
-        None,
-        |cur| {
-            matches!(
-                cur,
-                AgentStatus::Spawning | AgentStatus::Running | AgentStatus::Idle
-            ) && *cur != new
-        },
-    );
-    if matches!(changed, Ok(true)) {
-        emit_status(app, agent_id, new.clone(), None);
+    // Operate on the live in-memory status. A live agent with no entry yet
+    // is treated as Spawning (the at-rest derivation).
+    let cur = sup
+        .live_status(agent_id)
+        .unwrap_or(AgentStatus::Spawning);
+    let should_change = matches!(
+        cur,
+        AgentStatus::Spawning | AgentStatus::Running | AgentStatus::Idle
+    ) && cur != new;
+    if should_change {
+        sup.set_status(app, agent_id, new.clone(), None);
         if matches!(new, AgentStatus::Idle) {
             sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
         }
@@ -1663,26 +1737,23 @@ fn apply_exit_if_current(
     let (status, err) = if success {
         // Clean exit means the agent is resumable — keep it Idle so the
         // user can send follow-up messages without a manual Resume step.
+        // The Idle entry stays in the `statuses` map (the agent is
+        // resumable for the life of the session).
         (AgentStatus::Idle, None)
     } else {
         (AgentStatus::Error, Some(format!("Agent process exited: {message}")))
     };
-    let changed = sup.workspace.update_agent_status_if(
-        agent_id,
-        status.clone(),
-        err.clone(),
-        |status| {
-            matches!(
-                status,
-                AgentStatus::Running | AgentStatus::Idle | AgentStatus::Spawning
-            )
-        },
+    // Only apply the exit transition if the agent was still live (not
+    // already moved to a terminal disposition by another path).
+    let was_live = matches!(
+        sup.live_status(agent_id).unwrap_or(AgentStatus::Spawning),
+        AgentStatus::Running | AgentStatus::Idle | AgentStatus::Spawning
     );
-    if matches!(changed, Ok(true)) {
+    if was_live {
+        sup.set_status(app, agent_id, status.clone(), err);
         if matches!(status, AgentStatus::Idle) {
             sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
         }
-        emit_status(app, agent_id, status, err);
     }
 }
 
@@ -1865,4 +1936,75 @@ fn emit_status(
             last_error,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_supervisor() -> Supervisor {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::database::init(dir.path()).unwrap();
+        Supervisor::new(Arc::new(WorkspaceManager::new(db)))
+    }
+
+    fn record_with_status(id: &str, status: AgentStatus) -> AgentRecord {
+        let mut record = new_agent_record(
+            id.to_string(),
+            id.to_string(),
+            "claude".to_string(),
+            TrackedRepo {
+                repo_path: PathBuf::from("/r"),
+                subdir: "repo".to_string(),
+                branch: None,
+                parent_branch: None,
+            },
+            String::new(),
+            AgentView::Custom,
+        );
+        record.status = status;
+        record
+    }
+
+    #[test]
+    fn effective_status_falls_back_to_record_when_absent() {
+        let sup = test_supervisor();
+        // No in-memory entry → use the record's (DB-derived) status.
+        let record = record_with_status("yosemite", AgentStatus::Spawning);
+        assert_eq!(
+            sup.effective_status("yosemite", &record),
+            AgentStatus::Spawning
+        );
+
+        let stopped = record_with_status("dolomites", AgentStatus::Stopped);
+        assert_eq!(
+            sup.effective_status("dolomites", &stopped),
+            AgentStatus::Stopped
+        );
+    }
+
+    #[test]
+    fn effective_status_prefers_in_memory_value() {
+        let sup = test_supervisor();
+        sup.statuses
+            .lock()
+            .insert("yosemite".to_string(), AgentStatus::Running);
+        // Record derives Spawning, but the live map says Running — the
+        // in-memory value wins.
+        let record = record_with_status("yosemite", AgentStatus::Spawning);
+        assert_eq!(
+            sup.effective_status("yosemite", &record),
+            AgentStatus::Running
+        );
+    }
+
+    #[test]
+    fn live_status_reflects_inserted_value() {
+        let sup = test_supervisor();
+        assert_eq!(sup.live_status("yosemite"), None);
+        sup.statuses
+            .lock()
+            .insert("yosemite".to_string(), AgentStatus::Running);
+        assert_eq!(sup.live_status("yosemite"), Some(AgentStatus::Running));
+    }
 }
