@@ -65,7 +65,7 @@ pub struct PerTurnSpec {
 /// Everything that varies between per-turn agents. The runner lifecycle —
 /// one fresh process per turn via `ExecSession` — is identical for all of
 /// them; only the binary, CLI args, session-id extraction, and turn-end
-/// detector differ. Capturing those four as a table entry means a new
+/// detector differ. Capturing those as a table entry means a new
 /// per-turn agent is one `PER_TURN_AGENTS` row, with no new `spawn_*`
 /// method, `resolve_*` helper, or `match provider` arm anywhere.
 pub struct PerTurnDescriptor {
@@ -81,6 +81,49 @@ pub struct PerTurnDescriptor {
     session_id: fn(&Value) -> Option<String>,
     /// Constructs this agent's turn-end detector (custom-view `Activity`).
     pub activity: fn() -> Box<dyn Activity>,
+    /// Rollout flags — see `AgentCapabilities`. These describe what's wired
+    /// *today*, not a permanent limit; each is being brought to every agent
+    /// in follow-up PRs, at which point its flag flips to `true`.
+    native_view: bool,
+    transcript_replay: bool,
+}
+
+/// What an agent can do *right now*. These are rollout flags, not fixed
+/// traits: the roadmap is native (PTY/TUI) views and on-disk transcript
+/// replay for every agent, with the SQLite event log as the canonical
+/// history store you can always restore from. As each capability is wired
+/// for an agent, its flag flips — callers gate on the capability, never on
+/// the provider id, so nothing else changes when support lands.
+pub struct AgentCapabilities {
+    /// Can render in the native PTY view (its interactive TUI streamed into
+    /// xterm), in addition to the structured custom view. Today: claude
+    /// only; per-turn agents are custom-only until their TUI path is wired.
+    pub native_view: bool,
+    /// Has its native on-disk transcript wired for replay (parsed by the
+    /// frontend adapter's `normalizeTranscript`). When false, re-attaching
+    /// still restores history from the provider-agnostic SQLite event log —
+    /// this flag only governs the richer native-format path.
+    pub transcript_replay: bool,
+}
+
+/// Capabilities for a provider. Per-turn agents read theirs from the
+/// descriptor table; claude (the lone persistent-runner agent) is the
+/// fully-wired baseline. Unknown providers get nothing.
+pub fn capabilities(provider: &str) -> AgentCapabilities {
+    match per_turn_descriptor(provider) {
+        Some(d) => AgentCapabilities {
+            native_view: d.native_view,
+            transcript_replay: d.transcript_replay,
+        },
+        None if provider == "claude" => AgentCapabilities {
+            native_view: true,
+            transcript_replay: true,
+        },
+        None => AgentCapabilities {
+            native_view: false,
+            transcript_replay: false,
+        },
+    }
 }
 
 const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
@@ -91,6 +134,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         build_args: codex_build_args,
         session_id: codex_session_id,
         activity: || Box::new(ManagedActivity::codex()),
+        native_view: false,
+        // Codex persists a `rollout-*.jsonl`; `find_codex_rollout` + the
+        // frontend codex adapter replay it.
+        transcript_replay: true,
     },
     PerTurnDescriptor {
         id: "cursor",
@@ -101,6 +148,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // Cursor emits Claude-shaped stream-json incl. a `result` turn-end,
         // so it reuses the Claude managed detector.
         activity: || Box::new(ManagedActivity::claude()),
+        native_view: false,
+        // Cursor's on-disk chat format is undocumented; restore from the
+        // SQLite log until a native transcript path is wired.
+        transcript_replay: false,
     },
     PerTurnDescriptor {
         id: "opencode",
@@ -109,6 +160,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         build_args: opencode_build_args,
         session_id: opencode_session_id,
         activity: || Box::new(ManagedActivity::opencode()),
+        native_view: false,
+        // OpenCode's `export` schema differs from its live stream; restore
+        // from the SQLite log until that's mapped.
+        transcript_replay: false,
     },
     PerTurnDescriptor {
         id: "pi",
@@ -117,6 +172,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         build_args: pi_build_args,
         session_id: pi_session_id,
         activity: || Box::new(ManagedActivity::pi()),
+        native_view: false,
+        // Pi persists a `session.jsonl` that's wireable later; restore from
+        // the SQLite log until then.
+        transcript_replay: false,
     },
 ];
 
@@ -617,6 +676,44 @@ fn command_from_login_shell(name: &str) -> Option<String> {
         None
     } else {
         Some(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_per_turn_agent_resolves_to_its_descriptor() {
+        for d in PER_TURN_AGENTS {
+            assert_eq!(per_turn_descriptor(d.id).map(|x| x.id), Some(d.id));
+        }
+        assert!(per_turn_descriptor("claude").is_none());
+        assert!(per_turn_descriptor("nope").is_none());
+    }
+
+    /// Pins the current capability rollout. The roadmap is native views and
+    /// transcript replay for every agent; when a follow-up wires one, it
+    /// flips the descriptor flag and updates the expectation here on purpose.
+    #[test]
+    fn capability_rollout_matches_what_is_wired_today() {
+        let cases = [
+            // provider     native_view  transcript_replay
+            ("claude", true, true),
+            ("codex", false, true),
+            ("cursor", false, false),
+            ("opencode", false, false),
+            ("pi", false, false),
+            ("unknown", false, false),
+        ];
+        for (provider, native_view, transcript_replay) in cases {
+            let caps = capabilities(provider);
+            assert_eq!(caps.native_view, native_view, "native_view for {provider}");
+            assert_eq!(
+                caps.transcript_replay, transcript_replay,
+                "transcript_replay for {provider}"
+            );
+        }
     }
 }
 
