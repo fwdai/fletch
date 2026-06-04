@@ -22,8 +22,6 @@ import { DEFAULT_PROVIDER_ID } from "./data/providers";
 import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 import { getAllSettings, setSetting } from "./storage/settings";
-import { countMessages, insertMessage, listMessages } from "./storage/messages";
-import { messageRowFor, messagesToChatItems } from "./storage/transcript";
 import {
   getOrCreateAccount,
   saveAccountProfile,
@@ -362,6 +360,36 @@ function passthroughSlashName(
   return match ? match.name : null;
 }
 
+/** Reduce one stored raw event into chat items during restore. The
+ *  provider-agnostic `user_message` event (synthesized by the backend on
+ *  send) is rendered here exactly as the optimistic live path renders it —
+ *  so a restored conversation matches what was on screen. Every other event
+ *  is a native provider event and goes through that provider's adapter. */
+function reduceStoredEvent(
+  provider: string | undefined,
+  prev: ChatItem[],
+  rawEvent: RawEvent,
+): ChatItem[] {
+  if (rawEvent.type === "user_message") {
+    const text = typeof rawEvent.text === "string" ? rawEvent.text : "";
+    const slashName = passthroughSlashName(provider, text);
+    const entry: ChatItem = slashName
+      ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
+      : { kind: "user_message", text };
+    return [...prev, entry];
+  }
+  try {
+    return getAdapter(provider).reduce(prev, rawEvent);
+  } catch (err) {
+    console.error("[adapters] reduce threw during restore", {
+      provider,
+      type: rawEvent.type,
+      err,
+    });
+    return prev;
+  }
+}
+
 /** Apply one raw event to an agent's log via its provider adapter. Catches
  *  adapter throws so a single malformed event can't poison the whole log. */
 function applyEvent(
@@ -414,35 +442,6 @@ function extractInputTokens(ev: RawEvent): number | undefined {
   const usage = ev.usage as Record<string, unknown> | undefined;
   const n = usage?.input_tokens;
   return typeof n === "number" && n > 0 ? n : undefined;
-}
-
-/** Append newly-finalized chat items to our sqlite history store — the
- *  canonical, provider-agnostic record that survives restart for every
- *  provider, including those whose own on-disk transcript we can't read.
- *
- *  Append-only and crash-safe: the stored row count is the high-water mark,
- *  so we only insert items beyond what's already persisted. No destructive
- *  replace-all, so a partial write just resumes next time, and cost is O(new
- *  items) per turn rather than O(whole log). Safe because chat items finalize
- *  *within* a turn — by the time this runs (turn-end / archive) every item up
- *  to that point is immutable, so appending the tail can't miss an edit to the
- *  prefix. Fire-and-forget — errors are logged, not surfaced. */
-const persistInFlight = new Set<string>();
-
-async function persistHistory(agentId: string): Promise<void> {
-  if (persistInFlight.has(agentId)) return;
-  persistInFlight.add(agentId);
-  try {
-    const items = useAppStore.getState().managedLogs[agentId] ?? [];
-    const persisted = await countMessages(agentId);
-    for (let i = persisted; i < items.length; i++) {
-      await insertMessage(messageRowFor(items[i], i, agentId));
-    }
-  } catch (e) {
-    console.warn("[persistHistory] failed for", agentId, e);
-  } finally {
-    persistInFlight.delete(agentId);
-  }
 }
 
 /** Names already taken by real or draft agents — passed to the backend
@@ -674,13 +673,6 @@ export const useAppStore = create<AppState>((set, get) => ({
               ? { ...state.managedBusy, [e.agent_id]: false }
               : state.managedBusy,
       }));
-
-      // A turn just ended — append the (now-finalized) new items to sqlite
-      // so history survives restart for every provider, including those
-      // whose own on-disk store we can't read (cursor).
-      if (e.status === "idle") {
-        void persistHistory(e.agent_id);
-      }
     });
 
     // Archive / restore reshape `repos` and `archive` on the record,
@@ -874,7 +866,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   archive: async (id) => {
     try {
-      await persistHistory(id);
       await api.archiveAgent(id);
       clearOutputBuffer(id);
       const fresh = await api.getWorkspace();
@@ -928,41 +919,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   loadHistoryTranscript: async (id) => {
     if (get().transcriptLoading[id]) return;
-    set((s) => ({
-      transcriptLoading: { ...s.transcriptLoading, [id]: true },
-    }));
+    set((s) => ({ transcriptLoading: { ...s.transcriptLoading, [id]: true } }));
     try {
-      // SQLite is the canonical history store — restore from it first.
-      // It's provider-agnostic (whatever we rendered + persisted) and works
-      // for every agent, including those whose own on-disk store we can't read.
-      let items = messagesToChatItems(await listMessages(id));
-
-      // First open of an agent whose history predates the SQLite store (an
-      // existing claude/codex agent), seed it from the agent's native on-disk
-      // transcript and persist that, so future restores — and every other
-      // provider — come from SQLite uniformly. Agents without a readable
-      // native transcript (cursor/opencode/pi) get an empty seed and rely on
-      // live capture going forward.
-      if (items.length === 0) {
-        const rawLines = await api.readSessionTranscript(id);
-        if (rawLines.length > 0) {
-          const adapter = getAdapter(providerFor(get(), id));
-          const events = adapter.normalizeTranscript(rawLines);
-          let imported: ChatItem[] = [];
-          for (const ev of events) {
-            imported = adapter.reduce(imported, ev);
-          }
-          if (imported.length > 0) {
-            items = imported;
-            for (let i = 0; i < imported.length; i++) {
-              await insertMessage(messageRowFor(imported[i], i, id));
-            }
-          }
-        }
+      // session_events is the canonical history — replay the stored raw events
+      // through the same reducer used live, so restore matches the live render.
+      const provider = providerFor(get(), id);
+      const events = await api.readSessionEvents(id);
+      let items: ChatItem[] = [];
+      for (const ev of events) {
+        items = reduceStoredEvent(provider, items, ev as RawEvent);
       }
       set((state) => {
-        // If we found nothing stored but a live turn is already rendering,
-        // leave it alone — don't erase a turn that's still in flight.
+        // Nothing stored but a live turn is already rendering — don't clobber it.
         if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {
           return {};
         }
@@ -1128,7 +1096,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await api.mergePr(agentId);
       // pr:state_changed event will update prStates
-      void persistHistory(agentId);
     } catch (e) {
       set({ lastError: String(e) });
     }
