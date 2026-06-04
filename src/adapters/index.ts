@@ -4,11 +4,15 @@ import { cursorAdapter } from "./cursor";
 import { opencodeAdapter } from "./opencode";
 import { piAdapter } from "./pi";
 import type { ChatAdapter } from "./types";
+import type { ProviderId } from "../data/providers";
 
 export type { ChatAdapter, ChatItem, DisplayPolicy, NoticeSubtype, RawEvent } from "./types";
 export { applyPolicy, modeFor } from "./policy";
 
-export const ADAPTERS: Record<string, ChatAdapter> = {
+// Partial: not every provider is wired. Agents listed in PROVIDERS without an
+// entry here (e.g. antigravity) are "coming soon" — the picker gates them via
+// `hasAdapter` so they can never be selected and silently fall back to Claude.
+export const ADAPTERS: Partial<Record<ProviderId, ChatAdapter>> = {
   claude: claudeAdapter,
   codex: codexAdapter,
   cursor: cursorAdapter,
@@ -16,15 +20,20 @@ export const ADAPTERS: Record<string, ChatAdapter> = {
   pi: piAdapter,
 };
 
-export const DEFAULT_ADAPTER_ID = "claude";
+export const DEFAULT_ADAPTER_ID: ProviderId = "claude";
+
+/** True if `provider` has a real adapter (i.e. is runnable, not coming-soon). */
+export function hasAdapter(provider: string | null | undefined): boolean {
+  return !!provider && provider in ADAPTERS;
+}
 
 export function getAdapter(provider: string | null | undefined): ChatAdapter {
   if (provider) {
-    const found = ADAPTERS[provider];
+    const found = ADAPTERS[provider as ProviderId];
     if (found) return found;
     console.warn(
       `[adapters] unknown provider "${provider}", falling back to ${DEFAULT_ADAPTER_ID}`,
     );
   }
-  return ADAPTERS[DEFAULT_ADAPTER_ID];
+  return ADAPTERS[DEFAULT_ADAPTER_ID]!;
 }

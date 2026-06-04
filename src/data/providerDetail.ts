@@ -2,6 +2,12 @@
 // the `PROVIDERS` id in data/providers.ts. This is mock data: real detection /
 // authentication isn't wired yet, so these describe how a configured agent
 // *would* present. The enable toggle still drives the real `providerFlags`.
+//
+// Typed as a full Record<ProviderId, …> so every provider must have an entry;
+// `installed: false` keeps a provider out of the "Installed" list (e.g.
+// antigravity, which has no adapter/runner yet).
+
+import type { ProviderId } from "./providers";
 
 export interface ProviderDetail {
   /** Account the agent is authenticated as. */
@@ -20,7 +26,7 @@ export interface ProviderDetail {
   installed: boolean;
 }
 
-export const PROVIDER_DETAIL: Record<string, ProviderDetail> = {
+export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
   claude: {
     account: "alex@joineve.ai",
     plan: "Claude Team",
@@ -49,13 +55,23 @@ export const PROVIDER_DETAIL: Record<string, ProviderDetail> = {
     plan: "Google AI Pro",
     path: "/Applications/Antigravity.app/…/antigravity",
     models: "Gemini 3 Pro · Flash",
-    installed: true,
+    // No adapter/runner yet — kept out of the Installed list and gated as
+    // "coming soon" in the picker. Flip to true once it's wired end-to-end.
+    installed: false,
   },
   opencode: {
     account: "opencode",
     plan: "1 upstream connected",
     path: "~/.opencode/bin/opencode",
     models: "Routed via upstream provider",
+    installed: true,
+  },
+  pi: {
+    account: "pi",
+    plan: "Experimental",
+    path: "~/.pi/bin/pi",
+    models: "Pi · experimental",
+    earlyAccess: true,
     installed: true,
   },
 };
@@ -74,12 +90,12 @@ export interface AvailableAgent {
 // Agents found on PATH but not yet configured, plus ones available to install.
 export const AVAILABLE_AGENTS: AvailableAgent[] = [
   {
-    id: "pi",
-    label: "Pi",
-    short: "PI",
-    hue: 320,
-    version: "v0.4",
-    state: "detected",
-    note: "Detected on PATH — not configured yet.",
+    id: "antigravity",
+    label: "Antigravity",
+    short: "AG",
+    hue: 260,
+    version: "v1.0",
+    state: "install",
+    note: "Not yet supported in Quorum — coming soon.",
   },
 ];

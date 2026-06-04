@@ -4,7 +4,6 @@ import type { AgentRecord, AgentStatus } from "../../api";
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
 import { LANDMARK_NAMES } from "../../data/landmarks";
-import { DEFAULT_PROVIDER_ID } from "../../data/providers";
 import { Icon, LandmarkGlyph } from "../Icon";
 import { formatAge, formatTokens } from "../../util/format";
 import { useMinuteClock } from "../../util/hooks";
@@ -87,7 +86,7 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
           </span>
         )}
         <span className="ag-name">{agent.name}</span>
-        <span className="ag-provider-inline">· {DEFAULT_PROVIDER_ID}</span>
+        <span className="ag-provider-inline">· {agent.provider}</span>
         <span className="ag-actions">
           {stoppable && (
             <button
