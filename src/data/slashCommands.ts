@@ -18,6 +18,8 @@
 // "/foo isn't available in this environment" if proxied. If we want
 // them, they need a `local` entry with Quorum-side implementations.
 
+import type { ProviderId } from "./providers";
+
 export type SlashCommand =
   | {
       kind: "passthrough";
@@ -33,7 +35,7 @@ export type SlashCommand =
       action: string;
     };
 
-export const PROVIDER_COMMANDS: Record<string, SlashCommand[]> = {
+export const PROVIDER_COMMANDS: Record<ProviderId, SlashCommand[]> = {
   claude: [
     { kind: "passthrough", name: "help",    description: "Show available commands" },
     { kind: "passthrough", name: "compact", description: "Compact prior turns into a summary" },
@@ -47,7 +49,7 @@ export const PROVIDER_COMMANDS: Record<string, SlashCommand[]> = {
 };
 
 export function commandsFor(providerId: string): SlashCommand[] {
-  return PROVIDER_COMMANDS[providerId] ?? [];
+  return PROVIDER_COMMANDS[providerId as ProviderId] ?? [];
 }
 
 export function filterCommands(

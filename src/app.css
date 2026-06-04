@@ -2796,6 +2796,10 @@ button { cursor: default; }
   background: color-mix(in oklch, var(--warn), transparent 82%);
   color: var(--warn);
 }
+.set-badge.soon {
+  background: color-mix(in oklch, var(--fg-3), transparent 84%);
+  color: var(--fg-2);
+}
 .set-prov-update {
   display: inline-flex; align-items: center; justify-content: center;
   width: 17px; height: 17px; border-radius: 50%;

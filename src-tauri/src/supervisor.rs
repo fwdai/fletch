@@ -1345,10 +1345,13 @@ fn spawn_per_turn_agent(
 
     let spec = PerTurnSpec { cwd, session_id };
     match provider {
+        "codex" => Agent::spawn_codex(spec, on_event, on_session_id, on_turn_exit),
         "cursor" => Agent::spawn_cursor(spec, on_event, on_session_id, on_turn_exit),
         "opencode" => Agent::spawn_opencode(spec, on_event, on_session_id, on_turn_exit),
         "pi" => Agent::spawn_pi(spec, on_event, on_session_id, on_turn_exit),
-        _ => Agent::spawn_codex(spec, on_event, on_session_id, on_turn_exit),
+        other => Err(Error::Other(format!(
+            "unknown per-turn agent provider: {other}"
+        ))),
     }
 }
 

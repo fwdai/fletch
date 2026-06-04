@@ -1,9 +1,24 @@
-// Coding-agent providers. Only "claude" is actually wired; others are
-// listed so the model picker has something to show. When real backends
-// land, drop the mocks and add a `provider` field on AgentRecord.
+// Coding-agent providers shown in the composer's model picker.
+//
+// `ProviderId` is the single source of truth for the set of agents. Every
+// keyed registry (ADAPTERS, PROVIDER_DETAIL, PROVIDER_COMMANDS) is typed
+// against it, so adding/removing an agent surfaces as a compile error
+// anywhere it isn't kept in sync.
+//
+// "Wired" (runnable) === has an entry in the frontend `ADAPTERS` registry
+// plus a backend runner. Agents without an adapter (e.g. antigravity) still
+// appear here but are gated as "coming soon" in the picker (see ModelPicker).
+
+export type ProviderId =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "antigravity"
+  | "opencode"
+  | "pi";
 
 export interface Provider {
-  id: string;
+  id: ProviderId;
   label: string;
   short: string;
   version: string;
