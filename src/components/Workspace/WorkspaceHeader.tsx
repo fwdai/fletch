@@ -52,6 +52,11 @@ export function WorkspaceHeader({ agent }: Props) {
         value={agent.view}
         onChange={(v) => switchView(agent.id, v)}
         disabled={switchInFlight}
+        // The native TUI resumes the agent's session, which only exists once
+        // the first turn lands (claude gets one up front, so it's never
+        // gated). Matches the backend switch_view guard.
+        nativeDisabled={!agent.session_id}
+        nativeReason="Available after the agent's first turn"
       />
 
       <IconButton

@@ -4,12 +4,16 @@ interface Props {
   value: "custom" | "native";
   onChange: (v: "custom" | "native") => void;
   disabled?: boolean;
+  /** Disable only the Native option (e.g. a per-turn agent has no session
+   *  id yet); `nativeReason` is shown as its tooltip. */
+  nativeDisabled?: boolean;
+  nativeReason?: string;
 }
 
 /** Segmented Custom / Native toggle. Click triggers a backend
  *  `switch_view` via the store action; the store updates `viewMode`
  *  on success. */
-export function ViewToggle({ value, onChange, disabled }: Props) {
+export function ViewToggle({ value, onChange, disabled, nativeDisabled, nativeReason }: Props) {
   return (
     <div
       className="view-toggle"
@@ -20,7 +24,12 @@ export function ViewToggle({ value, onChange, disabled }: Props) {
       <Btn active={value === "custom"} disabled={disabled} onClick={() => onChange("custom")}>
         <Icon name="sparkle" /> Custom
       </Btn>
-      <Btn active={value === "native"} disabled={disabled} onClick={() => onChange("native")}>
+      <Btn
+        active={value === "native"}
+        disabled={disabled || nativeDisabled}
+        title={nativeDisabled ? nativeReason : undefined}
+        onClick={() => onChange("native")}
+      >
         <Icon name="terminal" /> Native
       </Btn>
     </div>
@@ -28,8 +37,14 @@ export function ViewToggle({ value, onChange, disabled }: Props) {
 }
 
 function Btn({
-  active, disabled, onClick, children,
-}: { active: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode }) {
+  active, disabled, onClick, children, title,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  title?: string;
+}) {
   return (
     <button
       type="button"
@@ -37,6 +52,7 @@ function Btn({
       aria-selected={active}
       className={active ? "active" : ""}
       disabled={disabled}
+      title={title}
       onClick={onClick}
     >
       {children}
