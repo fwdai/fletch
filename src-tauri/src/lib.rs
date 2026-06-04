@@ -125,19 +125,11 @@ pub fn run() {
 
             let workspace = Arc::new(WorkspaceManager::new(db));
             let supervisor = Arc::new(Supervisor::new(workspace));
-            app.manage(supervisor.clone());
+            app.manage(supervisor);
 
-            // Auto-resume any agent that was live before the previous
-            // shutdown. Runs on a tauri async task so we don't block
-            // app boot; events emit as they would for a manual spawn.
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                // Tiny delay so the frontend has time to mount its
-                // event listeners and the workspace view before agents
-                // start emitting.
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                supervisor.resume_persisted_agents(app_handle);
-            });
+            // Agents rest at Idle on boot — no process is spawned. The
+            // supervisor brings one up lazily on the user's next interaction
+            // (the frontend resumes on send), so nothing auto-spawns here.
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

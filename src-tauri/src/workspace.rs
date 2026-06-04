@@ -153,8 +153,10 @@ pub struct Workspace {
 /// Runtime status is not stored. Derive it from durable dispositions plus
 /// whether a live process currently exists (supervisor-supplied). At the
 /// storage layer `running` is always false (nothing is live mid-query), so a
-/// resting, non-stopped, non-errored workspace derives to `Spawning` — the
-/// auto-resume state that the old load-time reconciliation used to write.
+/// resting, non-stopped, non-errored agent derives to `Idle`: it has no live
+/// process and is not running a turn. A process is spawned lazily on the
+/// user's next interaction (the frontend resumes on send), so agents no
+/// longer auto-spawn at load.
 pub fn derive_status(
     archived: bool,
     stopped: bool,
@@ -170,7 +172,7 @@ pub fn derive_status(
     if last_error.is_some() {
         return AgentStatus::Error;
     }
-    AgentStatus::Spawning
+    AgentStatus::Idle
 }
 
 fn view_to_str(v: &AgentView) -> &'static str {
@@ -206,9 +208,9 @@ pub struct WorkspaceManager {
 impl WorkspaceManager {
     pub fn new(db: Arc<Mutex<Connection>>) -> Self {
         // Status is derived, not stored, so there is nothing to reconcile at
-        // load time: a resting, non-stopped, non-errored workspace already
-        // derives to `Spawning` (the supervisor's auto-resume state), while
-        // user-stopped workspaces keep their `stopped_at` and derive to
+        // load time: a resting, non-stopped, non-errored workspace derives to
+        // `Idle` (no live process; resumed lazily on the next interaction),
+        // while user-stopped workspaces keep their `stopped_at` and derive to
         // `Stopped` until the manual Resume button clears it.
         Self { db }
     }
@@ -469,14 +471,14 @@ impl WorkspaceManager {
 
     /// Clear archive metadata and re-seed `repos`. Clearing `archived_at`
     /// (with no `stopped_at`/error) makes the workspace derive back to
-    /// `Spawning`, so the supervisor's resume path picks the agent up.
+    /// `Idle`; the supervisor's restore path drives the live spawn explicitly.
     pub fn restore_agent(&self, id: &str, repos: Vec<TrackedRepo>) -> Result<()> {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
 
-        // Clearing both dispositions (archived + user-stopped) is what the
-        // old `status = 'spawning'` write effectively meant: a freshly
-        // restored workspace should auto-resume, not stay stopped.
+        // Clearing both dispositions (archived + user-stopped) returns the
+        // record to its resting `Idle` state — a restored agent should be
+        // live-able again, not stuck Stopped.
         conn.execute(
             "UPDATE workspaces SET archived_at = NULL, stopped_at = NULL WHERE id = ?1",
             [id],
@@ -1178,7 +1180,7 @@ mod tests {
     }
 
     #[test]
-    fn persists_across_instances_and_reconciles_to_spawning_for_resume() {
+    fn persists_across_instances_and_rests_at_idle() {
         let db = test_db();
 
         // Seed repo paths so add_agent can look them up.
@@ -1191,7 +1193,7 @@ mod tests {
             let wm = WorkspaceManager::new(db.clone());
             wm.add_workspace_repo(repo.clone()).unwrap();
             // A resting agent has no durable disposition — it derives to
-            // `Spawning` (the auto-resume state) without any reconciliation.
+            // `Idle` (no live process, not running a turn).
             let mut running = new_agent_record(
                 "yosemite".into(),
                 "a".into(),
@@ -1218,7 +1220,7 @@ mod tests {
         }
 
         // Second instance — status is derived, so the resting agent comes
-        // back as Spawning and the stopped one stays Stopped.
+        // back as Idle and the stopped one stays Stopped.
         let wm2 = WorkspaceManager::new(db);
         let cur = wm2.current().unwrap();
         assert!(cur.repos.iter().any(|p| p == &repo));
@@ -1226,7 +1228,7 @@ mod tests {
 
         let yosemite = cur.agents.iter().find(|a| a.id == "yosemite").unwrap();
         let dolomites = cur.agents.iter().find(|a| a.id == "dolomites").unwrap();
-        assert_eq!(yosemite.status, AgentStatus::Spawning);
+        assert_eq!(yosemite.status, AgentStatus::Idle);
         assert_eq!(dolomites.status, AgentStatus::Stopped);
     }
 
@@ -1252,10 +1254,10 @@ mod tests {
             derive_status(false, false, true, Some("boom")),
             AgentStatus::Running
         );
-        // A resting, clean workspace derives to Spawning (auto-resume).
+        // A resting, clean workspace derives to Idle (lazy resume on send).
         assert_eq!(
             derive_status(false, false, false, None),
-            AgentStatus::Spawning
+            AgentStatus::Idle
         );
     }
 
@@ -1326,18 +1328,18 @@ mod tests {
         let id = rec.id.clone();
         wm.add_agent(&mut rec).unwrap();
 
-        // Fresh agent derives Spawning (no durable disposition).
-        assert_eq!(wm.agent(&id).unwrap().status, AgentStatus::Spawning);
+        // Fresh agent derives Idle (no durable disposition, no live process).
+        assert_eq!(wm.agent(&id).unwrap().status, AgentStatus::Idle);
 
         // Stopping stamps a durable disposition → derives Stopped.
         wm.update_agent_status(&id, AgentStatus::Stopped, None)
             .unwrap();
         assert_eq!(wm.agent(&id).unwrap().status, AgentStatus::Stopped);
 
-        // Resuming clears the stop disposition → back to Spawning.
+        // Resuming clears the stop disposition → back to Idle.
         wm.update_agent_status(&id, AgentStatus::Running, None)
             .unwrap();
-        assert_eq!(wm.agent(&id).unwrap().status, AgentStatus::Spawning);
+        assert_eq!(wm.agent(&id).unwrap().status, AgentStatus::Idle);
 
         // Recording an error surfaces as Error (no live process at rest).
         wm.update_agent_status(&id, AgentStatus::Error, Some("boom".into()))
@@ -1346,11 +1348,11 @@ mod tests {
         assert_eq!(a.status, AgentStatus::Error);
         assert_eq!(a.last_error.as_deref(), Some("boom"));
 
-        // Resuming again clears the error → back to Spawning.
+        // Resuming again clears the error → back to Idle.
         wm.update_agent_status(&id, AgentStatus::Spawning, None)
             .unwrap();
         let a = wm.agent(&id).unwrap();
-        assert_eq!(a.status, AgentStatus::Spawning);
+        assert_eq!(a.status, AgentStatus::Idle);
         assert!(a.last_error.is_none());
     }
 
@@ -1405,7 +1407,9 @@ mod tests {
         assert_eq!(arch.repos[0].diff_stats.additions, 12);
         assert_eq!(arch.repos[0].diff_stats.deletions, 3);
 
-        // Restore puts repos back and flips to Spawning
+        // Restore puts repos back and clears the archived/stopped
+        // disposition, so the record derives Idle. (The supervisor's
+        // restore path then drives the live spawn separately.)
         let restored = vec![TrackedRepo {
             repo_path: PathBuf::from("/some/repo"),
             subdir: "repo".into(),
@@ -1416,7 +1420,7 @@ mod tests {
         let a = wm.agent(&id).unwrap();
         assert!(a.archive.is_none());
         assert_eq!(a.repos.len(), 1);
-        assert_eq!(a.status, AgentStatus::Spawning);
+        assert_eq!(a.status, AgentStatus::Idle);
     }
 
     #[test]
