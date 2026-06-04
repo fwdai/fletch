@@ -71,8 +71,9 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       return dedupAgainstLast(items, { kind: "agent_message", text });
     }
 
-    // A reasoning part (emitted by reasoning-capable models). Surface it as a
-    // thinking notice. Mirrors the `text` part's whole-content shape.
+    // A reasoning part (`opencode run --thinking`, verified against 1.15.12):
+    // {"type":"reasoning","part":{"type":"reasoning","text":"…"}} — same
+    // whole-content shape as a `text` part. Surface it as a thinking notice.
     case "reasoning": {
       const part = asRecord(ev.part);
       const text = typeof part.text === "string" ? part.text : "";

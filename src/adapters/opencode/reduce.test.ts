@@ -148,15 +148,13 @@ describe("opencodeAdapter", () => {
     expect(opencodeAdapter.policy["notice:turn_end"]).toBe("hide");
   });
 
-  it("surfaces a reasoning part as a thinking notice", () => {
-    const items = run([
-      { type: "reasoning", part: { type: "reasoning", text: "thinking aloud" } },
-    ] as RawEvent[]);
-    expect(items).toContainEqual({
-      kind: "notice",
-      subtype: "reasoning",
-      text: "thinking aloud",
-    });
+  it("surfaces a reasoning part as a thinking notice (real --thinking output)", () => {
+    const items = run(readJsonl("reasoning.jsonl") as RawEvent[]);
+    const reasoning = items.find(
+      (i) => i.kind === "notice" && i.subtype === "reasoning",
+    );
+    expect(reasoning).toBeDefined();
+    expect((reasoning as { text: string }).text).toContain("12 times 8 = 96");
     expect(opencodeAdapter.policy["notice:reasoning"]).toBe("show");
   });
 });
