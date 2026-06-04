@@ -137,6 +137,7 @@ function ProvDetailRow({ k, v, mono }: { k: string; v: string; mono?: boolean })
 
 function AvailableRow({ agent }: { agent: AvailableAgent }) {
   const detected = agent.state === "detected";
+  const soon = agent.state === "soon";
   return (
     <div className="set-prov available">
       <div className="set-prov-main">
@@ -148,13 +149,13 @@ function AvailableRow({ agent }: { agent: AvailableAgent }) {
         <div className="set-prov-id">
           <div className="set-prov-name">
             {agent.label}
+            {soon && <span className="set-badge soon">Coming soon</span>}
             {agent.version && <span className="set-prov-ver mono">{agent.version}</span>}
           </div>
           <div className="set-prov-sub muted">{agent.note}</div>
         </div>
-        {detected ? (
-          <button className="btn-t outline sm-t">Configure</button>
-        ) : (
+        {detected && <button className="btn-t outline sm-t">Configure</button>}
+        {agent.state === "install" && (
           <button className="btn-t ghost sm-t">
             Install <Icon name="external" size={11} />
           </button>

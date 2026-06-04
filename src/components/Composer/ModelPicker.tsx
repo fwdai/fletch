@@ -57,7 +57,11 @@ export function ModelPicker({ value, onChange }: Props) {
                 >
                   <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={18} />
                   <span className="di-l">{p.label}</span>
-                  <span className="di-m">{wired ? p.version : "Soon"}</span>
+                  {wired ? (
+                    <span className="di-m">{p.version}</span>
+                  ) : (
+                    <span className="set-badge soon">Coming soon</span>
+                  )}
                 </div>
               );
             })}

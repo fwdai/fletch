@@ -82,8 +82,9 @@ export interface AvailableAgent {
   short: string;
   hue: number;
   version: string | null;
-  /** "detected" = found on PATH but unconfigured; "install" = installable. */
-  state: "detected" | "install";
+  /** "detected" = found on PATH but unconfigured; "install" = installable;
+   *  "soon" = not yet supported in Quorum (no adapter/runner). */
+  state: "detected" | "install" | "soon";
   note: string;
 }
 
@@ -95,7 +96,7 @@ export const AVAILABLE_AGENTS: AvailableAgent[] = [
     short: "AG",
     hue: 260,
     version: "v1.0",
-    state: "install",
-    note: "Not yet supported in Quorum — coming soon.",
+    state: "soon",
+    note: "Not yet supported in Quorum.",
   },
 ];
