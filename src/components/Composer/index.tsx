@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../store";
 import { DEFAULT_PROVIDER_ID } from "../../data/providers";
+import { PROVIDER_DETAIL } from "../../data/providerDetail";
 import { filterCommands, type SlashCommand } from "../../data/slashCommands";
 import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
@@ -9,8 +10,6 @@ import { ModelPicker } from "./ModelPicker";
 import { SlashMenu } from "./SlashMenu";
 import { AttachmentList } from "./AttachmentList";
 import { useFileDrop } from "./useFileDrop";
-
-type ThinkingBudget = "low" | "medium" | "high";
 
 interface Props {
   /** Initial provider id — defaults to claude. */
@@ -28,7 +27,9 @@ interface Props {
   onSend: (payload: {
     text: string;
     provider: string;
-    thinking: ThinkingBudget;
+    /** Raw effort value for the selected provider, or undefined when the
+     *  provider has no thinking levels (e.g. Cursor). */
+    thinking: string | undefined;
     attachments: string[];
   }) => void;
   /** Fired when the composer is showing an active stop control. */
@@ -55,8 +56,18 @@ export function Composer({
 
   const [text, setText] = useState("");
   const [provider, setProvider] = useState(defaultProvider);
-  const [thinking, setThinking] = useState<ThinkingBudget>("high");
   const [attachments, setAttachments] = useState<string[]>([]);
+
+  const thinkingLevels = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL]?.thinkingLevels ?? [];
+  const defaultThinking = thinkingLevels.at(-1)?.value; // highest by default
+  const [thinkingValue, setThinkingValue] = useState<string | undefined>(defaultThinking);
+
+  // Reset to the new provider's highest level when switching providers.
+  useEffect(() => {
+    setThinkingValue(
+      (PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL]?.thinkingLevels ?? []).at(-1)?.value
+    );
+  }, [provider]);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const ta = useRef<HTMLTextAreaElement>(null);
@@ -107,7 +118,7 @@ export function Composer({
       return;
     }
     if ((!trimmed && attachments.length === 0) || disabled) return;
-    onSend({ text: trimmed, provider, thinking, attachments });
+    onSend({ text: trimmed, provider, thinking: thinkingValue, attachments });
     setText("");
     setAttachments([]);
     if (ta.current) ta.current.style.height = "auto";
@@ -210,17 +221,17 @@ export function Composer({
       />
       <div className="composer-foot">
         <ModelPicker value={provider} onChange={setProvider} />
-        {features.thinkingBudget && (
+        {features.thinkingBudget && thinkingLevels.length > 0 && (
           <Chip
             tip="Thinking budget"
-            onClick={() =>
-              setThinking((t) =>
-                t === "high" ? "medium" : t === "medium" ? "low" : "high",
-              )
-            }
+            onClick={() => {
+              const idx = thinkingLevels.findIndex((l) => l.value === thinkingValue);
+              const next = thinkingLevels[(idx + 1) % thinkingLevels.length];
+              setThinkingValue(next.value);
+            }}
           >
             <Icon name="sparkle" size={11} />
-            <span style={{ textTransform: "capitalize" }}>{thinking}</span>
+            <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
           </Chip>
         )}
         {features.autoEdit && (

@@ -31,7 +31,7 @@ use crate::error::{Error, Result};
 type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
 type SessionIdCb = Arc<dyn Fn(String) + Send + Sync>;
 type ExitCb = Arc<dyn Fn(bool) + Send + Sync>;
-type ArgsBuilder = Arc<dyn Fn(&str, Option<&str>) -> Vec<String> + Send + Sync>;
+type ArgsBuilder = Arc<dyn Fn(&str, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
 type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 
 pub struct ExecSpawn {
@@ -75,7 +75,7 @@ impl ExecSession {
         cb: ExecCallbacks<F, G, H>,
     ) -> Self
     where
-        A: Fn(&str, Option<&str>) -> Vec<String> + Send + Sync + 'static,
+        A: Fn(&str, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync + 'static,
         I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
@@ -95,7 +95,7 @@ impl ExecSession {
         }
     }
 
-    pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
+    pub fn send_user_message(&self, text: &str, attachments: &[String], thinking: Option<&str>) -> Result<()> {
         // Claim this turn's sequence number first, so a superseded turn's
         // reap thread sees it's no longer current and stays quiet.
         let seq = self.turn_seq.fetch_add(1, Ordering::SeqCst) + 1;
@@ -120,7 +120,7 @@ impl ExecSession {
 
         let args = {
             let id = self.session_id.lock();
-            (self.build_args)(&prompt, id.as_deref())
+            (self.build_args)(&prompt, id.as_deref(), thinking)
         };
         let mut cmd = Command::new(&self.program);
         cmd.args(&args);
@@ -292,7 +292,7 @@ mod tests {
     }
 
     // A codex-style config: id from `thread.started`, end on `turn.completed`.
-    fn codex_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+    fn codex_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>) -> Vec<String> {
         let mut a = vec!["exec".to_string()];
         if let Some(id) = session_id {
             a.push("resume".into());
@@ -346,7 +346,7 @@ mod tests {
             },
         );
 
-        session.send_user_message("hello", &[]).unwrap();
+        session.send_user_message("hello", &[], None).unwrap();
 
         let mut events = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -395,7 +395,7 @@ mod tests {
             },
         );
 
-        session.send_user_message("again", &[]).unwrap();
+        session.send_user_message("again", &[], None).unwrap();
         erx.recv_timeout(Duration::from_secs(5)).unwrap();
         let args = std::fs::read_to_string(dir.path().join("argv.txt")).unwrap();
         assert!(args.contains("exec resume prev-thread"), "argv was: {args}");

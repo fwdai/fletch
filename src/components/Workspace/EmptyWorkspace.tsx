@@ -88,8 +88,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             defaultProvider={draft.provider}
             baseBranch={draft.base}
             placeholder="Describe the task for the agent. ↵ to spawn."
-            onSend={({ text, provider, attachments }) =>
-              spawnFromDraft(draft.id, text, provider, attachments)
+            onSend={({ text, provider, attachments, thinking }) =>
+              spawnFromDraft(draft.id, text, provider, attachments, thinking)
             }
           />
           <div className="empty-meta">

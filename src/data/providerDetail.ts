@@ -7,6 +7,12 @@
 
 import type { ProviderId } from "./providers";
 
+export interface ThinkingLevel {
+  label: string;
+  /** Raw value passed verbatim to the provider CLI flag. */
+  value: string;
+}
+
 export interface ProviderDetail {
   /** Fallback binary path, shown before the live probe resolves. */
   path: string;
@@ -14,6 +20,9 @@ export interface ProviderDetail {
   models: string;
   /** Detected & configured on this machine — drives the "Installed" list. */
   installed: boolean;
+  /** Thinking/reasoning effort levels supported by this provider's CLI.
+   *  Empty means the provider has no effort flag — the picker hides. */
+  thinkingLevels: ThinkingLevel[];
 }
 
 export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
@@ -21,16 +30,28 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     path: "/opt/homebrew/bin/claude",
     models: "Opus 4.7 · Sonnet 4.6 · Haiku 4",
     installed: true,
+    // Claude's `--effort` is a session-level spawn flag, not per-message.
+    // Wiring it requires threading effort through spawn_agent — tracked as
+    // a follow-up. No picker shown until then.
+    thinkingLevels: [],
   },
   codex: {
     path: "~/.codex/bin/codex",
     models: "GPT-5.2-codex · o4-mini",
     installed: true,
+    // `codex exec -c reasoning_effort="<value>"`
+    thinkingLevels: [
+      { label: "Low",  value: "low"    },
+      { label: "Med",  value: "medium" },
+      { label: "High", value: "high"   },
+    ],
   },
   cursor: {
     path: "/Applications/Cursor.app/…/cursor-agent",
     models: "Composer · Auto",
     installed: true,
+    // Cursor encodes effort in model names — no standalone flag.
+    thinkingLevels: [],
   },
   antigravity: {
     path: "/Applications/Antigravity.app/…/antigravity",
@@ -38,16 +59,31 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     // No adapter/runner yet — kept out of the Installed list and gated as
     // "coming soon" in the picker. Flip to true once it's wired end-to-end.
     installed: false,
+    thinkingLevels: [],
   },
   opencode: {
     path: "~/.opencode/bin/opencode",
     models: "Routed via upstream provider",
     installed: true,
+    // `opencode run --variant <value>`
+    thinkingLevels: [
+      { label: "Low",  value: "minimal" },
+      { label: "High", value: "high"    },
+      { label: "Max",  value: "max"     },
+    ],
   },
   pi: {
     path: "~/.pi/bin/pi",
     models: "Pi · experimental",
     installed: true,
+    // `pi --thinking <value>`
+    thinkingLevels: [
+      { label: "Off",   value: "off"    },
+      { label: "Low",   value: "low"    },
+      { label: "Med",   value: "medium" },
+      { label: "High",  value: "high"   },
+      { label: "xHigh", value: "xhigh" },
+    ],
   },
 };
 
