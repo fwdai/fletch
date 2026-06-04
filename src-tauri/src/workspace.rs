@@ -529,6 +529,87 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    // ── Session event log ─────────────────────────────────────────────────
+
+    /// Append one raw provider event to the workspace's current session log.
+    /// seq is the next per-session value; the read+insert run in one
+    /// transaction so concurrent appends can't collide.
+    pub fn append_session_event(
+        &self,
+        workspace_id: &str,
+        event: &serde_json::Value,
+    ) -> Result<()> {
+        let conn = self.db.lock();
+
+        // Resolve the current session — each workspace has exactly one today.
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        let Some(sid) = sid else {
+            // No session row yet — nothing to log.
+            return Ok(());
+        };
+
+        let event_json = serde_json::to_string(event)
+            .map_err(|e| crate::error::Error::Other(format!("serialize event: {e}")))?;
+
+        let tx = conn.unchecked_transaction()?;
+        let seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM session_events WHERE session_id = ?1",
+            [&sid],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO session_events (session_id, seq, event_json, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![sid, seq, event_json, now_millis()],
+        )?;
+        tx.commit()?;
+
+        Ok(())
+    }
+
+    /// All raw events for the workspace's current session, in seq order.
+    pub fn read_session_events(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let conn = self.db.lock();
+
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        let Some(sid) = sid else {
+            return Ok(vec![]);
+        };
+
+        let mut stmt = conn.prepare(
+            "SELECT event_json FROM session_events WHERE session_id = ?1 ORDER BY seq ASC",
+        )?;
+
+        let texts: Vec<String> = stmt
+            .query_map([&sid], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<_, rusqlite::Error>>()?;
+
+        texts
+            .into_iter()
+            .map(|text| {
+                serde_json::from_str(&text)
+                    .map_err(|e| Error::Other(format!("deserialize event: {e}")))
+            })
+            .collect()
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────────
 
     /// Translate a requested runtime status into durable disposition writes.
@@ -1372,6 +1453,178 @@ mod tests {
         assert_eq!(cur.agents.len(), 1);
         assert!(cur.agents[0].archive.is_some());
         assert_eq!(cur.agents[0].status, AgentStatus::Stopped);
+    }
+
+    // ── session event log ─────────────────────────────────────────────────
+
+    /// Seed a minimal workspace+session row and return (workspace_id, wm).
+    fn make_workspace_with_session(db: &Arc<Mutex<Connection>>) -> (String, WorkspaceManager) {
+        let td = tempfile::tempdir().unwrap();
+        let repo = init_repo(td.path());
+        let repo_str = repo.to_str().unwrap().to_string();
+        let wm = WorkspaceManager::new(db.clone());
+        wm.add_workspace_repo(repo.clone()).unwrap();
+
+        let mut rec = new_agent_record(
+            uuid::Uuid::new_v4().to_string(),
+            "evt-test".into(),
+            "claude".into(),
+            TrackedRepo {
+                repo_path: repo,
+                subdir: "repo".into(),
+                branch: None,
+                parent_branch: None,
+            },
+            "task".into(),
+            AgentView::Custom,
+        );
+        // add_agent needs the repo pre-seeded in repos; add_workspace_repo
+        // handles that above. But we also need the repo in the repos table
+        // for the worktree join — seed it explicitly so the lookup succeeds.
+        let _ = seed_repo_path(db, &repo_str);
+        wm.add_agent(&mut rec).unwrap();
+        let id = rec.id.clone();
+        (id, wm)
+    }
+
+    fn seed_repo_path(db: &Arc<Mutex<Connection>>, repo_path: &str) {
+        // No-op if already there; used to guarantee the row exists for the
+        // worktree FK before add_agent runs the lookup.
+        let conn = db.lock();
+        let path = std::path::Path::new(repo_path);
+        let project_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let project_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![project_id, project_name, now_millis()],
+        )
+        .unwrap();
+        let pid: String = conn
+            .query_row(
+                "SELECT id FROM projects WHERE name = ?1",
+                [project_name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let repo_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO repos (id, project_id, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![repo_id, pid, repo_path, now_millis()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn append_and_read_preserves_order_and_content() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        let ev1 = serde_json::json!({"type": "user", "text": "hello"});
+        let ev2 = serde_json::json!({"type": "assistant", "text": "hi"});
+        let ev3 = serde_json::json!({"type": "result", "cost": 0.001});
+
+        wm.append_session_event(&ws_id, &ev1).unwrap();
+        wm.append_session_event(&ws_id, &ev2).unwrap();
+        wm.append_session_event(&ws_id, &ev3).unwrap();
+
+        let events = wm.read_session_events(&ws_id).unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0], ev1);
+        assert_eq!(events[1], ev2);
+        assert_eq!(events[2], ev3);
+    }
+
+    #[test]
+    fn seq_increments_in_order() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        wm.append_session_event(&ws_id, &serde_json::json!({"type": "a"}))
+            .unwrap();
+        wm.append_session_event(&ws_id, &serde_json::json!({"type": "b"}))
+            .unwrap();
+
+        // Verify seq values via raw SQL.
+        let conn = db.lock();
+        let sid: String = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 LIMIT 1",
+                [&ws_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let seqs: Vec<i64> = conn
+            .prepare("SELECT seq FROM session_events WHERE session_id = ?1 ORDER BY seq")
+            .unwrap()
+            .query_map([&sid], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(seqs, vec![1, 2]);
+    }
+
+    #[test]
+    fn read_with_no_events_returns_empty() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        let events = wm.read_session_events(&ws_id).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn append_to_workspace_with_no_session_is_noop() {
+        let db = test_db();
+        // Create a workspace row directly, but no matching sessions row.
+        {
+            let conn = db.lock();
+            let pid = conn
+                .query_row(
+                    "SELECT id FROM projects LIMIT 1",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap_or_else(|_| {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    conn.execute(
+                        "INSERT INTO projects (id, name, created_at) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![id, "orphan", now_millis()],
+                    )
+                    .unwrap();
+                    id
+                });
+            let ws_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO workspaces (id, project_id, name, task, created_at) VALUES (?1, ?2, 'orphan', '', ?3)",
+                rusqlite::params![ws_id, pid, now_millis()],
+            )
+            .unwrap();
+        }
+
+        // Pick any workspace that has no session row — the orphan one above.
+        let conn = db.lock();
+        let ws_id: String = conn
+            .query_row(
+                "SELECT w.id FROM workspaces w
+                 LEFT JOIN sessions s ON s.workspace_id = w.id
+                 WHERE s.id IS NULL LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        let wm = WorkspaceManager::new(db.clone());
+        // Must not error.
+        wm.append_session_event(&ws_id, &serde_json::json!({"type": "x"}))
+            .unwrap();
+
+        // And read must return empty.
+        let events = wm.read_session_events(&ws_id).unwrap();
+        assert!(events.is_empty());
     }
 
     #[test]
