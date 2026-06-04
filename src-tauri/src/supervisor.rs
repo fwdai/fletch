@@ -391,6 +391,7 @@ impl Supervisor {
         repo_path: PathBuf,
         provider: String,
         name: Option<String>,
+        effort: Option<String>,
     ) -> Result<AgentRecord> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -447,6 +448,7 @@ impl Supervisor {
         let sup = self.clone();
         let app_for_task = app.clone();
         let id_for_task = agent_id.clone();
+        let effort_for_task = effort.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = std::fs::create_dir_all(&parent_dir) {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
@@ -460,7 +462,7 @@ impl Supervisor {
 
             tokio::time::sleep(Duration::from_millis(350)).await;
 
-            if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
+            if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true, effort_for_task).await {
                 let _ = git::worktree_remove(&repo_path, &primary_worktree, true).await;
                 let _ = std::fs::remove_dir_all(&parent_dir);
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
@@ -536,6 +538,7 @@ impl Supervisor {
         app: &AppHandle,
         agent_id: &str,
         fresh: bool,
+        effort: Option<String>,
     ) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
         let provider = record.provider.clone();
@@ -615,6 +618,7 @@ impl Supervisor {
                 fresh: effective_fresh,
                 cols: 120,
                 rows: 32,
+                effort: effort.clone(),
             };
             match record.view {
                 AgentView::Native => spawn_pty_agent(
@@ -670,7 +674,7 @@ impl Supervisor {
         self.set_status(&app, agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
 
-        self.start_process(&app, agent_id, false).await?;
+        self.start_process(&app, agent_id, false, None).await?;
         Ok(())
     }
 
@@ -794,7 +798,7 @@ impl Supervisor {
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        if let Err(e) = self.start_process(&app, agent_id, false).await {
+        if let Err(e) = self.start_process(&app, agent_id, false, None).await {
             let err = e.to_string();
             self.set_status(&app, agent_id, AgentStatus::Error, Some(err));
             return Err(e);
@@ -1033,7 +1037,7 @@ impl Supervisor {
         let app_for_task = app.clone();
         let id_for_task = agent_id.to_string();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = sup.start_process(&app_for_task, &id_for_task, false).await {
+            if let Err(e) = sup.start_process(&app_for_task, &id_for_task, false, None).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
             }
         });

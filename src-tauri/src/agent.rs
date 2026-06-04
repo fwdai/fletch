@@ -211,6 +211,9 @@ pub struct SpawnSpec<'a> {
     pub fresh: bool,
     pub cols: u16,
     pub rows: u16,
+    /// Thinking/reasoning effort level passed as `--effort <value>` to
+    /// the claude CLI. `None` lets claude use its own default.
+    pub effort: Option<String>,
 }
 
 impl Agent {
@@ -454,6 +457,10 @@ fn prepare_pty_args(
         args.push("--resume".into());
         args.push(spec.session_id.to_string());
     }
+    if let Some(effort) = &spec.effort {
+        args.push("--effort".into());
+        args.push(effort.clone());
+    }
 
     Ok((profile_file, args))
 }
@@ -498,6 +505,10 @@ fn prepare_managed_args(
     } else {
         args.push("--resume".into());
         args.push(spec.session_id.to_string());
+    }
+    if let Some(effort) = &spec.effort {
+        args.push("--effort".into());
+        args.push(effort.clone());
     }
 
     Ok((profile_file, args))

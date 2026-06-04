@@ -30,10 +30,15 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     path: "/opt/homebrew/bin/claude",
     models: "Opus 4.7 · Sonnet 4.6 · Haiku 4",
     installed: true,
-    // Claude's `--effort` is a session-level spawn flag, not per-message.
-    // Wiring it requires threading effort through spawn_agent — tracked as
-    // a follow-up. No picker shown until then.
-    thinkingLevels: [],
+    // `claude --effort <value>` — session-level flag applied at spawn time.
+    // Changing the level mid-session takes effect on the next respawn.
+    thinkingLevels: [
+      { label: "Low",   value: "low"    },
+      { label: "Med",   value: "medium" },
+      { label: "High",  value: "high"   },
+      { label: "xHigh", value: "xhigh"  },
+      { label: "Max",   value: "max"    },
+    ],
   },
   codex: {
     path: "~/.codex/bin/codex",

@@ -1197,7 +1197,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ busy: true, lastError: null });
     try {
       const view = get().viewMode;
-      const rec = await api.spawnAgent(view, draft.repoPath, provider, draft.name);
+      // For Claude (persistent session), effort is a spawn-time flag. For
+      // per-turn agents it's passed per-message via sendUserMessage instead.
+      const spawnEffort = provider === "claude" ? thinking : undefined;
+      const rec = await api.spawnAgent(view, draft.repoPath, provider, draft.name, spawnEffort);
       const fresh = await api.getWorkspace();
       set((state) => {
         const patches: Partial<AppState> = {
