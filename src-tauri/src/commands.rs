@@ -199,6 +199,14 @@ pub fn read_session_transcript(
 }
 
 #[tauri::command]
+pub fn read_session_events(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Vec<Value>> {
+    supervisor.workspace.read_session_events(&agent_id)
+}
+
+#[tauri::command]
 pub async fn add_repo_to_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     app: AppHandle,

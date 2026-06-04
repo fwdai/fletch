@@ -727,6 +727,24 @@ impl Supervisor {
         text: &str,
         attachments: &[String],
     ) -> Result<()> {
+        // Record the user turn as a provider-agnostic canonical event before
+        // sending to the agent, so the user message is logged ahead of the
+        // response. Persist for history + emit for live rendering.
+        let user_event = serde_json::json!({
+            "type": "user_message",
+            "text": text,
+            "attachments": attachments,
+        });
+        if let Err(e) = self.workspace.append_session_event(agent_id, &user_event) {
+            tracing::warn!(error = %e, agent_id = %agent_id, "append user_message event failed");
+        }
+        let _ = app.emit(
+            "agent:event",
+            AgentEventPayload {
+                agent_id: agent_id.to_string(),
+                event: user_event,
+            },
+        );
         {
             let agents = self.agents.lock();
             let agent = agents
@@ -1280,9 +1298,16 @@ fn spawn_managed_agent(
     let app_for_event = app.clone();
     let id_for_event = agent_id.clone();
     let sup_for_event = sup.clone();
-    let sup_for_exit = sup;
+    let sup_for_exit = sup.clone();
     let app_for_exit = app.clone();
     let id_for_exit = agent_id.clone();
+    // Resolve the provider once at spawn (one DB read, not per event) so the
+    // event closure can decide which events are durable.
+    let provider = sup
+        .workspace
+        .agent(&agent_id)
+        .map(|r| r.provider)
+        .unwrap_or_else(|_| "claude".to_string());
     Agent::spawn_managed(
         spec,
         move |event| {
@@ -1292,6 +1317,12 @@ fn spawn_managed_agent(
                 .get_mut(&id_for_event)
             {
                 activity.observe_event(&event);
+            }
+
+            if crate::agent::is_durable_event(&provider, &event) {
+                if let Err(e) = sup_for_event.workspace.append_session_event(&id_for_event, &event) {
+                    tracing::warn!(error = %e, agent_id = %id_for_event, "append_session_event failed");
+                }
             }
 
             if let Err(e) = app_for_event.emit(
@@ -1332,6 +1363,7 @@ fn spawn_per_turn_agent(
     let app_for_event = app.clone();
     let id_for_event = agent_id.clone();
     let sup_for_event = sup.clone();
+    let provider_for_event = provider.to_string();
     let id_for_sid = agent_id.clone();
     let sup_for_sid = sup.clone();
     let app_for_exit = app;
@@ -1341,6 +1373,11 @@ fn spawn_per_turn_agent(
     let on_event = move |event: Value| {
         if let Some(activity) = sup_for_event.activities.lock().get_mut(&id_for_event) {
             activity.observe_event(&event);
+        }
+        if crate::agent::is_durable_event(&provider_for_event, &event) {
+            if let Err(e) = sup_for_event.workspace.append_session_event(&id_for_event, &event) {
+                tracing::warn!(error = %e, agent_id = %id_for_event, "append_session_event failed");
+            }
         }
         if let Err(e) = app_for_event.emit(
             "agent:event",

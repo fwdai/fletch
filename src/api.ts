@@ -234,6 +234,11 @@ export const api = {
       "read_session_transcript",
       { agentId },
     ),
+  readSessionEvents: (agentId: string) =>
+    invoke<Array<Record<string, unknown> & { type?: string }>>(
+      "read_session_events",
+      { agentId },
+    ),
   addRepoToAgent: (agentId: string, repoPath: string) =>
     invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
   allocateDraftName: (used: string[]) =>
