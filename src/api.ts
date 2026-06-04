@@ -225,8 +225,8 @@ export const api = {
     invoke<AgentRecord>("spawn_agent", { view, repoPath, provider, name }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
-  sendUserMessage: (agentId: string, text: string, attachments: string[] = []) =>
-    invoke<void>("send_user_message", { agentId, text, attachments }),
+  sendUserMessage: (agentId: string, text: string, attachments: string[] = [], thinking?: string) =>
+    invoke<void>("send_user_message", { agentId, text, attachments, thinking: thinking ?? null }),
   resizeAgent: (agentId: string, cols: number, rows: number) =>
     invoke<void>("resize_agent", { agentId, cols, rows }),
   switchView: (agentId: string, view: AgentView) =>

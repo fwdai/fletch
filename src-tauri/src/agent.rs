@@ -78,8 +78,8 @@ pub struct PerTurnDescriptor {
     bin: &'static str,
     /// Human-facing product name, used only in the not-found error.
     label: &'static str,
-    /// Builds the CLI args for a turn: `(prompt, resume_session_id)`.
-    build_args: fn(&str, Option<&str>) -> Vec<String>,
+    /// Builds the CLI args for a turn: `(prompt, resume_session_id, thinking_effort)`.
+    build_args: fn(&str, Option<&str>, Option<&str>) -> Vec<String>,
     /// Builds the args to launch this agent's interactive TUI in the native
     /// (PTY) view: `None` = fresh session, `Some(id)` = resume.
     pty_args: fn(Option<&str>) -> Vec<String>,
@@ -400,7 +400,7 @@ impl Agent {
         cb: ExecCallbacks<F, G, H>,
     ) -> Result<Self>
     where
-        A: Fn(&str, Option<&str>) -> Vec<String> + Send + Sync + 'static,
+        A: Fn(&str, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync + 'static,
         I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
@@ -434,10 +434,10 @@ impl Agent {
         }
     }
 
-    pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
+    pub fn send_user_message(&self, text: &str, attachments: &[String], thinking: Option<&str>) -> Result<()> {
         match self {
             Self::Managed(a) => a.session.send_user_message(text, attachments),
-            Self::PerTurn(a) => a.session.send_user_message(text, attachments),
+            Self::PerTurn(a) => a.session.send_user_message(text, attachments, thinking),
             Self::Pty(_) => Err(Error::Other(
                 "send_user_message called on pty agent".into(),
             )),
@@ -653,7 +653,7 @@ pub fn is_durable_event(provider: &str, ev: &Value) -> bool {
 /// workspace-write sandbox on, via `-c` (works on both `exec` and
 /// `exec resume`, unlike the `-s`/`-a` flags). Quorum does not wrap codex
 /// in sandbox-exec; codex sandboxes itself.
-fn codex_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+fn codex_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["exec".into()];
     if let Some(id) = session_id {
         args.push("resume".into());
@@ -665,6 +665,10 @@ fn codex_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
     args.push("approval_policy=\"never\"".into());
     args.push("-c".into());
     args.push("sandbox_mode=\"workspace-write\"".into());
+    if let Some(effort) = thinking {
+        args.push("-c".into());
+        args.push(format!("reasoning_effort=\"{effort}\""));
+    }
     args.push(prompt.to_string());
     args
 }
@@ -684,7 +688,7 @@ fn codex_session_id(event: &Value) -> Option<String> {
 /// `--force` runs commands without approval prompts; `--trust` trusts the
 /// workspace in headless mode. Cursor's own sandbox applies; cwd comes from
 /// the child process working directory.
-fn cursor_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+fn cursor_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-p".into(),
         "--output-format".into(),
@@ -722,7 +726,7 @@ fn cursor_session_id(event: &Value) -> Option<String> {
 /// 1.15.12. OpenCode runs in the child's cwd (no `--dir` needed) and assigns
 /// its own session id on the first turn. The prompt is positional and must
 /// come after the flags.
-fn opencode_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+fn opencode_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "run".into(),
         "--format".into(),
@@ -732,6 +736,10 @@ fn opencode_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
         // opencode reducer and persisted via opencode_is_durable).
         "--thinking".into(),
     ];
+    if let Some(variant) = thinking {
+        args.push("--variant".into());
+        args.push(variant.to_string());
+    }
     if let Some(id) = session_id {
         args.push("--session".into());
         args.push(id.to_string());
@@ -758,8 +766,12 @@ fn opencode_session_id(event: &Value) -> Option<String> {
 /// it's the resume flag common to the versions we target — 0.74.x lacks
 /// `--session-id` entirely. Verified end-to-end against pi 0.74.2. Pi runs in
 /// the child's cwd; the prompt is positional and must come after the flags.
-fn pi_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+fn pi_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["-p".into(), "--mode".into(), "json".into()];
+    if let Some(level) = thinking {
+        args.push("--thinking".into());
+        args.push(level.to_string());
+    }
     if let Some(id) = session_id {
         args.push("--session".into());
         args.push(id.to_string());
@@ -1065,7 +1077,7 @@ mod tests {
     #[test]
     fn opencode_args_request_thinking() {
         // Without --thinking, opencode emits no `reasoning` events at all.
-        let args = opencode_build_args("hi", None);
+        let args = opencode_build_args("hi", None, None);
         assert!(args.contains(&"--thinking".to_string()));
         assert!(args.contains(&"--format".to_string()));
         // Prompt is positional and last.
@@ -1151,6 +1163,33 @@ mod tests {
                 d.id
             );
         }
+    }
+
+    #[test]
+    fn opencode_args_variant_when_thinking_set() {
+        let args = opencode_build_args("hi", None, Some("max"));
+        assert!(args.contains(&"--variant".to_string()));
+        assert!(args.contains(&"max".to_string()));
+    }
+
+    #[test]
+    fn codex_args_reasoning_effort_when_thinking_set() {
+        let args = codex_build_args("hi", None, Some("high"));
+        assert!(args.contains(&"reasoning_effort=\"high\"".to_string()));
+    }
+
+    #[test]
+    fn pi_args_thinking_when_set() {
+        let args = pi_build_args("hi", None, Some("xhigh"));
+        assert!(args.contains(&"--thinking".to_string()));
+        assert!(args.contains(&"xhigh".to_string()));
+    }
+
+    #[test]
+    fn cursor_args_ignores_thinking() {
+        let with_none = cursor_build_args("hi", None, None);
+        let with_some = cursor_build_args("hi", None, Some("high"));
+        assert_eq!(with_none, with_some);
     }
 
     // ── descriptor table ──────────────────────────────────────────────────
