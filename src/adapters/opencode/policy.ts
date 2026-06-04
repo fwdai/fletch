@@ -6,7 +6,7 @@ export const opencodePolicy: DisplayPolicy = {
   "notice:turn_end": "hide",
   "notice:hook_output": "hide",
   "notice:info": "show",
-  "notice:reasoning": "hide",
+  "notice:reasoning": "show",
   "notice:slash_command": "show",
   "notice:error": "show",
 };

@@ -98,4 +98,19 @@ describe("cursorAdapter", () => {
     expect(cursorAdapter.policy["notice:turn_end"]).toBe("hide");
     expect(cursorAdapter.normalizeTranscript([{ anything: true }])).toEqual([]);
   });
+
+  it("captures thinking from delegated (Claude-shaped) assistant events", () => {
+    const items = run([
+      {
+        type: "assistant",
+        message: { content: [{ type: "thinking", thinking: "hmm" }] },
+      },
+    ] as RawEvent[]);
+    expect(items).toContainEqual({
+      kind: "notice",
+      subtype: "reasoning",
+      text: "hmm",
+    });
+    expect(cursorAdapter.policy["notice:reasoning"]).toBe("show");
+  });
 });

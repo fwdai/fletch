@@ -147,4 +147,16 @@ describe("opencodeAdapter", () => {
     expect(opencodeAdapter.id).toBe("opencode");
     expect(opencodeAdapter.policy["notice:turn_end"]).toBe("hide");
   });
+
+  it("surfaces a reasoning part as a thinking notice", () => {
+    const items = run([
+      { type: "reasoning", part: { type: "reasoning", text: "thinking aloud" } },
+    ] as RawEvent[]);
+    expect(items).toContainEqual({
+      kind: "notice",
+      subtype: "reasoning",
+      text: "thinking aloud",
+    });
+    expect(opencodeAdapter.policy["notice:reasoning"]).toBe("show");
+  });
 });

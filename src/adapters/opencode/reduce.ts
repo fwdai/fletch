@@ -71,6 +71,15 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       return dedupAgainstLast(items, { kind: "agent_message", text });
     }
 
+    // A reasoning part (emitted by reasoning-capable models). Surface it as a
+    // thinking notice. Mirrors the `text` part's whole-content shape.
+    case "reasoning": {
+      const part = asRecord(ev.part);
+      const text = typeof part.text === "string" ? part.text : "";
+      if (!text) return prev;
+      return [...prev, { kind: "notice", subtype: "reasoning", text }];
+    }
+
     // A tool call. `state.status` is `completed`/`error` once it's done, or
     // `pending`/`running` while in flight.
     case "tool_use": {

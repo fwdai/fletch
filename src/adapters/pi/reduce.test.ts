@@ -113,4 +113,24 @@ describe("piAdapter", () => {
     expect(piAdapter.id).toBe("pi");
     expect(piAdapter.policy["notice:turn_end"]).toBe("hide");
   });
+
+  it("captures a thinking block as a reasoning notice", () => {
+    const items = run([
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "pondering" },
+            { type: "text", text: "answer" },
+          ],
+        },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([
+      { kind: "notice", subtype: "reasoning", text: "pondering" },
+      { kind: "agent_message", text: "answer" },
+    ]);
+    expect(piAdapter.policy["notice:reasoning"]).toBe("show");
+  });
 });
