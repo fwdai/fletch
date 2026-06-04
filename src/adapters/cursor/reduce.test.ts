@@ -1,10 +1,22 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { cursorAdapter } from "./index";
 import type { ChatItem, RawEvent } from "../types";
 
 // Events captured from cursor-agent 2026.05.24
 // (`-p --output-format stream-json`).
+
+const here = fileURLToPath(new URL(".", import.meta.url));
+
+function readJsonl(name: string): unknown[] {
+  return readFileSync(join(here, "fixtures", name), "utf8")
+    .split("\n")
+    .filter((l) => l.trim().length > 0)
+    .map((l) => JSON.parse(l));
+}
 
 function run(events: RawEvent[]): ChatItem[] {
   return events.reduce<ChatItem[]>((acc, ev) => cursorAdapter.reduce(acc, ev), []);
@@ -97,5 +109,35 @@ describe("cursorAdapter", () => {
     expect(cursorAdapter.id).toBe("cursor");
     expect(cursorAdapter.policy["notice:turn_end"]).toBe("hide");
     expect(cursorAdapter.normalizeTranscript([{ anything: true }])).toEqual([]);
+  });
+
+  it("accumulates `thinking` delta events into one reasoning notice (real output)", () => {
+    // Cursor streams thinking as its own `thinking`/delta+completed events
+    // (NOT a Claude content block), so it's handled in cursor's reducer.
+    const items = run(readJsonl("reasoning.jsonl") as RawEvent[]);
+    const reasoning = items.find(
+      (i) => i.kind === "notice" && i.subtype === "reasoning",
+    );
+    expect(reasoning).toBeDefined();
+    expect((reasoning as { text: string }).text).toBe(
+      " I'm breaking down the multiplication using the distributive property—splitting 23 into 20 and 3, multiplying each part by 17, then adding the results to get 391.",
+    );
+    // The reasoning notice precedes the assistant's text answer.
+    const rIdx = items.indexOf(reasoning as ChatItem);
+    const aIdx = items.findIndex((i) => i.kind === "agent_message");
+    expect(rIdx).toBeLessThan(aIdx);
+    expect(cursorAdapter.policy["notice:reasoning"]).toBe("show");
+  });
+
+  it("does not leak a reasoning notice when there is no thinking", () => {
+    const items = run([
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
+      },
+    ] as RawEvent[]);
+    expect(items.some((i) => i.kind === "notice" && i.subtype === "reasoning")).toBe(
+      false,
+    );
   });
 });

@@ -113,4 +113,14 @@ describe("piAdapter", () => {
     expect(piAdapter.id).toBe("pi");
     expect(piAdapter.policy["notice:turn_end"]).toBe("hide");
   });
+
+  it("captures a thinking block as a reasoning notice (real --thinking output)", () => {
+    const items = run(readJsonl("reasoning.jsonl") as RawEvent[]);
+    const reasoning = items.find(
+      (i) => i.kind === "notice" && i.subtype === "reasoning",
+    );
+    expect(reasoning).toBeDefined();
+    expect((reasoning as { text: string }).text).toContain("12 times 8 equals 96");
+    expect(piAdapter.policy["notice:reasoning"]).toBe("show");
+  });
 });

@@ -4,7 +4,7 @@ export const claudePolicy: DisplayPolicy = {
   "notice:turn_end": "hide",
   "notice:hook_output": "hide",
   "notice:info": "show",
-  "notice:reasoning": "hide",
+  "notice:reasoning": "show",
   "notice:slash_command": "hide",
   "notice:error": "show",
 };

@@ -59,7 +59,13 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       if (role === "assistant") {
         let items = prev;
         for (const block of asBlockList(msg.content)) {
-          if (block.type === "text") {
+          if (block.type === "thinking") {
+            // Extended-thinking block (`pi --thinking`, verified against
+            // 0.78.0): {type:"thinking",thinking:"…",thinkingSignature:"…"}.
+            // Surface the text as a reasoning notice.
+            const text = typeof block.thinking === "string" ? block.thinking : "";
+            if (text) items = [...items, { kind: "notice", subtype: "reasoning", text }];
+          } else if (block.type === "text") {
             const text = typeof block.text === "string" ? block.text : "";
             if (text) items = dedupAgainstLast(items, { kind: "agent_message", text });
           } else if (block.type === "toolCall") {

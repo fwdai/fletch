@@ -528,7 +528,9 @@ fn codex_is_durable(ev: &Value) -> bool {
 
 fn opencode_is_durable(ev: &Value) -> bool {
     match event_type(ev) {
-        Some("text" | "step_finish" | "error") => true,
+        // `reasoning` is a whole, finalized part (like `text`) — persist it so
+        // thinking survives canonical-history replay, not just the live stream.
+        Some("text" | "reasoning" | "step_finish" | "error") => true,
         // A tool_use is durable only once settled; pending/running are ephemeral.
         Some("tool_use") => {
             let status = ev
@@ -550,6 +552,10 @@ fn cursor_is_durable(ev: &Value) -> bool {
         // is durable ("started" is the in-progress/streaming form). Errors are
         // encoded inside the completed payload.
         Some("tool_call") => ev.get("subtype").and_then(|s| s.as_str()) == Some("completed"),
+        // Thinking is its own event (NOT a Claude content block); the `delta`s
+        // carry the text, terminated by `completed`. Persist the deltas so the
+        // accumulated reasoning survives canonical-history replay.
+        Some("thinking") => ev.get("subtype").and_then(|s| s.as_str()) == Some("delta"),
         _ => false,
     }
 }
@@ -654,6 +660,9 @@ fn opencode_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
         "--format".into(),
         "json".into(),
         "--dangerously-skip-permissions".into(),
+        // Surface the model's reasoning as `reasoning` events (captured by the
+        // opencode reducer and persisted via opencode_is_durable).
+        "--thinking".into(),
     ];
     if let Some(id) = session_id {
         args.push("--session".into());
@@ -784,6 +793,7 @@ mod tests {
     #[test]
     fn opencode_durability() {
         assert!(is_durable_event("opencode", &json!({"type": "text"})));
+        assert!(is_durable_event("opencode", &json!({"type": "reasoning"})));
         assert!(is_durable_event("opencode", &json!({"type": "step_finish"})));
         assert!(is_durable_event("opencode", &json!({"type": "error"})));
         assert!(!is_durable_event("opencode", &json!({"type": "step_start"})));
@@ -831,6 +841,16 @@ mod tests {
             "cursor",
             &json!({"type": "tool_call", "subtype": "started"})
         ));
+        // thinking/delta carries the reasoning text → durable; completed is an
+        // empty terminator → ephemeral.
+        assert!(is_durable_event(
+            "cursor",
+            &json!({"type": "thinking", "subtype": "delta"})
+        ));
+        assert!(!is_durable_event(
+            "cursor",
+            &json!({"type": "thinking", "subtype": "completed"})
+        ));
         // Lifecycle events are ephemeral.
         assert!(!is_durable_event("cursor", &json!({"type": "stream_event"})));
         assert!(!is_durable_event("cursor", &json!({"type": "system"})));
@@ -841,6 +861,18 @@ mod tests {
         // Lossless fallback: unknown provider → always durable.
         assert!(is_durable_event("zzz", &json!({"type": "anything"})));
         assert!(is_durable_event("zzz", &json!({})));
+    }
+
+    // ── build_args ────────────────────────────────────────────────────────
+
+    #[test]
+    fn opencode_args_request_thinking() {
+        // Without --thinking, opencode emits no `reasoning` events at all.
+        let args = opencode_build_args("hi", None);
+        assert!(args.contains(&"--thinking".to_string()));
+        assert!(args.contains(&"--format".to_string()));
+        // Prompt is positional and last.
+        assert_eq!(args.last().unwrap(), "hi");
     }
 
     // ── descriptor table ──────────────────────────────────────────────────

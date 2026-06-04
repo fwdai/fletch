@@ -1,15 +1,20 @@
 // Reducer for Cursor Agent's `cursor-agent -p --output-format stream-json`.
 //
-// Verified against cursor-agent 2026.05.24. Cursor emits Claude Code's
-// stream-json schema verbatim for system / user / assistant / result
-// events — so those delegate to the Claude reducer. The one difference is
-// tool calls: instead of Claude's `assistant.content[].tool_use` +
-// `user.content[].tool_result`, Cursor emits a dedicated `tool_call` event
-// with `started`/`completed` subtypes and a typed payload, e.g.
-//   {"type":"tool_call","subtype":"completed","call_id":"…",
-//    "tool_call":{"shellToolCall":{"args":{"command":"…"},
-//                 "result":{"success":{"exitCode":0,"stdout":"…",
-//                           "interleavedOutput":"…"}}}}}
+// Verified against cursor-agent 2026.05.24 (tool calls) and 2026.06.03
+// (thinking). Cursor emits Claude Code's stream-json schema verbatim for
+// system / user / assistant / result events — so those delegate to the
+// Claude reducer. Two things differ, each its own dedicated event rather
+// than a Claude content block:
+//   1. Tool calls: a `tool_call` event with `started`/`completed` subtypes
+//      and a typed payload, instead of `assistant.content[].tool_use` +
+//      `user.content[].tool_result`, e.g.
+//        {"type":"tool_call","subtype":"completed","call_id":"…",
+//         "tool_call":{"shellToolCall":{"args":{"command":"…"},
+//                      "result":{"success":{"exitCode":0,"stdout":"…",
+//                                "interleavedOutput":"…"}}}}}
+//   2. Thinking: a `thinking` event streamed as `subtype:"delta"` (each with
+//      `text`) terminated by `subtype:"completed"`, instead of a thinking
+//      content block on the `assistant` event.
 
 import type { ChatItem, RawEvent } from "../types";
 import { asRecord } from "../shared/json";
@@ -75,8 +80,27 @@ function handleToolCall(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   });
 }
 
+/** Cursor streams thinking as its own `thinking` event (subtype `delta` then
+ *  `completed`), NOT a Claude content block — so it never reaches the Claude
+ *  reducer. Accumulate the deltas into a single reasoning notice, appending to
+ *  the trailing one while a block streams and starting a new one otherwise.
+ *  `completed` carries no text and needs no handling. */
+function handleThinking(prev: ChatItem[], ev: RawEvent): ChatItem[] {
+  if (ev.subtype !== "delta") return prev;
+  const text = typeof ev.text === "string" ? ev.text : "";
+  if (!text) return prev;
+  const last = prev[prev.length - 1];
+  if (last && last.kind === "notice" && last.subtype === "reasoning") {
+    const next = prev.slice();
+    next[next.length - 1] = { ...last, text: last.text + text };
+    return next;
+  }
+  return [...prev, { kind: "notice", subtype: "reasoning", text }];
+}
+
 export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
-  // Cursor-specific tool-call events; everything else is Claude-shaped.
+  // Cursor-specific events; everything else is Claude-shaped.
   if (ev.type === "tool_call") return handleToolCall(prev, ev);
+  if (ev.type === "thinking") return handleThinking(prev, ev);
   return claudeReduce(prev, ev);
 }

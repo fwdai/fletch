@@ -71,6 +71,16 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       return dedupAgainstLast(items, { kind: "agent_message", text });
     }
 
+    // A reasoning part (`opencode run --thinking`, verified against 1.15.12):
+    // {"type":"reasoning","part":{"type":"reasoning","text":"…"}} — same
+    // whole-content shape as a `text` part. Surface it as a thinking notice.
+    case "reasoning": {
+      const part = asRecord(ev.part);
+      const text = typeof part.text === "string" ? part.text : "";
+      if (!text) return prev;
+      return [...prev, { kind: "notice", subtype: "reasoning", text }];
+    }
+
     // A tool call. `state.status` is `completed`/`error` once it's done, or
     // `pending`/`running` while in flight.
     case "tool_use": {

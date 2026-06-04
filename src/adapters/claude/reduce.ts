@@ -72,7 +72,25 @@ function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const turnStart = lastIndexBy(items, (it) => it.kind === "user_message") + 1;
 
   for (const block of content) {
-    if (block.type === "text" && typeof block.text === "string") {
+    if (block.type === "thinking" && typeof block.thinking === "string") {
+      // Extended-thinking block → reasoning notice (we capture the whole
+      // block here; the stream-event deltas are ignored). The text lives in
+      // the assistant event's `thinking` field — confirmed against real
+      // persisted events. (Some Claude auth modes redact this to "" and emit
+      // only a signature; `if (!text) continue` skips those cleanly.)
+      const text = block.thinking;
+      if (!text) continue;
+      const exists = items
+        .slice(turnStart)
+        .some(
+          (it) =>
+            it.kind === "notice" &&
+            it.subtype === "reasoning" &&
+            it.text === text,
+        );
+      if (exists) continue;
+      items = [...items, { kind: "notice", subtype: "reasoning", text }];
+    } else if (block.type === "text" && typeof block.text === "string") {
       const exists = items
         .slice(turnStart)
         .some((it) => it.kind === "agent_message" && it.text === block.text);

@@ -147,4 +147,14 @@ describe("opencodeAdapter", () => {
     expect(opencodeAdapter.id).toBe("opencode");
     expect(opencodeAdapter.policy["notice:turn_end"]).toBe("hide");
   });
+
+  it("surfaces a reasoning part as a thinking notice (real --thinking output)", () => {
+    const items = run(readJsonl("reasoning.jsonl") as RawEvent[]);
+    const reasoning = items.find(
+      (i) => i.kind === "notice" && i.subtype === "reasoning",
+    );
+    expect(reasoning).toBeDefined();
+    expect((reasoning as { text: string }).text).toContain("12 times 8 = 96");
+    expect(opencodeAdapter.policy["notice:reasoning"]).toBe("show");
+  });
 });

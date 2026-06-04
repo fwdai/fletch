@@ -120,3 +120,42 @@ describe("claudeAdapter.reduce — unknown event", () => {
     expect(next).toBe(prev);
   });
 });
+
+describe("claudeAdapter.reduce — extended thinking", () => {
+  // The thinking text arrives in the assistant event's `thinking` field
+  // (shape confirmed against real persisted Claude events). The synthetic
+  // blocks below mirror that real shape.
+  it("captures a thinking block as a reasoning notice", () => {
+    const items = reduceAll([
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "thinking", thinking: "Let me reason…", signature: "s" },
+            { type: "text", text: "Done." },
+          ],
+        },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([
+      { kind: "notice", subtype: "reasoning", text: "Let me reason…" },
+      { kind: "agent_message", text: "Done.", streaming: false },
+    ]);
+  });
+
+  it("does not duplicate a thinking block already captured this turn", () => {
+    const ev = {
+      type: "assistant",
+      message: {
+        content: [{ type: "thinking", thinking: "same" }],
+      },
+    } as RawEvent;
+    const once = reduceAll([ev]);
+    const twice = reduceAll([ev, ev]);
+    expect(twice).toEqual(once);
+  });
+
+  it("exposes a reasoning-visible policy", () => {
+    expect(claudeAdapter.policy["notice:reasoning"]).toBe("show");
+  });
+});
