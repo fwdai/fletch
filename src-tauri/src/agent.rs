@@ -40,7 +40,10 @@ pub enum Agent {
 
 pub struct PtyAgent {
     pty: PtySession,
-    _profile_file: tempfile::NamedTempFile,
+    /// `sandbox-exec` profile for claude's PTY run. `None` for per-turn
+    /// agents in the native view: they launch their own binary directly and
+    /// self-sandbox, so there's no profile to keep alive.
+    _profile_file: Option<tempfile::NamedTempFile>,
 }
 
 pub struct ManagedAgent {
@@ -77,6 +80,9 @@ pub struct PerTurnDescriptor {
     label: &'static str,
     /// Builds the CLI args for a turn: `(prompt, resume_session_id, thinking_effort)`.
     build_args: fn(&str, Option<&str>, Option<&str>) -> Vec<String>,
+    /// Builds the args to launch this agent's interactive TUI in the native
+    /// (PTY) view: `None` = fresh session, `Some(id)` = resume.
+    pty_args: fn(Option<&str>) -> Vec<String>,
     /// Extracts the agent-assigned session id from a turn's events.
     session_id: fn(&Value) -> Option<String>,
     /// Constructs this agent's turn-end detector (custom-view `Activity`).
@@ -99,8 +105,9 @@ pub struct PerTurnDescriptor {
 /// the provider id, so nothing else changes when support lands.
 pub struct AgentCapabilities {
     /// Can render in the native PTY view (its interactive TUI streamed into
-    /// xterm), in addition to the structured custom view. Today: claude
-    /// only; per-turn agents are custom-only until their TUI path is wired.
+    /// xterm), in addition to the structured custom view. Wired for claude
+    /// and every per-turn agent (codex/cursor/opencode/pi); a per-turn agent
+    /// can only switch *into* native once it has a session id to resume.
     pub native_view: bool,
     /// Has its native on-disk transcript wired for replay (parsed by the
     /// frontend adapter's `normalizeTranscript`). When false, re-attaching
@@ -135,9 +142,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         bin: "codex",
         label: "Codex",
         build_args: codex_build_args,
+        pty_args: codex_pty_args,
         session_id: codex_session_id,
         activity: || Box::new(ManagedActivity::codex()),
-        native_view: false,
+        native_view: true,
         // Codex persists a `rollout-*.jsonl`; `find_codex_rollout` + the
         // frontend codex adapter replay it.
         transcript_replay: true,
@@ -148,11 +156,12 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         bin: "cursor-agent",
         label: "Cursor",
         build_args: cursor_build_args,
+        pty_args: cursor_pty_args,
         session_id: cursor_session_id,
         // Cursor emits Claude-shaped stream-json incl. a `result` turn-end,
         // so it reuses the Claude managed detector.
         activity: || Box::new(ManagedActivity::claude()),
-        native_view: false,
+        native_view: true,
         // Cursor's on-disk chat format is undocumented; restore from the
         // SQLite log until a native transcript path is wired.
         transcript_replay: false,
@@ -166,9 +175,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         bin: "opencode",
         label: "OpenCode",
         build_args: opencode_build_args,
+        pty_args: opencode_pty_args,
         session_id: opencode_session_id,
         activity: || Box::new(ManagedActivity::opencode()),
-        native_view: false,
+        native_view: true,
         // OpenCode's `export` schema differs from its live stream; restore
         // from the SQLite log until that's mapped.
         transcript_replay: false,
@@ -179,9 +189,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         bin: "pi",
         label: "Pi",
         build_args: pi_build_args,
+        pty_args: pi_pty_args,
         session_id: pi_session_id,
         activity: || Box::new(ManagedActivity::pi()),
-        native_view: false,
+        native_view: true,
         // Pi persists a `session.jsonl` that's wireable later; restore from
         // the SQLite log until then.
         transcript_replay: false,
@@ -246,7 +257,64 @@ impl Agent {
 
         Ok(Self::Pty(PtyAgent {
             pty,
-            _profile_file: profile_file,
+            _profile_file: Some(profile_file),
+        }))
+    }
+
+    /// Launch a per-turn agent's interactive TUI in a PTY — the native view
+    /// for codex/cursor/opencode/pi. Unlike claude's `spawn_pty`, the agent
+    /// binary runs directly (no `sandbox-exec`): these agents self-sandbox.
+    /// The session is always resumed (`spec.fresh == false`); the supervisor
+    /// only routes a per-turn agent here once it has an established session
+    /// id, so the TUI continues the same conversation the Custom view built.
+    pub fn spawn_pty_native<F, G>(
+        spec: SpawnSpec<'_>,
+        provider: &str,
+        on_output: F,
+        on_exit: G,
+    ) -> Result<Self>
+    where
+        F: Fn(Vec<u8>) + Send + 'static,
+        G: Fn(PtyExit) + Send + 'static,
+    {
+        let desc = per_turn_descriptor(provider)
+            .ok_or_else(|| Error::Other(format!("no per-turn descriptor for `{provider}`")))?;
+        let home =
+            dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let bin = resolve_agent_bin(desc.bin, desc.label, &home)?;
+        let session = if spec.fresh {
+            None
+        } else {
+            Some(spec.session_id)
+        };
+        let args = (desc.pty_args)(session);
+
+        tracing::info!(
+            agent_id = %spec.agent_id,
+            provider = %provider,
+            session = %spec.session_id,
+            fresh = spec.fresh,
+            cwd = %spec.cwd.display(),
+            bin = %bin,
+            argv = ?args,
+            "spawning native pty per-turn agent"
+        );
+
+        let pty = PtySession::spawn(
+            PtySpawn {
+                program: Path::new(&bin),
+                args: &args,
+                cwd: &spec.cwd,
+                cols: spec.cols,
+                rows: spec.rows,
+            },
+            on_output,
+            on_exit,
+        )?;
+
+        Ok(Self::Pty(PtyAgent {
+            pty,
+            _profile_file: None,
         }))
     }
 
@@ -720,6 +788,65 @@ fn pi_session_id(event: &Value) -> Option<String> {
     event.get("id").and_then(|s| s.as_str()).map(str::to_string)
 }
 
+// ── native (PTY/TUI) arg builders ───────────────────────────────────────────
+//
+// These launch each agent's *interactive* TUI inside a PTY (the native view),
+// as opposed to the one-shot JSON `*_build_args` used by the structured Custom
+// view. `session_id == None` starts a fresh interactive session; `Some(id)`
+// resumes the prior one. The PTY runs in the agent's cwd (set by `PtySession`),
+// so none of these need a working-dir flag. Verified against codex-cli 0.135,
+// cursor-agent 2026.06, opencode 1.15, pi 0.74+.
+
+/// Codex: bare `codex` launches the interactive TUI;
+/// `--dangerously-bypass-approvals-and-sandbox` runs it unattended (Quorum
+/// already isolates the worktree). `resume <id>` continues a prior session.
+fn codex_pty_args(session_id: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["--dangerously-bypass-approvals-and-sandbox".into()];
+    if let Some(id) = session_id {
+        args.push("resume".into());
+        args.push(id.to_string());
+    }
+    args
+}
+
+/// Cursor: bare `cursor-agent` launches the TUI; `--force` auto-allows
+/// commands. `--resume <id>` continues a prior chat.
+fn cursor_pty_args(session_id: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["--force".into()];
+    if let Some(id) = session_id {
+        args.push("--resume".into());
+        args.push(id.to_string());
+    }
+    args
+}
+
+/// OpenCode: bare `opencode` launches the interactive TUI; `--session <id>`
+/// continues a prior session. Note: no auto-approve flag — that's
+/// `--dangerously-skip-permissions`, which belongs to the `run` (headless)
+/// subcommand and makes the *default* (TUI) command print help and exit. The
+/// TUI prompts for tool permissions interactively, which the native view
+/// handles like any other keystroke.
+fn opencode_pty_args(session_id: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if let Some(id) = session_id {
+        args.push("--session".into());
+        args.push(id.to_string());
+    }
+    args
+}
+
+/// Pi: bare `pi` launches the interactive TUI (tools auto-run there).
+/// `--session <id>` resumes — same flag the Custom-view runner uses, since the
+/// versions we target (0.74.x) lack `--session-id`.
+fn pi_pty_args(session_id: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if let Some(id) = session_id {
+        args.push("--session".into());
+        args.push(id.to_string());
+    }
+    args
+}
+
 /// Locate an agent CLI by name: PATH first, then the user's login shell
 /// (catches nvm / fnm / volta / homebrew setups the GUI process's bare
 /// PATH misses), then the usual install dirs. `label` is the
@@ -957,6 +1084,87 @@ mod tests {
         assert_eq!(args.last().unwrap(), "hi");
     }
 
+    // ── pty (native TUI) args ──────────────────────────────────────────────
+
+    #[test]
+    fn codex_pty_args_launch_tui_fresh_and_resume() {
+        // Fresh: bypass approvals/sandbox so the TUI runs unattended; no
+        // `exec`/`resume` subcommand means the interactive CLI.
+        let fresh = codex_pty_args(None);
+        assert!(fresh.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(!fresh.iter().any(|a| a == "resume"));
+        // Resume: `resume <id>` continues the prior interactive session.
+        let resume = codex_pty_args(Some("abc123"));
+        assert!(resume.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        let pos = resume
+            .iter()
+            .position(|a| a == "resume")
+            .expect("resume subcommand");
+        assert_eq!(resume.get(pos + 1).map(String::as_str), Some("abc123"));
+    }
+
+    #[test]
+    fn cursor_pty_args_force_and_resume() {
+        let fresh = cursor_pty_args(None);
+        assert!(fresh.contains(&"--force".to_string()));
+        assert!(!fresh.iter().any(|a| a == "--resume"));
+        let resume = cursor_pty_args(Some("chat-1"));
+        assert!(resume.contains(&"--force".to_string()));
+        let pos = resume
+            .iter()
+            .position(|a| a == "--resume")
+            .expect("--resume flag");
+        assert_eq!(resume.get(pos + 1).map(String::as_str), Some("chat-1"));
+    }
+
+    #[test]
+    fn opencode_pty_args_launch_tui_and_session() {
+        // Fresh: bare `opencode` launches the TUI. It must NOT carry
+        // `--dangerously-skip-permissions` — that's a `run`-only flag, and
+        // the default (TUI) command prints help and exits when given it.
+        let fresh = opencode_pty_args(None);
+        assert!(!fresh.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(fresh.is_empty());
+        // Resume: `--session <id>` continues the prior session.
+        let resume = opencode_pty_args(Some("ses_9"));
+        assert!(!resume.iter().any(|a| a == "--dangerously-skip-permissions"));
+        let pos = resume
+            .iter()
+            .position(|a| a == "--session")
+            .expect("--session flag");
+        assert_eq!(resume.get(pos + 1).map(String::as_str), Some("ses_9"));
+    }
+
+    #[test]
+    fn pi_pty_args_bare_tui_and_session() {
+        // Fresh: bare `pi` launches the interactive TUI; tools auto-run there.
+        let fresh = pi_pty_args(None);
+        assert!(fresh.is_empty());
+        // Resume uses `--session <id>` (target pi 0.74.x lacks `--session-id`).
+        let resume = pi_pty_args(Some("u-7"));
+        let pos = resume
+            .iter()
+            .position(|a| a == "--session")
+            .expect("--session flag");
+        assert_eq!(resume.get(pos + 1).map(String::as_str), Some("u-7"));
+    }
+
+    #[test]
+    fn every_per_turn_agent_has_a_pty_arg_builder() {
+        // Native view is wired for every per-turn agent, so each descriptor
+        // must carry a TUI arg-builder. Fresh launch never references resume.
+        for d in PER_TURN_AGENTS {
+            let fresh = (d.pty_args)(None);
+            assert!(
+                !fresh
+                    .iter()
+                    .any(|a| a == "resume" || a == "--resume" || a == "--session"),
+                "fresh {} args must not resume: {fresh:?}",
+                d.id
+            );
+        }
+    }
+
     #[test]
     fn opencode_args_variant_when_thinking_set() {
         let args = opencode_build_args("hi", None, Some("max"));
@@ -1003,10 +1211,10 @@ mod tests {
         let cases = [
             // provider     native_view  transcript_replay
             ("claude", true, true),
-            ("codex", false, true),
-            ("cursor", false, false),
-            ("opencode", false, false),
-            ("pi", false, false),
+            ("codex", true, true),
+            ("cursor", true, false),
+            ("opencode", true, false),
+            ("pi", true, false),
             ("unknown", false, false),
         ];
         for (provider, native_view, transcript_replay) in cases {

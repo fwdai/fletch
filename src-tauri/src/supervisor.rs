@@ -573,10 +573,15 @@ impl Supervisor {
         };
 
         // Per-turn agents carry their turn-end detector in the descriptor
-        // table; everything else is claude (native PTY silence or the
-        // managed `result` detector, by view).
+        // table — but only for the Custom (exec/JSON) view. In the native
+        // view they run their interactive TUI in a PTY with no JSON stream,
+        // so turn-end is detected by silence, the same as claude's native
+        // view. Claude (no descriptor) picks its detector by view too.
         let mut activity: Box<dyn Activity> = match per_turn_descriptor(&provider) {
-            Some(desc) => (desc.activity)(),
+            Some(desc) => match record.view {
+                AgentView::Native => Box::new(ClaudeNativeActivity::new()),
+                AgentView::Custom => (desc.activity)(),
+            },
             None => match record.view {
                 AgentView::Native => Box::new(ClaudeNativeActivity::new()),
                 AgentView::Custom => Box::new(ManagedActivity::claude()),
@@ -588,20 +593,48 @@ impl Supervisor {
         self.activities.lock().insert(agent_id_str.clone(), activity);
 
         let agent = if per_turn {
-            // Per-turn runner (codex, cursor) — no process spawns until the
-            // first user message. Always rendered in the structured
-            // (Custom) view; the native PTY view isn't wired for these yet.
-            // No sandbox profile: the agent sandboxes itself rather than
-            // running under sandbox-exec.
-            spawn_per_turn_agent(
-                &provider,
-                cwd,
-                session_id.clone(),
-                app.clone(),
-                agent_id_str.clone(),
-                self.clone(),
-                my_gen,
-            )?
+            match record.view {
+                // Native view: launch the agent's interactive TUI in a PTY,
+                // resuming the session the Custom view established. The
+                // switch_view guard guarantees a session id is present before
+                // we ever route a per-turn agent here.
+                AgentView::Native => {
+                    let session_id = session_id.as_deref().ok_or_else(|| {
+                        Error::Other("native view requires an established session id".into())
+                    })?;
+                    let spec = SpawnSpec {
+                        agent_id: &agent_id_str,
+                        cwd,
+                        sandbox_root: agent_parent_dir(agent_id)?,
+                        session_id,
+                        // Per-turn native always resumes (the agent built its
+                        // session in the Custom view first).
+                        fresh: false,
+                        cols: 120,
+                        rows: 32,
+                    };
+                    spawn_pty_per_turn_agent(
+                        spec,
+                        provider.clone(),
+                        app.clone(),
+                        agent_id_str.clone(),
+                        self.clone(),
+                        my_gen,
+                    )?
+                }
+                // Custom view: per-turn runner — no process spawns until the
+                // first user message. No sandbox profile: the agent sandboxes
+                // itself rather than running under sandbox-exec.
+                AgentView::Custom => spawn_per_turn_agent(
+                    &provider,
+                    cwd,
+                    session_id.clone(),
+                    app.clone(),
+                    agent_id_str.clone(),
+                    self.clone(),
+                    my_gen,
+                )?,
+            }
         } else {
             let session_id = session_id
                 .as_deref()
@@ -772,6 +805,20 @@ impl Supervisor {
         if new_view == AgentView::Native && !capabilities(&record.provider).native_view {
             return Err(Error::Other(
                 "The native view isn't available for this agent yet".into(),
+            ));
+        }
+
+        // Per-turn agents assign their own session id on the first turn, and
+        // the native TUI gives us no event stream to capture it. So we only
+        // allow switching to native once that id exists — the TUI then
+        // resumes the same session, and switching back to Custom can resume
+        // it too. (claude generates its id up front, so this never blocks it.)
+        if new_view == AgentView::Native
+            && is_per_turn_provider(&record.provider)
+            && record.session_id.is_none()
+        {
+            return Err(Error::Other(
+                "Switch to the native view after the agent's first turn".into(),
             ));
         }
 
@@ -1261,6 +1308,47 @@ fn spawn_pty_agent(
                 .lock()
                 .get_mut(&id_for_output)
             {
+                activity.observe_bytes(&bytes);
+            }
+
+            if let Err(e) = app_for_output.emit(
+                "agent:output",
+                AgentOutputPayload {
+                    agent_id: id_for_output.clone(),
+                    bytes,
+                },
+            ) {
+                tracing::warn!(error = %e, agent_id = %id_for_output, "emit agent:output failed");
+            }
+        },
+        move |exit| {
+            apply_exit_if_current(&sup_for_exit, &app_for_exit, &id_for_exit, gen, exit.success, exit.message);
+        },
+    )
+}
+
+/// Native (PTY/TUI) view for a per-turn agent. Same byte/exit wiring as
+/// `spawn_pty_agent` (claude), but launches the agent's own binary via
+/// `Agent::spawn_pty_native` rather than running claude under sandbox-exec.
+fn spawn_pty_per_turn_agent(
+    spec: SpawnSpec<'_>,
+    provider: String,
+    app: AppHandle,
+    agent_id: String,
+    sup: Arc<Supervisor>,
+    gen: u64,
+) -> Result<Agent> {
+    let app_for_output = app.clone();
+    let id_for_output = agent_id.clone();
+    let sup_for_output = sup.clone();
+    let sup_for_exit = sup;
+    let app_for_exit = app.clone();
+    let id_for_exit = agent_id.clone();
+    Agent::spawn_pty_native(
+        spec,
+        &provider,
+        move |bytes| {
+            if let Some(activity) = sup_for_output.activities.lock().get_mut(&id_for_output) {
                 activity.observe_bytes(&bytes);
             }
 
