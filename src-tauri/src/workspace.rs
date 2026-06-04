@@ -364,30 +364,6 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    pub fn update_agent_status_if<F>(
-        &self,
-        id: &str,
-        status: AgentStatus,
-        last_error: Option<String>,
-        predicate: F,
-    ) -> Result<bool>
-    where
-        F: FnOnce(&AgentStatus) -> bool,
-    {
-        let conn = self.db.lock();
-
-        // Derive the current status from durable dispositions (the storage
-        // layer never sees a live process, so running=false here) and gate
-        // the write on the caller's predicate.
-        let current = Self::current_status(&conn, id)?;
-        if !predicate(&current) {
-            return Ok(false);
-        }
-
-        Self::apply_status(&conn, id, &status, last_error.as_deref())?;
-        Ok(true)
-    }
-
     pub fn set_agent_task_if_empty(&self, id: &str, task: &str) -> Result<bool> {
         let conn = self.db.lock();
         let changed = conn.execute(
@@ -554,28 +530,6 @@ impl WorkspaceManager {
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────
-
-    /// Derive the current status from a workspace's durable dispositions.
-    /// The storage layer never observes a live process, so `running` is
-    /// always false here — see `derive_status`.
-    fn current_status(conn: &Connection, id: &str) -> Result<AgentStatus> {
-        let (archived, stopped, last_error): (Option<i64>, Option<i64>, Option<String>) = conn
-            .query_row(
-                "SELECT w.archived_at, w.stopped_at, s.last_error
-                 FROM workspaces w
-                 LEFT JOIN sessions s ON s.workspace_id = w.id
-                 WHERE w.id = ?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .map_err(|_| Error::AgentNotFound(id.to_string()))?;
-        Ok(derive_status(
-            archived.is_some(),
-            stopped.is_some(),
-            false,
-            last_error.as_deref(),
-        ))
-    }
 
     /// Translate a requested runtime status into durable disposition writes.
     /// There is no status column — only the workspace's `stopped_at` and the
