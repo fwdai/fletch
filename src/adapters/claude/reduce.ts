@@ -74,13 +74,10 @@ function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   for (const block of content) {
     if (block.type === "thinking" && typeof block.thinking === "string") {
       // Extended-thinking block → reasoning notice (we capture the whole
-      // block here; the stream-event deltas are ignored).
-      //
-      // NOTE: as of Claude Code 2.1.162 this is effectively dormant — the
-      // CLI REDACTS thinking text, emitting `{thinking:"", signature:"…"}`
-      // and empty `thinking_delta`s (only `estimated_tokens`). So `text` is
-      // always "" and nothing renders. Kept correct for if/when the CLI
-      // exposes the text; verified live that no text is currently available.
+      // block here; the stream-event deltas are ignored). The text lives in
+      // the assistant event's `thinking` field — confirmed against real
+      // persisted events. (Some Claude auth modes redact this to "" and emit
+      // only a signature; `if (!text) continue` skips those cleanly.)
       const text = block.thinking;
       if (!text) continue;
       const exists = items
