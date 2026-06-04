@@ -22,30 +22,22 @@
 import type { ChatItem, RawEvent } from "../types";
 import { asRecord } from "../shared/json";
 import {
+  aliasToolInput,
   dedupAgainstLast,
   finalizeStreamingItems,
   upsertToolCall,
 } from "../shared/reducer-helpers";
 
 /** OpenCode uses camelCase file fields (`filePath`/`oldString`/`newString`)
- *  while the shared tool presenters read Claude's snake_case names. Add the
- *  aliases so Read/Write/Edit render the path + diff without bespoke
- *  presenters. Returns the input untouched when nothing needs aliasing. */
+ *  while the shared tool presenters read Claude's snake_case names. Alias
+ *  them so Read/Write/Edit render the path + diff without bespoke
+ *  presenters. */
 function normalizeToolInput(input: unknown): unknown {
-  const rec = asRecord(input);
-  const aliases: Array<[string, string]> = [
+  return aliasToolInput(input, [
     ["filePath", "file_path"],
     ["oldString", "old_string"],
     ["newString", "new_string"],
-  ];
-  let out: Record<string, unknown> | null = null;
-  for (const [from, to] of aliases) {
-    if (typeof rec[from] === "string" && rec[to] === undefined) {
-      out = out ?? { ...rec };
-      out[to] = rec[from];
-    }
-  }
-  return out ?? input;
+  ]);
 }
 
 /** The result text to show for a finished tool. */
