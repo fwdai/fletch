@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { codexAdapter } from "./index";
+import { applyPolicy } from "../policy";
 import type { ChatItem, RawEvent } from "../types";
 
 // Fixtures are real `codex exec --json` output captured from
@@ -188,5 +189,26 @@ describe("codexAdapter", () => {
   it("exposes id and policy on the adapter", () => {
     expect(codexAdapter.id).toBe("codex");
     expect(codexAdapter.policy["notice:turn_end"]).toBe("hide");
+  });
+
+  it("surfaces reasoning as a thinking notice (not hidden by policy)", () => {
+    const items = run([
+      {
+        type: "item.completed",
+        item: { id: "r1", type: "reasoning", text: "Let me think…" },
+      } as RawEvent,
+    ]);
+    expect(items).toContainEqual({
+      kind: "notice",
+      subtype: "reasoning",
+      text: "Let me think…",
+    });
+    // And the display policy keeps it visible.
+    const visible = applyPolicy(items, codexAdapter.policy);
+    expect(visible).toContainEqual({
+      kind: "notice",
+      subtype: "reasoning",
+      text: "Let me think…",
+    });
   });
 });

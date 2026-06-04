@@ -109,10 +109,13 @@ export function getStringField(input: unknown, field: string): string {
   return "";
 }
 
-/** Read a shell command from a tool input, accepting both Claude's `Bash`
- *  shape (`command` is a string) and Codex's `shell` shape (`command` is an
- *  argv array like ["bash", "-lc", "…"]). */
+/** Read a shell command from a tool input. Handles every shape adapters
+ *  produce: Claude's `Bash` wraps it in a `{ command }` object, while Codex
+ *  and Cursor hand over the command as a bare value — either a string or an
+ *  argv array like ["bash", "-lc", "…"]. */
 export function getCommandField(input: unknown, field = "command"): string {
+  if (typeof input === "string") return input;
+  if (Array.isArray(input)) return input.map((part) => String(part)).join(" ");
   if (input && typeof input === "object" && field in input) {
     const v = (input as Record<string, unknown>)[field];
     if (typeof v === "string") return v;
