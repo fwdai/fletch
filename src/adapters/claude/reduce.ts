@@ -77,7 +77,7 @@ function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
         .slice(turnStart)
         .some((it) => it.kind === "agent_message" && it.text === block.text);
       if (exists) continue;
-      items = [...items, { kind: "agent_message", text: block.text }];
+      items = [...items, { kind: "agent_message", text: block.text, streaming: false }];
     } else if (block.type === "tool_use") {
       items = upsertToolCall(items, {
         kind: "tool_call",

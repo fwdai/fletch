@@ -56,7 +56,7 @@ describe("cursorAdapter", () => {
       { kind: "user_message", text: "Run: echo hi" },
       { kind: "tool_call", id: "tool_x", name: "shell", input: "echo hi", streaming: false },
       { kind: "tool_result", tool_use_id: "tool_x", content: "hi\n", is_error: false },
-      { kind: "agent_message", text: "It printed hi." },
+      { kind: "agent_message", text: "It printed hi.", streaming: false },
       { kind: "notice", subtype: "turn_end", text: "success" },
     ]);
   });
