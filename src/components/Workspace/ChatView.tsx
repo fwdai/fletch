@@ -126,7 +126,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                   : "Agent is not ready"
           }
           stopping={busy}
-          onSend={({ text, attachments }) => send(agent.id, text, attachments)}
+          onSend={({ text, thinking, attachments }) => send(agent.id, text, attachments, thinking)}
           onStop={() => stop(agent.id)}
         />
       </div>

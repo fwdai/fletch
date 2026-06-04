@@ -285,6 +285,7 @@ interface AppState {
     id: string,
     text: string,
     attachments?: string[],
+    thinking?: string,
   ) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
   resume: (id: string) => Promise<void>;
@@ -309,6 +310,7 @@ interface AppState {
     text: string,
     provider: string,
     attachments?: string[],
+    thinking?: string,
   ) => Promise<void>;
 
   // UI
@@ -785,7 +787,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  sendUserMessage: async (id, text, attachments = []) => {
+  sendUserMessage: async (id, text, attachments = [], thinking) => {
     try {
       set((state) => {
         const slashName = passthroughSlashName(providerFor(state, id), text);
@@ -805,14 +807,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
       });
       try {
-        await api.sendUserMessage(id, text, attachments);
+        await api.sendUserMessage(id, text, attachments, thinking);
       } catch (e) {
         if (String(e).includes("agent not found")) {
           // Dead idle agent (finished its prior task) — resume the
           // process in --resume mode, then deliver the message once ready.
           await api.resumeAgent(id);
           await sendWhenAgentReady(() =>
-            api.sendUserMessage(id, text, attachments),
+            api.sendUserMessage(id, text, attachments, thinking),
           );
         } else {
           throw e;
@@ -1189,7 +1191,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
-  spawnFromDraft: async (id, text, provider, attachments = []) => {
+  spawnFromDraft: async (id, text, provider, attachments = [], thinking?) => {
     const draft = get().drafts.find((d) => d.id === id);
     if (!draft) return;
     set({ busy: true, lastError: null });
@@ -1219,7 +1221,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         );
       } else {
         await sendWhenAgentReady(() =>
-          api.sendUserMessage(rec.id, text, attachments),
+          api.sendUserMessage(rec.id, text, attachments, thinking),
         );
       }
     } catch (e) {

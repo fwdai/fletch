@@ -700,8 +700,9 @@ impl Supervisor {
         agent_id: &str,
         text: &str,
         attachments: &[String],
+        thinking: Option<&str>,
     ) -> Result<()> {
-        self.deliver_user_message(agent_id, text, attachments)?;
+        self.deliver_user_message(agent_id, text, attachments, thinking)?;
         mark_user_turn_started(&self, app, agent_id);
         on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), text.to_string());
         Ok(())
@@ -728,13 +729,14 @@ impl Supervisor {
         agent_id: &str,
         text: &str,
         attachments: &[String],
+        thinking: Option<&str>,
     ) -> Result<()> {
         {
             let agents = self.agents.lock();
             let agent = agents
                 .get(agent_id)
                 .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
-            agent.send_user_message(text, attachments)?;
+            agent.send_user_message(text, attachments, thinking)?;
         }
         let user_event = serde_json::json!({
             "type": "user_message",
@@ -2008,7 +2010,7 @@ mod tests {
         sup.workspace.add_agent(&mut record).unwrap();
 
         let err = sup
-            .deliver_user_message("yosemite", "hello", &[])
+            .deliver_user_message("yosemite", "hello", &[], None)
             .unwrap_err();
         assert!(matches!(err, Error::AgentNotFound(_)));
 
