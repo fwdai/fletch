@@ -139,9 +139,12 @@ function handleResult(prev: ChatItem[], ev: RawEvent): ChatItem[] {
     .some((it) => it.kind === "agent_message" && it.text.trim().length > 0);
 
   if (isError) {
-    const text = hasAssistantText
-      ? `Turn failed (${subtype || "error"})`
-      : resultText || `Turn failed (${subtype || "error"})`;
+    // Surface the real error detail (e.g. an auth/401 message) rather than the
+    // result envelope's `subtype` — claude reports subtype "success" even when
+    // the turn errored, which produced the contradictory "Turn failed
+    // (success)". When the agent already spoke (the detail is on screen), keep
+    // the notice to a clean label instead of repeating it.
+    const text = hasAssistantText ? "Turn failed" : resultText.trim() || "Turn failed";
     items = [
       ...items,
       { kind: "notice", subtype: "error", text, is_error: true },
@@ -155,7 +158,7 @@ function handleResult(prev: ChatItem[], ev: RawEvent): ChatItem[] {
     {
       kind: "notice",
       subtype: "turn_end",
-      text: subtype || (isError ? "error" : "success"),
+      text: isError ? "error" : subtype || "success",
     },
   ];
   return items;
