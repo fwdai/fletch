@@ -103,8 +103,8 @@ pub struct Supervisor {
     pub activities: Mutex<HashMap<String, Box<dyn Activity>>>,
     /// In-memory source of truth for live runtime status
     /// (Spawning/Running/Idle). The DB only persists durable
-    /// dispositions, so a record loaded from it always derives `Spawning`
-    /// for a live agent; this map carries the real current status.
+    /// dispositions, so a resting record loaded from it derives `Idle`;
+    /// this map carries the real current status while an agent is live.
     pub statuses: Mutex<HashMap<String, AgentStatus>>,
     pub native_input_lines: Mutex<HashMap<String, String>>,
     pub shells: Mutex<HashMap<String, PtySession>>,
@@ -367,9 +367,9 @@ impl Supervisor {
 
     pub fn current_workspace(&self) -> Option<Workspace> {
         let mut ws = self.workspace.current()?;
-        // The DB-derived `status` reports `Spawning` for any live agent;
-        // overlay the supervisor's in-memory runtime status so the snapshot
-        // reflects the real Running/Idle/Spawning state.
+        // The DB-derived `status` rests at `Idle`; overlay the supervisor's
+        // in-memory runtime status so the snapshot reflects the real
+        // Spawning/Running/Idle state for any agent that's currently live.
         for record in &mut ws.agents {
             record.status = self.effective_status(&record.id, record);
         }
@@ -648,39 +648,6 @@ impl Supervisor {
         spawn_turn_watchdog(self.clone(), app, agent_id_str, my_gen);
 
         Ok(())
-    }
-
-    pub fn resume_persisted_agents(self: Arc<Self>, app: AppHandle) {
-        let agents = match self.workspace.current() {
-            Some(ws) => ws.agents,
-            None => return,
-        };
-
-        for record in agents {
-            if !matches!(record.status, AgentStatus::Spawning) {
-                continue;
-            }
-            // Per-turn agents legitimately have no session id until their
-            // first turn assigns one, so only treat a missing id as
-            // corruption for providers that generate it up front (claude).
-            let missing_session =
-                !is_per_turn_provider(&record.provider) && record.session_id.is_none();
-            if missing_session || record.repos.is_empty() {
-                let err = "Agent record incomplete (no session id / no repos). Remove and respawn.".to_string();
-                self.set_status(&app, &record.id, AgentStatus::Error, Some(err));
-                continue;
-            }
-
-            let sup = self.clone();
-            let app = app.clone();
-            let id = record.id.clone();
-            arm_spawn_timeout(sup.clone(), app.clone(), id.clone());
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = sup.start_process(&app, &id, false).await {
-                    fail_spawn(&sup, &app, &id, e.to_string());
-                }
-            });
-        }
     }
 
     pub async fn resume_agent(
@@ -1036,8 +1003,8 @@ impl Supervisor {
         self.set_status(&app, agent_id, AgentStatus::Spawning, None);
         let _ = app.emit("workspace:changed", ());
 
-        // Kick the resume path. start_process is the same one that
-        // resume_persisted_agents uses on app boot.
+        // Restore is an explicit user action, so bring the process up now
+        // (set_status(Spawning) above lets start_process promote to Idle).
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
         let sup = self.clone();
         let app_for_task = app.clone();
