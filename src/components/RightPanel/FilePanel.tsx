@@ -111,15 +111,8 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
     });
   }, [files]);
 
-  // Default every directory open the first time files arrive.
-  const seededRef = useRef(false);
-  useEffect(() => {
-    if (!seededRef.current && files.length) {
-      seededRef.current = true;
-      setExpanded(new Set(allDirPaths(fullTree)));
-    }
-  }, [files.length, fullTree]);
-  useEffect(() => { seededRef.current = false; }, [agent.id]);
+  // The tree starts fully collapsed so the user expands only what they need.
+  // (The per-agent reset above already clears `expanded` when switching agents.)
 
   const changedCount = useMemo(() => files.filter((f) => f.status).length, [files]);
   const filtering = query.trim() !== "" || changedOnly;
@@ -936,16 +929,6 @@ function sortNodes(nodes: TreeNode[]): void {
     return a.name.localeCompare(b.name);
   });
   for (const n of nodes) if (n.type === "dir") sortNodes(n.children);
-}
-
-function allDirPaths(nodes: TreeNode[], acc: string[] = []): string[] {
-  for (const n of nodes) {
-    if (n.type === "dir") {
-      acc.push(n.path);
-      allDirPaths(n.children, acc);
-    }
-  }
-  return acc;
 }
 
 /** Pruned copy containing only files that match the query / changed filter
