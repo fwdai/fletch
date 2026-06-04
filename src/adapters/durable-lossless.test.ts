@@ -60,6 +60,11 @@ function isDurable(provider: string, ev: RawEvent): boolean {
       return (
         t === "message_end" || t === "tool_execution_end" || t === "agent_end"
       );
+    case "cursor": {
+      if (t === "assistant" || t === "user" || t === "result") return true;
+      if (t === "tool_call") return (ev as Record<string, unknown>).subtype === "completed";
+      return false;
+    }
     default:
       return true;
   }
@@ -86,6 +91,10 @@ const cases: ProviderCase[] = [
   {
     provider: "pi",
     fixture: join(here, "pi/fixtures/sample.jsonl"),
+  },
+  {
+    provider: "cursor",
+    fixture: join(here, "cursor/fixtures/sample.jsonl"),
   },
 ];
 

@@ -156,9 +156,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // Cursor's on-disk chat format is undocumented; restore from the
         // SQLite log until a native transcript path is wired.
         transcript_replay: false,
-        // Cursor emits Claude-shaped events, so it reuses the Claude
-        // durability rules.
-        is_durable: claude_is_durable,
+        // Cursor emits Claude-shaped events for most types, but uses a
+        // dedicated tool_call event (started/completed) rather than
+        // Claude's assistant.content tool_use + user.content tool_result.
+        is_durable: cursor_is_durable,
     },
     PerTurnDescriptor {
         id: "opencode",
@@ -541,6 +542,18 @@ fn opencode_is_durable(ev: &Value) -> bool {
     }
 }
 
+fn cursor_is_durable(ev: &Value) -> bool {
+    match event_type(ev) {
+        // Cursor reuses Claude's stream-json for these.
+        Some("assistant" | "user" | "result") => true,
+        // Tool calls are a dedicated event; only the settled "completed" form
+        // is durable ("started" is the in-progress/streaming form). Errors are
+        // encoded inside the completed payload.
+        Some("tool_call") => ev.get("subtype").and_then(|s| s.as_str()) == Some("completed"),
+        _ => false,
+    }
+}
+
 fn pi_is_durable(ev: &Value) -> bool {
     matches!(
         event_type(ev),
@@ -803,11 +816,24 @@ mod tests {
     }
 
     #[test]
-    fn cursor_uses_claude_rules() {
-        // Cursor emits Claude-shaped events.
-        assert!(is_durable_event("cursor", &json!({"type": "result"})));
+    fn cursor_durability() {
+        // Claude-shaped events are durable.
         assert!(is_durable_event("cursor", &json!({"type": "assistant"})));
+        assert!(is_durable_event("cursor", &json!({"type": "user"})));
+        assert!(is_durable_event("cursor", &json!({"type": "result"})));
+        // tool_call/completed is the settled, durable form.
+        assert!(is_durable_event(
+            "cursor",
+            &json!({"type": "tool_call", "subtype": "completed"})
+        ));
+        // tool_call/started is the in-progress/streaming form — ephemeral.
+        assert!(!is_durable_event(
+            "cursor",
+            &json!({"type": "tool_call", "subtype": "started"})
+        ));
+        // Lifecycle events are ephemeral.
         assert!(!is_durable_event("cursor", &json!({"type": "stream_event"})));
+        assert!(!is_durable_event("cursor", &json!({"type": "system"})));
     }
 
     #[test]
