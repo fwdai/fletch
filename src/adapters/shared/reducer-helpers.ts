@@ -1,4 +1,5 @@
 import type { ChatItem } from "../types";
+import { asRecord } from "./json";
 
 // Walk from the end since the items we care about (latest streaming
 // agent_message, latest tool_call) are always near the tail.
@@ -126,4 +127,26 @@ export function dedupAgainstLast(
     return items;
   }
   return [...items, candidate];
+}
+
+/** Alias tool-input fields so the shared Read/Write/Edit presenters — which
+ *  read Claude's snake_case names (`file_path`, `old_string`, …) — render
+ *  correctly for agents that use different field names. For each
+ *  `[from, to]` pair, copies a string `from` value to `to` when `to` isn't
+ *  already set. Returns the input untouched (same reference) when there's
+ *  nothing to alias, so callers can pass through non-file tools (e.g. bash's
+ *  `command`) for free. */
+export function aliasToolInput(
+  input: unknown,
+  aliases: ReadonlyArray<readonly [from: string, to: string]>,
+): unknown {
+  const rec = asRecord(input);
+  let out: Record<string, unknown> | null = null;
+  for (const [from, to] of aliases) {
+    if (typeof rec[from] === "string" && rec[to] === undefined) {
+      out = out ?? { ...rec };
+      out[to] = rec[from];
+    }
+  }
+  return out ?? input;
 }
