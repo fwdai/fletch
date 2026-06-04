@@ -20,6 +20,7 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use crate::activity::{Activity, ManagedActivity};
 use crate::error::{Error, Result};
 use crate::exec_session::{ExecCallbacks, ExecSession, ExecSpawn};
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn};
@@ -59,6 +60,71 @@ pub struct PerTurnSpec {
     pub cwd: PathBuf,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
+}
+
+/// Everything that varies between per-turn agents. The runner lifecycle —
+/// one fresh process per turn via `ExecSession` — is identical for all of
+/// them; only the binary, CLI args, session-id extraction, and turn-end
+/// detector differ. Capturing those four as a table entry means a new
+/// per-turn agent is one `PER_TURN_AGENTS` row, with no new `spawn_*`
+/// method, `resolve_*` helper, or `match provider` arm anywhere.
+pub struct PerTurnDescriptor {
+    /// Provider id (matches the frontend adapter / `AgentRecord.provider`).
+    pub id: &'static str,
+    /// Executable name resolved via `resolve_agent_bin`.
+    bin: &'static str,
+    /// Human-facing product name, used only in the not-found error.
+    label: &'static str,
+    /// Builds the CLI args for a turn: `(prompt, resume_session_id)`.
+    build_args: fn(&str, Option<&str>) -> Vec<String>,
+    /// Extracts the agent-assigned session id from a turn's events.
+    session_id: fn(&Value) -> Option<String>,
+    /// Constructs this agent's turn-end detector (custom-view `Activity`).
+    pub activity: fn() -> Box<dyn Activity>,
+}
+
+const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
+    PerTurnDescriptor {
+        id: "codex",
+        bin: "codex",
+        label: "Codex",
+        build_args: codex_build_args,
+        session_id: codex_session_id,
+        activity: || Box::new(ManagedActivity::codex()),
+    },
+    PerTurnDescriptor {
+        id: "cursor",
+        bin: "cursor-agent",
+        label: "Cursor",
+        build_args: cursor_build_args,
+        session_id: cursor_session_id,
+        // Cursor emits Claude-shaped stream-json incl. a `result` turn-end,
+        // so it reuses the Claude managed detector.
+        activity: || Box::new(ManagedActivity::claude()),
+    },
+    PerTurnDescriptor {
+        id: "opencode",
+        bin: "opencode",
+        label: "OpenCode",
+        build_args: opencode_build_args,
+        session_id: opencode_session_id,
+        activity: || Box::new(ManagedActivity::opencode()),
+    },
+    PerTurnDescriptor {
+        id: "pi",
+        bin: "pi",
+        label: "Pi",
+        build_args: pi_build_args,
+        session_id: pi_session_id,
+        activity: || Box::new(ManagedActivity::pi()),
+    },
+];
+
+/// Look up the descriptor for a per-turn provider id. `None` means the
+/// provider isn't a per-turn agent (e.g. claude, which has its own
+/// Pty/Managed runners) or isn't a known agent at all.
+pub fn per_turn_descriptor(id: &str) -> Option<&'static PerTurnDescriptor> {
+    PER_TURN_AGENTS.iter().find(|d| d.id == id)
 }
 
 pub struct SpawnSpec<'a> {
@@ -149,9 +215,14 @@ impl Agent {
         }))
     }
 
-    /// Build a Codex per-turn runner (`codex exec [resume <id>] --json`).
-    /// See `spawn_per_turn` for the shared lifecycle.
-    pub fn spawn_codex<F, G, H>(
+    /// Build a per-turn runner (codex, cursor, opencode, pi) from its
+    /// `PerTurnDescriptor`. The binary, CLI args, and session-id extraction
+    /// come from the descriptor; the lifecycle is the shared `spawn_exec`.
+    /// Per-turn agents hold no live process between turns — each user
+    /// message spawns a fresh process — and sandbox themselves, so there's
+    /// no sandbox-exec profile.
+    pub fn spawn_per_turn<F, G, H>(
+        desc: &PerTurnDescriptor,
         spec: PerTurnSpec,
         on_event: F,
         on_session_id: G,
@@ -164,12 +235,12 @@ impl Agent {
     {
         let home = dirs::home_dir()
             .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let program = PathBuf::from(resolve_codex(&home)?);
-        Self::spawn_per_turn(
+        let program = PathBuf::from(resolve_agent_bin(desc.bin, desc.label, &home)?);
+        Self::spawn_exec(
             program,
             spec,
-            codex_build_args,
-            codex_session_id,
+            desc.build_args,
+            desc.session_id,
             ExecCallbacks {
                 on_event,
                 on_session_id,
@@ -178,108 +249,13 @@ impl Agent {
         )
     }
 
-    /// Build a Cursor per-turn runner
-    /// (`cursor-agent -p --output-format stream-json [--resume <id>]`).
-    /// Cursor emits Claude-shaped stream-json events, so it reuses the
-    /// Claude reducer + `result`-based turn-end on the frontend.
-    pub fn spawn_cursor<F, G, H>(
-        spec: PerTurnSpec,
-        on_event: F,
-        on_session_id: G,
-        on_turn_exit: H,
-    ) -> Result<Self>
-    where
-        F: Fn(Value) + Send + Sync + 'static,
-        G: Fn(String) + Send + Sync + 'static,
-        H: Fn(bool) + Send + Sync + 'static,
-    {
-        let home = dirs::home_dir()
-            .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let program = PathBuf::from(resolve_cursor(&home)?);
-        Self::spawn_per_turn(
-            program,
-            spec,
-            cursor_build_args,
-            cursor_session_id,
-            ExecCallbacks {
-                on_event,
-                on_session_id,
-                on_exit: on_turn_exit,
-            },
-        )
-    }
-
-    /// Build an OpenCode per-turn runner
-    /// (`opencode run --format json --dangerously-skip-permissions [--session <id>]`).
-    /// OpenCode emits its own step/part event schema (see `src/adapters/opencode`),
-    /// so the frontend reduces it with a dedicated reducer; the lifecycle is the
-    /// shared `spawn_per_turn`.
-    pub fn spawn_opencode<F, G, H>(
-        spec: PerTurnSpec,
-        on_event: F,
-        on_session_id: G,
-        on_turn_exit: H,
-    ) -> Result<Self>
-    where
-        F: Fn(Value) + Send + Sync + 'static,
-        G: Fn(String) + Send + Sync + 'static,
-        H: Fn(bool) + Send + Sync + 'static,
-    {
-        let home = dirs::home_dir()
-            .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let program = PathBuf::from(resolve_opencode(&home)?);
-        Self::spawn_per_turn(
-            program,
-            spec,
-            opencode_build_args,
-            opencode_session_id,
-            ExecCallbacks {
-                on_event,
-                on_session_id,
-                on_exit: on_turn_exit,
-            },
-        )
-    }
-
-    /// Build a Pi per-turn runner
-    /// (`pi -p --mode json [--session <id>] <prompt>`). Pi emits its own
-    /// step/message event schema (see `src/adapters/pi`), so the frontend
-    /// reduces it with a dedicated reducer; the lifecycle is the shared
-    /// `spawn_per_turn`.
-    pub fn spawn_pi<F, G, H>(
-        spec: PerTurnSpec,
-        on_event: F,
-        on_session_id: G,
-        on_turn_exit: H,
-    ) -> Result<Self>
-    where
-        F: Fn(Value) + Send + Sync + 'static,
-        G: Fn(String) + Send + Sync + 'static,
-        H: Fn(bool) + Send + Sync + 'static,
-    {
-        let home = dirs::home_dir()
-            .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let program = PathBuf::from(resolve_pi(&home)?);
-        Self::spawn_per_turn(
-            program,
-            spec,
-            pi_build_args,
-            pi_session_id,
-            ExecCallbacks {
-                on_event,
-                on_session_id,
-                on_exit: on_turn_exit,
-            },
-        )
-    }
-
-    /// Shared per-turn runner. Spawns no process yet — the first turn is
-    /// launched when the first user message arrives. `on_exit(success)`
+    /// Shared per-turn exec lifecycle. Spawns no process yet — the first
+    /// turn is launched when the first user message arrives. `on_exit(success)`
     /// fires when a turn's process exits (and that turn is still current)
     /// — the per-turn analogue of a turn-end signal, so an interrupted or
     /// failed turn that never emits an in-band turn-end still leaves the
     /// agent promptly.
-    fn spawn_per_turn<A, I, F, G, H>(
+    fn spawn_exec<A, I, F, G, H>(
         program: PathBuf,
         spec: PerTurnSpec,
         build_args: A,
@@ -460,22 +436,6 @@ fn prepare_managed_args(
 
 fn resolve_claude(home: &Path) -> Result<String> {
     resolve_agent_bin("claude", "Claude Code", home)
-}
-
-fn resolve_codex(home: &Path) -> Result<String> {
-    resolve_agent_bin("codex", "Codex", home)
-}
-
-fn resolve_cursor(home: &Path) -> Result<String> {
-    resolve_agent_bin("cursor-agent", "Cursor", home)
-}
-
-fn resolve_opencode(home: &Path) -> Result<String> {
-    resolve_agent_bin("opencode", "OpenCode", home)
-}
-
-fn resolve_pi(home: &Path) -> Result<String> {
-    resolve_agent_bin("pi", "Pi", home)
 }
 
 // ── per-turn provider configs ────────────────────────────────────────────

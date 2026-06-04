@@ -936,9 +936,10 @@ impl WorkspaceManager {
 
 /// Per-turn agents run one process per turn, assign their own session id
 /// (captured from their first turn's events rather than generated up
-/// front), and render only in the structured (Custom) view for now.
+/// front), and render only in the structured (Custom) view for now. The
+/// canonical set is the `agent::PER_TURN_AGENTS` descriptor table.
 pub fn is_per_turn_provider(provider: &str) -> bool {
-    matches!(provider, "codex" | "cursor" | "opencode" | "pi")
+    crate::agent::per_turn_descriptor(provider).is_some()
 }
 
 /// Build a fresh AgentRecord with one primary tracked repo.
