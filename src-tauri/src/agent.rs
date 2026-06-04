@@ -241,6 +241,38 @@ impl Agent {
         )
     }
 
+    /// Build a Pi per-turn runner
+    /// (`pi -p --mode json [--session <id>] <prompt>`). Pi emits its own
+    /// step/message event schema (see `src/adapters/pi`), so the frontend
+    /// reduces it with a dedicated reducer; the lifecycle is the shared
+    /// `spawn_per_turn`.
+    pub fn spawn_pi<F, G, H>(
+        spec: PerTurnSpec,
+        on_event: F,
+        on_session_id: G,
+        on_turn_exit: H,
+    ) -> Result<Self>
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+        G: Fn(String) + Send + Sync + 'static,
+        H: Fn(bool) + Send + Sync + 'static,
+    {
+        let home = dirs::home_dir()
+            .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let program = PathBuf::from(resolve_pi(&home)?);
+        Self::spawn_per_turn(
+            program,
+            spec,
+            pi_build_args,
+            pi_session_id,
+            ExecCallbacks {
+                on_event,
+                on_session_id,
+                on_exit: on_turn_exit,
+            },
+        )
+    }
+
     /// Shared per-turn runner. Spawns no process yet — the first turn is
     /// launched when the first user message arrives. `on_exit(success)`
     /// fires when a turn's process exits (and that turn is still current)
@@ -442,6 +474,10 @@ fn resolve_opencode(home: &Path) -> Result<String> {
     resolve_agent_bin("opencode", "OpenCode", home)
 }
 
+fn resolve_pi(home: &Path) -> Result<String> {
+    resolve_agent_bin("pi", "Pi", home)
+}
+
 // ── per-turn provider configs ────────────────────────────────────────────
 
 /// Codex: `codex exec [resume <id>] --json …`. Approvals off + codex's own
@@ -540,6 +576,32 @@ fn opencode_session_id(event: &Value) -> Option<String> {
         .get("sessionID")
         .and_then(|s| s.as_str())
         .map(str::to_string)
+}
+
+/// Pi: `pi -p --mode json [--session <id>] <prompt>`. `-p` runs one turn
+/// non-interactively and exits; in that mode Pi auto-runs its tools (bash,
+/// write, …) with no approval prompt. Pi assigns its own session id on the
+/// first turn (captured from the `session` event), and `--session <id>`
+/// resumes it. We deliberately use `--session` (not the newer `--session-id`):
+/// it's the resume flag common to the versions we target — 0.74.x lacks
+/// `--session-id` entirely. Verified end-to-end against pi 0.74.2. Pi runs in
+/// the child's cwd; the prompt is positional and must come after the flags.
+fn pi_build_args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-p".into(), "--mode".into(), "json".into()];
+    if let Some(id) = session_id {
+        args.push("--session".into());
+        args.push(id.to_string());
+    }
+    args.push(prompt.to_string());
+    args
+}
+
+/// Pi reports its session id on the first `{"type":"session","id":"…"}` event.
+fn pi_session_id(event: &Value) -> Option<String> {
+    if event.get("type").and_then(|t| t.as_str()) != Some("session") {
+        return None;
+    }
+    event.get("id").and_then(|s| s.as_str()).map(str::to_string)
 }
 
 /// Locate an agent CLI by name: PATH first, then the user's login shell

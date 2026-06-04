@@ -938,7 +938,7 @@ impl WorkspaceManager {
 /// (captured from their first turn's events rather than generated up
 /// front), and render only in the structured (Custom) view for now.
 pub fn is_per_turn_provider(provider: &str) -> bool {
-    matches!(provider, "codex" | "cursor" | "opencode")
+    matches!(provider, "codex" | "cursor" | "opencode" | "pi")
 }
 
 /// Build a fresh AgentRecord with one primary tracked repo.

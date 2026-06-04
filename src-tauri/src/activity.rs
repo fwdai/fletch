@@ -92,6 +92,13 @@ impl ManagedActivity {
                     == Some("stop")
         })
     }
+
+    /// Pi (`pi -p --mode json`) emits a `turn_end` per assistant step (so it
+    /// fires mid-turn after a tool call); the whole turn ends with a single
+    /// `agent_end`, which is the signal we key on.
+    pub fn pi() -> Self {
+        Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("agent_end"))
+    }
 }
 
 impl Activity for ManagedActivity {
@@ -213,6 +220,28 @@ mod tests {
     fn opencode_resets_after_new_turn() {
         let mut a = ManagedActivity::opencode();
         a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}}));
+        assert!(a.turn_ended());
+        a.reset_for_new_turn();
+        assert!(!a.turn_ended());
+    }
+
+    #[test]
+    fn pi_ends_on_agent_end_not_turn_end() {
+        let mut a = ManagedActivity::pi();
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "session", "id": "x"}));
+        assert!(!a.turn_ended());
+        // A mid-turn `turn_end` (after a tool step) must NOT end the turn.
+        a.observe_event(&serde_json::json!({"type": "turn_end"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "agent_end"}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn pi_resets_after_new_turn() {
+        let mut a = ManagedActivity::pi();
+        a.observe_event(&serde_json::json!({"type": "agent_end"}));
         assert!(a.turn_ended());
         a.reset_for_new_turn();
         assert!(!a.turn_ended());
