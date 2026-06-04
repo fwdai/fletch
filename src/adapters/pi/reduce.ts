@@ -22,21 +22,16 @@
 import type { ChatItem, RawEvent } from "../types";
 import { asBlockList, asRecord } from "../shared/json";
 import {
+  aliasToolInput,
   dedupAgainstLast,
   finalizeStreamingItems,
   upsertToolCall,
 } from "../shared/reducer-helpers";
 
 /** Pi names file tools' path argument `path`; the shared presenters read
- *  Claude's `file_path`. Add the alias so Read/Write/Edit render the path.
- *  Returns the input untouched when there's nothing to alias (e.g. bash's
- *  `command`). */
+ *  Claude's `file_path`. Alias it so Read/Write/Edit render the path. */
 function normalizeToolInput(input: unknown): unknown {
-  const rec = asRecord(input);
-  if (typeof rec.path === "string" && rec.file_path === undefined) {
-    return { ...rec, file_path: rec.path };
-  }
-  return input;
+  return aliasToolInput(input, [["path", "file_path"]]);
 }
 
 /** Flatten a content-block array (`[{type:"text",text}]`) to a string. */
