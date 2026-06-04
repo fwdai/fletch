@@ -728,8 +728,10 @@ impl Supervisor {
         attachments: &[String],
     ) -> Result<()> {
         // Record the user turn as a provider-agnostic canonical event before
-        // sending to the agent, so the user message is logged ahead of the
-        // response. Persist for history + emit for live rendering.
+        // sending to the agent, so it's logged ahead of the response. This is
+        // persist-only: the frontend renders the user message optimistically
+        // on send, and replays this event through the reducer on restore — so
+        // it must not be emitted live (that would double-render).
         let user_event = serde_json::json!({
             "type": "user_message",
             "text": text,
@@ -738,13 +740,6 @@ impl Supervisor {
         if let Err(e) = self.workspace.append_session_event(agent_id, &user_event) {
             tracing::warn!(error = %e, agent_id = %agent_id, "append user_message event failed");
         }
-        let _ = app.emit(
-            "agent:event",
-            AgentEventPayload {
-                agent_id: agent_id.to_string(),
-                event: user_event,
-            },
-        );
         {
             let agents = self.agents.lock();
             let agent = agents
