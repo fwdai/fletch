@@ -9,7 +9,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
-use crate::agent::{Agent, PerTurnSpec, SpawnSpec};
+use crate::agent::{per_turn_descriptor, Agent, PerTurnSpec, SpawnSpec};
 use crate::branding;
 use crate::error::{Error, Result};
 use crate::git;
@@ -506,16 +506,12 @@ impl Supervisor {
             *entry
         };
 
-        let mut activity: Box<dyn Activity> = match provider.as_str() {
-            "codex" => Box::new(ManagedActivity::codex()),
-            // cursor emits Claude-shaped stream-json, incl. a `result`
-            // turn-end event — reuse the Claude managed detector.
-            "cursor" => Box::new(ManagedActivity::claude()),
-            // opencode ends a turn on a `step_finish` with reason "stop".
-            "opencode" => Box::new(ManagedActivity::opencode()),
-            // pi ends a turn on a single `agent_end` event.
-            "pi" => Box::new(ManagedActivity::pi()),
-            _ => match record.view {
+        // Per-turn agents carry their turn-end detector in the descriptor
+        // table; everything else is claude (native PTY silence or the
+        // managed `result` detector, by view).
+        let mut activity: Box<dyn Activity> = match per_turn_descriptor(&provider) {
+            Some(desc) => (desc.activity)(),
+            None => match record.view {
                 AgentView::Native => Box::new(ClaudeNativeActivity::new()),
                 AgentView::Custom => Box::new(ManagedActivity::claude()),
             },
@@ -1344,15 +1340,10 @@ fn spawn_per_turn_agent(
     };
 
     let spec = PerTurnSpec { cwd, session_id };
-    match provider {
-        "codex" => Agent::spawn_codex(spec, on_event, on_session_id, on_turn_exit),
-        "cursor" => Agent::spawn_cursor(spec, on_event, on_session_id, on_turn_exit),
-        "opencode" => Agent::spawn_opencode(spec, on_event, on_session_id, on_turn_exit),
-        "pi" => Agent::spawn_pi(spec, on_event, on_session_id, on_turn_exit),
-        other => Err(Error::Other(format!(
-            "unknown per-turn agent provider: {other}"
-        ))),
-    }
+    let desc = per_turn_descriptor(provider).ok_or_else(|| {
+        Error::Other(format!("unknown per-turn agent provider: {provider}"))
+    })?;
+    Agent::spawn_per_turn(desc, spec, on_event, on_session_id, on_turn_exit)
 }
 
 fn observe_native_input(sup: &Supervisor, agent_id: &str, bytes: &[u8]) -> Vec<String> {
