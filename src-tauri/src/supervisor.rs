@@ -9,7 +9,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
-use crate::agent::{per_turn_descriptor, Agent, PerTurnSpec, SpawnSpec};
+use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnSpec};
 use crate::branding;
 use crate::error::{Error, Result};
 use crate::git;
@@ -339,13 +339,13 @@ impl Supervisor {
             )));
         }
 
-        // Per-turn agents (codex, cursor) only render in the structured
-        // (Custom) view for now: they emit stream-json events, not the PTY
-        // bytes the native view expects. Native TUI views are a follow-up.
-        let view = if is_per_turn_provider(&provider) {
-            AgentView::Custom
-        } else {
+        // Only agents with a wired native (PTY/TUI) view can honor a Native
+        // request; the rest fall back to the structured Custom view. Native
+        // views are being rolled out per agent (see `AgentCapabilities`).
+        let view = if capabilities(&provider).native_view {
             view
+        } else {
+            AgentView::Custom
         };
 
         let agent_id = self.workspace.allocate_agent_id()?;
@@ -709,11 +709,11 @@ impl Supervisor {
         if record.view == new_view {
             return Ok(());
         }
-        // Per-turn agents (codex, cursor) have no native PTY view yet —
-        // keep them on the structured one.
-        if is_per_turn_provider(&record.provider) && new_view == AgentView::Native {
+        // Reject switching to native for agents whose native view isn't
+        // wired yet (rolling out per agent — see `AgentCapabilities`).
+        if new_view == AgentView::Native && !capabilities(&record.provider).native_view {
             return Err(Error::Other(
-                "This agent only supports the structured view".into(),
+                "The native view isn't available for this agent yet".into(),
             ));
         }
 
@@ -997,20 +997,12 @@ impl Supervisor {
     pub fn read_session_transcript(&self, agent_id: &str) -> Result<Vec<Value>> {
         let record = self.workspace.agent(agent_id)?;
 
-        // Cursor stores chats in an internal, undocumented format (no
-        // `export`), so transcript replay isn't wired for it in v1 — live
-        // turns render fine and `--resume` still continues the conversation.
-        //
-        // OpenCode does have an `export` command, but its on-disk schema
-        // differs from the live event stream the reducer consumes, so
-        // wiring it is a follow-up. Re-attaching replays from the
-        // provider-agnostic SQLite event log; `--session <id>` resumes the
-        // conversation.
-        //
-        // Pi persists a `session.jsonl` of its live events, so transcript
-        // replay is wireable later; for v1 it falls back to the SQLite log
-        // like the others, and `--session <id>` resumes the conversation.
-        if matches!(record.provider.as_str(), "cursor" | "opencode" | "pi") {
+        // Agents whose native on-disk transcript isn't wired yet have
+        // nothing to hand back here; re-attaching restores their history
+        // from the provider-agnostic SQLite event log instead, and
+        // `--resume`/`--session <id>` still continues the conversation.
+        // (Per-agent rollout — see `AgentCapabilities::transcript_replay`.)
+        if !capabilities(&record.provider).transcript_replay {
             return Ok(Vec::new());
         }
 
