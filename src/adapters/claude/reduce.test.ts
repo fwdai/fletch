@@ -122,6 +122,10 @@ describe("claudeAdapter.reduce — unknown event", () => {
 });
 
 describe("claudeAdapter.reduce — extended thinking", () => {
+  // These feed a NON-EMPTY thinking block to exercise the reducer logic.
+  // Real Claude Code (2.1.162) redacts thinking text — it emits an empty
+  // `thinking` with only a signature — so this path is dormant in practice
+  // (verified live). It stays correct for if/when the CLI exposes the text.
   it("captures a thinking block as a reasoning notice", () => {
     const items = reduceAll([
       {
