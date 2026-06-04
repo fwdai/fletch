@@ -18,8 +18,23 @@
 
 import type { ChatItem, RawEvent } from "../types";
 import { asRecord } from "../shared/json";
-import { upsertToolCall } from "../shared/reducer-helpers";
+import { aliasToolInput, upsertToolCall } from "../shared/reducer-helpers";
 import { reduce as claudeReduce } from "../claude/reduce";
+
+/** Cursor names its file-tool fields differently from Claude — glob uses
+ *  `globPattern`/`targetDirectory`, read/edit use `path`, edit carries the new
+ *  content in `streamContent`. Alias them to the snake_case names the shared
+ *  Glob/Read/Edit presenters read, so they render the pattern/path/diff
+ *  instead of "(no pattern)"/"(no path)". (Grep already uses `pattern`/`path`,
+ *  and shell goes through the command-string branch — both untouched.) */
+function normalizeToolInput(input: unknown): unknown {
+  return aliasToolInput(input, [
+    ["globPattern", "pattern"],
+    ["targetDirectory", "path"],
+    ["path", "file_path"],
+    ["streamContent", "new_string"],
+  ]);
+}
 
 /** Pull a renderable (name, input) out of Cursor's typed tool_call payload.
  *  The payload is a single-key object like `{shellToolCall: {args, result}}`. */
@@ -33,8 +48,12 @@ function toolCallParts(ev: RawEvent): {
   const inner = asRecord(tc[key]);
   const name = key.replace(/ToolCall$/, "") || "tool";
   const args = asRecord(inner.args);
-  // Shell calls read best as the command string; other tools show their args.
-  const input = typeof args.command === "string" ? args.command : (inner.args ?? {});
+  // Shell calls read best as the command string; other tools show their args
+  // (with field names aliased to what the shared presenters expect).
+  const input =
+    typeof args.command === "string"
+      ? args.command
+      : normalizeToolInput(inner.args ?? {});
   return { name, input, inner };
 }
 

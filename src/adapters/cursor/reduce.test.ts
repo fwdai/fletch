@@ -105,6 +105,84 @@ describe("cursorAdapter", () => {
     ]);
   });
 
+  // Cursor names file-tool args differently from Claude (globPattern,
+  // targetDirectory, path, streamContent). The reducer aliases them to the
+  // snake_case fields the shared presenters read, so glob/read/edit don't
+  // render "(no pattern)"/"(no path)". Events captured from cursor-agent
+  // 2026.06.03.
+  it("aliases glob/read/edit tool args to the presenters' field names", () => {
+    const items = run([
+      {
+        type: "tool_call",
+        subtype: "completed",
+        call_id: "g1",
+        tool_call: {
+          globToolCall: {
+            args: { targetDirectory: "/repo/src", globPattern: "*.txt" },
+            result: { success: { files: ["sample.txt"], totalFiles: 1 } },
+          },
+        },
+      },
+      {
+        type: "tool_call",
+        subtype: "completed",
+        call_id: "r1",
+        tool_call: {
+          readToolCall: {
+            args: { path: "/repo/src/sample.txt" },
+            result: { success: { content: "hi\n", totalLines: 1 } },
+          },
+        },
+      },
+      {
+        type: "tool_call",
+        subtype: "completed",
+        call_id: "e1",
+        tool_call: {
+          editToolCall: {
+            args: { path: "/repo/src/note.md", streamContent: "bye" },
+            result: { success: {} },
+          },
+        },
+      },
+    ] as RawEvent[]);
+
+    const calls = items.filter((i) => i.kind === "tool_call");
+    expect(calls).toEqual([
+      {
+        kind: "tool_call",
+        id: "g1",
+        name: "glob",
+        input: {
+          targetDirectory: "/repo/src",
+          globPattern: "*.txt",
+          pattern: "*.txt",
+          path: "/repo/src",
+        },
+        streaming: false,
+      },
+      {
+        kind: "tool_call",
+        id: "r1",
+        name: "read",
+        input: { path: "/repo/src/sample.txt", file_path: "/repo/src/sample.txt" },
+        streaming: false,
+      },
+      {
+        kind: "tool_call",
+        id: "e1",
+        name: "edit",
+        input: {
+          path: "/repo/src/note.md",
+          file_path: "/repo/src/note.md",
+          streamContent: "bye",
+          new_string: "bye",
+        },
+        streaming: false,
+      },
+    ]);
+  });
+
   it("exposes id and reuses Claude's policy", () => {
     expect(cursorAdapter.id).toBe("cursor");
     expect(cursorAdapter.policy["notice:turn_end"]).toBe("hide");
