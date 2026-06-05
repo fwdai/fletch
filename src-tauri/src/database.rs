@@ -32,6 +32,7 @@ fn get_migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("../migrations/0001_initial_schema.sql")),
         M::up(include_str!("../migrations/0002_session_records.sql")),
+        M::up(include_str!("../migrations/0003_retire_session_events.sql")),
     ])
 }
 
@@ -552,11 +553,12 @@ mod tests {
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
-        for t in ["workspaces", "sessions", "worktrees", "session_events", "repos", "projects", "project_settings", "accounts", "settings"] {
+        for t in ["workspaces", "sessions", "worktrees", "session_records", "repos", "projects", "project_settings", "accounts", "settings"] {
             assert!(names.contains(t), "missing table {t}");
         }
         assert!(!names.contains("agents"), "stale table agents still present");
         assert!(!names.contains("messages"), "stale table messages still present");
+        assert!(!names.contains("session_events"), "retired table session_events still present");
     }
 
     #[test]
@@ -566,19 +568,20 @@ mod tests {
         let pid = db_insert(&conn, "projects", json!({ "name": "p" })).unwrap();
         let ws = db_insert(&conn, "workspaces", json!({ "project_id": pid, "name": "halifax" })).unwrap();
         let sess = db_insert(&conn, "sessions", json!({ "workspace_id": ws, "provider": "claude" })).unwrap();
-        // session_events is written via dedicated functions, not the generic
+        // session_records is written via dedicated functions, not the generic
         // layer, so it isn't in ALLOWED_TABLES — insert/count with raw SQL.
         conn.execute(
-            "INSERT INTO session_events (session_id, seq, event_json, created_at) VALUES (?1, 1, '{}', 0)",
+            "INSERT INTO session_records (session_id, seq, provider, source, native_id, body, created_at)
+             VALUES (?1, 1, 'claude', 'transcript', 'x', '{}', 0)",
             [&sess],
         )
         .unwrap();
         db_delete(&conn, "workspaces", json!({ "where": { "id": ws } })).unwrap();
         assert_eq!(db_count(&conn, "sessions", json!({})).unwrap(), 0);
-        let events: i64 = conn
-            .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
+        let records: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_records", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(events, 0);
+        assert_eq!(records, 0);
     }
 
     #[test]

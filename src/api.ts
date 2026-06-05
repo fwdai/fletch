@@ -245,11 +245,6 @@ export const api = {
       "read_session_transcript",
       { agentId },
     ),
-  readSessionEvents: (agentId: string) =>
-    invoke<Array<Record<string, unknown> & { type?: string }>>(
-      "read_session_events",
-      { agentId },
-    ),
   readSessionRecords: (agentId: string) =>
     invoke<SessionRecord[]>("read_session_records", { agentId }),
   syncSession: (agentId: string) =>

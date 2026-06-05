@@ -2177,12 +2177,10 @@ mod tests {
     }
 
     #[test]
-    fn delivery_to_unready_agent_persists_no_user_message() {
-        // A freshly spawned agent has a session row but isn't in the live
-        // agents map yet. The frontend retries the send until the agent is
-        // ready; if we persisted before delivery, every failed retry would
-        // record a duplicate user_message event and the prompt would render
-        // N times on reopen. Nothing must be persisted for a failed delivery.
+    fn delivery_to_unready_agent_persists_nothing() {
+        // A freshly spawned agent has a session row but isn't in the live agents
+        // map yet (the frontend retries the send until it's ready). A failed
+        // delivery must not write anything to the canonical store.
         let sup = test_supervisor();
         let mut record = record_with_status("yosemite", AgentStatus::Spawning);
         sup.workspace.add_agent(&mut record).unwrap();
@@ -2192,10 +2190,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::AgentNotFound(_)));
 
-        let events = sup.workspace.read_session_events("yosemite").unwrap();
+        let records = sup.workspace.read_session_records("yosemite").unwrap();
         assert!(
-            events.is_empty(),
-            "failed delivery must not persist a user_message event, got {events:?}",
+            records.is_empty(),
+            "failed delivery must persist nothing, got {records:?}",
         );
     }
 }
