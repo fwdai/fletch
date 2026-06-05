@@ -9,12 +9,14 @@ import {
   onAgentTask,
   onAgentView,
   onPrStateChanged,
+  onSessionRecordsAppended,
   onShellOutput,
   onWorkspaceChanged,
   type AgentRecord,
   type AgentView,
   type GitState,
   type PrState,
+  type SessionRecord,
   type ShortStats,
   type Workspace,
 } from "./api";
@@ -417,6 +419,40 @@ export function reduceStoredEvent(
   }
 }
 
+/** Render canonical `session_records` (verbatim per-provider transcript
+ *  bodies) into chat items via the same pipeline as on-disk replay:
+ *  `normalizeTranscript` → `reduce`. Defensive: a malformed body or an adapter
+ *  throw degrades gracefully instead of failing the whole restore. */
+export function reduceRecords(
+  provider: string | undefined,
+  records: SessionRecord[],
+): ChatItem[] {
+  const adapter = getAdapter(provider);
+  let rawEvents: RawEvent[];
+  try {
+    rawEvents = adapter.normalizeTranscript(records.map((r) => r.body));
+  } catch (err) {
+    console.error("[adapters] normalizeTranscript threw during restore", {
+      provider,
+      err,
+    });
+    return [];
+  }
+  let items: ChatItem[] = [];
+  for (const ev of rawEvents) {
+    try {
+      items = adapter.reduce(items, ev);
+    } catch (err) {
+      console.error("[adapters] reduce threw during records restore", {
+        provider,
+        type: ev.type,
+        err,
+      });
+    }
+  }
+  return items;
+}
+
 /** Apply one raw event to an agent's log via its provider adapter. Catches
  *  adapter throws so a single malformed event can't poison the whole log. */
 function applyEvent(
@@ -610,6 +646,26 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     await onAgentEvent((e) => {
       set((state) => applyEvent(state, e.agent_id, e.event as RawEvent));
+    });
+
+    // A turn's transcript was ingested into session_records: replace the
+    // ephemeral live render with the canonical one (richer — e.g. tool results
+    // the live stream dropped). No-op if nothing was stored.
+    await onSessionRecordsAppended((e) => {
+      const id = e.agent_id;
+      void (async () => {
+        try {
+          const records = await api.readSessionRecords(id);
+          if (records.length === 0) return;
+          const provider = providerFor(get(), id);
+          const items = reduceRecords(provider, records);
+          set((state) => ({
+            managedLogs: { ...state.managedLogs, [id]: items },
+          }));
+        } catch {
+          // Non-critical refresh; the next load picks up the records.
+        }
+      })();
     });
 
     await onAgentBranch((e) => {
@@ -963,13 +1019,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().transcriptLoading[id]) return;
     set((s) => ({ transcriptLoading: { ...s.transcriptLoading, [id]: true } }));
     try {
-      // session_events is the canonical history — replay the stored raw events
-      // through the same reducer used live, so restore matches the live render.
       const provider = providerFor(get(), id);
-      const events = await api.readSessionEvents(id);
+      // session_records is the canonical store: per-provider verbatim transcript
+      // bodies, rendered via normalizeTranscript→reduce. Fall back to the legacy
+      // session_events log for sessions not yet ingested (agents without a
+      // transcript reader, or pre-migration history).
+      const records = await api.readSessionRecords(id);
       let items: ChatItem[] = [];
-      for (const ev of events) {
-        items = reduceStoredEvent(provider, items, ev as RawEvent);
+      if (records.length > 0) {
+        items = reduceRecords(provider, records);
+      } else {
+        const events = await api.readSessionEvents(id);
+        for (const ev of events) {
+          items = reduceStoredEvent(provider, items, ev as RawEvent);
+        }
       }
       set((state) => {
         // Nothing stored but a live turn is already rendering — don't clobber it.
