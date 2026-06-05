@@ -1098,8 +1098,9 @@ impl Supervisor {
         sync_session_records(&self.workspace, agent_id)
     }
 
-    /// Fire-and-forget transcript ingest at turn-end. Retries with backoff to
-    /// ride out the agent's flush lag; emits `session:records-appended` when new
+    /// Fire-and-forget transcript ingest at turn-end. Polls with backoff to ride
+    /// out the agent's flush lag, accumulating records until the transcript
+    /// settles (see `TranscriptPoll`); emits `session:records-appended` when new
     /// records land. WARNs once if a reader-backed agent ingests nothing after
     /// all retries — the early signal that its transcript path/format changed.
     /// Called from `transition_active` whenever any agent reaches Idle, so it
@@ -1107,33 +1108,34 @@ impl Supervisor {
     pub fn trigger_session_sync(&self, app: AppHandle, agent_id: String) {
         let workspace = self.workspace.clone();
         tauri::async_runtime::spawn(async move {
-            // Immediate attempt, then back off (ms) for flush lag.
+            // Immediate attempt, then back off (ms) across the whole window for
+            // flush lag — accumulating every batch (see `TranscriptPoll`), so a
+            // late-flushing final answer is captured this turn, not the next.
             let backoffs = [0u64, 200, 400, 800, 1600];
-            let mut had_reader = false;
-            let mut inserted_any = false;
+            let mut poll = TranscriptPoll::default();
             for wait in backoffs {
                 if wait > 0 {
                     tokio::time::sleep(Duration::from_millis(wait)).await;
                 }
-                match sync_session_records(&workspace, &agent_id) {
-                    None => return, // no transcript reader — nothing to do
-                    Some(0) => had_reader = true,
-                    Some(_) => {
-                        inserted_any = true;
-                        break;
-                    }
+                let result = sync_session_records(&workspace, &agent_id);
+                if matches!(poll.observe(result), PollControl::Stop) {
+                    break;
                 }
             }
-            if inserted_any {
-                let _ = app.emit(
-                    "session:records-appended",
-                    SessionRecordsAppendedPayload { agent_id },
-                );
-            } else if had_reader {
-                tracing::warn!(
-                    agent_id,
-                    "session sync ingested 0 records after retries (transcript not found or unchanged)"
-                );
+            match poll.outcome() {
+                PollOutcome::Appended(_) => {
+                    let _ = app.emit(
+                        "session:records-appended",
+                        SessionRecordsAppendedPayload { agent_id },
+                    );
+                }
+                PollOutcome::NothingIngested => {
+                    tracing::warn!(
+                        agent_id,
+                        "session sync ingested 0 records after retries (transcript not found or unchanged)"
+                    );
+                }
+                PollOutcome::NoReader => {}
             }
         });
     }
@@ -1213,6 +1215,76 @@ impl Supervisor {
 
         self.workspace.remove_agent(agent_id)?;
         Ok(())
+    }
+}
+
+/// Whether the turn-end transcript poll should keep going.
+#[derive(Debug, PartialEq, Eq)]
+enum PollControl {
+    Continue,
+    Stop,
+}
+
+/// What to do once the poll loop ends.
+#[derive(Debug, PartialEq, Eq)]
+enum PollOutcome {
+    /// No transcript reader for this provider — nothing was or will be ingested.
+    NoReader,
+    /// At least one record landed; emit `session:records-appended`.
+    Appended(usize),
+    /// A reader ran but the transcript yielded nothing (not flushed / unchanged).
+    NothingIngested,
+}
+
+/// Accumulating decision logic for the turn-end transcript sync, split out from
+/// `trigger_session_sync` so the "keep polling until the tail flushes" behavior
+/// is unit-testable without timers or the filesystem.
+///
+/// A single turn's lines can flush to the jsonl in more than one batch, separated
+/// by a gap — e.g. a tool-use plus a large tool-result (and session bookkeeping)
+/// land first, then the final assistant answer a phase later (it may not even be
+/// generated when the turn-end first fires). The old behavior stopped at the
+/// first non-empty batch, committing the turn *minus* its answer and emitting —
+/// so the answer was dropped until the next turn re-read the file.
+///
+/// Because any early-stop heuristic can be defeated by a gap at least as long as
+/// the heuristic's threshold, we don't try to detect "settled": we poll the
+/// whole backoff window, accumulating every batch, and emit once at the end. The
+/// only early exit is "no reader for this provider" — then there's no transcript
+/// to wait for. The window is bounded (~3s); anything that flushes later is still
+/// swept up by the next turn's sync (each sync re-reads the full file).
+#[derive(Default)]
+struct TranscriptPoll {
+    had_reader: bool,
+    inserted: usize,
+}
+
+impl TranscriptPoll {
+    /// Fold one `sync_session_records` result into the running decision and say
+    /// whether to keep polling.
+    fn observe(&mut self, result: Option<usize>) -> PollControl {
+        match result {
+            // No reader for this provider — nothing to wait for, bail at once.
+            None => PollControl::Stop,
+            // A reader ran. Whether or not it added rows this pass, keep polling
+            // the rest of the window: a later batch (the answer) may still land,
+            // possibly after an empty pass. The for-loop's backoff bounds this.
+            Some(n) => {
+                self.had_reader = true;
+                self.inserted += n;
+                PollControl::Continue
+            }
+        }
+    }
+
+    fn outcome(&self) -> PollOutcome {
+        if self.inserted > 0 {
+            PollOutcome::Appended(self.inserted)
+        } else if self.had_reader {
+            PollOutcome::NothingIngested
+        } else {
+            PollOutcome::NoReader
+        }
     }
 }
 
@@ -2183,5 +2255,52 @@ mod tests {
         assert_eq!(turns[0].turn_id, "turn-1");
         assert_eq!(turns[0].text, "hello");
         assert_eq!(turns[0].native_id, None);
+    }
+
+    // ── TranscriptPoll: turn-end ingest must not stop at the first flushed batch ──
+
+    #[test]
+    fn poll_does_not_stop_on_first_batch() {
+        // Regression: an image turn flushes the user msg + tool-use + large
+        // tool-result first, then the final answer a beat later. The poll must
+        // keep going after the first batch so the answer is still captured this
+        // turn (not dropped until the next one).
+        let mut poll = TranscriptPoll::default();
+        assert_eq!(poll.observe(Some(7)), PollControl::Continue);
+    }
+
+    #[test]
+    fn poll_accumulates_across_a_gap_before_the_late_answer() {
+        // The decisive case from the live evidence: the turn's lines flush in
+        // batches separated by a gap. The answer can be a phase *after* the
+        // tool-result + bookkeeping — so there's an empty pass BEFORE it lands.
+        // The poll must NOT settle on that empty pass; it has to keep reading
+        // through the window so the late answer is still ingested this turn.
+        let mut poll = TranscriptPoll::default();
+        assert_eq!(poll.observe(Some(7)), PollControl::Continue); // user + tool-use + result + meta
+        assert_eq!(poll.observe(Some(0)), PollControl::Continue); // gap — answer not flushed yet
+        assert_eq!(poll.observe(Some(2)), PollControl::Continue); // the answer (+ trailing meta)
+        assert_eq!(poll.observe(Some(0)), PollControl::Continue);
+        assert_eq!(poll.observe(Some(0)), PollControl::Continue);
+        assert_eq!(poll.outcome(), PollOutcome::Appended(9));
+    }
+
+    #[test]
+    fn poll_no_reader_stops_immediately() {
+        // Readerless providers must bail at once — no point polling a window for
+        // a transcript that will never exist.
+        let mut poll = TranscriptPoll::default();
+        assert_eq!(poll.observe(None), PollControl::Stop);
+        assert_eq!(poll.outcome(), PollOutcome::NoReader);
+    }
+
+    #[test]
+    fn poll_reader_but_nothing_ingested_warns() {
+        // Reader ran every pass but the transcript never yielded a record.
+        let mut poll = TranscriptPoll::default();
+        for _ in 0..5 {
+            assert_eq!(poll.observe(Some(0)), PollControl::Continue);
+        }
+        assert_eq!(poll.outcome(), PollOutcome::NothingIngested);
     }
 }
