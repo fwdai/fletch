@@ -573,15 +573,23 @@ impl WorkspaceManager {
     /// on `(session_id, native_id)`: a duplicate native_id is ignored and the
     /// original row's body is retained. Returns `true` if a new row was
     /// inserted, `false` if it was a duplicate or the workspace has no session.
-    pub fn append_session_record(
+    /// Append many transcript records in a single transaction. Same idempotency
+    /// as `append_session_record` (ignored on a `(session_id, native_id)`
+    /// conflict), but one commit for the whole batch instead of one per record —
+    /// so turn-end ingest is O(batch) commits, not O(conversation). `seq` stays
+    /// contiguous: an ignored duplicate doesn't burn a number. Returns how many
+    /// rows were actually inserted.
+    pub fn append_session_records(
         &self,
         workspace_id: &str,
         provider: &str,
         source: &str,
-        native_id: &str,
         agent_version: Option<&str>,
-        body: &serde_json::Value,
-    ) -> Result<bool> {
+        records: &[(&str, &serde_json::Value)],
+    ) -> Result<usize> {
+        if records.is_empty() {
+            return Ok(0);
+        }
         let conn = self.db.lock();
 
         let sid: Option<String> = conn
@@ -591,29 +599,88 @@ impl WorkspaceManager {
                 |r| r.get(0),
             )
             .ok();
-
         let Some(sid) = sid else {
-            return Ok(false);
+            return Ok(0);
         };
 
-        let body_json = serde_json::to_string(body)
-            .map_err(|e| Error::Other(format!("serialize record body: {e}")))?;
-
+        let now = now_millis();
         let tx = conn.unchecked_transaction()?;
-        let seq: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM session_records WHERE session_id = ?1",
+        let mut seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM session_records WHERE session_id = ?1",
             [&sid],
             |r| r.get(0),
         )?;
-        let n = tx.execute(
-            "INSERT OR IGNORE INTO session_records
-                (session_id, seq, provider, source, native_id, agent_version, body, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![sid, seq, provider, source, native_id, agent_version, body_json, now_millis()],
-        )?;
+        let mut inserted = 0usize;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO session_records
+                    (session_id, seq, provider, source, native_id, agent_version, body, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            for (native_id, body) in records {
+                let body_json = serde_json::to_string(body)
+                    .map_err(|e| Error::Other(format!("serialize record body: {e}")))?;
+                let next = seq + 1;
+                let n = stmt.execute(rusqlite::params![
+                    sid, next, provider, source, native_id, agent_version, body_json, now
+                ])?;
+                if n > 0 {
+                    seq = next; // consumed only on a real insert; dups keep seq dense
+                    inserted += 1;
+                }
+            }
+        }
         tx.commit()?;
 
-        Ok(n > 0)
+        Ok(inserted)
+    }
+
+    /// Byte offset into the current session's transcript up to which records have
+    /// been ingested — the resume point for an incremental tail read. 0 if there
+    /// is no session yet or nothing has been ingested.
+    pub fn session_ingest_offset(&self, workspace_id: &str) -> Result<u64> {
+        let conn = self.db.lock();
+        let offset: Option<i64> = conn
+            .query_row(
+                "SELECT ingest_offset FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok();
+        Ok(offset.unwrap_or(0).max(0) as u64)
+    }
+
+    /// Persist the tail offset for the current session after an incremental read.
+    pub fn set_session_ingest_offset(&self, workspace_id: &str, offset: u64) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "UPDATE sessions SET ingest_offset = ?2
+             WHERE id = (SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1)",
+            rusqlite::params![workspace_id, offset as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Count of records already ingested for the current session (= MAX(seq)) —
+    /// the starting index for positional `ln:{i}` native ids on the next read.
+    pub fn session_record_count(&self, workspace_id: &str) -> Result<usize> {
+        let conn = self.db.lock();
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok();
+        let Some(sid) = sid else {
+            return Ok(0);
+        };
+        let count: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM session_records WHERE session_id = ?1",
+            [&sid],
+            |r| r.get(0),
+        )?;
+        Ok(count.max(0) as usize)
     }
 
     /// All canonical records for the workspace's current session, in seq order.
@@ -1728,9 +1795,9 @@ mod tests {
 
         let body = serde_json::json!({"role": "user", "content": "hello"});
         let inserted = wm
-            .append_session_record(&ws_id, "claude", "transcript", "uuid-1", Some("1.2.3"), &body)
+            .append_session_records(&ws_id, "claude", "transcript", Some("1.2.3"), &[("uuid-1", &body)])
             .unwrap();
-        assert!(inserted);
+        assert_eq!(inserted, 1);
 
         let records = wm.read_session_records(&ws_id).unwrap();
         assert_eq!(records.len(), 1);
@@ -1749,13 +1816,17 @@ mod tests {
 
         let first = serde_json::json!({"n": 1});
         let dup = serde_json::json!({"n": 2});
-        assert!(wm
-            .append_session_record(&ws_id, "pi", "transcript", "id-a", None, &first)
-            .unwrap());
+        assert_eq!(
+            wm.append_session_records(&ws_id, "pi", "transcript", None, &[("id-a", &first)])
+                .unwrap(),
+            1
+        );
         // Same (session, native_id) — must be ignored, original body retained.
-        assert!(!wm
-            .append_session_record(&ws_id, "pi", "transcript", "id-a", None, &dup)
-            .unwrap());
+        assert_eq!(
+            wm.append_session_records(&ws_id, "pi", "transcript", None, &[("id-a", &dup)])
+                .unwrap(),
+            0
+        );
 
         let records = wm.read_session_records(&ws_id).unwrap();
         assert_eq!(records.len(), 1);
@@ -1764,13 +1835,83 @@ mod tests {
     }
 
     #[test]
+    fn append_session_records_batches_in_one_pass_and_is_idempotent() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        let a = serde_json::json!({"n": 1});
+        let b = serde_json::json!({"n": 2});
+        let c = serde_json::json!({"n": 3});
+
+        // First batch: all three land, seq contiguous in order.
+        let inserted = wm
+            .append_session_records(
+                &ws_id,
+                "claude",
+                "transcript",
+                None,
+                &[("id-a", &a), ("id-b", &b), ("id-c", &c)],
+            )
+            .unwrap();
+        assert_eq!(inserted, 3);
+
+        let records = wm.read_session_records(&ws_id).unwrap();
+        assert_eq!(records.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(
+            records.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            vec!["id-a", "id-b", "id-c"],
+        );
+
+        // Re-running with two already-stored + one new inserts only the new one,
+        // and seq stays contiguous (ignored dups don't burn a seq).
+        let d = serde_json::json!({"n": 4});
+        let inserted = wm
+            .append_session_records(
+                &ws_id,
+                "claude",
+                "transcript",
+                None,
+                &[("id-b", &b), ("id-c", &c), ("id-d", &d)],
+            )
+            .unwrap();
+        assert_eq!(inserted, 1);
+
+        let records = wm.read_session_records(&ws_id).unwrap();
+        assert_eq!(records.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        assert_eq!(records[3].native_id, "id-d");
+        assert_eq!(records[3].body, d);
+    }
+
+    #[test]
+    fn ingest_offset_and_record_count_roundtrip() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        // Defaults before anything is ingested.
+        assert_eq!(wm.session_ingest_offset(&ws_id).unwrap(), 0);
+        assert_eq!(wm.session_record_count(&ws_id).unwrap(), 0);
+
+        let a = serde_json::json!({"n": 1});
+        let b = serde_json::json!({"n": 2});
+        wm.append_session_records(&ws_id, "claude", "transcript", None, &[("x", &a), ("y", &b)])
+            .unwrap();
+        // record_count tracks MAX(seq) — the start index for the next tail read.
+        assert_eq!(wm.session_record_count(&ws_id).unwrap(), 2);
+
+        wm.set_session_ingest_offset(&ws_id, 4096).unwrap();
+        assert_eq!(wm.session_ingest_offset(&ws_id).unwrap(), 4096);
+    }
+
+    #[test]
     fn session_records_seq_increments_in_order() {
         let db = test_db();
         let (ws_id, wm) = make_workspace_with_session(&db);
 
-        wm.append_session_record(&ws_id, "pi", "transcript", "ln:0", None, &serde_json::json!({"a": 1}))
+        let a = serde_json::json!({"a": 1});
+        let b = serde_json::json!({"a": 2});
+        wm.append_session_records(&ws_id, "pi", "transcript", None, &[("ln:0", &a)])
             .unwrap();
-        wm.append_session_record(&ws_id, "pi", "transcript", "ln:1", None, &serde_json::json!({"a": 2}))
+        wm.append_session_records(&ws_id, "pi", "transcript", None, &[("ln:1", &b)])
             .unwrap();
 
         let records = wm.read_session_records(&ws_id).unwrap();
@@ -1792,11 +1933,12 @@ mod tests {
         let db = test_db();
         make_workspace_with_session(&db);
         let wm = WorkspaceManager::new(db.clone());
-        // Unknown workspace id → no session → returns false, read empty.
+        // Unknown workspace id → no session → nothing inserted, read empty.
+        let body = serde_json::json!({});
         let inserted = wm
-            .append_session_record("no-such-ws", "claude", "transcript", "x", None, &serde_json::json!({}))
+            .append_session_records("no-such-ws", "claude", "transcript", None, &[("x", &body)])
             .unwrap();
-        assert!(!inserted);
+        assert_eq!(inserted, 0);
         assert!(wm.read_session_records("no-such-ws").unwrap().is_empty());
     }
 
@@ -1844,22 +1986,14 @@ mod tests {
 
         // Transcript user-message records as the agent logged them (attachment
         // turn carries the injected reference line; plain turn is just text).
-        wm.append_session_record(
+        let rec_a = serde_json::json!({"role": "user", "text": "look at this\nAttached file: /tmp/diagram.png"});
+        let rec_b = serde_json::json!({"role": "user", "text": "now refactor"});
+        wm.append_session_records(
             &ws_id,
             "claude",
             "transcript",
-            "rec-A",
             None,
-            &serde_json::json!({"role": "user", "text": "look at this\nAttached file: /tmp/diagram.png"}),
-        )
-        .unwrap();
-        wm.append_session_record(
-            &ws_id,
-            "claude",
-            "transcript",
-            "rec-B",
-            None,
-            &serde_json::json!({"role": "user", "text": "now refactor"}),
+            &[("rec-A", &rec_a), ("rec-B", &rec_b)],
         )
         .unwrap();
 
