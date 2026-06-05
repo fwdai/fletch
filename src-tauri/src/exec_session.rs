@@ -41,11 +41,16 @@ pub struct ExecSpawn {
     pub cwd: PathBuf,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
+    /// When false, the turn's stdout is **plaintext** — drained without JSON
+    /// parsing (no events emitted). History for such agents comes from their
+    /// on-disk transcript, and the session id from the filesystem.
+    pub stdout_is_json: bool,
 }
 
 pub struct ExecSession {
     program: PathBuf,
     cwd: PathBuf,
+    stdout_is_json: bool,
     session_id: Arc<Mutex<Option<String>>>,
     child: Arc<Mutex<Option<Child>>>,
     /// Monotonic turn counter. A reap thread only reports its exit if its
@@ -84,6 +89,7 @@ impl ExecSession {
         Self {
             program: spec.program,
             cwd: spec.cwd,
+            stdout_is_json: spec.stdout_is_json,
             session_id: Arc::new(Mutex::new(spec.session_id)),
             child: Arc::new(Mutex::new(None)),
             turn_seq: Arc::new(AtomicU64::new(0)),
@@ -154,11 +160,16 @@ impl ExecSession {
         let on_session_id = self.on_session_id.clone();
         let extract_session_id = self.extract_session_id.clone();
         let session_id = self.session_id.clone();
+        let stdout_is_json = self.stdout_is_json;
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 match line {
                     Ok(l) if l.trim().is_empty() => continue,
+                    // Plaintext turn runner (e.g. agy): drain stdout without
+                    // parsing — there are no events; history comes from the
+                    // on-disk transcript ingested at turn-end.
+                    Ok(_) if !stdout_is_json => continue,
                     Ok(l) => match serde_json::from_str::<Value>(&l) {
                         Ok(v) => {
                             maybe_capture_session_id(
@@ -330,6 +341,7 @@ mod tests {
                 program: script,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
+                stdout_is_json: true,
             },
             codex_args,
             codex_id,
@@ -383,6 +395,7 @@ mod tests {
                 program: script,
                 cwd: dir.path().to_path_buf(),
                 session_id: Some("prev-thread".into()),
+                stdout_is_json: true,
             },
             codex_args,
             codex_id,

@@ -1226,9 +1226,6 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
     let reader = crate::agent::transcript_reader(&record.provider)?;
 
     // A reader exists; from here any shortfall is "nothing yet" → Some(0).
-    let Some(session_id) = record.session_id.as_deref() else {
-        return Some(0);
-    };
     let Some(repo) = record.repos.first() else {
         return Some(0);
     };
@@ -1236,7 +1233,26 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
         return Some(0);
     };
 
-    let paths = (reader.locate)(session_id, &cwd);
+    // Resolve the session id. Event-stream agents have it on the record already;
+    // plaintext agents (agy) read it from the filesystem at turn-end — persist
+    // it here so the next turn can resume.
+    let session_id = match record.session_id.clone() {
+        Some(id) => id,
+        None => {
+            let captured = per_turn_descriptor(&record.provider)
+                .and_then(|d| d.session_id_from_cwd)
+                .and_then(|f| f(&cwd));
+            match captured {
+                Some(id) => {
+                    let _ = workspace.set_agent_session_id(agent_id, &id);
+                    id
+                }
+                None => return Some(0),
+            }
+        }
+    };
+
+    let paths = (reader.locate)(&session_id, &cwd);
     let records = (reader.read)(&paths);
 
     // Version-frozen snapshot tag (memoized probe — at most one --version per

@@ -83,16 +83,26 @@ pub struct PerTurnDescriptor {
     /// Builds the args to launch this agent's interactive TUI in the native
     /// (PTY) view: `None` = fresh session, `Some(id)` = resume.
     pty_args: fn(Option<&str>) -> Vec<String>,
-    /// Extracts the agent-assigned session id from a turn's events.
+    /// Extracts the agent-assigned session id from a turn's events. No-op for
+    /// `plaintext` agents (they emit no events — see `session_id_from_cwd`).
     session_id: fn(&Value) -> Option<String>,
     /// Constructs this agent's turn-end detector (custom-view `Activity`).
     pub activity: fn() -> Box<dyn Activity>,
     /// Whether this agent can render in the native PTY view (see
     /// `AgentCapabilities::native_view`).
     native_view: bool,
+    /// True if the turn process emits **plaintext** on stdout rather than a
+    /// newline-delimited JSON event stream. The runner then drains stdout
+    /// without parsing (no events; history comes from `transcript`), and the
+    /// session id is captured via `session_id_from_cwd` instead of events.
+    plaintext: bool,
+    /// For agents whose session id isn't in their event stream (e.g. agy), read
+    /// it from the filesystem at turn-end given the worktree cwd. `None` =
+    /// session id comes from events via `session_id`.
+    pub session_id_from_cwd: Option<fn(&Path) -> Option<String>>,
     /// Reader for this agent's on-disk transcript, used by `sync_session` to
     /// ingest verbatim records into `session_records`. `None` = no readable
-    /// transcript yet (or a live-compiled agent).
+    /// transcript.
     pub transcript: Option<TranscriptReader>,
 }
 
@@ -152,6 +162,8 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         session_id: codex_session_id,
         activity: || Box::new(ManagedActivity::codex()),
         native_view: true,
+        plaintext: false,
+        session_id_from_cwd: None,
         transcript: Some(TranscriptReader {
             locate: codex_locate,
             read: codex_read,
@@ -168,6 +180,8 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // so it reuses the Claude managed detector.
         activity: || Box::new(ManagedActivity::claude()),
         native_view: true,
+        plaintext: false,
+        session_id_from_cwd: None,
         transcript: Some(TranscriptReader {
             locate: cursor_locate,
             read: cursor_read,
@@ -182,6 +196,8 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         session_id: opencode_session_id,
         activity: || Box::new(ManagedActivity::opencode()),
         native_view: true,
+        plaintext: false,
+        session_id_from_cwd: None,
         transcript: Some(TranscriptReader {
             locate: opencode_locate,
             read: opencode_read,
@@ -196,10 +212,32 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         session_id: pi_session_id,
         activity: || Box::new(ManagedActivity::pi()),
         native_view: true,
+        plaintext: false,
+        session_id_from_cwd: None,
         // Pi is the reference reader — its per-session JSONL feeds session_records.
         transcript: Some(TranscriptReader {
             locate: pi_locate,
             read: pi_read,
+        }),
+    },
+    PerTurnDescriptor {
+        id: "antigravity",
+        bin: "agy",
+        label: "Antigravity",
+        build_args: antigravity_build_args,
+        pty_args: antigravity_pty_args,
+        // agy emits no JSON events; its session id is read from the filesystem.
+        session_id: |_| None,
+        // No event stream to detect turn-end from — the turn's process exit ends
+        // the turn (on_turn_exit). The detector is never fed, so any is fine.
+        activity: || Box::new(ManagedActivity::claude()),
+        // Native PTY view is a follow-up; custom view only for v1.
+        native_view: false,
+        plaintext: true,
+        session_id_from_cwd: Some(antigravity_session_id_from_cwd),
+        transcript: Some(TranscriptReader {
+            locate: antigravity_locate,
+            read: antigravity_read,
         }),
     },
 ];
@@ -424,6 +462,94 @@ fn opencode_read(message_paths: &[PathBuf]) -> Vec<RawRecord> {
     out
 }
 
+// ── Antigravity (agy) ──
+// agy has no JSON event stream (its `--print` output is plaintext), so it runs
+// as a `plaintext` per-turn agent: the runner drains stdout, the turn's process
+// exit ends the turn, and history comes entirely from its on-disk transcript.
+// The conversation id (== session id) lives in agy's filesystem, not its output.
+
+fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "--print".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+    ];
+    if let Some(id) = session_id {
+        args.push("--conversation".into());
+        args.push(id.to_string());
+    }
+    args.push(prompt.to_string());
+    args
+}
+
+fn antigravity_pty_args(session_id: Option<&str>) -> Vec<String> {
+    // Native view is a follow-up (native_view: false); kept consistent for when
+    // it's wired — launch the TUI, resuming when we have an id.
+    let mut args = vec!["--dangerously-skip-permissions".to_string()];
+    if let Some(id) = session_id {
+        args.push("--conversation".into());
+        args.push(id.to_string());
+    }
+    args
+}
+
+/// agy stores `cwd → conversationId` in
+/// `~/.gemini/antigravity-cli/cache/last_conversations.json` (the worktree cwd
+/// is the key). Read it at turn-end to capture the id for resume + transcript.
+fn antigravity_session_id_from_cwd(cwd: &Path) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let path = home.join(".gemini/antigravity-cli/cache/last_conversations.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    antigravity_conv_id_from_map(&text, &cwd.to_string_lossy())
+}
+
+/// Pure: extract the conversation id for `cwd` from the last-conversations map.
+fn antigravity_conv_id_from_map(json_text: &str, cwd: &str) -> Option<String> {
+    let map: Value = serde_json::from_str(json_text).ok()?;
+    map.get(cwd).and_then(|v| v.as_str()).map(str::to_string)
+}
+
+fn antigravity_locate(session_id: &str, cwd: &Path) -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    // Prefer the captured id; fall back to the cwd→id map (e.g. the first turn,
+    // before the id has been persisted).
+    let id = if session_id.is_empty() {
+        match antigravity_session_id_from_cwd(cwd) {
+            Some(i) => i,
+            None => return Vec::new(),
+        }
+    } else {
+        session_id.to_string()
+    };
+    let path = home
+        .join(".gemini/antigravity-cli/brain")
+        .join(&id)
+        .join(".system_generated/logs/transcript_full.jsonl");
+    if path.exists() {
+        vec![path]
+    } else {
+        Vec::new()
+    }
+}
+
+fn antigravity_read(paths: &[PathBuf]) -> Vec<RawRecord> {
+    paths
+        .iter()
+        .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
+        .enumerate()
+        .map(|(i, body)| {
+            // `step_index` is a stable, monotonic per-conversation key.
+            let native_id = body
+                .get("step_index")
+                .and_then(|v| v.as_i64())
+                .map(|n| format!("step:{n}"))
+                .unwrap_or_else(|| format!("ln:{i}"));
+            RawRecord { native_id, body }
+        })
+        .collect()
+}
+
 /// The transcript reader for a provider, or `None` if it has no on-disk
 /// transcript wired. Per-turn agents read theirs from the descriptor table;
 /// claude (persistent runner) is special-cased here. Callers gate on this, not
@@ -639,6 +765,7 @@ impl Agent {
             spec,
             desc.build_args,
             desc.session_id,
+            !desc.plaintext,
             ExecCallbacks {
                 on_event,
                 on_session_id,
@@ -658,6 +785,7 @@ impl Agent {
         spec: PerTurnSpec,
         build_args: A,
         extract_session_id: I,
+        stdout_is_json: bool,
         cb: ExecCallbacks<F, G, H>,
     ) -> Result<Self>
     where
@@ -678,6 +806,7 @@ impl Agent {
                 program,
                 cwd: spec.cwd,
                 session_id: spec.session_id,
+                stdout_is_json,
             },
             build_args,
             extract_session_id,
@@ -1174,19 +1303,54 @@ mod tests {
         assert_eq!(provider_bin_label("claude"), Some(("claude", "Claude Code")));
         assert!(provider_bin_label("codex").is_some());
         assert!(provider_bin_label("pi").is_some());
+        assert_eq!(provider_bin_label("antigravity"), Some(("agy", "Antigravity")));
         assert!(provider_bin_label("nope").is_none());
     }
 
     #[test]
     fn transcript_reader_dispatch() {
-        // Claude (persistent runner, not a per-turn agent) + Pi/Codex/Cursor.
+        // Claude (persistent runner, not a per-turn agent) + every per-turn agent.
         assert!(transcript_reader("claude").is_some());
         assert!(transcript_reader("pi").is_some());
         assert!(transcript_reader("codex").is_some());
         assert!(transcript_reader("cursor").is_some());
         assert!(transcript_reader("opencode").is_some());
+        assert!(transcript_reader("antigravity").is_some());
         // Unknown providers have none.
         assert!(transcript_reader("nope").is_none());
+    }
+
+    #[test]
+    fn antigravity_conv_id_from_map_reads_cwd_key() {
+        let json = r#"{"/Users/alex/x":"conv-1","/Users/alex/y":"conv-2"}"#;
+        assert_eq!(
+            antigravity_conv_id_from_map(json, "/Users/alex/x").as_deref(),
+            Some("conv-1")
+        );
+        assert_eq!(antigravity_conv_id_from_map(json, "/Users/alex/z"), None);
+        assert_eq!(antigravity_conv_id_from_map("not json", "/x"), None);
+    }
+
+    #[test]
+    fn antigravity_read_keys_by_step_index() {
+        let td = tempfile::tempdir().unwrap();
+        let f = td.path().join("transcript_full.jsonl");
+        std::fs::write(
+            &f,
+            "{\"step_index\":0,\"type\":\"USER_INPUT\"}\n{\"step_index\":2,\"type\":\"PLANNER_RESPONSE\"}\n{\"type\":\"X\"}\n",
+        )
+        .unwrap();
+        let recs = antigravity_read(&[f]);
+        assert_eq!(recs.len(), 3);
+        assert_eq!(recs[0].native_id, "step:0");
+        assert_eq!(recs[1].native_id, "step:2");
+        assert_eq!(recs[2].native_id, "ln:2"); // no step_index → positional
+    }
+
+    // agy has no native_view yet (custom view only); native rollout test pins it.
+    #[test]
+    fn antigravity_is_custom_view_only_for_now() {
+        assert!(!capabilities("antigravity").native_view);
     }
 
     #[test]
