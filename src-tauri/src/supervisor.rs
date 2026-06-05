@@ -1316,9 +1316,19 @@ pub(crate) fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
 /// `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
 /// defaults to `~/.codex`); the id suffix is the thread id we captured.
 fn find_codex_rollout(session_id: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("CODEX_HOME")
+    find_codex_rollouts(session_id).into_iter().next()
+}
+
+/// All of codex's rollout files for a thread id, ordered (filenames are
+/// timestamp-prefixed, so lexical sort == chronological). Resume normally keeps
+/// one file per session, but returning all is correct if it ever splits.
+pub(crate) fn find_codex_rollouts(session_id: &str) -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))?;
+        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
+    else {
+        return Vec::new();
+    };
     // Anchor on the `-<id>.jsonl` boundary (filenames are
     // `rollout-<ts>-<id>.jsonl`) so one thread id can't match another whose
     // name merely ends with the same characters.
@@ -1334,6 +1344,7 @@ fn find_codex_rollout(session_id: &str) -> Option<PathBuf> {
             .collect()
     }
     let sessions = home.join("sessions");
+    let mut out = Vec::new();
     for year in dirs_in(&sessions) {
         for month in dirs_in(&year) {
             for day in dirs_in(&month) {
@@ -1344,13 +1355,14 @@ fn find_codex_rollout(session_id: &str) -> Option<PathBuf> {
                         .and_then(|n| n.to_str())
                         .is_some_and(|n| n.ends_with(&suffix))
                     {
-                        return Some(path);
+                        out.push(path);
                     }
                 }
             }
         }
     }
-    None
+    out.sort();
+    out
 }
 
 /// Read a JSONL file into a vec of parsed values, skipping blank or

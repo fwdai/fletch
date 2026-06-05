@@ -171,8 +171,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // frontend codex adapter replay it.
         transcript_replay: true,
         is_durable: codex_is_durable,
-        // session_records ingestion wired in a later commit.
-        transcript: None,
+        transcript: Some(TranscriptReader {
+            locate: codex_locate,
+            read: codex_read,
+        }),
     },
     PerTurnDescriptor {
         id: "cursor",
@@ -192,7 +194,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // dedicated tool_call event (started/completed) rather than
         // Claude's assistant.content tool_use + user.content tool_result.
         is_durable: cursor_is_durable,
-        transcript: None,
+        transcript: Some(TranscriptReader {
+            locate: cursor_locate,
+            read: cursor_read,
+        }),
     },
     PerTurnDescriptor {
         id: "opencode",
@@ -323,6 +328,54 @@ static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
     locate: claude_locate,
     read: claude_read,
 };
+
+// ── Codex ──
+// Codex writes `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`.
+// Lines are `{timestamp,type,payload}` dual-channel with no stable per-line id,
+// so records key positionally. The codex frontend adapter already normalizes.
+fn codex_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
+    crate::supervisor::find_codex_rollouts(session_id)
+}
+
+fn codex_read(paths: &[PathBuf]) -> Vec<RawRecord> {
+    let values: Vec<Value> = paths
+        .iter()
+        .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
+        .collect();
+    records_with_id(values, None)
+}
+
+// ── Cursor ──
+// cursor-agent writes `~/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl`.
+// The session-id dir is unique, so glob by it (like claude) rather than
+// reverse-engineering the undocumented slug. Lines have no per-line id →
+// positional keys.
+fn cursor_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let rel = format!("agent-transcripts/{session_id}/{session_id}.jsonl");
+    let projects = home.join(".cursor").join("projects");
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&projects) {
+        for entry in entries.flatten() {
+            let path = entry.path().join(&rel);
+            if path.exists() {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn cursor_read(paths: &[PathBuf]) -> Vec<RawRecord> {
+    let values: Vec<Value> = paths
+        .iter()
+        .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
+        .collect();
+    records_with_id(values, None)
+}
 
 /// The transcript reader for a provider, or `None` if it has no on-disk
 /// transcript wired. Per-turn agents read theirs from the descriptor table;
@@ -1111,12 +1164,12 @@ mod tests {
 
     #[test]
     fn transcript_reader_dispatch() {
-        // Claude (persistent runner, not a per-turn agent) and Pi have readers.
+        // Claude (persistent runner, not a per-turn agent) + Pi/Codex/Cursor.
         assert!(transcript_reader("claude").is_some());
         assert!(transcript_reader("pi").is_some());
-        // Not yet wired (own commits) / unknown.
-        assert!(transcript_reader("codex").is_none());
-        assert!(transcript_reader("cursor").is_none());
+        assert!(transcript_reader("codex").is_some());
+        assert!(transcript_reader("cursor").is_some());
+        // Not yet wired / unknown.
         assert!(transcript_reader("opencode").is_none());
         assert!(transcript_reader("nope").is_none());
     }
