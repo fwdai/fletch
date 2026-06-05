@@ -13,8 +13,8 @@ interface Props {
 }
 
 /** Pops a dropdown listing enabled providers. Providers without an adapter
- *  (no backend runner yet, e.g. antigravity) are shown but disabled as
- *  "Soon" so they can't be selected and silently fall back to Claude. */
+ *  (no backend runner yet) are shown but disabled as "Soon" so they can't be
+ *  selected and silently fall back to Claude. */
 export function ModelPicker({ value, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const providerFlags = useAppStore((s) => s.providerFlags);
