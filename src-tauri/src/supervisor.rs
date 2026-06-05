@@ -1334,21 +1334,23 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
     // provider per process).
     let version = crate::agent::cached_provider_version(&record.provider);
 
-    let mut inserted = 0usize;
-    for rec in &records {
-        match workspace.append_session_record(
-            agent_id,
-            &record.provider,
-            "transcript",
-            &rec.native_id,
-            version.as_deref(),
-            &rec.body,
-        ) {
-            Ok(true) => inserted += 1,
-            Ok(false) => {}
-            Err(e) => tracing::warn!(error = %e, agent_id, "append_session_record failed"),
+    // One batched transaction for the whole turn instead of a commit per record
+    // — turn-end ingest is then O(batch) commits, not O(conversation).
+    let batch: Vec<(&str, &serde_json::Value)> =
+        records.iter().map(|r| (r.native_id.as_str(), &r.body)).collect();
+    let inserted = match workspace.append_session_records(
+        agent_id,
+        &record.provider,
+        "transcript",
+        version.as_deref(),
+        &batch,
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(error = %e, agent_id, "append_session_records failed");
+            0
         }
-    }
+    };
 
     // Link any pending outgoing user turns to the canonical transcript
     // user-message rows just ingested (fills in their `native_id`).
