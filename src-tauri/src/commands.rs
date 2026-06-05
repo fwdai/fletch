@@ -1,7 +1,6 @@
 //! Tauri IPC command handlers — the thin frontend-facing surface.
 
 use serde::Serialize;
-use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -192,14 +191,6 @@ pub async fn restore_agent(
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
     sup.restore_agent(app, &agent_id).await
-}
-
-#[tauri::command]
-pub fn read_session_transcript(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<Vec<Value>> {
-    supervisor.read_session_transcript(&agent_id)
 }
 
 #[tauri::command]

@@ -1088,49 +1088,6 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Read the persisted session JSONL for an archived (or live) agent
-    /// and return its raw lines as a Vec<Value>. The frontend's
-    /// per-provider adapter normalizes these into renderable events, so
-    /// we don't need a parallel renderer here. Claude's file lives under
-    /// `~/.claude/projects`; codex's rollout under `$CODEX_HOME/sessions`.
-    ///
-    /// Returns an empty vec if the file is missing (pruned, deleted, or
-    /// the session never reached its first turn).
-    pub fn read_session_transcript(&self, agent_id: &str) -> Result<Vec<Value>> {
-        let record = self.workspace.agent(agent_id)?;
-
-        // Agents whose native on-disk transcript isn't wired yet have
-        // nothing to hand back here; re-attaching restores their history
-        // from the provider-agnostic SQLite event log instead, and
-        // `--resume`/`--session <id>` still continues the conversation.
-        // (Per-agent rollout — see `AgentCapabilities::transcript_replay`.)
-        if !capabilities(&record.provider).transcript_replay {
-            return Ok(Vec::new());
-        }
-
-        let session_id = match record.session_id.as_deref() {
-            Some(s) => s,
-            // A per-turn agent's id is only assigned on the first turn;
-            // before that there's nothing to replay.
-            None if is_per_turn_provider(&record.provider) => return Ok(Vec::new()),
-            None => return Err(Error::Other("agent has no session id".into())),
-        };
-
-        // Each provider persists its conversation in a different place and
-        // format. The frontend's per-provider adapter (`normalizeTranscript`)
-        // translates these raw lines into renderable events, so here we just
-        // locate the file and hand back its JSONL.
-        let path = if record.provider == "codex" {
-            find_codex_rollout(session_id)
-        } else {
-            find_session_jsonl(session_id)
-        };
-        match path {
-            Some(p) => read_jsonl_values(&p),
-            None => Ok(Vec::new()),
-        }
-    }
-
     /// Synchronously ingest the agent's transcript into session_records (used
     /// for lazy backfill when a session is opened with no records yet). `None`
     /// if the provider has no transcript reader.
@@ -1318,16 +1275,11 @@ pub(crate) fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
     None
 }
 
-/// Locate codex's rollout file for a thread id. Codex stores sessions at
-/// `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
-/// defaults to `~/.codex`); the id suffix is the thread id we captured.
-fn find_codex_rollout(session_id: &str) -> Option<PathBuf> {
-    find_codex_rollouts(session_id).into_iter().next()
-}
-
 /// All of codex's rollout files for a thread id, ordered (filenames are
-/// timestamp-prefixed, so lexical sort == chronological). Resume normally keeps
-/// one file per session, but returning all is correct if it ever splits.
+/// timestamp-prefixed, so lexical sort == chronological). Codex stores sessions
+/// at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
+/// defaults to `~/.codex`); the id suffix is the thread id we captured. Resume
+/// normally keeps one file per session, but returning all is correct if it splits.
 pub(crate) fn find_codex_rollouts(session_id: &str) -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)

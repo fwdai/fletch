@@ -154,7 +154,6 @@ pub fn run() {
             commands::discard_agent,
             commands::archive_agent,
             commands::restore_agent,
-            commands::read_session_transcript,
             commands::read_session_records,
             commands::sync_session,
             commands::add_repo_to_agent,
