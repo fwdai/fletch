@@ -212,7 +212,10 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // from the SQLite log until that's mapped.
         transcript_replay: false,
         is_durable: opencode_is_durable,
-        transcript: None,
+        transcript: Some(TranscriptReader {
+            locate: opencode_locate,
+            read: opencode_read,
+        }),
     },
     PerTurnDescriptor {
         id: "pi",
@@ -375,6 +378,83 @@ fn cursor_read(paths: &[PathBuf]) -> Vec<RawRecord> {
         .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
         .collect();
     records_with_id(values, None)
+}
+
+// ── OpenCode ──
+// OpenCode stores a blob store under `$XDG_DATA_HOME/opencode/storage` (defaults
+// to `~/.local/share/opencode/storage`, even on macOS): message blobs at
+// `message/<ses>/<msg>.json` (role + metadata, no content) and part blobs at
+// `part/<msg>/<part>.json` (the content). We emit each message record then its
+// parts, in id order (ids are time-sortable); the frontend reassembles. ids are
+// globally unique, so they're the native dedup key.
+
+fn opencode_storage_root() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))?;
+    Some(base.join("opencode").join("storage"))
+}
+
+/// Sorted `*.json` files directly in `dir` (filenames are id-prefixed, so
+/// lexical sort == creation order).
+fn json_files_in(dir: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn read_json_value(path: &Path) -> Option<Value> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+fn opencode_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
+    let Some(root) = opencode_storage_root() else {
+        return Vec::new();
+    };
+    json_files_in(&root.join("message").join(session_id))
+}
+
+fn opencode_read(message_paths: &[PathBuf]) -> Vec<RawRecord> {
+    let mut out = Vec::new();
+    for msg_path in message_paths {
+        let Some(msg) = read_json_value(msg_path) else {
+            continue;
+        };
+        let Some(msg_id) = msg.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
+            continue;
+        };
+        out.push(RawRecord {
+            native_id: msg_id.clone(),
+            body: msg,
+        });
+        // Parts live at `<storage>/part/<msg_id>/`; derive <storage> from the
+        // message path `<storage>/message/<ses>/<msg>.json` (three parents up).
+        let Some(part_dir) = msg_path
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(|storage| storage.join("part").join(&msg_id))
+        else {
+            continue;
+        };
+        for pf in json_files_in(&part_dir) {
+            if let Some(part) = read_json_value(&pf) {
+                if let Some(pid) = part.get("id").and_then(|v| v.as_str()) {
+                    out.push(RawRecord {
+                        native_id: pid.to_string(),
+                        body: part,
+                    });
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The transcript reader for a provider, or `None` if it has no on-disk
@@ -1169,8 +1249,8 @@ mod tests {
         assert!(transcript_reader("pi").is_some());
         assert!(transcript_reader("codex").is_some());
         assert!(transcript_reader("cursor").is_some());
-        // Not yet wired / unknown.
-        assert!(transcript_reader("opencode").is_none());
+        assert!(transcript_reader("opencode").is_some());
+        // Unknown providers have none.
         assert!(transcript_reader("nope").is_none());
     }
 
