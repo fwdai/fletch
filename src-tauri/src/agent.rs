@@ -469,6 +469,38 @@ pub fn transcript_reader(provider: &str) -> Option<&'static TranscriptReader> {
     }
 }
 
+/// (binary, human label) for a provider, or `None` if unknown. Same dispatch
+/// as `transcript_reader`: per-turn descriptors + the claude special case.
+fn provider_bin_label(provider: &str) -> Option<(&'static str, &'static str)> {
+    match per_turn_descriptor(provider) {
+        Some(d) => Some((d.bin, d.label)),
+        None if provider == "claude" => Some(("claude", "Claude Code")),
+        None => None,
+    }
+}
+
+/// The probed CLI version for a provider (`v1.2.3`), memoized per process so the
+/// `--version` subprocess runs at most once per provider. Stamped onto
+/// session_records at ingest so read-time normalizers can branch by version
+/// when a vendor format changes. `None` if the binary is missing/unparseable.
+pub fn cached_provider_version(provider: &str) -> Option<String> {
+    static CACHE: std::sync::OnceLock<
+        parking_lot::Mutex<std::collections::HashMap<String, Option<String>>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+    if let Some(v) = cache.lock().get(provider) {
+        return v.clone();
+    }
+    let version = provider_bin_label(provider).and_then(|(bin, label)| {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        resolve_agent_bin(bin, label, &home)
+            .ok()
+            .and_then(|p| probe_version(&p))
+    });
+    cache.lock().insert(provider.to_string(), version.clone());
+    version
+}
+
 pub struct SpawnSpec<'a> {
     pub agent_id: &'a str,
     /// Claude's working directory — the primary repo's worktree.
@@ -1241,6 +1273,14 @@ mod tests {
     use serde_json::json;
 
     // ── transcript readers ────────────────────────────────────────────────
+
+    #[test]
+    fn provider_bin_label_dispatch() {
+        assert_eq!(provider_bin_label("claude"), Some(("claude", "Claude Code")));
+        assert!(provider_bin_label("codex").is_some());
+        assert!(provider_bin_label("pi").is_some());
+        assert!(provider_bin_label("nope").is_none());
+    }
 
     #[test]
     fn transcript_reader_dispatch() {

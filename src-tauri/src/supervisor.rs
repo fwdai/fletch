@@ -1280,6 +1280,10 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
     let paths = (reader.locate)(session_id, &cwd);
     let records = (reader.read)(&paths);
 
+    // Version-frozen snapshot tag (memoized probe — at most one --version per
+    // provider per process).
+    let version = crate::agent::cached_provider_version(&record.provider);
+
     let mut inserted = 0usize;
     for rec in &records {
         match workspace.append_session_record(
@@ -1287,7 +1291,7 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
             &record.provider,
             "transcript",
             &rec.native_id,
-            None, // agent_version stamped in a later pass
+            version.as_deref(),
             &rec.body,
         ) {
             Ok(true) => inserted += 1,
