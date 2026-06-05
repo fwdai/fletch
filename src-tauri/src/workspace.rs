@@ -201,6 +201,18 @@ fn now_millis() -> i64 {
 
 // ── WorkspaceManager ──────────────────────────────────────────────────────
 
+/// One canonical durable record from `session_records`, in the agent's own
+/// verbatim shape. Normalized into ChatItems on read by the per-provider adapter.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionRecord {
+    pub seq: i64,
+    pub provider: String,
+    pub source: String,
+    pub native_id: String,
+    pub agent_version: Option<String>,
+    pub body: serde_json::Value,
+}
+
 pub struct WorkspaceManager {
     db: Arc<Mutex<Connection>>,
 }
@@ -608,6 +620,103 @@ impl WorkspaceManager {
             .map(|text| {
                 serde_json::from_str(&text)
                     .map_err(|e| Error::Other(format!("deserialize event: {e}")))
+            })
+            .collect()
+    }
+
+    /// Append a canonical record to the workspace's current session. Idempotent
+    /// on `(session_id, native_id)`: a duplicate native_id is ignored and the
+    /// original row's body is retained. Returns `true` if a new row was
+    /// inserted, `false` if it was a duplicate or the workspace has no session.
+    pub fn append_session_record(
+        &self,
+        workspace_id: &str,
+        provider: &str,
+        source: &str,
+        native_id: &str,
+        agent_version: Option<&str>,
+        body: &serde_json::Value,
+    ) -> Result<bool> {
+        let conn = self.db.lock();
+
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        let Some(sid) = sid else {
+            return Ok(false);
+        };
+
+        let body_json = serde_json::to_string(body)
+            .map_err(|e| Error::Other(format!("serialize record body: {e}")))?;
+
+        let tx = conn.unchecked_transaction()?;
+        let seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM session_records WHERE session_id = ?1",
+            [&sid],
+            |r| r.get(0),
+        )?;
+        let n = tx.execute(
+            "INSERT OR IGNORE INTO session_records
+                (session_id, seq, provider, source, native_id, agent_version, body, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![sid, seq, provider, source, native_id, agent_version, body_json, now_millis()],
+        )?;
+        tx.commit()?;
+
+        Ok(n > 0)
+    }
+
+    /// All canonical records for the workspace's current session, in seq order.
+    pub fn read_session_records(&self, workspace_id: &str) -> Result<Vec<SessionRecord>> {
+        let conn = self.db.lock();
+
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        let Some(sid) = sid else {
+            return Ok(vec![]);
+        };
+
+        let mut stmt = conn.prepare(
+            "SELECT seq, provider, source, native_id, agent_version, body
+             FROM session_records WHERE session_id = ?1 ORDER BY seq ASC",
+        )?;
+
+        let rows: Vec<(i64, String, String, String, Option<String>, String)> = stmt
+            .query_map([&sid], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })?
+            .collect::<std::result::Result<_, rusqlite::Error>>()?;
+
+        rows.into_iter()
+            .map(|(seq, provider, source, native_id, agent_version, body_text)| {
+                let body = serde_json::from_str(&body_text)
+                    .map_err(|e| Error::Other(format!("deserialize record body: {e}")))?;
+                Ok(SessionRecord {
+                    seq,
+                    provider,
+                    source,
+                    native_id,
+                    agent_version,
+                    body,
+                })
             })
             .collect()
     }
@@ -1629,6 +1738,87 @@ mod tests {
         // And read must return empty.
         let events = wm.read_session_events(&ws_id).unwrap();
         assert!(events.is_empty());
+    }
+
+    // ── session record store (canonical) ──────────────────────────────────
+
+    #[test]
+    fn append_and_read_session_records_roundtrip() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        let body = serde_json::json!({"role": "user", "content": "hello"});
+        let inserted = wm
+            .append_session_record(&ws_id, "claude", "transcript", "uuid-1", Some("1.2.3"), &body)
+            .unwrap();
+        assert!(inserted);
+
+        let records = wm.read_session_records(&ws_id).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].provider, "claude");
+        assert_eq!(records[0].source, "transcript");
+        assert_eq!(records[0].native_id, "uuid-1");
+        assert_eq!(records[0].agent_version.as_deref(), Some("1.2.3"));
+        assert_eq!(records[0].body, body);
+        assert_eq!(records[0].seq, 1);
+    }
+
+    #[test]
+    fn append_session_record_is_idempotent_on_native_id() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        let first = serde_json::json!({"n": 1});
+        let dup = serde_json::json!({"n": 2});
+        assert!(wm
+            .append_session_record(&ws_id, "pi", "transcript", "id-a", None, &first)
+            .unwrap());
+        // Same (session, native_id) — must be ignored, original body retained.
+        assert!(!wm
+            .append_session_record(&ws_id, "pi", "transcript", "id-a", None, &dup)
+            .unwrap());
+
+        let records = wm.read_session_records(&ws_id).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].body, first);
+        assert_eq!(records[0].agent_version, None);
+    }
+
+    #[test]
+    fn session_records_seq_increments_in_order() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        wm.append_session_record(&ws_id, "pi", "transcript", "ln:0", None, &serde_json::json!({"a": 1}))
+            .unwrap();
+        wm.append_session_record(&ws_id, "pi", "transcript", "ln:1", None, &serde_json::json!({"a": 2}))
+            .unwrap();
+
+        let records = wm.read_session_records(&ws_id).unwrap();
+        let seqs: Vec<i64> = records.iter().map(|r| r.seq).collect();
+        assert_eq!(seqs, vec![1, 2]);
+        assert_eq!(records[0].native_id, "ln:0");
+        assert_eq!(records[1].native_id, "ln:1");
+    }
+
+    #[test]
+    fn read_session_records_empty_when_none() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        assert!(wm.read_session_records(&ws_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn append_session_record_to_workspace_with_no_session_is_noop() {
+        let db = test_db();
+        make_workspace_with_session(&db);
+        let wm = WorkspaceManager::new(db.clone());
+        // Unknown workspace id → no session → returns false, read empty.
+        let inserted = wm
+            .append_session_record("no-such-ws", "claude", "transcript", "x", None, &serde_json::json!({}))
+            .unwrap();
+        assert!(!inserted);
+        assert!(wm.read_session_records("no-such-ws").unwrap().is_empty());
     }
 
     #[test]
