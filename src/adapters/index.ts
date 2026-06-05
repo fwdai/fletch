@@ -1,3 +1,4 @@
+import { antigravityAdapter } from "./antigravity";
 import { claudeAdapter } from "./claude";
 import { codexAdapter } from "./codex";
 import { cursorAdapter } from "./cursor";
@@ -10,9 +11,10 @@ export type { ChatAdapter, ChatItem, DisplayPolicy, NoticeSubtype, RawEvent } fr
 export { applyPolicy, modeFor } from "./policy";
 
 // Partial: not every provider is wired. Agents listed in PROVIDERS without an
-// entry here (e.g. antigravity) are "coming soon" — the picker gates them via
-// `hasAdapter` so they can never be selected and silently fall back to Claude.
+// entry here are "coming soon" — the picker gates them via `hasAdapter` so they
+// can never be selected and silently fall back to Claude.
 export const ADAPTERS: Partial<Record<ProviderId, ChatAdapter>> = {
+  antigravity: antigravityAdapter,
   claude: claudeAdapter,
   codex: codexAdapter,
   cursor: cursorAdapter,
