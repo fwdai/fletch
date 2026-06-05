@@ -457,6 +457,19 @@ function extractInputTokens(ev: RawEvent): number | undefined {
   return typeof n === "number" && n > 0 ? n : undefined;
 }
 
+/** A per-turn agent captures its session id on its first turn (e.g. agy reads
+ *  it from disk at turn-end), but the id only reaches the live frontend via a
+ *  full `getWorkspace`. True when an agent's turn just landed yet its session
+ *  id is still missing locally — the cue to re-fetch so the Native toggle
+ *  unblocks without a reload. False once present, to avoid per-turn re-fetch. */
+export function needsSessionIdRefresh(
+  workspace: Workspace | null,
+  agentId: string,
+): boolean {
+  const agent = workspace?.agents.find((a) => a.id === agentId);
+  return !!agent && !agent.session_id;
+}
+
 /** Names already taken by real or draft agents — passed to the backend
  *  name allocator so picks avoid collisions. */
 function usedNames(workspace: Workspace | null, drafts: DraftAgent[]): Set<string> {
@@ -612,6 +625,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           set((state) => ({
             managedLogs: { ...state.managedLogs, [id]: items },
           }));
+          // The first turn captures the agent's session id in the DB; pull it
+          // into the live workspace so the Native toggle unblocks without a
+          // reload. Only when still missing locally — avoids per-turn re-fetch.
+          if (needsSessionIdRefresh(get().workspace, id)) {
+            const fresh = await api.getWorkspace();
+            if (fresh) set({ workspace: fresh });
+          }
         } catch {
           // Non-critical refresh; the next load picks up the records.
         }

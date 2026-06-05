@@ -231,8 +231,9 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // No event stream to detect turn-end from — the turn's process exit ends
         // the turn (on_turn_exit). The detector is never fed, so any is fine.
         activity: || Box::new(ManagedActivity::claude()),
-        // Native PTY view is a follow-up; custom view only for v1.
-        native_view: false,
+        // Native PTY view runs agy's interactive TUI, resuming the conversation
+        // the custom view established (see antigravity_pty_args).
+        native_view: true,
         plaintext: true,
         session_id_from_cwd: Some(antigravity_session_id_from_cwd),
         transcript: Some(TranscriptReader {
@@ -482,8 +483,8 @@ fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Opt
 }
 
 fn antigravity_pty_args(session_id: Option<&str>) -> Vec<String> {
-    // Native view is a follow-up (native_view: false); kept consistent for when
-    // it's wired — launch the TUI, resuming when we have an id.
+    // Native view: launch agy's interactive TUI (NOT `--print`, the
+    // non-interactive turn runner), resuming the conversation by id.
     let mut args = vec!["--dangerously-skip-permissions".to_string()];
     if let Some(id) = session_id {
         args.push("--conversation".into());
@@ -1347,10 +1348,11 @@ mod tests {
         assert_eq!(recs[2].native_id, "ln:2"); // no step_index → positional
     }
 
-    // agy has no native_view yet (custom view only); native rollout test pins it.
+    // agy's native (PTY/TUI) view is wired — it resumes the conversation the
+    // custom view established. Rollout test below pins the full matrix.
     #[test]
-    fn antigravity_is_custom_view_only_for_now() {
-        assert!(!capabilities("antigravity").native_view);
+    fn antigravity_native_view_is_wired() {
+        assert!(capabilities("antigravity").native_view);
     }
 
     #[test]
@@ -1565,6 +1567,7 @@ mod tests {
             ("cursor", true),
             ("opencode", true),
             ("pi", true),
+            ("antigravity", true),
             ("unknown", false),
         ];
         for (provider, native_view) in cases {
