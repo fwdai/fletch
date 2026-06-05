@@ -218,6 +218,14 @@ pub fn read_session_records(
     supervisor.workspace.read_session_records(&agent_id)
 }
 
+/// Ingest the agent's on-disk transcript into session_records now (lazy
+/// backfill when a session is opened with no records yet). Idempotent.
+#[tauri::command]
+pub fn sync_session(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
+    supervisor.sync_session(&agent_id);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn add_repo_to_agent(
     supervisor: State<'_, Arc<Supervisor>>,

@@ -1020,20 +1020,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ transcriptLoading: { ...s.transcriptLoading, [id]: true } }));
     try {
       const provider = providerFor(get(), id);
-      // session_records is the canonical store: per-provider verbatim transcript
-      // bodies, rendered via normalizeTranscript→reduce. Fall back to the legacy
-      // session_events log for sessions not yet ingested (agents without a
-      // transcript reader, or pre-migration history).
-      const records = await api.readSessionRecords(id);
-      let items: ChatItem[] = [];
-      if (records.length > 0) {
-        items = reduceRecords(provider, records);
-      } else {
-        const events = await api.readSessionEvents(id);
-        for (const ev of events) {
-          items = reduceStoredEvent(provider, items, ev as RawEvent);
-        }
+      // session_records is the sole canonical store: per-provider verbatim
+      // transcript bodies, rendered via normalizeTranscript→reduce. If a session
+      // has no records yet (first open, or pre-cutover history), lazily ingest
+      // its on-disk transcript and re-read. No-op for agents with no transcript.
+      let records = await api.readSessionRecords(id);
+      if (records.length === 0) {
+        await api.syncSession(id);
+        records = await api.readSessionRecords(id);
       }
+      const items = reduceRecords(provider, records);
       set((state) => {
         // Nothing stored but a live turn is already rendering — don't clobber it.
         if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {

@@ -776,14 +776,9 @@ impl Supervisor {
                 .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
             agent.send_user_message(text, attachments, thinking)?;
         }
-        let user_event = serde_json::json!({
-            "type": "user_message",
-            "text": text,
-            "attachments": attachments,
-        });
-        if let Err(e) = self.workspace.append_session_event(agent_id, &user_event) {
-            tracing::warn!(error = %e, agent_id = %agent_id, "append user_message event failed");
-        }
+        // The user's prompt is persisted via the agent's own transcript (ingested
+        // into session_records at turn-end); the live view renders it
+        // optimistically on send. No separate event log to write.
         Ok(())
     }
 
@@ -1136,6 +1131,13 @@ impl Supervisor {
         }
     }
 
+    /// Synchronously ingest the agent's transcript into session_records (used
+    /// for lazy backfill when a session is opened with no records yet). `None`
+    /// if the provider has no transcript reader.
+    pub fn sync_session(&self, agent_id: &str) -> Option<usize> {
+        sync_session_records(&self.workspace, agent_id)
+    }
+
     /// Fire-and-forget transcript ingest at turn-end. Retries with backoff to
     /// ride out the agent's flush lag; emits `session:records-appended` when new
     /// records land. WARNs once if a reader-backed agent ingests nothing after
@@ -1482,13 +1484,6 @@ fn spawn_managed_agent(
     let sup_for_exit = sup.clone();
     let app_for_exit = app.clone();
     let id_for_exit = agent_id.clone();
-    // Resolve the provider once at spawn (one DB read, not per event) so the
-    // event closure can decide which events are durable.
-    let provider = sup
-        .workspace
-        .agent(&agent_id)
-        .map(|r| r.provider)
-        .unwrap_or_else(|_| "claude".to_string());
     Agent::spawn_managed(
         spec,
         move |event| {
@@ -1498,12 +1493,6 @@ fn spawn_managed_agent(
                 .get_mut(&id_for_event)
             {
                 activity.observe_event(&event);
-            }
-
-            if crate::agent::is_durable_event(&provider, &event) {
-                if let Err(e) = sup_for_event.workspace.append_session_event(&id_for_event, &event) {
-                    tracing::warn!(error = %e, agent_id = %id_for_event, "append_session_event failed");
-                }
             }
 
             if let Err(e) = app_for_event.emit(
@@ -1544,7 +1533,6 @@ fn spawn_per_turn_agent(
     let app_for_event = app.clone();
     let id_for_event = agent_id.clone();
     let sup_for_event = sup.clone();
-    let provider_for_event = provider.to_string();
     let id_for_sid = agent_id.clone();
     let sup_for_sid = sup.clone();
     let app_for_exit = app;
@@ -1554,11 +1542,6 @@ fn spawn_per_turn_agent(
     let on_event = move |event: Value| {
         if let Some(activity) = sup_for_event.activities.lock().get_mut(&id_for_event) {
             activity.observe_event(&event);
-        }
-        if crate::agent::is_durable_event(&provider_for_event, &event) {
-            if let Err(e) = sup_for_event.workspace.append_session_event(&id_for_event, &event) {
-                tracing::warn!(error = %e, agent_id = %id_for_event, "append_session_event failed");
-            }
         }
         if let Err(e) = app_for_event.emit(
             "agent:event",

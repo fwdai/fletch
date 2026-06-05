@@ -252,6 +252,8 @@ export const api = {
     ),
   readSessionRecords: (agentId: string) =>
     invoke<SessionRecord[]>("read_session_records", { agentId }),
+  syncSession: (agentId: string) =>
+    invoke<void>("sync_session", { agentId }),
   addRepoToAgent: (agentId: string, repoPath: string) =>
     invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
   allocateDraftName: (used: string[]) =>
