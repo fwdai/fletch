@@ -33,6 +33,7 @@ fn get_migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/0001_initial_schema.sql")),
         M::up(include_str!("../migrations/0002_session_records.sql")),
         M::up(include_str!("../migrations/0003_retire_session_events.sql")),
+        M::up(include_str!("../migrations/0004_session_user_turns.sql")),
     ])
 }
 

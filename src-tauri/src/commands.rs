@@ -115,12 +115,20 @@ pub fn send_user_message(
     supervisor: State<'_, Arc<Supervisor>>,
     app: AppHandle,
     agent_id: String,
+    turn_id: String,
     text: String,
     attachments: Vec<String>,
     thinking: Option<String>,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.send_user_message(&app, &agent_id, &text, &attachments, thinking.as_deref())
+    sup.send_user_message(
+        &app,
+        &agent_id,
+        &turn_id,
+        &text,
+        &attachments,
+        thinking.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -199,6 +207,14 @@ pub fn read_session_records(
     agent_id: String,
 ) -> Result<Vec<crate::workspace::SessionRecord>> {
     supervisor.workspace.read_session_records(&agent_id)
+}
+
+#[tauri::command]
+pub fn read_user_turns(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Vec<crate::workspace::UserTurn>> {
+    supervisor.workspace.read_user_turns(&agent_id)
 }
 
 /// Ingest the agent's on-disk transcript into session_records now (lazy

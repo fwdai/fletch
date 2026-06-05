@@ -736,49 +736,52 @@ impl Supervisor {
         self: Arc<Self>,
         app: &AppHandle,
         agent_id: &str,
+        turn_id: &str,
         text: &str,
         attachments: &[String],
         thinking: Option<&str>,
     ) -> Result<()> {
-        self.deliver_user_message(agent_id, text, attachments, thinking)?;
+        self.deliver_user_message(agent_id, turn_id, text, attachments, thinking)?;
         mark_user_turn_started(&self, app, agent_id);
         on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), text.to_string());
         Ok(())
     }
 
-    /// Deliver a user turn to the running agent, then persist it as the
-    /// provider-agnostic canonical `user_message` event.
+    /// Capture the outgoing user turn durably, then deliver it to the agent.
     ///
-    /// Order matters: we persist *after* the agent has accepted the message,
-    /// never before. A freshly spawned agent isn't in the in-memory map yet,
-    /// so a send aimed at it fails with `AgentNotFound`; the frontend retries
-    /// until the agent is ready (`sendWhenAgentReady`). Persisting up front
-    /// would record one duplicate `user_message` event per failed retry, and
-    /// those surface as the same prompt rendered N times when the conversation
-    /// is replayed from history on reopen.
+    /// Order matters: we persist the `session_user_turns` row *before* the agent
+    /// send, idempotently on `turn_id`. So the message survives even if delivery
+    /// fails (agent not yet spawned → `AgentNotFound`; the frontend resumes and
+    /// retries via `sendWhenAgentReady`, reusing the same `turn_id` → one row).
+    /// On reload a never-delivered turn renders standalone so the user can retry.
     ///
-    /// Persist-only: the frontend renders the user message optimistically on
-    /// send and replays this event through the reducer on restore, so it must
-    /// not be emitted live (that would double-render). It still lands ahead of
-    /// the response — `send_user_message` only queues the write, so the agent's
-    /// own events arrive (and persist) strictly later.
+    /// This row carries Quorum-origin metadata (text + attachments) that the
+    /// transcript can't; it lives outside `session_records`, which stays a pure
+    /// 1:1 mirror of the agent's jsonl. At turn-end `sync_session_records`
+    /// matches the row to its canonical transcript user-message and fills in
+    /// `native_id`. It is never rendered as a message when matched (the
+    /// transcript renders the turn; this only hangs attachments) — so no
+    /// double-render with the optimistic live render.
     fn deliver_user_message(
         &self,
         agent_id: &str,
+        turn_id: &str,
         text: &str,
         attachments: &[String],
         thinking: Option<&str>,
     ) -> Result<()> {
+        // Durable capture first — independent of whether the agent accepts.
+        if let Err(e) = self
+            .workspace
+            .insert_user_turn(agent_id, turn_id, text, attachments)
         {
-            let agents = self.agents.lock();
-            let agent = agents
-                .get(agent_id)
-                .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
-            agent.send_user_message(text, attachments, thinking)?;
+            tracing::warn!(error = %e, agent_id, "persist outgoing user turn failed");
         }
-        // The user's prompt is persisted via the agent's own transcript (ingested
-        // into session_records at turn-end); the live view renders it
-        // optimistically on send. No separate event log to write.
+        let agents = self.agents.lock();
+        let agent = agents
+            .get(agent_id)
+            .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
+        agent.send_user_message(text, attachments, thinking)?;
         Ok(())
     }
 
@@ -1274,6 +1277,13 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
             Err(e) => tracing::warn!(error = %e, agent_id, "append_session_record failed"),
         }
     }
+
+    // Link any pending outgoing user turns to the canonical transcript
+    // user-message rows just ingested (fills in their `native_id`).
+    if let Err(e) = workspace.associate_pending_user_turns(agent_id) {
+        tracing::warn!(error = %e, agent_id, "associate user turns failed");
+    }
+
     Some(inserted)
 }
 
@@ -2145,23 +2155,33 @@ mod tests {
     }
 
     #[test]
-    fn delivery_to_unready_agent_persists_nothing() {
+    fn delivery_to_unready_agent_leaves_canonical_store_clean_but_captures_turn() {
         // A freshly spawned agent has a session row but isn't in the live agents
         // map yet (the frontend retries the send until it's ready). A failed
-        // delivery must not write anything to the canonical store.
+        // delivery must not touch the canonical transcript store — but the
+        // outgoing user turn IS captured durably so it isn't lost and can be
+        // retried.
         let sup = test_supervisor();
         let mut record = record_with_status("yosemite", AgentStatus::Spawning);
         sup.workspace.add_agent(&mut record).unwrap();
 
         let err = sup
-            .deliver_user_message("yosemite", "hello", &[], None)
+            .deliver_user_message("yosemite", "turn-1", "hello", &[], None)
             .unwrap_err();
         assert!(matches!(err, Error::AgentNotFound(_)));
 
+        // Canonical store untouched.
         let records = sup.workspace.read_session_records("yosemite").unwrap();
         assert!(
             records.is_empty(),
-            "failed delivery must persist nothing, got {records:?}",
+            "failed delivery must not write the canonical store, got {records:?}",
         );
+
+        // Outgoing turn captured, pending (no transcript yet) → renders standalone.
+        let turns = sup.workspace.read_user_turns("yosemite").unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].turn_id, "turn-1");
+        assert_eq!(turns[0].text, "hello");
+        assert_eq!(turns[0].native_id, None);
     }
 }
