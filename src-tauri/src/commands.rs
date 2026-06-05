@@ -211,6 +211,14 @@ pub fn read_session_events(
 }
 
 #[tauri::command]
+pub fn read_session_records(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Vec<crate::workspace::SessionRecord>> {
+    supervisor.workspace.read_session_records(&agent_id)
+}
+
+#[tauri::command]
 pub async fn add_repo_to_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     app: AppHandle,
