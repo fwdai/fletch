@@ -48,6 +48,44 @@ describe("applyUserTurns", () => {
     });
   });
 
+  it("shows the clean typed text on restore, not the runner's injected 'Attached file' lines", () => {
+    // The transcript copy of the user message carries the runner-injected
+    // reference line(s); the live render showed only the clean typed text +
+    // chips. Restore must match: clean text, attachments as chips.
+    const items = [
+      userMsg("What's on this image?\nAttached file: /Users/alex/Downloads/Clair.png"),
+      agentMsg("It's a UI screen."),
+    ];
+    const turns = [
+      turn({
+        native_id: "rec-A",
+        text: "What's on this image?",
+        attachments: ["/Users/alex/Downloads/Clair.png"],
+      }),
+    ];
+
+    const out = applyUserTurns(items, turns);
+    expect(out[0]).toEqual({
+      kind: "user_message",
+      text: "What's on this image?",
+      attachments: ["/Users/alex/Downloads/Clair.png"],
+    });
+  });
+
+  it("leaves text alone if the stored text isn't a prefix (guards a mis-aligned match)", () => {
+    const items = [userMsg("totally different message")];
+    const turns = [turn({ native_id: "rec-A", text: "what I typed", attachments: ["/tmp/x"] })];
+
+    const out = applyUserTurns(items, turns);
+    // Attachments still hang (existing behavior), but we don't rewrite the
+    // text to something that doesn't belong to this message.
+    expect(out[0]).toEqual({
+      kind: "user_message",
+      text: "totally different message",
+      attachments: ["/tmp/x"],
+    });
+  });
+
   it("is a no-op when there are no user turns", () => {
     const items = [userMsg("hi"), agentMsg("yo")];
     expect(applyUserTurns(items, [])).toEqual(items);

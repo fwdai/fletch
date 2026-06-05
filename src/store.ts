@@ -431,6 +431,14 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
     const item = result[userIdxs[userIdxs.length - k]];
     if (item.kind === "user_message" && t.attachments.length > 0) {
       item.attachments = t.attachments;
+      // Render the clean text the user actually typed (what the live render
+      // showed) rather than the transcript's copy, which the runner padded
+      // with `Attached file: <path>` reference lines. The stored turn text is
+      // verbatim what was sent, so it matches the optimistic render exactly.
+      // Prefix-guard so a mis-aligned match can't rewrite an unrelated message.
+      if (item.text.startsWith(t.text)) {
+        item.text = t.text;
+      }
     }
   }
 
