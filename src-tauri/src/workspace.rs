@@ -127,6 +127,13 @@ pub struct AgentRecord {
     /// (e.g. when the user switches views).
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Claude's session-level reasoning effort (`--effort <level>`), chosen in
+    /// the composer at session creation and applied on every process spawn
+    /// (fresh, view-switch, resume). `None` = no selection; claude uses its
+    /// own default. Only the persistent-runner agent (claude) consumes this;
+    /// per-turn agents take effort per-turn instead.
+    #[serde(default)]
+    pub effort: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -369,8 +376,8 @@ impl WorkspaceManager {
         // not persisted — it derives from the workspace/session dispositions.
         let session_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 session_id,
                 record.id,
@@ -378,6 +385,7 @@ impl WorkspaceManager {
                 view_to_str(&record.view),
                 record.session_id,
                 record.last_error,
+                record.effort,
                 created_millis,
             ],
         )?;
@@ -941,7 +949,8 @@ impl WorkspaceManager {
         let mut stmt = match conn.prepare(
             "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
                     w.stopped_at, w.archived_at,
-                    s.provider, s.view, s.provider_session_id, s.last_error
+                    s.provider, s.view, s.provider_session_id, s.last_error,
+                    s.effort
              FROM workspaces w
              LEFT JOIN sessions s ON s.workspace_id = w.id
              ORDER BY w.created_at",
@@ -963,6 +972,7 @@ impl WorkspaceManager {
                 let view_str: Option<String> = row.get(8)?;
                 let session_id: Option<String> = row.get(9)?;
                 let last_error: Option<String> = row.get(10)?;
+                let effort: Option<String> = row.get(11)?;
 
                 Ok((
                     id,
@@ -976,6 +986,7 @@ impl WorkspaceManager {
                     view_str,
                     session_id,
                     last_error,
+                    effort,
                 ))
             })
             .ok()
@@ -995,6 +1006,7 @@ impl WorkspaceManager {
                     view_str,
                     session_id,
                     last_error,
+                    effort,
                 )| {
                     let is_archived = archived_millis.is_some();
 
@@ -1026,6 +1038,7 @@ impl WorkspaceManager {
                         status,
                         view: str_to_view(view_str.as_deref().unwrap_or("custom")),
                         session_id,
+                        effort,
                         created_at: millis_to_iso(created_millis),
                         last_error,
                         archive,
@@ -1237,7 +1250,8 @@ impl WorkspaceManager {
             .query_row(
                 "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
                         w.stopped_at, w.archived_at,
-                        s.provider, s.view, s.provider_session_id, s.last_error
+                        s.provider, s.view, s.provider_session_id, s.last_error,
+                        s.effort
                  FROM workspaces w
                  LEFT JOIN sessions s ON s.workspace_id = w.id
                  WHERE w.id = ?1",
@@ -1255,6 +1269,7 @@ impl WorkspaceManager {
                         row.get::<_, Option<String>>(8)?,
                         row.get::<_, Option<String>>(9)?,
                         row.get::<_, Option<String>>(10)?,
+                        row.get::<_, Option<String>>(11)?,
                     ))
                 },
             )
@@ -1272,6 +1287,7 @@ impl WorkspaceManager {
             view_str,
             session_id,
             last_error,
+            effort,
         ) = row;
 
         let is_archived = archived_millis.is_some();
@@ -1302,6 +1318,7 @@ impl WorkspaceManager {
             status,
             view: str_to_view(view_str.as_deref().unwrap_or("custom")),
             session_id,
+            effort,
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,
@@ -1347,6 +1364,7 @@ pub fn new_agent_record(
         status: AgentStatus::Spawning,
         view,
         session_id,
+        effort: None,
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         archive: None,

@@ -1286,7 +1286,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const turnId = crypto.randomUUID();
     try {
       const view = get().viewMode;
-      const rec = await api.spawnAgent(view, draft.repoPath, provider, draft.name);
+      // `thinking` carries the composer's effort selection. For claude it's a
+      // session-level spawn flag (--effort), applied here; per-turn agents
+      // ignore it at spawn and take it per-turn via sendUserMessage below.
+      const rec = await api.spawnAgent(
+        view,
+        draft.repoPath,
+        provider,
+        draft.name,
+        thinking,
+      );
       const fresh = await api.getWorkspace();
       set((state) => {
         const patches: Partial<AppState> = {

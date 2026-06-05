@@ -681,6 +681,12 @@ pub struct SpawnSpec<'a> {
     /// on disk for this session). False if we're respawning to switch
     /// views — claude should `--resume` instead of starting fresh.
     pub fresh: bool,
+    /// Claude's session-level effort (`--effort <level>`), chosen at session
+    /// creation and persisted on the `AgentRecord`. Applied on every spawn
+    /// (fresh, view-switch, resume) so it sticks for the session. `None` =
+    /// no selection; claude uses its own default. Ignored by per-turn agents,
+    /// which take effort per-turn via their `thinking` build-args instead.
+    pub effort: Option<&'a str>,
     pub cols: u16,
     pub rows: u16,
 }
@@ -956,6 +962,18 @@ fn prepare_sandbox(
     Ok(profile_file)
 }
 
+/// Claude's session-level effort flag (`--effort <level>`), shared by the
+/// managed (custom-view) and PTY (native-view) arg builders. Empty when no
+/// effort was selected for the session, so claude falls back to its own
+/// default. Effort is a spawn-time flag for the whole session, not per-turn
+/// (unlike the per-turn agents' `thinking` arg) — see `providerDetail.ts`.
+fn effort_args(effort: Option<&str>) -> Vec<String> {
+    match effort {
+        Some(level) => vec!["--effort".into(), level.to_string()],
+        None => Vec::new(),
+    }
+}
+
 fn prepare_pty_args(
     spec: &SpawnSpec<'_>,
 ) -> Result<(tempfile::NamedTempFile, Vec<String>)> {
@@ -978,6 +996,7 @@ fn prepare_pty_args(
         "--permission-mode".into(),
         "bypassPermissions".into(),
     ];
+    args.extend(effort_args(spec.effort));
 
     if spec.fresh {
         args.push("--session-id".into());
@@ -1023,6 +1042,7 @@ fn prepare_managed_args(
         "--permission-mode".into(),
         "bypassPermissions".into(),
     ];
+    args.extend(effort_args(spec.effort));
 
     if spec.fresh {
         args.push("--session-id".into());
@@ -1669,6 +1689,19 @@ mod tests {
         let args = pi_build_args("hi", None, Some("xhigh"));
         assert!(args.contains(&"--thinking".to_string()));
         assert!(args.contains(&"xhigh".to_string()));
+    }
+
+    #[test]
+    fn effort_args_present_when_set() {
+        assert_eq!(
+            effort_args(Some("xhigh")),
+            vec!["--effort".to_string(), "xhigh".to_string()]
+        );
+    }
+
+    #[test]
+    fn effort_args_empty_when_unset() {
+        assert!(effort_args(None).is_empty());
     }
 
     #[test]

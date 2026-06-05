@@ -221,8 +221,15 @@ export const api = {
     repoPath: string,
     provider?: string,
     name?: string,
+    effort?: string,
   ) =>
-    invoke<AgentRecord>("spawn_agent", { view, repoPath, provider, name }),
+    invoke<AgentRecord>("spawn_agent", {
+      view,
+      repoPath,
+      provider,
+      name,
+      effort: effort ?? null,
+    }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   sendUserMessage: (

@@ -35,6 +35,7 @@ fn get_migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/0003_retire_session_events.sql")),
         M::up(include_str!("../migrations/0004_session_user_turns.sql")),
         M::up(include_str!("../migrations/0005_session_ingest_offset.sql")),
+        M::up(include_str!("../migrations/0006_session_effort.sql")),
     ])
 }
 

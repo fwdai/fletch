@@ -112,6 +112,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
       </div>
       <div className="composer-wrap">
         <Composer
+          existingSession
           defaultProvider={agent.provider}
           disabled={!canSend}
           placeholder={

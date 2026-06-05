@@ -23,6 +23,13 @@ export interface ProviderDetail {
   /** Thinking/reasoning effort levels supported by this provider's CLI.
    *  Empty means the provider has no effort flag — the picker hides. */
   thinkingLevels: ThinkingLevel[];
+  /** Preferred initial level. Falls back to the highest level when unset. */
+  defaultLevel?: string;
+  /** True when effort is a session-level spawn flag (claude `--effort`) rather
+   *  than a per-message arg. The composer hides the picker on an existing
+   *  session, since the value can't change mid-session without restarting the
+   *  process (which would discard the conversation's prompt cache). */
+  effortAtSpawn?: boolean;
 }
 
 export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
@@ -30,10 +37,18 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     path: "/opt/homebrew/bin/claude",
     models: "Opus 4.7 · Sonnet 4.6 · Haiku 4",
     installed: true,
-    // Claude's `--effort` is a session-level spawn flag, not per-message.
-    // Wiring it requires threading effort through spawn_agent — tracked as
-    // a follow-up. No picker shown until then.
-    thinkingLevels: [],
+    // `claude --effort <level>` is a session-level spawn flag (not per-message):
+    // chosen at session creation, threaded through spawn_agent, and persisted on
+    // the session record so it re-applies on every spawn. Fixed for the session.
+    thinkingLevels: [
+      { label: "Low",   value: "low"    },
+      { label: "Med",   value: "medium" },
+      { label: "High",  value: "high"   },
+      { label: "xHigh", value: "xhigh"  },
+      { label: "Max",   value: "max"    },
+    ],
+    defaultLevel: "xhigh", // matches Claude Code's own default
+    effortAtSpawn: true,
   },
   codex: {
     path: "~/.codex/bin/codex",

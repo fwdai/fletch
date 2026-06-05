@@ -396,6 +396,7 @@ impl Supervisor {
         repo_path: PathBuf,
         provider: String,
         name: Option<String>,
+        effort: Option<String>,
     ) -> Result<AgentRecord> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -442,6 +443,9 @@ impl Supervisor {
             String::new(),
             view,
         );
+        // Session-level effort (claude `--effort`); persisted so start_process
+        // re-applies it on every spawn. Per-turn agents ignore it at spawn.
+        record.effort = effort;
         let parent_dir = agent_parent_dir(&agent_id)?;
         let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
 
@@ -615,6 +619,9 @@ impl Supervisor {
                         // Per-turn native always resumes (the agent built its
                         // session in the Custom view first).
                         fresh: false,
+                        // Per-turn agents take effort per-turn (build-args),
+                        // not at spawn.
+                        effort: None,
                         cols: 120,
                         rows: 32,
                     };
@@ -651,6 +658,9 @@ impl Supervisor {
                 sandbox_root,
                 session_id,
                 fresh: effective_fresh,
+                // Claude's session-level effort, persisted on the record so it
+                // re-applies on every spawn (fresh, view-switch, resume).
+                effort: record.effort.as_deref(),
                 cols: 120,
                 rows: 32,
             };
