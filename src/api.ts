@@ -225,8 +225,20 @@ export const api = {
     invoke<AgentRecord>("spawn_agent", { view, repoPath, provider, name }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
-  sendUserMessage: (agentId: string, text: string, attachments: string[] = [], thinking?: string) =>
-    invoke<void>("send_user_message", { agentId, text, attachments, thinking: thinking ?? null }),
+  sendUserMessage: (
+    agentId: string,
+    turnId: string,
+    text: string,
+    attachments: string[] = [],
+    thinking?: string,
+  ) =>
+    invoke<void>("send_user_message", {
+      agentId,
+      turnId,
+      text,
+      attachments,
+      thinking: thinking ?? null,
+    }),
   resizeAgent: (agentId: string, cols: number, rows: number) =>
     invoke<void>("resize_agent", { agentId, cols, rows }),
   switchView: (agentId: string, view: AgentView) =>
@@ -242,6 +254,8 @@ export const api = {
     invoke<void>("restore_agent", { agentId }),
   readSessionRecords: (agentId: string) =>
     invoke<SessionRecord[]>("read_session_records", { agentId }),
+  readUserTurns: (agentId: string) =>
+    invoke<UserTurn[]>("read_user_turns", { agentId }),
   syncSession: (agentId: string) =>
     invoke<void>("sync_session", { agentId }),
   addRepoToAgent: (agentId: string, repoPath: string) =>
@@ -333,6 +347,18 @@ export interface SessionRecord {
   native_id: string;
   agent_version: string | null;
   body: Record<string, unknown> & { type?: string };
+}
+
+/** One Quorum-origin outgoing user message (session_user_turns). Carries the
+ *  attachment metadata the transcript lacks; `native_id` links it to the
+ *  canonical session_records user-message once matched at turn-end (null =
+ *  pending or failed — rendered standalone for retry). */
+export interface UserTurn {
+  turn_id: string;
+  seq: number;
+  text: string;
+  attachments: string[];
+  native_id: string | null;
 }
 
 export interface SessionRecordsAppendedEvent {

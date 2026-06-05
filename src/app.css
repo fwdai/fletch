@@ -798,6 +798,11 @@ button { cursor: default; }
   display: flex; flex-wrap: wrap; gap: 6px;
   padding: 10px 12px 0;
 }
+/* Read-only attachment chips shown on a sent user message. */
+.message-attachments {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 8px;
+}
 .attachment {
   display: inline-flex; align-items: center; gap: 6px;
   max-width: 220px; height: 24px; padding: 0 4px 0 8px;
