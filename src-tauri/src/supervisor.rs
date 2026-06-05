@@ -36,6 +36,11 @@ pub struct AgentEventPayload {
 }
 
 #[derive(Clone, serde::Serialize)]
+pub struct SessionRecordsAppendedPayload {
+    pub agent_id: String,
+}
+
+#[derive(Clone, serde::Serialize)]
 pub struct AgentStatusPayload {
     pub agent_id: String,
     pub status: AgentStatus,
@@ -1131,6 +1136,87 @@ impl Supervisor {
         }
     }
 
+    /// Ingest the agent's on-disk transcript into `session_records`, idempotent
+    /// per `native_id`. Returns `None` if this provider has no transcript
+    /// reader wired (nothing to do, don't retry); otherwise `Some(n)` with the
+    /// number of *new* records inserted (`0` = reader ran but found nothing
+    /// yet — the file may not be flushed, or its location/format changed).
+    pub fn sync_session(&self, agent_id: &str) -> Option<usize> {
+        let record = self.workspace.agent(agent_id).ok()?;
+        let reader = per_turn_descriptor(&record.provider)?.transcript.as_ref()?;
+
+        // A reader exists; from here any shortfall is "nothing yet" → Some(0).
+        let Some(session_id) = record.session_id.as_deref() else {
+            return Some(0);
+        };
+        let Some(repo) = record.repos.first() else {
+            return Some(0);
+        };
+        let Ok(cwd) = repo_worktree_path(agent_id, &repo.subdir) else {
+            return Some(0);
+        };
+
+        let paths = (reader.locate)(session_id, &cwd);
+        let records = (reader.read)(&paths);
+
+        let mut inserted = 0usize;
+        for rec in &records {
+            match self.workspace.append_session_record(
+                agent_id,
+                &record.provider,
+                "transcript",
+                &rec.native_id,
+                None, // agent_version stamped in a later pass
+                &rec.body,
+            ) {
+                Ok(true) => inserted += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, agent_id, "append_session_record failed")
+                }
+            }
+        }
+        Some(inserted)
+    }
+
+    /// Fire-and-forget transcript ingest at turn-end. Retries with backoff to
+    /// ride out the agent's flush lag; emits `session:records-appended` when new
+    /// records land. WARNs once if a reader-backed agent ingests nothing after
+    /// all retries — the early signal that its transcript path/format changed.
+    pub fn trigger_session_sync(self: &Arc<Self>, app: AppHandle, agent_id: String) {
+        let sup = self.clone();
+        tauri::async_runtime::spawn(async move {
+            // Immediate attempt, then back off (ms) for flush lag.
+            let backoffs = [0u64, 200, 400, 800, 1600];
+            let mut had_reader = false;
+            let mut inserted_any = false;
+            for wait in backoffs {
+                if wait > 0 {
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                }
+                match sup.sync_session(&agent_id) {
+                    None => return, // no transcript reader — nothing to do
+                    Some(0) => had_reader = true,
+                    Some(_) => {
+                        inserted_any = true;
+                        break;
+                    }
+                }
+            }
+            if inserted_any {
+                let _ = app.emit(
+                    "session:records-appended",
+                    SessionRecordsAppendedPayload { agent_id },
+                );
+            } else if had_reader {
+                tracing::warn!(
+                    agent_id,
+                    "session sync ingested 0 records after retries (transcript not found or unchanged)"
+                );
+            }
+        });
+    }
+
     /// Fetch the current PR state for an agent's primary repo and emit
     /// a `pr:state_changed` event. Runs as a background task — never blocks the caller.
     pub fn fetch_and_emit_pr_state(&self, app: AppHandle, agent_id: String) {
@@ -1270,7 +1356,7 @@ fn find_codex_rollout(session_id: &str) -> Option<PathBuf> {
 
 /// Read a JSONL file into a vec of parsed values, skipping blank or
 /// unparseable lines.
-fn read_jsonl_values(path: &Path) -> Result<Vec<Value>> {
+pub(crate) fn read_jsonl_values(path: &Path) -> Result<Vec<Value>> {
     use std::io::BufRead;
     let file = std::fs::File::open(path)
         .map_err(|e| Error::Other(format!("open transcript: {e}")))?;
@@ -1492,6 +1578,8 @@ fn spawn_per_turn_agent(
         // (SIGINT) is also non-success, and real agent errors are reported
         // in-band as events.
         transition_active(&sup_for_exit, &app_for_exit, &id_for_exit, AgentStatus::Idle);
+        // Ingest the just-completed turn's transcript into session_records.
+        sup_for_exit.trigger_session_sync(app_for_exit.clone(), id_for_exit.clone());
     };
 
     let spec = PerTurnSpec { cwd, session_id };

@@ -95,6 +95,27 @@ pub struct PerTurnDescriptor {
     /// True if this event is a finalized/durable form worth persisting to
     /// session_events; false for ephemeral streaming/lifecycle events.
     pub is_durable: fn(&Value) -> bool,
+    /// Reader for this agent's on-disk transcript, used by `sync_session` to
+    /// ingest verbatim records into `session_records`. `None` = no readable
+    /// transcript yet (or a live-compiled agent).
+    pub transcript: Option<TranscriptReader>,
+}
+
+/// One verbatim durable record from an agent's transcript: the raw body in the
+/// agent's own shape plus a stable per-record dedup key (`native_id`).
+#[derive(Debug, Clone)]
+pub struct RawRecord {
+    pub native_id: String,
+    pub body: Value,
+}
+
+/// How to find and parse a provider's on-disk transcript into ordered records.
+pub struct TranscriptReader {
+    /// Ordered transcript artifact paths for a session (empty if none / not
+    /// yet flushed). Multiple paths concatenate in order (resume can split).
+    pub locate: fn(session_id: &str, cwd: &Path) -> Vec<PathBuf>,
+    /// Parse located artifacts into ordered verbatim records.
+    pub read: fn(paths: &[PathBuf]) -> Vec<RawRecord>,
 }
 
 /// What an agent can do *right now*. These are rollout flags, not fixed
@@ -150,6 +171,8 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // frontend codex adapter replay it.
         transcript_replay: true,
         is_durable: codex_is_durable,
+        // session_records ingestion wired in a later commit.
+        transcript: None,
     },
     PerTurnDescriptor {
         id: "cursor",
@@ -169,6 +192,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // dedicated tool_call event (started/completed) rather than
         // Claude's assistant.content tool_use + user.content tool_result.
         is_durable: cursor_is_durable,
+        transcript: None,
     },
     PerTurnDescriptor {
         id: "opencode",
@@ -183,6 +207,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // from the SQLite log until that's mapped.
         transcript_replay: false,
         is_durable: opencode_is_durable,
+        transcript: None,
     },
     PerTurnDescriptor {
         id: "pi",
@@ -193,10 +218,14 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         session_id: pi_session_id,
         activity: || Box::new(ManagedActivity::pi()),
         native_view: true,
-        // Pi persists a `session.jsonl` that's wireable later; restore from
-        // the SQLite log until then.
+        // Pi persists a per-session JSONL whose lines match its live event
+        // shape; `pi_*` read it into session_records (the reference reader).
         transcript_replay: false,
         is_durable: pi_is_durable,
+        transcript: Some(TranscriptReader {
+            locate: pi_locate,
+            read: pi_read,
+        }),
     },
 ];
 
@@ -205,6 +234,68 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
 /// Pty/Managed runners) or isn't a known agent at all.
 pub fn per_turn_descriptor(id: &str) -> Option<&'static PerTurnDescriptor> {
     PER_TURN_AGENTS.iter().find(|d| d.id == id)
+}
+
+// ── Transcript readers ──────────────────────────────────────────────────────
+
+/// Build ordered `RawRecord`s from a parsed JSONL stream. `native_id` is the
+/// value's `id_field` (a string) when present, else a positional `ln:{i}` key
+/// over the global stream offset — stable across append-only multi-file reads.
+pub fn records_with_id(values: Vec<Value>, id_field: Option<&str>) -> Vec<RawRecord> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(i, body)| {
+            let native_id = id_field
+                .and_then(|f| body.get(f))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("ln:{i}"));
+            RawRecord { native_id, body }
+        })
+        .collect()
+}
+
+/// JSONL files directly in `dir` whose filename ends with `suffix`, sorted
+/// lexically (filenames are timestamp-prefixed, so lexical == chronological).
+fn jsonl_files_ending(dir: &Path, suffix: &str) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(suffix))
+        })
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// Pi's session-dir slug: cwd with `/` → `-`, wrapped in `--…--`.
+/// `/Users/alex/Code/amux` → `--Users-alex-Code-amux--`. Dots are preserved.
+fn pi_session_slug(cwd: &Path) -> String {
+    format!("-{}--", cwd.to_string_lossy().replace('/', "-"))
+}
+
+fn pi_locate(session_id: &str, cwd: &Path) -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let dir = home.join(".pi/agent/sessions").join(pi_session_slug(cwd));
+    // Files are `<ts>_<session_id>.jsonl`.
+    jsonl_files_ending(&dir, &format!("_{session_id}.jsonl"))
+}
+
+fn pi_read(paths: &[PathBuf]) -> Vec<RawRecord> {
+    let values: Vec<Value> = paths
+        .iter()
+        .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
+        .collect();
+    // Pi's JSONL lines carry a stable `id`.
+    records_with_id(values, Some("id"))
 }
 
 pub struct SpawnSpec<'a> {
@@ -977,6 +1068,78 @@ fn parse_semver(s: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── transcript readers ────────────────────────────────────────────────
+
+    #[test]
+    fn pi_slug_wraps_cwd_with_dashes() {
+        assert_eq!(
+            pi_session_slug(Path::new("/Users/alex/Code/amux")),
+            "--Users-alex-Code-amux--"
+        );
+        // Dots are preserved (unlike Cursor) — only slashes are replaced.
+        assert_eq!(
+            pi_session_slug(Path::new("/Users/alex/.quorum/worktrees/balkhash/agent")),
+            "--Users-alex-.quorum-worktrees-balkhash-agent--"
+        );
+    }
+
+    #[test]
+    fn records_with_id_uses_id_field_when_present() {
+        let values = vec![json!({"id": "abc", "v": 1}), json!({"id": "def", "v": 2})];
+        let recs = records_with_id(values, Some("id"));
+        assert_eq!(recs[0].native_id, "abc");
+        assert_eq!(recs[1].native_id, "def");
+        assert_eq!(recs[0].body, json!({"id": "abc", "v": 1}));
+    }
+
+    #[test]
+    fn records_with_id_positional_fallback_is_global() {
+        // First line has an id, second doesn't; the positional index is the
+        // global stream offset, not reset per missing line.
+        let values = vec![json!({"id": "abc"}), json!({"no_id": true})];
+        let recs = records_with_id(values, Some("id"));
+        assert_eq!(recs[0].native_id, "abc");
+        assert_eq!(recs[1].native_id, "ln:1");
+    }
+
+    #[test]
+    fn records_with_id_none_field_is_all_positional() {
+        let values = vec![json!({"a": 1}), json!({"a": 2})];
+        let recs = records_with_id(values, None);
+        assert_eq!(recs[0].native_id, "ln:0");
+        assert_eq!(recs[1].native_id, "ln:1");
+    }
+
+    #[test]
+    fn jsonl_files_ending_filters_and_sorts() {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        std::fs::write(dir.join("2026-06-04T19-10-20Z_sess-1.jsonl"), "{}").unwrap();
+        std::fs::write(dir.join("2026-06-04T08-00-00Z_sess-1.jsonl"), "{}").unwrap();
+        std::fs::write(dir.join("2026-06-04T09-00-00Z_other.jsonl"), "{}").unwrap();
+        std::fs::write(dir.join("notes.txt"), "x").unwrap();
+
+        let found = jsonl_files_ending(dir, "_sess-1.jsonl");
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        // Only the two matching files, sorted lexically (== chronological here).
+        assert_eq!(
+            names,
+            vec![
+                "2026-06-04T08-00-00Z_sess-1.jsonl".to_string(),
+                "2026-06-04T19-10-20Z_sess-1.jsonl".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_dir_yields_no_files() {
+        let td = tempfile::tempdir().unwrap();
+        assert!(jsonl_files_ending(&td.path().join("nope"), "_x.jsonl").is_empty());
+    }
 
     // ── is_durable_event ──────────────────────────────────────────────────
 
