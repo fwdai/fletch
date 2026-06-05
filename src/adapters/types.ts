@@ -6,7 +6,7 @@
 // for the design rationale.
 
 export type ChatItem =
-  | { kind: "user_message"; text: string }
+  | { kind: "user_message"; text: string; attachments?: string[] }
   | { kind: "agent_message"; text: string; streaming?: boolean }
   | {
       kind: "tool_call";

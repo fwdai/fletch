@@ -18,6 +18,7 @@ import {
   type PrState,
   type SessionRecord,
   type ShortStats,
+  type UserTurn,
   type Workspace,
 } from "./api";
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
@@ -403,6 +404,53 @@ export function reduceRecords(
   return items;
 }
 
+/** Overlay Quorum-origin outgoing-turn metadata (attachments) onto the
+ *  transcript-rendered conversation. Additive only — never replaces transcript
+ *  content (which stays the canonical, re-ingestable history):
+ *  - Matched turns (`native_id` set) hang their attachments on the rendered
+ *    user message. Aligned from the end, so older turns that predate this
+ *    feature (no row) simply keep no attachments instead of mis-grabbing them.
+ *  - Pending turns (`native_id` null — the agent never logged them, e.g. a
+ *    failed send) render standalone so the message survives reload + retry. */
+export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[] {
+  if (turns.length === 0) return items;
+
+  const matched = turns.filter((t) => t.native_id);
+  const pending = turns.filter((t) => !t.native_id);
+  const result = items.map((it) => ({ ...it }));
+
+  const userIdxs: number[] = [];
+  result.forEach((it, i) => {
+    if (it.kind === "user_message") userIdxs.push(i);
+  });
+
+  // End-align matched turns to the trailing rendered user messages.
+  const n = Math.min(matched.length, userIdxs.length);
+  for (let k = 1; k <= n; k++) {
+    const t = matched[matched.length - k];
+    const item = result[userIdxs[userIdxs.length - k]];
+    if (item.kind === "user_message" && t.attachments.length > 0) {
+      item.attachments = t.attachments;
+      // Render the clean text the user actually typed (what the live render
+      // showed) rather than the transcript's copy, which the runner padded
+      // with `Attached file: <path>` reference lines. The stored turn text is
+      // verbatim what was sent, so it matches the optimistic render exactly.
+      // Prefix-guard so a mis-aligned match can't rewrite an unrelated message.
+      if (item.text.startsWith(t.text)) {
+        item.text = t.text;
+      }
+    }
+  }
+
+  for (const t of pending) {
+    const item: ChatItem = { kind: "user_message", text: t.text };
+    if (t.attachments.length > 0) item.attachments = t.attachments;
+    result.push(item);
+  }
+
+  return result;
+}
+
 /** Apply one raw event to an agent's log via its provider adapter. Catches
  *  adapter throws so a single malformed event can't poison the whole log. */
 function applyEvent(
@@ -618,10 +666,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       const id = e.agent_id;
       void (async () => {
         try {
-          const records = await api.readSessionRecords(id);
+          const [records, turns] = await Promise.all([
+            api.readSessionRecords(id),
+            api.readUserTurns(id),
+          ]);
           if (records.length === 0) return;
           const provider = providerFor(get(), id);
-          const items = reduceRecords(provider, records);
+          const items = applyUserTurns(reduceRecords(provider, records), turns);
           set((state) => ({
             managedLogs: { ...state.managedLogs, [id]: items },
           }));
@@ -814,12 +865,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   sendUserMessage: async (id, text, attachments = [], thinking) => {
+    // Stable per-turn id, reused across the agent-not-ready retry below so the
+    // backend's session_user_turns write is idempotent (one row per turn).
+    const turnId = crypto.randomUUID();
     try {
       set((state) => {
         const slashName = passthroughSlashName(providerFor(state, id), text);
         const entry: ChatItem = slashName
           ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
-          : { kind: "user_message", text };
+          : attachments.length > 0
+            ? { kind: "user_message", text, attachments }
+            : { kind: "user_message", text };
         return {
           managedLogs: {
             ...state.managedLogs,
@@ -833,14 +889,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
       });
       try {
-        await api.sendUserMessage(id, text, attachments, thinking);
+        await api.sendUserMessage(id, turnId, text, attachments, thinking);
       } catch (e) {
         if (String(e).includes("agent not found")) {
           // Dead idle agent (finished its prior task) — resume the
           // process in --resume mode, then deliver the message once ready.
           await api.resumeAgent(id);
           await sendWhenAgentReady(() =>
-            api.sendUserMessage(id, text, attachments, thinking),
+            api.sendUserMessage(id, turnId, text, attachments, thinking),
           );
         } else {
           throw e;
@@ -999,7 +1055,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         await api.syncSession(id);
         records = await api.readSessionRecords(id);
       }
-      const items = reduceRecords(provider, records);
+      // Overlay outgoing-turn attachments + any undelivered (pending) turns, so
+      // a failed send still shows on reload even when there are no records yet.
+      const turns = await api.readUserTurns(id);
+      const items = applyUserTurns(reduceRecords(provider, records), turns);
       set((state) => {
         // Nothing stored but a live turn is already rendering — don't clobber it.
         if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {
@@ -1224,6 +1283,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const draft = get().drafts.find((d) => d.id === id);
     if (!draft) return;
     set({ busy: true, lastError: null });
+    const turnId = crypto.randomUUID();
     try {
       const view = get().viewMode;
       const rec = await api.spawnAgent(view, draft.repoPath, provider, draft.name);
@@ -1238,7 +1298,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (view === "custom") {
           patches.managedLogs = {
             ...state.managedLogs,
-            [rec.id]: [{ kind: "user_message", text }],
+            [rec.id]: [
+              attachments.length > 0
+                ? { kind: "user_message", text, attachments }
+                : { kind: "user_message", text },
+            ],
           };
           patches.managedBusy = { ...state.managedBusy, [rec.id]: true };
         }
@@ -1250,7 +1314,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         );
       } else {
         await sendWhenAgentReady(() =>
-          api.sendUserMessage(rec.id, text, attachments, thinking),
+          api.sendUserMessage(rec.id, turnId, text, attachments, thinking),
         );
       }
     } catch (e) {

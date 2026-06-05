@@ -5,13 +5,21 @@ import type { ViewItem } from "./pair";
 import { ToolResultItem } from "./ToolResultItem";
 import { ToolRow } from "./ToolRow";
 import { getPresenter } from "./presenters";
+import { AttachmentList } from "../../Composer/AttachmentList";
 
 /** Dispatcher for one rendered row. Accepts either a raw ChatItem or
  *  the derived `tool_pair` from pairToolItems(). */
 export function MessageItem({ item }: { item: ViewItem }) {
   switch (item.kind) {
     case "user_message":
-      return <div className="m-user">{item.text}</div>;
+      return (
+        <div className="m-user">
+          {item.text}
+          {item.attachments && item.attachments.length > 0 && (
+            <AttachmentList paths={item.attachments} className="message-attachments" />
+          )}
+        </div>
+      );
     case "agent_message":
       return (
         <div className="m-agent">
