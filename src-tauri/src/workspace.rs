@@ -635,6 +635,54 @@ impl WorkspaceManager {
         Ok(inserted)
     }
 
+    /// Byte offset into the current session's transcript up to which records have
+    /// been ingested — the resume point for an incremental tail read. 0 if there
+    /// is no session yet or nothing has been ingested.
+    pub fn session_ingest_offset(&self, workspace_id: &str) -> Result<u64> {
+        let conn = self.db.lock();
+        let offset: Option<i64> = conn
+            .query_row(
+                "SELECT ingest_offset FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok();
+        Ok(offset.unwrap_or(0).max(0) as u64)
+    }
+
+    /// Persist the tail offset for the current session after an incremental read.
+    pub fn set_session_ingest_offset(&self, workspace_id: &str, offset: u64) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "UPDATE sessions SET ingest_offset = ?2
+             WHERE id = (SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1)",
+            rusqlite::params![workspace_id, offset as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Count of records already ingested for the current session (= MAX(seq)) —
+    /// the starting index for positional `ln:{i}` native ids on the next read.
+    pub fn session_record_count(&self, workspace_id: &str) -> Result<usize> {
+        let conn = self.db.lock();
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok();
+        let Some(sid) = sid else {
+            return Ok(0);
+        };
+        let count: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM session_records WHERE session_id = ?1",
+            [&sid],
+            |r| r.get(0),
+        )?;
+        Ok(count.max(0) as usize)
+    }
+
     /// All canonical records for the workspace's current session, in seq order.
     pub fn read_session_records(&self, workspace_id: &str) -> Result<Vec<SessionRecord>> {
         let conn = self.db.lock();
@@ -1832,6 +1880,26 @@ mod tests {
         assert_eq!(records.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
         assert_eq!(records[3].native_id, "id-d");
         assert_eq!(records[3].body, d);
+    }
+
+    #[test]
+    fn ingest_offset_and_record_count_roundtrip() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        // Defaults before anything is ingested.
+        assert_eq!(wm.session_ingest_offset(&ws_id).unwrap(), 0);
+        assert_eq!(wm.session_record_count(&ws_id).unwrap(), 0);
+
+        let a = serde_json::json!({"n": 1});
+        let b = serde_json::json!({"n": 2});
+        wm.append_session_records(&ws_id, "claude", "transcript", None, &[("x", &a), ("y", &b)])
+            .unwrap();
+        // record_count tracks MAX(seq) — the start index for the next tail read.
+        assert_eq!(wm.session_record_count(&ws_id).unwrap(), 2);
+
+        wm.set_session_ingest_offset(&ws_id, 4096).unwrap();
+        assert_eq!(wm.session_ingest_offset(&ws_id).unwrap(), 4096);
     }
 
     #[test]

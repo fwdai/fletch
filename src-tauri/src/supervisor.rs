@@ -1328,14 +1328,27 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
     };
 
     let paths = (reader.locate)(&session_id, &cwd);
-    let records = (reader.read)(&paths);
 
     // Version-frozen snapshot tag (memoized probe — at most one --version per
     // provider per process).
     let version = crate::agent::cached_provider_version(&record.provider);
 
-    // One batched transaction for the whole turn instead of a commit per record
-    // — turn-end ingest is then O(batch) commits, not O(conversation).
+    // Read only what's new. Single-file JSONL readers tail from the stored byte
+    // offset (O(new), not O(conversation) — the key win for long claude/image
+    // sessions); multi-file / blob-dir readers fall back to a full read whose
+    // already-stored rows are idempotently skipped. Either way the batch lands
+    // in one transaction.
+    let (records, new_offset) = match (reader.tail, paths.as_slice()) {
+        (Some(tail), [path]) => {
+            let offset = workspace.session_ingest_offset(agent_id).unwrap_or(0);
+            let start_index = workspace.session_record_count(agent_id).unwrap_or(0);
+            let (recs, next) =
+                crate::agent::read_jsonl_tail(path, offset, start_index, tail.id_field);
+            (recs, Some(next))
+        }
+        _ => ((reader.read)(&paths), None),
+    };
+
     let batch: Vec<(&str, &serde_json::Value)> =
         records.iter().map(|r| (r.native_id.as_str(), &r.body)).collect();
     let inserted = match workspace.append_session_records(
@@ -1351,6 +1364,14 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
             0
         }
     };
+
+    // Advance the tail cursor past the complete lines we just consumed (only for
+    // the single-file readers; `None` leaves it untouched).
+    if let Some(next) = new_offset {
+        if let Err(e) = workspace.set_session_ingest_offset(agent_id, next) {
+            tracing::warn!(error = %e, agent_id, "persist ingest offset failed");
+        }
+    }
 
     // Link any pending outgoing user turns to the canonical transcript
     // user-message rows just ingested (fills in their `native_id`).

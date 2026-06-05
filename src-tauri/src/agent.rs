@@ -114,6 +114,15 @@ pub struct RawRecord {
     pub body: Value,
 }
 
+/// Marks a reader whose transcript is a single append-only JSONL file, so it can
+/// be read incrementally from a byte offset (`read_jsonl_tail`) instead of fully
+/// re-parsed each turn. `id_field` is the per-line native-id field (matching the
+/// reader's full `read`), or None for positional `ln:{i}` ids.
+#[derive(Clone, Copy)]
+pub struct JsonlTail {
+    pub id_field: Option<&'static str>,
+}
+
 /// How to find and parse a provider's on-disk transcript into ordered records.
 pub struct TranscriptReader {
     /// Ordered transcript artifact paths for a session (empty if none / not
@@ -121,6 +130,10 @@ pub struct TranscriptReader {
     pub locate: fn(session_id: &str, cwd: &Path) -> Vec<PathBuf>,
     /// Parse located artifacts into ordered verbatim records.
     pub read: fn(paths: &[PathBuf]) -> Vec<RawRecord>,
+    /// Set for single-file JSONL readers to enable incremental tail ingest.
+    /// `None` for multi-file (codex) / blob-dir (opencode) readers, which fall
+    /// back to a full read + idempotent batched insert.
+    pub tail: Option<JsonlTail>,
 }
 
 /// What an agent can do *right now*. A rollout flag, not a fixed trait: native
@@ -167,6 +180,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         transcript: Some(TranscriptReader {
             locate: codex_locate,
             read: codex_read,
+            tail: None, // multiple rollout files
         }),
     },
     PerTurnDescriptor {
@@ -185,6 +199,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         transcript: Some(TranscriptReader {
             locate: cursor_locate,
             read: cursor_read,
+            tail: Some(JsonlTail { id_field: None }), // single jsonl, positional ids
         }),
     },
     PerTurnDescriptor {
@@ -201,6 +216,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         transcript: Some(TranscriptReader {
             locate: opencode_locate,
             read: opencode_read,
+            tail: None, // blob-store directory, not a single file
         }),
     },
     PerTurnDescriptor {
@@ -218,6 +234,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         transcript: Some(TranscriptReader {
             locate: pi_locate,
             read: pi_read,
+            tail: Some(JsonlTail { id_field: Some("id") }), // single jsonl when one file
         }),
     },
     PerTurnDescriptor {
@@ -239,6 +256,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         transcript: Some(TranscriptReader {
             locate: antigravity_locate,
             read: antigravity_read,
+            tail: None, // per-turn agent; full read on exit is bounded
         }),
     },
 ];
@@ -255,6 +273,60 @@ pub fn per_turn_descriptor(id: &str) -> Option<&'static PerTurnDescriptor> {
 /// Build ordered `RawRecord`s from a parsed JSONL stream. `native_id` is the
 /// value's `id_field` (a string) when present, else a positional `ln:{i}` key
 /// over the global stream offset — stable across append-only multi-file reads.
+/// Incrementally read an append-only JSONL transcript from byte `offset` to EOF,
+/// returning the new records and the byte offset just past the last **complete**
+/// line consumed. A torn trailing line (the writer is mid-append, no newline yet)
+/// is left unconsumed so it's picked up — whole — on the next read; this is what
+/// makes tailing safe against the flush race. Positional `ln:{i}` ids continue
+/// from `start_index` (the count of records already ingested) so they match what
+/// a full read would have assigned; `id_field` (e.g. claude's `uuid`) overrides
+/// when present. Mirrors `records_with_id` parsing, just over the new tail only.
+pub fn read_jsonl_tail(
+    path: &Path,
+    offset: u64,
+    start_index: usize,
+    id_field: Option<&str>,
+) -> (Vec<RawRecord>, u64) {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return (Vec::new(), offset);
+    };
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return (Vec::new(), offset);
+    }
+    let mut buf = Vec::new();
+    if file.read_to_end(&mut buf).is_err() {
+        return (Vec::new(), offset);
+    }
+    // Consume only up to the last newline; anything after is a partial line.
+    let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') else {
+        return (Vec::new(), offset);
+    };
+
+    let mut out = Vec::new();
+    let mut idx = start_index;
+    for line in buf[..=last_nl].split(|&b| b == b'\n') {
+        let Ok(text) = std::str::from_utf8(line) else {
+            continue;
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(text) {
+            let native_id = id_field
+                .and_then(|f| v.get(f))
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("ln:{idx}"));
+            out.push(RawRecord { native_id, body: v });
+            idx += 1;
+        }
+    }
+
+    (out, offset + last_nl as u64 + 1)
+}
+
 pub fn records_with_id(values: Vec<Value>, id_field: Option<&str>) -> Vec<RawRecord> {
     values
         .into_iter()
@@ -336,6 +408,7 @@ fn claude_read(paths: &[PathBuf]) -> Vec<RawRecord> {
 static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
     locate: claude_locate,
     read: claude_read,
+    tail: Some(JsonlTail { id_field: Some("uuid") }), // single persistent jsonl
 };
 
 // ── Codex ──
@@ -1298,6 +1371,66 @@ mod tests {
     use serde_json::json;
 
     // ── transcript readers ────────────────────────────────────────────────
+
+    #[test]
+    fn read_jsonl_tail_consumes_complete_lines_holds_partial_then_resumes() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+
+        // Two complete lines, then a torn trailing line (no newline yet — the
+        // writer is mid-append).
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            write!(
+                f,
+                "{}\n{}\n{}",
+                r#"{"uuid":"a","type":"user"}"#,
+                r#"{"uuid":"b","type":"assistant"}"#,
+                r#"{"uuid":"c","#
+            )
+            .unwrap();
+        }
+
+        let (recs, off) = read_jsonl_tail(&path, 0, 0, Some("uuid"));
+        assert_eq!(
+            recs.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b"],
+            "only complete lines ingested; the torn line is held back",
+        );
+
+        // The writer finishes line c and appends d. Resume from the held offset
+        // with start_index = 2 (we consumed 2 records).
+        {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+            write!(f, "{}\n{}\n", r#""type":"assistant"}"#, r#"{"uuid":"d","type":"user"}"#).unwrap();
+        }
+
+        let (recs2, _off2) = read_jsonl_tail(&path, off, 2, Some("uuid"));
+        assert_eq!(
+            recs2.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            vec!["c", "d"],
+            "resume picks up the now-complete line + the new one, no re-emit",
+        );
+    }
+
+    #[test]
+    fn read_jsonl_tail_positional_ids_continue_from_start_index() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            // No `uuid` field → positional `ln:{global_index}` fallback.
+            write!(f, "{}\n{}\n", r#"{"type":"mode"}"#, r#"{"type":"summary"}"#).unwrap();
+        }
+        // Pretend 5 records were already ingested.
+        let (recs, _off) = read_jsonl_tail(&path, 0, 5, None);
+        assert_eq!(
+            recs.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            vec!["ln:5", "ln:6"],
+        );
+    }
 
     #[test]
     fn provider_bin_label_dispatch() {
