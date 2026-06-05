@@ -250,6 +250,8 @@ export const api = {
       "read_session_events",
       { agentId },
     ),
+  readSessionRecords: (agentId: string) =>
+    invoke<SessionRecord[]>("read_session_records", { agentId }),
   addRepoToAgent: (agentId: string, repoPath: string) =>
     invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
   allocateDraftName: (used: string[]) =>
@@ -328,6 +330,32 @@ export function onAgentEvent(
   cb: (e: AgentManagedEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<AgentManagedEvent>("agent:event", (event) => cb(event.payload));
+}
+
+/** One canonical record from session_records: a verbatim per-provider
+ *  transcript body plus its dedup key and provenance. */
+export interface SessionRecord {
+  seq: number;
+  provider: string;
+  source: string;
+  native_id: string;
+  agent_version: string | null;
+  body: Record<string, unknown> & { type?: string };
+}
+
+export interface SessionRecordsAppendedEvent {
+  agent_id: string;
+}
+
+/** Fires when a turn's transcript has been ingested into session_records, so
+ *  the canonical render can replace the ephemeral live one. */
+export function onSessionRecordsAppended(
+  cb: (e: SessionRecordsAppendedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SessionRecordsAppendedEvent>(
+    "session:records-appended",
+    (event) => cb(event.payload),
+  );
 }
 
 export function onAgentStatus(

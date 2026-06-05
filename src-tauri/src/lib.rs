@@ -156,6 +156,7 @@ pub fn run() {
             commands::restore_agent,
             commands::read_session_transcript,
             commands::read_session_events,
+            commands::read_session_records,
             commands::add_repo_to_agent,
             commands::allocate_draft_name,
             commands::get_git_state,

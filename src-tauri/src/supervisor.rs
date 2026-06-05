@@ -36,6 +36,11 @@ pub struct AgentEventPayload {
 }
 
 #[derive(Clone, serde::Serialize)]
+pub struct SessionRecordsAppendedPayload {
+    pub agent_id: String,
+}
+
+#[derive(Clone, serde::Serialize)]
 pub struct AgentStatusPayload {
     pub agent_id: String,
     pub status: AgentStatus,
@@ -1131,6 +1136,46 @@ impl Supervisor {
         }
     }
 
+    /// Fire-and-forget transcript ingest at turn-end. Retries with backoff to
+    /// ride out the agent's flush lag; emits `session:records-appended` when new
+    /// records land. WARNs once if a reader-backed agent ingests nothing after
+    /// all retries — the early signal that its transcript path/format changed.
+    /// Called from `transition_active` whenever any agent reaches Idle, so it
+    /// covers managed, per-turn, and native turn-ends uniformly.
+    pub fn trigger_session_sync(&self, app: AppHandle, agent_id: String) {
+        let workspace = self.workspace.clone();
+        tauri::async_runtime::spawn(async move {
+            // Immediate attempt, then back off (ms) for flush lag.
+            let backoffs = [0u64, 200, 400, 800, 1600];
+            let mut had_reader = false;
+            let mut inserted_any = false;
+            for wait in backoffs {
+                if wait > 0 {
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                }
+                match sync_session_records(&workspace, &agent_id) {
+                    None => return, // no transcript reader — nothing to do
+                    Some(0) => had_reader = true,
+                    Some(_) => {
+                        inserted_any = true;
+                        break;
+                    }
+                }
+            }
+            if inserted_any {
+                let _ = app.emit(
+                    "session:records-appended",
+                    SessionRecordsAppendedPayload { agent_id },
+                );
+            } else if had_reader {
+                tracing::warn!(
+                    agent_id,
+                    "session sync ingested 0 records after retries (transcript not found or unchanged)"
+                );
+            }
+        });
+    }
+
     /// Fetch the current PR state for an agent's primary repo and emit
     /// a `pr:state_changed` event. Runs as a background task — never blocks the caller.
     pub fn fetch_and_emit_pr_state(&self, app: AppHandle, agent_id: String) {
@@ -1213,7 +1258,51 @@ impl Supervisor {
 /// for `<session-id>.jsonl`. Claude's path-encoding scheme isn't part
 /// of its public API, so we glob instead of recomputing the encoded
 /// directory name from the worktree path.
-fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
+/// Ingest the agent's on-disk transcript into `session_records`, idempotent per
+/// `native_id`. `None` = no transcript reader for this provider (skip, don't
+/// retry); `Some(n)` = reader ran, `n` new records inserted (`0` = nothing yet:
+/// file not flushed, or its location/format changed).
+fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<usize> {
+    let record = workspace.agent(agent_id).ok()?;
+    let reader = crate::agent::transcript_reader(&record.provider)?;
+
+    // A reader exists; from here any shortfall is "nothing yet" → Some(0).
+    let Some(session_id) = record.session_id.as_deref() else {
+        return Some(0);
+    };
+    let Some(repo) = record.repos.first() else {
+        return Some(0);
+    };
+    let Ok(cwd) = repo_worktree_path(agent_id, &repo.subdir) else {
+        return Some(0);
+    };
+
+    let paths = (reader.locate)(session_id, &cwd);
+    let records = (reader.read)(&paths);
+
+    // Version-frozen snapshot tag (memoized probe — at most one --version per
+    // provider per process).
+    let version = crate::agent::cached_provider_version(&record.provider);
+
+    let mut inserted = 0usize;
+    for rec in &records {
+        match workspace.append_session_record(
+            agent_id,
+            &record.provider,
+            "transcript",
+            &rec.native_id,
+            version.as_deref(),
+            &rec.body,
+        ) {
+            Ok(true) => inserted += 1,
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, agent_id, "append_session_record failed"),
+        }
+    }
+    Some(inserted)
+}
+
+pub(crate) fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let projects = home.join(".claude").join("projects");
     let entries = std::fs::read_dir(&projects).ok()?;
@@ -1231,9 +1320,19 @@ fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
 /// `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
 /// defaults to `~/.codex`); the id suffix is the thread id we captured.
 fn find_codex_rollout(session_id: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("CODEX_HOME")
+    find_codex_rollouts(session_id).into_iter().next()
+}
+
+/// All of codex's rollout files for a thread id, ordered (filenames are
+/// timestamp-prefixed, so lexical sort == chronological). Resume normally keeps
+/// one file per session, but returning all is correct if it ever splits.
+pub(crate) fn find_codex_rollouts(session_id: &str) -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))?;
+        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
+    else {
+        return Vec::new();
+    };
     // Anchor on the `-<id>.jsonl` boundary (filenames are
     // `rollout-<ts>-<id>.jsonl`) so one thread id can't match another whose
     // name merely ends with the same characters.
@@ -1249,6 +1348,7 @@ fn find_codex_rollout(session_id: &str) -> Option<PathBuf> {
             .collect()
     }
     let sessions = home.join("sessions");
+    let mut out = Vec::new();
     for year in dirs_in(&sessions) {
         for month in dirs_in(&year) {
             for day in dirs_in(&month) {
@@ -1259,18 +1359,19 @@ fn find_codex_rollout(session_id: &str) -> Option<PathBuf> {
                         .and_then(|n| n.to_str())
                         .is_some_and(|n| n.ends_with(&suffix))
                     {
-                        return Some(path);
+                        out.push(path);
                     }
                 }
             }
         }
     }
-    None
+    out.sort();
+    out
 }
 
 /// Read a JSONL file into a vec of parsed values, skipping blank or
 /// unparseable lines.
-fn read_jsonl_values(path: &Path) -> Result<Vec<Value>> {
+pub(crate) fn read_jsonl_values(path: &Path) -> Result<Vec<Value>> {
     use std::io::BufRead;
     let file = std::fs::File::open(path)
         .map_err(|e| Error::Other(format!("open transcript: {e}")))?;
@@ -1491,6 +1592,7 @@ fn spawn_per_turn_agent(
         // We don't surface non-success as Error: a user-initiated Stop
         // (SIGINT) is also non-success, and real agent errors are reported
         // in-band as events.
+        // Turn-end ingest fires from transition_active's Idle transition.
         transition_active(&sup_for_exit, &app_for_exit, &id_for_exit, AgentStatus::Idle);
     };
 
@@ -1780,6 +1882,11 @@ fn transition_active(
         sup.set_status(app, agent_id, new.clone(), None);
         if matches!(new, AgentStatus::Idle) {
             sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+            // Turn ended (managed in-band, per-turn exit, or native silence all
+            // converge here). Ingest the just-written transcript into
+            // session_records. Idempotent + reader-gated, so it's a cheap no-op
+            // for agents without a reader.
+            sup.trigger_session_sync(app.clone(), agent_id.to_string());
         }
     }
 }

@@ -31,6 +31,7 @@ fn validate_column(col: &str) -> Result<()> {
 fn get_migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("../migrations/0001_initial_schema.sql")),
+        M::up(include_str!("../migrations/0002_session_records.sql")),
     ])
 }
 
