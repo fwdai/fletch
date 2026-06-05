@@ -1136,55 +1136,14 @@ impl Supervisor {
         }
     }
 
-    /// Ingest the agent's on-disk transcript into `session_records`, idempotent
-    /// per `native_id`. Returns `None` if this provider has no transcript
-    /// reader wired (nothing to do, don't retry); otherwise `Some(n)` with the
-    /// number of *new* records inserted (`0` = reader ran but found nothing
-    /// yet — the file may not be flushed, or its location/format changed).
-    pub fn sync_session(&self, agent_id: &str) -> Option<usize> {
-        let record = self.workspace.agent(agent_id).ok()?;
-        let reader = per_turn_descriptor(&record.provider)?.transcript.as_ref()?;
-
-        // A reader exists; from here any shortfall is "nothing yet" → Some(0).
-        let Some(session_id) = record.session_id.as_deref() else {
-            return Some(0);
-        };
-        let Some(repo) = record.repos.first() else {
-            return Some(0);
-        };
-        let Ok(cwd) = repo_worktree_path(agent_id, &repo.subdir) else {
-            return Some(0);
-        };
-
-        let paths = (reader.locate)(session_id, &cwd);
-        let records = (reader.read)(&paths);
-
-        let mut inserted = 0usize;
-        for rec in &records {
-            match self.workspace.append_session_record(
-                agent_id,
-                &record.provider,
-                "transcript",
-                &rec.native_id,
-                None, // agent_version stamped in a later pass
-                &rec.body,
-            ) {
-                Ok(true) => inserted += 1,
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, agent_id, "append_session_record failed")
-                }
-            }
-        }
-        Some(inserted)
-    }
-
     /// Fire-and-forget transcript ingest at turn-end. Retries with backoff to
     /// ride out the agent's flush lag; emits `session:records-appended` when new
     /// records land. WARNs once if a reader-backed agent ingests nothing after
     /// all retries — the early signal that its transcript path/format changed.
-    pub fn trigger_session_sync(self: &Arc<Self>, app: AppHandle, agent_id: String) {
-        let sup = self.clone();
+    /// Called from `transition_active` whenever any agent reaches Idle, so it
+    /// covers managed, per-turn, and native turn-ends uniformly.
+    pub fn trigger_session_sync(&self, app: AppHandle, agent_id: String) {
+        let workspace = self.workspace.clone();
         tauri::async_runtime::spawn(async move {
             // Immediate attempt, then back off (ms) for flush lag.
             let backoffs = [0u64, 200, 400, 800, 1600];
@@ -1194,7 +1153,7 @@ impl Supervisor {
                 if wait > 0 {
                     tokio::time::sleep(Duration::from_millis(wait)).await;
                 }
-                match sup.sync_session(&agent_id) {
+                match sync_session_records(&workspace, &agent_id) {
                     None => return, // no transcript reader — nothing to do
                     Some(0) => had_reader = true,
                     Some(_) => {
@@ -1299,7 +1258,47 @@ impl Supervisor {
 /// for `<session-id>.jsonl`. Claude's path-encoding scheme isn't part
 /// of its public API, so we glob instead of recomputing the encoded
 /// directory name from the worktree path.
-fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
+/// Ingest the agent's on-disk transcript into `session_records`, idempotent per
+/// `native_id`. `None` = no transcript reader for this provider (skip, don't
+/// retry); `Some(n)` = reader ran, `n` new records inserted (`0` = nothing yet:
+/// file not flushed, or its location/format changed).
+fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<usize> {
+    let record = workspace.agent(agent_id).ok()?;
+    let reader = crate::agent::transcript_reader(&record.provider)?;
+
+    // A reader exists; from here any shortfall is "nothing yet" → Some(0).
+    let Some(session_id) = record.session_id.as_deref() else {
+        return Some(0);
+    };
+    let Some(repo) = record.repos.first() else {
+        return Some(0);
+    };
+    let Ok(cwd) = repo_worktree_path(agent_id, &repo.subdir) else {
+        return Some(0);
+    };
+
+    let paths = (reader.locate)(session_id, &cwd);
+    let records = (reader.read)(&paths);
+
+    let mut inserted = 0usize;
+    for rec in &records {
+        match workspace.append_session_record(
+            agent_id,
+            &record.provider,
+            "transcript",
+            &rec.native_id,
+            None, // agent_version stamped in a later pass
+            &rec.body,
+        ) {
+            Ok(true) => inserted += 1,
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, agent_id, "append_session_record failed"),
+        }
+    }
+    Some(inserted)
+}
+
+pub(crate) fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let projects = home.join(".claude").join("projects");
     let entries = std::fs::read_dir(&projects).ok()?;
@@ -1577,9 +1576,8 @@ fn spawn_per_turn_agent(
         // We don't surface non-success as Error: a user-initiated Stop
         // (SIGINT) is also non-success, and real agent errors are reported
         // in-band as events.
+        // Turn-end ingest fires from transition_active's Idle transition.
         transition_active(&sup_for_exit, &app_for_exit, &id_for_exit, AgentStatus::Idle);
-        // Ingest the just-completed turn's transcript into session_records.
-        sup_for_exit.trigger_session_sync(app_for_exit.clone(), id_for_exit.clone());
     };
 
     let spec = PerTurnSpec { cwd, session_id };
@@ -1868,6 +1866,11 @@ fn transition_active(
         sup.set_status(app, agent_id, new.clone(), None);
         if matches!(new, AgentStatus::Idle) {
             sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+            // Turn ended (managed in-band, per-turn exit, or native silence all
+            // converge here). Ingest the just-written transcript into
+            // session_records. Idempotent + reader-gated, so it's a cheap no-op
+            // for agents without a reader.
+            sup.trigger_session_sync(app.clone(), agent_id.to_string());
         }
     }
 }

@@ -298,6 +298,44 @@ fn pi_read(paths: &[PathBuf]) -> Vec<RawRecord> {
     records_with_id(values, Some("id"))
 }
 
+// ── Claude ──
+// Claude is the lone persistent-runner agent (not in PER_TURN_AGENTS), launched
+// `--session-id <uuid>` / `--resume <uuid>`, so it writes
+// `~/.claude/projects/<slug>/<uuid>.jsonl`. find_session_jsonl already locates
+// it (the existing transcript_replay path). Content lines carry a top-level
+// `uuid`; metadata lines (mode/permission-mode/…) don't → positional fallback.
+
+fn claude_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
+    crate::supervisor::find_session_jsonl(session_id)
+        .into_iter()
+        .collect()
+}
+
+fn claude_read(paths: &[PathBuf]) -> Vec<RawRecord> {
+    let values: Vec<Value> = paths
+        .iter()
+        .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
+        .collect();
+    records_with_id(values, Some("uuid"))
+}
+
+static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
+    locate: claude_locate,
+    read: claude_read,
+};
+
+/// The transcript reader for a provider, or `None` if it has no on-disk
+/// transcript wired. Per-turn agents read theirs from the descriptor table;
+/// claude (persistent runner) is special-cased here. Callers gate on this, not
+/// on the provider id.
+pub fn transcript_reader(provider: &str) -> Option<&'static TranscriptReader> {
+    match per_turn_descriptor(provider) {
+        Some(d) => d.transcript.as_ref(),
+        None if provider == "claude" => Some(&CLAUDE_TRANSCRIPT),
+        None => None,
+    }
+}
+
 pub struct SpawnSpec<'a> {
     pub agent_id: &'a str,
     /// Claude's working directory — the primary repo's worktree.
@@ -1070,6 +1108,18 @@ mod tests {
     use serde_json::json;
 
     // ── transcript readers ────────────────────────────────────────────────
+
+    #[test]
+    fn transcript_reader_dispatch() {
+        // Claude (persistent runner, not a per-turn agent) and Pi have readers.
+        assert!(transcript_reader("claude").is_some());
+        assert!(transcript_reader("pi").is_some());
+        // Not yet wired (own commits) / unknown.
+        assert!(transcript_reader("codex").is_none());
+        assert!(transcript_reader("cursor").is_none());
+        assert!(transcript_reader("opencode").is_none());
+        assert!(transcript_reader("nope").is_none());
+    }
 
     #[test]
     fn pi_slug_wraps_cwd_with_dashes() {
