@@ -87,14 +87,9 @@ pub struct PerTurnDescriptor {
     session_id: fn(&Value) -> Option<String>,
     /// Constructs this agent's turn-end detector (custom-view `Activity`).
     pub activity: fn() -> Box<dyn Activity>,
-    /// Rollout flags — see `AgentCapabilities`. These describe what's wired
-    /// *today*, not a permanent limit; each is being brought to every agent
-    /// in follow-up PRs, at which point its flag flips to `true`.
+    /// Whether this agent can render in the native PTY view (see
+    /// `AgentCapabilities::native_view`).
     native_view: bool,
-    transcript_replay: bool,
-    /// True if this event is a finalized/durable form worth persisting to
-    /// session_events; false for ephemeral streaming/lifecycle events.
-    pub is_durable: fn(&Value) -> bool,
     /// Reader for this agent's on-disk transcript, used by `sync_session` to
     /// ingest verbatim records into `session_records`. `None` = no readable
     /// transcript yet (or a live-compiled agent).
@@ -118,23 +113,16 @@ pub struct TranscriptReader {
     pub read: fn(paths: &[PathBuf]) -> Vec<RawRecord>,
 }
 
-/// What an agent can do *right now*. These are rollout flags, not fixed
-/// traits: the roadmap is native (PTY/TUI) views and on-disk transcript
-/// replay for every agent, with the SQLite event log as the canonical
-/// history store you can always restore from. As each capability is wired
-/// for an agent, its flag flips — callers gate on the capability, never on
-/// the provider id, so nothing else changes when support lands.
+/// What an agent can do *right now*. A rollout flag, not a fixed trait: native
+/// (PTY/TUI) view support is being brought to every agent, and callers gate on
+/// the capability, never on the provider id, so nothing else changes when
+/// support lands.
 pub struct AgentCapabilities {
     /// Can render in the native PTY view (its interactive TUI streamed into
     /// xterm), in addition to the structured custom view. Wired for claude
     /// and every per-turn agent (codex/cursor/opencode/pi); a per-turn agent
     /// can only switch *into* native once it has a session id to resume.
     pub native_view: bool,
-    /// Has its native on-disk transcript wired for replay (parsed by the
-    /// frontend adapter's `normalizeTranscript`). When false, re-attaching
-    /// still restores history from the provider-agnostic SQLite event log —
-    /// this flag only governs the richer native-format path.
-    pub transcript_replay: bool,
 }
 
 /// Capabilities for a provider. Per-turn agents read theirs from the
@@ -144,15 +132,12 @@ pub fn capabilities(provider: &str) -> AgentCapabilities {
     match per_turn_descriptor(provider) {
         Some(d) => AgentCapabilities {
             native_view: d.native_view,
-            transcript_replay: d.transcript_replay,
         },
         None if provider == "claude" => AgentCapabilities {
             native_view: true,
-            transcript_replay: true,
         },
         None => AgentCapabilities {
             native_view: false,
-            transcript_replay: false,
         },
     }
 }
@@ -167,10 +152,6 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         session_id: codex_session_id,
         activity: || Box::new(ManagedActivity::codex()),
         native_view: true,
-        // Codex persists a `rollout-*.jsonl`; `find_codex_rollout` + the
-        // frontend codex adapter replay it.
-        transcript_replay: true,
-        is_durable: codex_is_durable,
         transcript: Some(TranscriptReader {
             locate: codex_locate,
             read: codex_read,
@@ -187,13 +168,6 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         // so it reuses the Claude managed detector.
         activity: || Box::new(ManagedActivity::claude()),
         native_view: true,
-        // Cursor's on-disk chat format is undocumented; restore from the
-        // SQLite log until a native transcript path is wired.
-        transcript_replay: false,
-        // Cursor emits Claude-shaped events for most types, but uses a
-        // dedicated tool_call event (started/completed) rather than
-        // Claude's assistant.content tool_use + user.content tool_result.
-        is_durable: cursor_is_durable,
         transcript: Some(TranscriptReader {
             locate: cursor_locate,
             read: cursor_read,
@@ -208,10 +182,6 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         session_id: opencode_session_id,
         activity: || Box::new(ManagedActivity::opencode()),
         native_view: true,
-        // OpenCode's `export` schema differs from its live stream; restore
-        // from the SQLite log until that's mapped.
-        transcript_replay: false,
-        is_durable: opencode_is_durable,
         transcript: Some(TranscriptReader {
             locate: opencode_locate,
             read: opencode_read,
@@ -226,10 +196,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         session_id: pi_session_id,
         activity: || Box::new(ManagedActivity::pi()),
         native_view: true,
-        // Pi persists a per-session JSONL whose lines match its live event
-        // shape; `pi_*` read it into session_records (the reference reader).
-        transcript_replay: false,
-        is_durable: pi_is_durable,
+        // Pi is the reference reader — its per-session JSONL feeds session_records.
         transcript: Some(TranscriptReader {
             locate: pi_locate,
             read: pi_read,
@@ -310,7 +277,7 @@ fn pi_read(paths: &[PathBuf]) -> Vec<RawRecord> {
 // Claude is the lone persistent-runner agent (not in PER_TURN_AGENTS), launched
 // `--session-id <uuid>` / `--resume <uuid>`, so it writes
 // `~/.claude/projects/<slug>/<uuid>.jsonl`. find_session_jsonl already locates
-// it (the existing transcript_replay path). Content lines carry a top-level
+// it. Content lines carry a top-level
 // `uuid`; metadata lines (mode/permission-mode/…) don't → positional fallback.
 
 fn claude_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
@@ -869,78 +836,6 @@ fn resolve_claude(home: &Path) -> Result<String> {
     resolve_agent_bin("claude", "Claude Code", home)
 }
 
-// ── durable-event classification ─────────────────────────────────────────
-
-/// Extract the `type` string from a raw provider event. Used by all
-/// per-provider durability predicates.
-fn event_type(ev: &Value) -> Option<&str> {
-    ev.get("type").and_then(|t| t.as_str())
-}
-
-fn claude_is_durable(ev: &Value) -> bool {
-    matches!(event_type(ev), Some("assistant" | "user" | "result"))
-}
-
-fn codex_is_durable(ev: &Value) -> bool {
-    matches!(
-        event_type(ev),
-        Some("item.completed" | "turn.completed" | "turn.failed" | "error")
-    )
-}
-
-fn opencode_is_durable(ev: &Value) -> bool {
-    match event_type(ev) {
-        // `reasoning` is a whole, finalized part (like `text`) — persist it so
-        // thinking survives canonical-history replay, not just the live stream.
-        Some("text" | "reasoning" | "step_finish" | "error") => true,
-        // A tool_use is durable only once settled; pending/running are ephemeral.
-        Some("tool_use") => {
-            let status = ev
-                .get("part")
-                .and_then(|p| p.get("state"))
-                .and_then(|s| s.get("status"))
-                .and_then(|s| s.as_str());
-            matches!(status, Some("completed" | "error"))
-        }
-        _ => false,
-    }
-}
-
-fn cursor_is_durable(ev: &Value) -> bool {
-    match event_type(ev) {
-        // Cursor reuses Claude's stream-json for these.
-        Some("assistant" | "user" | "result") => true,
-        // Tool calls are a dedicated event; only the settled "completed" form
-        // is durable ("started" is the in-progress/streaming form). Errors are
-        // encoded inside the completed payload.
-        Some("tool_call") => ev.get("subtype").and_then(|s| s.as_str()) == Some("completed"),
-        // Thinking is its own event (NOT a Claude content block); the `delta`s
-        // carry the text, terminated by `completed`. Persist the deltas so the
-        // accumulated reasoning survives canonical-history replay.
-        Some("thinking") => ev.get("subtype").and_then(|s| s.as_str()) == Some("delta"),
-        _ => false,
-    }
-}
-
-fn pi_is_durable(ev: &Value) -> bool {
-    matches!(
-        event_type(ev),
-        Some("message_end" | "tool_execution_end" | "agent_end")
-    )
-}
-
-/// True if this raw provider event is a durable, finalized form worth
-/// persisting to the session_events log (replayed through the reducer on
-/// restore). Ephemeral streaming deltas and no-op lifecycle events return
-/// false. Unknown providers default to storing everything (lossless).
-pub fn is_durable_event(provider: &str, ev: &Value) -> bool {
-    match per_turn_descriptor(provider) {
-        Some(d) => (d.is_durable)(ev),
-        None if provider == "claude" => claude_is_durable(ev),
-        None => true,
-    }
-}
-
 // ── per-turn provider configs ─────────────────────────────────────────────
 
 /// Codex: `codex exec [resume <id>] --json …`. Approvals off + codex's own
@@ -1364,100 +1259,6 @@ mod tests {
         assert!(jsonl_files_ending(&td.path().join("nope"), "_x.jsonl").is_empty());
     }
 
-    // ── is_durable_event ──────────────────────────────────────────────────
-
-    #[test]
-    fn claude_durability() {
-        assert!(is_durable_event("claude", &json!({"type": "assistant"})));
-        assert!(is_durable_event("claude", &json!({"type": "user"})));
-        assert!(is_durable_event("claude", &json!({"type": "result"})));
-        assert!(!is_durable_event("claude", &json!({"type": "stream_event"})));
-        assert!(!is_durable_event("claude", &json!({"type": "system"})));
-    }
-
-    #[test]
-    fn codex_durability() {
-        assert!(is_durable_event("codex", &json!({"type": "item.completed"})));
-        assert!(is_durable_event("codex", &json!({"type": "turn.completed"})));
-        assert!(is_durable_event("codex", &json!({"type": "turn.failed"})));
-        assert!(is_durable_event("codex", &json!({"type": "error"})));
-        assert!(!is_durable_event("codex", &json!({"type": "item.started"})));
-        assert!(!is_durable_event("codex", &json!({"type": "turn.started"})));
-    }
-
-    #[test]
-    fn opencode_durability() {
-        assert!(is_durable_event("opencode", &json!({"type": "text"})));
-        assert!(is_durable_event("opencode", &json!({"type": "reasoning"})));
-        assert!(is_durable_event("opencode", &json!({"type": "step_finish"})));
-        assert!(is_durable_event("opencode", &json!({"type": "error"})));
-        assert!(!is_durable_event("opencode", &json!({"type": "step_start"})));
-        // tool_use settled → durable
-        assert!(is_durable_event(
-            "opencode",
-            &json!({"type": "tool_use", "part": {"state": {"status": "completed"}}})
-        ));
-        assert!(is_durable_event(
-            "opencode",
-            &json!({"type": "tool_use", "part": {"state": {"status": "error"}}})
-        ));
-        // tool_use in-flight → ephemeral
-        assert!(!is_durable_event(
-            "opencode",
-            &json!({"type": "tool_use", "part": {"state": {"status": "running"}}})
-        ));
-        assert!(!is_durable_event(
-            "opencode",
-            &json!({"type": "tool_use", "part": {"state": {"status": "pending"}}})
-        ));
-    }
-
-    #[test]
-    fn pi_durability() {
-        assert!(is_durable_event("pi", &json!({"type": "message_end"})));
-        assert!(is_durable_event("pi", &json!({"type": "tool_execution_end"})));
-        assert!(is_durable_event("pi", &json!({"type": "agent_end"})));
-        assert!(!is_durable_event("pi", &json!({"type": "message_update"})));
-    }
-
-    #[test]
-    fn cursor_durability() {
-        // Claude-shaped events are durable.
-        assert!(is_durable_event("cursor", &json!({"type": "assistant"})));
-        assert!(is_durable_event("cursor", &json!({"type": "user"})));
-        assert!(is_durable_event("cursor", &json!({"type": "result"})));
-        // tool_call/completed is the settled, durable form.
-        assert!(is_durable_event(
-            "cursor",
-            &json!({"type": "tool_call", "subtype": "completed"})
-        ));
-        // tool_call/started is the in-progress/streaming form — ephemeral.
-        assert!(!is_durable_event(
-            "cursor",
-            &json!({"type": "tool_call", "subtype": "started"})
-        ));
-        // thinking/delta carries the reasoning text → durable; completed is an
-        // empty terminator → ephemeral.
-        assert!(is_durable_event(
-            "cursor",
-            &json!({"type": "thinking", "subtype": "delta"})
-        ));
-        assert!(!is_durable_event(
-            "cursor",
-            &json!({"type": "thinking", "subtype": "completed"})
-        ));
-        // Lifecycle events are ephemeral.
-        assert!(!is_durable_event("cursor", &json!({"type": "stream_event"})));
-        assert!(!is_durable_event("cursor", &json!({"type": "system"})));
-    }
-
-    #[test]
-    fn unknown_provider_stores_everything() {
-        // Lossless fallback: unknown provider → always durable.
-        assert!(is_durable_event("zzz", &json!({"type": "anything"})));
-        assert!(is_durable_event("zzz", &json!({})));
-    }
-
     // ── build_args ────────────────────────────────────────────────────────
 
     #[test]
@@ -1589,26 +1390,24 @@ mod tests {
         assert!(per_turn_descriptor("nope").is_none());
     }
 
-    /// Pins the current capability rollout. The roadmap is native views and
-    /// transcript replay for every agent; when a follow-up wires one, it
-    /// flips the descriptor flag and updates the expectation here on purpose.
+    /// Pins the current native-view capability rollout. When a follow-up wires
+    /// native view for an agent, it flips the descriptor flag and updates the
+    /// expectation here on purpose.
     #[test]
     fn capability_rollout_matches_what_is_wired_today() {
         let cases = [
-            // provider     native_view  transcript_replay
-            ("claude", true, true),
-            ("codex", true, true),
-            ("cursor", true, false),
-            ("opencode", true, false),
-            ("pi", true, false),
-            ("unknown", false, false),
+            ("claude", true),
+            ("codex", true),
+            ("cursor", true),
+            ("opencode", true),
+            ("pi", true),
+            ("unknown", false),
         ];
-        for (provider, native_view, transcript_replay) in cases {
-            let caps = capabilities(provider);
-            assert_eq!(caps.native_view, native_view, "native_view for {provider}");
+        for (provider, native_view) in cases {
             assert_eq!(
-                caps.transcript_replay, transcript_replay,
-                "transcript_replay for {provider}"
+                capabilities(provider).native_view,
+                native_view,
+                "native_view for {provider}"
             );
         }
     }

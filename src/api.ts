@@ -240,18 +240,10 @@ export const api = {
     invoke<void>("archive_agent", { agentId }),
   restoreAgent: (agentId: string) =>
     invoke<void>("restore_agent", { agentId }),
-  readSessionTranscript: (agentId: string) =>
-    invoke<Array<Record<string, unknown> & { type?: string }>>(
-      "read_session_transcript",
-      { agentId },
-    ),
-  readSessionEvents: (agentId: string) =>
-    invoke<Array<Record<string, unknown> & { type?: string }>>(
-      "read_session_events",
-      { agentId },
-    ),
   readSessionRecords: (agentId: string) =>
     invoke<SessionRecord[]>("read_session_records", { agentId }),
+  syncSession: (agentId: string) =>
+    invoke<void>("sync_session", { agentId }),
   addRepoToAgent: (agentId: string, repoPath: string) =>
     invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
   allocateDraftName: (used: string[]) =>

@@ -1,7 +1,6 @@
 //! Tauri IPC command handlers — the thin frontend-facing surface.
 
 use serde::Serialize;
-use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -195,27 +194,19 @@ pub async fn restore_agent(
 }
 
 #[tauri::command]
-pub fn read_session_transcript(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<Vec<Value>> {
-    supervisor.read_session_transcript(&agent_id)
-}
-
-#[tauri::command]
-pub fn read_session_events(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<Vec<Value>> {
-    supervisor.workspace.read_session_events(&agent_id)
-}
-
-#[tauri::command]
 pub fn read_session_records(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Vec<crate::workspace::SessionRecord>> {
     supervisor.workspace.read_session_records(&agent_id)
+}
+
+/// Ingest the agent's on-disk transcript into session_records now (lazy
+/// backfill when a session is opened with no records yet). Idempotent.
+#[tauri::command]
+pub fn sync_session(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
+    supervisor.sync_session(&agent_id);
+    Ok(())
 }
 
 #[tauri::command]

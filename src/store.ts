@@ -23,7 +23,6 @@ import {
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
 import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
-import { dedupAgainstLast } from "./adapters/shared/reducer-helpers";
 import { getAllSettings, setSetting } from "./storage/settings";
 import {
   getOrCreateAccount,
@@ -368,55 +367,6 @@ function passthroughSlashName(
     (c) => c.kind === "passthrough" && c.name === first,
   );
   return match ? match.name : null;
-}
-
-/** Reduce one stored raw event into chat items during restore. The
- *  provider-agnostic `user_message` event (synthesized by the backend on
- *  send) is rendered here exactly as the optimistic live path renders it —
- *  so a restored conversation matches what was on screen. Every other event
- *  is a native provider event and goes through that provider's adapter. */
-export function reduceStoredEvent(
-  provider: string | undefined,
-  prev: ChatItem[],
-  rawEvent: RawEvent,
-): ChatItem[] {
-  if (rawEvent.type === "user_message") {
-    const text = typeof rawEvent.text === "string" ? rawEvent.text : "";
-    const slashName = passthroughSlashName(provider, text);
-    // Dedup against the tail: older histories can hold the same user_message
-    // event repeated (a send retried while the agent was still spawning used
-    // to persist one copy per attempt). Collapsing consecutive identical
-    // entries renders the prompt once — matching how every adapter dedups its
-    // own user_message echoes via dedupAgainstLast.
-    if (slashName) {
-      const notice: ChatItem = {
-        kind: "notice",
-        subtype: "slash_command",
-        text: `/${slashName}`,
-      };
-      const last = prev[prev.length - 1];
-      if (
-        last &&
-        last.kind === "notice" &&
-        last.subtype === "slash_command" &&
-        last.text === notice.text
-      ) {
-        return prev;
-      }
-      return [...prev, notice];
-    }
-    return dedupAgainstLast(prev, { kind: "user_message", text });
-  }
-  try {
-    return getAdapter(provider).reduce(prev, rawEvent);
-  } catch (err) {
-    console.error("[adapters] reduce threw during restore", {
-      provider,
-      type: rawEvent.type,
-      err,
-    });
-    return prev;
-  }
 }
 
 /** Render canonical `session_records` (verbatim per-provider transcript
@@ -1020,20 +970,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ transcriptLoading: { ...s.transcriptLoading, [id]: true } }));
     try {
       const provider = providerFor(get(), id);
-      // session_records is the canonical store: per-provider verbatim transcript
-      // bodies, rendered via normalizeTranscript→reduce. Fall back to the legacy
-      // session_events log for sessions not yet ingested (agents without a
-      // transcript reader, or pre-migration history).
-      const records = await api.readSessionRecords(id);
-      let items: ChatItem[] = [];
-      if (records.length > 0) {
-        items = reduceRecords(provider, records);
-      } else {
-        const events = await api.readSessionEvents(id);
-        for (const ev of events) {
-          items = reduceStoredEvent(provider, items, ev as RawEvent);
-        }
+      // session_records is the sole canonical store: per-provider verbatim
+      // transcript bodies, rendered via normalizeTranscript→reduce. If a session
+      // has no records yet (first open, or pre-cutover history), lazily ingest
+      // its on-disk transcript and re-read. No-op for agents with no transcript.
+      let records = await api.readSessionRecords(id);
+      if (records.length === 0) {
+        await api.syncSession(id);
+        records = await api.readSessionRecords(id);
       }
+      const items = reduceRecords(provider, records);
       set((state) => {
         // Nothing stored but a live turn is already rendering — don't clobber it.
         if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {

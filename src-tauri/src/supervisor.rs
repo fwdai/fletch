@@ -776,14 +776,9 @@ impl Supervisor {
                 .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
             agent.send_user_message(text, attachments, thinking)?;
         }
-        let user_event = serde_json::json!({
-            "type": "user_message",
-            "text": text,
-            "attachments": attachments,
-        });
-        if let Err(e) = self.workspace.append_session_event(agent_id, &user_event) {
-            tracing::warn!(error = %e, agent_id = %agent_id, "append user_message event failed");
-        }
+        // The user's prompt is persisted via the agent's own transcript (ingested
+        // into session_records at turn-end); the live view renders it
+        // optimistically on send. No separate event log to write.
         Ok(())
     }
 
@@ -1093,47 +1088,11 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Read the persisted session JSONL for an archived (or live) agent
-    /// and return its raw lines as a Vec<Value>. The frontend's
-    /// per-provider adapter normalizes these into renderable events, so
-    /// we don't need a parallel renderer here. Claude's file lives under
-    /// `~/.claude/projects`; codex's rollout under `$CODEX_HOME/sessions`.
-    ///
-    /// Returns an empty vec if the file is missing (pruned, deleted, or
-    /// the session never reached its first turn).
-    pub fn read_session_transcript(&self, agent_id: &str) -> Result<Vec<Value>> {
-        let record = self.workspace.agent(agent_id)?;
-
-        // Agents whose native on-disk transcript isn't wired yet have
-        // nothing to hand back here; re-attaching restores their history
-        // from the provider-agnostic SQLite event log instead, and
-        // `--resume`/`--session <id>` still continues the conversation.
-        // (Per-agent rollout — see `AgentCapabilities::transcript_replay`.)
-        if !capabilities(&record.provider).transcript_replay {
-            return Ok(Vec::new());
-        }
-
-        let session_id = match record.session_id.as_deref() {
-            Some(s) => s,
-            // A per-turn agent's id is only assigned on the first turn;
-            // before that there's nothing to replay.
-            None if is_per_turn_provider(&record.provider) => return Ok(Vec::new()),
-            None => return Err(Error::Other("agent has no session id".into())),
-        };
-
-        // Each provider persists its conversation in a different place and
-        // format. The frontend's per-provider adapter (`normalizeTranscript`)
-        // translates these raw lines into renderable events, so here we just
-        // locate the file and hand back its JSONL.
-        let path = if record.provider == "codex" {
-            find_codex_rollout(session_id)
-        } else {
-            find_session_jsonl(session_id)
-        };
-        match path {
-            Some(p) => read_jsonl_values(&p),
-            None => Ok(Vec::new()),
-        }
+    /// Synchronously ingest the agent's transcript into session_records (used
+    /// for lazy backfill when a session is opened with no records yet). `None`
+    /// if the provider has no transcript reader.
+    pub fn sync_session(&self, agent_id: &str) -> Option<usize> {
+        sync_session_records(&self.workspace, agent_id)
     }
 
     /// Fire-and-forget transcript ingest at turn-end. Retries with backoff to
@@ -1316,16 +1275,11 @@ pub(crate) fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
     None
 }
 
-/// Locate codex's rollout file for a thread id. Codex stores sessions at
-/// `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
-/// defaults to `~/.codex`); the id suffix is the thread id we captured.
-fn find_codex_rollout(session_id: &str) -> Option<PathBuf> {
-    find_codex_rollouts(session_id).into_iter().next()
-}
-
 /// All of codex's rollout files for a thread id, ordered (filenames are
-/// timestamp-prefixed, so lexical sort == chronological). Resume normally keeps
-/// one file per session, but returning all is correct if it ever splits.
+/// timestamp-prefixed, so lexical sort == chronological). Codex stores sessions
+/// at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
+/// defaults to `~/.codex`); the id suffix is the thread id we captured. Resume
+/// normally keeps one file per session, but returning all is correct if it splits.
 pub(crate) fn find_codex_rollouts(session_id: &str) -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
@@ -1482,13 +1436,6 @@ fn spawn_managed_agent(
     let sup_for_exit = sup.clone();
     let app_for_exit = app.clone();
     let id_for_exit = agent_id.clone();
-    // Resolve the provider once at spawn (one DB read, not per event) so the
-    // event closure can decide which events are durable.
-    let provider = sup
-        .workspace
-        .agent(&agent_id)
-        .map(|r| r.provider)
-        .unwrap_or_else(|_| "claude".to_string());
     Agent::spawn_managed(
         spec,
         move |event| {
@@ -1498,12 +1445,6 @@ fn spawn_managed_agent(
                 .get_mut(&id_for_event)
             {
                 activity.observe_event(&event);
-            }
-
-            if crate::agent::is_durable_event(&provider, &event) {
-                if let Err(e) = sup_for_event.workspace.append_session_event(&id_for_event, &event) {
-                    tracing::warn!(error = %e, agent_id = %id_for_event, "append_session_event failed");
-                }
             }
 
             if let Err(e) = app_for_event.emit(
@@ -1544,7 +1485,6 @@ fn spawn_per_turn_agent(
     let app_for_event = app.clone();
     let id_for_event = agent_id.clone();
     let sup_for_event = sup.clone();
-    let provider_for_event = provider.to_string();
     let id_for_sid = agent_id.clone();
     let sup_for_sid = sup.clone();
     let app_for_exit = app;
@@ -1554,11 +1494,6 @@ fn spawn_per_turn_agent(
     let on_event = move |event: Value| {
         if let Some(activity) = sup_for_event.activities.lock().get_mut(&id_for_event) {
             activity.observe_event(&event);
-        }
-        if crate::agent::is_durable_event(&provider_for_event, &event) {
-            if let Err(e) = sup_for_event.workspace.append_session_event(&id_for_event, &event) {
-                tracing::warn!(error = %e, agent_id = %id_for_event, "append_session_event failed");
-            }
         }
         if let Err(e) = app_for_event.emit(
             "agent:event",
@@ -2194,12 +2129,10 @@ mod tests {
     }
 
     #[test]
-    fn delivery_to_unready_agent_persists_no_user_message() {
-        // A freshly spawned agent has a session row but isn't in the live
-        // agents map yet. The frontend retries the send until the agent is
-        // ready; if we persisted before delivery, every failed retry would
-        // record a duplicate user_message event and the prompt would render
-        // N times on reopen. Nothing must be persisted for a failed delivery.
+    fn delivery_to_unready_agent_persists_nothing() {
+        // A freshly spawned agent has a session row but isn't in the live agents
+        // map yet (the frontend retries the send until it's ready). A failed
+        // delivery must not write anything to the canonical store.
         let sup = test_supervisor();
         let mut record = record_with_status("yosemite", AgentStatus::Spawning);
         sup.workspace.add_agent(&mut record).unwrap();
@@ -2209,10 +2142,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::AgentNotFound(_)));
 
-        let events = sup.workspace.read_session_events("yosemite").unwrap();
+        let records = sup.workspace.read_session_records("yosemite").unwrap();
         assert!(
-            events.is_empty(),
-            "failed delivery must not persist a user_message event, got {events:?}",
+            records.is_empty(),
+            "failed delivery must persist nothing, got {records:?}",
         );
     }
 }
