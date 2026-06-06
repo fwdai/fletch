@@ -7,6 +7,7 @@ import { Workspace } from "./components/Workspace";
 import { RightPanel } from "./components/RightPanel";
 import { Settings } from "./components/Settings";
 import { SettingsScreen } from "./components/SettingsScreen";
+import { Onboarding } from "./components/Onboarding";
 import { History } from "./components/History";
 import { useSplitter } from "./util/splitter";
 import { useGlobalShortcuts } from "./util/shortcuts";
@@ -33,6 +34,7 @@ export function App() {
   const workspace = useAppStore((s) => s.workspace);
   const historyOpen = useAppStore((s) => s.historyOpen);
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
+  const onboardingOpen = useAppStore((s) => s.onboardingOpen);
 
   useEffect(() => { init(); }, [init]);
 
@@ -107,6 +109,7 @@ export function App() {
 
       {historyOpen && <History />}
       <Settings />
+      {onboardingOpen && <Onboarding />}
 
       {lastError && (
         <div className="error-banner" role="alert">
