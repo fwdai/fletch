@@ -87,22 +87,26 @@ export function Onboarding() {
       setBusy(provider);
       setAuthError(null);
       setDevice(null);
-      // The backend emits the user code once the provider issues it; show it
-      // and open the verification page in the user's browser.
-      const unlisten = await listen<{
-        provider: string;
-        user_code: string;
-        verification_uri: string;
-      }>("oauth:device-code", (e) => {
-        if (stale()) return;
-        setDevice({
-          provider: e.payload.provider,
-          userCode: e.payload.user_code,
-          verificationUri: e.payload.verification_uri,
-        });
-        void openExternal(e.payload.verification_uri).catch(() => {});
-      });
+      // Default to a no-op so the finally can always call it — listen() lives
+      // inside the try so an IPC failure is caught and surfaced, not thrown
+      // unhandled (which would strand the cancel-less loading panel).
+      let unlisten: () => void = () => {};
       try {
+        // The backend emits the user code once the provider issues it; show it
+        // and open the verification page in the user's browser.
+        unlisten = await listen<{
+          provider: string;
+          user_code: string;
+          verification_uri: string;
+        }>("oauth:device-code", (e) => {
+          if (stale()) return;
+          setDevice({
+            provider: e.payload.provider,
+            userCode: e.payload.user_code,
+            verificationUri: e.payload.verification_uri,
+          });
+          void openExternal(e.payload.verification_uri).catch(() => {});
+        });
         const profile = await invoke<OAuthProfile>("oauth_device_login", {
           provider,
         });
