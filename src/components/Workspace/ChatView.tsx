@@ -114,6 +114,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         <Composer
           existingSession
           defaultProvider={agent.provider}
+          initialThinking={agent.effort ?? undefined}
           disabled={!canSend}
           placeholder={
             canSend

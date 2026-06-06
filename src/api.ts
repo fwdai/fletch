@@ -58,6 +58,9 @@ export interface AgentRecord {
   last_error?: string | null;
   /** Set when the agent has been archived. Live agents have null. */
   archive?: ArchiveMetadata | null;
+  /** Claude's session-level reasoning effort (`--effort <level>`), chosen at
+   *  spawn. Null for agents where effort wasn't set or isn't session-scoped. */
+  effort?: string | null;
 }
 
 export interface Workspace {
