@@ -2,11 +2,13 @@
 // project, and the ignition finale. Ported from the design prototype
 // (onboarding/steps.jsx).
 
-import { useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
-import { Icon, LandmarkGlyph } from "../Icon";
-import type { BeatDef, RepoOption } from "./beats";
-import { REPOS } from "./beats";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { Icon } from "../Icon";
+import type { BeatDef } from "./beats";
+
+const TERMS_URL = "https://quorum.fwdai.org/terms";
+const PRIVACY_URL = "https://quorum.fwdai.org/privacy";
 
 // ── brand mark: the Quorum triple-peak ──────────────────────────────
 export function PeaksMark() {
@@ -84,21 +86,27 @@ export function WelcomeStep({
             </span>
             <span className="lbl">Continue with Google</span>
           </button>
-          <div className="ob-auth-alt">
-            <span className="ln" />
-          </div>
-          <div className="ob-sso">
-            Part of a team? <button onClick={() => onAuth("github")}>Sign in with SSO</button>
-          </div>
         </div>
 
         <p className="ob-legal ob-reveal" style={{ "--d": ".58s" } as CSSProperties}>
           By continuing you agree to Quorum's{" "}
-          <a href="#" onClick={(e) => e.preventDefault()}>
+          <a
+            href={TERMS_URL}
+            onClick={(e) => {
+              e.preventDefault();
+              void openExternal(TERMS_URL).catch(() => {});
+            }}
+          >
             Terms
           </a>{" "}
           and{" "}
-          <a href="#" onClick={(e) => e.preventDefault()}>
+          <a
+            href={PRIVACY_URL}
+            onClick={(e) => {
+              e.preventDefault();
+              void openExternal(PRIVACY_URL).catch(() => {});
+            }}
+          >
             Privacy Policy
           </a>
           . Your code never leaves your machine.
@@ -149,163 +157,8 @@ export function Beat({ beat }: { beat: BeatDef }) {
   );
 }
 
-// ── Step · create first project ─────────────────────────────────────
-export function CreateStep({
-  repo,
-  setRepo,
-  agentName,
-  reroll,
-  task,
-  setTask,
-  onCreate,
-}: {
-  repo: string;
-  setRepo: (full: string) => void;
-  agentName: string;
-  reroll: () => void;
-  task: string;
-  setTask: (v: string) => void;
-  onCreate: () => void;
-}) {
-  const selected: RepoOption = REPOS.find((r) => r.full === repo) || REPOS[0];
-  const projName = selected.full.split("/")[1];
-  const taRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 160) + "px";
-  }, [task]);
-
-  return (
-    <div className="ob-step">
-      <div className="ob-create">
-        <div className="ob-create-head">
-          <div
-            className="ob-eyebrow ob-reveal"
-            style={{ "--d": ".05s", justifyContent: "center" } as CSSProperties}
-          >
-            <span className="ln" />
-            <span>Let's begin</span>
-            <span
-              className="ln"
-              style={{ background: "linear-gradient(270deg, var(--accent-line), transparent)" }}
-            />
-          </div>
-          <h2 className="ob-display ob-reveal" style={{ "--d": ".14s" } as CSSProperties}>
-            Point Quorum at your <em>first repo.</em>
-          </h2>
-          <p className="ob-lede ob-reveal" style={{ "--d": ".24s" } as CSSProperties}>
-            Choose a repository and describe the first task. Quorum creates the worktree —
-            everything else is handled.
-          </p>
-        </div>
-
-        <div className="ob-card ob-reveal" style={{ "--d": ".34s" } as CSSProperties}>
-          <div className="ob-card-sect">
-            <div className="ob-card-lab">
-              <span className="n">1</span>
-              <span>Repository</span>
-              <span className="gh">
-                <span className="av">M</span>maya · github
-              </span>
-            </div>
-            <div className="ob-repos">
-              {REPOS.map((r) => (
-                <div
-                  key={r.full}
-                  className={`ob-repo ${repo === r.full ? "sel" : ""}`}
-                  onClick={() => setRepo(r.full)}
-                >
-                  <span className="rdot" />
-                  <span className="rn">{r.full}</span>
-                  <span className="rmeta">
-                    <span className="lang">
-                      <span className="d" style={{ background: `oklch(0.6 0.13 ${r.langHue})` }} />
-                      {r.lang}
-                    </span>
-                    <span>{r.updated}</span>
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="ob-card-sect">
-            <div className="ob-card-lab">
-              <span className="n">2</span>
-              <span>Your first agent</span>
-            </div>
-            <div className="ob-agentname">
-              <span className="gbox">
-                <LandmarkGlyph name={agentName} size={26} strokeWidth={1.1} />
-              </span>
-              <span className="nmwrap">
-                <div className="nm">{agentName}</div>
-                <div className="path">
-                  <b>{projName}</b>/.quorum/{agentName}
-                </div>
-              </span>
-              <button className="ob-reroll" onClick={reroll}>
-                <Icon name="refresh" />
-                reroll
-              </button>
-            </div>
-          </div>
-
-          <div className="ob-card-sect">
-            <div className="ob-card-lab">
-              <span className="n">3</span>
-              <span>First task</span>
-            </div>
-            <div className="ob-firsttask">
-              <textarea
-                ref={taRef}
-                value={task}
-                onChange={(e) => setTask(e.target.value)}
-                placeholder="Describe what this agent should build…"
-                autoFocus
-              />
-              <div className="ob-firsttask-foot">
-                <span className="pill">
-                  <span className="dot" style={{ background: "oklch(0.6 0.13 28)" }} />
-                  Claude Code
-                </span>
-                <span className="pill">
-                  <Icon name="branch" /> from main
-                </span>
-                <span className="spacer" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div
-          className="ob-reveal"
-          style={
-            { "--d": ".46s", marginTop: 22, display: "flex", justifyContent: "center" } as CSSProperties
-          }
-        >
-          <button className="ob-cta" disabled={!task.trim()} onClick={onCreate}>
-            Create worktree &amp; enter
-            <Icon name="arrowR" />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Step · ignition / finale ────────────────────────────────────────
-export function IgniteStep({
-  agentName,
-  projName,
-  onEnter,
-}: {
-  agentName: string;
-  projName: string;
-  onEnter: () => void;
-}) {
+// ── Step · finale / handoff ─────────────────────────────────────────
+export function IgniteStep({ onEnter }: { onEnter: () => void }) {
   return (
     <div className="ob-step">
       <div className="ob-ignite">
@@ -313,20 +166,12 @@ export function IgniteStep({
           <PeaksMark />
         </div>
         <h2 className="ob-display ob-reveal" style={{ "--d": ".2s" } as CSSProperties}>
-          <em>{agentName}</em> is on it.
+          You're <em>all set.</em>
         </h2>
         <p className="ob-lede ob-reveal" style={{ "--d": ".34s" } as CSSProperties}>
-          Your worktree is live and the agent is reading the codebase. Welcome to Quorum — this is
-          what the rest of your engineering feels like now.
+          Add your first repository from the sidebar and Quorum spins up an isolated
+          worktree for every agent you direct.
         </p>
-        <div className="worktree ob-reveal" style={{ "--d": ".46s" } as CSSProperties}>
-          <span className="gly">
-            <LandmarkGlyph name={agentName} size={14} strokeWidth={1.3} />
-          </span>
-          <span>
-            <b>{projName}</b>/.quorum/{agentName}
-          </span>
-        </div>
         <button className="ob-cta ob-reveal" style={{ "--d": ".58s" } as CSSProperties} onClick={onEnter}>
           Enter Quorum
           <Icon name="arrowR" />

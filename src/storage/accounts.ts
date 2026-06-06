@@ -9,6 +9,8 @@ export interface AccountRow {
   last_name: string | null;
   email: string | null;
   avatar_url: string | null;
+  oauth_provider: string | null;
+  oauth_id: string | null;
   created_at: number;
 }
 
@@ -57,6 +59,40 @@ export async function saveAccountProfile(
       last_name: patch.lastName,
       email: patch.email,
       name,
+    },
+  );
+}
+
+/** Identity returned by the `oauth_device_login` backend command. */
+export interface OAuthProfile {
+  provider: string;
+  provider_user_id: string;
+  name: string | null;
+  email: string | null;
+  avatar_url: string | null;
+}
+
+/** Persist identity fetched from an OAuth provider onto the single account.
+ *  Splits the provider display name into first/last for the profile fields. */
+export async function linkOAuthAccount(
+  id: string,
+  profile: OAuthProfile,
+): Promise<void> {
+  const full = (profile.name ?? "").trim();
+  const space = full.indexOf(" ");
+  const firstName = space === -1 ? full : full.slice(0, space);
+  const lastName = space === -1 ? "" : full.slice(space + 1);
+  await dbUpdate(
+    "accounts",
+    { id },
+    {
+      oauth_provider: profile.provider,
+      oauth_id: profile.provider_user_id,
+      name: full,
+      first_name: firstName,
+      last_name: lastName,
+      email: profile.email,
+      avatar_url: profile.avatar_url,
     },
   );
 }
