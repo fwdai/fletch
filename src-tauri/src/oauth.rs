@@ -3,7 +3,7 @@
 //! it is used once to read the profile, then dropped.
 
 use serde::Serialize;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Clone, Serialize)]
@@ -157,6 +157,9 @@ pub async fn oauth_device_login(
         .or_else(|| str_field(&dc, "verification_url"))
         .ok_or("no verification uri in response")?;
     let mut interval = dc.get("interval").and_then(|v| v.as_u64()).unwrap_or(5);
+    // Don't poll past the device code's lifetime (GitHub ~900s, Google ~1800s).
+    let expires_in = dc.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(900);
+    let deadline = Instant::now() + Duration::from_secs(expires_in);
 
     // 2. Tell the UI to show the code (it opens the browser to `verification`).
     let _ = app.emit(
@@ -170,6 +173,9 @@ pub async fn oauth_device_login(
 
     // 3. Poll the token endpoint until the user approves (or it fails).
     let access_token = loop {
+        if Instant::now() >= deadline {
+            return Err("device code expired before authorization".into());
+        }
         tokio::time::sleep(Duration::from_secs(interval)).await;
         let mut poll: Vec<(&str, &str)> = vec![
             ("client_id", cfg.client_id.as_str()),

@@ -3,7 +3,7 @@
 // General. Ported from the design prototype (onboarding/app.jsx): ambient
 // stage, step sequence, cinematic transitions, progress rail, keyboard nav.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
@@ -46,6 +46,11 @@ export function Onboarding() {
 
   const [device, setDevice] = useState<DeviceCodeInfo | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  // Monotonic id for the active sign-in. Bumping it (on cancel or a new
+  // attempt) invalidates any in-flight oauth_device_login so its late result
+  // is ignored — the backend poll keeps running until it expires, but its
+  // outcome no longer touches the UI or the DB.
+  const authRunRef = useRef(0);
 
   const step = STEPS[idx];
 
@@ -77,6 +82,8 @@ export function Onboarding() {
   const onAuth = useCallback(
     async (provider: string) => {
       if (busy) return;
+      const runId = ++authRunRef.current;
+      const stale = () => authRunRef.current !== runId;
       setBusy(provider);
       setAuthError(null);
       setDevice(null);
@@ -87,6 +94,7 @@ export function Onboarding() {
         user_code: string;
         verification_uri: string;
       }>("oauth:device-code", (e) => {
+        if (stale()) return;
         setDevice({
           provider: e.payload.provider,
           userCode: e.payload.user_code,
@@ -98,14 +106,17 @@ export function Onboarding() {
         const profile = await invoke<OAuthProfile>("oauth_device_login", {
           provider,
         });
+        if (stale()) return; // cancelled or superseded — drop the result
         const account = await getOrCreateAccount();
         await linkOAuthAccount(account.id, profile);
         await refreshAccount();
+        if (stale()) return;
         // Keep the device panel visible through the transition-out — clearing
         // `device`/`busy` here would flash the welcome buttons mid-fade. The
         // step-change effect below tears them down once we've left welcome.
         go(1);
       } catch (err) {
+        if (stale()) return;
         setAuthError(String(err));
         setBusy(null);
       } finally {
@@ -116,6 +127,7 @@ export function Onboarding() {
   );
 
   const cancelAuth = useCallback(() => {
+    authRunRef.current++; // invalidate any in-flight sign-in
     setDevice(null);
     setAuthError(null);
     setBusy(null);
