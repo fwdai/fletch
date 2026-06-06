@@ -116,17 +116,3 @@ export const BEAT_CODE: BeatDef = {
 };
 
 export const BEATS: BeatDef[] = [BEAT_PARALLEL, BEAT_PROVIDERS, BEAT_ROOM];
-
-// ── create-step sample repositories ─────────────────────────────────
-export interface RepoOption {
-  full: string;
-  lang: string;
-  langHue: number;
-  updated: string;
-}
-
-export const REPOS: RepoOption[] = [
-  { full: "joineve/atlas-web", lang: "TypeScript", langHue: 215, updated: "2h" },
-  { full: "joineve/quorum-core", lang: "Rust", langHue: 28, updated: "1d" },
-  { full: "joineve/voyager-rs", lang: "Rust", langHue: 28, updated: "3d" },
-];

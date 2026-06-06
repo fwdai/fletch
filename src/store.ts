@@ -26,6 +26,7 @@ import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 import { getAllSettings, setSetting } from "./storage/settings";
 import {
+  getAccount,
   getOrCreateAccount,
   saveAccountProfile,
   toProfile,
@@ -332,6 +333,9 @@ interface AppState {
   saveAccount: (
     patch: Pick<AccountProfile, "firstName" | "lastName" | "email">,
   ) => Promise<void>;
+  /** Re-read the local account row into the store — e.g. after an OAuth
+   *  sign-in writes the provider profile to SQLite. */
+  refreshAccount: () => Promise<void>;
   toggleHistory: (open?: boolean) => void;
   selectHistoryAgent: (id: string | null) => void;
   toggleLeft: () => void;
@@ -1376,6 +1380,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await saveAccountProfile(current.id, patch);
       set({ account: { ...current, ...patch } });
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+  refreshAccount: async () => {
+    try {
+      const row = await getAccount();
+      if (row) set({ account: toProfile(row) });
     } catch (e) {
       set({ lastError: String(e) });
     }
