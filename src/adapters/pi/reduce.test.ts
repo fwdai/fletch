@@ -55,7 +55,12 @@ describe("piAdapter", () => {
       is_error: false,
     });
 
-    expect(items[3]).toEqual({ kind: "agent_message", text: 'It printed "hello".' });
+    // The agent_message carries the model pi reports on the message_end event.
+    expect(items[3]).toEqual({
+      kind: "agent_message",
+      text: 'It printed "hello".',
+      model: "claude-opus-4-7",
+    });
     expect(items[4]).toEqual({ kind: "notice", subtype: "turn_end", text: "success" });
   });
 

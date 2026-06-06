@@ -77,7 +77,10 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       const text = typeof part.text === "string" ? part.text : "";
       if (!text) return prev;
       const items = finalizeStreamingItems(prev);
-      return dedupAgainstLast(items, { kind: "agent_message", text });
+      // `model` is attached by normalizeTranscript from the parent message
+      // blob's `modelID`; absent on the live run stream (which omits it).
+      const model = typeof ev.model === "string" ? ev.model : undefined;
+      return dedupAgainstLast(items, { kind: "agent_message", text, model });
     }
 
     // A reasoning part (`opencode run --thinking`, verified against 1.15.12):

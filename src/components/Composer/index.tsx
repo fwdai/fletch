@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../store";
 import { DEFAULT_PROVIDER_ID } from "../../data/providers";
 import { PROVIDER_DETAIL } from "../../data/providerDetail";
+import { prettyModelLabel } from "../../data/modelLabel";
 import { filterCommands, type SlashCommand } from "../../data/slashCommands";
 import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
@@ -46,6 +47,12 @@ interface Props {
    *  (`effortAtSpawn`, e.g. claude) hides its picker here, since the value
    *  can't change mid-session. */
   existingSession?: boolean;
+  /** The model the agent actually used on its most recent turn, read from the
+   *  transcript (Claude, pi, Codex, OpenCode report it). Shown as a read-only
+   *  chip next to the provider so the user can see the real model in use.
+   *  Undefined for Cursor / Antigravity (no model in their transcript) or
+   *  before the first agent turn. */
+  activeModel?: string;
 }
 
 export function Composer({
@@ -61,6 +68,7 @@ export function Composer({
   onStop,
   onLocalCommand,
   existingSession = false,
+  activeModel,
 }: Props) {
   const features = useAppStore((s) => s.features);
 
@@ -232,6 +240,13 @@ export function Composer({
       />
       <div className="composer-foot">
         <ModelPicker value={provider} onChange={setProvider} />
+        {existingSession && activeModel && (
+          <Chip tip={`Model in use · ${activeModel}`}>
+            <span style={{ color: "var(--fg-2)" }}>
+              {prettyModelLabel(activeModel)}
+            </span>
+          </Chip>
+        )}
         {features.thinkingBudget &&
           thinkingLevels.length > 0 &&
           !(existingSession && detail?.effortAtSpawn) && (

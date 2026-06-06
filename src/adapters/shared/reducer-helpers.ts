@@ -111,6 +111,19 @@ export function dedupAgainstLast(
 ): ChatItem[] {
   const last = items[items.length - 1];
   if (last && last.kind === candidate.kind && last.text === candidate.text) {
+    // Same text already there. If the candidate carries a model the existing
+    // item lacks (the finalized event arriving after a streamed one), stamp it
+    // on rather than dropping it.
+    if (
+      candidate.kind === "agent_message" &&
+      last.kind === "agent_message" &&
+      candidate.model &&
+      last.model !== candidate.model
+    ) {
+      const next = items.slice();
+      next[next.length - 1] = { ...last, model: candidate.model };
+      return next;
+    }
     return items;
   }
   // Suppress an echoed user_message whose text matches the slash_command
