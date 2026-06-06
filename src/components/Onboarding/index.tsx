@@ -4,11 +4,20 @@
 // stage, step sequence, cinematic transitions, progress rail, keyboard nav.
 
 import { useCallback, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { LANDMARK_NAMES } from "../../data/landmarks";
+import {
+  getOrCreateAccount,
+  linkOAuthAccount,
+  type OAuthProfile,
+} from "../../storage/accounts";
 import { Ambient } from "./Ambient";
 import { WelcomeStep, Beat, CreateStep, IgniteStep } from "./steps";
+import { DeviceCode, type DeviceCodeInfo } from "./DeviceCode";
 import { BEATS, REPOS } from "./beats";
 import "./onboarding.css";
 
@@ -47,6 +56,8 @@ export function Onboarding() {
   const [repo, setRepo] = useState(REPOS[0].full);
   const [agentName, setAgentName] = useState(() => freeLandmark());
   const [task, setTask] = useState("");
+  const [device, setDevice] = useState<DeviceCodeInfo | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const step = STEPS[idx];
 
@@ -75,14 +86,49 @@ export function Onboarding() {
   const next = useCallback(() => go(idx + 1), [go, idx]);
   const back = useCallback(() => go(idx - 1), [go, idx]);
 
-  const onAuth = (provider: string) => {
-    if (busy) return;
-    setBusy(provider);
-    window.setTimeout(() => {
-      setBusy(null);
-      go(1);
-    }, 1100);
-  };
+  const onAuth = useCallback(
+    async (provider: string) => {
+      if (busy) return;
+      setBusy(provider);
+      setAuthError(null);
+      setDevice(null);
+      // The backend emits the user code once the provider issues it; show it
+      // and open the verification page in the user's browser.
+      const unlisten = await listen<{
+        provider: string;
+        user_code: string;
+        verification_uri: string;
+      }>("oauth:device-code", (e) => {
+        setDevice({
+          provider: e.payload.provider,
+          userCode: e.payload.user_code,
+          verificationUri: e.payload.verification_uri,
+        });
+        void openExternal(e.payload.verification_uri).catch(() => {});
+      });
+      try {
+        const profile = await invoke<OAuthProfile>("oauth_device_login", {
+          provider,
+        });
+        const account = await getOrCreateAccount();
+        await linkOAuthAccount(account.id, profile);
+        setDevice(null);
+        go(1);
+      } catch (err) {
+        setAuthError(String(err));
+      } finally {
+        unlisten();
+        setBusy(null);
+      }
+    },
+    [busy, go],
+  );
+
+  const cancelAuth = useCallback(() => {
+    setDevice(null);
+    setAuthError(null);
+    setBusy(null);
+  }, []);
 
   const reroll = () => setAgentName((n) => freeLandmark(n));
   const onCreate = () => go(STEPS.length - 1);
@@ -112,7 +158,13 @@ export function Onboarding() {
   const projName = (REPOS.find((r) => r.full === repo) || REPOS[0]).full.split("/")[1];
 
   let content = null;
-  if (step.kind === "welcome") content = <WelcomeStep onAuth={onAuth} busy={busy} />;
+  if (step.kind === "welcome")
+    content =
+      busy || device || authError ? (
+        <DeviceCode info={device} error={authError} onCancel={cancelAuth} />
+      ) : (
+        <WelcomeStep onAuth={onAuth} busy={busy} />
+      );
   else if (step.kind === "beat") content = <Beat beat={BEATS[step.beat]} />;
   else if (step.kind === "create")
     content = (

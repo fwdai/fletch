@@ -811,3 +811,33 @@
   .ob-auth { margin-top: 26px; }
   .ob-view { padding-top: 24px; }
 }
+
+/* ── device-flow login panel ─────────────────────────────────────── */
+.ob-device {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: 440px;
+  margin: 0 auto;
+  text-align: center;
+}
+.ob-device-lede { opacity: .8; }
+.ob-device-code {
+  font-size: 34px;
+  letter-spacing: .18em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ob-device-uri { opacity: .55; font-size: 13px; word-break: break-all; }
+.ob-device-err { color: #ff6b6b; }
+.ob-cancel {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: .6;
+  cursor: pointer;
+  font: inherit;
+  padding: 6px 10px;
+}
+.ob-cancel:hover { opacity: .9; }
