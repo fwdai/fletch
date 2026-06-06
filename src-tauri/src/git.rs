@@ -499,6 +499,27 @@ pub async fn branch_delete(repo: &Path, branch: &str) -> Result<()> {
     )))
 }
 
+/// List all local branches in the repo, sorted alphabetically.
+pub async fn list_local_branches(repo: &Path) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["for-each-ref", "refs/heads", "--format=%(refname:short)", "--sort=refname"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "for-each-ref failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let branches = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect();
+    Ok(branches)
+}
+
 /// List the worktree's relevant files: everything tracked plus untracked
 /// files that aren't gitignored. Paths are repo-relative with forward
 /// slashes (git's native form). This is what the File panel browses — it
