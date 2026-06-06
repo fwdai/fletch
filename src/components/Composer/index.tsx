@@ -7,6 +7,7 @@ import { filterCommands, type SlashCommand } from "../../data/slashCommands";
 import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
 import { ModelPicker } from "./ModelPicker";
+import { BranchPicker } from "./BranchPicker";
 import { SlashMenu } from "./SlashMenu";
 import { AttachmentList } from "./AttachmentList";
 import { useFileDrop } from "./useFileDrop";
@@ -14,9 +15,11 @@ import { useFileDrop } from "./useFileDrop";
 interface Props {
   /** Initial provider id — defaults to claude. */
   defaultProvider?: string;
-  /** When set, render a `from <branch>` chip and call `onChangeBase` on click. */
+  /** When set, render a branch picker chip showing the current base branch. */
   baseBranch?: string;
-  onChangeBase?: () => void;
+  /** Repo path used to fetch available branches for the picker. */
+  repoPath?: string;
+  onChangeBase?: (branch: string) => void;
   placeholder?: string;
   autoFocus?: boolean;
   disabled?: boolean;
@@ -48,6 +51,7 @@ interface Props {
 export function Composer({
   defaultProvider = DEFAULT_PROVIDER_ID,
   baseBranch,
+  repoPath,
   onChangeBase,
   placeholder,
   autoFocus,
@@ -249,8 +253,15 @@ export function Composer({
             <span>Auto-edit</span>
           </Chip>
         )}
-        {baseBranch && (
-          <Chip tip="Base branch" onClick={onChangeBase}>
+        {baseBranch && repoPath && onChangeBase && (
+          <BranchPicker
+            repoPath={repoPath}
+            value={baseBranch}
+            onChange={onChangeBase}
+          />
+        )}
+        {baseBranch && (!repoPath || !onChangeBase) && (
+          <Chip tip="Base branch">
             <Icon name="branch" size={11} />
             <span style={{ color: "var(--fg-2)" }}>from</span>
             <span style={{ fontFamily: "var(--font-mono)" }}>{baseBranch}</span>

@@ -13,6 +13,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const rerollDraftName = useAppStore((s) => s.rerollDraftName);
   const spawnFromDraft = useAppStore((s) => s.spawnFromDraft);
   const removeDraft = useAppStore((s) => s.removeDraft);
+  const updateDraft = useAppStore((s) => s.updateDraft);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
 
@@ -87,6 +88,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             autoFocus
             defaultProvider={draft.provider}
             baseBranch={draft.base}
+            repoPath={draft.repoPath}
+            onChangeBase={(branch) => updateDraft(draft.id, { base: branch })}
             placeholder="Describe the task for the agent. ↵ to spawn."
             onSend={({ text, provider, attachments, thinking }) =>
               spawnFromDraft(draft.id, text, provider, attachments, thinking)
@@ -102,7 +105,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
               <span style={{ color: "var(--fg-2)" }}>from</span>
               <span className="v">{draft.base}</span>
             </span>
-            <span className="pill" onClick={() => rerollDraftName(draft.id)}>
+            <span className="pill is-action" onClick={() => rerollDraftName(draft.id)}>
               <Icon name="refresh" />
               <span>reroll name</span>
             </span>

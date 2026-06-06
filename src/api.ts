@@ -287,6 +287,8 @@ export const api = {
     invoke<void>("abort_merge_agent", { agentId }),
   deleteBranchAgent: (agentId: string) =>
     invoke<void>("delete_branch_agent", { agentId }),
+  listRepoBranches: (repoPath: string) =>
+    invoke<string[]>("list_repo_branches", { repoPath }),
   createPr: (agentId: string, title: string, body: string) =>
     invoke<PrState>("create_pr", { agentId, title, body }),
   mergePr: (agentId: string) => invoke<void>("merge_pr", { agentId }),

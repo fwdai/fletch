@@ -312,6 +312,13 @@ pub async fn abort_merge_agent(
     git::merge_abort(&worktree).await
 }
 
+/// List all local branches in a repo. Used by the new-agent composer to
+/// let the user pick the base branch before spawning.
+#[tauri::command]
+pub async fn list_repo_branches(repo_path: String) -> Result<Vec<String>> {
+    git::list_local_branches(Path::new(&repo_path)).await
+}
+
 /// Force-delete the agent's local branch from its parent repository.
 /// Used by the merged-state UI to clean up after a PR lands. Safe-noops
 /// if the branch is already gone (matches `git::branch_delete` semantics).
