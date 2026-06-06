@@ -10,6 +10,7 @@ mod git;
 mod git_state;
 mod managed_session;
 mod names;
+mod oauth;
 mod pty_session;
 mod run_session;
 mod sandbox;
@@ -140,6 +141,7 @@ pub fn run() {
             db_upsert,
             db_count,
             db_query,
+            oauth::oauth_device_login,
             commands::get_workspace,
             commands::get_agent_diff_stats,
             commands::add_workspace_repo,
