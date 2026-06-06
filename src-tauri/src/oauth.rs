@@ -139,7 +139,18 @@ pub async fn oauth_device_login(
         .await
         .map_err(|e| e.to_string())?;
 
-    let device_code = str_field(&dc, "device_code").ok_or("no device_code in response")?;
+    let device_code = match str_field(&dc, "device_code") {
+        Some(c) => c,
+        None => {
+            // No device_code means the provider rejected the request — surface
+            // its error/description (and the raw body) instead of a blind miss.
+            let err = str_field(&dc, "error").unwrap_or_default();
+            let desc = str_field(&dc, "error_description").unwrap_or_default();
+            return Err(format!(
+                "device code request rejected: {err} {desc} (raw: {dc})"
+            ));
+        }
+    };
     let user_code = str_field(&dc, "user_code").ok_or("no user_code in response")?;
     // GitHub uses `verification_uri`; Google uses `verification_url`.
     let verification = str_field(&dc, "verification_uri")
