@@ -127,6 +127,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           existingSession
           activeModel={activeModel}
           defaultProvider={agent.provider}
+          initialThinking={agent.effort ?? undefined}
           disabled={!canSend}
           placeholder={
             canSend

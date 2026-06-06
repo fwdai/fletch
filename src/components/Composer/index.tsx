@@ -44,9 +44,12 @@ interface Props {
   onLocalCommand?: (action: string) => void;
   /** True when rendered for an existing agent (ChatView) rather than a new
    *  session (EmptyWorkspace). A provider whose effort is set at spawn
-   *  (`effortAtSpawn`, e.g. claude) hides its picker here, since the value
-   *  can't change mid-session. */
+   *  (`effortAtSpawn`, e.g. claude) shows a read-only badge here instead of
+   *  an interactive picker, since the value can't change mid-session. */
   existingSession?: boolean;
+  /** For existing sessions: the effort value this session was spawned with.
+   *  Shown as a read-only chip for effortAtSpawn providers (e.g. claude). */
+  initialThinking?: string;
   /** The model the agent actually used on its most recent turn, read from the
    *  transcript (Claude, pi, Codex, OpenCode report it). Shown as a read-only
    *  chip next to the provider so the user can see the real model in use.
@@ -68,6 +71,7 @@ export function Composer({
   onStop,
   onLocalCommand,
   existingSession = false,
+  initialThinking,
   activeModel,
 }: Props) {
   const features = useAppStore((s) => s.features);
@@ -247,20 +251,29 @@ export function Composer({
             </span>
           </Chip>
         )}
-        {features.thinkingBudget &&
-          thinkingLevels.length > 0 &&
-          !(existingSession && detail?.effortAtSpawn) && (
-          <Chip
-            tip="Thinking budget"
-            onClick={() => {
-              const idx = thinkingLevels.findIndex((l) => l.value === thinkingValue);
-              const next = thinkingLevels[(idx + 1) % thinkingLevels.length];
-              setThinkingValue(next.value);
-            }}
-          >
-            <Icon name="sparkle" size={11} />
-            <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
-          </Chip>
+        {features.thinkingBudget && thinkingLevels.length > 0 && (
+          existingSession && detail?.effortAtSpawn ? (
+            initialThinking && (
+              <Chip tip="Thinking effort — fixed at spawn" disabled>
+                <Icon name="sparkle" size={11} />
+                <span>
+                  {thinkingLevels.find((l) => l.value === initialThinking)?.label ?? initialThinking}
+                </span>
+              </Chip>
+            )
+          ) : (
+            <Chip
+              tip="Thinking budget"
+              onClick={() => {
+                const idx = thinkingLevels.findIndex((l) => l.value === thinkingValue);
+                const next = thinkingLevels[(idx + 1) % thinkingLevels.length];
+                setThinkingValue(next.value);
+              }}
+            >
+              <Icon name="sparkle" size={11} />
+              <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
+            </Chip>
+          )
         )}
         {features.autoEdit && (
           <Chip tip="Auto-approve writes">

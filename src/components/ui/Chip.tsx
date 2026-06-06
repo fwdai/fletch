@@ -6,12 +6,13 @@ interface Props {
   bordered?: boolean;
   tip?: string;
   className?: string;
+  disabled?: boolean;
 }
 
 /** Composer footer chip — model picker, thinking budget, attach,
  *  base-branch selector. Visual sibling of `IconButton` but with a
  *  text label slot. */
-export function Chip({ children, onClick, bordered, tip, className }: Props) {
+export function Chip({ children, onClick, bordered, tip, className, disabled }: Props) {
   const cls = [
     "c-chip",
     bordered ? "with-border" : "",
@@ -21,7 +22,7 @@ export function Chip({ children, onClick, bordered, tip, className }: Props) {
     .filter(Boolean)
     .join(" ");
   return (
-    <button type="button" className={cls} onClick={onClick} data-tip={tip}>
+    <button type="button" className={cls} onClick={onClick} data-tip={tip} disabled={disabled}>
       {children}
     </button>
   );
