@@ -91,7 +91,7 @@ export async function linkOAuthAccount(
       name: full,
       first_name: firstName,
       last_name: lastName,
-      email: profile.email ?? "",
+      email: profile.email,
       avatar_url: profile.avatar_url,
     },
   );
