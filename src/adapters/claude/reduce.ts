@@ -65,6 +65,11 @@ function handleStreamEvent(prev: ChatItem[], ev: RawEvent): ChatItem[] {
 function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const message = asRecord(ev.message);
   const content = asBlockList(message.content);
+  // The model that produced this turn (Claude reports it on the finalized
+  // assistant event). Stamped onto the turn's agent_message so the UI can show
+  // the actual model in use; absent on stream deltas, so a turn that streamed
+  // in gets its model only once this finalized event arrives.
+  const model = typeof message.model === "string" ? message.model : undefined;
   let items = finalizeStreamingItems(prev);
   // The finalized assistant event arrives after the stream events for the
   // same turn. Anything already in items past the last user_message belongs
@@ -91,11 +96,25 @@ function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       if (exists) continue;
       items = [...items, { kind: "notice", subtype: "reasoning", text }];
     } else if (block.type === "text" && typeof block.text === "string") {
-      const exists = items
+      // The text may already exist as a streamed agent_message for this turn
+      // (deltas arrived before this finalized event). If so, stamp the model
+      // onto it rather than appending a duplicate; otherwise append fresh.
+      const existingIdx = items
         .slice(turnStart)
-        .some((it) => it.kind === "agent_message" && it.text === block.text);
-      if (exists) continue;
-      items = [...items, { kind: "agent_message", text: block.text, streaming: false }];
+        .findIndex((it) => it.kind === "agent_message" && it.text === block.text);
+      if (existingIdx !== -1) {
+        const absIdx = turnStart + existingIdx;
+        const existing = items[absIdx];
+        if (existing.kind === "agent_message" && model && existing.model !== model) {
+          items = items.slice();
+          items[absIdx] = { ...existing, model };
+        }
+        continue;
+      }
+      items = [
+        ...items,
+        { kind: "agent_message", text: block.text, streaming: false, model },
+      ];
     } else if (block.type === "tool_use") {
       items = upsertToolCall(items, {
         kind: "tool_call",

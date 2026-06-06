@@ -57,6 +57,9 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       }
 
       if (role === "assistant") {
+        // pi reports the model on every message object; stamp it onto the
+        // turn's agent_message so the UI can show the actual model in use.
+        const model = typeof msg.model === "string" ? msg.model : undefined;
         let items = prev;
         for (const block of asBlockList(msg.content)) {
           if (block.type === "thinking") {
@@ -67,7 +70,12 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
             if (text) items = [...items, { kind: "notice", subtype: "reasoning", text }];
           } else if (block.type === "text") {
             const text = typeof block.text === "string" ? block.text : "";
-            if (text) items = dedupAgainstLast(items, { kind: "agent_message", text });
+            if (text)
+              items = dedupAgainstLast(items, {
+                kind: "agent_message",
+                text,
+                model,
+              });
           } else if (block.type === "toolCall") {
             const id = typeof block.id === "string" ? block.id : "";
             if (!id) continue;

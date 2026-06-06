@@ -159,3 +159,66 @@ describe("claudeAdapter.reduce — extended thinking", () => {
     expect(claudeAdapter.policy["notice:reasoning"]).toBe("show");
   });
 });
+
+describe("claudeAdapter.reduce — model", () => {
+  it("stamps the model from a finalized assistant event onto the agent_message", () => {
+    const items = reduceAll([
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-opus-4-8",
+          content: [{ type: "text", text: "Hi there" }],
+        },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([
+      {
+        kind: "agent_message",
+        text: "Hi there",
+        streaming: false,
+        model: "claude-opus-4-8",
+      },
+    ]);
+  });
+
+  it("stamps the model onto a message that streamed in before the finalized event", () => {
+    const items = reduceAll([
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          content_block: { type: "text", text: "Hi there" },
+        },
+      },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "text", text: "Hi there" }],
+        },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([
+      {
+        kind: "agent_message",
+        text: "Hi there",
+        streaming: false,
+        model: "claude-sonnet-4-6",
+      },
+    ]);
+  });
+
+  it("leaves model undefined when the event carries none", () => {
+    const items = reduceAll([
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "Hi" }] },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([
+      { kind: "agent_message", text: "Hi", streaming: false },
+    ]);
+  });
+});
