@@ -47,10 +47,20 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
   }
 
   const out: RawEvent[] = [];
+  // The model is reported on `turn_context` records (`payload.model`), which
+  // precede the turn's events. Track the latest and stamp it onto the agent
+  // messages that follow so the UI can show the model in use on replay.
+  let currentModel: string | undefined;
   for (const raw of lines) {
     const env = asRecord(raw);
     const p = asRecord(env.payload);
     const ptype = typeof p.type === "string" ? p.type : "";
+
+    if (env.type === "turn_context") {
+      const m = p.model;
+      if (typeof m === "string") currentModel = m;
+      continue;
+    }
 
     if (env.type === "event_msg") {
       if (ptype === "user_message") {
@@ -61,7 +71,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
         if (text) {
           out.push({
             type: "item.completed",
-            item: { id: `msg_${out.length}`, type: "agent_message", text },
+            item: { id: `msg_${out.length}`, type: "agent_message", text, model: currentModel },
           });
         }
       } else if (ptype === "task_complete") {

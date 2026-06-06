@@ -26,11 +26,15 @@ const PART_TO_LIVE: Record<string, string> = {
 
 export function normalizeTranscript(lines: unknown[]): RawEvent[] {
   // First pass: messageID → role (message blobs have role + id, no `type`).
+  // Assistant message blobs also carry `modelID` (the model that produced the
+  // turn); index it so the emitted text event can carry the model to the UI.
   const roleOf = new Map<string, string>();
+  const modelOf = new Map<string, string>();
   for (const line of lines) {
     const rec = asRecord(line);
     if (rec.type == null && typeof rec.id === "string" && typeof rec.role === "string") {
       roleOf.set(rec.id, rec.role);
+      if (typeof rec.modelID === "string") modelOf.set(rec.id, rec.modelID);
     }
   }
 
@@ -50,7 +54,9 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
 
     const liveType = PART_TO_LIVE[rec.type];
     if (!liveType) continue; // subtask / unknown — nothing renderable
-    out.push({ type: liveType, part: rec });
+    const model =
+      typeof rec.messageID === "string" ? modelOf.get(rec.messageID) : undefined;
+    out.push({ type: liveType, part: rec, model });
   }
   return out;
 }

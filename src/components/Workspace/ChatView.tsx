@@ -67,6 +67,18 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     const visible = applyPolicy(log ?? [], adapter.policy);
     return pairToolItems(visible);
   }, [log, agent.provider]);
+
+  // The model the agent actually used on its most recent turn (Claude, pi,
+  // Codex, OpenCode report it in their transcripts). Undefined for Cursor /
+  // Antigravity, or before the first turn — the composer then shows just the
+  // provider.
+  const activeModel = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const it = items[i];
+      if (it.kind === "agent_message" && it.model) return it.model;
+    }
+    return undefined;
+  }, [items]);
   const canSend =
     !transcriptLoading &&
     !switchInFlight &&
@@ -113,6 +125,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
       <div className="composer-wrap">
         <Composer
           existingSession
+          activeModel={activeModel}
           defaultProvider={agent.provider}
           disabled={!canSend}
           placeholder={

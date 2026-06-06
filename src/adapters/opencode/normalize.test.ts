@@ -19,7 +19,7 @@ function render(lines: unknown[]): ChatItem[] {
 const records: unknown[] = [
   { id: "m1", role: "user", sessionID: "s" }, // message blob (no `type`)
   { id: "p1", type: "text", messageID: "m1", text: "hello" },
-  { id: "m2", role: "assistant", sessionID: "s" },
+  { id: "m2", role: "assistant", sessionID: "s", modelID: "grok-code" },
   { id: "p2", type: "text", messageID: "m2", text: "hi there" },
   {
     id: "p3",
@@ -37,7 +37,8 @@ describe("opencodeAdapter.normalizeTranscript", () => {
     const items = render(records);
     expect(items).toEqual([
       { kind: "user_message", text: "hello" },
-      { kind: "agent_message", text: "hi there" },
+      // The assistant blob's modelID rides through onto the agent_message.
+      { kind: "agent_message", text: "hi there", model: "grok-code" },
       { kind: "tool_call", id: "c1", name: "bash", input: { command: "ls" }, streaming: false },
       { kind: "tool_result", tool_use_id: "c1", content: "file.txt", is_error: false },
       { kind: "notice", subtype: "turn_end", text: "success" },

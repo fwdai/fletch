@@ -108,7 +108,10 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
         const items = finalizeStreamingItems(prev);
         const text = typeof item.text === "string" ? item.text : "";
         if (!text) return items;
-        return dedupAgainstLast(items, { kind: "agent_message", text });
+        // `model` is attached by normalizeTranscript from the turn_context
+        // record; absent on the live exec stream (which omits it).
+        const model = typeof item.model === "string" ? item.model : undefined;
+        return dedupAgainstLast(items, { kind: "agent_message", text, model });
       }
 
       if (itemType === "reasoning") {

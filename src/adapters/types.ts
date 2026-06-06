@@ -7,7 +7,18 @@
 
 export type ChatItem =
   | { kind: "user_message"; text: string; attachments?: string[] }
-  | { kind: "agent_message"; text: string; streaming?: boolean }
+  | {
+      kind: "agent_message";
+      text: string;
+      streaming?: boolean;
+      /** The model that produced this turn, when the agent reports it in its
+       *  transcript: Claude/pi `message.model` (live + replay); Codex
+       *  `turn_context.model` and OpenCode message-blob `modelID` (replay only —
+       *  their live streams omit it). Absent for Cursor (model only in the live
+       *  `init` event, not the on-disk transcript) and Antigravity (no model in
+       *  the transcript) — consumers fall back to the static provider label. */
+      model?: string;
+    }
   | {
       kind: "tool_call";
       id: string;

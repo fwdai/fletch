@@ -125,6 +125,21 @@ describe("codexAdapter", () => {
     ]);
   });
 
+  it("stamps the turn_context model onto replayed agent messages", () => {
+    const events = codexAdapter.normalizeTranscript([
+      { type: "turn_context", payload: { model: "gpt-5.2-codex" } },
+      { type: "event_msg", payload: { type: "user_message", message: "hi" } },
+      { type: "event_msg", payload: { type: "agent_message", message: "hello back" } },
+      { type: "event_msg", payload: { type: "task_complete" } },
+    ]);
+    const items = run(events as RawEvent[]);
+    expect(items).toContainEqual({
+      kind: "agent_message",
+      text: "hello back",
+      model: "gpt-5.2-codex",
+    });
+  });
+
   it("replays a failed shell command as an error, not a success", () => {
     const events = codexAdapter.normalizeTranscript([
       {
