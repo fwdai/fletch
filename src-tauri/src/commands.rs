@@ -87,6 +87,7 @@ pub async fn spawn_agent(
     repo_path: String,
     provider: Option<String>,
     name: Option<String>,
+    effort: Option<String>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
     sup.spawn_agent(
@@ -95,6 +96,7 @@ pub async fn spawn_agent(
         PathBuf::from(repo_path),
         provider.unwrap_or_else(|| "claude".to_string()),
         name,
+        effort,
     )
     .await
 }

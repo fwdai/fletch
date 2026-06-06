@@ -38,6 +38,11 @@ interface Props {
    *  `action` identifier comes from the `SlashCommand` entry. The text
    *  is NOT sent to the agent; the parent decides what to do. */
   onLocalCommand?: (action: string) => void;
+  /** True when rendered for an existing agent (ChatView) rather than a new
+   *  session (EmptyWorkspace). A provider whose effort is set at spawn
+   *  (`effortAtSpawn`, e.g. claude) hides its picker here, since the value
+   *  can't change mid-session. */
+  existingSession?: boolean;
 }
 
 export function Composer({
@@ -51,6 +56,7 @@ export function Composer({
   onSend,
   onStop,
   onLocalCommand,
+  existingSession = false,
 }: Props) {
   const features = useAppStore((s) => s.features);
 
@@ -58,15 +64,16 @@ export function Composer({
   const [provider, setProvider] = useState(defaultProvider);
   const [attachments, setAttachments] = useState<string[]>([]);
 
-  const thinkingLevels = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL]?.thinkingLevels ?? [];
-  const defaultThinking = thinkingLevels.at(-1)?.value; // highest by default
+  const detail = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
+  const thinkingLevels = detail?.thinkingLevels ?? [];
+  // Preferred initial level, falling back to the highest.
+  const defaultThinking = detail?.defaultLevel ?? thinkingLevels.at(-1)?.value;
   const [thinkingValue, setThinkingValue] = useState<string | undefined>(defaultThinking);
 
-  // Reset to the new provider's highest level when switching providers.
+  // Reset to the new provider's default (or highest) level when switching.
   useEffect(() => {
-    setThinkingValue(
-      (PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL]?.thinkingLevels ?? []).at(-1)?.value
-    );
+    const d = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
+    setThinkingValue(d?.defaultLevel ?? (d?.thinkingLevels ?? []).at(-1)?.value);
   }, [provider]);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -221,7 +228,9 @@ export function Composer({
       />
       <div className="composer-foot">
         <ModelPicker value={provider} onChange={setProvider} />
-        {features.thinkingBudget && thinkingLevels.length > 0 && (
+        {features.thinkingBudget &&
+          thinkingLevels.length > 0 &&
+          !(existingSession && detail?.effortAtSpawn) && (
           <Chip
             tip="Thinking budget"
             onClick={() => {
