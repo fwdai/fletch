@@ -242,6 +242,11 @@ interface AppState {
    *  Replaces the workspace panes while open. */
   settingsScreenOpen: boolean;
   settingsSection: SettingsSection;
+  /** First-run onboarding overlay. `onboardingComplete` is persisted (DB
+   *  settings); the overlay auto-opens for new users on init and is
+   *  re-openable any time from Settings › General. */
+  onboardingOpen: boolean;
+  onboardingComplete: boolean;
   /** Local account profile, loaded on init. `null` until the row is read. */
   account: AccountProfile | null;
   /** When true the workspace pane shows archived-session history instead
@@ -320,6 +325,10 @@ interface AppState {
   openSettingsScreen: (section?: SettingsSection) => void;
   closeSettingsScreen: () => void;
   setSettingsSection: (section: SettingsSection) => void;
+  /** Open the onboarding overlay (e.g. "Replay tour" from Settings). */
+  openOnboarding: () => void;
+  /** Dismiss onboarding and mark it complete so it won't auto-open again. */
+  closeOnboarding: () => void;
   saveAccount: (
     patch: Pick<AccountProfile, "firstName" | "lastName" | "email">,
   ) => Promise<void>;
@@ -568,6 +577,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   settingsOpen: false,
   settingsScreenOpen: false,
   settingsSection: "general" as SettingsSection,
+  onboardingOpen: false,
+  onboardingComplete: false,
   account: null,
   historyOpen: false,
   selectedHistoryAgentId: null,
@@ -603,6 +614,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         features: parseFeatures(s.features),
         providerFlags: parseProviderFlags(s.providers),
         viewMode: (s.viewMode as WorkspaceView) || "custom",
+        onboardingComplete: s.onboardingComplete === "true",
+        // Auto-open the welcome tour for new users (no completion flag yet).
+        onboardingOpen: s.onboardingComplete !== "true",
       });
     } catch {
       // First launch or DB not ready — defaults are fine.
@@ -1351,6 +1365,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
   closeSettingsScreen: () => set({ settingsScreenOpen: false }),
   setSettingsSection: (section) => set({ settingsSection: section }),
+  openOnboarding: () => set({ onboardingOpen: true }),
+  closeOnboarding: () => {
+    set({ onboardingOpen: false, onboardingComplete: true });
+    setSetting("onboardingComplete", "true");
+  },
   saveAccount: async (patch) => {
     const current = get().account;
     if (!current) return;
