@@ -2,10 +2,11 @@ import { useEffect } from "react";
 import { useAppStore } from "../store";
 
 /** Global keyboard shortcuts: ⌘B sidebar, ⌘/ right panel, ⌘,
- *  settings, ⌘⇧L theme flip, ⌘N new agent in active project, Esc
- *  closes popovers. */
+ *  settings, ⌘⇧L theme flip, ⌘N new agent in active project, ⌘K focus
+ *  sidebar search, Esc closes popovers. */
 export function useGlobalShortcuts() {
   const toggleLeft = useAppStore((s) => s.toggleLeft);
+  const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const toggleRight = useAppStore((s) => s.toggleRight);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
   const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
@@ -24,6 +25,20 @@ export function useGlobalShortcuts() {
       if (mod && e.key === "b") {
         e.preventDefault();
         toggleLeft();
+      } else if (mod && e.key === "k" && !inField) {
+        e.preventDefault();
+        // Reveal the sidebar if collapsed, then focus its search input.
+        // When the sidebar was hidden the input mounts this frame, so defer
+        // the focus to the next frame.
+        const focus = () => {
+          document.getElementById("sidebar-search")?.focus();
+        };
+        if (leftCollapsed) {
+          toggleLeft();
+          requestAnimationFrame(focus);
+        } else {
+          focus();
+        }
       } else if (mod && e.key === "/") {
         e.preventDefault();
         toggleRight();
@@ -49,5 +64,5 @@ export function useGlobalShortcuts() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleLeft, toggleRight, toggleSettings, closeSettingsScreen, setTheme, theme, createDraft, workspace, selectedAgentId]);
+  }, [toggleLeft, leftCollapsed, toggleRight, toggleSettings, closeSettingsScreen, setTheme, theme, createDraft, workspace, selectedAgentId]);
 }

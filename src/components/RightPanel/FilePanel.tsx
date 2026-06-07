@@ -232,7 +232,7 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
     ];
     const common: ContextMenuEntry[] = [
       { icon: "edit", label: "Rename…", onClick: () => { setOpError(null); setEdit({ mode: "rename", path: node.path, isDir: node.type === "dir" }); } },
-      { icon: "copy", label: "Copy Path", onClick: () => copyPath(node) },
+      { icon: "copy", label: "Copy Path", feedbackLabel: "Copied", onClick: () => copyPath(node) },
     ];
     const del: ContextMenuEntry = {
       icon: "trash",
