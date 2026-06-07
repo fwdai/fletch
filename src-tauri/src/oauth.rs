@@ -39,25 +39,38 @@ struct ProviderCfg {
     client_secret: Option<String>,
 }
 
+/// A build-time config value, baked into the binary via `option_env!`.
+/// Returns `None` when the variable was unset *or empty* at compile time, so a
+/// missing CI secret reads as "not configured" rather than a confusing
+/// provider error. (Runtime env is not used: a macOS .app launched from Finder
+/// gets a minimal environment, so the keys must be embedded at build time.)
+macro_rules! config_value {
+    ($key:literal) => {
+        option_env!($key)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+}
+
 fn provider_cfg(provider: &str) -> Result<ProviderCfg, String> {
     match provider {
         "github" => Ok(ProviderCfg {
             device_code_url: "https://github.com/login/device/code",
             token_url: "https://github.com/login/oauth/access_token",
             scope: "read:user user:email",
-            client_id: std::env::var("QUORUM_GITHUB_CLIENT_ID")
-                .map_err(|_| "GitHub sign-in is not configured".to_string())?,
+            client_id: config_value!("QUORUM_GITHUB_CLIENT_ID")
+                .ok_or_else(|| "GitHub sign-in is not configured".to_string())?,
             client_secret: None,
         }),
         "google" => Ok(ProviderCfg {
             device_code_url: "https://oauth2.googleapis.com/device/code",
             token_url: "https://oauth2.googleapis.com/token",
             scope: "openid email profile",
-            client_id: std::env::var("QUORUM_GOOGLE_CLIENT_ID")
-                .map_err(|_| "Google sign-in is not configured".to_string())?,
+            client_id: config_value!("QUORUM_GOOGLE_CLIENT_ID")
+                .ok_or_else(|| "Google sign-in is not configured".to_string())?,
             client_secret: Some(
-                std::env::var("QUORUM_GOOGLE_CLIENT_SECRET")
-                    .map_err(|_| "Google sign-in is not configured".to_string())?,
+                config_value!("QUORUM_GOOGLE_CLIENT_SECRET")
+                    .ok_or_else(|| "Google sign-in is not configured".to_string())?,
             ),
         }),
         other => Err(format!("unknown provider: {other}")),
