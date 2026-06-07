@@ -194,6 +194,23 @@ export interface RunStateSnapshot {
   log: number[];
 }
 
+/** A single detected run-config row (see Rust `run_detect::DetectedRow`). */
+export interface DetectedRow {
+  /** "version" | "install" | "dev" | "test" | "build" | "port" | "env" */
+  id: string;
+  group: "environment" | "scripts" | "server";
+  key: string;
+  value: string;
+  source: string;
+}
+
+/** One ecosystem's detected config (see Rust `run_detect::DetectedConfig`). */
+export interface DetectedConfig {
+  ecosystem: string;
+  confidence: number;
+  rows: DetectedRow[];
+}
+
 export interface RunOutputEvent {
   agent_id: string;
   bytes: number[];
@@ -307,6 +324,8 @@ export const api = {
   runStop: (agentId: string) => invoke<void>("run_stop", { agentId }),
   runState: (agentId: string) =>
     invoke<RunStateSnapshot>("run_state", { agentId }),
+  detectRunConfig: (agentId: string) =>
+    invoke<DetectedConfig[]>("detect_run_config", { agentId }),
   listWorktreeTree: (agentId: string) =>
     invoke<WorktreeFile[]>("list_worktree_tree", { agentId }),
   readWorktreeFile: (agentId: string, path: string) =>

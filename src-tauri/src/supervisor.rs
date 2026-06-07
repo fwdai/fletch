@@ -274,7 +274,7 @@ impl Supervisor {
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
         let cwd = repo_worktree_path(agent_id, &primary.subdir)?;
 
-        let (setup_cmd, run_cmd) = self.read_run_commands(&record.project_id);
+        let (setup_cmd, run_cmd) = self.read_run_commands(&record.project_id, &cwd);
         let setup_done = self.workspace.is_setup_completed(agent_id)?;
 
         let session = {
@@ -345,16 +345,26 @@ impl Supervisor {
         }
     }
 
-    /// Read the setup + run commands from project_settings, falling
-    /// back to the same inferred defaults the panel UI shows. Keys
-    /// match the RunPanel storage scheme (`run.install`, `run.dev`).
-    fn read_run_commands(&self, project_id: &str) -> (String, String) {
-        let conn = self.workspace.db_handle();
-        let install_default = "pnpm install".to_string();
-        let dev_default = "pnpm dev".to_string();
+    /// Read the setup + run commands for an agent. The detector provides
+    /// the baseline (same values the panel shows), and any persisted
+    /// `run.install` / `run.dev` overrides in project_settings take
+    /// precedence. One detector feeds both the panel and the runner, so
+    /// there is no hardcoded default to keep in sync.
+    fn read_run_commands(&self, project_id: &str, worktree: &Path) -> (String, String) {
+        let configs = crate::run_detect::detect_all(worktree);
+        let detected = |id: &str| -> String {
+            configs
+                .first()
+                .and_then(|c| c.rows.iter().find(|r| r.id == id))
+                .map(|r| r.value.clone())
+                .unwrap_or_default()
+        };
+        let install_default = detected("install");
+        let dev_default = detected("dev");
         if project_id.is_empty() {
             return (install_default, dev_default);
         }
+        let conn = self.workspace.db_handle();
         let read = |key: &str| -> Option<String> {
             let conn = conn.lock();
             conn.query_row(
@@ -368,6 +378,20 @@ impl Supervisor {
             read("run.install").unwrap_or(install_default),
             read("run.dev").unwrap_or(dev_default),
         )
+    }
+
+    /// Detect the run configuration for an agent's primary repo,
+    /// ranked by confidence. The panel renders the first (highest
+    /// confidence) entry; the rest are returned for future
+    /// multi-ecosystem selection.
+    pub fn detect_run_config(&self, agent_id: &str) -> Result<Vec<crate::run_detect::DetectedConfig>> {
+        let record = self.workspace.agent(agent_id)?;
+        let primary = record
+            .repos
+            .first()
+            .ok_or_else(|| Error::Other("agent has no repos".into()))?;
+        let worktree = repo_worktree_path(agent_id, &primary.subdir)?;
+        Ok(crate::run_detect::detect_all(&worktree))
     }
 
     pub fn current_workspace(&self) -> Option<Workspace> {

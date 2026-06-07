@@ -485,6 +485,17 @@ pub fn run_state(
     Ok(supervisor.run_state(&agent_id))
 }
 
+/// Detect the run configuration for an agent's primary repo, ranked by
+/// confidence. The panel renders the first entry and layers persisted
+/// overrides on top.
+#[tauri::command]
+pub fn detect_run_config(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Vec<crate::run_detect::DetectedConfig>> {
+    supervisor.detect_run_config(&agent_id)
+}
+
 /// Returns git state for the agent's primary repo.
 /// For multi-repo agents only the first repo's state is returned.
 #[tauri::command]
