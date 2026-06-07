@@ -88,10 +88,6 @@ export function getShellBuffer(agentId: string): Uint8Array | undefined {
   return shellBuffers.get(agentId);
 }
 
-export function clearShellBuffer(agentId: string) {
-  shellBuffers.delete(agentId);
-}
-
 export function registerShellSink(
   agentId: string,
   handler: OutputHandler,
