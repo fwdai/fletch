@@ -63,7 +63,7 @@ No VM, no Docker, no containers.
 ## How it works
 
 1. **Point** Quorum at a local git repo.
-2. **Spawn** an agent with a task. Quorum creates `.worktrees/<id>` on a fresh branch.
+2. **Spawn** an agent with a task. Quorum creates an isolated worktree at `~/.quorum/worktrees/<id>/` on a fresh branch.
 3. **Run.** It launches the agent's CLI in that worktree under `sandbox-exec`, bridged through a local PTY.
 4. **Watch.** Output streams into a tab — switch between a normalized chat view and the raw native terminal.
 5. **Review.** See the agent's edits as live diffs; browse and edit files directly.
@@ -75,10 +75,12 @@ Agent history is captured to a local SQLite store, so reopening a session replay
 
 Each agent runs as **your user** under a per-agent `sandbox-exec` profile that denies writes by default and re-allows them only for:
 
-- the agent's worktree under `.worktrees/<id>`
-- temp dirs (`/private/tmp`, `/private/var/folders`, …)
-- the agent's own state (`~/.claude`, `~/.config`, `~/.cache`, `~/.npm`, `~/.local`, …)
-- the PTY/device files terminal programs need
+- the agent's worktree root under `~/.quorum/worktrees/<id>/`
+- `/private/tmp`, `/private/var/tmp`, and `/private/var/folders`
+- the agent's own state: `~/.claude`, `~/.claude.json`, `~/.npm`, `~/.cache`, `~/.config`, and `~/.local`
+- the PTY and device files terminal programs need (`/dev/tty*`, `/dev/ptmx`, `/dev/pts/*`, `/dev/null`, `/dev/zero`)
+
+This list is the complete write-allow set; everything else is denied. See [`src-tauri/src/sandbox.rs`](src-tauri/src/sandbox.rs) for the exact profile.
 
 This is a **write-protection sandbox, not a VM**: the agent can still read files your user can read and use the network. It's the difference between "can't trash the rest of your repo or machine" and "fully air-gapped." Choose tasks accordingly.
 
