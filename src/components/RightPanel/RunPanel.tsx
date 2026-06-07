@@ -13,6 +13,7 @@ import {
   setProjectSetting,
 } from "../../storage/projectSettings";
 import { RunSettingsSheet, type SetupRow } from "./RunSettingsSheet";
+import { reconcileOverrides } from "./reconcileOverrides";
 
 // Settings keys are namespaced under `run.` so the project_settings
 // table can hold overrides from other panels without colliding.
@@ -190,36 +191,22 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   };
 
   const onApply = (next: Record<string, string>) => {
-    // Persist only true overrides — values that match the inferred
-    // default are removed from the DB so the row reads as "auto".
+    // Reconcile the draft against the detected rows: keep only real
+    // overrides, and prune keys (including stale ones whose row no longer
+    // exists after an ecosystem change) from the DB so the override
+    // indicator can't get stuck lit.
+    const { cleaned, toSet, toDelete } = reconcileOverrides(rows, overrides, next);
     const projectId = agent.project_id;
-    const cleaned: Record<string, string> = {};
     if (projectId) {
-      const previous = overrides;
-      for (const row of rows) {
-        const nextVal = next[row.id];
-        const wasSet = previous[row.id] !== undefined;
-        const isOverride = nextVal !== undefined && nextVal !== row.value;
-
-        if (isOverride) {
-          cleaned[row.id] = nextVal;
-          if (previous[row.id] !== nextVal) {
-            setProjectSetting(projectId, runKey(row.id), nextVal).catch(
-              (err) => console.error("setProjectSetting failed", err),
-            );
-          }
-        } else if (wasSet) {
-          deleteProjectSetting(projectId, runKey(row.id)).catch((err) =>
-            console.error("deleteProjectSetting failed", err),
-          );
-        }
+      for (const { id, value } of toSet) {
+        setProjectSetting(projectId, runKey(id), value).catch((err) =>
+          console.error("setProjectSetting failed", err),
+        );
       }
-    } else {
-      for (const row of rows) {
-        const nextVal = next[row.id];
-        if (nextVal !== undefined && nextVal !== row.value) {
-          cleaned[row.id] = nextVal;
-        }
+      for (const id of toDelete) {
+        deleteProjectSetting(projectId, runKey(id)).catch((err) =>
+          console.error("deleteProjectSetting failed", err),
+        );
       }
     }
 
