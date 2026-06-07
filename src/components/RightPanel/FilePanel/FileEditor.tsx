@@ -1,7 +1,7 @@
 // The Files-panel editor: a transparent <textarea> over a live
 // syntax-highlight layer, with line numbers and a git-style change gutter.
 // Edit, ⌘S to save, Revert to restore the agent's version.
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, type AgentRecord, type WorktreeFileContents } from "../../../api";
 import { useAppStore } from "../../../store";
 import { CODE_THEMES } from "../../../data/codeThemes";
@@ -113,7 +113,7 @@ export function FileEditor({ agent, path, name, dir, file, canViewDiff, onViewDi
     setTimeout(() => setCopied(false), 1400);
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === "s") {
       e.preventDefault();

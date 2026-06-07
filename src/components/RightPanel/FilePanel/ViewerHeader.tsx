@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { FileIcon } from "../FileIcon";
 import { Icon } from "../../Icon";
 
@@ -7,7 +8,7 @@ interface ViewerHeaderProps {
   status: string | null;
   dirty: boolean;
   onBack: () => void;
-  actions?: React.ReactNode;
+  actions?: ReactNode;
 }
 
 /** Header bar shown above a file's contents (loading, error, and editor
