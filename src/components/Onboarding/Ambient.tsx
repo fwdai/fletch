@@ -49,12 +49,19 @@ export function Ambient({ phase }: { phase: number }) {
         className={`ob-glow ${phase > 0 ? "lo" : ""}`}
         style={{ transform: `translateX(-50%) translateY(${par * -1.6}%)` }}
       />
-      <svg
+      {/* The per-step parallax transform lives on this wrapping <div>, not the
+          <svg>: WebKit (Tauri's macOS WKWebView) jumps instead of animating CSS
+          transform transitions on SVG root elements, so the lines would shift
+          sharply. A <div> transitions reliably. */}
+      <div
         className="ob-contours"
+        style={{ transform: `translateY(${par * -1.3}%) translateX(${par * -0.6}%)` }}
+      >
+      <svg
+        className="ob-contours-svg"
         viewBox="0 0 100 100"
         preserveAspectRatio="none"
         aria-hidden="true"
-        style={{ transform: `translateY(${par * -1.3}%) translateX(${par * -0.6}%)` }}
       >
         <defs>
           <linearGradient id="ob-fade" x1="0" y1="0" x2="1" y2="0">
@@ -78,6 +85,7 @@ export function Ambient({ phase }: { phase: number }) {
           ))}
         </g>
       </svg>
+      </div>
       <div className="ob-vignette" />
       <div className="ob-grain" />
     </div>
