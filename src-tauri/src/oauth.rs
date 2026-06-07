@@ -121,6 +121,10 @@ const AVATAR_SIZE: u32 = 256;
 /// Refuse to cache anything larger than this — guards the DB against a rogue
 /// or mis-typed response. A 256px avatar is well under 100 KB.
 const AVATAR_MAX_BYTES: usize = 2 * 1024 * 1024;
+/// Hard cap on the avatar download. It runs *after* the user has approved the
+/// login, and is purely best-effort, so a stalled CDN must degrade to initials
+/// rather than hang `oauth_device_login` forever.
+const AVATAR_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Rewrite a provider avatar URL to request our preferred pixel size, so the
 /// bytes we download (and cache) are small. Unknown providers pass through.
@@ -157,7 +161,12 @@ async fn fetch_avatar_data_uri(
     provider: &str,
     url: &str,
 ) -> Option<String> {
-    let resp = http.get(sized_avatar_url(provider, url)).send().await.ok()?;
+    let resp = http
+        .get(sized_avatar_url(provider, url))
+        .timeout(AVATAR_TIMEOUT)
+        .send()
+        .await
+        .ok()?;
     if !resp.status().is_success() {
         return None;
     }
