@@ -582,6 +582,23 @@ pub async fn file_changed_lines(
     Ok(parse_changed_lines(&String::from_utf8_lossy(&out.stdout)))
 }
 
+/// Return the full unified diff of `path` versus `base_ref`, for the Code
+/// panel's live view. `-U3` gives three lines of surrounding context per hunk.
+pub async fn file_diff(worktree: &Path, base_ref: &str, path: &str) -> Result<String> {
+    let out = Command::new("git")
+        .current_dir(worktree)
+        .args(["diff", "--no-color", "-U3", base_ref, "--", path])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "diff -U3 {base_ref} -- {path} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Parse `git diff -U0` output into (added, modified) new-file line numbers.
 /// A hunk that only inserts lines marks them "added"; a hunk that also
 /// removes lines marks its inserted lines "modified" (a replacement).
