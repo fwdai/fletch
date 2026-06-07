@@ -2,6 +2,8 @@
 name = "quorum"
 version = "0.2.0"
 description = "Spawn coding agents in isolated sandboxes"
+authors = ["Alex Chaplinsky", "fwdai.org"]
+license = "AGPL-3.0-only"
 edition = "2021"
 rust-version = "1.77"
 
