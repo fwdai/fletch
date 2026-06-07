@@ -144,12 +144,28 @@ fn sized_avatar_url(provider: &str, url: &str) -> String {
     }
 }
 
+/// Resolve a response `Content-Type` to an image MIME, or `None` if it is not
+/// an image. This guards against a CDN answering an avatar URL with text/html
+/// or JSON (an error page, a redirect-to-login): without it we would base64
+/// non-image bytes straight into the database. A blank type on an otherwise-OK
+/// response is assumed to be PNG.
+fn image_mime(content_type: &str) -> Option<String> {
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if mime.is_empty() {
+        return Some("image/png".to_string());
+    }
+    mime.starts_with("image/").then_some(mime)
+}
+
 /// Assemble a self-contained `data:` URI from image bytes so the avatar can be
 /// stored in SQLite and rendered without a network round-trip (or CSP concerns).
-fn to_data_uri(content_type: &str, bytes: &[u8]) -> String {
+fn to_data_uri(mime: &str, bytes: &[u8]) -> String {
     use base64::{engine::general_purpose::STANDARD, Engine};
-    let mime = content_type.split(';').next().unwrap_or("").trim();
-    let mime = if mime.is_empty() { "image/png" } else { mime };
     format!("data:{mime};base64,{}", STANDARD.encode(bytes))
 }
 
@@ -170,17 +186,19 @@ async fn fetch_avatar_data_uri(
     if !resp.status().is_success() {
         return None;
     }
-    let content_type = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("image/png")
-        .to_string();
+    // Reject non-image responses before downloading the body, so a CDN error
+    // page is never base64-encoded into the database.
+    let mime = image_mime(
+        resp.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+    )?;
     let bytes = resp.bytes().await.ok()?;
     if bytes.is_empty() || bytes.len() > AVATAR_MAX_BYTES {
         return None;
     }
-    Some(to_data_uri(&content_type, &bytes))
+    Some(to_data_uri(&mime, &bytes))
 }
 
 pub fn classify_token_response(v: &serde_json::Value) -> PollOutcome {
@@ -409,16 +427,25 @@ mod tests {
     }
 
     #[test]
+    fn image_mime_accepts_images_and_rejects_others() {
+        assert_eq!(image_mime("image/png").as_deref(), Some("image/png"));
+        // Strips charset params and lowercases.
+        assert_eq!(
+            image_mime("IMAGE/JPEG; charset=binary").as_deref(),
+            Some("image/jpeg")
+        );
+        // Blank type on an OK response is assumed to be an image (PNG).
+        assert_eq!(image_mime("").as_deref(), Some("image/png"));
+        // Non-image types are rejected — they must not reach the database.
+        assert_eq!(image_mime("text/html"), None);
+        assert_eq!(image_mime("application/json"), None);
+    }
+
+    #[test]
     fn builds_data_uri_from_bytes() {
         // "hi" → base64 "aGk=".
         assert_eq!(to_data_uri("image/png", b"hi"), "data:image/png;base64,aGk=");
-        // Strips charset params from the content type.
-        assert_eq!(
-            to_data_uri("image/jpeg; charset=binary", b"hi"),
-            "data:image/jpeg;base64,aGk="
-        );
-        // Falls back to image/png when the content type is blank.
-        assert_eq!(to_data_uri("", b"hi"), "data:image/png;base64,aGk=");
+        assert_eq!(to_data_uri("image/jpeg", b"hi"), "data:image/jpeg;base64,aGk=");
     }
 
     #[test]
