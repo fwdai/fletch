@@ -1,11 +1,7 @@
 import { useState } from "react";
 import { useAppStore } from "../../store";
 import { PROVIDERS, type Provider } from "../../data/providers";
-import {
-  PROVIDER_DETAIL,
-  AVAILABLE_AGENTS,
-  type AvailableAgent,
-} from "../../data/providerDetail";
+import { PROVIDER_DETAIL } from "../../data/providerDetail";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
 import { SetHead, SetGroup, SetToggle } from "./primitives";
@@ -38,7 +34,7 @@ export function ProvidersPane() {
         }
       />
 
-      <SetGroup label="Installed on this system">
+      <SetGroup label="Installed on this system" last>
         <div className="set-prov-list">
           {installed.map((p) => (
             <ProviderRow
@@ -53,13 +49,6 @@ export function ProvidersPane() {
         </div>
       </SetGroup>
 
-      <SetGroup label="Available" last>
-        <div className="set-prov-list">
-          {AVAILABLE_AGENTS.map((a) => (
-            <AvailableRow key={a.id} agent={a} />
-          ))}
-        </div>
-      </SetGroup>
     </div>
   );
 }
@@ -125,32 +114,3 @@ function ProvDetailRow({ k, v, mono }: { k: string; v: string; mono?: boolean })
   );
 }
 
-function AvailableRow({ agent }: { agent: AvailableAgent }) {
-  const detected = agent.state === "detected";
-  const soon = agent.state === "soon";
-  return (
-    <div className="set-prov available">
-      <div className="set-prov-main">
-        <span
-          className={`set-prov-status ${detected ? "idle" : "none"}`}
-          title={detected ? "Detected" : "Not installed"}
-        />
-        <ProviderIcon slug={agent.id} short={agent.short} hue={agent.hue} />
-        <div className="set-prov-id">
-          <div className="set-prov-name">
-            {agent.label}
-            {soon && <span className="set-badge soon">Coming soon</span>}
-            {agent.version && <span className="set-prov-ver mono">{agent.version}</span>}
-          </div>
-          <div className="set-prov-sub muted">{agent.note}</div>
-        </div>
-        {detected && <button className="btn-t outline sm-t">Configure</button>}
-        {agent.state === "install" && (
-          <button className="btn-t ghost sm-t">
-            Install <Icon name="external" size={11} />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}

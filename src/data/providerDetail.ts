@@ -71,9 +71,7 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
   antigravity: {
     path: "/Applications/Antigravity.app/…/antigravity",
     models: "Gemini 3 Pro · Flash",
-    // No adapter/runner yet — kept out of the Installed list and gated as
-    // "coming soon" in the picker. Flip to true once it's wired end-to-end.
-    installed: false,
+    installed: true,
     thinkingLevels: [],
   },
   opencode: {
@@ -115,14 +113,4 @@ export interface AvailableAgent {
 }
 
 // Agents found on PATH but not yet configured, plus ones available to install.
-export const AVAILABLE_AGENTS: AvailableAgent[] = [
-  {
-    id: "antigravity",
-    label: "Antigravity",
-    short: "AG",
-    hue: 260,
-    version: "v1.0",
-    state: "soon",
-    note: "Not yet supported in Quorum.",
-  },
-];
+export const AVAILABLE_AGENTS: AvailableAgent[] = [];
