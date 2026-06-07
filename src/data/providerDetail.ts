@@ -99,18 +99,3 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     ],
   },
 };
-
-export interface AvailableAgent {
-  id: string;
-  label: string;
-  short: string;
-  hue: number;
-  version: string | null;
-  /** "detected" = found on PATH but unconfigured; "install" = installable;
-   *  "soon" = not yet supported in Quorum (no adapter/runner). */
-  state: "detected" | "install" | "soon";
-  note: string;
-}
-
-// Agents found on PATH but not yet configured, plus ones available to install.
-export const AVAILABLE_AGENTS: AvailableAgent[] = [];
