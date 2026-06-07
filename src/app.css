@@ -1967,7 +1967,13 @@ button { cursor: default; }
   border-radius: var(--r-md);
   box-shadow: 0 24px 64px rgba(0,0,0,.4);
   z-index: 301;
-  animation: ddIn .15s var(--ease);
+  /* Own keyframe (not ddIn): the animated transform must keep the
+     translate(-50%,-50%) centering, or it jumps from the corner to center. */
+  animation: np-modal-in .18s var(--ease);
+}
+@keyframes np-modal-in {
+  from { opacity: 0; transform: translate(-50%, calc(-50% + 6px)) scale(.985); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 }
 .np-modal-h {
   display: flex; align-items: center; gap: 8px;
