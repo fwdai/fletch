@@ -2,11 +2,18 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../store";
 import { Icon, type IconName } from "../Icon";
 import { Scrim } from "../ui/Scrim";
+import type { NewProjectMode } from "../NewProject";
 
-/** Choose how to add a project to the sidebar. "Folder" is the only
- *  path currently wired; the other options are placeholders for
- *  future GitHub clone / new-repo flows. */
-export function NewProjectPopover({ onClose }: { onClose: () => void }) {
+/** Choose how to add a project to the sidebar: open a local folder, clone
+ *  from GitHub, or create a new repo. The latter two open the New Project
+ *  modal (hosted by the sidebar) via `onChoose`. */
+export function NewProjectPopover({
+  onClose,
+  onChoose,
+}: {
+  onClose: () => void;
+  onChoose: (mode: NewProjectMode) => void;
+}) {
   const addWorkspaceRepo = useAppStore((s) => s.addWorkspaceRepo);
 
   async function onOpenFolder() {
@@ -34,14 +41,14 @@ export function NewProjectPopover({ onClose }: { onClose: () => void }) {
         <Item
           icon="github"
           title="Clone from GitHub"
-          subtitle="Coming soon"
-          onClick={onClose}
+          subtitle="Pick a repo or paste a URL"
+          onClick={() => onChoose("clone")}
         />
         <Item
           icon="sparkle"
           title="Create new project"
-          subtitle="Coming soon"
-          onClick={onClose}
+          subtitle="New repo, local + on GitHub"
+          onClick={() => onChoose("create")}
         />
       </div>
     </>

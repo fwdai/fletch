@@ -3,6 +3,7 @@
 //! Follows the same subprocess pattern as `git.rs` — each function
 //! shells out to `gh` and maps exit-code / stderr to typed errors.
 
+use std::io::ErrorKind;
 use std::path::Path;
 use tokio::process::Command;
 
@@ -136,6 +137,159 @@ pub async fn pr_merge(worktree: &Path) -> Result<()> {
         ));
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Account / discovery (used by the New Project flow)
+// ---------------------------------------------------------------------------
+
+/// Whether `gh` is installed and authenticated. Drives the New Project UI:
+/// clone and create both go through `gh`, so we surface a clear prompt up
+/// front instead of letting an operation fail half-way.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GhStatus {
+    pub installed: bool,
+    pub authenticated: bool,
+    pub login: Option<String>,
+}
+
+/// One repo as returned by `gh repo list --json`. `gh` emits camelCase keys;
+/// we re-expose the snake_case shape the rest of the IPC surface uses.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GhRepoSummary {
+    pub name_with_owner: String,
+    pub description: Option<String>,
+    pub is_private: bool,
+    pub updated_at: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhRepoRaw {
+    name_with_owner: String,
+    description: Option<String>,
+    is_private: bool,
+    updated_at: String,
+}
+
+impl From<GhRepoRaw> for GhRepoSummary {
+    fn from(r: GhRepoRaw) -> Self {
+        GhRepoSummary {
+            name_with_owner: r.name_with_owner,
+            // `gh` returns "" rather than null for an empty description.
+            description: r.description.filter(|d| !d.is_empty()),
+            is_private: r.is_private,
+            updated_at: r.updated_at,
+        }
+    }
+}
+
+/// Probe `gh` availability and auth. Never errors — a missing binary or a
+/// logged-out state are reported as fields, not failures.
+pub async fn auth_status() -> Result<GhStatus> {
+    let out = match Command::new("gh").args(["auth", "status"]).output().await {
+        Ok(out) => out,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Ok(GhStatus { installed: false, authenticated: false, login: None });
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    if !out.status.success() {
+        // `gh` is installed but no account is logged in.
+        return Ok(GhStatus { installed: true, authenticated: false, login: None });
+    }
+
+    // Best-effort login name; never fail the whole probe on it.
+    let login = Command::new("gh")
+        .args(["api", "user", "--jq", ".login"])
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    Ok(GhStatus { installed: true, authenticated: true, login })
+}
+
+/// List the authenticated user's repos (most-recently-updated first). The
+/// New Project picker filters this list client-side.
+pub async fn repo_list(limit: u32) -> Result<Vec<GhRepoSummary>> {
+    let out = Command::new("gh")
+        .args([
+            "repo",
+            "list",
+            "--json",
+            "nameWithOwner,description,isPrivate,updatedAt",
+            "--limit",
+            &limit.to_string(),
+        ])
+        .output()
+        .await?;
+
+    if !out.status.success() {
+        return Err(Error::Gh(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+
+    let raw: Vec<GhRepoRaw> = serde_json::from_slice(&out.stdout)?;
+    Ok(raw.into_iter().map(Into::into).collect())
+}
+
+/// Clone `spec` (an `owner/repo`, an https URL, or an ssh URL — `gh` accepts
+/// all three) into `target`.
+pub async fn repo_clone(spec: &str, target: &Path) -> Result<()> {
+    let target = target.to_str().ok_or_else(|| {
+        Error::InvalidPath(target.display().to_string())
+    })?;
+    let out = Command::new("gh")
+        .args(["repo", "clone", spec, target])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Gh(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Create a GitHub repo from the existing git repo at `target` and push the
+/// initial commit. `target` must already be a git repo with at least one
+/// commit (see `new_project::create`).
+pub async fn repo_create_and_push(
+    target: &Path,
+    name: &str,
+    private: bool,
+    description: Option<&str>,
+) -> Result<()> {
+    let mut args = vec![
+        "repo".to_string(),
+        "create".to_string(),
+        name.to_string(),
+        if private { "--private".to_string() } else { "--public".to_string() },
+        "--source=.".to_string(),
+        "--remote=origin".to_string(),
+        "--push".to_string(),
+    ];
+    if let Some(desc) = description.filter(|d| !d.is_empty()) {
+        args.push("--description".to_string());
+        args.push(desc.to_string());
+    }
+
+    let out = Command::new("gh")
+        .current_dir(target)
+        .args(&args)
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Gh(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
     Ok(())
 }
 

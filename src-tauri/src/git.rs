@@ -54,6 +54,57 @@ pub async fn checkout_new_branch(worktree: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// `git init` a fresh repository at `path` (created if absent). Used by the
+/// New Project "create" flow before seeding an initial commit.
+pub async fn init_repo(path: &Path) -> Result<()> {
+    let out = Command::new("git")
+        .args([
+            "init",
+            path.to_str().ok_or_else(|| {
+                Error::InvalidPath(path.display().to_string())
+            })?,
+        ])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "init failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Stage everything and create a commit in `repo`. Relies on the user's
+/// global git identity (`user.name` / `user.email`); a missing identity
+/// surfaces as a `git commit` error.
+pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
+    let add = Command::new("git")
+        .current_dir(repo)
+        .args(["add", "-A"])
+        .output()
+        .await?;
+    if !add.status.success() {
+        return Err(Error::Git(format!(
+            "add -A failed: {}",
+            String::from_utf8_lossy(&add.stderr).trim()
+        )));
+    }
+
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["commit", "-m", message])
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "commit failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 pub async fn worktree_remove(repo: &Path, worktree_path: &Path, force: bool) -> Result<()> {
     let mut args = vec!["worktree", "remove"];
     if force {

@@ -10,6 +10,7 @@ mod git;
 mod git_state;
 mod managed_session;
 mod names;
+mod new_project;
 mod oauth;
 mod pty_session;
 mod run_session;
@@ -146,6 +147,10 @@ pub fn run() {
             commands::get_agent_diff_stats,
             commands::add_workspace_repo,
             commands::remove_workspace_repo,
+            commands::gh_status,
+            commands::gh_repo_list,
+            commands::clone_repo,
+            commands::create_repo,
             commands::spawn_agent,
             commands::write_to_agent,
             commands::send_user_message,
