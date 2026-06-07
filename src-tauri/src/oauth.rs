@@ -115,6 +115,92 @@ pub fn google_profile(info: &serde_json::Value) -> OAuthProfile {
     }
 }
 
+/// Pixel size we request when caching an avatar. Large enough to stay crisp on
+/// retina displays, small enough to keep the base64 blob tiny.
+const AVATAR_SIZE: u32 = 256;
+/// Refuse to cache anything larger than this — guards the DB against a rogue
+/// or mis-typed response. A 256px avatar is well under 100 KB.
+const AVATAR_MAX_BYTES: usize = 2 * 1024 * 1024;
+/// Hard cap on the avatar download. It runs *after* the user has approved the
+/// login, and is purely best-effort, so a stalled CDN must degrade to initials
+/// rather than hang `oauth_device_login` forever.
+const AVATAR_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Rewrite a provider avatar URL to request our preferred pixel size, so the
+/// bytes we download (and cache) are small. Unknown providers pass through.
+fn sized_avatar_url(provider: &str, url: &str) -> String {
+    match provider {
+        // GitHub honours an `s=` query param.
+        "github" => {
+            let sep = if url.contains('?') { '&' } else { '?' };
+            format!("{url}{sep}s={AVATAR_SIZE}")
+        }
+        // Google photo URLs carry a trailing size directive like `=s96-c`.
+        "google" => match url.rfind("=s") {
+            Some(i) => format!("{}=s{AVATAR_SIZE}-c", &url[..i]),
+            None => format!("{url}=s{AVATAR_SIZE}-c"),
+        },
+        _ => url.to_string(),
+    }
+}
+
+/// Resolve a response `Content-Type` to an image MIME, or `None` if it is not
+/// an image. This guards against a CDN answering an avatar URL with text/html
+/// or JSON (an error page, a redirect-to-login): without it we would base64
+/// non-image bytes straight into the database. A blank type on an otherwise-OK
+/// response is assumed to be PNG.
+fn image_mime(content_type: &str) -> Option<String> {
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if mime.is_empty() {
+        return Some("image/png".to_string());
+    }
+    mime.starts_with("image/").then_some(mime)
+}
+
+/// Assemble a self-contained `data:` URI from image bytes so the avatar can be
+/// stored in SQLite and rendered without a network round-trip (or CSP concerns).
+fn to_data_uri(mime: &str, bytes: &[u8]) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    format!("data:{mime};base64,{}", STANDARD.encode(bytes))
+}
+
+/// Download an avatar and return it as a `data:` URI. Best-effort: any failure
+/// (network, non-success status, empty/oversized body) yields `None`, and the
+/// caller falls back to initials.
+async fn fetch_avatar_data_uri(
+    http: &reqwest::Client,
+    provider: &str,
+    url: &str,
+) -> Option<String> {
+    let resp = http
+        .get(sized_avatar_url(provider, url))
+        .timeout(AVATAR_TIMEOUT)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    // Reject non-image responses before downloading the body, so a CDN error
+    // page is never base64-encoded into the database.
+    let mime = image_mime(
+        resp.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+    )?;
+    let bytes = resp.bytes().await.ok()?;
+    if bytes.is_empty() || bytes.len() > AVATAR_MAX_BYTES {
+        return None;
+    }
+    Some(to_data_uri(&mime, &bytes))
+}
+
 pub fn classify_token_response(v: &serde_json::Value) -> PollOutcome {
     if let Some(tok) = str_field(v, "access_token") {
         return PollOutcome::Token(tok);
@@ -255,6 +341,13 @@ pub async fn oauth_device_login(
         }
         _ => return Err("unknown provider".into()),
     };
+
+    // 5. Cache the avatar as a self-contained data URI so it can be stored in
+    //    SQLite and rendered offline. On any failure we drop it (initials show).
+    let mut profile = profile;
+    if let Some(url) = profile.avatar_url.take() {
+        profile.avatar_url = fetch_avatar_data_uri(&http, &provider, &url).await;
+    }
     Ok(profile)
 }
 
@@ -298,6 +391,61 @@ mod tests {
         assert_eq!(p.provider, "google");
         assert_eq!(p.provider_user_id, "11822");
         assert_eq!(p.email.as_deref(), Some("jane@gmail.com"));
+    }
+
+    #[test]
+    fn sizes_github_avatar_url() {
+        // No existing query → add one.
+        assert_eq!(
+            sized_avatar_url("github", "https://avatars.githubusercontent.com/u/42"),
+            "https://avatars.githubusercontent.com/u/42?s=256"
+        );
+        // Existing query (e.g. ?v=4) → append.
+        assert_eq!(
+            sized_avatar_url("github", "https://avatars.githubusercontent.com/u/42?v=4"),
+            "https://avatars.githubusercontent.com/u/42?v=4&s=256"
+        );
+    }
+
+    #[test]
+    fn sizes_google_avatar_url() {
+        // Replace an existing size directive.
+        assert_eq!(
+            sized_avatar_url("google", "https://lh3.googleusercontent.com/a/ABC=s96-c"),
+            "https://lh3.googleusercontent.com/a/ABC=s256-c"
+        );
+        // Append when there is none.
+        assert_eq!(
+            sized_avatar_url("google", "https://lh3.googleusercontent.com/a/ABC"),
+            "https://lh3.googleusercontent.com/a/ABC=s256-c"
+        );
+    }
+
+    #[test]
+    fn unknown_provider_url_passes_through() {
+        assert_eq!(sized_avatar_url("other", "https://x/y.png"), "https://x/y.png");
+    }
+
+    #[test]
+    fn image_mime_accepts_images_and_rejects_others() {
+        assert_eq!(image_mime("image/png").as_deref(), Some("image/png"));
+        // Strips charset params and lowercases.
+        assert_eq!(
+            image_mime("IMAGE/JPEG; charset=binary").as_deref(),
+            Some("image/jpeg")
+        );
+        // Blank type on an OK response is assumed to be an image (PNG).
+        assert_eq!(image_mime("").as_deref(), Some("image/png"));
+        // Non-image types are rejected — they must not reach the database.
+        assert_eq!(image_mime("text/html"), None);
+        assert_eq!(image_mime("application/json"), None);
+    }
+
+    #[test]
+    fn builds_data_uri_from_bytes() {
+        // "hi" → base64 "aGk=".
+        assert_eq!(to_data_uri("image/png", b"hi"), "data:image/png;base64,aGk=");
+        assert_eq!(to_data_uri("image/jpeg", b"hi"), "data:image/jpeg;base64,aGk=");
     }
 
     #[test]

@@ -2815,6 +2815,7 @@ dependencies = [
 name = "quorum"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
  "nix 0.29.0",

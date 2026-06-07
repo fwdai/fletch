@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAppStore } from "../../store";
 import { accountInitials } from "../../util/format";
+import { Avatar } from "../Avatar";
 import { SetHead, SetGroup } from "./primitives";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -50,7 +51,12 @@ export function AccountPane() {
       <SetHead eyebrow="Settings · Account" title="Account" />
 
       <div className="set-profile">
-        <div className="set-avatar">{accountInitials(firstName, lastName, email)}</div>
+        <Avatar
+          className="set-avatar"
+          avatarUrl={account?.avatarUrl ?? null}
+          initials={accountInitials(firstName, lastName, email)}
+          alt={fullName}
+        />
         <div className="set-profile-body">
           <div className="set-profile-name">
             {fullName || <span className="set-profile-empty">Your name</span>}

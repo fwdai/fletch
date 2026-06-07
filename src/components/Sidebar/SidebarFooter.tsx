@@ -1,5 +1,6 @@
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
+import { Avatar } from "../Avatar";
 import { useAppStore } from "../../store";
 import { accountInitials } from "../../util/format";
 
@@ -24,7 +25,12 @@ export function SidebarFooter() {
         onClick={() => openSettingsScreen("account")}
         aria-label="Account settings"
       >
-        <div className="user-avatar">{initial}</div>
+        <Avatar
+          className="user-avatar"
+          avatarUrl={account?.avatarUrl ?? null}
+          initials={initial}
+          alt={name}
+        />
         <div className="user-info">
           <div className="un">{name}</div>
           <div className="ue">{sub}</div>
