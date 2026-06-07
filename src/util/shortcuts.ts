@@ -25,7 +25,7 @@ export function useGlobalShortcuts() {
       if (mod && e.key === "b") {
         e.preventDefault();
         toggleLeft();
-      } else if (mod && e.key === "k") {
+      } else if (mod && e.key === "k" && !inField) {
         e.preventDefault();
         // Reveal the sidebar if collapsed, then focus its search input.
         // When the sidebar was hidden the input mounts this frame, so defer
