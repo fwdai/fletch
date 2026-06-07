@@ -11,9 +11,21 @@ export function ProvidersPane() {
   const setProviderEnabled = useAppStore((s) => s.setProviderEnabled);
   const providerVersions = useAppStore((s) => s.providerVersions);
   const providerPaths = useAppStore((s) => s.providerPaths);
+  const refreshProviderVersions = useAppStore((s) => s.refreshProviderVersions);
+  const [scanning, setScanning] = useState(false);
 
   const installed = PROVIDERS.filter((p) => PROVIDER_DETAIL[p.id]?.installed);
   const enabledCount = installed.filter((p) => providerFlags[p.id] !== false).length;
+
+  const rescan = async () => {
+    if (scanning) return;
+    setScanning(true);
+    try {
+      await refreshProviderVersions();
+    } finally {
+      setScanning(false);
+    }
+  };
 
   return (
     <div className="set-pane">
@@ -23,11 +35,24 @@ export function ProvidersPane() {
         desc={`${enabledCount} of ${installed.length} installed agents enabled. Toggle an agent off to hide it from the composer's model picker without signing out.`}
         actions={
           <>
-            <span className="set-checked mono">Checked just now</span>
-            <button className="btn-i tip" data-tip-down data-tip="Add provider" aria-label="Add provider">
+            {scanning && <span className="set-checked mono">Scanning…</span>}
+            <button
+              className="btn-i tip"
+              data-tip-down
+              data-tip="Coming soon"
+              aria-label="Add provider"
+              disabled
+            >
               <Icon name="plus" />
             </button>
-            <button className="btn-i tip" data-tip-down data-tip="Re-scan system" aria-label="Re-scan system">
+            <button
+              className="btn-i tip"
+              data-tip-down
+              data-tip="Re-scan system"
+              aria-label="Re-scan system"
+              onClick={rescan}
+              disabled={scanning}
+            >
               <Icon name="refresh" />
             </button>
           </>

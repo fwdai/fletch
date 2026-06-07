@@ -15,6 +15,7 @@ export function SidebarHeader({ query, onChange }: Props) {
       <div className="search">
         <Icon name="search" size={12} />
         <input
+          id="sidebar-search"
           placeholder="Search agents, branches…"
           value={query}
           onChange={(e) => onChange(e.target.value)}

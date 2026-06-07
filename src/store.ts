@@ -351,6 +351,9 @@ interface AppState {
   setShowLandmarks: (v: boolean) => void;
   setFeature: <K extends keyof FeatureFlags>(k: K, v: FeatureFlags[K]) => void;
   setProviderEnabled: (id: string, enabled: boolean) => void;
+  /** Re-probe installed provider CLIs for versions + binary paths. Runs once
+   *  on init and again when the user re-scans from the Providers settings. */
+  refreshProviderVersions: () => Promise<void>;
   setViewMode: (v: WorkspaceView) => void;
 }
 
@@ -634,18 +637,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Non-fatal — Account screen shows empty fields until a save succeeds.
     }
 
-    // Probe installed provider CLIs for real versions + paths (async, non-blocking).
-    api.probeProviderVersions().then((probes) => {
-      const versions: Record<string, string> = {};
-      const paths: Record<string, string> = {};
-      for (const probe of probes) {
-        if (probe.version) versions[probe.id] = probe.version;
-        if (probe.path) paths[probe.id] = probe.path;
-      }
-      set({ providerVersions: versions, providerPaths: paths });
-    }).catch(() => {
-      // Non-fatal — UI falls back to hardcoded versions.
-    });
+    // Probe installed provider CLIs for real versions + paths (async,
+    // non-blocking). Errors are non-fatal — UI falls back to hardcoded versions.
+    void get().refreshProviderVersions();
 
     await onAgentOutput((e) => {
       const chunk = new Uint8Array(e.bytes);
@@ -1440,6 +1434,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       setSetting("providers", next);
       return { providerFlags: next };
     }),
+  refreshProviderVersions: async () => {
+    try {
+      const probes = await api.probeProviderVersions();
+      const versions: Record<string, string> = {};
+      const paths: Record<string, string> = {};
+      for (const probe of probes) {
+        if (probe.version) versions[probe.id] = probe.version;
+        if (probe.path) paths[probe.id] = probe.path;
+      }
+      set({ providerVersions: versions, providerPaths: paths });
+    } catch {
+      // Non-fatal — UI falls back to hardcoded versions.
+    }
+  },
   setViewMode: (v) => {
     set({ viewMode: v });
     setSetting("viewMode", v);
