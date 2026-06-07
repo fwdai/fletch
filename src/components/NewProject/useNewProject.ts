@@ -15,9 +15,18 @@ export function useNewProject() {
 
   useEffect(() => {
     let cancelled = false;
-    api.ghStatus().then((s) => {
-      if (!cancelled) setGh(s);
-    });
+    api
+      .ghStatus()
+      .then((s) => {
+        if (!cancelled) setGh(s);
+      })
+      .catch(() => {
+        // If the probe itself fails, treat gh as unavailable so the gate shows
+        // immediately rather than leaving the form live with a deferred error.
+        if (!cancelled) {
+          setGh({ installed: false, authenticated: false, login: null });
+        }
+      });
     return () => {
       cancelled = true;
     };
