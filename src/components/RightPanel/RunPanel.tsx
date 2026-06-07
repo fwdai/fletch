@@ -13,25 +13,22 @@ import {
   setProjectSetting,
 } from "../../storage/projectSettings";
 import { RunSettingsSheet, type SetupRow } from "./RunSettingsSheet";
+import { reconcileOverrides } from "./reconcileOverrides";
 
 // Settings keys are namespaced under `run.` so the project_settings
 // table can hold overrides from other panels without colliding.
 const RUN_KEY_PREFIX = "run.";
 const runKey = (id: string) => `${RUN_KEY_PREFIX}${id}`;
 
-// Inferred defaults the panel shows when a project has no overrides.
-// The backend reads `run.install` / `run.dev` from project_settings and
-// falls back to these same strings — keep them in sync.
-const RUN_SETUP: SetupRow[] = [
-  { id: "pm",      group: "Environment", key: "Package manager", value: "pnpm 9.7.1",   source: "package.json · packageManager" },
-  { id: "node",    group: "Environment", key: "Node version",    value: "v22.4.0",      source: ".nvmrc" },
-  { id: "install", group: "Scripts",     key: "Install",         value: "pnpm install", source: "convention (pm + install)" },
-  { id: "dev",     group: "Scripts",     key: "Dev",             value: "pnpm dev",     source: "package.json · scripts.dev" },
-  { id: "build",   group: "Scripts",     key: "Build",           value: "pnpm build",   source: "package.json · scripts.build" },
-  { id: "test",    group: "Scripts",     key: "Test",            value: "pnpm test",    source: "package.json · scripts.test" },
-  { id: "port",    group: "Server",      key: "Port",            value: "3000",         source: "next.config.js" },
-  { id: "env",     group: "Server",      key: "Env file",        value: ".env.local",   source: "auto-detected" },
-];
+// Detected run config replaces the old hardcoded defaults. The backend
+// (`detect_run_config`) returns rows per ecosystem; the panel shows the
+// highest-confidence one. The `run.*` overrides in project_settings layer
+// on top of these detected values.
+const GROUP_LABEL: Record<string, string> = {
+  environment: "Environment",
+  scripts: "Scripts",
+  server: "Server",
+};
 
 // Strip ANSI escape sequences before rendering. v1 keeps log rendering
 // dead-simple (plain text with pre-wrap); colorization can come later.
@@ -45,6 +42,8 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   const [log, setLog] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [rows, setRows] = useState<SetupRow[]>([]);
+  const [ecosystem, setEcosystem] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   // Streaming UTF-8 decoder so a multi-byte rune split across two
   // PTY chunks doesn't produce a replacement character. Reset each
@@ -73,6 +72,38 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       cancelled = true;
     };
   }, [agent.project_id]);
+
+  // Detect the run config for this agent's worktree. Re-runs on agent
+  // switch. The highest-confidence ecosystem fills the table; an empty
+  // result means nothing was recognized (no-op fallback).
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .detectRunConfig(agent.id)
+      .then((configs) => {
+        if (cancelled) return;
+        const primary = configs[0];
+        setEcosystem(primary?.ecosystem ?? null);
+        setRows(
+          (primary?.rows ?? []).map((r) => ({
+            id: r.id,
+            group: GROUP_LABEL[r.group] ?? r.group,
+            key: r.key,
+            value: r.value,
+            source: r.source,
+          })),
+        );
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("detectRunConfig failed", err);
+        setRows([]);
+        setEcosystem(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agent.id]);
 
   // Subscribe to run output and state events for this agent.
   // Rehydrate snapshot on mount/agent-switch so the panel preserves
@@ -142,7 +173,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   }, [log]);
 
   const valueOf = (id: string) => {
-    const row = RUN_SETUP.find((r) => r.id === id);
+    const row = rows.find((r) => r.id === id);
     return overrides[id] ?? row?.value ?? "";
   };
 
@@ -160,36 +191,22 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   };
 
   const onApply = (next: Record<string, string>) => {
-    // Persist only true overrides — values that match the inferred
-    // default are removed from the DB so the row reads as "auto".
+    // Reconcile the draft against the detected rows: keep only real
+    // overrides, and prune keys (including stale ones whose row no longer
+    // exists after an ecosystem change) from the DB so the override
+    // indicator can't get stuck lit.
+    const { cleaned, toSet, toDelete } = reconcileOverrides(rows, overrides, next);
     const projectId = agent.project_id;
-    const cleaned: Record<string, string> = {};
     if (projectId) {
-      const previous = overrides;
-      for (const row of RUN_SETUP) {
-        const nextVal = next[row.id];
-        const wasSet = previous[row.id] !== undefined;
-        const isOverride = nextVal !== undefined && nextVal !== row.value;
-
-        if (isOverride) {
-          cleaned[row.id] = nextVal;
-          if (previous[row.id] !== nextVal) {
-            setProjectSetting(projectId, runKey(row.id), nextVal).catch(
-              (err) => console.error("setProjectSetting failed", err),
-            );
-          }
-        } else if (wasSet) {
-          deleteProjectSetting(projectId, runKey(row.id)).catch((err) =>
-            console.error("deleteProjectSetting failed", err),
-          );
-        }
+      for (const { id, value } of toSet) {
+        setProjectSetting(projectId, runKey(id), value).catch((err) =>
+          console.error("setProjectSetting failed", err),
+        );
       }
-    } else {
-      for (const row of RUN_SETUP) {
-        const nextVal = next[row.id];
-        if (nextVal !== undefined && nextVal !== row.value) {
-          cleaned[row.id] = nextVal;
-        }
+      for (const id of toDelete) {
+        deleteProjectSetting(projectId, runKey(id)).catch((err) =>
+          console.error("deleteProjectSetting failed", err),
+        );
       }
     }
 
@@ -257,9 +274,9 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       {/* ── Settings sheet ── */}
       {settingsOpen && (
         <RunSettingsSheet
-          rows={RUN_SETUP}
+          rows={rows}
           overrides={overrides}
-          agent={agent}
+          ecosystem={ecosystem}
           onClose={() => setSettingsOpen(false)}
           onApply={onApply}
         />

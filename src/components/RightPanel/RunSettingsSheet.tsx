@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import type { AgentRecord } from "../../api";
 import { Icon } from "../Icon";
 
 export interface SetupRow {
@@ -13,12 +12,21 @@ export interface SetupRow {
 interface Props {
   rows:      SetupRow[];
   overrides: Record<string, string>;
-  agent:     AgentRecord;
+  /** Detected ecosystem ("node", "rust", …), or null if none recognized. */
+  ecosystem: string | null;
   onClose:   () => void;
   onApply:   (overrides: Record<string, string>) => void;
 }
 
-export function RunSettingsSheet({ rows, overrides, agent, onClose, onApply }: Props) {
+const ECOSYSTEM_LABEL: Record<string, string> = {
+  node:   "Node",
+  python: "Python",
+  ruby:   "Ruby",
+  rust:   "Rust",
+  go:     "Go",
+};
+
+export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply }: Props) {
   // Draft = working copy while the sheet is open; uncommitted until Apply.
   const [draft, setDraft] = useState<Record<string, string>>(overrides);
 
@@ -60,8 +68,11 @@ export function RunSettingsSheet({ rows, overrides, agent, onClose, onApply }: P
           <div className="rsh-left">
             <div className="rsh-title">Run configuration</div>
             <div className="rsh-sub">
-              Auto-detected from{" "}
-              <code>{agent?.name ? `worktree/${agent.name}/package.json` : "package.json"}</code>
+              {ecosystem ? (
+                <>Detected · <code>{ECOSYSTEM_LABEL[ecosystem] ?? ecosystem}</code></>
+              ) : (
+                <>No ecosystem detected — edit values below</>
+              )}
             </div>
           </div>
           <button className="run-sheet-x" onClick={onClose} aria-label="Close">

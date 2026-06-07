@@ -13,6 +13,7 @@ mod names;
 mod new_project;
 mod oauth;
 mod pty_session;
+mod run_detect;
 mod run_session;
 mod sandbox;
 mod supervisor;
@@ -187,6 +188,7 @@ pub fn run() {
             commands::run_start,
             commands::run_stop,
             commands::run_state,
+            commands::detect_run_config,
             commands::list_worktree_tree,
             commands::read_worktree_file,
             commands::get_file_diff,

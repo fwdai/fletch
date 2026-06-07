@@ -274,7 +274,7 @@ impl Supervisor {
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
         let cwd = repo_worktree_path(agent_id, &primary.subdir)?;
 
-        let (setup_cmd, run_cmd) = self.read_run_commands(&record.project_id);
+        let (setup_cmd, run_cmd) = self.read_run_commands(&record.project_id, &cwd);
         let setup_done = self.workspace.is_setup_completed(agent_id)?;
 
         let session = {
@@ -288,16 +288,15 @@ impl Supervisor {
             return Ok(()); // already running, idempotent
         }
 
-        let needs_setup = !setup_done && !setup_cmd.trim().is_empty();
-        let (first_phase, first_cmd, chains_to_run) = if needs_setup {
-            (RunPhase::Setup, setup_cmd.clone(), true)
-        } else {
-            (RunPhase::Running, run_cmd.clone(), false)
+        // Nothing to run (unrecognized ecosystem with no install/dev) —
+        // leave the button Idle rather than spawning an empty command.
+        let Some(plan) = plan_run_phases(setup_done, &setup_cmd, &run_cmd) else {
+            return Ok(());
         };
 
-        let gen = session.begin_phase(first_phase);
-        emit_run_state(&app, agent_id, first_phase, None);
-        write_header(&app, agent_id, &session, &first_cmd);
+        let gen = session.begin_phase(plan.first_phase);
+        emit_run_state(&app, agent_id, plan.first_phase, None);
+        write_header(&app, agent_id, &session, &plan.first_cmd);
 
         spawn_run_phase(
             self.clone(),
@@ -306,9 +305,9 @@ impl Supervisor {
             session,
             gen,
             cwd,
-            first_phase,
-            first_cmd,
-            if chains_to_run { Some(run_cmd) } else { None },
+            plan.first_phase,
+            plan.first_cmd,
+            plan.chained_run_cmd,
         )
     }
 
@@ -345,16 +344,26 @@ impl Supervisor {
         }
     }
 
-    /// Read the setup + run commands from project_settings, falling
-    /// back to the same inferred defaults the panel UI shows. Keys
-    /// match the RunPanel storage scheme (`run.install`, `run.dev`).
-    fn read_run_commands(&self, project_id: &str) -> (String, String) {
-        let conn = self.workspace.db_handle();
-        let install_default = "pnpm install".to_string();
-        let dev_default = "pnpm dev".to_string();
+    /// Read the setup + run commands for an agent. The detector provides
+    /// the baseline (same values the panel shows), and any persisted
+    /// `run.install` / `run.dev` overrides in project_settings take
+    /// precedence. One detector feeds both the panel and the runner, so
+    /// there is no hardcoded default to keep in sync.
+    fn read_run_commands(&self, project_id: &str, worktree: &Path) -> (String, String) {
+        let configs = crate::run_detect::detect_all(worktree);
+        let detected = |id: &str| -> String {
+            configs
+                .first()
+                .and_then(|c| c.rows.iter().find(|r| r.id == id))
+                .map(|r| r.value.clone())
+                .unwrap_or_default()
+        };
+        let install_default = detected("install");
+        let dev_default = detected("dev");
         if project_id.is_empty() {
             return (install_default, dev_default);
         }
+        let conn = self.workspace.db_handle();
         let read = |key: &str| -> Option<String> {
             let conn = conn.lock();
             conn.query_row(
@@ -368,6 +377,20 @@ impl Supervisor {
             read("run.install").unwrap_or(install_default),
             read("run.dev").unwrap_or(dev_default),
         )
+    }
+
+    /// Detect the run configuration for an agent's primary repo,
+    /// ranked by confidence. The panel renders the first (highest
+    /// confidence) entry; the rest are returned for future
+    /// multi-ecosystem selection.
+    pub fn detect_run_config(&self, agent_id: &str) -> Result<Vec<crate::run_detect::DetectedConfig>> {
+        let record = self.workspace.agent(agent_id)?;
+        let primary = record
+            .repos
+            .first()
+            .ok_or_else(|| Error::Other("agent has no repos".into()))?;
+        let worktree = repo_worktree_path(agent_id, &primary.subdir)?;
+        Ok(crate::run_detect::detect_all(&worktree))
     }
 
     pub fn current_workspace(&self) -> Option<Workspace> {
@@ -2068,6 +2091,42 @@ fn write_header(app: &AppHandle, agent_id: &str, session: &Arc<RunSession>, cmd:
     emit_run_output(app, agent_id, bytes);
 }
 
+/// The phases to spawn for a single `run_start`, derived from the
+/// resolved commands and whether setup has already completed.
+#[derive(Debug)]
+struct RunPlan {
+    first_phase: RunPhase,
+    first_cmd: String,
+    /// Run command to chain after a successful setup phase. `None` when
+    /// the first phase is already the run, or when there is no run
+    /// command to chain (so we never spawn an empty command).
+    chained_run_cmd: Option<String>,
+}
+
+/// Decide what to spawn. Returns `None` when there is nothing to run —
+/// neither a setup nor a run command — so the caller can leave the
+/// button Idle instead of spawning an empty command that would exit 0
+/// and flash the panel to Stopped with no explanation.
+fn plan_run_phases(setup_done: bool, setup_cmd: &str, run_cmd: &str) -> Option<RunPlan> {
+    let needs_setup = !setup_done && !setup_cmd.trim().is_empty();
+    let has_run_cmd = !run_cmd.trim().is_empty();
+    if needs_setup {
+        Some(RunPlan {
+            first_phase: RunPhase::Setup,
+            first_cmd: setup_cmd.to_string(),
+            chained_run_cmd: has_run_cmd.then(|| run_cmd.to_string()),
+        })
+    } else if has_run_cmd {
+        Some(RunPlan {
+            first_phase: RunPhase::Running,
+            first_cmd: run_cmd.to_string(),
+            chained_run_cmd: None,
+        })
+    } else {
+        None
+    }
+}
+
 /// Spawn one phase's PTY (setup or run). Wires up output streaming
 /// and the exit handler that chains setup→run or transitions to
 /// Stopped on natural exit. Out-of-band stops are handled via the
@@ -2215,6 +2274,57 @@ fn emit_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── plan_run_phases ───────────────────────────────────────────────────
+
+    #[test]
+    fn plan_runs_dev_directly_when_setup_done() {
+        let plan = plan_run_phases(true, "pnpm install", "pnpm dev").unwrap();
+        assert_eq!(plan.first_phase, RunPhase::Running);
+        assert_eq!(plan.first_cmd, "pnpm dev");
+        assert_eq!(plan.chained_run_cmd, None);
+    }
+
+    #[test]
+    fn plan_runs_setup_then_chains_dev() {
+        let plan = plan_run_phases(false, "pnpm install", "pnpm dev").unwrap();
+        assert_eq!(plan.first_phase, RunPhase::Setup);
+        assert_eq!(plan.first_cmd, "pnpm install");
+        assert_eq!(plan.chained_run_cmd.as_deref(), Some("pnpm dev"));
+    }
+
+    #[test]
+    fn plan_does_not_chain_into_empty_run_cmd() {
+        // Setup needed but no dev command (e.g. a plain Python project with
+        // an install but no recognized run). Setup runs alone — no empty
+        // command chained after it.
+        let plan = plan_run_phases(false, "pip install -r requirements.txt", "").unwrap();
+        assert_eq!(plan.first_phase, RunPhase::Setup);
+        assert_eq!(plan.chained_run_cmd, None);
+    }
+
+    #[test]
+    fn plan_is_none_when_nothing_to_run() {
+        // Wholly unrecognized ecosystem: no setup, no run. Nothing should
+        // be spawned — the button stays Idle instead of flashing Stopped.
+        assert!(plan_run_phases(true, "", "").is_none());
+        assert!(plan_run_phases(false, "", "").is_none());
+        assert!(plan_run_phases(false, "   ", "  ").is_none());
+    }
+
+    #[test]
+    fn plan_skips_completed_setup_even_if_run_empty() {
+        // Setup already done and no run command → nothing to do.
+        assert!(plan_run_phases(true, "pnpm install", "").is_none());
+    }
+
+    #[test]
+    fn plan_runs_only_run_cmd_when_no_setup_needed() {
+        let plan = plan_run_phases(true, "", "cargo run").unwrap();
+        assert_eq!(plan.first_phase, RunPhase::Running);
+        assert_eq!(plan.first_cmd, "cargo run");
+        assert_eq!(plan.chained_run_cmd, None);
+    }
 
     fn test_supervisor() -> Supervisor {
         let dir = tempfile::tempdir().unwrap();
