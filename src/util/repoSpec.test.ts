@@ -34,6 +34,10 @@ describe("parseRepoSpec", () => {
   it("rejects a tail with illegal characters", () => {
     expect(parseRepoSpec("owner/bad name").valid).toBe(false);
   });
+
+  it("rejects a tail starting with a hyphen (gh flag injection)", () => {
+    expect(parseRepoSpec("owner/-foo").valid).toBe(false);
+  });
 });
 
 describe("isValidRepoName", () => {
@@ -44,7 +48,7 @@ describe("isValidRepoName", () => {
   });
 
   it("rejects bad names", () => {
-    for (const bad of ["", "  ", ".", "..", "a/b", "a b", "a:b", "café"]) {
+    for (const bad of ["", "  ", ".", "..", "a/b", "a b", "a:b", "café", "-foo", "--push"]) {
       expect(isValidRepoName(bad)).toBe(false);
     }
   });

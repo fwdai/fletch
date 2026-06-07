@@ -47,6 +47,13 @@ pub fn validate_new_name(name: &str) -> Result<()> {
     if name == "." || name == ".." {
         return Err(Error::InvalidPath("invalid project name".into()));
     }
+    // A leading hyphen is read as a flag by `gh` (e.g. `--push`), and GitHub
+    // disallows it anyway — reject before it can reach the CLI.
+    if name.starts_with('-') {
+        return Err(Error::InvalidPath(
+            "project name may not start with '-'".into(),
+        ));
+    }
     if name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
@@ -92,17 +99,29 @@ pub async fn create(
     let target = resolve_target(dest_parent, name)?;
 
     std::fs::create_dir_all(&target)?;
-    git::init_repo(&target).await?;
 
-    let readme = target.join("README.md");
-    let body = match description.map(str::trim).filter(|d| !d.is_empty()) {
-        Some(desc) => format!("# {name}\n\n{desc}\n"),
-        None => format!("# {name}\n"),
-    };
-    std::fs::write(&readme, body)?;
+    // Once the directory exists, any later failure must remove it — otherwise
+    // the orphaned folder makes `resolve_target` reject every retry.
+    let result = async {
+        git::init_repo(&target).await?;
 
-    git::commit_all(&target, "Initial commit").await?;
-    gh::repo_create_and_push(&target, name, private, description).await?;
+        let readme = target.join("README.md");
+        let body = match description.map(str::trim).filter(|d| !d.is_empty()) {
+            Some(desc) => format!("# {name}\n\n{desc}\n"),
+            None => format!("# {name}\n"),
+        };
+        std::fs::write(&readme, body)?;
+
+        git::commit_all(&target, "Initial commit").await?;
+        gh::repo_create_and_push(&target, name, private, description).await?;
+        Ok::<(), Error>(())
+    }
+    .await;
+
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&target);
+        return Err(e);
+    }
     Ok(target)
 }
 
@@ -163,7 +182,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_bad_names() {
-        for bad in ["", "  ", ".", "..", "a/b", "a b", "a:b", "café"] {
+        for bad in ["", "  ", ".", "..", "a/b", "a b", "a:b", "café", "-foo", "--push"] {
             assert!(validate_new_name(bad).is_err(), "{bad} should be invalid");
         }
     }

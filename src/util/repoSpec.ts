@@ -2,7 +2,10 @@
 // New Project flow gives instant feedback. Mirrors the Rust logic in
 // `src-tauri/src/new_project.rs` (repo_name_from_spec / validate_new_name).
 
-const NAME_RE = /^[A-Za-z0-9._-]+$/;
+// Leading '-' is rejected: `gh` reads it as a flag (e.g. `--push`) and GitHub
+// disallows it. First char must not be a hyphen; mirrors validate_new_name in
+// src-tauri/src/new_project.rs.
+const NAME_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 
 /** A GitHub repo name is legal: letters, digits, '.', '-', '_'; not '.'/'..'. */
 export function isValidRepoName(name: string): boolean {
