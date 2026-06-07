@@ -115,6 +115,65 @@ pub fn google_profile(info: &serde_json::Value) -> OAuthProfile {
     }
 }
 
+/// Pixel size we request when caching an avatar. Large enough to stay crisp on
+/// retina displays, small enough to keep the base64 blob tiny.
+const AVATAR_SIZE: u32 = 256;
+/// Refuse to cache anything larger than this — guards the DB against a rogue
+/// or mis-typed response. A 256px avatar is well under 100 KB.
+const AVATAR_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+/// Rewrite a provider avatar URL to request our preferred pixel size, so the
+/// bytes we download (and cache) are small. Unknown providers pass through.
+fn sized_avatar_url(provider: &str, url: &str) -> String {
+    match provider {
+        // GitHub honours an `s=` query param.
+        "github" => {
+            let sep = if url.contains('?') { '&' } else { '?' };
+            format!("{url}{sep}s={AVATAR_SIZE}")
+        }
+        // Google photo URLs carry a trailing size directive like `=s96-c`.
+        "google" => match url.rfind("=s") {
+            Some(i) => format!("{}=s{AVATAR_SIZE}-c", &url[..i]),
+            None => format!("{url}=s{AVATAR_SIZE}-c"),
+        },
+        _ => url.to_string(),
+    }
+}
+
+/// Assemble a self-contained `data:` URI from image bytes so the avatar can be
+/// stored in SQLite and rendered without a network round-trip (or CSP concerns).
+fn to_data_uri(content_type: &str, bytes: &[u8]) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let mime = content_type.split(';').next().unwrap_or("").trim();
+    let mime = if mime.is_empty() { "image/png" } else { mime };
+    format!("data:{mime};base64,{}", STANDARD.encode(bytes))
+}
+
+/// Download an avatar and return it as a `data:` URI. Best-effort: any failure
+/// (network, non-success status, empty/oversized body) yields `None`, and the
+/// caller falls back to initials.
+async fn fetch_avatar_data_uri(
+    http: &reqwest::Client,
+    provider: &str,
+    url: &str,
+) -> Option<String> {
+    let resp = http.get(sized_avatar_url(provider, url)).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("image/png")
+        .to_string();
+    let bytes = resp.bytes().await.ok()?;
+    if bytes.is_empty() || bytes.len() > AVATAR_MAX_BYTES {
+        return None;
+    }
+    Some(to_data_uri(&content_type, &bytes))
+}
+
 pub fn classify_token_response(v: &serde_json::Value) -> PollOutcome {
     if let Some(tok) = str_field(v, "access_token") {
         return PollOutcome::Token(tok);
@@ -255,6 +314,13 @@ pub async fn oauth_device_login(
         }
         _ => return Err("unknown provider".into()),
     };
+
+    // 5. Cache the avatar as a self-contained data URI so it can be stored in
+    //    SQLite and rendered offline. On any failure we drop it (initials show).
+    let mut profile = profile;
+    if let Some(url) = profile.avatar_url.take() {
+        profile.avatar_url = fetch_avatar_data_uri(&http, &provider, &url).await;
+    }
     Ok(profile)
 }
 
@@ -298,6 +364,52 @@ mod tests {
         assert_eq!(p.provider, "google");
         assert_eq!(p.provider_user_id, "11822");
         assert_eq!(p.email.as_deref(), Some("jane@gmail.com"));
+    }
+
+    #[test]
+    fn sizes_github_avatar_url() {
+        // No existing query → add one.
+        assert_eq!(
+            sized_avatar_url("github", "https://avatars.githubusercontent.com/u/42"),
+            "https://avatars.githubusercontent.com/u/42?s=256"
+        );
+        // Existing query (e.g. ?v=4) → append.
+        assert_eq!(
+            sized_avatar_url("github", "https://avatars.githubusercontent.com/u/42?v=4"),
+            "https://avatars.githubusercontent.com/u/42?v=4&s=256"
+        );
+    }
+
+    #[test]
+    fn sizes_google_avatar_url() {
+        // Replace an existing size directive.
+        assert_eq!(
+            sized_avatar_url("google", "https://lh3.googleusercontent.com/a/ABC=s96-c"),
+            "https://lh3.googleusercontent.com/a/ABC=s256-c"
+        );
+        // Append when there is none.
+        assert_eq!(
+            sized_avatar_url("google", "https://lh3.googleusercontent.com/a/ABC"),
+            "https://lh3.googleusercontent.com/a/ABC=s256-c"
+        );
+    }
+
+    #[test]
+    fn unknown_provider_url_passes_through() {
+        assert_eq!(sized_avatar_url("other", "https://x/y.png"), "https://x/y.png");
+    }
+
+    #[test]
+    fn builds_data_uri_from_bytes() {
+        // "hi" → base64 "aGk=".
+        assert_eq!(to_data_uri("image/png", b"hi"), "data:image/png;base64,aGk=");
+        // Strips charset params from the content type.
+        assert_eq!(
+            to_data_uri("image/jpeg; charset=binary", b"hi"),
+            "data:image/jpeg;base64,aGk="
+        );
+        // Falls back to image/png when the content type is blank.
+        assert_eq!(to_data_uri("", b"hi"), "data:image/png;base64,aGk=");
     }
 
     #[test]
