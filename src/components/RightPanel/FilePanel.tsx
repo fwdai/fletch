@@ -320,7 +320,9 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
       </div>
 
       {opError && (
-        <div className="fp-op-error" role="alert">
+        // Key by message so a new error remounts the banner and re-runs the
+        // attention flash even when one is already showing.
+        <div key={opError} className="fp-op-error" role="alert">
           <Icon name="close" size={11} />
           <span>{opError}</span>
           <button className="fp-clear" onClick={() => setOpError(null)} aria-label="Dismiss">
