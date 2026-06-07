@@ -9,11 +9,13 @@ use std::path::Path;
 
 pub struct NodeDetector;
 
-/// (lockfile name, package-manager name) in priority order.
+/// (lockfile name, package-manager name) in priority order. Bun has two
+/// forms: the binary `bun.lockb` and, since Bun 1.2, a text `bun.lock`.
 const LOCKFILES: &[(&str, &str)] = &[
     ("pnpm-lock.yaml", "pnpm"),
     ("yarn.lock", "yarn"),
     ("package-lock.json", "npm"),
+    ("bun.lock", "bun"),
     ("bun.lockb", "bun"),
 ];
 
@@ -199,6 +201,14 @@ mod tests {
         )])
         .unwrap();
         assert_eq!(val(&cfg, "install"), "pnpm install");
+    }
+
+    #[test]
+    fn bun_text_lockfile_yields_high_confidence() {
+        // Bun >= 1.2 writes a text-format `bun.lock`, not `bun.lockb`.
+        let cfg = detect(&[("package.json", "{}"), ("bun.lock", "")]).unwrap();
+        assert_eq!(cfg.confidence, CONFIDENCE_LOCKFILE);
+        assert_eq!(val(&cfg, "install"), "bun install");
     }
 
     #[test]

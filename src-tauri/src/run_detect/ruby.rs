@@ -22,21 +22,28 @@ impl RunDetector for RubyDetector {
 
         let mut rows = Vec::new();
 
-        // version: .ruby-version → `ruby "x"` line in the Gemfile.
-        if let Some(version) = read_trimmed(worktree, ".ruby-version").or_else(|| {
-            gemfile.lines().find_map(|l| {
-                let l = l.trim();
-                l.strip_prefix("ruby ")
-                    .map(|v| v.trim().trim_matches(['"', '\'']).to_string())
-                    .filter(|v| !v.is_empty())
+        // version: .ruby-version → `ruby "x"` line in the Gemfile. The
+        // source reflects whichever branch actually supplied the value.
+        if let Some((version, source)) = read_trimmed(worktree, ".ruby-version")
+            .map(|v| (v, ".ruby-version"))
+            .or_else(|| {
+                gemfile
+                    .lines()
+                    .find_map(|l| {
+                        let l = l.trim();
+                        l.strip_prefix("ruby ")
+                            .map(|v| v.trim().trim_matches(['"', '\'']).to_string())
+                            .filter(|v| !v.is_empty())
+                    })
+                    .map(|v| (v, "Gemfile · ruby"))
             })
-        }) {
+        {
             rows.push(DetectedRow::new(
                 "version",
                 RowGroup::Environment,
                 "Ruby version",
                 version,
-                ".ruby-version",
+                source,
             ));
         }
 
@@ -69,7 +76,7 @@ impl RunDetector for RubyDetector {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{fixture, val};
+    use super::super::test_support::{fixture, row, val};
     use super::super::CONFIDENCE_LOCKFILE;
     use super::*;
 
@@ -124,5 +131,15 @@ mod tests {
     fn ruby_version_file() {
         let cfg = detect(&[("Gemfile", "source 'x'\n"), (".ruby-version", "3.3.0\n")]).unwrap();
         assert_eq!(val(&cfg, "version"), "3.3.0");
+        assert_eq!(row(&cfg, "version").unwrap().source, ".ruby-version");
+    }
+
+    #[test]
+    fn gemfile_ruby_directive_reports_gemfile_source() {
+        // No .ruby-version: the value comes from the Gemfile `ruby`
+        // directive, so the source must say so — not ".ruby-version".
+        let cfg = detect(&[("Gemfile", "ruby \"3.2.2\"\nsource 'x'\n")]).unwrap();
+        assert_eq!(val(&cfg, "version"), "3.2.2");
+        assert_eq!(row(&cfg, "version").unwrap().source, "Gemfile · ruby");
     }
 }

@@ -45,6 +45,11 @@ fn explicit_port(cmd: &str) -> Option<u16> {
 
 /// Map a known framework dependency to its conventional dev-server port.
 /// First match wins; order matters where defaults overlap.
+///
+/// `detect_port` is currently called only by the Node detector, whose
+/// `deps` are npm package names — so this table lists only JS frameworks.
+/// Python/Ruby frameworks (Django, Flask, Rails) set their ports directly
+/// in their own detectors; adding them here would be unreachable.
 fn framework_default(deps: &[String]) -> Option<(u16, &'static str)> {
     const TABLE: &[(&str, u16, &str)] = &[
         ("next", 3000, "Next.js"),
@@ -55,9 +60,6 @@ fn framework_default(deps: &[String]) -> Option<(u16, &'static str)> {
         ("react-scripts", 3000, "CRA"),
         ("@angular/core", 4200, "Angular"),
         ("vue-cli-service", 8080, "Vue CLI"),
-        ("django", 8000, "Django"),
-        ("flask", 5000, "Flask"),
-        ("rails", 3000, "Rails"),
     ];
     for (name, port, label) in TABLE {
         if deps.iter().any(|d| d == name) {
