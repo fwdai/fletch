@@ -49,6 +49,11 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # OAuth client keys, baked into the binary at compile time (see
+          # src-tauri/src/oauth.rs). Add these as repository Actions secrets.
+          QUORUM_GITHUB_CLIENT_ID: ${{ secrets.QUORUM_GITHUB_CLIENT_ID }}
+          QUORUM_GOOGLE_CLIENT_ID: ${{ secrets.QUORUM_GOOGLE_CLIENT_ID }}
+          QUORUM_GOOGLE_CLIENT_SECRET: ${{ secrets.QUORUM_GOOGLE_CLIENT_SECRET }}
         with:
           tagName: v__VERSION__
           releaseName: Quorum v__VERSION__
