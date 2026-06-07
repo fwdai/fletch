@@ -148,7 +148,10 @@ export function History() {
                       onClick={() => onRowClick(a.id)}
                       onMouseEnter={() => setFocusedIndex(myIdx)}
                       disabled={!!restoringId}
-                      style={{ opacity: isRestoring ? 0.5 : undefined }}
+                      // Dim the other rows during a restore, but keep the active
+                      // row at full opacity so its spinner stays visible (a
+                      // parent opacity would otherwise cap the child rule).
+                      style={{ opacity: !isRestoring && restoringId ? 0.5 : undefined }}
                     >
                       <span className="hr-status">
                         <Icon name="dot" size={6} />
