@@ -8,6 +8,7 @@ import { SidebarHeader } from "./SidebarHeader";
 import { SidebarFooter } from "./SidebarFooter";
 import { ProjectGroup } from "./ProjectGroup";
 import { NewProjectPopover } from "./NewProjectPopover";
+import { NewProject, type NewProjectMode } from "../NewProject";
 
 interface RepoGroup {
   repoPath: string;
@@ -73,6 +74,7 @@ export function Sidebar() {
   const [query, setQuery] = useState("");
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
   const [npOpen, setNpOpen] = useState(false);
+  const [npMode, setNpMode] = useState<NewProjectMode | null>(null);
 
   const liveAgents = useMemo(
     () => (workspace?.agents ?? []).filter((a) => !a.archive),
@@ -139,7 +141,16 @@ export function Sidebar() {
 
       <SidebarFooter />
 
-      {npOpen && <NewProjectPopover onClose={() => setNpOpen(false)} />}
+      {npOpen && (
+        <NewProjectPopover
+          onClose={() => setNpOpen(false)}
+          onChoose={(mode) => {
+            setNpOpen(false);
+            setNpMode(mode);
+          }}
+        />
+      )}
+      {npMode && <NewProject mode={npMode} onClose={() => setNpMode(null)} />}
     </>
   );
 }

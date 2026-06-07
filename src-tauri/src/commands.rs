@@ -8,8 +8,9 @@ use tauri::{AppHandle, State};
 
 use crate::agent::ProviderProbe;
 use crate::error::{Error, Result};
-use crate::gh::{self, PrState};
+use crate::gh::{self, GhRepoSummary, GhStatus, PrState};
 use crate::git;
+use crate::new_project;
 use crate::git_state::{self, FileStatus, GitState, ShortStats, StatusKind};
 use crate::names;
 use crate::run_session::RunStateSnapshot;
@@ -77,6 +78,51 @@ pub fn remove_workspace_repo(
     repo_path: String,
 ) -> Result<Workspace> {
     supervisor.remove_workspace_repo(PathBuf::from(repo_path))
+}
+
+/// Whether the `gh` CLI is installed and authenticated — drives the New
+/// Project flow's gating (clone and create both require `gh`).
+#[tauri::command]
+pub async fn gh_status() -> Result<GhStatus> {
+    gh::auth_status().await
+}
+
+/// The authenticated user's GitHub repos, newest first, for the clone picker.
+#[tauri::command]
+pub async fn gh_repo_list() -> Result<Vec<GhRepoSummary>> {
+    gh::repo_list(200).await
+}
+
+/// Clone a GitHub repo into `dest_parent/<repo-name>` and register it as a
+/// workspace project.
+#[tauri::command]
+pub async fn clone_repo(
+    supervisor: State<'_, Arc<Supervisor>>,
+    spec: String,
+    dest_parent: String,
+) -> Result<Workspace> {
+    let target = new_project::clone(&spec, Path::new(&dest_parent)).await?;
+    supervisor.add_workspace_repo(target)
+}
+
+/// Create a fresh repo locally + on GitHub, then register it as a workspace
+/// project.
+#[tauri::command]
+pub async fn create_repo(
+    supervisor: State<'_, Arc<Supervisor>>,
+    name: String,
+    dest_parent: String,
+    private: bool,
+    description: Option<String>,
+) -> Result<Workspace> {
+    let target = new_project::create(
+        &name,
+        Path::new(&dest_parent),
+        private,
+        description.as_deref(),
+    )
+    .await?;
+    supervisor.add_workspace_repo(target)
 }
 
 #[tauri::command]

@@ -301,6 +301,15 @@ interface AppState {
   selectAgent: (id: string | null) => void;
   addWorkspaceRepo: (path: string) => Promise<void>;
   removeWorkspaceRepo: (path: string) => Promise<void>;
+  // Clone/create resolve on success and throw on failure, so the New Project
+  // modal can show the error inline rather than in the global banner.
+  cloneRepo: (spec: string, destParent: string) => Promise<void>;
+  createRepo: (
+    name: string,
+    destParent: string,
+    isPrivate: boolean,
+    description?: string,
+  ) => Promise<void>;
   spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
   sendUserMessage: (
     id: string,
@@ -862,6 +871,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e) {
       set({ lastError: String(e) });
     }
+  },
+
+  cloneRepo: async (spec, destParent) => {
+    // The new project appears in the sidebar via the refreshed workspace.
+    // Errors propagate to the caller (the modal) for inline display.
+    const ws = await api.cloneRepo(spec, destParent);
+    set({ workspace: ws });
+  },
+
+  createRepo: async (name, destParent, isPrivate, description) => {
+    const ws = await api.createRepo(name, destParent, isPrivate, description);
+    set({ workspace: ws });
   },
 
   spawn: async (view, repoPath) => {

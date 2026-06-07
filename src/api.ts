@@ -211,6 +211,21 @@ export interface ProviderProbe {
   path: string | null;
 }
 
+/** Whether the `gh` CLI is installed and authenticated (New Project flow). */
+export interface GhStatus {
+  installed: boolean;
+  authenticated: boolean;
+  login: string | null;
+}
+
+/** One repo from `gh repo list`, for the clone picker. */
+export interface GhRepoSummary {
+  name_with_owner: string;
+  description: string | null;
+  is_private: boolean;
+  updated_at: string;
+}
+
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
   getAgentDiffStats: (agentId: string) =>
@@ -219,6 +234,22 @@ export const api = {
     invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>
     invoke<Workspace>("remove_workspace_repo", { repoPath }),
+  ghStatus: () => invoke<GhStatus>("gh_status"),
+  ghRepoList: () => invoke<GhRepoSummary[]>("gh_repo_list"),
+  cloneRepo: (spec: string, destParent: string) =>
+    invoke<Workspace>("clone_repo", { spec, destParent }),
+  createRepo: (
+    name: string,
+    destParent: string,
+    isPrivate: boolean,
+    description?: string,
+  ) =>
+    invoke<Workspace>("create_repo", {
+      name,
+      destParent,
+      private: isPrivate,
+      description: description ?? null,
+    }),
   spawnAgent: (
     view: AgentView,
     repoPath: string,
