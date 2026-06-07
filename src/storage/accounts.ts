@@ -96,10 +96,3 @@ export async function linkOAuthAccount(
     },
   );
 }
-
-export async function updateAccount(
-  id: string,
-  data: Partial<Omit<AccountRow, "id" | "created_at">>,
-): Promise<void> {
-  await dbUpdate("accounts", { id }, data as Record<string, unknown>);
-}
