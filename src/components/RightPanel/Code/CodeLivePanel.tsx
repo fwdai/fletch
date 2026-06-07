@@ -7,13 +7,12 @@
 // and fetches each file's diff via `get_file_diff`. True edit-streaming (a
 // typing cursor per keystroke) is a deferred follow-up.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type AgentRecord, type FileStatus } from "../../../api";
+import { type AgentRecord, type FileStatus } from "../../../api";
 import { useAppStore } from "../../../store";
 import { usePoll } from "../../../util/hooks";
-import { hljsLang } from "../../../data/languages";
-import { highlightToHtml } from "../../../util/highlight";
 import { useHljsTheme } from "../../../util/codeTheme";
-import { parseUnifiedDiff, type DiffHunk, type DiffLine } from "../../../util/diff";
+import { type DiffLine } from "../../../util/diff";
+import { DiffBody, useFileDiff, extOf } from "./DiffView";
 import { Icon } from "../../Icon";
 
 interface CodeLivePanelProps {
@@ -36,7 +35,6 @@ function statusLetter(kind: FileStatus["kind"]): string {
   }
 }
 
-const extOf = (path: string) => path.split(".").pop() ?? "";
 const sigOf = (f: FileStatus) => `${f.additions}:${f.deletions}`;
 
 export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }: CodeLivePanelProps) {
@@ -99,9 +97,17 @@ export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }:
       return;
     }
 
+    // If several files moved this tick, pick the one whose line counts changed
+    // the most — git status has no timestamps, so magnitude is the best proxy
+    // for "most active" (beats arbitrary array/path order).
     let moved: string | null = null;
+    let bestDelta = -1;
     for (const f of files) {
-      if (prevSig.current.get(f.path) !== sigOf(f)) moved = f.path;
+      const prev = prevSig.current.get(f.path);
+      if (prev === sigOf(f)) continue;
+      const [pa, pd] = prev ? prev.split(":").map(Number) : [0, 0];
+      const delta = Math.abs(f.additions - pa) + Math.abs(f.deletions - pd);
+      if (delta > bestDelta) { bestDelta = delta; moved = f.path; }
     }
     prevSig.current = sig;
     if (moved) setLiveFile(moved);
@@ -132,19 +138,8 @@ export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }:
   const displaySigStr = displaySig ? sigOf(displaySig) : "";
 
   // ── diff fetch ──────────────────────────────────────────────────────────
-  const [diffText, setDiffText] = useState<string | null>(null);
-  const [diffErr, setDiffErr] = useState(false);
-  useEffect(() => {
-    if (!displayPath) { setDiffText(null); setDiffErr(false); return; }
-    let cancelled = false;
-    api
-      .getFileDiff(agent.id, displayPath)
-      .then((t) => { if (!cancelled) { setDiffText(t); setDiffErr(false); } })
-      .catch(() => { if (!cancelled) { setDiffText(null); setDiffErr(true); } });
-    return () => { cancelled = true; };
-  }, [agent.id, displayPath, displaySigStr]);
-
-  const hunks = useMemo(() => (diffText ? parseUnifiedDiff(diffText) : []), [diffText]);
+  // Refetch when the shown file changes or its +/- counts move during a turn.
+  const { hunks, error: diffErr } = useFileDiff(agent.id, displayPath, displaySigStr);
 
   // ── fresh-line highlighting ──────────────────────────────────────────────
   // Mark added lines that weren't present last time we rendered this same file
@@ -168,11 +163,14 @@ export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hunks, displayPath]);
 
-  // Clicking the file the agent is editing now re-arms auto-follow; clicking
-  // any other file pauses it (the user is reading something specific).
+  // During a turn, clicking the live file re-arms auto-follow and clicking any
+  // other file pauses it (the user is reading something specific). While idle
+  // there's no live file to follow, so a click just browses — it must not touch
+  // the armed/paused state, or an armed session would silently pause for the
+  // next turn. The Follow toggle stays the explicit control while idle.
   const onPickTab = (path: string) => {
     onSelect(path);
-    setFollow(busy && path === liveFile);
+    if (busy) setFollow(path === liveFile);
   };
 
   if (files.length === 0) {
@@ -257,33 +255,14 @@ export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }:
           <div>This change has no textual diff (binary, or already committed).</div>
         </div>
       ) : (
-        <div className={`code-diff ${isQuorum ? "cq" : ""} ${follow && busy && displayPath === liveFile ? "live" : ""}`}>
-          {hunks.map((h: DiffHunk, i) => (
-            <div key={i}>
-              <div className="code-hunk-h">{h.header}</div>
-              {h.lines.map((l, j) => (
-                <LiveDiffLine key={j} line={l} lang={lang} fresh={l.op === "add" && freshKeys.has(`${l.n}:${l.t}`)} />
-              ))}
-            </div>
-          ))}
-        </div>
+        <DiffBody
+          hunks={hunks}
+          lang={lang}
+          isQuorum={isQuorum}
+          live={follow && busy && displayPath === liveFile}
+          freshKeys={freshKeys}
+        />
       )}
-    </div>
-  );
-}
-
-function LiveDiffLine({ line, lang, fresh }: { line: DiffLine; lang: string; fresh: boolean }) {
-  const sigil = line.op === "add" ? "+" : line.op === "rem" ? "−" : " ";
-  const html = useMemo(
-    () => (line.t ? highlightToHtml(line.t, hljsLang(lang) ? lang : "") : ""),
-    [line.t, lang],
-  );
-  return (
-    <div className={`dl op-${line.op}${fresh ? " fresh" : ""}`}>
-      <span className="dl-num o">{line.o ?? ""}</span>
-      <span className="dl-num n">{line.n ?? ""}</span>
-      <span className="dl-sigil">{sigil}</span>
-      <span className="dl-text" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );
 }

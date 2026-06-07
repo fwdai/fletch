@@ -176,6 +176,15 @@ function TreeRow({
           ) : (
             <span className="fp-name">{node.name}</span>
           )}
+          {/* When collapsed, surface that this folder hides agent edits. */}
+          {!isOpen && !renaming && node.changedCount > 0 && (
+            <span
+              className="fp-dir-changed"
+              title={`${node.changedCount} changed file${node.changedCount === 1 ? "" : "s"} inside`}
+            >
+              {node.changedCount}
+            </span>
+          )}
         </button>
         {(isOpen || creatingHere) && (
           <>

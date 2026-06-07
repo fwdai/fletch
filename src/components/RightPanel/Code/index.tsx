@@ -41,8 +41,6 @@ export function CodePanel({ agent }: { agent: AgentRecord }) {
             agent={agent}
             openPath={selectedPath}
             onOpenPath={setSelectedPath}
-            canViewDiff
-            onViewDiff={() => changeMode("live")}
           />
         ) : (
           <CodeLivePanel
@@ -59,16 +57,18 @@ export function CodePanel({ agent }: { agent: AgentRecord }) {
 
 // A secondary segmented control — deliberately styled unlike the panel tabs
 // above it (filled "thumb" pill, not an underline tab) so it reads as a control
-// within the Code panel, not as panel switching.
+// within the Code panel, not as panel switching. The two modes are the two
+// ways to look at code here: explore it yourself, or watch the agent change it.
 function ModeSwitch({ agent, mode, onChange }: { agent: AgentRecord; mode: Mode; onChange: (m: Mode) => void }) {
-  // A live dot on the Live segment when the worktree has uncommitted changes,
-  // so the user can tell there's something to watch without leaving Files mode.
   const hasChanges = useAppStore(
     (s) =>
       (s.gitStates[agent.id]?.files.length ??
         s.gitShortstats[agent.id]?.file_count ??
         0) > 0,
   );
+  // Whether the agent is mid-turn — the dot is green & pulsing only then, and
+  // goes grey when work stops so it never implies activity that isn't there.
+  const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
 
   return (
     <div className="code-modes">
@@ -76,21 +76,25 @@ function ModeSwitch({ agent, mode, onChange }: { agent: AgentRecord; mode: Mode;
         <button
           role="tab"
           aria-selected={mode === "files"}
-          className={`cms-seg ${mode === "files" ? "active" : ""}`}
+          className={`cms-seg ${mode === "files" ? "active" : ""} tip`}
+          data-tip-down
+          data-tip="Browse and edit any file in the worktree"
           onClick={() => onChange("files")}
         >
           <Icon name="folder" size={12} />
-          <span>Files</span>
+          <span>Explore</span>
         </button>
         <button
           role="tab"
           aria-selected={mode === "live"}
-          className={`cms-seg ${mode === "live" ? "active" : ""}`}
+          className={`cms-seg ${mode === "live" ? "active" : ""} tip`}
+          data-tip-down
+          data-tip="Watch the agent's changes as they happen"
           onClick={() => onChange("live")}
         >
           <Icon name="zap" size={12} />
           <span>Live</span>
-          {hasChanges && <span className="cms-live-dot"></span>}
+          {(hasChanges || busy) && <span className={`cms-live-dot ${busy ? "on" : ""}`}></span>}
         </button>
       </div>
     </div>

@@ -8,6 +8,9 @@ export type DirNode = {
   name: string;
   path: string;
   children: TreeNode[];
+  // Number of changed files anywhere under this directory — lets a collapsed
+  // folder signal that it contains agent edits.
+  changedCount: number;
 };
 export type FileNode = {
   type: "file";
@@ -70,7 +73,7 @@ export function buildTree(files: WorktreeFile[], extraDirs: string[] = []): Tree
       const parent = prefix;
       prefix = prefix ? `${prefix}/${segs[i]}` : segs[i];
       if (!dirIndex.has(prefix)) {
-        const node: DirNode = { type: "dir", name: segs[i], path: prefix, children: [] };
+        const node: DirNode = { type: "dir", name: segs[i], path: prefix, children: [], changedCount: 0 };
         dirIndex.set(prefix, node);
         childrenOf(parent).push(node);
       }
@@ -94,7 +97,23 @@ export function buildTree(files: WorktreeFile[], extraDirs: string[] = []): Tree
   for (const d of extraDirs) if (d) ensureDir(d);
 
   sortNodes(roots);
+  annotateChanged(roots);
   return roots;
+}
+
+/** Tally changed files per directory (recursively) so collapsed folders can
+ *  show how many edits they hide. Returns this level's changed-file count. */
+function annotateChanged(nodes: TreeNode[]): number {
+  let total = 0;
+  for (const n of nodes) {
+    if (n.type === "dir") {
+      n.changedCount = annotateChanged(n.children);
+      total += n.changedCount;
+    } else if (n.status) {
+      total += 1;
+    }
+  }
+  return total;
 }
 
 function sortNodes(nodes: TreeNode[]): void {

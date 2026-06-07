@@ -978,8 +978,11 @@ button { cursor: default; }
 }
 .cms-live-dot {
   width: 6px; height: 6px; border-radius: 50%;
-  background: var(--success);
   margin-left: 1px;
+  background: var(--fg-3); /* grey: there are changes, but nothing is happening now */
+}
+.cms-live-dot.on {
+  background: var(--success); /* green & pulsing only while the agent works */
   animation: code-tab-live 1.6s ease-in-out infinite;
 }
 
@@ -2430,6 +2433,18 @@ button { cursor: default; }
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: var(--r-xs);
 }
+
+/* changed-file count on a collapsed folder */
+.fp-row.dir .fp-dir-changed {
+  flex-shrink: 0;
+  margin-left: auto;
+  min-width: 15px; height: 15px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
+  border-radius: var(--r-xs);
+  background: color-mix(in oklch, var(--warn), transparent 84%);
+  color: var(--warn);
+}
 .fp-badge.s-m { background: color-mix(in oklch, var(--warn), transparent 82%);    color: var(--warn); }
 .fp-badge.s-a { background: color-mix(in oklch, var(--success), transparent 82%); color: var(--success); }
 .fp-badge.s-d { background: color-mix(in oklch, var(--danger), transparent 82%);  color: var(--danger); }
@@ -2531,6 +2546,16 @@ button { cursor: default; }
   font-family: var(--font-sans); font-size: 10.5px; font-weight: 500;
 }
 .fp-meta-btn:hover { background: var(--hover); color: var(--fg-0); border-color: var(--bd); }
+/* pressed state for the Diff view toggle */
+.fp-meta-btn.active {
+  background: color-mix(in oklch, var(--accent), transparent 86%);
+  border-color: color-mix(in oklch, var(--accent), transparent 55%);
+  color: var(--accent);
+}
+.fp-meta-btn.active:hover {
+  background: color-mix(in oklch, var(--accent), transparent 80%);
+  color: var(--accent);
+}
 
 /* syntax-theme picker (bottom-right of the editor footer) */
 .fp-theme-select {

@@ -34,15 +34,13 @@ import {
 
 interface FilePanelProps {
   agent: AgentRecord;
-  canViewDiff: boolean;
-  onViewDiff: () => void;
   // The open file is owned by the parent Code panel so it survives a switch to
-  // Live mode (and so cross-panel "View diff" / "Open in editor" can target it).
+  // Live mode (and so "Open in editor" from Live can target it).
   openPath: string | null;
   onOpenPath: (path: string | null) => void;
 }
 
-export function FilePanel({ agent, canViewDiff, onViewDiff, openPath, onOpenPath }: FilePanelProps) {
+export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
   const [files, setFiles] = useState<WorktreeFile[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
@@ -252,8 +250,6 @@ export function FilePanel({ agent, canViewDiff, onViewDiff, openPath, onOpenPath
         key={openPath}
         agent={agent}
         path={openPath}
-        canViewDiff={canViewDiff}
-        onViewDiff={onViewDiff}
         onBack={() => { onOpenPath(null); void refresh(); }}
       />
     );
