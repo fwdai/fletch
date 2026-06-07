@@ -1163,10 +1163,14 @@ button { cursor: default; }
 .git-act { padding: 12px 18px 14px; }
 /* transient confirmation shown in place of the status line after an action */
 .git-notice {
-  display: flex; align-items: center; gap: 7px;
+  display: inline-flex; align-items: center; gap: 7px;
   font-size: 11px; color: var(--success);
   margin-bottom: 11px;
   min-height: 14px;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in oklch, var(--success), transparent 70%);
+  background: color-mix(in oklch, var(--success), transparent 90%);
+  border-radius: var(--r-sm);
 }
 .git-notice svg { flex-shrink: 0; }
 .git-act-status {
@@ -2035,6 +2039,16 @@ button { cursor: default; }
   transition: opacity .12s var(--ease);
 }
 .hrow:hover .hr-goto { opacity: 1; }
+/* while a restore is in flight, keep the indicator visible without hover */
+.hr-goto.restoring { opacity: 1; pointer-events: none; }
+.hr-goto .dots { display: inline-flex; gap: 3px; }
+.hr-goto .dots i {
+  width: 4px; height: 4px; border-radius: 50%;
+  background: currentColor;
+  animation: bounce 1.2s var(--ease) infinite;
+}
+.hr-goto .dots i:nth-child(2) { animation-delay: .15s; }
+.hr-goto .dots i:nth-child(3) { animation-delay: .3s; }
 
 /* foot hint */
 .history-foot {
@@ -2204,6 +2218,13 @@ button { cursor: default; }
   color: var(--danger);
   border-radius: var(--r-sm);
   font-size: 11.5px;
+  /* The banner is pinned above the tree, so it can't scroll off-screen — a
+     brief flash on appear draws the eye when an op fails deep in the list. */
+  animation: fp-op-error-flash .6s var(--ease);
+}
+@keyframes fp-op-error-flash {
+  0%, 100% { background: color-mix(in oklch, var(--danger), transparent 92%); }
+  35%      { background: color-mix(in oklch, var(--danger), transparent 70%); }
 }
 .fp-op-error span { flex: 1; min-width: 0; }
 .fp-op-error .fp-clear { color: var(--danger); }

@@ -148,7 +148,10 @@ export function History() {
                       onClick={() => onRowClick(a.id)}
                       onMouseEnter={() => setFocusedIndex(myIdx)}
                       disabled={!!restoringId}
-                      style={{ opacity: isRestoring ? 0.5 : undefined }}
+                      // Dim the other rows during a restore, but keep the active
+                      // row at full opacity so its spinner stays visible (a
+                      // parent opacity would otherwise cap the child rule).
+                      style={{ opacity: !isRestoring && restoringId ? 0.5 : undefined }}
                     >
                       <span className="hr-status">
                         <Icon name="dot" size={6} />
@@ -170,11 +173,20 @@ export function History() {
                         </span>
                       )}
                       <span className="hr-date">{when}</span>
-                      <span className="hr-goto">
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="9 18 15 12 9 6" />
-                        </svg>
-                        Restore
+                      <span className={`hr-goto${isRestoring ? " restoring" : ""}`}>
+                        {isRestoring ? (
+                          <>
+                            <span className="dots"><i /><i /><i /></span>
+                            Restoring…
+                          </>
+                        ) : (
+                          <>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="9 18 15 12 9 6" />
+                            </svg>
+                            Restore
+                          </>
+                        )}
                       </span>
                     </button>
                   );
