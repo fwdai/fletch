@@ -1,0 +1,13 @@
+Quorum
+Copyright (C) 2026 Alex Chaplinsky and fwdai.org
+
+This program is licensed under the GNU Affero General Public License v3.0.
+See the LICENSE file for the full license text.
+
+Retroactive application
+------------------------
+The repository did not carry a license file prior to this notice. The
+AGPL-3.0 terms apply retroactively to all earlier releases of Quorum,
+including v0.1.0 and earlier, to the extent the copyright is held by the
+authors named above. The license file was authored and committed as of
+2026-06-07; it is not backdated in version-control history.
