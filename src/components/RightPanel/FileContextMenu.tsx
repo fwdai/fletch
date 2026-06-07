@@ -38,6 +38,15 @@ export function FileContextMenu({ x, y, entries, onClose }: Props) {
   const [armed, setArmed] = useState(-1);
   // Index of the item showing post-click feedback, or -1 when none.
   const [done, setDone] = useState(-1);
+  // Pending deferred-close timer (feedbackLabel path), cleared on unmount so it
+  // can't fire onClose again after an early close (Esc / outside-click / blur).
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    },
+    [],
+  );
 
   // Clamp into the viewport once we know the menu's size, so a click near the
   // right/bottom edge doesn't push it off-screen.
@@ -96,7 +105,7 @@ export function FileContextMenu({ x, y, entries, onClose }: Props) {
               entry.onClick();
               if (entry.feedbackLabel) {
                 setDone(i);
-                window.setTimeout(onClose, 900);
+                closeTimer.current = setTimeout(onClose, 900);
               } else {
                 onClose();
               }
