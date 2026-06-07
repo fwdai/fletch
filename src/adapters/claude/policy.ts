@@ -1,10 +1,9 @@
 import type { DisplayPolicy } from "../types";
+import { DEFAULT_POLICY } from "../shared/default-policy";
 
+// Claude is the one adapter that hides slash-command notices; everything else
+// follows the shared default.
 export const claudePolicy: DisplayPolicy = {
-  "notice:turn_end": "hide",
-  "notice:hook_output": "hide",
-  "notice:info": "show",
-  "notice:reasoning": "show",
+  ...DEFAULT_POLICY,
   "notice:slash_command": "hide",
-  "notice:error": "show",
 };
