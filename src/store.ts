@@ -129,8 +129,8 @@ export type SettingsSection = "general" | "account" | "providers";
 
 export interface FeatureFlags {
   git: boolean;
-  files: boolean;
-  diff: boolean;
+  /** The unified Code panel: file explorer/editor + the Live diff feed. */
+  code: boolean;
   run: boolean;
   terminal: boolean;
   thinkingBudget: boolean;
@@ -141,8 +141,7 @@ export interface FeatureFlags {
 
 const DEFAULT_FEATURES: FeatureFlags = {
   git: true,
-  files: true,
-  diff: false,
+  code: true,
   run: false,
   terminal: false,
   thinkingBudget: true,
@@ -154,7 +153,25 @@ const DEFAULT_FEATURES: FeatureFlags = {
 function parseFeatures(raw: string | undefined): FeatureFlags {
   if (!raw) return DEFAULT_FEATURES;
   try {
-    return { ...DEFAULT_FEATURES, ...(JSON.parse(raw) as Partial<FeatureFlags>) };
+    const saved = JSON.parse(raw) as Partial<FeatureFlags> & {
+      // legacy flags folded into `code`
+      files?: boolean;
+      diff?: boolean;
+    };
+    // The old "Files" and "Diff" tabs were merged into the Code panel; honor a
+    // saved preference for either when migrating an existing settings blob.
+    const legacyCode =
+      saved.code ?? (saved.files !== undefined || saved.diff !== undefined
+        ? !!(saved.files || saved.diff)
+        : undefined);
+    const { files: _files, diff: _diff, ...rest } = saved;
+    void _files;
+    void _diff;
+    return {
+      ...DEFAULT_FEATURES,
+      ...rest,
+      ...(legacyCode !== undefined ? { code: legacyCode } : {}),
+    };
   } catch {
     return DEFAULT_FEATURES;
   }

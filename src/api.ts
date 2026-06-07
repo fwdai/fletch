@@ -311,6 +311,8 @@ export const api = {
     invoke<WorktreeFile[]>("list_worktree_tree", { agentId }),
   readWorktreeFile: (agentId: string, path: string) =>
     invoke<WorktreeFileContents>("read_worktree_file", { agentId, path }),
+  getFileDiff: (agentId: string, path: string) =>
+    invoke<string>("get_file_diff", { agentId, path }),
   writeWorktreeFile: (agentId: string, path: string, contents: string) =>
     invoke<void>("write_worktree_file", { agentId, path, contents }),
   renameWorktreePath: (agentId: string, from: string, to: string) =>

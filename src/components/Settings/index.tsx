@@ -17,9 +17,8 @@ const FEATURE_GROUPS: { label: string; items: FeatureItem[] }[] = [
   {
     label: "Side panels",
     items: [
-      { key: "files",    title: "Files",    sub: "Browse & edit worktree files" },
+      { key: "code",     title: "Code",     sub: "Browse & edit files, plus a Live diff feed" },
       { key: "git",      title: "Git",      sub: "Branch, file changes, smart actions" },
-      { key: "diff",     title: "Diff",     sub: "Inline diff for the selected file" },
       { key: "run",      title: "Run",      sub: "Dev server with setup table" },
       { key: "terminal", title: "Terminal", sub: "Interactive shell in the worktree" },
     ],

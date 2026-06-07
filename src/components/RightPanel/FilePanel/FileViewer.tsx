@@ -10,12 +10,10 @@ import { FileEditor } from "./FileEditor";
 interface FileViewerProps {
   agent: AgentRecord;
   path: string;
-  canViewDiff: boolean;
-  onViewDiff: () => void;
   onBack: () => void;
 }
 
-export function FileViewer({ agent, path, canViewDiff, onViewDiff, onBack }: FileViewerProps) {
+export function FileViewer({ agent, path, onBack }: FileViewerProps) {
   const name = basename(path);
   const dir = parentDir(path);
 
@@ -70,8 +68,6 @@ export function FileViewer({ agent, path, canViewDiff, onViewDiff, onBack }: Fil
       name={name}
       dir={dir}
       file={contents}
-      canViewDiff={canViewDiff}
-      onViewDiff={onViewDiff}
       onBack={onBack}
     />
   );

@@ -751,6 +751,18 @@ pub async fn read_worktree_file(
     })
 }
 
+/// Full unified diff of one worktree file versus the parent branch — the data
+/// behind the Code panel's Live view. Returns "" when the file is unchanged.
+#[tauri::command]
+pub async fn get_file_diff(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    path: String,
+) -> Result<String> {
+    let (worktree, parent) = primary_worktree(&supervisor, &agent_id)?;
+    git::file_diff(&worktree, &parent, &path).await
+}
+
 /// Overwrite a worktree file with new contents (the editor's Save / Revert).
 #[tauri::command]
 pub async fn write_worktree_file(

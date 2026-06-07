@@ -2,12 +2,12 @@ import { useState } from "react";
 import type { AgentRecord } from "../../api";
 import { useAppStore } from "../../store";
 import { Icon, type IconName } from "../Icon";
-import { FilePanel } from "./FilePanel";
+import { CodePanel } from "./Code";
 import { GitPanel } from "./GitPanel";
 import { RunPanel } from "./RunPanel";
 import { TermPanel } from "./TermPanel";
 
-type TabId = "files" | "git" | "diff" | "run" | "term";
+type TabId = "code" | "git" | "run" | "term";
 
 interface Tab {
   id: TabId;
@@ -16,9 +16,9 @@ interface Tab {
   count?: number;
 }
 
-/** Right rail: tabs for Git / Diff / Run / Terminal (each
- *  feature-flagged in settings). For now only Git renders real content —
- *  the others show a stub. */
+/** Right rail: tabs for Code / Git / Run / Terminal (each feature-flagged in
+ *  settings). The Code tab unifies the file explorer/editor with a Live diff
+ *  feed of the agent's edits. */
 export function RightPanel({ agent }: { agent: AgentRecord }) {
   const features  = useAppStore((s) => s.features);
   // Tab badge: prefer the live file list from `gitStates` (refreshed at 1s
@@ -33,9 +33,8 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
   );
 
   const tabs: Tab[] = [
-    features.files && { id: "files", label: "Files", icon: "folder" },
+    features.code && { id: "code", label: "Code", icon: "code" },
     features.git && { id: "git", label: "Git", icon: "branch", count: gitFiles },
-    features.diff && { id: "diff", label: "Diff", icon: "code" },
     features.run && { id: "run", label: "Run", icon: "play" },
     features.terminal && { id: "term", label: "Terminal", icon: "terminal" },
   ].filter(Boolean) as Tab[];
@@ -47,7 +46,7 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
       <div className="empty-msg" style={{ margin: "auto" }}>
         <div className="et">No side panels enabled</div>
         <div>
-          Turn on Git, Diff, Run, or Terminal in{" "}
+          Turn on Code, Git, Run, or Terminal in{" "}
           <span style={{ color: "var(--accent)" }}>Settings</span>.
         </div>
       </div>
@@ -72,27 +71,11 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
         </div>
       </div>
       <div className="right-body">
-        {tab === "files" && (
-          <FilePanel
-            agent={agent}
-            canViewDiff={features.diff}
-            onViewDiff={() => setTab("diff")}
-          />
-        )}
+        {tab === "code" && <CodePanel agent={agent} />}
         {tab === "git" && <GitPanel agent={agent} />}
-        {tab === "diff" && <Stub label="Diff" />}
         {tab === "run" && <RunPanel agent={agent} />}
         {tab === "term" && <TermPanel agent={agent} />}
       </div>
     </>
-  );
-}
-
-function Stub({ label }: { label: string }) {
-  return (
-    <div className="empty-msg" style={{ margin: "auto" }}>
-      <div className="et">{label} panel coming soon</div>
-      <div>This view will be wired to the backend in a later pass.</div>
-    </div>
   );
 }

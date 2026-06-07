@@ -184,6 +184,7 @@ pub fn run() {
             commands::run_state,
             commands::list_worktree_tree,
             commands::read_worktree_file,
+            commands::get_file_diff,
             commands::write_worktree_file,
             commands::rename_worktree_path,
             commands::delete_worktree_path,

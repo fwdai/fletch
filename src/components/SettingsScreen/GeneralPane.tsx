@@ -11,8 +11,7 @@ interface FeatureItem {
 
 const SIDE_PANELS: FeatureItem[] = [
   { key: "git",      title: "Git",      sub: "Branch, file changes, and smart commit / push / PR actions." },
-  { key: "files",    title: "Files",    sub: "Browse the worktree and read & edit file contents." },
-  { key: "diff",     title: "Diff",     sub: "Inline diff for the selected file." },
+  { key: "code",     title: "Code",     sub: "Browse & edit worktree files, plus a Live feed of the agent's diffs." },
   { key: "run",      title: "Run",      sub: "Dev server with an auto-detected, overrideable config." },
   { key: "terminal", title: "Terminal", sub: "Interactive shell scoped to the worktree." },
 ];

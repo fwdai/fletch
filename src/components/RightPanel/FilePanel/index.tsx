@@ -1,5 +1,5 @@
-// FilePanel — the right-rail "Files" tab. Browse the agent's worktree and
-// view/edit any file's contents (NOT diffs — that's the Diff panel's job).
+// FilePanel — the "Files" mode of the Code panel. Browse the agent's worktree
+// and view/edit any file's contents (diffs live in the Code panel's Live mode).
 //
 // This orchestrator owns the explorer's state + file operations and switches
 // between two modes:
@@ -34,14 +34,15 @@ import {
 
 interface FilePanelProps {
   agent: AgentRecord;
-  canViewDiff: boolean;
-  onViewDiff: () => void;
+  // The open file is owned by the parent Code panel so it survives a switch to
+  // Live mode (and so "Open in editor" from Live can target it).
+  openPath: string | null;
+  onOpenPath: (path: string | null) => void;
 }
 
-export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
+export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
   const [files, setFiles] = useState<WorktreeFile[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [openPath, setOpenPath] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [changedOnly, setChangedOnly] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -52,9 +53,9 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
   // so without this a brand-new folder would vanish on the next poll.
   const [pendingDirs, setPendingDirs] = useState<Set<string>>(() => new Set());
 
-  // Reset per-agent so one worktree's open file / search doesn't leak.
+  // Reset per-agent so one worktree's search/expansion doesn't leak. (The open
+  // file is owned by the parent and reset there.)
   useEffect(() => {
-    setOpenPath(null);
     setQuery("");
     setChangedOnly(false);
     setLoaded(false);
@@ -162,7 +163,7 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
         await api.createWorktreeFile(agent.id, dest);
         setEdit(null);
         await refresh();
-        setOpenPath(dest);
+        onOpenPath(dest);
         return;
       } else {
         const dest = joinPath(edit.parentDir, name);
@@ -249,9 +250,7 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
         key={openPath}
         agent={agent}
         path={openPath}
-        canViewDiff={canViewDiff}
-        onViewDiff={onViewDiff}
-        onBack={() => { setOpenPath(null); void refresh(); }}
+        onBack={() => { onOpenPath(null); void refresh(); }}
       />
     );
   }
@@ -275,7 +274,7 @@ export function FilePanel({ agent, canViewDiff, onViewDiff }: FilePanelProps) {
         edit={edit}
         onCommit={commitEdit}
         onCancel={cancelEdit}
-        onOpen={setOpenPath}
+        onOpen={onOpenPath}
         onMenu={(node, x, y) => setMenu({ node, x, y })}
         opError={opError}
         onClearOpError={() => setOpError(null)}
