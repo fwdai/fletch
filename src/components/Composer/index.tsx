@@ -58,6 +58,14 @@ interface Props {
   activeModel?: string;
 }
 
+function resolveThinking(providerId: string): string | undefined {
+  const d = PROVIDER_DETAIL[providerId as keyof typeof PROVIDER_DETAIL];
+  const levels = d?.thinkingLevels ?? [];
+  const stored = localStorage.getItem(`thinkingBudget.${providerId}`);
+  if (stored && levels.some((l) => l.value === stored)) return stored;
+  return d?.defaultLevel ?? levels.at(-1)?.value;
+}
+
 export function Composer({
   defaultProvider = DEFAULT_PROVIDER_ID,
   baseBranch,
@@ -82,14 +90,6 @@ export function Composer({
 
   const detail = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
   const thinkingLevels = detail?.thinkingLevels ?? [];
-
-  function resolveThinking(providerId: string) {
-    const d = PROVIDER_DETAIL[providerId as keyof typeof PROVIDER_DETAIL];
-    const levels = d?.thinkingLevels ?? [];
-    const stored = localStorage.getItem(`thinkingBudget.${providerId}`);
-    if (stored && levels.some((l) => l.value === stored)) return stored;
-    return d?.defaultLevel ?? levels.at(-1)?.value;
-  }
 
   const [thinkingValue, setThinkingValue] = useState<string | undefined>(
     () => resolveThinking(defaultProvider),
