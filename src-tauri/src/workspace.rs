@@ -869,9 +869,16 @@ impl WorkspaceManager {
             if needle.is_empty() {
                 continue;
             }
+            // The body is stored as serde_json::to_string(value), so characters
+            // like newlines appear JSON-escaped (\n) in the stored string. Escape
+            // the needle the same way so the substring match works for multi-line
+            // messages. serde_json::to_string wraps in quotes; strip them.
+            let needle_escaped = serde_json::to_string(&needle)
+                .map(|s| s[1..s.len() - 1].to_string())
+                .unwrap_or(needle.clone());
             let hit = records
                 .iter()
-                .find(|(nid, body)| !claimed.contains(nid) && body.contains(&needle));
+                .find(|(nid, body)| !claimed.contains(nid) && body.contains(&needle_escaped));
             if let Some((nid, _)) = hit {
                 tx.execute(
                     "UPDATE session_user_turns SET native_id = ?1 WHERE turn_id = ?2",
@@ -2024,6 +2031,31 @@ mod tests {
 
         // Idempotent: re-running associates nothing new.
         assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 0);
+    }
+
+    #[test]
+    fn associate_matches_multiline_text() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        // Multi-line message — the transcript stores it JSON-escaped (\n → \\n).
+        let text = "Please do this:\n- step one\n- step two";
+        wm.insert_user_turn(&ws_id, "t1", text, &[]).unwrap();
+
+        let rec_body = serde_json::json!({"role": "user", "text": text});
+        wm.append_session_records(
+            &ws_id,
+            "claude",
+            "transcript",
+            None,
+            &[("rec-1", &rec_body)],
+        )
+        .unwrap();
+
+        let n = wm.associate_pending_user_turns(&ws_id).unwrap();
+        assert_eq!(n, 1);
+        let turns = wm.read_user_turns(&ws_id).unwrap();
+        assert_eq!(turns[0].native_id.as_deref(), Some("rec-1"));
     }
 
     #[test]
