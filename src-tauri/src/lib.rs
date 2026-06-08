@@ -120,9 +120,14 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let app_data = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&app_data)?;
+            let data_dir = if cfg!(debug_assertions) {
+                app_data.join("dev")
+            } else {
+                app_data
+            };
+            std::fs::create_dir_all(&data_dir)?;
 
-            let db = database::init(&app_data)
+            let db = database::init(&data_dir)
                 .expect("failed to initialize database");
             app.manage(db.clone());
 
