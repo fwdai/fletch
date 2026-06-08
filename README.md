@@ -13,7 +13,7 @@ Quorum is an open-source macOS app for running and managing multiple AI coding a
 ![Built with Tauri](https://img.shields.io/badge/Built%20with-Tauri%202-24C8DB.svg)
 
 <!-- Drop a short demo GIF here. Record one full loop: spawn an agent → it works → review the diff → commit/PR. Save it to docs/demo.gif. -->
-<img src="docs/demo.gif" alt="Quorum: spawning multiple AI coding agents in parallel, each in its own git worktree" width="820">
+<img src="docs/quorum_control_room.png" alt="Quorum: spawning multiple AI coding agents in parallel, each in its own git worktree" width="820">
 
 </div>
 
