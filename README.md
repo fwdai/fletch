@@ -1,6 +1,9 @@
 <div align="center">
 
-# Quorum
+<h1>
+  <img src="docs/quorum_dark.png" alt="" width="48" valign="middle">
+  Quorum
+</h1>
 
 ### Run a fleet of AI coding agents in parallel — each in its own sandbox and git worktree.
 
@@ -13,13 +16,13 @@ Quorum is an open-source macOS app for running and managing multiple AI coding a
 ![Built with Tauri](https://img.shields.io/badge/Built%20with-Tauri%202-24C8DB.svg)
 
 <!-- Drop a short demo GIF here. Record one full loop: spawn an agent → it works → review the diff → commit/PR. Save it to docs/demo.gif. -->
-<img src="docs/quorum_control_room.png" alt="Quorum: spawning multiple AI coding agents in parallel, each in its own git worktree" width="820">
+<img src="docs/quorum_control_room.jpg" alt="Quorum: spawning multiple AI coding agents in parallel, each in its own git worktree" width="820">
 
 </div>
 
 ---
 
-A *quorum* is the number of members a body needs present to do business. Convene one on your codebase: many coding agents, each isolated in its own worktree and sandbox, all working the same problem in parallel — with you presiding.
+A _quorum_ is the number of members a body needs present to do business. Convene one on your codebase: many coding agents, each isolated in its own worktree and sandbox, all working the same problem in parallel — with you presiding.
 
 Every agent runs in its own git worktree under a macOS sandbox, so you can run a dozen at once and they physically can't touch each other's files — or write outside their box. Watch each one as a readable chat or its raw terminal, see its edits as live diffs the moment they land, and commit, push, or open a PR from the same window. Need more throughput? Spawn another. Done with one? Discard it — worktree and branch with it — in a click.
 
@@ -36,14 +39,14 @@ Every agent runs in its own git worktree under a macOS sandbox, so you can run a
 
 Quorum normalizes each agent's transcript into one consistent view, so they all look and behave the same to you.
 
-| Agent | Status |
-| --- | --- |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ✅ Supported |
-| [Codex](https://github.com/openai/codex) | ✅ Supported |
-| [Cursor Agent](https://cursor.com) | ✅ Supported |
-| [OpenCode](https://opencode.ai) | ✅ Supported |
-| Pi | ✅ Supported (experimental) |
-| Antigravity | 🔜 Coming soon |
+| Agent                                                             | Status                      |
+| ----------------------------------------------------------------- | --------------------------- |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code)     | ✅ Supported                |
+| [Codex](https://github.com/openai/codex)                          | ✅ Supported                |
+| [Cursor Agent](https://cursor.com)                                | ✅ Supported                |
+| [OpenCode](https://opencode.ai)                                   | ✅ Supported                |
+| [Pi](https://pi.dev/)                                             | ✅ Supported                |
+| [Antigravity](https://antigravity.google/product/antigravity-cli) | ✅ Supported (experimental) |
 
 You install and authenticate the agent CLIs you want to use; Quorum detects them on your `PATH` and common install locations.
 
@@ -54,6 +57,7 @@ You install and authenticate the agent CLIs you want to use; Quorum detects them
 The app is signed, notarized, and updates itself in the background.
 
 **Requirements**
+
 - macOS 13+ (`sandbox-exec` is macOS-only)
 - At least one supported agent CLI installed (e.g. `claude`)
 - `git`, and `gh` (GitHub CLI) for the PR and project-creation features
