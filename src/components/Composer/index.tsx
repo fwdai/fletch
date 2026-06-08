@@ -58,6 +58,14 @@ interface Props {
   activeModel?: string;
 }
 
+function resolveThinking(providerId: string): string | undefined {
+  const d = PROVIDER_DETAIL[providerId as keyof typeof PROVIDER_DETAIL];
+  const levels = d?.thinkingLevels ?? [];
+  const stored = localStorage.getItem(`thinkingBudget.${providerId}`);
+  if (stored && levels.some((l) => l.value === stored)) return stored;
+  return d?.defaultLevel ?? levels.at(-1)?.value;
+}
+
 export function Composer({
   defaultProvider = DEFAULT_PROVIDER_ID,
   baseBranch,
@@ -82,14 +90,14 @@ export function Composer({
 
   const detail = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
   const thinkingLevels = detail?.thinkingLevels ?? [];
-  // Preferred initial level, falling back to the highest.
-  const defaultThinking = detail?.defaultLevel ?? thinkingLevels.at(-1)?.value;
-  const [thinkingValue, setThinkingValue] = useState<string | undefined>(defaultThinking);
 
-  // Reset to the new provider's default (or highest) level when switching.
+  const [thinkingValue, setThinkingValue] = useState<string | undefined>(
+    () => resolveThinking(defaultProvider),
+  );
+
+  // When switching providers, restore the last-used level for that provider.
   useEffect(() => {
-    const d = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
-    setThinkingValue(d?.defaultLevel ?? (d?.thinkingLevels ?? []).at(-1)?.value);
+    setThinkingValue(resolveThinking(provider));
   }, [provider]);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -268,6 +276,7 @@ export function Composer({
                 const idx = thinkingLevels.findIndex((l) => l.value === thinkingValue);
                 const next = thinkingLevels[(idx + 1) % thinkingLevels.length];
                 setThinkingValue(next.value);
+                localStorage.setItem(`thinkingBudget.${provider}`, next.value);
               }}
             >
               <Icon name="sparkle" size={11} />
