@@ -548,15 +548,14 @@ impl Supervisor {
             },
         );
 
-        // If the agent already has a task (slug), create the branch
-        // in the freshly-added repo right away.
-        let task = record.task.trim().to_string();
-        if !task.is_empty() {
+        // If the agent has already started (its first message set the
+        // task), create the branch in the freshly-added repo right away;
+        // otherwise defer, consistent with the primary repo.
+        if !record.task.trim().is_empty() {
             create_branches_for_branchless_repos(
                 self.clone(),
                 app.clone(),
                 agent_id.to_string(),
-                task,
             );
         }
 
@@ -1831,18 +1830,34 @@ fn on_first_user_message(
         }
     }
 
-    create_branches_for_branchless_repos(sup, app, agent_id, trimmed);
+    create_branches_for_branchless_repos(sup, app, agent_id);
+}
+
+/// Find a branch name that doesn't yet exist in `repo`, starting from
+/// `base` and falling back to `base-2`, `base-3`, … on collision.
+async fn free_branch_name(repo: &std::path::Path, base: &str) -> String {
+    if !git::branch_exists(repo, base).await.unwrap_or(false) {
+        return base.to_string();
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if !git::branch_exists(repo, &candidate).await.unwrap_or(false) {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 /// For every tracked repo on the agent that doesn't have a branch yet,
-/// derive a slug from the agent's task and create `quorum/<slug>` inside
-/// that repo's worktree. Runs in a background task. Idempotent —
-/// `set_repo_branch_if_empty` guards each write.
+/// create `quorum/<workspace-name>` inside that repo's worktree — the
+/// branch mirrors the workspace (place) name so worktree, sandbox, and
+/// branch all share one identifier. Runs in a background task.
+/// Idempotent — `set_repo_branch_if_empty` guards each write.
 fn create_branches_for_branchless_repos(
     sup: Arc<Supervisor>,
     app: AppHandle,
     agent_id: String,
-    task: String,
 ) {
     tauri::async_runtime::spawn(async move {
         let record = match sup.workspace.agent(&agent_id) {
@@ -1853,12 +1868,7 @@ fn create_branches_for_branchless_repos(
             }
         };
 
-        let slug_base = branding::slugify_task(&task);
-        let slug = if slug_base.is_empty() {
-            agent_id.clone()
-        } else {
-            slug_base
-        };
+        let branch_base = branding::branch_for(&agent_id);
 
         for repo in record.repos.iter() {
             if repo.branch.is_some() {
@@ -1871,13 +1881,11 @@ fn create_branches_for_branchless_repos(
                     continue;
                 }
             };
-            let mut branch = branding::branch_for(&slug);
-            if git::branch_exists(&repo.repo_path, &branch)
-                .await
-                .unwrap_or(false)
-            {
-                branch = format!("{branch}-{agent_id}");
-            }
+            // The workspace name is unique among live agents, but a branch
+            // from a since-deleted agent of the same name can linger. Append
+            // a numeric suffix until we find a free name, mirroring how place
+            // ids disambiguate (`-2`, `-3`, …).
+            let branch = free_branch_name(&repo.repo_path, &branch_base).await;
             if let Err(e) = git::checkout_new_branch(&worktree, &branch).await {
                 tracing::warn!(
                     error = %e,
