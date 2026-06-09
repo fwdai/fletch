@@ -77,7 +77,7 @@ export function Sidebar() {
   const [npMode, setNpMode] = useState<NewProjectMode | null>(null);
 
   const liveAgents = useMemo(
-    () => (workspace?.agents ?? []).filter((a) => !a.archive),
+    () => (workspace?.agents ?? []).filter((a) => !a.archive).slice().reverse(),
     [workspace?.agents],
   );
   const groups = useMemo(
