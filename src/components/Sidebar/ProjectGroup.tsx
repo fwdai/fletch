@@ -78,16 +78,10 @@ export function ProjectGroup({
       </div>
 
       <div className={`agents ${open ? "" : "closed"}`}>
-        {drafts.map((d) => (
-          <AgentRow
-            key={d.id}
-            kind="draft"
-            draft={d}
-            active={d.id === activeDraftId}
-            showGlyph={showLandmarks}
-            onClick={() => selectDraft(d.id)}
-          />
-        ))}
+        <button className="agent-new" onClick={onAddAgent}>
+          <Icon name="plus" size={11} />
+          <span>New agent</span>
+        </button>
         {agents.map((a) => (
           <AgentRow
             key={a.id}
@@ -98,10 +92,16 @@ export function ProjectGroup({
             onClick={() => selectAgent(a.id)}
           />
         ))}
-        <button className="agent-new" onClick={onAddAgent}>
-          <Icon name="plus" size={11} />
-          <span>New agent</span>
-        </button>
+        {drafts.map((d) => (
+          <AgentRow
+            key={d.id}
+            kind="draft"
+            draft={d}
+            active={d.id === activeDraftId}
+            showGlyph={showLandmarks}
+            onClick={() => selectDraft(d.id)}
+          />
+        ))}
       </div>
     </div>
   );
