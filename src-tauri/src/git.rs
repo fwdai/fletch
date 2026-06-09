@@ -97,10 +97,15 @@ pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
         .output()
         .await?;
     if !out.status.success() {
-        return Err(Error::Git(format!(
-            "commit failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+        // `git commit` writes the common "nothing to commit, working tree
+        // clean" diagnostic to *stdout*, not stderr — so report both, else a
+        // clean-tree failure surfaces as an empty, undebuggable message.
+        let detail = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        return Err(Error::Git(format!("commit failed: {}", detail.trim())));
     }
     Ok(())
 }
@@ -296,6 +301,34 @@ mod tests {
     #[test]
     fn parse_shortstat_empty() {
         assert_eq!(parse_shortstat(""), (0, 0));
+    }
+
+    async fn config(repo: &Path, key: &str, val: &str) {
+        let out = Command::new("git")
+            .current_dir(repo)
+            .args(["config", key, val])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success());
+    }
+
+    #[tokio::test]
+    async fn commit_all_clean_tree_reports_nothing_to_commit() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        commit_all(repo, "first").await.unwrap();
+
+        // Tree is now clean: git writes "nothing to commit" to stdout and exits
+        // non-zero. The error must surface that, not an empty string.
+        let err = commit_all(repo, "second").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("nothing to commit"), "got: {msg}");
     }
 }
 
