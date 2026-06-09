@@ -23,6 +23,7 @@ use serde_json::Value;
 use crate::activity::{Activity, ManagedActivity};
 use crate::error::{Error, Result};
 use crate::exec_session::{ExecCallbacks, ExecSession, ExecSpawn};
+use crate::instructions;
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
@@ -552,7 +553,7 @@ fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Opt
         args.push(id.to_string());
     }
     args.push("--print".into());
-    args.push(prompt.to_string());
+    args.push(instructions::prepend_to_prompt(prompt, session_id));
     args
 }
 
@@ -998,6 +999,7 @@ fn prepare_pty_args(
         "bypassPermissions".into(),
     ];
     args.extend(effort_args(spec.effort));
+    args.extend(instructions::append_system_prompt_args());
 
     if spec.fresh {
         args.push("--session-id".into());
@@ -1044,6 +1046,7 @@ fn prepare_managed_args(
         "bypassPermissions".into(),
     ];
     args.extend(effort_args(spec.effort));
+    args.extend(instructions::append_system_prompt_args());
 
     if spec.fresh {
         args.push("--session-id".into());
@@ -1082,6 +1085,7 @@ fn codex_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&st
         args.push("-c".into());
         args.push(format!("reasoning_effort=\"{effort}\""));
     }
+    args.extend(instructions::codex_config_args());
     args.push(prompt.to_string());
     args
 }
@@ -1114,7 +1118,7 @@ fn cursor_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&
         args.push(id.to_string());
     }
     // Prompt is positional and must come after options.
-    args.push(prompt.to_string());
+    args.push(instructions::prepend_to_prompt(prompt, session_id));
     args
 }
 
@@ -1157,7 +1161,7 @@ fn opencode_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<
         args.push("--session".into());
         args.push(id.to_string());
     }
-    args.push(prompt.to_string());
+    args.push(instructions::prepend_to_prompt(prompt, session_id));
     args
 }
 
@@ -1185,6 +1189,7 @@ fn pi_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>)
         args.push("--thinking".into());
         args.push(level.to_string());
     }
+    args.extend(instructions::append_system_prompt_args());
     if let Some(id) = session_id {
         args.push("--session".into());
         args.push(id.to_string());
@@ -1215,6 +1220,7 @@ fn pi_session_id(event: &Value) -> Option<String> {
 /// already isolates the worktree). `resume <id>` continues a prior session.
 fn codex_pty_args(session_id: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["--dangerously-bypass-approvals-and-sandbox".into()];
+    args.extend(instructions::codex_config_args());
     if let Some(id) = session_id {
         args.push("resume".into());
         args.push(id.to_string());
@@ -1252,7 +1258,7 @@ fn opencode_pty_args(session_id: Option<&str>) -> Vec<String> {
 /// `--session <id>` resumes — same flag the Custom-view runner uses, since the
 /// versions we target (0.74.x) lack `--session-id`.
 fn pi_pty_args(session_id: Option<&str>) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
+    let mut args: Vec<String> = instructions::append_system_prompt_args();
     if let Some(id) = session_id {
         args.push("--session".into());
         args.push(id.to_string());
@@ -1587,8 +1593,9 @@ mod tests {
         let args = opencode_build_args("hi", None, None);
         assert!(args.contains(&"--thinking".to_string()));
         assert!(args.contains(&"--format".to_string()));
-        // Prompt is positional and last.
-        assert_eq!(args.last().unwrap(), "hi");
+        // Prompt is positional and last (possibly prefixed with injected
+        // instructions on a fresh turn, so match the tail rather than equality).
+        assert!(args.last().unwrap().ends_with("hi"), "prompt is positional and last");
     }
 
     // ── pty (native TUI) args ──────────────────────────────────────────────
@@ -1645,8 +1652,9 @@ mod tests {
     #[test]
     fn pi_pty_args_bare_tui_and_session() {
         // Fresh: bare `pi` launches the interactive TUI; tools auto-run there.
+        // (May carry injected --append-system-prompt args, but never a resume.)
         let fresh = pi_pty_args(None);
-        assert!(fresh.is_empty());
+        assert!(!fresh.iter().any(|a| a == "--session"), "fresh TUI has no resume flag");
         // Resume uses `--session <id>` (target pi 0.74.x lacks `--session-id`).
         let resume = pi_pty_args(Some("u-7"));
         let pos = resume
