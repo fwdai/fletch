@@ -117,3 +117,7 @@ Issues and pull requests are welcome. If you're planning a larger change, open a
 ## License
 
 [AGPL-3.0](LICENSE). See [NOTICE](NOTICE) for attribution.
+
+---
+
+_Last updated: 2026-06-09_
