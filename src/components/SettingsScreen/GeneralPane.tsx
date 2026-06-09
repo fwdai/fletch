@@ -37,8 +37,6 @@ export function GeneralPane() {
   const setShowLandmarks = useAppStore((s) => s.setShowLandmarks);
   const features = useAppStore((s) => s.features);
   const setFeature = useAppStore((s) => s.setFeature);
-  const openOnboarding = useAppStore((s) => s.openOnboarding);
-  const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
 
   const FeatureRow = ({ item }: { item: FeatureItem }) => (
     <SetRow title={item.title} sub={item.sub}>
@@ -97,25 +95,6 @@ export function GeneralPane() {
         </SetRow>
         <SetRow title="Landmark glyphs" sub="Tiny location marks beside each agent name.">
           <SetToggle on={showLandmarks} onClick={() => setShowLandmarks(!showLandmarks)} />
-        </SetRow>
-      </SetGroup>
-
-      <SetGroup label="Getting started">
-        <SetRow
-          title="Welcome tour"
-          sub="Replay the cinematic onboarding — the feature tour and first-project walkthrough."
-        >
-          <button
-            type="button"
-            className="btn-t outline"
-            onClick={() => {
-              closeSettingsScreen();
-              openOnboarding();
-            }}
-          >
-            <Icon name="sparkle" size={12} />
-            Replay tour
-          </button>
         </SetRow>
       </SetGroup>
 
