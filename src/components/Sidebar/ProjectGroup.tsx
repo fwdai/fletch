@@ -82,16 +82,6 @@ export function ProjectGroup({
           <Icon name="plus" size={11} />
           <span>New agent</span>
         </button>
-        {agents.map((a) => (
-          <AgentRow
-            key={a.id}
-            kind="real"
-            agent={a}
-            active={a.id === selectedAgentId}
-            showGlyph={showLandmarks}
-            onClick={() => selectAgent(a.id)}
-          />
-        ))}
         {drafts.map((d) => (
           <AgentRow
             key={d.id}
@@ -100,6 +90,16 @@ export function ProjectGroup({
             active={d.id === activeDraftId}
             showGlyph={showLandmarks}
             onClick={() => selectDraft(d.id)}
+          />
+        ))}
+        {agents.map((a) => (
+          <AgentRow
+            key={a.id}
+            kind="real"
+            agent={a}
+            active={a.id === selectedAgentId}
+            showGlyph={showLandmarks}
+            onClick={() => selectAgent(a.id)}
           />
         ))}
       </div>

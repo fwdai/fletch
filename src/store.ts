@@ -1292,7 +1292,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       base: "main",
     };
     set((s) => ({
-      drafts: [...s.drafts, draft],
+      drafts: [draft, ...s.drafts],
       activeDraftId: draft.id,
       selectedAgentId: null,
     }));
