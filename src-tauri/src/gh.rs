@@ -96,6 +96,13 @@ pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
 ///
 /// `gh pr create` does not support `--json`, so we run it for its side-effect
 /// (creating the PR) and then call `pr_view` to fetch the full `PrState`.
+/// Whether a `gh pr create` failure means a PR for this branch already exists
+/// (gh's message is "a pull request for branch ... already exists"). Used to
+/// make `pr_create` idempotent across retries.
+fn pr_already_exists(stderr: &str) -> bool {
+    stderr.to_lowercase().contains("already exists")
+}
+
 pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> Result<PrState> {
     let mut args = vec!["pr", "create", "--base", base];
     if title.is_empty() {
@@ -111,9 +118,19 @@ pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> 
         .await?;
 
     if !out.status.success() {
-        return Err(Error::Gh(
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // Idempotency: a prior attempt may have created the PR but failed
+        // before we could fetch it (a transient `pr_view` error returns
+        // `Err` even though the PR exists). On retry `gh pr create` reports
+        // the branch already has a PR — treat that as success by returning the
+        // existing one, so the caller isn't stuck erroring forever over a PR
+        // that's actually there.
+        if pr_already_exists(&stderr) {
+            if let Some(pr) = pr_view(worktree).await? {
+                return Ok(pr);
+            }
+        }
+        return Err(Error::Gh(stderr.trim().to_string()));
     }
 
     // `gh pr create` only prints the PR URL on success; fetch full state.
@@ -314,6 +331,16 @@ mod tests {
         assert!(matches!(pr.state, PrStatus::Open));
         assert!(pr.mergeable);
         assert_eq!(pr.number, 42);
+    }
+
+    #[test]
+    fn detects_already_exists_failure() {
+        // gh's real message for a duplicate PR.
+        assert!(pr_already_exists(
+            "a pull request for branch \"feat\" into branch \"main\" already exists:\nhttps://github.com/o/r/pull/7"
+        ));
+        // An unrelated failure must not be mistaken for it.
+        assert!(!pr_already_exists("fatal: could not read from remote repository"));
     }
 
     #[test]
