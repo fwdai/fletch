@@ -53,12 +53,14 @@ export function providerLabel(id: string | null | undefined): string {
 }
 
 /** Chip metadata (monogram + hue) for a provider id, used to render a brand
- *  icon via {@link ProviderIcon}. Unknown ids get a derived two-letter monogram
- *  and neutral hue so the chip still renders rather than breaking. */
+ *  icon via {@link ProviderIcon}. Mirrors {@link providerLabel}'s fallbacks so
+ *  the chip and its tooltip never disagree: null/undefined resolves to the
+ *  default provider, a known id to itself, and any unknown id to a derived
+ *  two-letter monogram with neutral hue (matching the raw-id label). */
 export function providerChip(id: string | null | undefined): { short: string; hue: number } {
-  const p = PROVIDERS.find((x) => x.id === id);
+  const p = PROVIDERS.find((x) => x.id === (id || DEFAULT_PROVIDER_ID));
   if (p) return { short: p.short, hue: p.hue };
-  return { short: (id ?? "?").slice(0, 2).toUpperCase(), hue: 0 };
+  return { short: id!.slice(0, 2).toUpperCase(), hue: 0 };
 }
 
 export interface Accent {

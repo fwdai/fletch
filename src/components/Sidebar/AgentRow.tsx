@@ -88,8 +88,12 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
           </span>
         )}
         <span className="ag-name">{agent.name}</span>
-        <span className="ag-prov-chip" title={providerLabel(agent.provider)}>
-          <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={18} />
+        <span
+          className="ag-prov-chip tip"
+          data-tip={providerLabel(agent.provider)}
+          data-tip-down=""
+        >
+          <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={14} />
         </span>
         <span className="ag-actions">
           {stoppable && (
@@ -153,8 +157,12 @@ function DraftRow({ draft, active, showGlyph, onClick }: DraftRowProps) {
           </span>
         )}
         <span className="ag-name">{draft.name}</span>
-        <span className="ag-prov-chip" title={providerLabel(draft.provider)}>
-          <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={18} />
+        <span
+          className="ag-prov-chip tip"
+          data-tip={providerLabel(draft.provider)}
+          data-tip-down=""
+        >
+          <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={14} />
         </span>
         <span className="ag-provider-inline" style={{ color: "var(--accent)" }}>
           new
