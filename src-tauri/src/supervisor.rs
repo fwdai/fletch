@@ -14,6 +14,7 @@ use crate::branding;
 use crate::error::{Error, Result};
 use crate::git;
 use crate::pty_session::{PtySession, PtySpawn};
+use crate::rpc;
 use crate::run_session::{
     self, shell_args, user_shell, RunPhase, RunSession, RunStateSnapshot,
 };
@@ -100,6 +101,8 @@ pub struct RunStatePayload {
 
 const WATCHDOG_TICK: Duration = Duration::from_millis(500);
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
+/// How often the per-agent RPC watcher scans its mailbox for new requests.
+const RPC_TICK: Duration = Duration::from_millis(100);
 
 pub struct Supervisor {
     pub workspace: Arc<WorkspaceManager>,
@@ -203,6 +206,7 @@ impl Supervisor {
                 program: &shell_path,
                 args: &[],
                 cwd: &worktree,
+                env: &[],
                 cols: 120,
                 rows: 32,
             },
@@ -583,6 +587,15 @@ impl Supervisor {
             .first()
             .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?;
         let cwd = repo_worktree_path(agent_id, &primary.subdir)?;
+        // Sandbox writable root — the agent's parent dir. Every agent (claude
+        // and per-turn alike) now runs under sandbox-exec rooted here.
+        let sandbox_root = agent_parent_dir(agent_id)?;
+
+        // The agent's file-mailbox RPC dir, created before spawn so the watcher
+        // (and the agent's `QUORUM_RPC_DIR`) have a target from turn one.
+        let rpc_dir = rpc::mailbox_dir(agent_id)?;
+        rpc::ensure_mailbox(&rpc_dir)?;
+        let watcher_cwd = cwd.clone();
 
         // Claude only writes a session file once the first turn lands.
         // If task is still empty (no first user message has ever been
@@ -636,7 +649,7 @@ impl Supervisor {
                     let spec = SpawnSpec {
                         agent_id: &agent_id_str,
                         cwd,
-                        sandbox_root: agent_parent_dir(agent_id)?,
+                        sandbox_root: sandbox_root.clone(),
                         session_id,
                         // Per-turn native always resumes (the agent built its
                         // session in the Custom view first).
@@ -644,6 +657,7 @@ impl Supervisor {
                         // Per-turn agents take effort per-turn (build-args),
                         // not at spawn.
                         effort: None,
+                        rpc_dir: rpc_dir.clone(),
                         cols: 120,
                         rows: 32,
                     };
@@ -661,8 +675,12 @@ impl Supervisor {
                 // itself rather than running under sandbox-exec.
                 AgentView::Custom => spawn_per_turn_agent(
                     &provider,
-                    cwd,
-                    session_id.clone(),
+                    PerTurnSpec {
+                        cwd,
+                        sandbox_root: sandbox_root.clone(),
+                        session_id: session_id.clone(),
+                        rpc_dir: rpc_dir.clone(),
+                    },
                     app.clone(),
                     agent_id_str.clone(),
                     self.clone(),
@@ -673,16 +691,16 @@ impl Supervisor {
             let session_id = session_id
                 .as_deref()
                 .expect("non-codex agents always have a session id");
-            let sandbox_root = agent_parent_dir(agent_id)?;
             let spec = SpawnSpec {
                 agent_id: &agent_id_str,
                 cwd,
-                sandbox_root,
+                sandbox_root: sandbox_root.clone(),
                 session_id,
                 fresh: effective_fresh,
                 // Claude's session-level effort, persisted on the record so it
                 // re-applies on every spawn (fresh, view-switch, resume).
                 effort: record.effort.as_deref(),
+                rpc_dir: rpc_dir.clone(),
                 cols: 120,
                 rows: 32,
             };
@@ -715,7 +733,11 @@ impl Supervisor {
             self.set_status(&app, &agent_id_str, AgentStatus::Idle, None);
         }
 
-        spawn_turn_watchdog(self.clone(), app, agent_id_str, my_gen);
+        spawn_turn_watchdog(self.clone(), app, agent_id_str.clone(), my_gen);
+
+        // Watch this agent's RPC mailbox for the life of this generation,
+        // executing allowlisted ops and writing responses back.
+        spawn_rpc_watcher(self.clone(), agent_id_str, watcher_cwd, rpc_dir, my_gen);
 
         Ok(())
     }
@@ -1661,8 +1683,7 @@ fn spawn_managed_agent(
 /// resume it.
 fn spawn_per_turn_agent(
     provider: &str,
-    cwd: PathBuf,
-    session_id: Option<String>,
+    spec: PerTurnSpec,
     app: AppHandle,
     agent_id: String,
     sup: Arc<Supervisor>,
@@ -1717,7 +1738,6 @@ fn spawn_per_turn_agent(
         transition_active(&sup_for_exit, &app_for_exit, &id_for_exit, AgentStatus::Idle);
     };
 
-    let spec = PerTurnSpec { cwd, session_id };
     let desc = per_turn_descriptor(provider).ok_or_else(|| {
         Error::Other(format!("unknown per-turn agent provider: {provider}"))
     })?;
@@ -2003,6 +2023,37 @@ fn spawn_turn_watchdog(
             if ended {
                 transition_active(&sup, &app, &agent_id, AgentStatus::Idle);
             }
+        }
+    });
+}
+
+/// Drive the agent's file-mailbox RPC for the life of this generation: each
+/// tick, execute any pending requests and write responses. Gen-guarded like
+/// `spawn_turn_watchdog`, so it exits cleanly when the agent is respawned or
+/// torn down (no explicit handle to track). Polling (no `notify` crate) mirrors
+/// the transcript-sync style already used elsewhere.
+fn spawn_rpc_watcher(
+    sup: Arc<Supervisor>,
+    agent_id: String,
+    cwd: PathBuf,
+    rpc_dir: PathBuf,
+    gen: u64,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(RPC_TICK).await;
+
+            let current_gen = sup
+                .generations
+                .lock()
+                .get(&agent_id)
+                .copied()
+                .unwrap_or(0);
+            if current_gen != gen {
+                return;
+            }
+
+            rpc::process_pending(&rpc_dir, &cwd).await;
         }
     });
 }

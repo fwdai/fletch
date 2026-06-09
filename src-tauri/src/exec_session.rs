@@ -35,8 +35,16 @@ type ArgsBuilder = Arc<dyn Fn(&str, Option<&str>, Option<&str>) -> Vec<String> +
 type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 
 pub struct ExecSpawn {
-    /// Resolved path to the agent binary.
+    /// Program to launch each turn. Normally `sandbox-exec`, with the real
+    /// agent binary carried in `prefix_args`; tests pass the agent directly.
     pub program: PathBuf,
+    /// Args inserted before the per-turn args on every spawn — e.g.
+    /// `["-f", <profile>, <agent_bin>]` when `program` is `sandbox-exec`. Empty
+    /// when the agent runs unwrapped.
+    pub prefix_args: Vec<String>,
+    /// Sandbox profile tempfile, held for the session's lifetime so the profile
+    /// path embedded in `prefix_args` stays valid across the per-turn respawns.
+    pub profile: Option<tempfile::NamedTempFile>,
     /// The agent's primary worktree — set as the child's cwd.
     pub cwd: PathBuf,
     /// Session id to resume, if one has been captured already.
@@ -45,12 +53,19 @@ pub struct ExecSpawn {
     /// parsing (no events emitted). History for such agents comes from their
     /// on-disk transcript, and the session id from the filesystem.
     pub stdout_is_json: bool,
+    /// Extra environment variables (e.g. `QUORUM_RPC_DIR`) set on every turn's
+    /// child process, layered on top of the inherited environment.
+    pub env: Vec<(String, String)>,
 }
 
 pub struct ExecSession {
     program: PathBuf,
+    prefix_args: Vec<String>,
+    /// Kept alive (not read) so the sandbox profile file outlives the session.
+    _profile: Option<tempfile::NamedTempFile>,
     cwd: PathBuf,
     stdout_is_json: bool,
+    env: Vec<(String, String)>,
     session_id: Arc<Mutex<Option<String>>>,
     child: Arc<Mutex<Option<Child>>>,
     /// Monotonic turn counter. A reap thread only reports its exit if its
@@ -88,8 +103,11 @@ impl ExecSession {
     {
         Self {
             program: spec.program,
+            prefix_args: spec.prefix_args,
+            _profile: spec.profile,
             cwd: spec.cwd,
             stdout_is_json: spec.stdout_is_json,
+            env: spec.env,
             session_id: Arc::new(Mutex::new(spec.session_id)),
             child: Arc::new(Mutex::new(None)),
             turn_seq: Arc::new(AtomicU64::new(0)),
@@ -129,8 +147,12 @@ impl ExecSession {
             (self.build_args)(&prompt, id.as_deref(), thinking)
         };
         let mut cmd = Command::new(&self.program);
+        cmd.args(&self.prefix_args);
         cmd.args(&args);
         cmd.current_dir(&self.cwd);
+        for (k, v) in &self.env {
+            cmd.env(k, v);
+        }
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -339,9 +361,12 @@ mod tests {
         let session = ExecSession::new(
             ExecSpawn {
                 program: script,
+                prefix_args: vec![],
+                profile: None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,
+                env: vec![],
             },
             codex_args,
             codex_id,
@@ -393,9 +418,12 @@ mod tests {
         let session = ExecSession::new(
             ExecSpawn {
                 program: script,
+                prefix_args: vec![],
+                profile: None,
                 cwd: dir.path().to_path_buf(),
                 session_id: Some("prev-thread".into()),
                 stdout_is_json: true,
+                env: vec![],
             },
             codex_args,
             codex_id,

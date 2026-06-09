@@ -17,16 +17,31 @@
 //!   conversation, so later turns don't re-send it (no per-turn token tax, no
 //!   accumulating copies).
 //!
-//! Blank the markdown file to disable injection: every helper below no-ops when
-//! the source is empty.
+//! The injected text has two layers: editable general guidance
+//! (`instructions/system_prompt.md`) plus a Quorum-managed protocol block
+//! (`instructions/rpc_protocol.md`) that documents the file-RPC the app exposes
+//! (see `rpc.rs`). The RPC block is code-managed because it must stay in sync
+//! with the implemented op allowlist and the `QUORUM_RPC_DIR` env var; the
+//! general layer is yours to edit. Blank both files to disable injection
+//! entirely — every helper below no-ops when the combined text is empty.
 
-/// The single source of truth. Edit the file, not this constant.
+/// Editable general guidance. Edit the file, not this constant.
 const SYSTEM_PROMPT: &str = include_str!("instructions/system_prompt.md");
 
-/// The instruction text, trimmed. Empty when the source is blank/whitespace,
-/// which makes every injection helper a no-op.
-pub fn text() -> &'static str {
-    SYSTEM_PROMPT.trim()
+/// Quorum-managed RPC protocol block, appended after the general guidance.
+const RPC_INSTRUCTIONS: &str = include_str!("instructions/rpc_protocol.md");
+
+/// The combined instruction text, trimmed. Empty when both sources are
+/// blank/whitespace, which makes every injection helper a no-op.
+pub fn text() -> String {
+    let general = SYSTEM_PROMPT.trim();
+    let rpc = RPC_INSTRUCTIONS.trim();
+    match (general.is_empty(), rpc.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => general.to_string(),
+        (true, false) => rpc.to_string(),
+        (false, false) => format!("{general}\n\n{rpc}"),
+    }
 }
 
 /// Args for agents that expose `--append-system-prompt` (Claude, Pi).
@@ -52,7 +67,7 @@ pub fn codex_config_args() -> Vec<String> {
     }
     vec![
         "-c".into(),
-        format!("developer_instructions={}", toml_basic_string(text)),
+        format!("developer_instructions={}", toml_basic_string(&text)),
     ]
 }
 
@@ -121,7 +136,7 @@ mod tests {
     fn prepend_only_on_first_turn() {
         let first = prepend_to_prompt("do the thing", None);
         assert!(first.starts_with("<quorum-system>"));
-        assert!(first.contains(text()));
+        assert!(first.contains(text().as_str()));
         assert!(first.contains("</quorum-system>"));
         assert!(first.ends_with("do the thing"));
 

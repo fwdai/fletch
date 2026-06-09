@@ -25,6 +25,9 @@ pub struct ManagedSpawn<'a> {
     pub program: &'a Path,
     pub args: &'a [String],
     pub cwd: &'a Path,
+    /// Extra environment variables (e.g. `QUORUM_RPC_DIR`). `Command` inherits
+    /// the parent environment by default; these are layered on top.
+    pub env: &'a [(String, String)],
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +45,9 @@ impl ManagedSession {
         let mut cmd = Command::new(spec.program);
         cmd.args(spec.args);
         cmd.current_dir(spec.cwd);
+        for (k, v) in spec.env {
+            cmd.env(k, v);
+        }
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
