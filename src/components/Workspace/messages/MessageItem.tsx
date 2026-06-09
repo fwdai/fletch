@@ -1,5 +1,4 @@
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Markdown } from "../../Markdown";
 import type { ChatItem } from "../../../store";
 import type { ViewItem } from "./pair";
 import { ToolResultItem } from "./ToolResultItem";
@@ -24,7 +23,7 @@ export function MessageItem({ item }: { item: ViewItem }) {
     case "agent_message":
       return (
         <div className="m-agent">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
+          <Markdown>{item.text}</Markdown>
           {item.streaming && (
             <span className="term-cursor" style={{ marginLeft: 4 }} />
           )}
