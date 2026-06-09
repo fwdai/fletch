@@ -543,14 +543,15 @@ fn opencode_read(message_paths: &[PathBuf]) -> Vec<RawRecord> {
 // The conversation id (== session id) lives in agy's filesystem, not its output.
 
 fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>) -> Vec<String> {
-    let mut args = vec![
-        "--print".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-    ];
+    // `--print` takes the prompt as its *value* (i.e. `--print <prompt>`), so the
+    // prompt must come last, directly after `--print`. Putting another flag
+    // between them makes that flag the prompt (agy then "answers" the flag name).
+    let mut args = vec!["--dangerously-skip-permissions".to_string()];
     if let Some(id) = session_id {
         args.push("--conversation".into());
         args.push(id.to_string());
     }
+    args.push("--print".into());
     args.push(prompt.to_string());
     args
 }
