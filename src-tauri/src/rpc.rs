@@ -21,9 +21,15 @@
 //!   responses/<uuid>.json    # app writes
 //! ```
 //!
-//! This module is intentionally self-contained — no `Supervisor` or Tauri
-//! dependency — so the protocol is unit-testable in isolation. The lifecycle
-//! glue (start a watcher per agent, stop it on teardown) lives in `supervisor`.
+//! The mailbox protocol (parse, dispatch, atomic response, give-up) has no
+//! `Supervisor` or Tauri dependency, so it stays unit-testable in isolation;
+//! the higher-level ops reuse the app's `git`/`gh` helpers for behavior that
+//! must match the rest of Quorum (staging, push, base-branch PRs). Several ops
+//! exist precisely because the sandbox blocks them: a worktree's git database
+//! lives in the main repo's `.git/worktrees/<name>` — outside the writable
+//! root — so the agent can't `commit`/`push` itself; it asks the app to. The
+//! lifecycle glue (start a watcher per agent, stop on teardown) lives in
+//! `supervisor`, which supplies the per-agent [`OpContext`].
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -71,6 +77,13 @@ pub struct Response {
     pub stderr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// What an op needs beyond the request body: where to run (the agent's primary
+/// worktree) and the base branch for PRs. Supplied per-agent by the watcher.
+pub struct OpContext {
+    pub cwd: PathBuf,
+    pub base_branch: String,
 }
 
 impl Response {
@@ -131,7 +144,7 @@ pub fn ensure_mailbox(dir: &Path) -> Result<()> {
 /// delete the request. Driven on a fixed tick by the per-agent watcher. Errors
 /// on a single request are logged and isolated — one bad file can't stall the
 /// rest. Commands run in `cwd` (the agent's primary worktree).
-pub async fn process_pending(rpc_dir: &Path, cwd: &Path) {
+pub async fn process_pending(rpc_dir: &Path, ctx: &OpContext) {
     let requests = rpc_dir.join("requests");
     let responses = rpc_dir.join("responses");
 
@@ -149,7 +162,7 @@ pub async fn process_pending(rpc_dir: &Path, cwd: &Path) {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        handle_request_file(&path, &responses, cwd).await;
+        handle_request_file(&path, &responses, ctx).await;
     }
 }
 
@@ -157,7 +170,7 @@ pub async fn process_pending(rpc_dir: &Path, cwd: &Path) {
 /// file stem (the `<uuid>` the agent polls), not the in-body `id`, so the agent
 /// always finds its reply where it expects. The stem must be a safe token —
 /// a defense-in-depth guard against a malformed id escaping the mailbox.
-async fn handle_request_file(path: &Path, responses: &Path, cwd: &Path) {
+async fn handle_request_file(path: &Path, responses: &Path, ctx: &OpContext) {
     let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
         return;
     };
@@ -196,7 +209,7 @@ async fn handle_request_file(path: &Path, responses: &Path, cwd: &Path) {
         }
     };
 
-    let resp = dispatch(stem, &req.op, &req.args, cwd).await;
+    let resp = dispatch(stem, &req.op, &req.args, ctx).await;
 
     if let Err(e) = write_response_atomic(responses, stem, &resp) {
         tracing::warn!(error = %e, id = %stem, "rpc: write response failed");
@@ -214,15 +227,57 @@ async fn handle_request_file(path: &Path, responses: &Path, cwd: &Path) {
 /// block (`instructions/rpc_protocol.md`). Anything unmatched is rejected, which
 /// is what keeps the sandbox meaningful — the agent can only invoke vetted,
 /// deterministic actions.
-async fn dispatch(id: &str, op: &str, _args: &Value, cwd: &Path) -> Response {
+async fn dispatch(id: &str, op: &str, args: &Value, ctx: &OpContext) -> Response {
     match op {
         // Liveness probe — proves the round-trip with no side effects.
         "ping" => Response::ok(id, 0, "pong".to_string(), String::new()),
-        // Example real op: run a deterministic command and report its result.
+        // Read-only: run a deterministic command and report its result.
         "git_status" => {
-            run_command(id, cwd, "git", &["status", "--porcelain=v1", "--branch"]).await
+            run_command(id, &ctx.cwd, "git", &["status", "--porcelain=v1", "--branch"]).await
         }
+        // Stage everything in the worktree and commit. Blocked in the sandbox
+        // (the worktree's git index/objects live outside the writable root), so
+        // it's an app action. `args.message` is the commit message.
+        "git_commit" => git_commit(id, args, ctx).await,
+        // Push the current branch and open a PR against the agent's base branch.
+        // `args.title`/`args.body` set the PR title and description (empty title
+        // → gh auto-fills from the commits).
+        "open_pr" => open_pr(id, args, ctx).await,
         other => Response::err(id, format!("unknown op: {other}")),
+    }
+}
+
+/// `git_commit` — `args.message` (required, non-empty) is the commit message.
+/// Reuses `git::commit_all` (stage `-A` + commit) so behavior matches the rest
+/// of the app.
+async fn git_commit(id: &str, args: &Value, ctx: &OpContext) -> Response {
+    let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    if message.trim().is_empty() {
+        return Response::err(id, "git_commit requires a non-empty `message` arg");
+    }
+    match crate::git::commit_all(&ctx.cwd, message).await {
+        Ok(()) => Response::ok(id, 0, "committed".to_string(), String::new()),
+        Err(e) => Response::err(id, e.to_string()),
+    }
+}
+
+/// `open_pr` — push the current branch, then `gh pr create` against the agent's
+/// base branch. `args.title`/`args.body` are optional (empty title → `--fill`).
+/// Returns the PR URL in `stdout` on success.
+async fn open_pr(id: &str, args: &Value, ctx: &OpContext) -> Response {
+    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
+    let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
+    let branch = match crate::git::current_branch(&ctx.cwd).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return Response::err(id, "open_pr: HEAD is detached — no branch to push"),
+        Err(e) => return Response::err(id, format!("open_pr: {e}")),
+    };
+    if let Err(e) = crate::git::push(&ctx.cwd, &branch).await {
+        return Response::err(id, format!("open_pr push failed: {e}"));
+    }
+    match crate::gh::pr_create(&ctx.cwd, title, body, &ctx.base_branch).await {
+        Ok(pr) => Response::ok(id, 0, pr.url, String::new()),
+        Err(e) => Response::err(id, format!("open_pr: {e}")),
     }
 }
 
@@ -294,6 +349,22 @@ mod tests {
         std::fs::write(requests.join(name), body).unwrap();
     }
 
+    fn ctx(cwd: &Path) -> OpContext {
+        OpContext {
+            cwd: cwd.to_path_buf(),
+            base_branch: "main".to_string(),
+        }
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
     #[test]
     fn ensure_mailbox_creates_both_subdirs() {
         let td = tempfile::tempdir().unwrap();
@@ -338,7 +409,7 @@ mod tests {
             r#"{"id":"req-1","op":"ping"}"#,
         );
 
-        process_pending(&rpc_dir, td.path()).await;
+        process_pending(&rpc_dir, &ctx(td.path())).await;
 
         // Request consumed; response written.
         assert!(!rpc_dir.join("requests/req-1.json").exists());
@@ -363,7 +434,7 @@ mod tests {
             r#"{"id":"req-2","op":"rm_rf_everything","args":{}}"#,
         );
 
-        process_pending(&rpc_dir, td.path()).await;
+        process_pending(&rpc_dir, &ctx(td.path())).await;
 
         let body = std::fs::read_to_string(rpc_dir.join("responses/req-2.json")).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
@@ -378,7 +449,7 @@ mod tests {
         ensure_mailbox(&rpc_dir).unwrap();
         write_request(&rpc_dir.join("requests"), "req-3.json", "{ not json");
 
-        process_pending(&rpc_dir, td.path()).await;
+        process_pending(&rpc_dir, &ctx(td.path())).await;
 
         // Within the grace window: left in place (could be a mid-write), no
         // response fabricated. Once older than STALE_REQUEST_AGE it would
@@ -400,7 +471,7 @@ mod tests {
             r#"{"id":"req-4","op":"git_status"}"#,
         );
 
-        process_pending(&rpc_dir, td.path()).await;
+        process_pending(&rpc_dir, &ctx(td.path())).await;
 
         let body = std::fs::read_to_string(rpc_dir.join("responses/req-4.json")).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
@@ -409,5 +480,59 @@ mod tests {
         // exit_code is present.
         assert_eq!(v["ok"], true);
         assert!(v["exit_code"].is_number());
+    }
+
+    #[tokio::test]
+    async fn git_commit_stages_and_commits_the_worktree() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("new.txt"), b"hello").unwrap();
+
+        // Mailbox kept outside the repo so `git add -A` only stages new.txt.
+        let rpc_dir = td.path().join("rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "c1.json",
+            r#"{"id":"c1","op":"git_commit","args":{"message":"add new.txt"}}"#,
+        );
+
+        let cx = OpContext { cwd: repo.clone(), base_branch: "main".to_string() };
+        process_pending(&rpc_dir, &cx).await;
+
+        let body = std::fs::read_to_string(rpc_dir.join("responses/c1.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["ok"], true, "response: {body}");
+
+        // The commit landed with the given message.
+        let log = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["log", "--oneline"])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&log.stdout).contains("add new.txt"));
+    }
+
+    #[tokio::test]
+    async fn git_commit_rejects_empty_message() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join("rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "c2.json",
+            r#"{"id":"c2","op":"git_commit","args":{"message":"  "}}"#,
+        );
+
+        process_pending(&rpc_dir, &ctx(td.path())).await;
+
+        let body = std::fs::read_to_string(rpc_dir.join("responses/c2.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["ok"], false);
+        assert!(v["error"].as_str().unwrap().contains("message"));
     }
 }

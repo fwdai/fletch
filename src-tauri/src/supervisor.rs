@@ -596,6 +596,12 @@ impl Supervisor {
         let rpc_dir = rpc::mailbox_dir(agent_id)?;
         rpc::ensure_mailbox(&rpc_dir)?;
         let watcher_cwd = cwd.clone();
+        // Base branch for the `open_pr` op — the branch the agent was forked
+        // from, same default the manual PR action uses.
+        let base_branch = primary
+            .parent_branch
+            .clone()
+            .unwrap_or_else(|| "main".to_string());
 
         // Claude only writes a session file once the first turn lands.
         // If task is still empty (no first user message has ever been
@@ -737,7 +743,11 @@ impl Supervisor {
 
         // Watch this agent's RPC mailbox for the life of this generation,
         // executing allowlisted ops and writing responses back.
-        spawn_rpc_watcher(self.clone(), agent_id_str, watcher_cwd, rpc_dir, my_gen);
+        let op_ctx = rpc::OpContext {
+            cwd: watcher_cwd,
+            base_branch,
+        };
+        spawn_rpc_watcher(self.clone(), agent_id_str, op_ctx, rpc_dir, my_gen);
 
         Ok(())
     }
@@ -2035,7 +2045,7 @@ fn spawn_turn_watchdog(
 fn spawn_rpc_watcher(
     sup: Arc<Supervisor>,
     agent_id: String,
-    cwd: PathBuf,
+    ctx: rpc::OpContext,
     rpc_dir: PathBuf,
     gen: u64,
 ) {
@@ -2053,7 +2063,7 @@ fn spawn_rpc_watcher(
                 return;
             }
 
-            rpc::process_pending(&rpc_dir, &cwd).await;
+            rpc::process_pending(&rpc_dir, &ctx).await;
         }
     });
 }

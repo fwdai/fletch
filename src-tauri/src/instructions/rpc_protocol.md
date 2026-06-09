@@ -24,3 +24,7 @@ Available ops:
 
 - `ping` — liveness check; returns `pong`. No args.
 - `git_status` — runs `git status` in your worktree and returns its output. No args.
+- `git_commit` — stages all changes in your worktree and commits them. `args.message` (required) is the commit message.
+- `open_pr` — pushes your branch and opens a pull request against your base branch. `args.title` and `args.body` set the PR title and description; omit `title` to auto-fill from your commits.
+
+Use these ops for git: your worktree's git database lives outside the sandbox, so running `git add`/`commit`/`push` yourself fails with a permission error. Commit and open PRs through `git_commit` and `open_pr` instead.
