@@ -32,6 +32,7 @@ import {
   toProfile,
   type AccountProfile,
 } from "./storage/accounts";
+import { playAgentDone } from "./util/sound";
 
 type OutputHandler = (bytes: Uint8Array) => void;
 
@@ -518,6 +519,10 @@ function applyEvent(
     next.length > prev.length &&
     next[next.length - 1]?.kind === "notice" &&
     (next[next.length - 1] as { subtype?: string }).subtype === "turn_end";
+
+  // Chime when a turn lands successfully. `next !== prev` above guarantees this
+  // runs once per turn-end (not on stale status pings).
+  if (turnEnded) playAgentDone();
 
   const tokens = extractInputTokens(rawEvent);
 
