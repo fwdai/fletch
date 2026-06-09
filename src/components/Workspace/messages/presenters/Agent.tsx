@@ -1,5 +1,4 @@
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Markdown } from "../../../Markdown";
 import type { ToolPresenter } from "./types";
 import { getStringField, renderToolResult } from "./util";
 
@@ -49,9 +48,7 @@ export const agentPresenter: ToolPresenter = {
               fontSize: 13.5,
             }}
           >
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {renderToolResult(result.content)}
-            </ReactMarkdown>
+            <Markdown>{renderToolResult(result.content)}</Markdown>
           </div>
         )}
       </>
