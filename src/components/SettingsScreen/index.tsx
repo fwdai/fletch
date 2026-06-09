@@ -1,17 +1,26 @@
+import { Suspense, lazy } from "react";
 import { useAppStore, type SettingsSection } from "../../store";
 import { Icon, type IconName } from "../Icon";
 import pkg from "../../../package.json";
 import { GeneralPane } from "./GeneralPane";
 import { AccountPane } from "./AccountPane";
 import { ProvidersPane } from "./ProvidersPane";
-import { DeveloperPane } from "./DeveloperPane";
+
+// Lazily loaded behind `import.meta.env.DEV`. In production the ternary's dead
+// branch — including the dynamic import() — is dropped by Rollup, so the
+// DeveloperPane chunk is never emitted into the build (not merely unloaded).
+const DeveloperPane = import.meta.env.DEV
+  ? lazy(() =>
+      import("./DeveloperPane").then((m) => ({ default: m.DeveloperPane })),
+    )
+  : null;
 
 const NAV: { id: SettingsSection; label: string; icon: IconName }[] = [
   { id: "account", label: "Account", icon: "user" },
   { id: "general", label: "General", icon: "settings" },
   { id: "providers", label: "Providers", icon: "cube" },
   // Dev-only: omitted entirely from production builds.
-  ...(import.meta.env.DEV
+  ...(DeveloperPane
     ? [{ id: "developer" as const, label: "Developer", icon: "wrench" as const }]
     : []),
 ];
@@ -53,11 +62,15 @@ export function SettingsScreen() {
         <div className="set-content">
           {section === "account" && <AccountPane />}
           {section === "providers" && <ProvidersPane />}
-          {section === "developer" && import.meta.env.DEV && <DeveloperPane />}
-          {/* Fallback: "developer" can't be selected in prod (no nav entry), but
-              guard the render so a stale section value still shows something. */}
+          {section === "developer" && DeveloperPane && (
+            <Suspense fallback={null}>
+              <DeveloperPane />
+            </Suspense>
+          )}
+          {/* Fallback: "developer" can't be selected in prod (no nav entry, and
+              DeveloperPane is null), so a stale section value falls back here. */}
           {(section === "general" ||
-            (section === "developer" && !import.meta.env.DEV)) && <GeneralPane />}
+            (section === "developer" && !DeveloperPane)) && <GeneralPane />}
         </div>
       </div>
     </div>
