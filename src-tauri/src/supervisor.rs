@@ -1833,27 +1833,44 @@ fn on_first_user_message(
     create_branches_for_branchless_repos(sup, app, agent_id);
 }
 
-/// Find a branch name that doesn't yet exist in `repo`, starting from
-/// `base` and falling back to `base-2`, `base-3`, … on collision.
-async fn free_branch_name(repo: &std::path::Path, base: &str) -> String {
-    if !git::branch_exists(repo, base).await.unwrap_or(false) {
-        return base.to_string();
-    }
-    let mut n = 2;
-    loop {
-        let candidate = format!("{base}-{n}");
-        if !git::branch_exists(repo, &candidate).await.unwrap_or(false) {
-            return candidate;
+/// Most stale same-named branches we'll step over before giving up. A
+/// modest cap so a pathological pile-up (e.g. bulk-deleted agents that
+/// all kept their branch) surfaces as a logged error instead of an
+/// unbounded probe loop.
+const MAX_BRANCH_SUFFIX: u32 = 1000;
+
+/// Find a single branch name that's free across *every* given repo,
+/// starting from `base` and stepping through `base-2`, `base-3`, … —
+/// so all of an agent's repos land on one canonical branch rather than
+/// diverging when a stale branch exists in some repos but not others.
+/// Returns `None` if no free name is found within `MAX_BRANCH_SUFFIX`.
+async fn free_branch_name_across(repos: &[PathBuf], base: &str) -> Option<String> {
+    for n in 1..=MAX_BRANCH_SUFFIX {
+        let candidate = if n == 1 {
+            base.to_string()
+        } else {
+            format!("{base}-{n}")
+        };
+        let mut taken = false;
+        for repo in repos {
+            if git::branch_exists(repo, &candidate).await.unwrap_or(false) {
+                taken = true;
+                break;
+            }
         }
-        n += 1;
+        if !taken {
+            return Some(candidate);
+        }
     }
+    None
 }
 
 /// For every tracked repo on the agent that doesn't have a branch yet,
 /// create `quorum/<workspace-name>` inside that repo's worktree — the
 /// branch mirrors the workspace (place) name so worktree, sandbox, and
-/// branch all share one identifier. Runs in a background task.
-/// Idempotent — `set_repo_branch_if_empty` guards each write.
+/// branch all share one identifier. Every repo on the agent lands on the
+/// same branch name. Runs in a background task. Idempotent —
+/// `set_repo_branch_if_empty` guards each write.
 fn create_branches_for_branchless_repos(
     sup: Arc<Supervisor>,
     app: AppHandle,
@@ -1868,12 +1885,37 @@ fn create_branches_for_branchless_repos(
             }
         };
 
-        let branch_base = branding::branch_for(&agent_id);
+        let pending: Vec<&TrackedRepo> =
+            record.repos.iter().filter(|r| r.branch.is_none()).collect();
+        if pending.is_empty() {
+            return;
+        }
 
-        for repo in record.repos.iter() {
-            if repo.branch.is_some() {
-                continue;
+        // One canonical branch per agent: reuse the name already
+        // established on another repo if there is one (e.g. a repo added
+        // after the agent started), otherwise pick a name that's free
+        // across all the repos we're about to branch — so a stale branch
+        // in one repo can't make them diverge.
+        let branch = match record.repos.iter().find_map(|r| r.branch.clone()) {
+            Some(existing) => existing,
+            None => {
+                let base = branding::branch_for(&agent_id);
+                let paths: Vec<PathBuf> = pending.iter().map(|r| r.repo_path.clone()).collect();
+                match free_branch_name_across(&paths, &base).await {
+                    Some(name) => name,
+                    None => {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            base = %base,
+                            "branch creation: no free branch name within cap; leaving repos branchless"
+                        );
+                        return;
+                    }
+                }
             }
+        };
+
+        for repo in pending {
             let worktree = match repo_worktree_path(&agent_id, &repo.subdir) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1881,11 +1923,6 @@ fn create_branches_for_branchless_repos(
                     continue;
                 }
             };
-            // The workspace name is unique among live agents, but a branch
-            // from a since-deleted agent of the same name can linger. Append
-            // a numeric suffix until we find a free name, mirroring how place
-            // ids disambiguate (`-2`, `-3`, …).
-            let branch = free_branch_name(&repo.repo_path, &branch_base).await;
             if let Err(e) = git::checkout_new_branch(&worktree, &branch).await {
                 tracing::warn!(
                     error = %e,
