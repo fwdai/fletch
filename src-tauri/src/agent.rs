@@ -282,11 +282,42 @@ pub fn per_turn_descriptor(id: &str) -> Option<&'static PerTurnDescriptor> {
 /// from `start_index` (the count of records already ingested) so they match what
 /// a full read would have assigned; `id_field` (e.g. claude's `uuid`) overrides
 /// when present. Mirrors `records_with_id` parsing, just over the new tail only.
+/// Parse one JSONL line into a `RawRecord`. Returns `None` for blank lines,
+/// non-UTF-8, or incomplete/invalid JSON — so a half-written trailing line is
+/// simply skipped rather than ingested.
+fn parse_jsonl_record(line: &[u8], id_field: Option<&str>, idx: usize) -> Option<RawRecord> {
+    let text = std::str::from_utf8(line).ok()?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    let v: Value = serde_json::from_str(text).ok()?;
+    let native_id = id_field
+        .and_then(|f| v.get(f))
+        .and_then(|x| x.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("ln:{idx}"));
+    Some(RawRecord { native_id, body: v })
+}
+
+/// Read new JSONL records from `path` starting at byte `offset`.
+///
+/// Newline-terminated lines are always safe to consume. The segment *after* the
+/// last newline is an unterminated trailing line:
+/// - For a **live writer** (`consume_trailing == false`, e.g. claude's open
+///   transcript) it may be half-written, so we hold it and re-read once it's
+///   terminated — the byte offset stays before it.
+/// - For an **exited writer** (`consume_trailing == true`, i.e. a per-turn agent
+///   in Custom view that has finished the turn) the trailing line is the final,
+///   complete line. Cursor and Pi write their last line with no trailing
+///   newline, so without this they'd never be ingested. We consume it *only if
+///   it parses as JSON*, so a genuinely partial line (caught mid-write) is still
+///   held rather than ingested.
 pub fn read_jsonl_tail(
     path: &Path,
     offset: u64,
     start_index: usize,
     id_field: Option<&str>,
+    consume_trailing: bool,
 ) -> (Vec<RawRecord>, u64) {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -300,32 +331,36 @@ pub fn read_jsonl_tail(
     if file.read_to_end(&mut buf).is_err() {
         return (Vec::new(), offset);
     }
-    // Consume only up to the last newline; anything after is a partial line.
-    let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') else {
-        return (Vec::new(), offset);
-    };
+
+    // Bytes through the last newline are complete lines; the rest is the
+    // unterminated trailing segment.
+    let complete_end = buf
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map(|p| p + 1)
+        .unwrap_or(0);
 
     let mut out = Vec::new();
     let mut idx = start_index;
-    for line in buf[..=last_nl].split(|&b| b == b'\n') {
-        let Ok(text) = std::str::from_utf8(line) else {
-            continue;
-        };
-        if text.trim().is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<Value>(text) {
-            let native_id = id_field
-                .and_then(|f| v.get(f))
-                .and_then(|x| x.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("ln:{idx}"));
-            out.push(RawRecord { native_id, body: v });
+    let mut consumed = complete_end;
+
+    for line in buf[..complete_end].split(|&b| b == b'\n') {
+        if let Some(rec) = parse_jsonl_record(line, id_field, idx) {
+            out.push(rec);
             idx += 1;
         }
     }
 
-    (out, offset + last_nl as u64 + 1)
+    if consume_trailing {
+        if let Some(rec) = parse_jsonl_record(&buf[complete_end..], id_field, idx) {
+            out.push(rec);
+            // The trailing line parsed cleanly, so it was complete — consume to
+            // EOF so we don't re-read it next time.
+            consumed = buf.len();
+        }
+    }
+
+    (out, offset + consumed as u64)
 }
 
 pub fn records_with_id(values: Vec<Value>, id_field: Option<&str>) -> Vec<RawRecord> {
@@ -1419,7 +1454,7 @@ mod tests {
             .unwrap();
         }
 
-        let (recs, off) = read_jsonl_tail(&path, 0, 0, Some("uuid"));
+        let (recs, off) = read_jsonl_tail(&path, 0, 0, Some("uuid"), false);
         assert_eq!(
             recs.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
             vec!["a", "b"],
@@ -1433,7 +1468,7 @@ mod tests {
             write!(f, "{}\n{}\n", r#""type":"assistant"}"#, r#"{"uuid":"d","type":"user"}"#).unwrap();
         }
 
-        let (recs2, _off2) = read_jsonl_tail(&path, off, 2, Some("uuid"));
+        let (recs2, _off2) = read_jsonl_tail(&path, off, 2, Some("uuid"), false);
         assert_eq!(
             recs2.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
             vec!["c", "d"],
@@ -1452,10 +1487,58 @@ mod tests {
             write!(f, "{}\n{}\n", r#"{"type":"mode"}"#, r#"{"type":"summary"}"#).unwrap();
         }
         // Pretend 5 records were already ingested.
-        let (recs, _off) = read_jsonl_tail(&path, 0, 5, None);
+        let (recs, _off) = read_jsonl_tail(&path, 0, 5, None, false);
         assert_eq!(
             recs.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
             vec!["ln:5", "ln:6"],
+        );
+    }
+
+    #[test]
+    fn read_jsonl_tail_consume_trailing_reads_unterminated_final_line() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        // A complete line + a complete-but-unterminated final line — how cursor
+        // and pi write their last (assistant) line: no trailing newline.
+        let path = dir.path().join("c.jsonl");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            write!(
+                f,
+                "{}\n{}",
+                r#"{"uuid":"a","type":"user"}"#,
+                r#"{"uuid":"b","type":"assistant"}"#,
+            )
+            .unwrap();
+        }
+
+        // Exited writer: the unterminated final line is consumed, to EOF.
+        let (recs, off) = read_jsonl_tail(&path, 0, 0, Some("uuid"), true);
+        assert_eq!(
+            recs.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b"],
+        );
+        assert_eq!(off, std::fs::metadata(&path).unwrap().len(), "consumed to EOF");
+
+        // Live writer (same bytes): the unterminated final line is held back.
+        let (held, _) = read_jsonl_tail(&path, 0, 0, Some("uuid"), false);
+        assert_eq!(
+            held.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            vec!["a"],
+        );
+
+        // A genuinely torn final line (invalid JSON) is held even when consuming.
+        let torn = dir.path().join("torn.jsonl");
+        {
+            let mut f = std::fs::File::create(&torn).unwrap();
+            write!(f, "{}\n{}", r#"{"uuid":"a","type":"user"}"#, r#"{"uuid":"x","#).unwrap();
+        }
+        let (recs_torn, _) = read_jsonl_tail(&torn, 0, 0, Some("uuid"), true);
+        assert_eq!(
+            recs_torn.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            vec!["a"],
+            "a mid-write torn line is held even with consume_trailing",
         );
     }
 

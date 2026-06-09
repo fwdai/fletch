@@ -85,4 +85,18 @@ describe("sanitizeUserText", () => {
     expect(out.text).toBe("");
     expect(out.notices).toEqual([]);
   });
+
+  it("unwraps Cursor's timestamp/user_query envelope", () => {
+    const raw =
+      "<timestamp>Tue, Jun 9, 2026</timestamp>\n<user_query>\nHey\n</user_query>";
+    expect(sanitizeUserText(raw).text).toBe("Hey");
+  });
+
+  it("strips an injected quorum-system block, even nested in the envelope", () => {
+    const raw =
+      "<timestamp>Tue, Jun 9, 2026</timestamp>\n<user_query>\n<quorum-system>\nfollow the rules\n</quorum-system>\n\nHey\n</user_query>";
+    // Cleaned to exactly what the user typed, so it dedups against the
+    // optimistic turn and renders as a single clean bubble.
+    expect(sanitizeUserText(raw).text).toBe("Hey");
+  });
 });

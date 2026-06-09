@@ -4,6 +4,7 @@
 // user-authored content and shouldn't render as user bubbles.
 
 import type { ChatItem } from "../types";
+import { stripInjectedInstructions } from "../../util/instructions";
 
 type NoticeItem = Extract<ChatItem, { kind: "notice" }>;
 
@@ -26,6 +27,12 @@ const SYSTEM_REMINDER_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/g;
 // type it. Convert to a compact_summary notice instead.
 const COMPACT_PREAMBLE_RE =
   /^This session is being continued from a previous conversation/;
+
+// Cursor (which reuses this sanitizer) wraps every user turn in its own
+// envelope: a `<timestamp>` line followed by the query inside `<user_query>`.
+// Neither is user-authored. Claude never emits these, so it's a no-op there.
+const CURSOR_TIMESTAMP_RE = /<timestamp>[\s\S]*?<\/timestamp>/g;
+const CURSOR_USER_QUERY_RE = /<user_query>([\s\S]*?)<\/user_query>/;
 
 export function sanitizeUserText(raw: string): SanitizeResult {
   const notices: NoticeItem[] = [];
@@ -64,6 +71,18 @@ export function sanitizeUserText(raw: string): SanitizeResult {
     }
     return "";
   });
+
+  // Unwrap Cursor's user-turn envelope (no-op for Claude).
+  text = text.replace(CURSOR_TIMESTAMP_RE, "");
+  const cursorQuery = text.match(CURSOR_USER_QUERY_RE);
+  if (cursorQuery) {
+    text = cursorQuery[1];
+  }
+
+  // Strip the Quorum-injected instruction block at the data layer (not just at
+  // render) so the stored text equals what the user typed — this lets dedup
+  // merge the agent's echoed turn with the optimistic one. No-op when absent.
+  text = stripInjectedInstructions(text);
 
   return { text: text.trim(), notices };
 }
