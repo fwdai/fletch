@@ -14,6 +14,7 @@ mod names;
 mod new_project;
 mod oauth;
 mod pty_session;
+mod rpc;
 mod run_detect;
 mod run_session;
 mod sandbox;

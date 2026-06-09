@@ -62,8 +62,14 @@ pub struct PerTurnAgent {
 pub struct PerTurnSpec {
     /// The agent's working directory — the primary repo's worktree.
     pub cwd: PathBuf,
+    /// Sandbox writable root — the agent's parent dir (same role as
+    /// `SpawnSpec::sandbox_root`). Per-turn agents now run under sandbox-exec
+    /// too, so they need it to build the profile.
+    pub sandbox_root: PathBuf,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
+    /// The agent's RPC mailbox dir, exposed to the child as `QUORUM_RPC_DIR`.
+    pub rpc_dir: PathBuf,
 }
 
 /// Everything that varies between per-turn agents. The runner lifecycle —
@@ -724,8 +730,20 @@ pub struct SpawnSpec<'a> {
     /// no selection; claude uses its own default. Ignored by per-turn agents,
     /// which take effort per-turn via their `thinking` build-args instead.
     pub effort: Option<&'a str>,
+    /// The agent's RPC mailbox dir, exposed to the child as `QUORUM_RPC_DIR`.
+    pub rpc_dir: PathBuf,
     pub cols: u16,
     pub rows: u16,
+}
+
+/// The environment Quorum injects into every agent child: the absolute path to
+/// its file-mailbox RPC dir. The agent posts requests there for the app to
+/// execute (see `rpc.rs`). Layered on top of the inherited environment.
+fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
+    vec![(
+        "QUORUM_RPC_DIR".to_string(),
+        rpc_dir.to_string_lossy().into_owned(),
+    )]
 }
 
 impl Agent {
@@ -735,6 +753,7 @@ impl Agent {
         G: Fn(PtyExit) + Send + 'static,
     {
         let (profile_file, args) = prepare_pty_args(&spec)?;
+        let env = rpc_env(&spec.rpc_dir);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -752,6 +771,7 @@ impl Agent {
                 program: Path::new(SANDBOX_EXEC),
                 args: &args,
                 cwd: &spec.cwd,
+                env: &env,
                 cols: spec.cols,
                 rows: spec.rows,
             },
@@ -791,7 +811,21 @@ impl Agent {
         } else {
             Some(spec.session_id)
         };
-        let args = (desc.pty_args)(session);
+        let agent_args = (desc.pty_args)(session);
+        let env = rpc_env(&spec.rpc_dir);
+
+        // Unified sandbox: run the agent's TUI under sandbox-exec with Quorum's
+        // profile (the agent's own sandbox is disabled in its arg builder), so
+        // per-turn agents are confined exactly like claude. argv becomes
+        // `sandbox-exec -f <profile> <agent-bin> <agent-args…>`.
+        let profile_file = prepare_sandbox(&spec.sandbox_root, &spec.rpc_dir, &home)?;
+        let profile_path = profile_file
+            .path()
+            .to_str()
+            .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
+            .to_string();
+        let mut args: Vec<String> = vec!["-f".into(), profile_path, bin.clone()];
+        args.extend(agent_args);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -799,16 +833,18 @@ impl Agent {
             session = %spec.session_id,
             fresh = spec.fresh,
             cwd = %spec.cwd.display(),
+            sandbox_root = %spec.sandbox_root.display(),
             bin = %bin,
             argv = ?args,
-            "spawning native pty per-turn agent"
+            "spawning sandboxed native pty per-turn agent"
         );
 
         let pty = PtySession::spawn(
             PtySpawn {
-                program: Path::new(&bin),
+                program: Path::new(SANDBOX_EXEC),
                 args: &args,
                 cwd: &spec.cwd,
+                env: &env,
                 cols: spec.cols,
                 rows: spec.rows,
             },
@@ -818,7 +854,7 @@ impl Agent {
 
         Ok(Self::Pty(PtyAgent {
             pty,
-            _profile_file: None,
+            _profile_file: Some(profile_file),
         }))
     }
 
@@ -828,6 +864,7 @@ impl Agent {
         G: Fn(ManagedExit) + Send + 'static,
     {
         let (profile_file, args) = prepare_managed_args(&spec)?;
+        let env = rpc_env(&spec.rpc_dir);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -845,6 +882,7 @@ impl Agent {
                 program: Path::new(SANDBOX_EXEC),
                 args: &args,
                 cwd: &spec.cwd,
+                env: &env,
             },
             on_event,
             on_exit,
@@ -912,18 +950,42 @@ impl Agent {
         G: Fn(String) + Send + Sync + 'static,
         H: Fn(bool) + Send + Sync + 'static,
     {
+        // Unified sandbox: wrap each turn's process in sandbox-exec with
+        // Quorum's profile. The agent binary moves into `prefix_args`
+        // (`sandbox-exec -f <profile> <agent-bin>`), and the profile tempfile
+        // rides on the ExecSession so it outlives the per-turn respawns.
+        let home = dirs::home_dir()
+            .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let profile_file = prepare_sandbox(&spec.sandbox_root, &spec.rpc_dir, &home)?;
+        let profile_path = profile_file
+            .path()
+            .to_str()
+            .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
+            .to_string();
+        let agent_bin = program
+            .to_str()
+            .ok_or_else(|| Error::Other("agent bin path not utf-8".into()))?
+            .to_string();
+        let prefix_args = vec!["-f".to_string(), profile_path, agent_bin];
+
         tracing::info!(
-            program = %program.display(),
+            program = %SANDBOX_EXEC,
+            agent_bin = %program.display(),
             cwd = %spec.cwd.display(),
+            sandbox_root = %spec.sandbox_root.display(),
             resume = spec.session_id.is_some(),
-            "preparing per-turn runner"
+            "preparing sandboxed per-turn runner"
         );
+        let env = rpc_env(&spec.rpc_dir);
         let session = ExecSession::new(
             ExecSpawn {
-                program,
+                program: PathBuf::from(SANDBOX_EXEC),
+                prefix_args,
+                profile: Some(profile_file),
                 cwd: spec.cwd,
                 session_id: spec.session_id,
                 stdout_is_json,
+                env,
             },
             build_args,
             extract_session_id,
@@ -981,10 +1043,11 @@ impl Agent {
 }
 
 fn prepare_sandbox(
-    worktree: &Path,
+    writable_root: &Path,
+    rpc_dir: &Path,
     home: &Path,
 ) -> Result<tempfile::NamedTempFile> {
-    let profile_text = sandbox::build_profile(worktree, home)?;
+    let profile_text = sandbox::build_profile(writable_root, rpc_dir, home)?;
     let mut profile_file = tempfile::Builder::new()
         .prefix("quorum-sandbox-")
         .suffix(".sb")
@@ -1017,7 +1080,7 @@ fn prepare_pty_args(
     let home = dirs::home_dir()
         .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     let claude = resolve_claude(&home)?;
-    let profile_file = prepare_sandbox(&spec.sandbox_root, &home)?;
+    let profile_file = prepare_sandbox(&spec.sandbox_root, &spec.rpc_dir, &home)?;
 
     let profile_path = profile_file
         .path()
@@ -1053,7 +1116,7 @@ fn prepare_managed_args(
     let home = dirs::home_dir()
         .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     let claude = resolve_claude(&home)?;
-    let profile_file = prepare_sandbox(&spec.sandbox_root, &home)?;
+    let profile_file = prepare_sandbox(&spec.sandbox_root, &spec.rpc_dir, &home)?;
 
     let profile_path = profile_file
         .path()
@@ -1100,10 +1163,12 @@ fn resolve_claude(home: &Path) -> Result<String> {
 
 // ── per-turn provider configs ─────────────────────────────────────────────
 
-/// Codex: `codex exec [resume <id>] --json …`. Approvals off + codex's own
-/// workspace-write sandbox on, via `-c` (works on both `exec` and
-/// `exec resume`, unlike the `-s`/`-a` flags). Quorum does not wrap codex
-/// in sandbox-exec; codex sandboxes itself.
+/// Codex: `codex exec [resume <id>] --json …`. Approvals off and codex's own
+/// sandbox set to `danger-full-access` via `-c` (works on both `exec` and
+/// `exec resume`, unlike the `-s`/`-a` flags). Quorum now runs codex under
+/// sandbox-exec like every other agent, so codex's own confinement is disabled
+/// to leave a single boundary — and so codex can reach its RPC mailbox, which
+/// lives outside the worktree that `workspace-write` would have confined it to.
 fn codex_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["exec".into()];
     if let Some(id) = session_id {
@@ -1115,7 +1180,7 @@ fn codex_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&st
     args.push("-c".into());
     args.push("approval_policy=\"never\"".into());
     args.push("-c".into());
-    args.push("sandbox_mode=\"workspace-write\"".into());
+    args.push("sandbox_mode=\"danger-full-access\"".into());
     if let Some(effort) = thinking {
         args.push("-c".into());
         args.push(format!("reasoning_effort=\"{effort}\""));
@@ -1774,6 +1839,17 @@ mod tests {
     fn codex_args_reasoning_effort_when_thinking_set() {
         let args = codex_build_args("hi", None, Some("high"));
         assert!(args.contains(&"reasoning_effort=\"high\"".to_string()));
+    }
+
+    #[test]
+    fn codex_args_disable_codex_own_sandbox() {
+        // Quorum now wraps codex in sandbox-exec, so codex's own confinement is
+        // turned fully off — otherwise its workspace-write sandbox would block
+        // the RPC mailbox, which lives outside the worktree.
+        let args = codex_build_args("hi", None, None);
+        assert!(args.contains(&"sandbox_mode=\"danger-full-access\"".to_string()));
+        assert!(!args.iter().any(|a| a.contains("workspace-write")));
+        assert!(args.contains(&"approval_policy=\"never\"".to_string()));
     }
 
     #[test]

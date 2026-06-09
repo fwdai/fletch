@@ -24,6 +24,9 @@ pub struct PtySpawn<'a> {
     pub args: &'a [String],
     /// Working directory inside the PTY.
     pub cwd: &'a std::path::Path,
+    /// Extra environment variables to set on the child, applied after the
+    /// inherited environment (so they win on collision).
+    pub env: &'a [(String, String)],
     pub cols: u16,
     pub rows: u16,
 }
@@ -67,6 +70,10 @@ impl PtySession {
         // to a line-buffered mode that doesn't match what the user expects.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // Caller-supplied overrides (e.g. QUORUM_RPC_DIR) last, so they win.
+        for (k, v) in spec.env {
+            cmd.env(k, v);
+        }
 
         let mut child = pair
             .slave
@@ -205,6 +212,7 @@ mod tests {
                     "printf hello-from-pty".to_string(),
                 ],
                 cwd: td.path(),
+                env: &[],
                 cols: 80,
                 rows: 24,
             },

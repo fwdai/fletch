@@ -179,6 +179,7 @@ where
             program,
             args,
             cwd,
+            env: &[],
             cols: 120,
             rows: 32,
         },
