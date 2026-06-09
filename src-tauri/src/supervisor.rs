@@ -1393,12 +1393,22 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
     // sessions); multi-file / blob-dir readers fall back to a full read whose
     // already-stored rows are idempotently skipped. Either way the batch lands
     // in one transaction.
+    // Per-turn agents in Custom view have exited by turn-end, so their final
+    // line is complete even without a trailing newline (cursor/pi write it that
+    // way) — consume it. Persistent writers (claude) keep the file open, so a
+    // trailing line may be mid-write; hold it until it's newline-terminated.
+    let consume_trailing = !is_persistent_runner(&record);
     let (records, new_offset) = match (reader.tail, paths.as_slice()) {
         (Some(tail), [path]) => {
             let offset = workspace.session_ingest_offset(agent_id).unwrap_or(0);
             let start_index = workspace.session_record_count(agent_id).unwrap_or(0);
-            let (recs, next) =
-                crate::agent::read_jsonl_tail(path, offset, start_index, tail.id_field);
+            let (recs, next) = crate::agent::read_jsonl_tail(
+                path,
+                offset,
+                start_index,
+                tail.id_field,
+                consume_trailing,
+            );
             (recs, Some(next))
         }
         _ => ((reader.read)(&paths), None),

@@ -6,6 +6,7 @@ import { ToolResultItem } from "./ToolResultItem";
 import { ToolRow } from "./ToolRow";
 import { getPresenter } from "./presenters";
 import { AttachmentList } from "../../Composer/AttachmentList";
+import { stripInjectedInstructions } from "../../../util/instructions";
 
 /** Dispatcher for one rendered row. Accepts either a raw ChatItem or
  *  the derived `tool_pair` from pairToolItems(). */
@@ -14,7 +15,7 @@ export function MessageItem({ item }: { item: ViewItem }) {
     case "user_message":
       return (
         <div className="m-user">
-          {item.text}
+          {stripInjectedInstructions(item.text)}
           {item.attachments && item.attachments.length > 0 && (
             <AttachmentList paths={item.attachments} className="message-attachments" />
           )}

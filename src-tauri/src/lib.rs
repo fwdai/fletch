@@ -8,6 +8,7 @@ mod exec_session;
 mod gh;
 mod git;
 mod git_state;
+mod instructions;
 mod managed_session;
 mod names;
 mod new_project;
