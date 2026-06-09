@@ -32,6 +32,7 @@ import {
   toProfile,
   type AccountProfile,
 } from "./storage/accounts";
+import { playAgentDone } from "./util/sound";
 
 type OutputHandler = (bytes: Uint8Array) => void;
 
@@ -489,13 +490,15 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
   return result;
 }
 
-/** Apply one raw event to an agent's log via its provider adapter. Catches
- *  adapter throws so a single malformed event can't poison the whole log. */
+/** Apply one raw event to an agent's log via its provider adapter. Pure: it
+ *  returns the state patch plus a `turnEnded` flag so the caller can fire any
+ *  side effects (e.g. the completion chime). Catches adapter throws so a single
+ *  malformed event can't poison the whole log. */
 function applyEvent(
   state: AppState,
   agentId: string,
   rawEvent: RawEvent,
-): Partial<AppState> {
+): { patch: Partial<AppState>; turnEnded: boolean } {
   const adapter = getAdapter(providerFor(state, agentId));
   const prev = state.managedLogs[agentId] ?? [];
   let next: ChatItem[];
@@ -507,13 +510,14 @@ function applyEvent(
       type: rawEvent.type,
       err,
     });
-    return {};
+    return { patch: {}, turnEnded: false };
   }
-  if (next === prev) return {};
+  if (next === prev) return { patch: {}, turnEnded: false };
 
   // `result` events signal turn end for claude; mirror that state on the
   // store so the composer re-enables. Adapter-agnostic: any notice with
-  // subtype "turn_end" appended this tick clears managedBusy.
+  // subtype "turn_end" appended this tick clears managedBusy. The `next !== prev`
+  // guard above means this is true exactly once per turn-end.
   const turnEnded =
     next.length > prev.length &&
     next[next.length - 1]?.kind === "notice" &&
@@ -522,17 +526,20 @@ function applyEvent(
   const tokens = extractInputTokens(rawEvent);
 
   return {
-    managedLogs: { ...state.managedLogs, [agentId]: next },
-    managedBusy: turnEnded
-      ? { ...state.managedBusy, [agentId]: false }
-      : state.managedBusy,
-    managedBusyLabel: turnEnded
-      ? { ...state.managedBusyLabel, [agentId]: undefined }
-      : state.managedBusyLabel,
-    tokens:
-      tokens !== undefined
-        ? { ...state.tokens, [agentId]: tokens }
-        : state.tokens,
+    turnEnded,
+    patch: {
+      managedLogs: { ...state.managedLogs, [agentId]: next },
+      managedBusy: turnEnded
+        ? { ...state.managedBusy, [agentId]: false }
+        : state.managedBusy,
+      managedBusyLabel: turnEnded
+        ? { ...state.managedBusyLabel, [agentId]: undefined }
+        : state.managedBusyLabel,
+      tokens:
+        tokens !== undefined
+          ? { ...state.tokens, [agentId]: tokens }
+          : state.tokens,
+    },
   };
 }
 
@@ -690,7 +697,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
 
     await onAgentEvent((e) => {
-      set((state) => applyEvent(state, e.agent_id, e.event as RawEvent));
+      let turnEnded = false;
+      set((state) => {
+        const result = applyEvent(state, e.agent_id, e.event as RawEvent);
+        turnEnded = result.turnEnded;
+        return result.patch;
+      });
+      // Side effect lives here, at the call-site, rather than inside the pure
+      // updater: chime when an agent turn lands successfully.
+      if (turnEnded) playAgentDone();
     });
 
     // A turn's transcript was ingested into session_records: replace the
