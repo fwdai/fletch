@@ -376,6 +376,11 @@ button { cursor: default; }
 }
 .agent.active .ag-glyph { color: var(--accent); }
 .agent-row .ag-name { font-weight: 500; color: inherit; flex-shrink: 0; }
+.agent-row .ag-prov-chip {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center;
+  margin-left: -2px;
+}
 .agent-row .ag-provider-inline {
   font-size: 11.5px;
   color: var(--fg-3);

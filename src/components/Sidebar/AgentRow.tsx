@@ -4,7 +4,9 @@ import type { AgentRecord, AgentStatus } from "../../api";
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
 import { LANDMARK_NAMES } from "../../data/landmarks";
+import { providerChip, providerLabel } from "../../data/providers";
 import { Icon, LandmarkGlyph } from "../Icon";
+import { ProviderIcon } from "../ProviderIcon";
 import { formatAge, formatTokens } from "../../util/format";
 import { useMinuteClock } from "../../util/hooks";
 import { AgentStatsPopover, type AgentStats } from "./AgentStatsPopover";
@@ -86,7 +88,9 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
           </span>
         )}
         <span className="ag-name">{agent.name}</span>
-        <span className="ag-provider-inline">· {agent.provider}</span>
+        <span className="ag-prov-chip" title={providerLabel(agent.provider)}>
+          <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={15} />
+        </span>
         <span className="ag-actions">
           {stoppable && (
             <button
@@ -149,8 +153,11 @@ function DraftRow({ draft, active, showGlyph, onClick }: DraftRowProps) {
           </span>
         )}
         <span className="ag-name">{draft.name}</span>
+        <span className="ag-prov-chip" title={providerLabel(draft.provider)}>
+          <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={15} />
+        </span>
         <span className="ag-provider-inline" style={{ color: "var(--accent)" }}>
-          · new
+          new
         </span>
         <button className="ag-discard" onClick={onDiscard} title="Discard">
           <Icon name="close" />
