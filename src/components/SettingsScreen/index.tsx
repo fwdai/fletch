@@ -4,11 +4,16 @@ import pkg from "../../../package.json";
 import { GeneralPane } from "./GeneralPane";
 import { AccountPane } from "./AccountPane";
 import { ProvidersPane } from "./ProvidersPane";
+import { DeveloperPane } from "./DeveloperPane";
 
 const NAV: { id: SettingsSection; label: string; icon: IconName }[] = [
   { id: "account", label: "Account", icon: "user" },
   { id: "general", label: "General", icon: "settings" },
   { id: "providers", label: "Providers", icon: "cube" },
+  // Dev-only: omitted entirely from production builds.
+  ...(import.meta.env.DEV
+    ? [{ id: "developer" as const, label: "Developer", icon: "wrench" as const }]
+    : []),
 ];
 
 /** Dedicated full-screen settings surface. Rendered in place of the workspace
@@ -46,9 +51,13 @@ export function SettingsScreen() {
 
       <div className="set-main">
         <div className="set-content">
-          {section === "general" && <GeneralPane />}
           {section === "account" && <AccountPane />}
           {section === "providers" && <ProvidersPane />}
+          {section === "developer" && import.meta.env.DEV && <DeveloperPane />}
+          {/* Fallback: "developer" can't be selected in prod (no nav entry), but
+              guard the render so a stale section value still shows something. */}
+          {(section === "general" ||
+            (section === "developer" && !import.meta.env.DEV)) && <GeneralPane />}
         </div>
       </div>
     </div>

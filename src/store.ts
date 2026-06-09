@@ -126,7 +126,7 @@ export interface DraftAgent {
 export type ThemeMode = "dark" | "light";
 export type Density = "comfortable" | "compact";
 export type WorkspaceView = "custom" | "native";
-export type SettingsSection = "general" | "account" | "providers";
+export type SettingsSection = "general" | "account" | "providers" | "developer";
 
 export interface FeatureFlags {
   git: boolean;
