@@ -43,6 +43,7 @@
   --warn: oklch(0.78 0.13 85);
   --danger: oklch(0.7 0.18 25);
   --info: oklch(0.74 0.12 230);
+  --purple: oklch(0.7 0.15 300);
   --shadow-1: 0 1px 0 rgba(255,255,255,.04) inset, 0 1px 2px rgba(0,0,0,.25);
   --shadow-2: 0 1px 0 rgba(255,255,255,.04) inset, 0 8px 28px rgba(0,0,0,.35);
   color-scheme: dark;
@@ -69,6 +70,7 @@
   --warn: oklch(0.6 0.14 80);
   --danger: oklch(0.55 0.18 25);
   --info: oklch(0.50 0.12 230);
+  --purple: oklch(0.5 0.16 300);
   --shadow-1: 0 1px 2px rgba(0,0,0,.06);
   --shadow-2: 0 8px 28px rgba(0,0,0,.10);
   color-scheme: light;
@@ -337,7 +339,7 @@ button { cursor: default; }
 .agents {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 1px;
   margin-left: 0;
   padding: 4px 0;
   overflow: visible;
@@ -347,112 +349,155 @@ button { cursor: default; }
 .agents.closed { max-height: 0; opacity: 0; padding: 0; overflow: hidden; }
 
 .agent {
+  --ag-sync: 2.4s;
   display: block;
-  margin: 0 0 0 6px;
-  padding: 7px 10px;
+  padding: 7px 9px 7px 13px;
   border-radius: var(--r-sm);
   font-size: 12.5px; color: var(--fg-1);
-  transition: background .1s;
+  transition: background .12s;
   position: relative;
   cursor: default;
 }
 .agent:hover { background: var(--hover); }
 .agent.active { background: var(--selected); color: var(--fg-0); }
-.agent.active::before {
-  content: ""; position: absolute;
-  left: -6px; top: 8px; bottom: 8px;
-  width: 2px; border-radius: 0 2px 2px 0;
-  background: var(--accent);
+
+/* status rail — the left spine; colored by status, faint grey when idle */
+.ag-rail {
+  position: absolute; left: 0; top: 6px; bottom: 6px;
+  width: 3px; border-radius: 0 3px 3px 0;
+  background: var(--bd-soft);
+  overflow: hidden;
 }
-.agent-row { display: flex; align-items: center; gap: 7px; }
-.agent-row .ag-dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: var(--fg-3);
-  flex-shrink: 0;
+.ag-rail.err    { background: var(--danger); }
+.ag-rail.merged { background: var(--purple); }
+.ag-rail.run    { background: var(--success); }
+/* a single lighter sheen sweeps the solid rail and resets off-screen (no blink) */
+.ag-rail.run::after {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 55%;
+  background: linear-gradient(180deg, transparent,
+    color-mix(in oklch, white 78%, var(--success)), transparent);
+  animation: agRailFlow var(--ag-sync) linear infinite;
 }
-.agent-row .ag-glyph {
-  flex-shrink: 0;
-  color: var(--fg-2);
-  width: 16px; height: 16px;
-  display: inline-flex; align-items: center;
+@keyframes agRailFlow {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(200%); }
 }
-.agent.active .ag-glyph { color: var(--accent); }
-.agent-row .ag-name { font-weight: 500; color: inherit; flex-shrink: 0; }
+
+.agent-row { display: flex; align-items: center; gap: 7px; min-height: 21px; }
+.agent-row .ag-name { font-weight: 550; color: var(--fg-0); flex-shrink: 0; }
+.ag-name.ag-name-draft { color: var(--fg-1); font-weight: 500; }
+/* shimmer + rail share one clock (--ag-sync) so their sweeps move in tandem */
+.ag-name.shimmer {
+  background: linear-gradient(100deg, var(--fg-1) 34%, var(--fg-0) 50%, var(--fg-1) 66%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: agShimmer var(--ag-sync) linear infinite;
+}
+@keyframes agShimmer {
+  0%   { background-position: 140% 0; }
+  100% { background-position: -40% 0; }
+}
 .agent-row .ag-prov-chip {
   flex-shrink: 0;
   display: inline-flex; align-items: center;
-  margin-left: -2px;
 }
-.agent-row .ag-provider-inline {
-  font-size: 11.5px;
-  color: var(--fg-3);
-  font-weight: 400;
-  min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.agent-row .ag-actions {
-  display: inline-flex; align-items: center; gap: 2px;
+
+/* right slot — meta and actions share one fixed space, cross-fading on
+ * hover so the row never reflows (no height jump). */
+.ag-slot {
+  position: relative;
   margin-left: auto;
-  opacity: 0;
-  transition: opacity .12s;
-  flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: flex-end;
+  flex-shrink: 0; min-height: 21px; min-width: 18px;
 }
-.agent:hover .ag-actions,
-.agent.active .ag-actions { opacity: 1; }
+.ag-slot .ag-meta { display: inline-flex; align-items: center; gap: 7px; transition: opacity .12s; }
+.ag-slot .ag-actions {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; gap: 2px;
+  opacity: 0; pointer-events: none; transition: opacity .12s;
+}
+.agent:hover .ag-slot .ag-meta { opacity: 0; }
+.agent:hover .ag-slot .ag-actions { opacity: 1; pointer-events: auto; }
 .ag-act {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px;
-  margin: -1px 0;
-  border-radius: 4px;
+  width: 21px; height: 21px;
+  border-radius: 5px;
   color: var(--fg-2);
   transition: background .1s, color .1s;
 }
 .ag-act:hover { background: var(--bg-3); color: var(--fg-0); }
 .ag-act:active { background: var(--selected); }
-.ag-act svg { transition: width .1s, height .1s; }
-.ag-act[aria-label="Archive"]:hover svg { width: 14px; height: 14px; }
-.ag-act.tip[data-tip]:hover::after {
-  left: auto;
-  right: 0;
-  transform: none;
+.ag-act.tip[data-tip]:hover::after { left: auto; right: 0; transform: none; }
+
+/* working indicator — three grey dots, smooth bounce + fade, synced */
+.ag-loader {
+  --d: 3.5px;
+  width: var(--d); height: var(--d); border-radius: 1.5px;
+  background: currentColor; color: var(--fg-2);
+  display: inline-block; position: relative;
+  margin-right: 14px; flex-shrink: 0;
+  animation: agLoader var(--ag-sync) var(--ease) infinite;
 }
+.ag-loader::before, .ag-loader::after {
+  content: ""; position: absolute; top: 0;
+  width: var(--d); height: var(--d); border-radius: 1.5px;
+  background: currentColor;
+  animation: agLoader var(--ag-sync) var(--ease) infinite;
+}
+.ag-loader::after  { left: 7px;  animation-delay: .25s; }
+.ag-loader::before { left: 14px; animation-delay: .5s; }
+@keyframes agLoader {
+  0%   { top: -2px; opacity: 1; }
+  50%  { top: 2px; opacity: .22; }
+  100% { top: -2px; opacity: 1; }
+}
+
+/* compact status badges (PR state, error, draft) */
+.ag-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  height: 16px; padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px; font-weight: 600;
+  font-family: var(--font-mono); letter-spacing: .01em;
+  flex-shrink: 0;
+}
+.ag-badge svg { width: 10px; height: 10px; }
+.ag-badge.pr-open   { color: var(--info);   background: color-mix(in oklch, var(--info), transparent 86%); }
+.ag-badge.pr-merged { color: var(--purple); background: color-mix(in oklch, var(--purple), transparent 86%); }
+.ag-badge.pr-closed { color: var(--fg-2);   background: color-mix(in oklch, var(--fg-2), transparent 88%); }
+.ag-badge.err       { color: var(--danger); background: color-mix(in oklch, var(--danger), transparent 86%); }
+.ag-badge.new       { color: var(--accent); background: var(--accent-soft); }
+
 .agent-sub {
   display: flex; align-items: center; gap: 8px;
-  margin-top: 3px;
-  padding-left: 13px;
-  font-size: 11.5px;
-  color: var(--fg-2);
-  font-family: var(--font-mono);
+  margin-top: 2px; min-height: 17px;
 }
-.agent.with-glyph .agent-sub { padding-left: 36px; }
-.agent-sub .a-branch { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-sub .a-task {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px;
+  color: color-mix(in oklch, var(--fg-1), var(--fg-0) 30%);
+}
+.agent-sub .a-task.a-task-draft { color: var(--fg-3); font-style: italic; }
+.agent-sub .a-diff {
+  font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: -.02em; flex-shrink: 0;
+}
+.agent-sub .a-diff .add { color: var(--success); }
+.agent-sub .a-diff .del { color: var(--danger); }
 .agent-sub .a-time {
   color: var(--fg-3);
   font-size: 11px;
+  font-family: var(--font-mono);
   position: relative;
   cursor: default;
   padding: 1px 3px;
   border-radius: 3px;
+  flex-shrink: 0;
   transition: background .1s, color .1s;
 }
 .agent-sub .a-time:hover { background: var(--hover); color: var(--fg-1); }
-.agent-sub .a-changes { color: var(--accent); font-size: 8px; }
-.ag-discard {
-  margin-left: auto;
-  display: none;
-  align-items: center; justify-content: center;
-  width: 16px; height: 16px;
-  padding: 0;
-  background: none; border: none;
-  color: var(--fg-3);
-  cursor: pointer;
-  border-radius: 3px;
-  flex-shrink: 0;
-}
-.ag-discard svg { width: 10px; height: 10px; stroke-width: 2; }
-.agent:hover .ag-discard { display: flex; }
-.ag-discard:hover { background: var(--hover); color: var(--fg-1); }
 
 .ag-stats-pop {
   position: absolute;
@@ -482,18 +527,13 @@ button { cursor: default; }
 .ag-stats-pop .st-bar { margin-top: 6px; height: 3px; background: var(--hover); border-radius: 2px; overflow: hidden; }
 .ag-stats-pop .st-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .25s var(--ease); }
 
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 2px color-mix(in oklch, var(--success), transparent 78%); }
-  50%      { box-shadow: 0 0 0 4px color-mix(in oklch, var(--success), transparent 92%); }
-}
-
 .agent-new {
   display: flex; align-items: center; gap: 8px;
-  margin: 0 0 0 6px;
-  padding: 4px 8px;
+  padding: 8px 8px;
+  margin-bottom: 6px;
   border-radius: var(--r-sm);
   font-size: 12px; color: var(--fg-3);
-  width: calc(100% - 6px);
+  width: 100%;
   text-align: left;
 }
 .agent-new:hover { background: var(--hover); color: var(--fg-1); }

@@ -1,13 +1,12 @@
 import { useState } from "react";
 import type { MouseEvent } from "react";
-import type { AgentRecord, AgentStatus } from "../../api";
+import type { AgentRecord, AgentStatus, PrState, ShortStats } from "../../api";
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
-import { LANDMARK_NAMES } from "../../data/landmarks";
 import { providerChip, providerLabel } from "../../data/providers";
-import { Icon, LandmarkGlyph } from "../Icon";
+import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
-import { formatAge, formatTokens } from "../../util/format";
+import { formatAge } from "../../util/format";
 import { useMinuteClock } from "../../util/hooks";
 import { AgentStatsPopover, type AgentStats } from "./AgentStatsPopover";
 
@@ -15,14 +14,12 @@ interface RealRowProps {
   kind: "real";
   agent: AgentRecord;
   active: boolean;
-  showGlyph: boolean;
   onClick: () => void;
 }
 interface DraftRowProps {
   kind: "draft";
   draft: DraftAgent;
   active: boolean;
-  showGlyph: boolean;
   onClick: () => void;
 }
 
@@ -35,8 +32,10 @@ export function AgentRow(props: Props) {
 
 // ── real agent ───────────────────────────────────────────────────────────────
 
-function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
+function RealRow({ agent, active, onClick }: RealRowProps) {
   const rawTokens = useAppStore((s) => s.tokens[agent.id]);
+  const prState = useAppStore((s) => s.prStates[agent.id] ?? null);
+  const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
   const now = useMinuteClock();
@@ -45,11 +44,8 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
   const branch = agent.repos[0]?.branch ?? null;
   const taskOrBranch = firstShort(agent.task) || branch || "—";
   const age = formatAge(agent.created_at, now);
-  const tokensLabel =
-    typeof rawTokens === "number" && rawTokens > 0
-      ? formatTokens(rawTokens)
-      : null;
-  const glyphName = LANDMARK_NAMES.includes(agent.name) ? agent.name : agent.name;
+  // spawning is the start of a run — show it as "working" too, not a dead row
+  const working = agent.status === "running" || agent.status === "spawning";
 
   const stats: AgentStats = {
     launched: age || "just now",
@@ -66,6 +62,16 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
     agent.status === "stopped" ||
     agent.status === "error";
 
+  // The status rail doubles as the left spine: colored for live/terminal
+  // states, a merged PR claims purple, everything else is a faint grey.
+  const railClass =
+    working ? "run" :
+    agent.status === "error" ? "err" :
+    prState?.state === "merged" ? "merged" : "idle";
+
+  const hasChanges =
+    !!shortstats && (shortstats.additions > 0 || shortstats.deletions > 0);
+
   const onStop = (e: MouseEvent) => {
     e.stopPropagation();
     stop(agent.id);
@@ -76,18 +82,10 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
   };
 
   return (
-    <div
-      className={`agent ${active ? "active" : ""} ${showGlyph ? "with-glyph" : ""}`}
-      onClick={onClick}
-    >
+    <div className={`agent ${active ? "active" : ""}`} onClick={onClick}>
+      <span className={`ag-rail ${railClass}`} />
       <div className="agent-row">
-        <StatusDot status={agent.status} />
-        {showGlyph && (
-          <span className="ag-glyph">
-            <LandmarkGlyph name={glyphName} />
-          </span>
-        )}
-        <span className="ag-name">{agent.name}</span>
+        <span className={`ag-name ${working ? "shimmer" : ""}`}>{agent.name}</span>
         <span
           className="ag-prov-chip tip"
           data-tip={providerLabel(agent.provider)}
@@ -95,32 +93,42 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
         >
           <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={14} />
         </span>
-        <span className="ag-actions">
-          {stoppable && (
-            <button
-              className="ag-act tip"
-              data-tip="Stop"
-              onClick={onStop}
-              aria-label="Stop"
-            >
-              <Icon name="stop" size={11} />
-            </button>
-          )}
-          {archivable && (
-            <button
-              className="ag-act tip"
-              data-tip="Archive"
-              onClick={onArchive}
-              aria-label="Archive"
-            >
-              <Icon name="archive" size={11} />
-            </button>
-          )}
+        <span className="ag-slot">
+          <span className="ag-meta">
+            {working && <span className="ag-loader" aria-label="Working" />}
+            {agent.status === "error" && <span className="ag-badge err">error</span>}
+          </span>
+          <span className="ag-actions">
+            {stoppable && (
+              <button
+                className="ag-act tip"
+                data-tip="Stop"
+                onClick={onStop}
+                aria-label="Stop"
+              >
+                <Icon name="stop" size={11} />
+              </button>
+            )}
+            {archivable && (
+              <button
+                className="ag-act tip"
+                data-tip="Archive"
+                onClick={onArchive}
+                aria-label="Archive"
+              >
+                <Icon name="archive" size={11} />
+              </button>
+            )}
+          </span>
         </span>
       </div>
       <div className="agent-sub">
-        <span className="a-branch">{taskOrBranch}</span>
-        {tokensLabel && <span className="a-changes" title={`${rawTokens} input tokens last turn`}>●</span>}
+        <span className="a-task">{taskOrBranch}</span>
+        {prState ? (
+          <PrBadge pr={prState} />
+        ) : hasChanges ? (
+          <DiffStat stats={shortstats} />
+        ) : null}
         <span
           className="a-time"
           onMouseEnter={() => setStatsOpen(true)}
@@ -136,7 +144,7 @@ function RealRow({ agent, active, showGlyph, onClick }: RealRowProps) {
 
 // ── draft (not-yet-spawned) ──────────────────────────────────────────────────
 
-function DraftRow({ draft, active, showGlyph, onClick }: DraftRowProps) {
+function DraftRow({ draft, active, onClick }: DraftRowProps) {
   const removeDraft = useAppStore((s) => s.removeDraft);
 
   function onDiscard(e: React.MouseEvent) {
@@ -145,18 +153,10 @@ function DraftRow({ draft, active, showGlyph, onClick }: DraftRowProps) {
   }
 
   return (
-    <div
-      className={`agent ${active ? "active" : ""} ${showGlyph ? "with-glyph" : ""}`}
-      onClick={onClick}
-    >
+    <div className={`agent ${active ? "active" : ""}`} onClick={onClick}>
+      <span className="ag-rail idle" />
       <div className="agent-row">
-        <span className="ag-dot" style={{ background: "var(--fg-3)" }} />
-        {showGlyph && (
-          <span className="ag-glyph">
-            <LandmarkGlyph name={draft.name} />
-          </span>
-        )}
-        <span className="ag-name">{draft.name}</span>
+        <span className="ag-name ag-name-draft">{draft.name}</span>
         <span
           className="ag-prov-chip tip"
           data-tip={providerLabel(draft.provider)}
@@ -164,41 +164,60 @@ function DraftRow({ draft, active, showGlyph, onClick }: DraftRowProps) {
         >
           <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={14} />
         </span>
-        <span className="ag-provider-inline" style={{ color: "var(--accent)" }}>
-          new
+        <span className="ag-slot">
+          <span className="ag-meta">
+            <span className="ag-badge new">new</span>
+          </span>
+          <span className="ag-actions">
+            <button
+              className="ag-act tip"
+              data-tip="Discard"
+              onClick={onDiscard}
+              aria-label="Discard"
+            >
+              <Icon name="close" size={11} />
+            </button>
+          </span>
         </span>
-        <button className="ag-discard" onClick={onDiscard} title="Discard">
-          <Icon name="close" />
-        </button>
       </div>
       <div className="agent-sub">
-        <span className="a-branch">Define task…</span>
+        <span className="a-task a-task-draft">Define task…</span>
       </div>
     </div>
   );
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── pieces ─────────────────────────────────────────────────────────────────
 
-function StatusDot({ status }: { status: AgentStatus }) {
-  const color =
-    status === "running" ? "var(--success)" :
-    status === "spawning" ? "var(--warn)" :
-    status === "error" ? "var(--danger)" : "var(--fg-3)";
-  const isRunning = status === "running";
+/** Compact PR pill mirroring the git-panel status. Note: CI/checks state is
+ *  not yet in PrState, so an open PR shows a neutral pill (no pass/fail tint). */
+function PrBadge({ pr }: { pr: PrState }) {
+  if (pr.state === "merged") {
+    return (
+      <span className="ag-badge pr-merged tip" data-tip={`PR #${pr.number} · merged`}>
+        <Icon name="merge" size={10} />#{pr.number}
+      </span>
+    );
+  }
+  const cls = pr.state === "closed" ? "pr-closed" : "pr-open";
   return (
-    <span
-      className="ag-dot"
-      style={{
-        background: color,
-        boxShadow: isRunning
-          ? "0 0 0 2px color-mix(in oklch, var(--success), transparent 78%)"
-          : "none",
-        animation: isRunning ? "pulse 2s var(--ease) infinite" : undefined,
-      }}
-    />
+    <span className={`ag-badge ${cls} tip`} data-tip={`PR #${pr.number} · ${pr.state}`}>
+      <Icon name="pr" size={10} />PR
+    </span>
   );
 }
+
+function DiffStat({ stats }: { stats: ShortStats }) {
+  return (
+    <span className="a-diff" title={`${stats.file_count} file(s) changed`}>
+      {stats.additions > 0 && <span className="add">+{stats.additions}</span>}
+      {stats.additions > 0 && stats.deletions > 0 && " "}
+      {stats.deletions > 0 && <span className="del">−{stats.deletions}</span>}
+    </span>
+  );
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
 
 function firstShort(s: string | null | undefined, max = 36): string {
   if (!s) return "";
