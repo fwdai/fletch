@@ -24,7 +24,6 @@ export function ProjectGroup({
 }: Props) {
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
-  const showLandmarks = useAppStore((s) => s.showLandmarks);
   const selectAgent = useAppStore((s) => s.selectAgent);
   const selectDraft = useAppStore((s) => s.selectDraft);
   const createDraft = useAppStore((s) => s.createDraft);
@@ -88,7 +87,6 @@ export function ProjectGroup({
             kind="draft"
             draft={d}
             active={d.id === activeDraftId}
-            showGlyph={showLandmarks}
             onClick={() => selectDraft(d.id)}
           />
         ))}
@@ -98,7 +96,6 @@ export function ProjectGroup({
             kind="real"
             agent={a}
             active={a.id === selectedAgentId}
-            showGlyph={showLandmarks}
             onClick={() => selectAgent(a.id)}
           />
         ))}
