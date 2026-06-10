@@ -40,10 +40,12 @@
   --accent-soft: oklch(0.72 0.13 50 / .14);
   --accent-line: oklch(0.72 0.13 50 / .35);
   --success: oklch(0.74 0.13 150);
-  --warn: oklch(0.78 0.13 85);
+  --warn: oklch(0.80 0.13 92);
+  --att: oklch(0.72 0.16 45);
   --danger: oklch(0.7 0.18 25);
   --info: oklch(0.74 0.12 230);
   --purple: oklch(0.7 0.15 300);
+  --merged: var(--purple);
   --shadow-1: 0 1px 0 rgba(255,255,255,.04) inset, 0 1px 2px rgba(0,0,0,.25);
   --shadow-2: 0 1px 0 rgba(255,255,255,.04) inset, 0 8px 28px rgba(0,0,0,.35);
   color-scheme: dark;
@@ -67,10 +69,12 @@
   --accent-soft: oklch(0.50 0.15 45 / .10);
   --accent-line: oklch(0.50 0.15 45 / .35);
   --success: oklch(0.48 0.13 150);
-  --warn: oklch(0.6 0.14 80);
+  --warn: oklch(0.6 0.14 92);
+  --att: oklch(0.58 0.16 45);
   --danger: oklch(0.55 0.18 25);
   --info: oklch(0.50 0.12 230);
   --purple: oklch(0.5 0.16 300);
+  --merged: var(--purple);
   --shadow-1: 0 1px 2px rgba(0,0,0,.06);
   --shadow-2: 0 8px 28px rgba(0,0,0,.10);
   color-scheme: light;
@@ -1249,31 +1253,62 @@ button { cursor: default; }
   flex: 1;
   display: flex; flex-direction: column;
   min-height: 0;
+  /* the footer action bar responds to the panel's width, not the viewport's */
+  container-type: inline-size;
 }
 
-/* context header — quiet; the changes are the focus, not this */
-.git-state {
+/* ── color-coded status header ──────────────────────────────────────
+   The panel's at-a-glance state signal: a tinted strip whose color carries the
+   state before a word is read. clean=green · uncommitted=amber · pushed/PR=blue
+   · fixable (can't merge / conflicts)=orange · ready=green · merged=purple. */
+.git-hdr {
   flex-shrink: 0;
-  padding: 16px 18px 14px;
-}
-.git-branch-row {
   display: flex; align-items: center; gap: 8px;
-  font-family: var(--font-mono); font-size: 12.5px;
-  color: var(--fg-0);
-  margin-bottom: 9px;
+  min-height: 40px; box-sizing: border-box;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+  background: transparent;
+  transition: background .25s var(--ease), border-color .25s var(--ease);
 }
-.git-branch-row svg { width: 12px; height: 12px; color: var(--accent); flex-shrink: 0; }
-.git-branch-row .bn { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.git-branch-row .base { color: var(--fg-3); margin-left: auto; flex-shrink: 0; }
+@media (prefers-reduced-motion: reduce) { .git-hdr { transition: none; } }
+.git-hdr .pill {
+  flex-shrink: 0;
+  font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 999px;
+  white-space: nowrap;
+}
+.git-hdr .hdr-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-3); flex-shrink: 0; }
+.git-hdr .bn {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-1);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.git-hdr .base { font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); flex-shrink: 0; }
+.git-hdr .hdr-meta { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.git-hdr .hdr-diff { display: flex; gap: 8px; font-family: var(--font-mono); font-size: 10.5px; }
+.git-hdr .hdr-diff .add { color: var(--success); }
+.git-hdr .hdr-diff .rem { color: var(--danger); }
+.git-hdr .hdr-ext {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--fg-3); padding: 2px; border-radius: var(--r-sm); cursor: pointer;
+  transition: color .12s, background .12s;
+}
+.git-hdr .hdr-ext:hover { color: var(--fg-1); background: var(--hover); }
 
-.git-stats {
-  display: flex; gap: 14px;
-  font-size: 11px; color: var(--fg-3);
-}
-.git-stats .num { color: var(--fg-1); font-family: var(--font-mono); }
-.git-stats .git-stats-d { display: flex; gap: 10px; padding-left: 2px; }
-.git-stats .add { color: var(--success); font-family: var(--font-mono); }
-.git-stats .rem { color: var(--danger); font-family: var(--font-mono); }
+/* per-state tints — header background, bottom border, and pill */
+.git-hdr.k-clean   { background: color-mix(in oklch, var(--success), transparent 94%); }
+.git-hdr.k-clean   .hdr-dot { background: var(--success); }
+.git-hdr.k-changes { background: color-mix(in oklch, var(--warn), transparent 91%); border-bottom-color: color-mix(in oklch, var(--warn), transparent 78%); }
+.git-hdr.k-changes .pill { background: color-mix(in oklch, var(--warn), transparent 80%); color: var(--warn); }
+.git-hdr.k-info    { background: color-mix(in oklch, var(--info), transparent 91%); border-bottom-color: color-mix(in oklch, var(--info), transparent 78%); }
+.git-hdr.k-info    .pill { background: color-mix(in oklch, var(--info), transparent 80%); color: var(--info); }
+.git-hdr.k-att     { background: color-mix(in oklch, var(--att), transparent 88%); border-bottom-color: color-mix(in oklch, var(--att), transparent 70%); }
+.git-hdr.k-att     .pill { background: color-mix(in oklch, var(--att), transparent 78%); color: var(--att); }
+.git-hdr.k-ready   { background: color-mix(in oklch, var(--success), transparent 89%); border-bottom-color: color-mix(in oklch, var(--success), transparent 72%); }
+.git-hdr.k-ready   .pill { background: color-mix(in oklch, var(--success), transparent 78%); color: var(--success); }
+.git-hdr.k-merged  { background: color-mix(in oklch, var(--merged), transparent 88%); border-bottom-color: color-mix(in oklch, var(--merged), transparent 72%); }
+.git-hdr.k-merged  .pill { background: color-mix(in oklch, var(--merged), transparent 76%); color: var(--merged); }
+.git-hdr.k-neutral .pill { background: var(--bg-3); color: var(--fg-2); }
 
 /* main content — the changes are the focus */
 .git-body {
@@ -1281,6 +1316,9 @@ button { cursor: default; }
   overflow-y: auto;
   display: flex; flex-direction: column;
 }
+/* dimmed while an action is in flight, so the panel reads as busy not frozen */
+.git-body.busy { opacity: .5; pointer-events: none; transition: opacity .2s var(--ease); }
+@media (prefers-reduced-motion: reduce) { .git-body.busy { transition: none; } }
 .git-files { display: flex; flex-direction: column; }
 
 /* files list */
@@ -1352,6 +1390,12 @@ button { cursor: default; }
   background: color-mix(in oklch, var(--danger), transparent 92%);
   color: var(--danger);
 }
+/* fixable, not fatal — warm orange, never red */
+.git-banner.att {
+  border: 1px solid color-mix(in oklch, var(--att), transparent 68%);
+  background: color-mix(in oklch, var(--att), transparent 90%);
+  color: var(--att);
+}
 
 .git-card {
   padding: 18px;
@@ -1366,6 +1410,7 @@ button { cursor: default; }
 .git-card-meta { font-size: 11.5px; color: var(--fg-2); margin-top: 4px; font-family: var(--font-mono); }
 .git-card-row { display: flex; gap: 12px; margin-top: 12px; font-size: 11.5px; color: var(--fg-2); }
 .git-card-row .ok { color: var(--success); }
+.git-card-row .att { color: var(--att); }
 .git-card-row .sep { color: var(--fg-3); }
 .git-card-link {
   display: inline-flex; align-items: center; gap: 5px;
@@ -1376,6 +1421,22 @@ button { cursor: default; }
 }
 .git-card-link:hover { color: var(--fg-0); }
 .git-card-link svg { width: 11px; height: 11px; }
+/* row of quiet links in the PR card (Overview · Files · Commits) */
+.git-card-links { display: flex; gap: 14px; margin-top: 12px; }
+.git-card-links .git-card-link { margin-top: 0; }
+
+/* quiet inline link in copy (e.g. the pushed-state commit/compare link) */
+.git-link {
+  display: inline-flex; align-items: center; gap: 2px;
+  background: none; border: 0; padding: 0;
+  font: inherit; color: var(--accent); cursor: pointer;
+  text-decoration: underline; text-decoration-color: transparent;
+  text-underline-offset: 2px;
+  transition: text-decoration-color .12s;
+  vertical-align: baseline;
+}
+.git-link:hover { text-decoration-color: var(--accent-line); }
+.git-link svg { opacity: .7; }
 
 /* ── pinned footer: commit message + status + action ── */
 .git-foot {
@@ -1465,13 +1526,20 @@ button { cursor: default; }
 .git-commit .cm-foot.on { color: var(--accent); }
 .git-commit .cm-foot .cm-foot-dim { color: var(--fg-3); }
 
-/* status + action row */
-.git-act { padding: 12px 18px 14px; }
+/* ── responsive action bar ──────────────────────────────────────────
+   status sits left and takes the slack (ellipsis-truncates); the split-button
+   is right-aligned at its natural width — never centered, never stretched.
+   Below the container breakpoint the bar stacks and the button goes full-width
+   (see the @container rule at the end of this block). */
+.git-act {
+  padding: 11px 18px 14px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
 /* transient confirmation shown in place of the status line after an action */
 .git-notice {
   display: inline-flex; align-items: center; gap: 7px;
+  flex: 1 1 auto; min-width: 0;
   font-size: 11px; color: var(--success);
-  margin-bottom: 11px;
   min-height: 14px;
   padding: 5px 9px;
   border: 1px solid color-mix(in oklch, var(--success), transparent 70%);
@@ -1479,30 +1547,36 @@ button { cursor: default; }
   border-radius: var(--r-sm);
 }
 .git-notice svg { flex-shrink: 0; }
+.git-notice span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-act-status {
   display: flex; align-items: center; gap: 7px;
+  flex: 1 1 auto; min-width: 0;
   font-size: 11px; color: var(--fg-2);
-  margin-bottom: 11px;
 }
 .git-act-status .d {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--warn); flex-shrink: 0;
 }
-.git-act-status.ready .d { background: var(--success); }
-.git-act-status.alert .d { background: var(--danger); }
+.git-act-status.clean .d     { background: var(--success); }
+.git-act-status.ready .d     { background: var(--success); }
+.git-act-status.info .d      { background: var(--info); }
+.git-act-status.attention .d { background: var(--att); }
+.git-act-status.attention .lbl { color: var(--att); }
+.git-act-status.merged .d    { background: var(--merged); }
+.git-act-status.alert .d     { background: var(--danger); }
 .git-act-status .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-act-status .ex {
-  margin-left: auto; flex-shrink: 0;
+  flex-shrink: 0;
   font-family: var(--font-mono); font-size: 10.5px;
   color: var(--fg-3);
   white-space: nowrap;
 }
 
-/* split button — one CTA, capped width, centered */
+/* split button — one CTA, auto-width, right-aligned */
 .git-split {
   display: flex;
-  width: 100%; max-width: 300px;
-  margin: 0 auto;
+  margin-left: auto;
+  width: auto; flex-shrink: 0;
   height: 34px;
   border-radius: var(--r-md);
   position: relative;
@@ -1535,7 +1609,8 @@ button { cursor: default; }
 }
 .theme-light .git-split .gsa-caret { color: oklch(0.98 0.005 60); }
 .git-split .gsa-caret svg { width: 12px; height: 12px; opacity: .9; }
-.git-split .gsa-caret:hover { background: oklch(from var(--accent) calc(l + 0.04) c h); }
+.git-split .gsa-caret:hover:not(:disabled) { background: oklch(from var(--accent) calc(l + 0.04) c h); }
+.git-split .gsa-caret:disabled { opacity: .5; cursor: default; }
 /* The caret sits near the panel's right edge; anchor its tooltip's right edge
    to the caret so it grows leftward and stays inside the panel (which now
    clips horizontal overflow). */
@@ -1543,7 +1618,26 @@ button { cursor: default; }
   left: auto; right: 0; transform: none;
 }
 
-/* danger variant (conflicts) — outline, not filled */
+/* tone variants — success (ready to merge), merged, ghost (quiet), danger */
+.git-split.success .gsa-main,
+.git-split.success .gsa-caret { background: var(--success); color: oklch(0.16 0.02 150); }
+.theme-light .git-split.success .gsa-main,
+.theme-light .git-split.success .gsa-caret { color: oklch(0.99 0.01 150); }
+.git-split.success .gsa-main:hover:not(:disabled),
+.git-split.success .gsa-caret:hover:not(:disabled) { background: oklch(from var(--success) calc(l + 0.04) c h); }
+
+.git-split.merged .gsa-main,
+.git-split.merged .gsa-caret { background: var(--merged); color: oklch(0.99 0.01 300); }
+.git-split.merged .gsa-main:hover:not(:disabled),
+.git-split.merged .gsa-caret:hover:not(:disabled) { background: oklch(from var(--merged) calc(l + 0.04) c h); }
+
+.git-split.ghost .gsa-main,
+.git-split.ghost .gsa-caret { background: transparent; color: var(--fg-1); border: 1px solid var(--bd); }
+.git-split.ghost .gsa-main { border-right: 0; }
+.git-split.ghost .gsa-caret { border-left: 1px solid var(--bd); }
+.git-split.ghost .gsa-main:hover:not(:disabled),
+.git-split.ghost .gsa-caret:hover:not(:disabled) { background: var(--hover); }
+
 .git-split.danger .gsa-main,
 .git-split.danger .gsa-caret {
   background: transparent;
@@ -1553,9 +1647,29 @@ button { cursor: default; }
 .git-split.danger .gsa-main { border-right: 0; }
 .git-split.danger .gsa-caret { border-left: 1px solid color-mix(in oklch, var(--danger), transparent 55%); }
 .git-split.danger .gsa-main:hover:not(:disabled),
-.git-split.danger .gsa-caret:hover {
+.git-split.danger .gsa-caret:hover:not(:disabled) {
   background: color-mix(in oklch, var(--danger), transparent 90%);
 }
+
+/* narrow panel: stack the bar and let the button span the full width */
+@container (max-width: 250px) {
+  .git-act { flex-direction: column; align-items: stretch; }
+  .git-act-status, .git-notice { width: 100%; }
+  .git-split { width: 100%; margin-left: 0; }
+}
+
+/* inline loading spinner (status line + busy CTA) */
+.git-spin {
+  display: inline-block;
+  width: 11px; height: 11px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: git-spin .7s linear infinite;
+}
+@keyframes git-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .git-spin { animation: none; } }
 
 /* menu opens upward from the split button (reuses .dd / .dd-item base) */
 .git-split .gsa-menu {

@@ -144,6 +144,12 @@ export interface GitState {
   files: FileStatus[];
   additions: number;
   deletions: number;
+  /** GitHub web base for `origin` (`https://github.com/owner/repo`), or null
+   *  when origin is missing / not a github.com remote. Lets the panel link to
+   *  a commit or compare view. */
+  remote_url?: string | null;
+  /** HEAD commit SHA, for a single-commit link when one commit is ahead. */
+  head_sha?: string | null;
 }
 
 /** One file in the worktree, as returned by `list_worktree_tree`.

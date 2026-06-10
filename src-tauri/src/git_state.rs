@@ -26,6 +26,13 @@ pub struct GitState {
     pub files: Vec<FileStatus>,
     pub additions: u32,
     pub deletions: u32,
+    /// GitHub web base for the `origin` remote (`https://github.com/owner/repo`),
+    /// or `None` when origin is missing or isn't a github.com remote. Lets the
+    /// UI link out to a commit / compare view. Stable across a branch's life.
+    pub remote_url: Option<String>,
+    /// HEAD commit SHA, used to build a single-commit link when exactly one
+    /// commit is ahead. `None` on an empty repo / detached read failure.
+    pub head_sha: Option<String>,
 }
 
 /// Compact projection of GitState used by the app-wide bulk poll —
@@ -79,6 +86,8 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
                 files: vec![],
                 additions: 0,
                 deletions: 0,
+                remote_url: None,
+                head_sha: None,
             });
         }
     };
@@ -112,6 +121,12 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
     let additions: u32 = files.iter().map(|f| f.additions).sum();
     let deletions: u32 = files.iter().map(|f| f.deletions).sum();
 
+    // 5. Link targets — the origin web base (for commit / compare links) and the
+    //    HEAD sha (for a single-commit link). Both are cheap reads; failures are
+    //    non-fatal (the UI just omits the link).
+    let remote_url = query_remote_web_url(worktree_path).await;
+    let head_sha = query_head_sha(worktree_path).await;
+
     Ok(GitState {
         branch,
         parent_branch: parent_branch.to_string(),
@@ -121,7 +136,65 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
         files,
         additions,
         deletions,
+        remote_url,
+        head_sha,
     })
+}
+
+/// HEAD commit SHA, or `None` when it can't be read.
+async fn query_head_sha(worktree_path: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
+/// The `origin` remote, normalized to a GitHub web base. `None` when there is no
+/// origin or it isn't a github.com remote.
+async fn query_remote_web_url(worktree_path: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    github_web_url(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+/// Normalize a git remote URL to its GitHub web base (`https://github.com/
+/// owner/repo`). Handles `https://`, `http://`, `git://`, `ssh://git@`, and
+/// `git@github.com:` forms, with optional `.git` suffix / trailing slash.
+/// Returns `None` for non-github.com remotes or anything not of the shape
+/// `owner/repo`, so callers only ever build valid GitHub links.
+fn github_web_url(remote: &str) -> Option<String> {
+    let r = remote.trim();
+    let owner_repo = r
+        .strip_prefix("git@github.com:")
+        .or_else(|| r.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| r.strip_prefix("https://github.com/"))
+        .or_else(|| r.strip_prefix("http://github.com/"))
+        .or_else(|| r.strip_prefix("git://github.com/"))?;
+    let owner_repo = owner_repo.trim_end_matches('/');
+    let owner_repo = owner_repo.strip_suffix(".git").unwrap_or(owner_repo);
+    let owner_repo = owner_repo.trim_end_matches('/');
+    let mut parts = owner_repo.split('/');
+    let owner = parts.next().filter(|s| !s.is_empty())?;
+    let repo = parts.next().filter(|s| !s.is_empty())?;
+    // Reject anything deeper than owner/repo.
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(format!("https://github.com/{owner}/{repo}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +420,46 @@ fn parse_numstat(output: &str) -> HashMap<String, (u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- github_web_url ---
+
+    #[test]
+    fn web_url_https() {
+        assert_eq!(github_web_url("https://github.com/octocat/Hello-World"), Some("https://github.com/octocat/Hello-World".into()));
+    }
+
+    #[test]
+    fn web_url_https_dot_git() {
+        assert_eq!(github_web_url("https://github.com/octocat/Hello-World.git"), Some("https://github.com/octocat/Hello-World".into()));
+    }
+
+    #[test]
+    fn web_url_https_trailing_slash() {
+        assert_eq!(github_web_url("https://github.com/octocat/Hello-World.git/"), Some("https://github.com/octocat/Hello-World".into()));
+    }
+
+    #[test]
+    fn web_url_ssh_scp_form() {
+        assert_eq!(github_web_url("git@github.com:octocat/Hello-World.git"), Some("https://github.com/octocat/Hello-World".into()));
+    }
+
+    #[test]
+    fn web_url_ssh_scheme_form() {
+        assert_eq!(github_web_url("ssh://git@github.com/octocat/Hello-World.git"), Some("https://github.com/octocat/Hello-World".into()));
+    }
+
+    #[test]
+    fn web_url_non_github_is_none() {
+        assert_eq!(github_web_url("git@gitlab.com:octocat/Hello-World.git"), None);
+        assert_eq!(github_web_url("https://bitbucket.org/octocat/Hello-World"), None);
+    }
+
+    #[test]
+    fn web_url_malformed_is_none() {
+        assert_eq!(github_web_url("https://github.com/octocat"), None); // no repo
+        assert_eq!(github_web_url("https://github.com/a/b/c"), None); // too deep
+        assert_eq!(github_web_url("not a url"), None);
+    }
 
     // --- parse_ahead_behind ---
 
