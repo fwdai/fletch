@@ -1,3 +1,4 @@
+import type { MergeState } from "../../api";
 import type { IconName } from "../Icon";
 
 /** Derived git panel state — computed from live GitState, not stored. */
@@ -43,12 +44,27 @@ export interface ActionCounts {
   /** PR-open state: whether GitHub reports the PR cleanly mergeable. Gates the
    *  Merge CTA — when false the panel reads as "can't merge yet" (attention). */
   mergeable?: boolean;
+  /** PR-open state: GitHub's combined merge gate (spec §6). Null/omitted =
+   *  checks unavailable → fall back to `mergeable`-only behavior. */
+  mergeState?: MergeState | null;
+  /** Number of failing checks (drives copy + the agent-fix CTA). */
+  checksFailed?: number;
 }
 
 /** Maps a git panel state to the panel's primary call-to-action.
  *  Pass counts for dynamic status labels; falls back to generic copy. */
 export function primaryFor(state: GitPanelState, counts?: ActionCounts): PrimaryAction {
-  const { files = 0, ahead = 0, behind = 0, prNumber, base = "main", customActive = false, mergeable = false } = counts ?? {};
+  const {
+    files = 0,
+    ahead = 0,
+    behind = 0,
+    prNumber,
+    base = "main",
+    customActive = false,
+    mergeable = false,
+    mergeState = null,
+    checksFailed = 0,
+  } = counts ?? {};
   const prLabel = prNumber != null ? `PR #${prNumber}` : "PR";
 
   switch (state) {
@@ -69,34 +85,109 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
         statusExtra: `${files} ${files === 1 ? "file" : "files"}`,
       };
     case "pushed":
+      // The PR description is the agent's job by default (it has the full
+      // context of the branch); the direct gh --fill PR stays in the menu.
       return {
-        key: "open-pr",
+        key: "agent-open-pr",
         label: "Open PR",
         icon: "pr",
         statusLabel: ahead === 1 ? "1 commit pushed, no PR yet" : `${ahead} commits pushed, no PR yet`,
         statusKind: "info",
       };
     case "pr-open":
-      // Merge is the goal here. GitHub's `mergeable` only reports the absence of
-      // merge conflicts — NOT CI/check status — so we claim no more than that:
-      // "no conflicts", a neutral accent CTA (no green "all clear" signal until
-      // real check state lands). When not mergeable the same Merge button reads
-      // as an attention state and is disabled by the panel until it clears.
-      return mergeable
-        ? {
+      // GitHub's combined merge gate (`merge_state`, spec §7) drives the
+      // sub-states. Without checks data (null → gh missing / API failure)
+      // fall back to the `mergeable`-only behavior.
+      switch (mergeState) {
+        case "clean":
+          return {
             key: "merge",
             label: "Merge PR",
             icon: "merge",
-            statusLabel: `${prLabel} · no conflicts`,
-            statusKind: "info",
-          }
-        : {
+            tone: "success",
+            statusLabel: `${prLabel} · ready to merge`,
+            statusKind: "ready",
+          };
+        case "unstable":
+          // Only NON-required checks failing — merging is allowed, but say so.
+          return {
             key: "merge",
             label: "Merge PR",
             icon: "merge",
-            statusLabel: `${prLabel} · can’t merge yet`,
+            statusLabel: `${prLabel} · optional checks failing`,
+            statusKind: "warn",
+          };
+        case "blocked":
+          // Failing required checks are agent-fixable; a pure review gate
+          // (nothing failing) is not — send the user to GitHub instead.
+          return checksFailed > 0
+            ? {
+                key: "agent-fix",
+                label: "Fix checks with agent",
+                icon: "wrench",
+                statusLabel: `${prLabel} · ${checksFailed} ${checksFailed === 1 ? "check" : "checks"} failing`,
+                statusKind: "attention",
+              }
+            : {
+                key: "view-pr",
+                label: "View on GitHub",
+                icon: "github",
+                statusLabel: `${prLabel} · review required`,
+                statusKind: "attention",
+              };
+        case "behind":
+          return {
+            key: "agent-update-branch",
+            label: "Update branch",
+            icon: "branch",
+            statusLabel: `${prLabel} · behind ${base}`,
             statusKind: "attention",
           };
+        case "dirty":
+          return {
+            key: "agent-update-branch",
+            label: "Update branch",
+            icon: "branch",
+            statusLabel: `${prLabel} · conflicts with ${base}`,
+            statusKind: "attention",
+          };
+        case "draft":
+          return {
+            key: "view-pr",
+            label: "View draft on GitHub",
+            icon: "github",
+            tone: "ghost",
+            statusLabel: `${prLabel} · draft`,
+            statusKind: "info",
+          };
+        case "unknown":
+        case "has_hooks":
+          return {
+            key: "merge",
+            label: "Merge PR",
+            icon: "merge",
+            statusLabel: `${prLabel} · checking…`,
+            statusKind: "info",
+          };
+        default:
+          // No checks data — `mergeable` only reports the absence of merge
+          // conflicts, NOT CI status, so claim no more than that.
+          return mergeable
+            ? {
+                key: "merge",
+                label: "Merge PR",
+                icon: "merge",
+                statusLabel: `${prLabel} · no conflicts`,
+                statusKind: "info",
+              }
+            : {
+                key: "merge",
+                label: "Merge PR",
+                icon: "merge",
+                statusLabel: `${prLabel} · can’t merge yet`,
+                statusKind: "attention",
+              };
+      }
     case "conflicts":
       // Fixable, not fatal — the agent can reconcile the conflict for you.
       return {
@@ -148,7 +239,15 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
 }
 
 export function secondaryFor(state: GitPanelState, counts?: ActionCounts): SecondaryAction[] {
-  const { behind = 0, unpushed = 0, base = "main", customActive = false, mergeable = false } = counts ?? {};
+  const {
+    behind = 0,
+    unpushed = 0,
+    base = "main",
+    customActive = false,
+    mergeable = false,
+    mergeState = null,
+    checksFailed = 0,
+  } = counts ?? {};
   // "Push more commits" only makes sense when there's something unpushed.
   const pushItem: SecondaryAction[] =
     unpushed > 0 ? [{ key: "push", label: "Push more commits", icon: "push" }] : [];
@@ -173,22 +272,33 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
         { key: "discard", label: "Discard all", icon: "trash" },
       ];
     case "pushed":
-      // Primary is "Open PR"; the menu offers the alternates only.
+      // Primary is the agent-written PR; the direct gh --fill PR stays one
+      // click away for users who don't want to wait on the agent.
       return [
+        { key: "open-pr", label: "Open PR (auto-fill)", icon: "pr" },
         ...pushItem,
         { key: "pull", label: "Pull", icon: "inbox" },
       ];
-    case "pr-open":
-      // Primary is "Merge PR". Surface the PR link, and — when it can't merge
-      // yet (base advanced / conflicts with base) — an agent-delegated branch
-      // update (sync base → resolve → push), distinct from the local-merge
-      // "Resolve with agent" used in the conflicts state.
+    case "pr-open": {
+      // Candidates may include the state's primary — the panel filters that
+      // out, so every alternate stays reachable regardless of merge_state.
+      // "Update branch with agent" (sync base → resolve → push) is distinct
+      // from the local-merge "Resolve with agent" used in the conflicts state.
+      const needsUpdate =
+        mergeState === "behind" || mergeState === "dirty" || (mergeState == null && !mergeable);
       return [
         { key: "view-pr", label: "View on GitHub", icon: "github" },
-        ...(mergeable ? [] : [{ key: "agent-update-branch", label: "Update branch with agent", icon: "branch" as IconName }]),
+        { key: "merge", label: "Merge PR", icon: "merge" },
+        ...(needsUpdate
+          ? [{ key: "agent-update-branch", label: "Update branch with agent", icon: "branch" as IconName }]
+          : []),
+        ...(checksFailed > 0
+          ? [{ key: "agent-fix", label: "Fix checks with agent", icon: "wrench" as IconName }]
+          : []),
         ...pushItem,
         { key: "pull", label: "Pull", icon: "inbox" },
       ];
+    }
     case "conflicts":
       return [
         { key: "abort", label: "Abort merge", icon: "close" },
