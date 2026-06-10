@@ -243,6 +243,10 @@ async fn dispatch(id: &str, op: &str, args: &Value, ctx: &OpContext) -> Response
         // `args.title`/`args.body` set the PR title and description (empty title
         // → gh auto-fills from the commits).
         "open_pr" => open_pr(id, args, ctx).await,
+        // Push the current branch to origin. Blocked in the sandbox for the
+        // same reason as commit — used to update an existing PR branch after
+        // the agent fixes checks or resolves conflicts.
+        "git_push" => git_push(id, ctx).await,
         other => Response::err(id, format!("unknown op: {other}")),
     }
 }
@@ -278,6 +282,20 @@ async fn open_pr(id: &str, args: &Value, ctx: &OpContext) -> Response {
     match crate::gh::pr_create(&ctx.cwd, title, body, &ctx.base_branch).await {
         Ok(pr) => Response::ok(id, 0, pr.url, String::new()),
         Err(e) => Response::err(id, format!("open_pr: {e}")),
+    }
+}
+
+/// `git_push` — push the current branch to origin (sets upstream on first
+/// push). No args. Reuses `git::push` so behavior matches the panel's Push.
+async fn git_push(id: &str, ctx: &OpContext) -> Response {
+    let branch = match crate::git::current_branch(&ctx.cwd).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return Response::err(id, "git_push: HEAD is detached — no branch to push"),
+        Err(e) => return Response::err(id, format!("git_push: {e}")),
+    };
+    match crate::git::push(&ctx.cwd, &branch).await {
+        Ok(summary) => Response::ok(id, 0, summary, String::new()),
+        Err(e) => Response::err(id, e.to_string()),
     }
 }
 
@@ -515,6 +533,35 @@ mod tests {
             .output()
             .unwrap();
         assert!(String::from_utf8_lossy(&log.stdout).contains("add new.txt"));
+    }
+
+    #[tokio::test]
+    async fn git_push_without_remote_reports_error() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+
+        let rpc_dir = td.path().join("rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(&rpc_dir.join("requests"), "p1.json", r#"{"id":"p1","op":"git_push"}"#);
+
+        let cx = OpContext { cwd: repo.clone(), base_branch: "main".to_string() };
+        process_pending(&rpc_dir, &cx).await;
+
+        let body = std::fs::read_to_string(rpc_dir.join("responses/p1.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        // No origin remote → push fails; the agent gets a clear error (from a
+        // real push attempt, not an unknown-op rejection).
+        assert_eq!(v["ok"], false);
+        let err = v["error"].as_str().unwrap();
+        assert!(!err.contains("unknown op"), "got: {err}");
+        assert!(err.contains("push failed"), "got: {err}");
     }
 
     #[tokio::test]
