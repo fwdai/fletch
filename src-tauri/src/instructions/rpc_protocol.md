@@ -27,5 +27,6 @@ Available ops:
 - `git_commit` — stages all changes in your worktree and commits them. `args.message` (required) is the commit message.
 - `open_pr` — pushes your branch and opens a pull request against your base branch. `args.title` and `args.body` set the PR title and description; omit `title` to auto-fill from your commits.
 - `git_push` — pushes your current branch to origin (sets the upstream on first push). No args. Use it to update an existing pull request after committing fixes.
+- `git_update_branch` — fetches your base branch from origin and merges it into your current branch. No args. A non-zero `exit_code` with `CONFLICT` in `stdout` means the merge stopped on conflicts: resolve the listed files in your worktree, then complete the merge with `git_commit` and push with `git_push`.
 
-Use these ops for git: your worktree's git database lives outside the sandbox, so running `git add`/`commit`/`push` yourself fails with a permission error. Commit through `git_commit`, push through `git_push`, and open PRs through `open_pr` instead.
+Use these ops for git: your worktree's git database lives outside the sandbox, so running `git add`/`commit`/`merge`/`push` yourself fails with a permission error. Commit through `git_commit`, push through `git_push`, sync your base branch through `git_update_branch`, and open PRs through `open_pr` instead.
