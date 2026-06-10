@@ -15,6 +15,7 @@ import {
   type AgentRecord,
   type AgentView,
   type GitState,
+  type PrChecks,
   type PrState,
   type SessionRecord,
   type ShortStats,
@@ -22,6 +23,10 @@ import {
   type Workspace,
 } from "./api";
 import { DEFAULT_PROVIDER_ID } from "./data/providers";
+import type {
+  GitDelegation,
+  GitDelegationKind,
+} from "./components/RightPanel/delegation";
 import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 import { getAllSettings, setSetting } from "./storage/settings";
@@ -231,6 +236,17 @@ interface AppState {
   /** PR state per agent, keyed by agent_id. Updated by the pr:state_changed watcher event. */
   prStates: Record<string, PrState | null>;
   fetchPrState: (agentId: string) => Promise<void>;
+  /** Rich PR merge-gate + checks per agent. Absent key = not yet fetched;
+   *  `null` = confirmed unavailable (no PR / gh failure). */
+  prChecks: Record<string, PrChecks | null>;
+  fetchPrChecks: (agentId: string) => Promise<void>;
+  /** Active agent-delegated git action per agent (absent = none). Set when a
+   *  panel action hands control to the agent; cleared by the panel when the
+   *  watched git/PR transition lands or the agent gives up. */
+  gitDelegations: Record<string, GitDelegation>;
+  delegateGitAction: (agentId: string, kind: GitDelegationKind, prompt: string) => void;
+  markGitDelegationRunning: (agentId: string) => void;
+  clearGitDelegation: (agentId: string) => void;
   /** Resolves to "up-to-date" | "pushed" on success, null on error. */
   pushAgent: (agentId: string) => Promise<string | null>;
   /** Resolves true on success, false on error. */
@@ -607,6 +623,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   gitStates: {},
   gitShortstats: {},
   prStates: {},
+  prChecks: {},
+  gitDelegations: {},
 
   drafts: [],
   activeDraftId: null,
@@ -1031,6 +1049,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _droppedGitState, ...restGitStates } = s.gitStates;
         const { [id]: _droppedShortstats, ...restShortstats } = s.gitShortstats;
         const { [id]: _droppedPrState, ...restPrStates } = s.prStates;
+        const { [id]: _droppedChecks, ...restPrChecks } = s.prChecks;
+        const { [id]: _droppedDelegation, ...restDelegations } = s.gitDelegations;
         return {
           workspace: fresh,
           selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
@@ -1042,6 +1062,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           gitStates: restGitStates,
           gitShortstats: restShortstats,
           prStates: restPrStates,
+          prChecks: restPrChecks,
+          gitDelegations: restDelegations,
         };
       });
     } catch (e) {
@@ -1065,6 +1087,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _g, ...restGitStates } = s.gitStates;
         const { [id]: _s, ...restShortstats } = s.gitShortstats;
         const { [id]: _p, ...restPrStates } = s.prStates;
+        const { [id]: _c, ...restPrChecks } = s.prChecks;
+        const { [id]: _d, ...restDelegations } = s.gitDelegations;
         return {
           workspace: fresh ?? s.workspace,
           selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
@@ -1076,6 +1100,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           gitStates: restGitStates,
           gitShortstats: restShortstats,
           prStates: restPrStates,
+          prChecks: restPrChecks,
+          gitDelegations: restDelegations,
         };
       });
     } catch (e) {
@@ -1173,6 +1199,44 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch {
       // non-fatal
     }
+  },
+
+  fetchPrChecks: async (agentId) => {
+    try {
+      const checks = await api.getPrChecks(agentId);
+      // Write nulls too: null = "confirmed unavailable", distinct from the
+      // absent key ("not yet fetched") that renders as the checking… state.
+      set((s) => ({ prChecks: { ...s.prChecks, [agentId]: checks } }));
+    } catch {
+      // non-fatal — next poll tick will retry
+    }
+  },
+
+  delegateGitAction: (agentId, kind, prompt) => {
+    set((s) => ({
+      gitDelegations: {
+        ...s.gitDelegations,
+        [agentId]: { kind, startedAt: Date.now(), sawRunning: false },
+      },
+    }));
+    void get().sendUserMessage(agentId, prompt);
+  },
+
+  markGitDelegationRunning: (agentId) => {
+    set((s) => {
+      const d = s.gitDelegations[agentId];
+      if (!d || d.sawRunning) return s;
+      return {
+        gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawRunning: true } },
+      };
+    });
+  },
+
+  clearGitDelegation: (agentId) => {
+    set((s) => {
+      const { [agentId]: _dropped, ...rest } = s.gitDelegations;
+      return { gitDelegations: rest };
+    });
   },
 
   pushAgent: async (agentId) => {
