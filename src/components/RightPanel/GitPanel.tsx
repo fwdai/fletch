@@ -1,11 +1,11 @@
 import { open } from "@tauri-apps/plugin-shell";
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import type { AgentRecord, FileStatus, GitState, PrState } from "../../api";
 import { useAppStore } from "../../store";
 import { usePoll } from "../../util/hooks";
 import { Icon, type IconName } from "../Icon";
 import { IconButton } from "../ui/IconButton";
-import { primaryFor, secondaryFor, type GitPanelState } from "./primaryActions";
+import { primaryFor, secondaryFor, type ActionTone, type GitPanelState } from "./primaryActions";
 
 function deriveState(git: GitState | null, pr: PrState | null): GitPanelState {
   if (!git) return "loading";
@@ -40,6 +40,109 @@ interface SplitActionItem {
   kbd?: string;
 }
 
+/** A small CSS spinner used in loading states (status line + busy CTA). */
+function Spinner() {
+  return <span className="git-spin" aria-hidden />;
+}
+
+/** A quiet inline link out to GitHub — accent text, underline on hover, ↗. */
+function GitLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <button type="button" className="git-link" onClick={() => void open(href)}>
+      {children}
+      <Icon name="external" size={10} />
+    </button>
+  );
+}
+
+// ── Color-coded status header ─────────────────────────────────────
+// The panel's at-a-glance state signal: a tinted strip whose color carries the
+// state before any word is read. clean=green · uncommitted=amber · pushed/PR=
+// blue · fixable (can't merge / conflicts)=orange · ready=green · merged=purple.
+type HeaderKind = "clean" | "changes" | "info" | "att" | "ready" | "merged" | "neutral";
+
+interface HeaderInfo {
+  kind: HeaderKind;
+  pill?: string;
+  /** Primary mono text (branch, or PR phrase like "ready to merge"). */
+  text: string;
+  /** Trailing muted text after `text` (e.g. "← main"). */
+  sub?: string;
+  /** Show a leading status dot instead of a pill (clean state). */
+  dot?: boolean;
+  /** Show the +adds/−dels diff summary on the right (changes state). */
+  diff?: boolean;
+  /** Show a trailing ↗ link to the PR on GitHub. */
+  ext?: boolean;
+}
+
+function describeHeader(
+  state: GitPanelState,
+  branch: string,
+  base: string,
+  pr: PrState | null,
+): HeaderInfo {
+  const n = pr?.number;
+  switch (state) {
+    case "loading":   return { kind: "neutral", text: "Loading…" };
+    case "changes":   return { kind: "changes", pill: "Uncommitted", text: branch, diff: true };
+    case "pushed":    return { kind: "info", pill: "Pushed", text: branch };
+    case "conflicts": return { kind: "att", pill: "Conflicts", text: branch, sub: `← ${base}` };
+    case "pr-open":
+      return pr?.mergeable
+        ? { kind: "ready", pill: n != null ? `PR #${n}` : "PR", text: "ready to merge", ext: true }
+        : { kind: "att", pill: n != null ? `PR #${n}` : "PR", text: "can’t merge yet", ext: true };
+    case "pr-closed": return { kind: "neutral", pill: "Closed", text: n != null ? `#${n}` : "—", ext: true };
+    case "merged":    return { kind: "merged", pill: "Merged", text: n != null ? `#${n} → ${base}` : `→ ${base}`, ext: true };
+    default:          return { kind: "clean", text: branch, sub: `← ${base}`, dot: true };
+  }
+}
+
+function StatusHeader({
+  state,
+  branch,
+  base,
+  git,
+  pr,
+}: {
+  state: GitPanelState;
+  branch: string;
+  base: string;
+  git: GitState | null;
+  pr: PrState | null;
+}) {
+  const h = describeHeader(state, branch, base, pr);
+  const adds = git?.additions ?? 0;
+  const dels = git?.deletions ?? 0;
+  return (
+    <div className={`git-hdr k-${h.kind}`}>
+      {h.dot && <span className="hdr-dot" />}
+      {h.pill && <span className="pill">{h.pill}</span>}
+      <span className="bn">{h.text}</span>
+      {h.sub && <span className="base">{h.sub}</span>}
+      <div className="hdr-meta">
+        {h.diff && (adds > 0 || dels > 0) && (
+          <span className="hdr-diff">
+            {adds > 0 && <span className="add">+{adds}</span>}
+            {dels > 0 && <span className="rem">−{dels}</span>}
+          </span>
+        )}
+        {h.ext && pr?.url && (
+          <button
+            type="button"
+            className="hdr-ext tip"
+            data-tip="View on GitHub"
+            aria-label="View on GitHub"
+            onClick={() => void open(pr.url)}
+          >
+            <Icon name="external" size={13} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Split action button ───────────────────────────────────────────
 // A split button with a *selectable* default: the main button shows the
 // currently-selected action and runs it on click; the caret opens a menu of
@@ -51,35 +154,41 @@ function SplitAction({
   items,
   selectedKey,
   primaryKey,
-  danger,
+  tone,
   mainDisabled,
+  busyLabel,
   onSelect,
   onRun,
 }: {
   items: SplitActionItem[];
   selectedKey: string;
   primaryKey: string;
-  danger: boolean;
+  tone: ActionTone;
   mainDisabled: boolean;
+  busyLabel: string | null;
   onSelect: (key: string) => void;
   onRun: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const selected = items.find((a) => a.key === selectedKey) ?? items[0];
   const hasMenu = items.length > 1;
+  const busy = busyLabel != null;
   if (!selected) return null;
 
+  const toneClass = tone !== "accent" ? tone : "";
+
   return (
-    <div className={`git-split ${danger ? "danger" : ""}`}>
-      <button className="gsa-main" disabled={mainDisabled} onClick={onRun}>
-        <Icon name={selected.icon} />
-        <span className="gsa-label">{selected.label}</span>
+    <div className={`git-split ${toneClass} ${busy ? "busy" : ""}`}>
+      <button className="gsa-main" disabled={mainDisabled || busy} onClick={onRun}>
+        {busy ? <Spinner /> : <Icon name={selected.icon} />}
+        <span className="gsa-label">{busy ? busyLabel : selected.label}</span>
       </button>
       {hasMenu && (
         <button
           className="gsa-caret tip"
           data-tip="Choose action"
           aria-label="Choose action"
+          disabled={busy}
           onClick={() => setOpen((v) => !v)}
         >
           <Icon name="chevU" />
@@ -199,13 +308,27 @@ function PRCard({ pr }: { pr: PrState }) {
     <div className="git-card">
       <div className="git-card-h">Pull request</div>
       <div className="git-card-title">{pr.title}</div>
-      <div className="git-card-meta">
-        #{pr.number} · alex chaplinsky · 12 comments
-      </div>
+      <div className="git-card-meta">#{pr.number} · open</div>
       <div className="git-card-row">
-        <span className="ok">✓ 24 checks passing</span>
-        <span className="sep">·</span>
-        <span>2 reviewers · 1 approved</span>
+        {pr.mergeable ? (
+          <span className="ok">✓ No conflicts — ready to merge</span>
+        ) : (
+          <span className="att">△ Can’t merge yet — resolve conflicts on GitHub</span>
+        )}
+      </div>
+      <div className="git-card-links">
+        <button type="button" className="git-card-link" onClick={() => void open(pr.url)}>
+          <Icon name="github" size={11} />
+          Overview
+        </button>
+        <button type="button" className="git-card-link" onClick={() => void open(`${pr.url}/files`)}>
+          <Icon name="diff" size={11} />
+          Files
+        </button>
+        <button type="button" className="git-card-link" onClick={() => void open(`${pr.url}/commits`)}>
+          <Icon name="commit" size={11} />
+          Commits
+        </button>
       </div>
     </div>
   );
@@ -225,25 +348,16 @@ function ClosedPRCard({ pr }: { pr: PrState }) {
   );
 }
 
-function MergedCard({ base }: { base: string }) {
-  return (
-    <div className="git-banner success">
-      <Icon name="merge" size={14} />
-      <span>Merged into {base}. Workspace can now be archived.</span>
-    </div>
-  );
-}
-
 function ConflictCard({ files }: { files: FileStatus[] }) {
   const conflicted = files.filter((f) => f.kind === "conflicted");
   const first = conflicted[0]?.path ?? "";
   const rest = conflicted.length - 1;
   return (
-    <div className="git-banner danger">
+    <div className="git-banner att">
       <Icon name="merge" size={14} />
       <span>
         Conflicts in <span className="mono">{first}</span>
-        {rest > 0 && ` and ${rest} more`}.
+        {rest > 0 && ` and ${rest} more`}. The agent can reconcile them.
       </span>
     </div>
   );
@@ -252,10 +366,11 @@ function ConflictCard({ files }: { files: FileStatus[] }) {
 // ── Main panel ────────────────────────────────────────────────────
 
 /** State-aware git panel driven by live git state from the Tauri backend.
- *  Layout follows the Quorum v2 design: a quiet context header, a scrollable
- *  changes list (the focus), and a pinned footer that holds the commit
- *  message, a status line, and one centered split-button action — same place
- *  in every state. The panel is feature-flagged in settings. */
+ *  Layout: a color-coded status header (the at-a-glance state signal), a
+ *  scrollable body (the changes / PR card — the focus), and a pinned footer
+ *  holding the commit message plus a responsive action bar (status left,
+ *  split-button right; stacks full-width on a narrow panel via a container
+ *  query). The panel is feature-flagged in settings. */
 export function GitPanel({ agent }: { agent: AgentRecord }) {
   const gitState = useAppStore((s) => s.gitStates[agent.id] ?? null);
   const prState  = useAppStore((s) => s.prStates[agent.id] ?? null);
@@ -306,6 +421,19 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   const commitRef = useRef<HTMLTextAreaElement>(null);
   const customActive = override && msg.trim().length > 0;
   const behind    = gitState?.behind ?? 0;
+  const mergeable = prState?.mergeable ?? false;
+
+  // In-flight async action — drives the loading presentation (dimmed body,
+  // spinner status, busy CTA). Holds the present-tense verb to show.
+  const [busy, setBusy] = useState<string | null>(null);
+  const runBusy = useCallback(async (label: string, fn: () => Promise<unknown>) => {
+    setBusy(label);
+    try {
+      return await fn();
+    } finally {
+      setBusy(null);
+    }
+  }, []);
 
   // Transient confirmation for fire-and-forget actions (push/pull/rebase,
   // and agent delegation), which otherwise have no visible effect.
@@ -318,12 +446,13 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   }, []);
   useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
-  // Reset the override + notice when switching agents so they don't leak
-  // between worktrees.
+  // Reset the override + notice + busy when switching agents so they don't
+  // leak between worktrees.
   useEffect(() => {
     setOverride(false);
     setMsg("");
     setNotice(null);
+    setBusy(null);
   }, [agent.id]);
 
   // Leaving the changes state drops any half-written override.
@@ -338,11 +467,14 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   }, []);
   const revertOverride = useCallback(() => { setOverride(false); setMsg(""); }, []);
 
+  const branch = gitState?.branch || agent.repos[0]?.branch || "(no branch yet)";
+  const base   = gitState?.parent_branch || agent.repos[0]?.parent_branch || "main";
+
   // Single dispatch table for every action a state can offer — the split
   // button's main click and its menu both route through here by key.
   function runAction(key: string) {
     switch (key) {
-      // ── delegated to the coding agent (agent mode, no custom message) ──
+      // ── delegated to the coding agent (agent mode) ──
       case "agent-commit-pr":
         void sendUserMessage(
           agent.id,
@@ -357,55 +489,70 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         );
         showNotice("Asked the agent to commit");
         break;
+      case "agent-resolve":
+        void sendUserMessage(
+          agent.id,
+          "Resolve the current git merge conflicts: inspect each conflicted file, reconcile both sides correctly, and complete the merge.",
+        );
+        showNotice("Asked the agent to resolve conflicts");
+        break;
+      case "agent-fix":
+        void sendUserMessage(
+          agent.id,
+          "Some CI checks are failing on this pull request. Investigate the failures and fix them.",
+        );
+        showNotice("Asked the agent to fix the failing checks");
+        break;
       // ── direct, agent bypassed (user typed their own message) ──
       case "commit-direct":
         if (!customActive) { openOverride(); return; }
-        void (async () => {
+        void runBusy("Committing…", async () => {
           const ok = await commitChanges(agent.id, msg.trim());
           if (ok) revertOverride();
-        })();
+        });
         break;
       case "commit-pr-direct":
         if (!customActive) { openOverride(); return; }
-        void (async () => {
+        void runBusy("Committing & opening PR…", async () => {
           const ok = await commitAndOpenPr(agent.id, msg.trim());
           if (ok) revertOverride();
-        })();
+        });
         break;
       case "open-pr":
-        void (async () => {
+        void runBusy("Opening PR…", async () => {
           const pr = await createPr(agent.id, "", "");
           // If creation failed (e.g. a PR already exists), the local prState
-          // was stale — re-fetch so the panel corrects itself to "View PR".
+          // was stale — re-fetch so the panel corrects itself.
           if (!pr) await fetchPrState(agent.id);
-        })();
+        });
         break;
       case "view-pr":      if (prState?.url) void open(prState.url); break;
-      case "merge":        void mergePr(agent.id);        break;
-      case "archive":      void archive(agent.id);        break;
+      case "merge":        void runBusy("Merging…", () => mergePr(agent.id)); break;
+      case "archive":      void runBusy("Archiving…", () => archive(agent.id)); break;
       case "push":
-        void (async () => {
+        void runBusy("Pushing…", async () => {
           const r = await pushAgent(agent.id);
           if (r) showNotice(r === "up-to-date" ? "Already up to date with origin" : "Pushed to origin");
-        })();
+        });
         break;
       case "pull":
-        void (async () => { if (await pullAgent(agent.id)) showNotice("Pulled latest changes"); })();
+        void runBusy("Pulling…", async () => {
+          if (await pullAgent(agent.id)) showNotice("Pulled latest changes");
+        });
         break;
       case "rebase":
-        void (async () => { if (await rebaseAgent(agent.id)) showNotice(`Rebased onto ${base}`); })();
+        void runBusy("Rebasing…", async () => {
+          if (await rebaseAgent(agent.id)) showNotice(`Rebased onto ${base}`);
+        });
         break;
-      case "stash":        void stashChanges(agent.id);   break;
-      case "discard":      void discardChanges(agent.id); break;
-      case "abort":        void abortMerge(agent.id);     break;
-      case "delete-branch": void deleteBranch(agent.id);  break;
-      // "resolve" / "loading" are non-actionable placeholders.
+      case "stash":        void runBusy("Stashing…", () => stashChanges(agent.id)); break;
+      case "discard":      void runBusy("Discarding…", () => discardChanges(agent.id)); break;
+      case "abort":        void runBusy("Aborting…", () => abortMerge(agent.id)); break;
+      case "delete-branch": void runBusy("Deleting branch…", () => deleteBranch(agent.id)); break;
+      // "loading" is a non-actionable placeholder.
       default:             break;
     }
   }
-
-  const branch = gitState?.branch || agent.repos[0]?.branch || "(no branch yet)";
-  const base   = gitState?.parent_branch || agent.repos[0]?.parent_branch || "main";
 
   const counts = {
     files:    gitState?.files.length ?? 0,
@@ -415,6 +562,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
     prNumber: prState?.number,
     base,
     customActive,
+    mergeable,
   };
   const primary   = primaryFor(panelState, counts);
   const secondary = secondaryFor(panelState, counts);
@@ -433,10 +581,28 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
     setSelectedKey(primary.key);
   }, [panelState, primary.key, agent.id]);
 
-  // The CTA is disabled only where the *selected* action can't run: the
-  // conflicts placeholder (no in-app resolver) and while git state loads.
-  const mainDisabled = selectedKey === "resolve" || selectedKey === "loading";
-  const danger = selectedKey === primary.key && !!primary.danger;
+  // The CTA's main button is disabled while loading git state, while an action
+  // is in flight, and when Merge is selected but the PR can't merge yet.
+  const mainDisabled =
+    selectedKey === "loading" ||
+    (selectedKey === "merge" && !mergeable);
+  // Tone applies only when the selected action is the state's primary; picking
+  // an alternate from the menu falls back to the neutral accent fill.
+  const tone: ActionTone = selectedKey === primary.key ? primary.tone ?? "accent" : "accent";
+
+  // Pushed state: link the commit count out to GitHub — a single commit when
+  // only one is ahead, otherwise the base..branch compare (commit list + full
+  // diff). Gated on nothing being unpushed, so the tip is on origin and the
+  // link can't 404. Needs the origin web base (github.com remotes only).
+  const webBase = gitState?.remote_url ?? null;
+  const aheadCount = gitState?.ahead ?? 0;
+  const unpushed = gitState?.unpushed ?? 0;
+  const pushedLink: string | null =
+    webBase && unpushed === 0 && aheadCount > 0
+      ? aheadCount === 1 && gitState?.head_sha
+        ? `${webBase}/commit/${gitState.head_sha}`
+        : `${webBase}/compare/${base}...${branch}`
+      : null;
 
   // Show the changes list only when there are uncommitted files to display.
   const showFiles  = panelState === "changes" || panelState === "conflicts";
@@ -444,30 +610,13 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 
   return (
     <div className="git-wrap">
-      {/* ── context header: branch + how it relates to base ── */}
-      <div className="git-state">
-        <div className="git-branch-row">
-          <Icon name="branch" />
-          <span className="bn">{branch}</span>
-          <span className="base">← {base}</span>
-        </div>
-        <div className="git-stats">
-          <span><span className="num">{gitState?.ahead ?? 0}</span> ahead</span>
-          <span><span className="num">{gitState?.behind ?? 0}</span> behind</span>
-          {((gitState?.additions ?? 0) > 0 || (gitState?.deletions ?? 0) > 0) && (
-            <span className="git-stats-d">
-              <span className="add">+{gitState!.additions}</span>
-              <span className="rem">−{gitState!.deletions}</span>
-            </span>
-          )}
-        </div>
-      </div>
+      {/* ── color-coded status header: the at-a-glance state signal ── */}
+      <StatusHeader state={panelState} branch={branch} base={base} git={gitState} pr={prState} />
 
       {/* ── scrollable body: the changes are the focus ── */}
-      <div className="git-body">
+      <div className={`git-body ${busy ? "busy" : ""}`}>
         {panelState === "pr-open"   && prState && <PRCard pr={prState} />}
         {panelState === "pr-closed" && prState && <ClosedPRCard pr={prState} />}
-        {panelState === "merged"    && <MergedCard base={base} />}
         {panelState === "conflicts" && gitState && <ConflictCard files={gitState.files} />}
 
         {showFiles && (
@@ -508,7 +657,13 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         {panelState === "pushed" && (
           <div className="empty-msg" style={{ margin: "auto" }}>
             <div className="et">Ready for a pull request</div>
-            <div>All changes are committed. Open a PR to start review.</div>
+            <div>All changes are committed &amp; pushed. Open a PR to start review.</div>
+          </div>
+        )}
+        {panelState === "merged" && (
+          <div className="empty-msg" style={{ margin: "auto" }}>
+            <div className="et">Merged into {base}</div>
+            <div>This workspace’s work is shipped. Archive it or keep going.</div>
           </div>
         )}
         {panelState === "clean" && (
@@ -534,7 +689,12 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         )}
 
         <div className="git-act">
-          {notice ? (
+          {busy ? (
+            <div className="git-act-status info">
+              <Spinner />
+              <span className="lbl">{busy}</span>
+            </div>
+          ) : notice ? (
             <div className="git-notice">
               <Icon name="check" size={11} />
               <span>{notice}</span>
@@ -542,7 +702,16 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
           ) : (
             <div className={`git-act-status ${primary.statusKind}`}>
               <span className="d" />
-              <span className="lbl">{primary.statusLabel}</span>
+              <span className="lbl">
+                {panelState === "pushed" && pushedLink ? (
+                  <>
+                    <GitLink href={pushedLink}>{aheadCount === 1 ? "1 commit" : `${aheadCount} commits`}</GitLink>
+                    {" pushed · no PR yet"}
+                  </>
+                ) : (
+                  primary.statusLabel
+                )}
+              </span>
               {primary.statusExtra && <span className="ex">{primary.statusExtra}</span>}
             </div>
           )}
@@ -550,8 +719,9 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
             items={items}
             selectedKey={selectedKey}
             primaryKey={primary.key}
-            danger={danger}
+            tone={tone}
             mainDisabled={mainDisabled}
+            busyLabel={busy}
             onSelect={setSelectedKey}
             onRun={() => runAction(selectedKey)}
           />
