@@ -593,14 +593,22 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
     setSelectedKey(primary.key);
   }, [panelState, primary.key, agent.id]);
 
+  // `selectedKey` can be orphaned when a background poll removes its menu item
+  // *without* changing `primary.key` — e.g. `mergeable` flips true, dropping
+  // "agent-update-branch" from the menu while the primary stays "merge", so the
+  // reset effect above doesn't fire. Fall back to the primary (which is always
+  // `items[0]`, what the button then displays) so the displayed action, its
+  // tone/enabled state, and the dispatched action all stay in agreement.
+  const effectiveKey = items.some((i) => i.key === selectedKey) ? selectedKey : primary.key;
+
   // The CTA's main button is disabled while loading git state, while an action
   // is in flight, and when Merge is selected but the PR can't merge yet.
   const mainDisabled =
-    selectedKey === "loading" ||
-    (selectedKey === "merge" && !mergeable);
+    effectiveKey === "loading" ||
+    (effectiveKey === "merge" && !mergeable);
   // Tone applies only when the selected action is the state's primary; picking
   // an alternate from the menu falls back to the neutral accent fill.
-  const tone: ActionTone = selectedKey === primary.key ? primary.tone ?? "accent" : "accent";
+  const tone: ActionTone = effectiveKey === primary.key ? primary.tone ?? "accent" : "accent";
 
   // Pushed state: link the commit count out to GitHub — a single commit when
   // only one is ahead, otherwise the base..branch compare (commit list + full
@@ -696,7 +704,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
             textareaRef={commitRef}
             onOpen={openOverride}
             onRevert={revertOverride}
-            onSubmit={() => runAction(selectedKey)}
+            onSubmit={() => runAction(effectiveKey)}
           />
         )}
 
@@ -729,13 +737,13 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
           )}
           <SplitAction
             items={items}
-            selectedKey={selectedKey}
+            selectedKey={effectiveKey}
             primaryKey={primary.key}
             tone={tone}
             mainDisabled={mainDisabled}
             busyLabel={busy}
             onSelect={setSelectedKey}
-            onRun={() => runAction(selectedKey)}
+            onRun={() => runAction(effectiveKey)}
           />
         </div>
       </div>
