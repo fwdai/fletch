@@ -30,6 +30,57 @@ pub struct PrState {
     pub mergeable: bool,
 }
 
+/// GitHub's combined merge gate (`mergeStateStatus`), normalized. This — not
+/// `mergeable` — is what actually decides whether a PR can land (spec §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeState {
+    Clean,
+    Blocked,
+    Unstable,
+    Behind,
+    Dirty,
+    Draft,
+    HasHooks,
+    Unknown,
+}
+
+/// One CI check, normalized from gh's `statusCheckRollup` (which mixes
+/// `CheckRun` and legacy `StatusContext` shapes).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CheckRun {
+    pub name: String,
+    /// "queued" | "in_progress" | "completed"
+    pub status: String,
+    /// "success" | "failure" | "neutral" | "cancelled" | "skipped" |
+    /// "timed_out" | "action_required" | "stale" — None until completed.
+    pub conclusion: Option<String>,
+    /// Branch-protection data needs an extra (often unauthorized) API call,
+    /// so this is always `false` for now — the merge gate comes from
+    /// `merge_state` instead (spec §6 fallback).
+    pub required: bool,
+    pub url: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+/// Rich PR merge-gate + per-check detail (spec §6). Heavier than `pr_view`
+/// — callers poll it on a slow cadence.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrChecks {
+    pub merge_state: MergeState,
+    /// "none" | "pending" | "passing" | "failing" — checks-only summary.
+    pub rollup: String,
+    pub total: u32,
+    pub passed: u32,
+    pub failed: u32,
+    pub pending: u32,
+    /// Names of failing checks. With `required` detection unavailable this
+    /// lists ALL failing checks, not just protected ones.
+    pub required_failing: Vec<String>,
+    pub runs: Vec<CheckRun>,
+}
+
 // ---------------------------------------------------------------------------
 // Internal deserialization helpers
 // ---------------------------------------------------------------------------
@@ -86,6 +137,128 @@ pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
 
     let raw: GhPrRaw = serde_json::from_slice(&out.stdout)?;
     Ok(Some(raw.into()))
+}
+
+/// Fetch the merge gate + per-check detail for the current branch's PR.
+/// One `gh pr view` call. Returns `Ok(None)` when there is no PR; other gh
+/// failures surface as `Err` — the command layer treats both as "checks
+/// unavailable" and the panel degrades to `mergeable`-only behavior.
+pub async fn pr_checks(worktree: &Path) -> Result<Option<PrChecks>> {
+    let out = Command::new("gh")
+        .current_dir(worktree)
+        .args(["pr", "view", "--json", "mergeStateStatus,statusCheckRollup"])
+        .output()
+        .await?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.to_lowercase().contains("no pull requests found") {
+            return Ok(None);
+        }
+        return Err(Error::Gh(stderr.trim().to_string()));
+    }
+
+    let raw: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let merge_state = raw["mergeStateStatus"].as_str().unwrap_or("UNKNOWN").to_string();
+    let rollup: Vec<serde_json::Value> = raw["statusCheckRollup"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    Ok(Some(parse_pr_checks(&merge_state, &rollup)))
+}
+
+/// Normalize gh's UPPERCASE payload into the spec §6 shape. Pure — unit
+/// tested against captured fixtures.
+fn parse_pr_checks(merge_state_status: &str, rollup: &[serde_json::Value]) -> PrChecks {
+    let merge_state = match merge_state_status {
+        "CLEAN" => MergeState::Clean,
+        "BLOCKED" => MergeState::Blocked,
+        "UNSTABLE" => MergeState::Unstable,
+        "BEHIND" => MergeState::Behind,
+        "DIRTY" => MergeState::Dirty,
+        "DRAFT" => MergeState::Draft,
+        "HAS_HOOKS" => MergeState::HasHooks,
+        _ => MergeState::Unknown,
+    };
+
+    let str_of = |v: &serde_json::Value, key: &str| -> Option<String> {
+        v.get(key)
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+
+    let runs: Vec<CheckRun> = rollup
+        .iter()
+        .map(|item| {
+            if item["__typename"].as_str() == Some("StatusContext") {
+                // Legacy commit status: a single `state` covers both status
+                // and conclusion.
+                let state = item["state"].as_str().unwrap_or("");
+                let (status, conclusion) = match state {
+                    "SUCCESS" => ("completed", Some("success")),
+                    "FAILURE" | "ERROR" => ("completed", Some("failure")),
+                    "EXPECTED" => ("queued", None),
+                    _ => ("in_progress", None), // PENDING
+                };
+                CheckRun {
+                    name: str_of(item, "context").unwrap_or_else(|| "status".into()),
+                    status: status.to_string(),
+                    conclusion: conclusion.map(|s| s.to_string()),
+                    required: false,
+                    url: str_of(item, "targetUrl"),
+                    started_at: str_of(item, "startedAt"),
+                    completed_at: None,
+                }
+            } else {
+                CheckRun {
+                    name: str_of(item, "name").unwrap_or_else(|| "check".into()),
+                    status: item["status"].as_str().unwrap_or("QUEUED").to_lowercase(),
+                    conclusion: str_of(item, "conclusion").map(|c| c.to_lowercase()),
+                    required: false,
+                    url: str_of(item, "detailsUrl"),
+                    started_at: str_of(item, "startedAt"),
+                    completed_at: str_of(item, "completedAt"),
+                }
+            }
+        })
+        .collect();
+
+    let is_failing = |r: &CheckRun| {
+        matches!(
+            r.conclusion.as_deref(),
+            Some("failure")
+                | Some("timed_out")
+                | Some("cancelled")
+                | Some("action_required")
+                | Some("startup_failure")
+        )
+    };
+    let total = runs.len() as u32;
+    let pending = runs.iter().filter(|r| r.status != "completed").count() as u32;
+    let failed = runs.iter().filter(|r| is_failing(r)).count() as u32;
+    let passed = total - pending - failed;
+    let rollup_summary = if total == 0 {
+        "none"
+    } else if failed > 0 {
+        "failing"
+    } else if pending > 0 {
+        "pending"
+    } else {
+        "passing"
+    };
+    let required_failing = runs.iter().filter(|r| is_failing(r)).map(|r| r.name.clone()).collect();
+
+    PrChecks {
+        merge_state,
+        rollup: rollup_summary.to_string(),
+        total,
+        passed,
+        failed,
+        pending,
+        required_failing,
+        runs,
+    }
 }
 
 /// Create a PR for the branch checked out in `worktree`.
@@ -369,6 +542,78 @@ mod tests {
         let pr = PrState::from(raw);
         assert!(matches!(pr.state, PrStatus::Closed));
         assert!(!pr.mergeable);
+    }
+
+    fn rollup_fixture() -> Vec<serde_json::Value> {
+        serde_json::from_str(
+            r#"[
+              {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS",
+               "detailsUrl":"https://ci/build","startedAt":"2026-06-10T00:00:00Z","completedAt":"2026-06-10T00:05:00Z"},
+              {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"FAILURE",
+               "detailsUrl":"https://ci/test","startedAt":"2026-06-10T00:00:00Z","completedAt":"2026-06-10T00:07:00Z"},
+              {"__typename":"CheckRun","name":"lint","status":"IN_PROGRESS","conclusion":null,
+               "detailsUrl":null,"startedAt":"2026-06-10T00:00:00Z","completedAt":null},
+              {"__typename":"StatusContext","context":"ci/legacy","state":"SUCCESS","targetUrl":"https://ci/legacy"}
+            ]"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn pr_checks_normalizes_runs_and_counts() {
+        let checks = parse_pr_checks("BLOCKED", &rollup_fixture());
+        assert!(matches!(checks.merge_state, MergeState::Blocked));
+        assert_eq!(checks.total, 4);
+        assert_eq!(checks.passed, 2); // build + legacy status context
+        assert_eq!(checks.failed, 1); // test
+        assert_eq!(checks.pending, 1); // lint
+        assert_eq!(checks.rollup, "failing");
+        assert_eq!(checks.required_failing, vec!["test".to_string()]);
+        let lint = checks.runs.iter().find(|r| r.name == "lint").unwrap();
+        assert_eq!(lint.status, "in_progress");
+        assert_eq!(lint.conclusion, None);
+        let legacy = checks.runs.iter().find(|r| r.name == "ci/legacy").unwrap();
+        assert_eq!(legacy.status, "completed");
+        assert_eq!(legacy.conclusion.as_deref(), Some("success"));
+        assert_eq!(legacy.url.as_deref(), Some("https://ci/legacy"));
+    }
+
+    #[test]
+    fn pr_checks_rollup_states() {
+        // No checks at all.
+        let none = parse_pr_checks("CLEAN", &[]);
+        assert_eq!(none.rollup, "none");
+        assert!(matches!(none.merge_state, MergeState::Clean));
+        // All passing.
+        let passing: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS"}]"#,
+        )
+        .unwrap();
+        assert_eq!(parse_pr_checks("CLEAN", &passing).rollup, "passing");
+        // Pending (no failures yet).
+        let pending: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"__typename":"CheckRun","name":"build","status":"QUEUED","conclusion":null}]"#,
+        )
+        .unwrap();
+        assert_eq!(parse_pr_checks("UNKNOWN", &pending).rollup, "pending");
+    }
+
+    #[test]
+    fn pr_checks_merge_state_mapping() {
+        for (raw, want) in [
+            ("CLEAN", MergeState::Clean),
+            ("BLOCKED", MergeState::Blocked),
+            ("UNSTABLE", MergeState::Unstable),
+            ("BEHIND", MergeState::Behind),
+            ("DIRTY", MergeState::Dirty),
+            ("DRAFT", MergeState::Draft),
+            ("HAS_HOOKS", MergeState::HasHooks),
+            ("UNKNOWN", MergeState::Unknown),
+            ("SOMETHING_NEW", MergeState::Unknown),
+        ] {
+            let got = parse_pr_checks(raw, &[]).merge_state;
+            assert_eq!(got, want, "for {raw}");
+        }
     }
 
     #[test]

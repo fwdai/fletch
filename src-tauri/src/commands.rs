@@ -456,6 +456,29 @@ pub async fn get_pr_state(
     gh::pr_view(&worktree).await
 }
 
+/// Fetch the PR merge gate + per-check detail (spec §6). Best-effort: any
+/// failure (no PR, gh missing, API error) returns `None` and the panel falls
+/// back to `mergeable`-only behavior.
+#[tauri::command]
+pub async fn get_pr_checks(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Option<gh::PrChecks>> {
+    let record = match supervisor.workspace.agent(&agent_id) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+    let repo = match record.repos.first() {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    if repo.branch.is_none() {
+        return Ok(None);
+    }
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    Ok(gh::pr_checks(&worktree).await.unwrap_or(None))
+}
+
 /// Open an interactive shell PTY in the agent's primary worktree.
 /// Idempotent: if a shell is already running for this agent, does nothing.
 #[tauri::command]
