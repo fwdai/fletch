@@ -77,17 +77,18 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
         statusKind: "info",
       };
     case "pr-open":
-      // Merge is the goal here. When GitHub reports the PR mergeable we surface
-      // a green "ready to merge" CTA; otherwise the same Merge button reads as
-      // an attention state and is disabled by the panel until it clears.
+      // Merge is the goal here. GitHub's `mergeable` only reports the absence of
+      // merge conflicts — NOT CI/check status — so we claim no more than that:
+      // "no conflicts", a neutral accent CTA (no green "all clear" signal until
+      // real check state lands). When not mergeable the same Merge button reads
+      // as an attention state and is disabled by the panel until it clears.
       return mergeable
         ? {
             key: "merge",
             label: "Merge PR",
             icon: "merge",
-            tone: "success",
-            statusLabel: `${prLabel} · ready to merge`,
-            statusKind: "ready",
+            statusLabel: `${prLabel} · no conflicts`,
+            statusKind: "info",
           }
         : {
             key: "merge",
@@ -179,10 +180,12 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
       ];
     case "pr-open":
       // Primary is "Merge PR". Surface the PR link, and — when it can't merge
-      // yet — an agent-delegated resolve as the most useful alternate.
+      // yet (base advanced / conflicts with base) — an agent-delegated branch
+      // update (sync base → resolve → push), distinct from the local-merge
+      // "Resolve with agent" used in the conflicts state.
       return [
         { key: "view-pr", label: "View on GitHub", icon: "github" },
-        ...(mergeable ? [] : [{ key: "agent-resolve", label: "Resolve with agent", icon: "merge" as IconName }]),
+        ...(mergeable ? [] : [{ key: "agent-update-branch", label: "Update branch with agent", icon: "branch" as IconName }]),
         ...pushItem,
         { key: "pull", label: "Pull", icon: "inbox" },
       ];

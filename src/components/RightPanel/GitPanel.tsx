@@ -89,8 +89,10 @@ function describeHeader(
     case "pushed":    return { kind: "info", pill: "Pushed", text: branch };
     case "conflicts": return { kind: "att", pill: "Conflicts", text: branch, sub: `← ${base}` };
     case "pr-open":
+      // `mergeable` only means "no conflicts" — not that checks passed — so the
+      // header stays neutral blue, never a green "ready" all-clear.
       return pr?.mergeable
-        ? { kind: "ready", pill: n != null ? `PR #${n}` : "PR", text: "ready to merge", ext: true }
+        ? { kind: "info", pill: n != null ? `PR #${n}` : "PR", text: "no conflicts", ext: true }
         : { kind: "att", pill: n != null ? `PR #${n}` : "PR", text: "can’t merge yet", ext: true };
     case "pr-closed": return { kind: "neutral", pill: "Closed", text: n != null ? `#${n}` : "—", ext: true };
     case "merged":    return { kind: "merged", pill: "Merged", text: n != null ? `#${n} → ${base}` : `→ ${base}`, ext: true };
@@ -303,7 +305,7 @@ function CommitComposer({
 
 // ── State cards (rendered in the scrollable body) ─────────────────
 
-function PRCard({ pr }: { pr: PrState }) {
+function PRCard({ pr, base }: { pr: PrState; base: string }) {
   return (
     <div className="git-card">
       <div className="git-card-h">Pull request</div>
@@ -311,9 +313,10 @@ function PRCard({ pr }: { pr: PrState }) {
       <div className="git-card-meta">#{pr.number} · open</div>
       <div className="git-card-row">
         {pr.mergeable ? (
-          <span className="ok">✓ No conflicts — ready to merge</span>
+          // `mergeable` ⇒ no merge conflicts only; it says nothing about checks.
+          <span className="ok">✓ No merge conflicts</span>
         ) : (
-          <span className="att">△ Can’t merge yet — resolve conflicts on GitHub</span>
+          <span className="att">△ Can’t merge cleanly with {base} — update your branch</span>
         )}
       </div>
       <div className="git-card-links">
@@ -496,6 +499,15 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         );
         showNotice("Asked the agent to resolve conflicts");
         break;
+      case "agent-update-branch":
+        // PR can't merge cleanly with the base (the base advanced). This is NOT
+        // a local in-progress merge — the agent must sync the base in first.
+        void sendUserMessage(
+          agent.id,
+          `This pull request can't merge cleanly with ${base}. Update this branch with the latest ${base} (rebase onto it, or merge it in), resolve any conflicts that arise, and push so the PR becomes mergeable again.`,
+        );
+        showNotice(`Asked the agent to update the branch with ${base}`);
+        break;
       case "agent-fix":
         void sendUserMessage(
           agent.id,
@@ -615,7 +627,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 
       {/* ── scrollable body: the changes are the focus ── */}
       <div className={`git-body ${busy ? "busy" : ""}`}>
-        {panelState === "pr-open"   && prState && <PRCard pr={prState} />}
+        {panelState === "pr-open"   && prState && <PRCard pr={prState} base={base} />}
         {panelState === "pr-closed" && prState && <ClosedPRCard pr={prState} />}
         {panelState === "conflicts" && gitState && <ConflictCard files={gitState.files} />}
 
