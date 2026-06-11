@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
-import type { AgentRecord, FileStatus, GitState, MergeState, PrState } from "../../api";
+import type { AgentRecord, CheckRun, FileStatus, GitState, MergeState, PrChecks, PrState } from "../../api";
 import { useAppStore } from "../../store";
 import { usePoll } from "../../util/hooks";
 import { Icon, type IconName } from "../Icon";
@@ -87,6 +87,8 @@ function describeHeader(
   branch: string,
   base: string,
   pr: PrState | null,
+  mergeState: MergeState | null,
+  checksFailed: number,
 ): HeaderInfo {
   const n = pr?.number;
   switch (state) {
@@ -94,12 +96,28 @@ function describeHeader(
     case "changes":   return { kind: "changes", pill: "Uncommitted", text: branch, diff: true };
     case "pushed":    return { kind: "info", pill: "Pushed", text: branch };
     case "conflicts": return { kind: "att", pill: "Conflicts", text: branch, sub: `← ${base}` };
-    case "pr-open":
-      // `mergeable` only means "no conflicts" — not that checks passed — so the
-      // header stays neutral blue, never a green "ready" all-clear.
-      return pr?.mergeable
-        ? { kind: "info", pill: n != null ? `PR #${n}` : "PR", text: "no conflicts", ext: true }
-        : { kind: "att", pill: n != null ? `PR #${n}` : "PR", text: "can’t merge yet", ext: true };
+    case "pr-open": {
+      // GitHub's combined merge gate (spec §7): the legitimate green "ready"
+      // appears only on `clean`. Without checks data, fall back to
+      // `mergeable` — which only means "no conflicts", never an all-clear.
+      const pill = n != null ? `PR #${n}` : "PR";
+      switch (mergeState) {
+        case "clean":    return { kind: "ready", pill, text: "ready to merge", ext: true };
+        case "unstable": return { kind: "changes", pill, text: "optional checks failing", ext: true };
+        case "blocked":
+          return { kind: "att", pill, text: checksFailed > 0 ? "checks failing" : "review required", ext: true };
+        case "behind":   return { kind: "att", pill, text: `behind ${base}`, ext: true };
+        case "dirty":    return { kind: "att", pill, text: `conflicts with ${base}`, ext: true };
+        case "draft":    return { kind: "info", pill, text: "draft", ext: true };
+        case "unknown":
+        case "has_hooks":
+          return { kind: "info", pill, text: "checking…", ext: true };
+        default:
+          return pr?.mergeable
+            ? { kind: "info", pill, text: "no conflicts", ext: true }
+            : { kind: "att", pill, text: "can’t merge yet", ext: true };
+      }
+    }
     case "pr-closed": return { kind: "neutral", pill: "Closed", text: n != null ? `#${n}` : "—", ext: true };
     case "merged":    return { kind: "merged", pill: "Merged", text: n != null ? `#${n} → ${base}` : `→ ${base}`, ext: true };
     default:          return { kind: "clean", text: branch, sub: `← ${base}`, dot: true };
@@ -112,14 +130,18 @@ function StatusHeader({
   base,
   git,
   pr,
+  mergeState,
+  checksFailed,
 }: {
   state: GitPanelState;
   branch: string;
   base: string;
   git: GitState | null;
   pr: PrState | null;
+  mergeState: MergeState | null;
+  checksFailed: number;
 }) {
-  const h = describeHeader(state, branch, base, pr);
+  const h = describeHeader(state, branch, base, pr, mergeState, checksFailed);
   const adds = git?.additions ?? 0;
   const dels = git?.deletions ?? 0;
   return (
@@ -311,20 +333,86 @@ function CommitComposer({
 
 // ── State cards (rendered in the scrollable body) ─────────────────
 
-function PRCard({ pr, base }: { pr: PrState; base: string }) {
+/** Visual class for one check row: ok / fail / skip dot, or a spinner while
+ *  the run is queued / in progress. */
+function checkTone(run: CheckRun): "ok" | "fail" | "skip" | "run" {
+  if (run.status !== "completed") return "run";
+  switch (run.conclusion) {
+    case "success": return "ok";
+    case "neutral":
+    case "skipped":
+    case "stale":
+    case null:      return "skip";
+    default:        return "fail"; // failure, timed_out, cancelled, action_required, …
+  }
+}
+
+function ChecksSection({ checks, prUrl }: { checks: PrChecks; prUrl: string }) {
+  if (checks.total === 0) return null;
+  // Failing first, then running, then the rest — the actionable rows lead.
+  const weight = (r: CheckRun) => (checkTone(r) === "fail" ? 0 : checkTone(r) === "run" ? 1 : 2);
+  const runs = [...checks.runs].sort((a, b) => weight(a) - weight(b));
+  const shown = runs.slice(0, 6);
+  const hidden = runs.length - shown.length;
+  const summary =
+    checks.rollup === "failing"
+      ? `${checks.failed} failing`
+      : checks.rollup === "pending"
+        ? `${checks.total - checks.pending} of ${checks.total} done`
+        : "all passing";
+  return (
+    <div className="pr-checks">
+      <div className="pr-checks-h">
+        <span>Checks</span>
+        <span className={`pr-checks-sum ${checks.rollup}`}>{summary}</span>
+      </div>
+      {shown.map((r) => {
+        const tone = checkTone(r);
+        return (
+          <button
+            type="button"
+            key={r.name}
+            className="pr-check"
+            onClick={() => void open(r.url ?? `${prUrl}/checks`)}
+          >
+            {tone === "run" ? <span className="git-spin sm" /> : <span className={`pc-dot ${tone}`} />}
+            <span className="pc-name">{r.name}</span>
+            <Icon name="external" size={10} />
+          </button>
+        );
+      })}
+      {hidden > 0 && (
+        <button type="button" className="pr-checks-more" onClick={() => void open(`${prUrl}/checks`)}>
+          +{hidden} more on GitHub
+        </button>
+      )}
+    </div>
+  );
+}
+
+function PRCard({ pr, base, checks }: { pr: PrState; base: string; checks: PrChecks | null }) {
+  // One merge-gate line, from `merge_state` when available (spec §7); the
+  // `mergeable`-only fallback claims no more than "no conflicts".
+  const ms = checks?.merge_state ?? null;
+  const gate: { cls: string; text: string } =
+    ms === "clean"    ? { cls: "ok",  text: "✓ Ready to merge" } :
+    ms === "unstable" ? { cls: "ok",  text: "✓ Mergeable — optional checks failing" } :
+    ms === "blocked"  ? { cls: "att", text: "△ Blocked by required checks or reviews" } :
+    ms === "behind"   ? { cls: "att", text: `△ Behind ${base} — update your branch` } :
+    ms === "dirty"    ? { cls: "att", text: `△ Conflicts with ${base} — update your branch` } :
+    ms === "draft"    ? { cls: "ok",  text: "Draft — mark ready on GitHub to merge" } :
+    ms != null        ? { cls: "ok",  text: "Computing merge status…" } :
+    pr.mergeable      ? { cls: "ok",  text: "✓ No merge conflicts" } :
+                        { cls: "att", text: `△ Can’t merge cleanly with ${base} — update your branch` };
   return (
     <div className="git-card">
       <div className="git-card-h">Pull request</div>
       <div className="git-card-title">{pr.title}</div>
       <div className="git-card-meta">#{pr.number} · open</div>
       <div className="git-card-row">
-        {pr.mergeable ? (
-          // `mergeable` ⇒ no merge conflicts only; it says nothing about checks.
-          <span className="ok">✓ No merge conflicts</span>
-        ) : (
-          <span className="att">△ Can’t merge cleanly with {base} — update your branch</span>
-        )}
+        <span className={gate.cls}>{gate.text}</span>
       </div>
+      {checks && <ChecksSection checks={checks} prUrl={pr.url} />}
       <div className="git-card-links">
         <button type="button" className="git-card-link" onClick={() => void open(pr.url)}>
           <Icon name="github" size={11} />
@@ -729,11 +817,19 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   return (
     <div className="git-wrap">
       {/* ── color-coded status header: the at-a-glance state signal ── */}
-      <StatusHeader state={panelState} branch={branch} base={base} git={gitState} pr={prState} />
+      <StatusHeader
+        state={panelState}
+        branch={branch}
+        base={base}
+        git={gitState}
+        pr={prState}
+        mergeState={mergeState}
+        checksFailed={checks?.failed ?? 0}
+      />
 
       {/* ── scrollable body: the changes are the focus ── */}
       <div className={`git-body ${busy ? "busy" : ""}`}>
-        {panelState === "pr-open"   && prState && <PRCard pr={prState} base={base} />}
+        {panelState === "pr-open"   && prState && <PRCard pr={prState} base={base} checks={checks} />}
         {panelState === "pr-closed" && prState && <ClosedPRCard pr={prState} />}
         {panelState === "conflicts" && gitState && <ConflictCard files={gitState.files} />}
 
