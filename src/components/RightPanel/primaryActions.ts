@@ -1,8 +1,37 @@
-import type { MergeState } from "../../api";
+import type { GitState, MergeState, PrState } from "../../api";
 import type { IconName } from "../Icon";
 
 /** Derived git panel state — computed from live GitState, not stored. */
 export type GitPanelState = "clean" | "changes" | "pushed" | "conflicts" | "pr-open" | "pr-closed" | "merged" | "loading";
+
+/** Map live git + PR state to the panel state. Uncommitted changes outrank
+ *  an open PR — the user's in-flight work is the actionable thing; the PR
+ *  (and Merge) stays one click away in the menu and the status chip. */
+export function deriveState(git: GitState | null, pr: PrState | null): GitPanelState {
+  if (!git) return "loading";
+  if (git.files.some((f) => f.kind === "conflicted")) return "conflicts";
+  if (pr?.state === "merged") return "merged";
+  if (git.files.length > 0)  return "changes";
+  if (pr?.state === "open")   return "pr-open";
+  if (pr?.state === "closed") return "pr-closed";
+  if (git.ahead > 0)         return "pushed";
+  return "clean";
+}
+
+/** The changes-state delegated commit modes. The user's dropdown pick is
+ *  persisted globally (settings table) and becomes the default everywhere
+ *  until changed. */
+export type GitCommitAction = "agent-commit" | "agent-commit-push" | "agent-commit-pr";
+
+export const COMMIT_ACTIONS: readonly GitCommitAction[] = [
+  "agent-commit",
+  "agent-commit-push",
+  "agent-commit-pr",
+];
+
+export function isCommitAction(v: unknown): v is GitCommitAction {
+  return (COMMIT_ACTIONS as readonly unknown[]).includes(v);
+}
 
 /** Drives the status-dot color in the action bar. */
 export type StatusKind = "clean" | "warn" | "info" | "attention" | "ready" | "merged" | "alert";
@@ -49,6 +78,11 @@ export interface ActionCounts {
   mergeState?: MergeState | null;
   /** Number of failing checks (drives copy + the agent-fix CTA). */
   checksFailed?: number;
+  /** Changes state: the user's sticky commit mode (defaults to commit & PR). */
+  commitAction?: GitCommitAction;
+  /** Changes state: a PR is already open for this branch — "open PR" is
+   *  meaningless (push updates it) and Merge belongs in the menu. */
+  prOpen?: boolean;
 }
 
 /** Maps a git panel state to the panel's primary call-to-action.
@@ -64,26 +98,38 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
     mergeable = false,
     mergeState = null,
     checksFailed = 0,
+    commitAction = "agent-commit-pr",
+    prOpen = false,
   } = counts ?? {};
   const prLabel = prNumber != null ? `PR #${prNumber}` : "PR";
 
   switch (state) {
     case "loading":
       return { key: "loading", label: "Loading…", icon: "refresh", statusLabel: "loading git state", statusKind: "info" };
-    case "changes":
+    case "changes": {
       // Override: user typed their own message → direct commit, agent bypassed.
       if (customActive) {
         return { key: "commit-direct", label: "Commit", icon: "commit", statusLabel: "Direct commit", statusKind: "ready" };
       }
-      // Default: delegate the whole thing to the agent.
-      return {
-        key: "agent-commit-pr",
-        label: "Commit & open PR",
-        icon: "pr",
+      // Default: delegate to the agent, in the user's sticky commit mode.
+      // With a PR already open, "open PR" degrades to "push" — that's what
+      // updates the existing PR.
+      const effective: GitCommitAction =
+        prOpen && commitAction === "agent-commit-pr" ? "agent-commit-push" : commitAction;
+      const common = {
         statusLabel: "Ready to commit",
-        statusKind: "warn",
+        statusKind: "warn" as StatusKind,
         statusExtra: `${files} ${files === 1 ? "file" : "files"}`,
       };
+      switch (effective) {
+        case "agent-commit":
+          return { key: "agent-commit", label: "Commit", icon: "commit", ...common };
+        case "agent-commit-push":
+          return { key: "agent-commit-push", label: "Commit & push", icon: "push", ...common };
+        default:
+          return { key: "agent-commit-pr", label: "Commit & open PR", icon: "pr", ...common };
+      }
+    }
     case "pushed":
       // The PR description is the agent's job by default (it has the full
       // context of the branch); the direct gh --fill PR stays in the menu.
@@ -247,6 +293,7 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
     mergeable = false,
     mergeState = null,
     checksFailed = 0,
+    prOpen = false,
   } = counts ?? {};
   // "Push more commits" only makes sense when there's something unpushed.
   const pushItem: SecondaryAction[] =
@@ -263,10 +310,15 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
           { key: "discard", label: "Discard all", icon: "trash" },
         ];
       }
-      // Default (agent) → primary is delegated "Commit & open PR"; offer a
-      // delegated "Commit only" as the alternate.
+      // Default (agent): every commit mode is a candidate — the panel drops
+      // whichever is the sticky primary. With a PR open, "open PR" is
+      // meaningless (push updates it) and Merge joins the menu.
       return [
-        { key: "agent-commit", label: "Commit only", icon: "commit", kbd: "⌘K" },
+        { key: "agent-commit", label: "Commit", icon: "commit", kbd: "⌘K" },
+        { key: "agent-commit-push", label: "Commit & push", icon: "push" },
+        ...(prOpen
+          ? [{ key: "merge", label: "Merge PR without changes", icon: "merge" as IconName }]
+          : [{ key: "agent-commit-pr", label: "Commit & open PR", icon: "pr" as IconName }]),
         { key: "push", label: "Push only", icon: "push" },
         { key: "stash", label: "Stash changes", icon: "inbox" },
         { key: "discard", label: "Discard all", icon: "trash" },
@@ -284,10 +336,11 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
       // out, so every alternate stays reachable regardless of merge_state.
       // "Update branch with agent" (sync base → resolve → push) is distinct
       // from the local-merge "Resolve with agent" used in the conflicts state.
+      // "View on GitHub" is deliberately absent: it's a convenience link,
+      // rendered as a chip next to the status text, not an action.
       const needsUpdate =
         mergeState === "behind" || mergeState === "dirty" || (mergeState == null && !mergeable);
       return [
-        { key: "view-pr", label: "View on GitHub", icon: "github" },
         { key: "merge", label: "Merge PR", icon: "merge" },
         ...(needsUpdate
           ? [{ key: "agent-update-branch", label: "Update branch with agent", icon: "branch" as IconName }]

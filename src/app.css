@@ -1571,6 +1571,14 @@ button { cursor: default; }
   color: var(--fg-3);
   white-space: nowrap;
 }
+/* quiet "view on GitHub" chip beside the status text (pr-open) */
+.git-act-status .st-ext {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex-shrink: 0;
+  border: 0; border-radius: 4px; padding: 0;
+  background: none; color: var(--fg-3); cursor: pointer;
+}
+.git-act-status .st-ext:hover { background: var(--bg-3); color: var(--fg-1); }
 
 /* split button — one CTA, auto-width, right-aligned */
 .git-split {

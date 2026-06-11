@@ -27,6 +27,10 @@ import type {
   GitDelegation,
   GitDelegationKind,
 } from "./components/RightPanel/delegation";
+import {
+  isCommitAction,
+  type GitCommitAction,
+} from "./components/RightPanel/primaryActions";
 import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 import { getAllSettings, setSetting } from "./storage/settings";
@@ -247,6 +251,10 @@ interface AppState {
   delegateGitAction: (agentId: string, kind: GitDelegationKind, prompt: string) => void;
   markGitDelegationRunning: (agentId: string) => void;
   clearGitDelegation: (agentId: string) => void;
+  /** Sticky changes-state commit mode (Commit / & push / & open PR). Global
+   *  across workspaces, persisted in settings until the user picks another. */
+  gitCommitAction: GitCommitAction;
+  setGitCommitAction: (action: GitCommitAction) => void;
   /** Resolves to "up-to-date" | "pushed" on success, null on error. */
   pushAgent: (agentId: string) => Promise<string | null>;
   /** Resolves true on success, false on error. */
@@ -625,6 +633,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   prStates: {},
   prChecks: {},
   gitDelegations: {},
+  gitCommitAction: "agent-commit-pr" as GitCommitAction,
 
   drafts: [],
   activeDraftId: null,
@@ -668,6 +677,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         features: parseFeatures(s.features),
         providerFlags: parseProviderFlags(s.providers),
         viewMode: (s.viewMode as WorkspaceView) || "custom",
+        gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
         onboardingComplete: s.onboardingComplete === "true",
         // Auto-open the welcome tour for new users (no completion flag yet).
         onboardingOpen: s.onboardingComplete !== "true",
@@ -1245,6 +1255,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [agentId]: _dropped, ...rest } = s.gitDelegations;
       return { gitDelegations: rest };
     });
+  },
+
+  setGitCommitAction: (action) => {
+    set({ gitCommitAction: action });
+    void setSetting("gitCommitAction", action);
   },
 
   pushAgent: async (agentId) => {

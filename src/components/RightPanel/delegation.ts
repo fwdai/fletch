@@ -6,6 +6,7 @@ import type { GitState, PrChecks, PrState } from "../../api";
  *  RPC (`git_commit` / `open_pr` / `git_update_branch` / `git_push`). */
 export type GitDelegationKind =
   | "commit"
+  | "commit-push"
   | "commit-pr"
   | "open-pr"
   | "resolve"
@@ -25,6 +26,7 @@ export interface GitDelegation {
 export function delegationLabel(kind: GitDelegationKind): string {
   switch (kind) {
     case "commit":        return "Agent is writing the commit message…";
+    case "commit-push":   return "Agent is committing & pushing…";
     case "commit-pr":     return "Agent is committing & opening a PR…";
     case "open-pr":       return "Agent is writing the PR description…";
     case "resolve":       return "Agent is resolving the conflicts…";
@@ -37,6 +39,7 @@ export function delegationLabel(kind: GitDelegationKind): string {
 export function delegationDone(kind: GitDelegationKind): string {
   switch (kind) {
     case "commit":        return "Agent committed your changes";
+    case "commit-push":   return "Committed & pushed";
     case "commit-pr":     return "Committed — PR is open";
     case "open-pr":       return "PR is open";
     case "resolve":       return "Conflicts resolved";
@@ -58,6 +61,8 @@ export function delegationResolved(
   switch (kind) {
     case "commit":
       return git != null && git.files.length === 0;
+    case "commit-push":
+      return git != null && git.files.length === 0 && git.unpushed === 0;
     case "commit-pr":
     case "open-pr":
       return pr?.state === "open";

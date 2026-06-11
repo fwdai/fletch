@@ -20,6 +20,21 @@ until [ -f "$QUORUM_RPC_DIR/responses/$ID.json" ]; do sleep 0.2; done
 cat "$QUORUM_RPC_DIR/responses/$ID.json"
 ```
 
+For args carrying free text (commit messages, PR bodies), do NOT hand-escape the string into a `printf`/`echo` format — `\n` and quotes get mangled by the shell. Build the body with `jq -n --arg` from a heredoc, which escapes everything correctly on the first try:
+
+```sh
+ID=$(uuidgen)
+MSG=$(cat <<'EOF'
+feat: add the thing
+
+Optional longer body, safely multi-line.
+EOF
+)
+jq -n --arg id "$ID" --arg msg "$MSG" '{id:$id,op:"git_commit",args:{message:$msg}}' \
+  > "$QUORUM_RPC_DIR/requests/$ID.json.tmp"
+mv "$QUORUM_RPC_DIR/requests/$ID.json.tmp" "$QUORUM_RPC_DIR/requests/$ID.json"
+```
+
 Available ops:
 
 - `ping` — liveness check; returns `pong`. No args.

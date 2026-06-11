@@ -1,7 +1,60 @@
 import { describe, expect, it } from "vitest";
-import { primaryFor, secondaryFor } from "./primaryActions";
+import type { GitState, PrState } from "../../api";
+import { deriveState, primaryFor, secondaryFor } from "./primaryActions";
 
 const base = { prNumber: 7, base: "main" };
+
+function git(over: Partial<GitState> = {}): GitState {
+  return {
+    branch: "feat", parent_branch: "main", ahead: 1, behind: 0, unpushed: 0,
+    files: [], additions: 0, deletions: 0, ...over,
+  };
+}
+const file = (kind: GitState["files"][number]["kind"]) => ({
+  path: "a.ts", kind, staged: false, additions: 1, deletions: 0,
+});
+function pr(over: Partial<PrState> = {}): PrState {
+  return { number: 7, url: "https://x", state: "open", title: "t", mergeable: true, ...over };
+}
+
+describe("deriveState", () => {
+  it("uncommitted changes take precedence over an open PR", () => {
+    expect(deriveState(git({ files: [file("modified")] }), pr())).toBe("changes");
+    expect(deriveState(git(), pr())).toBe("pr-open");
+  });
+
+  it("conflicts and merged still take precedence over changes", () => {
+    expect(deriveState(git({ files: [file("conflicted")] }), pr())).toBe("conflicts");
+    expect(deriveState(git({ files: [file("modified")] }), pr({ state: "merged" }))).toBe("merged");
+  });
+});
+
+describe("changes-state sticky commit action", () => {
+  it("defaults to Commit & open PR", () => {
+    const p = primaryFor("changes", { files: 2 });
+    expect(p.key).toBe("agent-commit-pr");
+  });
+
+  it("honors the persisted selection", () => {
+    expect(primaryFor("changes", { files: 2, commitAction: "agent-commit" }).key).toBe("agent-commit");
+    expect(primaryFor("changes", { files: 2, commitAction: "agent-commit-push" }).key).toBe("agent-commit-push");
+  });
+
+  it("remaps Commit & open PR to Commit & push when a PR is already open", () => {
+    const p = primaryFor("changes", { files: 2, commitAction: "agent-commit-pr", prOpen: true });
+    expect(p.key).toBe("agent-commit-push");
+  });
+
+  it("menu offers the other commit modes, and Merge PR when a PR is open", () => {
+    const closedKeys = secondaryFor("changes", { files: 2 }).map((s) => s.key);
+    expect(closedKeys).toContain("agent-commit");
+    expect(closedKeys).toContain("agent-commit-push");
+    expect(closedKeys).not.toContain("merge");
+    const openKeys = secondaryFor("changes", { files: 2, prOpen: true }).map((s) => s.key);
+    expect(openKeys).toContain("merge");
+    expect(openKeys).not.toContain("agent-commit-pr"); // meaningless with a PR open
+  });
+});
 
 describe("pr-open primary by merge_state (§7)", () => {
   it("clean → green Merge PR", () => {
@@ -63,7 +116,9 @@ describe("pr-open secondary menu", () => {
     const keys = secondaryFor("pr-open", { ...base, mergeState: "behind" }).map((s) => s.key);
     expect(keys).toContain("merge");
     expect(keys).toContain("agent-update-branch");
-    expect(keys).toContain("view-pr");
+    // View on GitHub is a convenience link (a chip next to the status), not
+    // an action — it doesn't belong in the action menu.
+    expect(keys).not.toContain("view-pr");
   });
 
   it("offers agent-fix when checks are failing", () => {

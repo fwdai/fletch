@@ -11,18 +11,14 @@ import {
   delegationResolved,
   type GitDelegationKind,
 } from "./delegation";
-import { primaryFor, secondaryFor, type ActionTone, type GitPanelState } from "./primaryActions";
-
-function deriveState(git: GitState | null, pr: PrState | null): GitPanelState {
-  if (!git) return "loading";
-  if (git.files.some((f) => f.kind === "conflicted")) return "conflicts";
-  if (pr?.state === "merged") return "merged";
-  if (pr?.state === "open")   return "pr-open";
-  if (pr?.state === "closed") return "pr-closed";
-  if (git.files.length > 0)  return "changes";
-  if (git.ahead > 0)         return "pushed";
-  return "clean";
-}
+import {
+  deriveState,
+  isCommitAction,
+  primaryFor,
+  secondaryFor,
+  type ActionTone,
+  type GitPanelState,
+} from "./primaryActions";
 
 /** Status letter for the file badge — matches CSS `.gs.<kind>` selectors. */
 function kindLabel(kind: FileStatus["kind"]): string {
@@ -93,7 +89,9 @@ function describeHeader(
   const n = pr?.number;
   switch (state) {
     case "loading":   return { kind: "neutral", text: "Loading…" };
-    case "changes":   return { kind: "changes", pill: "Uncommitted", text: branch, diff: true };
+    // With an open PR, keep its GitHub link reachable from the header even
+    // while new uncommitted changes take over the panel.
+    case "changes":   return { kind: "changes", pill: "Uncommitted", text: branch, diff: true, ext: pr?.state === "open" };
     case "pushed":    return { kind: "info", pill: "Pushed", text: branch };
     case "conflicts": return { kind: "att", pill: "Conflicts", text: branch, sub: `← ${base}` };
     case "pr-open": {
@@ -491,6 +489,8 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   const delegateGitAction = useAppStore((s) => s.delegateGitAction);
   const markGitDelegationRunning = useAppStore((s) => s.markGitDelegationRunning);
   const clearGitDelegation = useAppStore((s) => s.clearGitDelegation);
+  const gitCommitAction = useAppStore((s) => s.gitCommitAction);
+  const setGitCommitAction = useAppStore((s) => s.setGitCommitAction);
 
   // Poll git state for the focused agent at 1s while this panel is mounted.
   const pollGitState = useCallback(
@@ -650,7 +650,16 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         delegate(
           "commit",
           "Commit all current changes. Review them first (`git status`, `git diff HEAD`), write a clear, conventional " +
-            "commit message, then commit by calling the `git_commit` app action with that message. Don't open a pull request.",
+            "commit message, then commit by calling the `git_commit` app action with that message. Commit ONLY — " +
+            "don't push and don't open a pull request.",
+        );
+        break;
+      case "agent-commit-push":
+        delegate(
+          "commit-push",
+          "Commit all current changes and push them. Review the changes (`git status`, `git diff HEAD`), write a " +
+            "clear, conventional commit message, commit by calling the `git_commit` app action, then push by calling " +
+            "the `git_push` app action. Don't open a pull request.",
         );
         break;
       case "agent-open-pr":
@@ -752,6 +761,8 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
     mergeable,
     mergeState,
     checksFailed: checks?.failed ?? 0,
+    commitAction: gitCommitAction,
+    prOpen,
   };
   const primary   = primaryFor(panelState, counts);
   const secondary = secondaryFor(panelState, counts);
@@ -932,6 +943,19 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
                 )}
               </span>
               {primary.statusExtra && <span className="ex">{primary.statusExtra}</span>}
+              {/* View on GitHub is a convenience link, not an action — a
+                  quiet chip beside the status, never a menu item. */}
+              {panelState === "pr-open" && prState?.url && (
+                <button
+                  type="button"
+                  className="st-ext tip"
+                  data-tip="View on GitHub"
+                  aria-label="View on GitHub"
+                  onClick={() => void open(prState.url)}
+                >
+                  <Icon name="external" size={11} />
+                </button>
+              )}
             </div>
           )}
           <SplitAction
@@ -941,7 +965,12 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
             tone={tone}
             mainDisabled={mainDisabled}
             busyLabel={busy ?? (delegation ? "Agent working…" : null)}
-            onSelect={setSelectedKey}
+            onSelect={(key) => {
+              setSelectedKey(key);
+              // Picking a commit mode is sticky: it becomes the default
+              // primary in every workspace until the user picks another.
+              if (isCommitAction(key)) setGitCommitAction(key);
+            }}
             onRun={() => runAction(effectiveKey)}
           />
         </div>

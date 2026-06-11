@@ -28,6 +28,12 @@ describe("delegationResolved", () => {
     expect(delegationResolved("commit", null, null, null)).toBe(false);
   });
 
+  it("commit-push resolves once the tree is clean AND everything is pushed", () => {
+    expect(delegationResolved("commit-push", git({ files: [file("modified")] }), null, null)).toBe(false);
+    expect(delegationResolved("commit-push", git({ unpushed: 1 }), null, null)).toBe(false);
+    expect(delegationResolved("commit-push", git(), null, null)).toBe(true);
+  });
+
   it("commit-pr and open-pr resolve when a PR is open", () => {
     expect(delegationResolved("commit-pr", git(), null, null)).toBe(false);
     expect(delegationResolved("commit-pr", git(), pr(), null)).toBe(true);
@@ -56,7 +62,7 @@ describe("delegationResolved", () => {
 
 describe("copy", () => {
   it("has a label and done message for every kind", () => {
-    for (const k of ["commit", "commit-pr", "open-pr", "resolve", "update-branch", "fix-checks"] as const) {
+    for (const k of ["commit", "commit-push", "commit-pr", "open-pr", "resolve", "update-branch", "fix-checks"] as const) {
       expect(delegationLabel(k).length).toBeGreaterThan(0);
       expect(delegationDone(k).length).toBeGreaterThan(0);
     }
