@@ -237,7 +237,10 @@ fn parse_pr_checks(merge_state_status: &str, rollup: &[serde_json::Value]) -> Pr
     let total = runs.len() as u32;
     let pending = runs.iter().filter(|r| r.status != "completed").count() as u32;
     let failed = runs.iter().filter(|r| is_failing(r)).count() as u32;
-    let passed = total - pending - failed;
+    // Computed directly, not by subtraction: gh can report a failure
+    // conclusion on a not-yet-completed run (e.g. cancelled mid-run), which
+    // would double-count into both `pending` and `failed` and underflow.
+    let passed = runs.iter().filter(|r| r.status == "completed" && !is_failing(r)).count() as u32;
     let rollup_summary = if total == 0 {
         "none"
     } else if failed > 0 {
@@ -596,6 +599,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parse_pr_checks("UNKNOWN", &pending).rollup, "pending");
+    }
+
+    #[test]
+    fn pr_checks_tolerates_failing_conclusion_on_incomplete_run() {
+        // A cancelled-while-running check can surface as IN_PROGRESS with a
+        // failure conclusion. It must count as failed (and pending) without
+        // `passed` underflowing.
+        let rollup: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"__typename":"CheckRun","name":"build","status":"IN_PROGRESS","conclusion":"CANCELLED"}]"#,
+        )
+        .unwrap();
+        let checks = parse_pr_checks("UNKNOWN", &rollup);
+        assert_eq!(checks.total, 1);
+        assert_eq!(checks.failed, 1);
+        assert_eq!(checks.pending, 1);
+        assert_eq!(checks.passed, 0);
+        assert_eq!(checks.rollup, "failing");
     }
 
     #[test]

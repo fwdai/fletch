@@ -1208,7 +1208,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       // absent key ("not yet fetched") that renders as the checking… state.
       set((s) => ({ prChecks: { ...s.prChecks, [agentId]: checks } }));
     } catch {
-      // non-fatal — next poll tick will retry
+      // Non-fatal — the next poll tick retries. But a *first* fetch that
+      // throws would otherwise leave the key absent and pin the panel's
+      // "checking…" placeholder, so degrade it to null (mergeable-only
+      // fallback). A later transient error keeps the last good value.
+      set((s) =>
+        agentId in s.prChecks
+          ? {}
+          : { prChecks: { ...s.prChecks, [agentId]: null } },
+      );
     }
   },
 
