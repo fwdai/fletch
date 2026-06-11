@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { GitState, PrChecks, PrState } from "../../api";
-import { delegationDone, delegationLabel, delegationResolved } from "./delegation";
+import {
+  APP_ACTION_PREFIX,
+  appActionMessage,
+  delegationDone,
+  delegationLabel,
+  delegationResolved,
+} from "./delegation";
 
 function git(over: Partial<GitState> = {}): GitState {
   return {
@@ -57,6 +63,30 @@ describe("delegationResolved", () => {
 
   it("fix-checks never resolves from state (caller resolves on agent idle)", () => {
     expect(delegationResolved("fix-checks", git(), pr(), checks("clean"))).toBe(false);
+  });
+});
+
+describe("appActionMessage", () => {
+  it("builds a bare trigger without params", () => {
+    expect(appActionMessage("commit")).toBe("[app-action] commit");
+  });
+
+  it("appends quoted key=value params", () => {
+    expect(appActionMessage("commit-pr", { base: "main" })).toBe('[app-action] commit-pr base="main"');
+    expect(appActionMessage("fix-checks", { failing: "build, test" })).toBe(
+      '[app-action] fix-checks failing="build, test"',
+    );
+  });
+
+  it("skips empty params and escapes embedded quotes", () => {
+    expect(appActionMessage("open-pr", { base: "" })).toBe("[app-action] open-pr");
+    expect(appActionMessage("fix-checks", { failing: 'say "hi"' })).toBe(
+      '[app-action] fix-checks failing="say \\"hi\\""',
+    );
+  });
+
+  it("triggers start with the shared prefix the transcript folds into a chip", () => {
+    expect(appActionMessage("commit").startsWith(APP_ACTION_PREFIX)).toBe(true);
   });
 });
 

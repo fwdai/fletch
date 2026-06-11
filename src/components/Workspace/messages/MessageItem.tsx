@@ -6,12 +6,24 @@ import { ToolRow } from "./ToolRow";
 import { getPresenter } from "./presenters";
 import { AttachmentList } from "../../Composer/AttachmentList";
 import { stripInjectedInstructions } from "../../../util/instructions";
+import { APP_ACTION_PREFIX } from "../../RightPanel/delegation";
 
 /** Dispatcher for one rendered row. Accepts either a raw ChatItem or
  *  the derived `tool_pair` from pairToolItems(). */
 export function MessageItem({ item }: { item: ViewItem }) {
   switch (item.kind) {
     case "user_message":
+      // App-sent git-action triggers fold into a quiet chip (like slash
+      // commands) instead of a user bubble — one rendering rule covers both
+      // the live optimistic entry and history rebuilt from session records.
+      if (item.text.startsWith(APP_ACTION_PREFIX)) {
+        return (
+          <div className="m-reasoning" style={{ fontStyle: "italic" }}>
+            <div className="label">git action</div>
+            <code>{item.text.slice(APP_ACTION_PREFIX.length)}</code>
+          </div>
+        );
+      }
       return (
         <div className="m-user">
           {stripInjectedInstructions(item.text)}

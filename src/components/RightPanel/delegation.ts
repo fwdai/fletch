@@ -22,6 +22,25 @@ export interface GitDelegation {
   sawRunning: boolean;
 }
 
+/** Marker prefix for app-sent action triggers. The full per-action playbooks
+ *  live in the agent's injected instructions (`instructions/git_actions.md`),
+ *  so the chat carries only this one-liner — which the transcript folds into
+ *  a compact chip instead of a user bubble. */
+export const APP_ACTION_PREFIX = "[app-action] ";
+
+/** Build the one-line trigger the app sends when a git action is clicked:
+ *  `[app-action] <name> key="value" …`. Params carry only the dynamic context
+ *  the static playbook can't know (base branch, failing check names); empty
+ *  values are dropped. */
+export function appActionMessage(name: string, params?: Record<string, string>): string {
+  const parts = [`${APP_ACTION_PREFIX}${name}`];
+  for (const [key, value] of Object.entries(params ?? {})) {
+    if (!value) continue;
+    parts.push(`${key}="${value.replaceAll('"', '\\"')}"`);
+  }
+  return parts.join(" ");
+}
+
 /** Footer status line while the agent holds control. */
 export function delegationLabel(kind: GitDelegationKind): string {
   switch (kind) {

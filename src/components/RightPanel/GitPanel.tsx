@@ -6,6 +6,7 @@ import { usePoll } from "../../util/hooks";
 import { Icon, type IconName } from "../Icon";
 import { IconButton } from "../ui/IconButton";
 import {
+  appActionMessage,
   delegationDone,
   delegationLabel,
   delegationResolved,
@@ -637,68 +638,35 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   function runAction(key: string) {
     switch (key) {
       // ── delegated to the coding agent (agent mode) ──
+      // Each click sends a short `[app-action]` trigger; the full playbook
+      // lives in the agent's injected instructions (git_actions.md), keeping
+      // the chat free of boilerplate. Params carry only dynamic context.
       case "agent-commit-pr":
-        delegate(
-          "commit-pr",
-          "Commit all current changes and open a pull request. Review the changes (`git status`, `git diff HEAD`), " +
-            "write a clear, conventional commit message, and commit by calling the `git_commit` app action. Then write " +
-            `a concise PR title and description covering ALL changes on this branch versus ${base}, and open the PR by ` +
-            "calling the `open_pr` app action with that title and body.",
-        );
+        delegate("commit-pr", appActionMessage("commit-pr", { base }));
         break;
       case "agent-commit":
-        delegate(
-          "commit",
-          "Commit all current changes. Review them first (`git status`, `git diff HEAD`), write a clear, conventional " +
-            "commit message, then commit by calling the `git_commit` app action with that message. Commit ONLY — " +
-            "don't push and don't open a pull request.",
-        );
+        delegate("commit", appActionMessage("commit"));
         break;
       case "agent-commit-push":
-        delegate(
-          "commit-push",
-          "Commit all current changes and push them. Review the changes (`git status`, `git diff HEAD`), write a " +
-            "clear, conventional commit message, commit by calling the `git_commit` app action, then push by calling " +
-            "the `git_push` app action. Don't open a pull request.",
-        );
+        delegate("commit-push", appActionMessage("commit-push"));
         break;
       case "agent-open-pr":
-        delegate(
-          "open-pr",
-          `Open a pull request for this branch. Review everything on it versus ${base} (\`git log ${base}..HEAD\`, ` +
-            `\`git diff ${base}...HEAD\`), write a concise, descriptive PR title and body, then open the PR by calling ` +
-            "the `open_pr` app action with that title and body.",
-        );
+        delegate("open-pr", appActionMessage("open-pr", { base }));
         break;
       case "agent-resolve":
-        delegate(
-          "resolve",
-          "Resolve the merge conflicts in your worktree. Inspect each conflicted file, reconcile both sides correctly, " +
-            "then complete the merge by calling the `git_commit` app action with a short merge commit message — it " +
-            "stages everything for you.",
-        );
+        delegate("resolve", appActionMessage("resolve-conflicts"));
         break;
       case "agent-update-branch":
         // PR can't merge cleanly with the base (the base advanced). This is NOT
         // a local in-progress merge — the agent must sync the base in first.
-        delegate(
-          "update-branch",
-          `This pull request can't merge cleanly because ${base} has advanced. Call the \`git_update_branch\` app ` +
-            "action to merge the latest base into this branch. If it reports conflicts, resolve them in the affected " +
-            "files, complete the merge with the `git_commit` app action, then push with `git_push`. If it merges " +
-            "cleanly, just push with `git_push`.",
-        );
+        delegate("update-branch", appActionMessage("update-branch", { base }));
         break;
-      case "agent-fix": {
-        const failing = checks?.required_failing ?? [];
-        const names = failing.length > 0 ? ` (${failing.join(", ")})` : "";
+      case "agent-fix":
         delegate(
           "fix-checks",
-          `Some CI checks are failing on this pull request${names}. Investigate the failures, fix them, commit the ` +
-            "fix by calling the `git_commit` app action, then push with `git_push` so the checks re-run.",
+          appActionMessage("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") }),
         );
         break;
-      }
       // ── direct, agent bypassed (user typed their own message) ──
       case "commit-direct":
         if (!customActive) { openOverride(); return; }
