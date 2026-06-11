@@ -10,6 +10,7 @@ import {
   delegationDone,
   delegationLabel,
   delegationResolved,
+  delegationStep,
   type GitDelegationKind,
 } from "./delegation";
 import {
@@ -489,6 +490,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   const delegation = useAppStore((s) => s.gitDelegations[agent.id]);
   const delegateGitAction = useAppStore((s) => s.delegateGitAction);
   const markGitDelegationRunning = useAppStore((s) => s.markGitDelegationRunning);
+  const markGitDelegationDequeued = useAppStore((s) => s.markGitDelegationDequeued);
   const clearGitDelegation = useAppStore((s) => s.clearGitDelegation);
   const gitCommitAction = useAppStore((s) => s.gitCommitAction);
   const setGitCommitAction = useAppStore((s) => s.setGitCommitAction);
@@ -565,37 +567,43 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
   // Delegation lifecycle: while the agent holds control, watch the polled
-  // git/PR/check state for the transition that marks the action done. If the
-  // agent settles (idle/error/stopped) without it, hand control back with an
-  // honest notice. `sawRunning` + the 15s grace guard against clearing on
-  // the stale pre-send idle status.
+  // git/PR/check state for the transition that marks the action done. The
+  // step decision is pure (`delegationStep`) and handles the tricky cases —
+  // a trigger queued behind a pre-existing turn must wait that turn out
+  // (its running/settling is not ours), and a settled agent only reads as
+  // "gave up" after our own turn ran or the grace window passed.
   useEffect(() => {
     if (!delegation) return;
-    if (agent.status === "running" && !delegation.sawRunning) {
-      markGitDelegationRunning(agent.id);
-      return;
-    }
-    if (delegationResolved(delegation.kind, gitState, prState, checks)) {
-      clearGitDelegation(agent.id);
-      showNotice(delegationDone(delegation.kind));
-      // A fresh PR (or branch update) changes the merge gate — refresh now
-      // rather than waiting out the slow poll.
-      void fetchPrChecks(agent.id);
-      return;
-    }
-    const settled = agent.status !== "running" && agent.status !== "spawning";
-    const armed = delegation.sawRunning || Date.now() - delegation.startedAt > 15_000;
-    if (settled && armed) {
-      clearGitDelegation(agent.id);
-      showNotice(
-        delegation.kind === "fix-checks"
-          ? delegationDone("fix-checks")
-          : "Agent finished — review the chat for details",
-      );
+    const resolved = delegationResolved(delegation.kind, gitState, prState, checks);
+    switch (delegationStep(delegation, agent.status, resolved, Date.now())) {
+      case "resolve":
+        clearGitDelegation(agent.id);
+        showNotice(delegationDone(delegation.kind));
+        // A fresh PR (or branch update) changes the merge gate — refresh now
+        // rather than waiting out the slow poll.
+        void fetchPrChecks(agent.id);
+        break;
+      case "dequeue":
+        markGitDelegationDequeued(agent.id);
+        break;
+      case "mark-running":
+        markGitDelegationRunning(agent.id);
+        break;
+      case "give-up":
+        clearGitDelegation(agent.id);
+        showNotice(
+          delegation.kind === "fix-checks"
+            ? delegationDone("fix-checks")
+            : "Agent finished — review the chat for details",
+        );
+        break;
+      case "wait":
+        break;
     }
   }, [
     delegation, agent.id, agent.status, gitState, prState, checks,
-    markGitDelegationRunning, clearGitDelegation, showNotice, fetchPrChecks,
+    markGitDelegationRunning, markGitDelegationDequeued, clearGitDelegation,
+    showNotice, fetchPrChecks,
   ]);
 
   // Reset the override + notice + busy when switching agents so they don't

@@ -1,4 +1,4 @@
-import type { GitState, PrChecks, PrState } from "../../api";
+import type { AgentStatus, GitState, PrChecks, PrState } from "../../api";
 
 /** One agent-delegated git action: the user clicked a panel action whose
  *  judgment part (message, description, conflict edits) belongs to the
@@ -15,11 +15,47 @@ export type GitDelegationKind =
 
 export interface GitDelegation {
   kind: GitDelegationKind;
-  /** Epoch ms when the delegation was sent — grace window for status races. */
+  /** Epoch ms when the delegation entered the current phase: set at send,
+   *  reset on dequeue. The give-up grace window counts from here. */
   startedAt: number;
-  /** The agent has been observed `running` since `startedAt`. Until then an
-   *  `idle` status is the pre-send value, not a finished turn. */
+  /** OUR turn has been observed `running` since `startedAt`. Until then a
+   *  settled status is pre-send state, not a finished delegation turn. */
   sawRunning: boolean;
+  /** The agent was mid-turn when the trigger was sent, so it's queued behind
+   *  that turn. The foreign turn's running/settling must not arm or clear
+   *  this delegation — it's waited out first, then `queued` drops. */
+  queued: boolean;
+}
+
+/** How long a settled agent may sit without `sawRunning` before the
+ *  delegation reads as abandoned. Covers send→turn-start latency (and the
+ *  idle gap between a dequeued trigger and its turn actually starting). */
+export const DELEGATION_GIVE_UP_GRACE_MS = 15_000;
+
+/** What the lifecycle watcher should do for the current observation. Pure —
+ *  the panel effect maps each step to a store action:
+ *  - "resolve": the watched git/PR transition landed → clear + success notice
+ *  - "wait": nothing to do this pass
+ *  - "dequeue": the pre-existing turn settled → drop `queued`, reset the clock
+ *  - "mark-running": our turn started → set `sawRunning`
+ *  - "give-up": agent settled without the transition → clear + honest notice */
+export type DelegationStep = "resolve" | "wait" | "dequeue" | "mark-running" | "give-up";
+
+export function delegationStep(
+  delegation: GitDelegation,
+  status: AgentStatus,
+  resolved: boolean,
+  now: number,
+): DelegationStep {
+  if (resolved) return "resolve";
+  const active = status === "running" || status === "spawning";
+  // Queued behind a foreign turn: its activity is not ours to interpret.
+  if (delegation.queued) return active ? "wait" : "dequeue";
+  if (status === "running" && !delegation.sawRunning) return "mark-running";
+  const armed =
+    delegation.sawRunning || now - delegation.startedAt > DELEGATION_GIVE_UP_GRACE_MS;
+  if (!active && armed) return "give-up";
+  return "wait";
 }
 
 /** Marker prefix for app-sent action triggers. The full per-action playbooks

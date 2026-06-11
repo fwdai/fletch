@@ -3,10 +3,17 @@ import type { GitState, PrChecks, PrState } from "../../api";
 import {
   APP_ACTION_PREFIX,
   appActionMessage,
+  DELEGATION_GIVE_UP_GRACE_MS,
   delegationDone,
   delegationLabel,
   delegationResolved,
+  delegationStep,
+  type GitDelegation,
 } from "./delegation";
+
+function d(over: Partial<GitDelegation> = {}): GitDelegation {
+  return { kind: "commit", startedAt: 1_000, sawRunning: false, queued: false, ...over };
+}
 
 function git(over: Partial<GitState> = {}): GitState {
   return {
@@ -63,6 +70,41 @@ describe("delegationResolved", () => {
 
   it("fix-checks never resolves from state (caller resolves on agent idle)", () => {
     expect(delegationResolved("fix-checks", git(), pr(), checks("clean"))).toBe(false);
+  });
+});
+
+describe("delegationStep", () => {
+  const soon = 2_000; // within the grace window of startedAt=1_000
+  const late = 1_000 + DELEGATION_GIVE_UP_GRACE_MS + 1;
+
+  it("resolution wins over everything, even while queued", () => {
+    expect(delegationStep(d({ queued: true }), "running", true, soon)).toBe("resolve");
+    expect(delegationStep(d({ sawRunning: true }), "idle", true, late)).toBe("resolve");
+  });
+
+  it("queued behind an in-flight turn: waits it out, then dequeues — never gives up", () => {
+    // The pre-existing turn is still running: not ours, just wait.
+    expect(delegationStep(d({ queued: true }), "running", false, late)).toBe("wait");
+    // That turn settles: our trigger is next — dequeue, NOT "give-up", and
+    // NOT "mark-running" off the foreign turn (the reported bug).
+    expect(delegationStep(d({ queued: true }), "idle", false, late)).toBe("dequeue");
+  });
+
+  it("after dequeue, an idle gap before our turn starts is tolerated within the grace window", () => {
+    // markGitDelegationDequeued resets startedAt, so `now` is near it again.
+    expect(delegationStep(d(), "idle", false, soon)).toBe("wait");
+    expect(delegationStep(d(), "idle", false, late)).toBe("give-up");
+  });
+
+  it("marks our own turn running exactly once, then settles into give-up", () => {
+    expect(delegationStep(d(), "running", false, soon)).toBe("mark-running");
+    expect(delegationStep(d({ sawRunning: true }), "running", false, late)).toBe("wait");
+    expect(delegationStep(d({ sawRunning: true }), "idle", false, soon)).toBe("give-up");
+  });
+
+  it("spawning counts as active, not settled", () => {
+    expect(delegationStep(d({ queued: true }), "spawning", false, late)).toBe("wait");
+    expect(delegationStep(d({ sawRunning: true }), "spawning", false, late)).toBe("wait");
   });
 });
 

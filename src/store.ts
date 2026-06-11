@@ -250,6 +250,9 @@ interface AppState {
   gitDelegations: Record<string, GitDelegation>;
   delegateGitAction: (agentId: string, kind: GitDelegationKind, prompt: string) => void;
   markGitDelegationRunning: (agentId: string) => void;
+  /** The pre-existing turn the delegation was queued behind has settled —
+   *  drop `queued` and restart the give-up clock for our own turn. */
+  markGitDelegationDequeued: (agentId: string) => void;
   clearGitDelegation: (agentId: string) => void;
   /** Sticky changes-state commit mode (Commit / & push / & open PR). Global
    *  across workspaces, persisted in settings until the user picks another. */
@@ -1231,10 +1234,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   delegateGitAction: (agentId, kind, prompt) => {
+    // Sent mid-turn? Then our trigger is queued behind the in-flight turn,
+    // and that turn's running/settling must not be read as ours.
+    const status = get().workspace?.agents.find((a) => a.id === agentId)?.status;
+    const queued = status === "running";
     set((s) => ({
       gitDelegations: {
         ...s.gitDelegations,
-        [agentId]: { kind, startedAt: Date.now(), sawRunning: false },
+        [agentId]: { kind, startedAt: Date.now(), sawRunning: false, queued },
       },
     }));
     void get().sendUserMessage(agentId, prompt);
@@ -1246,6 +1253,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!d || d.sawRunning) return s;
       return {
         gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawRunning: true } },
+      };
+    });
+  },
+
+  markGitDelegationDequeued: (agentId) => {
+    set((s) => {
+      const d = s.gitDelegations[agentId];
+      if (!d || !d.queued) return s;
+      return {
+        gitDelegations: {
+          ...s.gitDelegations,
+          [agentId]: { ...d, queued: false, startedAt: Date.now() },
+        },
       };
     });
   },
