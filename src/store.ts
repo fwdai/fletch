@@ -1350,7 +1350,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   mergePr: async (agentId) => {
     try {
       await api.mergePr(agentId);
-      // pr:state_changed event will update prStates
+      // Refresh immediately: no backend event fires on merge, and the panel
+      // should transition to the merged state as soon as GitHub reports it
+      // (with --auto + pending checks the PR can legitimately stay open).
+      await get().fetchPrState(agentId);
+      await get().fetchPrChecks(agentId);
     } catch (e) {
       set({ lastError: String(e) });
     }
