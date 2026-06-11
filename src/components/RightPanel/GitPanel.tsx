@@ -1,10 +1,16 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
-import type { AgentRecord, FileStatus, GitState, PrState } from "../../api";
+import type { AgentRecord, FileStatus, GitState, MergeState, PrState } from "../../api";
 import { useAppStore } from "../../store";
 import { usePoll } from "../../util/hooks";
 import { Icon, type IconName } from "../Icon";
 import { IconButton } from "../ui/IconButton";
+import {
+  delegationDone,
+  delegationLabel,
+  delegationResolved,
+  type GitDelegationKind,
+} from "./delegation";
 import { primaryFor, secondaryFor, type ActionTone, type GitPanelState } from "./primaryActions";
 
 function deriveState(git: GitState | null, pr: PrState | null): GitPanelState {
@@ -391,7 +397,12 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   const discardChanges   = useAppStore((s) => s.discardChanges);
   const abortMerge       = useAppStore((s) => s.abortMerge);
   const deleteBranch     = useAppStore((s) => s.deleteBranch);
-  const sendUserMessage  = useAppStore((s) => s.sendUserMessage);
+  const prChecksEntry = useAppStore((s) => s.prChecks[agent.id]);
+  const fetchPrChecks = useAppStore((s) => s.fetchPrChecks);
+  const delegation = useAppStore((s) => s.gitDelegations[agent.id]);
+  const delegateGitAction = useAppStore((s) => s.delegateGitAction);
+  const markGitDelegationRunning = useAppStore((s) => s.markGitDelegationRunning);
+  const clearGitDelegation = useAppStore((s) => s.clearGitDelegation);
 
   // Poll git state for the focused agent at 1s while this panel is mounted.
   const pollGitState = useCallback(
@@ -403,6 +414,21 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   useEffect(() => {
     void fetchPrState(agent.id);
   }, [agent.id, fetchPrState]);
+
+  // Poll the heavier checks read at 7s, only while a PR is open. An absent
+  // entry (undefined) means the first fetch hasn't landed → the panel renders
+  // the "checking…" sub-state; null means confirmed unavailable → fall back
+  // to mergeable-only behavior.
+  const prOpen = prState?.state === "open";
+  const pollChecks = useCallback(() => {
+    if (!prOpen) return Promise.resolve();
+    return fetchPrChecks(agent.id);
+  }, [agent.id, prOpen, fetchPrChecks]);
+  usePoll(pollChecks, 7000, [pollChecks]);
+
+  const checks = prChecksEntry ?? null;
+  const mergeState: MergeState | null =
+    checks?.merge_state ?? (prOpen && prChecksEntry === undefined ? "unknown" : null);
 
   const panelState = deriveState(gitState, prState);
 
@@ -449,6 +475,40 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   }, []);
   useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
+  // Delegation lifecycle: while the agent holds control, watch the polled
+  // git/PR/check state for the transition that marks the action done. If the
+  // agent settles (idle/error/stopped) without it, hand control back with an
+  // honest notice. `sawRunning` + the 15s grace guard against clearing on
+  // the stale pre-send idle status.
+  useEffect(() => {
+    if (!delegation) return;
+    if (agent.status === "running" && !delegation.sawRunning) {
+      markGitDelegationRunning(agent.id);
+      return;
+    }
+    if (delegationResolved(delegation.kind, gitState, prState, checks)) {
+      clearGitDelegation(agent.id);
+      showNotice(delegationDone(delegation.kind));
+      // A fresh PR (or branch update) changes the merge gate — refresh now
+      // rather than waiting out the slow poll.
+      void fetchPrChecks(agent.id);
+      return;
+    }
+    const settled = agent.status !== "running" && agent.status !== "spawning";
+    const armed = delegation.sawRunning || Date.now() - delegation.startedAt > 15_000;
+    if (settled && armed) {
+      clearGitDelegation(agent.id);
+      showNotice(
+        delegation.kind === "fix-checks"
+          ? delegationDone("fix-checks")
+          : "Agent finished — review the chat for details",
+      );
+    }
+  }, [
+    delegation, agent.id, agent.status, gitState, prState, checks,
+    markGitDelegationRunning, clearGitDelegation, showNotice, fetchPrChecks,
+  ]);
+
   // Reset the override + notice + busy when switching agents so they don't
   // leak between worktrees.
   useEffect(() => {
@@ -473,48 +533,75 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   const branch = gitState?.branch || agent.repos[0]?.branch || "(no branch yet)";
   const base   = gitState?.parent_branch || agent.repos[0]?.parent_branch || "main";
 
+  // Hand control to the coding agent: it writes the judgment part (message /
+  // description / conflict edits) and executes the mutation through the
+  // app's file RPC (git_commit / open_pr / git_update_branch / git_push).
+  // The panel tracks the delegation until the matching transition lands.
+  const delegate = useCallback(
+    (kind: GitDelegationKind, prompt: string) => {
+      delegateGitAction(agent.id, kind, prompt);
+    },
+    [agent.id, delegateGitAction],
+  );
+
   // Single dispatch table for every action a state can offer — the split
   // button's main click and its menu both route through here by key.
   function runAction(key: string) {
     switch (key) {
       // ── delegated to the coding agent (agent mode) ──
       case "agent-commit-pr":
-        void sendUserMessage(
-          agent.id,
-          "Commit all current changes with a clear, conventional commit message, then open a pull request with a concise, descriptive title and body.",
+        delegate(
+          "commit-pr",
+          "Commit all current changes and open a pull request. Review the changes (`git status`, `git diff HEAD`), " +
+            "write a clear, conventional commit message, and commit by calling the `git_commit` app action. Then write " +
+            `a concise PR title and description covering ALL changes on this branch versus ${base}, and open the PR by ` +
+            "calling the `open_pr` app action with that title and body.",
         );
-        showNotice("Asked the agent to commit & open a PR");
         break;
       case "agent-commit":
-        void sendUserMessage(
-          agent.id,
-          "Commit all current changes with a clear, conventional commit message.",
+        delegate(
+          "commit",
+          "Commit all current changes. Review them first (`git status`, `git diff HEAD`), write a clear, conventional " +
+            "commit message, then commit by calling the `git_commit` app action with that message. Don't open a pull request.",
         );
-        showNotice("Asked the agent to commit");
+        break;
+      case "agent-open-pr":
+        delegate(
+          "open-pr",
+          `Open a pull request for this branch. Review everything on it versus ${base} (\`git log ${base}..HEAD\`, ` +
+            `\`git diff ${base}...HEAD\`), write a concise, descriptive PR title and body, then open the PR by calling ` +
+            "the `open_pr` app action with that title and body.",
+        );
         break;
       case "agent-resolve":
-        void sendUserMessage(
-          agent.id,
-          "Resolve the current git merge conflicts: inspect each conflicted file, reconcile both sides correctly, and complete the merge.",
+        delegate(
+          "resolve",
+          "Resolve the merge conflicts in your worktree. Inspect each conflicted file, reconcile both sides correctly, " +
+            "then complete the merge by calling the `git_commit` app action with a short merge commit message — it " +
+            "stages everything for you.",
         );
-        showNotice("Asked the agent to resolve conflicts");
         break;
       case "agent-update-branch":
         // PR can't merge cleanly with the base (the base advanced). This is NOT
         // a local in-progress merge — the agent must sync the base in first.
-        void sendUserMessage(
-          agent.id,
-          `This pull request can't merge cleanly with ${base}. Update this branch with the latest ${base} (rebase onto it, or merge it in), resolve any conflicts that arise, and push so the PR becomes mergeable again.`,
+        delegate(
+          "update-branch",
+          `This pull request can't merge cleanly because ${base} has advanced. Call the \`git_update_branch\` app ` +
+            "action to merge the latest base into this branch. If it reports conflicts, resolve them in the affected " +
+            "files, complete the merge with the `git_commit` app action, then push with `git_push`. If it merges " +
+            "cleanly, just push with `git_push`.",
         );
-        showNotice(`Asked the agent to update the branch with ${base}`);
         break;
-      case "agent-fix":
-        void sendUserMessage(
-          agent.id,
-          "Some CI checks are failing on this pull request. Investigate the failures and fix them.",
+      case "agent-fix": {
+        const failing = checks?.required_failing ?? [];
+        const names = failing.length > 0 ? ` (${failing.join(", ")})` : "";
+        delegate(
+          "fix-checks",
+          `Some CI checks are failing on this pull request${names}. Investigate the failures, fix them, commit the ` +
+            "fix by calling the `git_commit` app action, then push with `git_push` so the checks re-run.",
         );
-        showNotice("Asked the agent to fix the failing checks");
         break;
+      }
       // ── direct, agent bypassed (user typed their own message) ──
       case "commit-direct":
         if (!customActive) { openOverride(); return; }
@@ -575,15 +662,21 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
     base,
     customActive,
     mergeable,
+    mergeState,
+    checksFailed: checks?.failed ?? 0,
   };
   const primary   = primaryFor(panelState, counts);
   const secondary = secondaryFor(panelState, counts);
 
   // All actions for this state, primary first. The main button shows whichever
-  // is currently selected; the default selection is the primary.
+  // is currently selected; the default selection is the primary. A secondary
+  // candidate that duplicates the primary is dropped (pr-open lists Merge
+  // unconditionally so it stays reachable from any merge_state).
   const items: SplitActionItem[] = [
     { key: primary.key, label: primary.label, icon: primary.icon },
-    ...secondary.map((s) => ({ key: s.key, label: s.label, icon: s.icon, kbd: s.kbd })),
+    ...secondary
+      .filter((s) => s.key !== primary.key)
+      .map((s) => ({ key: s.key, label: s.label, icon: s.icon, kbd: s.kbd })),
   ];
 
   // Selected action: defaults to the primary, resets whenever the state (or the
@@ -601,11 +694,15 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   // tone/enabled state, and the dispatched action all stay in agreement.
   const effectiveKey = items.some((i) => i.key === selectedKey) ? selectedKey : primary.key;
 
-  // The CTA's main button is disabled while loading git state, while an action
-  // is in flight, and when Merge is selected but the PR can't merge yet.
+  // The CTA's main button is disabled while loading git state, while the
+  // agent holds a delegation, and when Merge is selected but the merge gate
+  // isn't open (clean/unstable per spec §7; `mergeable` fallback without
+  // checks data).
+  const mergeAllowed = checks ? mergeState === "clean" || mergeState === "unstable" : mergeable;
   const mainDisabled =
     effectiveKey === "loading" ||
-    (effectiveKey === "merge" && !mergeable);
+    delegation != null ||
+    (effectiveKey === "merge" && !mergeAllowed);
   // Tone applies only when the selected action is the state's primary; picking
   // an alternate from the menu falls back to the neutral accent fill.
   const tone: ActionTone = effectiveKey === primary.key ? primary.tone ?? "accent" : "accent";
@@ -625,8 +722,9 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
       : null;
 
   // Show the changes list only when there are uncommitted files to display.
+  // The commit composer yields while the agent holds a delegation.
   const showFiles  = panelState === "changes" || panelState === "conflicts";
-  const showCommit = panelState === "changes";
+  const showCommit = panelState === "changes" && !delegation;
 
   return (
     <div className="git-wrap">
@@ -714,6 +812,11 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
               <Spinner />
               <span className="lbl">{busy}</span>
             </div>
+          ) : delegation ? (
+            <div className="git-act-status info working">
+              <Spinner />
+              <span className="lbl">{delegationLabel(delegation.kind)}</span>
+            </div>
           ) : notice ? (
             <div className="git-notice">
               <Icon name="check" size={11} />
@@ -741,7 +844,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
             primaryKey={primary.key}
             tone={tone}
             mainDisabled={mainDisabled}
-            busyLabel={busy}
+            busyLabel={busy ?? (delegation ? "Agent working…" : null)}
             onSelect={setSelectedKey}
             onRun={() => runAction(effectiveKey)}
           />
