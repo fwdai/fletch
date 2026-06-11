@@ -1,0 +1,142 @@
+import { describe, expect, it } from "vitest";
+import type { GitState, PrChecks, PrState } from "../../api";
+import {
+  APP_ACTION_PREFIX,
+  appActionMessage,
+  DELEGATION_GIVE_UP_GRACE_MS,
+  delegationDone,
+  delegationLabel,
+  delegationResolved,
+  delegationStep,
+  type GitDelegation,
+} from "./delegation";
+
+function d(over: Partial<GitDelegation> = {}): GitDelegation {
+  return { kind: "commit", startedAt: 1_000, sawRunning: false, queued: false, ...over };
+}
+
+function git(over: Partial<GitState> = {}): GitState {
+  return {
+    branch: "feat", parent_branch: "main", ahead: 1, behind: 0, unpushed: 0,
+    files: [], additions: 0, deletions: 0, ...over,
+  };
+}
+const file = (kind: GitState["files"][number]["kind"]) => ({
+  path: "a.ts", kind, staged: false, additions: 1, deletions: 0,
+});
+function pr(over: Partial<PrState> = {}): PrState {
+  return { number: 7, url: "https://x", state: "open", title: "t", mergeable: true, ...over };
+}
+function checks(merge_state: PrChecks["merge_state"]): PrChecks {
+  return {
+    merge_state, rollup: "none", total: 0, passed: 0, failed: 0, pending: 0,
+    required_failing: [], runs: [],
+  };
+}
+
+describe("delegationResolved", () => {
+  it("commit resolves once the working tree is clean", () => {
+    expect(delegationResolved("commit", git({ files: [file("modified")] }), null, null)).toBe(false);
+    expect(delegationResolved("commit", git(), null, null)).toBe(true);
+    expect(delegationResolved("commit", null, null, null)).toBe(false);
+  });
+
+  it("commit-push resolves once the tree is clean AND everything is pushed", () => {
+    expect(delegationResolved("commit-push", git({ files: [file("modified")] }), null, null)).toBe(false);
+    expect(delegationResolved("commit-push", git({ unpushed: 1 }), null, null)).toBe(false);
+    expect(delegationResolved("commit-push", git(), null, null)).toBe(true);
+  });
+
+  it("commit-pr and open-pr resolve when a PR is open", () => {
+    expect(delegationResolved("commit-pr", git(), null, null)).toBe(false);
+    expect(delegationResolved("commit-pr", git(), pr(), null)).toBe(true);
+    expect(delegationResolved("open-pr", git(), pr({ state: "closed" }), null)).toBe(false);
+    expect(delegationResolved("open-pr", git(), pr(), null)).toBe(true);
+  });
+
+  it("resolve resolves when no conflicted files remain", () => {
+    expect(delegationResolved("resolve", git({ files: [file("conflicted")] }), null, null)).toBe(false);
+    expect(delegationResolved("resolve", git({ files: [file("modified")] }), null, null)).toBe(true);
+  });
+
+  it("update-branch waits out behind/dirty/unknown, falls back to mergeable", () => {
+    expect(delegationResolved("update-branch", git(), pr(), checks("behind"))).toBe(false);
+    expect(delegationResolved("update-branch", git(), pr(), checks("dirty"))).toBe(false);
+    expect(delegationResolved("update-branch", git(), pr(), checks("unknown"))).toBe(false);
+    expect(delegationResolved("update-branch", git(), pr(), checks("clean"))).toBe(true);
+    expect(delegationResolved("update-branch", git(), pr({ mergeable: false }), null)).toBe(false);
+    expect(delegationResolved("update-branch", git(), pr({ mergeable: true }), null)).toBe(true);
+  });
+
+  it("fix-checks never resolves from state (caller resolves on agent idle)", () => {
+    expect(delegationResolved("fix-checks", git(), pr(), checks("clean"))).toBe(false);
+  });
+});
+
+describe("delegationStep", () => {
+  const soon = 2_000; // within the grace window of startedAt=1_000
+  const late = 1_000 + DELEGATION_GIVE_UP_GRACE_MS + 1;
+
+  it("resolution wins over everything, even while queued", () => {
+    expect(delegationStep(d({ queued: true }), "running", true, soon)).toBe("resolve");
+    expect(delegationStep(d({ sawRunning: true }), "idle", true, late)).toBe("resolve");
+  });
+
+  it("queued behind an in-flight turn: waits it out, then dequeues — never gives up", () => {
+    // The pre-existing turn is still running: not ours, just wait.
+    expect(delegationStep(d({ queued: true }), "running", false, late)).toBe("wait");
+    // That turn settles: our trigger is next — dequeue, NOT "give-up", and
+    // NOT "mark-running" off the foreign turn (the reported bug).
+    expect(delegationStep(d({ queued: true }), "idle", false, late)).toBe("dequeue");
+  });
+
+  it("after dequeue, an idle gap before our turn starts is tolerated within the grace window", () => {
+    // markGitDelegationDequeued resets startedAt, so `now` is near it again.
+    expect(delegationStep(d(), "idle", false, soon)).toBe("wait");
+    expect(delegationStep(d(), "idle", false, late)).toBe("give-up");
+  });
+
+  it("marks our own turn running exactly once, then settles into give-up", () => {
+    expect(delegationStep(d(), "running", false, soon)).toBe("mark-running");
+    expect(delegationStep(d({ sawRunning: true }), "running", false, late)).toBe("wait");
+    expect(delegationStep(d({ sawRunning: true }), "idle", false, soon)).toBe("give-up");
+  });
+
+  it("spawning counts as active, not settled", () => {
+    expect(delegationStep(d({ queued: true }), "spawning", false, late)).toBe("wait");
+    expect(delegationStep(d({ sawRunning: true }), "spawning", false, late)).toBe("wait");
+  });
+});
+
+describe("appActionMessage", () => {
+  it("builds a bare trigger without params", () => {
+    expect(appActionMessage("commit")).toBe("[app-action] commit");
+  });
+
+  it("appends quoted key=value params", () => {
+    expect(appActionMessage("commit-pr", { base: "main" })).toBe('[app-action] commit-pr base="main"');
+    expect(appActionMessage("fix-checks", { failing: "build, test" })).toBe(
+      '[app-action] fix-checks failing="build, test"',
+    );
+  });
+
+  it("skips empty params and escapes embedded quotes", () => {
+    expect(appActionMessage("open-pr", { base: "" })).toBe("[app-action] open-pr");
+    expect(appActionMessage("fix-checks", { failing: 'say "hi"' })).toBe(
+      '[app-action] fix-checks failing="say \\"hi\\""',
+    );
+  });
+
+  it("triggers start with the shared prefix the transcript folds into a chip", () => {
+    expect(appActionMessage("commit").startsWith(APP_ACTION_PREFIX)).toBe(true);
+  });
+});
+
+describe("copy", () => {
+  it("has a label and done message for every kind", () => {
+    for (const k of ["commit", "commit-push", "commit-pr", "open-pr", "resolve", "update-branch", "fix-checks"] as const) {
+      expect(delegationLabel(k).length).toBeGreaterThan(0);
+      expect(delegationDone(k).length).toBeGreaterThan(0);
+    }
+  });
+});

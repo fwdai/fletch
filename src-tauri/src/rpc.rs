@@ -243,6 +243,15 @@ async fn dispatch(id: &str, op: &str, args: &Value, ctx: &OpContext) -> Response
         // `args.title`/`args.body` set the PR title and description (empty title
         // → gh auto-fills from the commits).
         "open_pr" => open_pr(id, args, ctx).await,
+        // Push the current branch to origin. Blocked in the sandbox for the
+        // same reason as commit — used to update an existing PR branch after
+        // the agent fixes checks or resolves conflicts.
+        "git_push" => git_push(id, ctx).await,
+        // Merge the latest base branch into the worktree branch (fetch +
+        // merge origin/<base>). Conflicts are reported faithfully (non-zero
+        // exit, stdout lists the files) and the merge is left in progress so
+        // the agent can resolve and finish with `git_commit` + `git_push`.
+        "git_update_branch" => git_update_branch(id, ctx).await,
         other => Response::err(id, format!("unknown op: {other}")),
     }
 }
@@ -279,6 +288,35 @@ async fn open_pr(id: &str, args: &Value, ctx: &OpContext) -> Response {
         Ok(pr) => Response::ok(id, 0, pr.url, String::new()),
         Err(e) => Response::err(id, format!("open_pr: {e}")),
     }
+}
+
+/// `git_push` — push the current branch to origin (sets upstream on first
+/// push). No args. Reuses `git::push` so behavior matches the panel's Push.
+async fn git_push(id: &str, ctx: &OpContext) -> Response {
+    let branch = match crate::git::current_branch(&ctx.cwd).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return Response::err(id, "git_push: HEAD is detached — no branch to push"),
+        Err(e) => return Response::err(id, format!("git_push: {e}")),
+    };
+    match crate::git::push(&ctx.cwd, &branch).await {
+        Ok(summary) => Response::ok(id, 0, summary, String::new()),
+        Err(e) => Response::err(id, e.to_string()),
+    }
+}
+
+/// `git_update_branch` — fetch the agent's base branch from origin and merge
+/// it into the current branch. No args; the base comes from [`OpContext`].
+/// A conflicting merge is NOT an op failure: the command report (exit code,
+/// stdout) is returned as-is and the merge stays open for the agent to
+/// resolve. A failed fetch (no origin, offline, unknown base) is returned
+/// faithfully too, before any merge is attempted.
+async fn git_update_branch(id: &str, ctx: &OpContext) -> Response {
+    let fetch = run_command(id, &ctx.cwd, "git", &["fetch", "origin", &ctx.base_branch]).await;
+    if !fetch.ok || fetch.exit_code != Some(0) {
+        return fetch;
+    }
+    let target = format!("origin/{}", ctx.base_branch);
+    run_command(id, &ctx.cwd, "git", &["merge", "--no-edit", &target]).await
 }
 
 /// Run a fixed command in `cwd`, capturing exit/stdout/stderr, bounded by
@@ -515,6 +553,134 @@ mod tests {
             .output()
             .unwrap();
         assert!(String::from_utf8_lossy(&log.stdout).contains("add new.txt"));
+    }
+
+    #[tokio::test]
+    async fn git_push_without_remote_reports_error() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+
+        let rpc_dir = td.path().join("rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(&rpc_dir.join("requests"), "p1.json", r#"{"id":"p1","op":"git_push"}"#);
+
+        let cx = OpContext { cwd: repo.clone(), base_branch: "main".to_string() };
+        process_pending(&rpc_dir, &cx).await;
+
+        let body = std::fs::read_to_string(rpc_dir.join("responses/p1.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        // No origin remote → push fails; the agent gets a clear error (from a
+        // real push attempt, not an unknown-op rejection).
+        assert_eq!(v["ok"], false);
+        let err = v["error"].as_str().unwrap();
+        assert!(!err.contains("unknown op"), "got: {err}");
+        assert!(err.contains("push failed"), "got: {err}");
+    }
+
+    /// origin (bare) + a clone on branch `feat`, with `main` advanced on
+    /// origin after `feat` forked. Returns (tempdir, clone_path).
+    fn setup_origin_and_clone() -> (tempfile::TempDir, std::path::PathBuf) {
+        let td = tempfile::tempdir().unwrap();
+        let origin = td.path().join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+
+        let work = td.path().join("work");
+        let out = std::process::Command::new("git")
+            .current_dir(td.path())
+            .args(["clone", "-q", origin.to_str().unwrap(), "work"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        run_git(&work, &["config", "user.email", "t@example.com"]);
+        run_git(&work, &["config", "user.name", "Tester"]);
+        run_git(&work, &["checkout", "-q", "-b", "main"]);
+        std::fs::write(work.join("a.txt"), b"base\n").unwrap();
+        run_git(&work, &["add", "-A"]);
+        run_git(&work, &["commit", "-q", "-m", "init"]);
+        run_git(&work, &["push", "-q", "-u", "origin", "main"]);
+
+        // Fork feat, then advance main on origin (push from main).
+        run_git(&work, &["checkout", "-q", "-b", "feat"]);
+        std::fs::write(work.join("feat.txt"), b"feature\n").unwrap();
+        run_git(&work, &["add", "-A"]);
+        run_git(&work, &["commit", "-q", "-m", "feat work"]);
+        run_git(&work, &["checkout", "-q", "main"]);
+        std::fs::write(work.join("b.txt"), b"advance\n").unwrap();
+        run_git(&work, &["add", "-A"]);
+        run_git(&work, &["commit", "-q", "-m", "main advances"]);
+        run_git(&work, &["push", "-q", "origin", "main"]);
+        run_git(&work, &["checkout", "-q", "feat"]);
+        (td, work)
+    }
+
+    #[tokio::test]
+    async fn git_update_branch_merges_the_advanced_base() {
+        let (td, work) = setup_origin_and_clone();
+        let rpc_dir = td.path().join("rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "u1.json",
+            r#"{"id":"u1","op":"git_update_branch"}"#,
+        );
+
+        let cx = OpContext { cwd: work.clone(), base_branch: "main".to_string() };
+        process_pending(&rpc_dir, &cx).await;
+
+        let body = std::fs::read_to_string(rpc_dir.join("responses/u1.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["ok"], true, "response: {body}");
+        assert_eq!(v["exit_code"], 0, "response: {body}");
+        // The advanced base landed in the worktree.
+        assert!(work.join("b.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn git_update_branch_reports_conflicts_and_leaves_merge_open() {
+        let (td, work) = setup_origin_and_clone();
+        // Make feat conflict with main: both edit a.txt.
+        std::fs::write(work.join("a.txt"), b"feat version\n").unwrap();
+        run_git(&work, &["add", "-A"]);
+        run_git(&work, &["commit", "-q", "-m", "feat edits a"]);
+        run_git(&work, &["checkout", "-q", "main"]);
+        std::fs::write(work.join("a.txt"), b"main version\n").unwrap();
+        run_git(&work, &["add", "-A"]);
+        run_git(&work, &["commit", "-q", "-m", "main edits a"]);
+        run_git(&work, &["push", "-q", "origin", "main"]);
+        run_git(&work, &["checkout", "-q", "feat"]);
+
+        let rpc_dir = td.path().join("rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "u2.json",
+            r#"{"id":"u2","op":"git_update_branch"}"#,
+        );
+
+        let cx = OpContext { cwd: work.clone(), base_branch: "main".to_string() };
+        process_pending(&rpc_dir, &cx).await;
+
+        let body = std::fs::read_to_string(rpc_dir.join("responses/u2.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        // Faithful command report: the op ran, the merge exited non-zero.
+        assert_eq!(v["ok"], true, "response: {body}");
+        assert_ne!(v["exit_code"], 0, "response: {body}");
+        assert!(v["stdout"].as_str().unwrap().contains("CONFLICT"));
+        // Merge left open so the agent can resolve + git_commit.
+        let status = std::process::Command::new("git")
+            .current_dir(&work)
+            .args(["status", "--porcelain=v1"])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&status.stdout).contains("UU a.txt"));
     }
 
     #[tokio::test]

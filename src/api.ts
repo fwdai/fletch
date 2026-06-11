@@ -190,6 +190,41 @@ export interface PrStateChangedEvent {
   state: PrState | null;
 }
 
+/** GitHub's combined merge gate (`mergeStateStatus`), normalized (spec §6). */
+export type MergeState =
+  | "clean"
+  | "blocked"
+  | "unstable"
+  | "behind"
+  | "dirty"
+  | "draft"
+  | "has_hooks"
+  | "unknown";
+
+/** One CI check, normalized from gh's statusCheckRollup. */
+export interface CheckRun {
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: string | null;
+  required: boolean;
+  url: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+/** Rich PR merge-gate + per-check detail. Heavier than PrState — polled on
+ *  a slow cadence while a PR is open. */
+export interface PrChecks {
+  merge_state: MergeState;
+  rollup: "none" | "pending" | "passing" | "failing";
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
+  required_failing: string[];
+  runs: CheckRun[];
+}
+
 export type RunPhase = "idle" | "setup" | "running" | "stopped";
 
 export interface RunStateSnapshot {
@@ -332,6 +367,8 @@ export const api = {
     invoke<Record<string, ShortStats>>("get_all_shortstats"),
   getPrState: (agentId: string) =>
     invoke<PrState | null>("get_pr_state", { agentId }),
+  getPrChecks: (agentId: string) =>
+    invoke<PrChecks | null>("get_pr_checks", { agentId }),
   pushAgent: (agentId: string) => invoke<string>("push_agent", { agentId }),
   pullAgent: (agentId: string) => invoke<void>("pull_agent", { agentId }),
   rebaseAgent: (agentId: string) => invoke<void>("rebase_agent", { agentId }),

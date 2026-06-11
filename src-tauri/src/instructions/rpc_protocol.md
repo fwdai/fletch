@@ -20,11 +20,28 @@ until [ -f "$QUORUM_RPC_DIR/responses/$ID.json" ]; do sleep 0.2; done
 cat "$QUORUM_RPC_DIR/responses/$ID.json"
 ```
 
+For args carrying free text (commit messages, PR bodies), do NOT hand-escape the string into a `printf`/`echo` format — `\n` and quotes get mangled by the shell. Build the body with `jq -n --arg` from a heredoc, which escapes everything correctly on the first try:
+
+```sh
+ID=$(uuidgen)
+MSG=$(cat <<'EOF'
+feat: add the thing
+
+Optional longer body, safely multi-line.
+EOF
+)
+jq -n --arg id "$ID" --arg msg "$MSG" '{id:$id,op:"git_commit",args:{message:$msg}}' \
+  > "$QUORUM_RPC_DIR/requests/$ID.json.tmp"
+mv "$QUORUM_RPC_DIR/requests/$ID.json.tmp" "$QUORUM_RPC_DIR/requests/$ID.json"
+```
+
 Available ops:
 
 - `ping` — liveness check; returns `pong`. No args.
 - `git_status` — runs `git status` in your worktree and returns its output. No args.
 - `git_commit` — stages all changes in your worktree and commits them. `args.message` (required) is the commit message.
 - `open_pr` — pushes your branch and opens a pull request against your base branch. `args.title` and `args.body` set the PR title and description; omit `title` to auto-fill from your commits.
+- `git_push` — pushes your current branch to origin (sets the upstream on first push). No args. Use it to update an existing pull request after committing fixes.
+- `git_update_branch` — fetches your base branch from origin and merges it into your current branch. No args. A non-zero `exit_code` with `CONFLICT` in `stdout` means the merge stopped on conflicts: resolve the listed files in your worktree, then complete the merge with `git_commit` and push with `git_push`.
 
-Use these ops for git: your worktree's git database lives outside the sandbox, so running `git add`/`commit`/`push` yourself fails with a permission error. Commit and open PRs through `git_commit` and `open_pr` instead.
+Use these ops for git: your worktree's git database lives outside the sandbox, so running `git add`/`commit`/`merge`/`push` yourself fails with a permission error. Commit through `git_commit`, push through `git_push`, sync your base branch through `git_update_branch`, and open PRs through `open_pr` instead.

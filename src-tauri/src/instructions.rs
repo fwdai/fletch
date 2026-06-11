@@ -17,13 +17,15 @@
 //!   conversation, so later turns don't re-send it (no per-turn token tax, no
 //!   accumulating copies).
 //!
-//! The injected text has two layers: editable general guidance
-//! (`instructions/system_prompt.md`) plus a Quorum-managed protocol block
-//! (`instructions/rpc_protocol.md`) that documents the file-RPC the app exposes
-//! (see `rpc.rs`). The RPC block is code-managed because it must stay in sync
-//! with the implemented op allowlist and the `QUORUM_RPC_DIR` env var; the
-//! general layer is yours to edit. Blank both files to disable injection
-//! entirely — every helper below no-ops when the combined text is empty.
+//! The injected text has three layers: editable general guidance
+//! (`instructions/system_prompt.md`), a Quorum-managed protocol block
+//! (`instructions/rpc_protocol.md`) that documents the file-RPC the app
+//! exposes (see `rpc.rs`), and the Quorum-managed git-action playbooks
+//! (`instructions/git_actions.md`) behind the panel's `[app-action]`
+//! triggers. The managed blocks are code-managed because they must stay in
+//! sync with the op allowlist / trigger names; the general layer is yours to
+//! edit. Blank all files to disable injection entirely — every helper below
+//! no-ops when the combined text is empty.
 
 /// Editable general guidance. Edit the file, not this constant.
 const SYSTEM_PROMPT: &str = include_str!("instructions/system_prompt.md");
@@ -31,17 +33,23 @@ const SYSTEM_PROMPT: &str = include_str!("instructions/system_prompt.md");
 /// Quorum-managed RPC protocol block, appended after the general guidance.
 const RPC_INSTRUCTIONS: &str = include_str!("instructions/rpc_protocol.md");
 
-/// The combined instruction text, trimmed. Empty when both sources are
+/// Quorum-managed git-action playbooks. The panel sends a short
+/// `[app-action] <name>` trigger; the full per-action instructions live here
+/// so the chat transcript stays free of boilerplate. Code-managed: must stay
+/// in sync with the trigger names the frontend sends (see
+/// `components/RightPanel/delegation.ts`).
+const GIT_ACTIONS: &str = include_str!("instructions/git_actions.md");
+
+/// The combined instruction text, trimmed. Empty when every source is
 /// blank/whitespace, which makes every injection helper a no-op.
 pub fn text() -> String {
-    let general = SYSTEM_PROMPT.trim();
-    let rpc = RPC_INSTRUCTIONS.trim();
-    match (general.is_empty(), rpc.is_empty()) {
-        (true, true) => String::new(),
-        (false, true) => general.to_string(),
-        (true, false) => rpc.to_string(),
-        (false, false) => format!("{general}\n\n{rpc}"),
-    }
+    let combined = [SYSTEM_PROMPT, RPC_INSTRUCTIONS, GIT_ACTIONS]
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    combined
 }
 
 /// Args for agents that expose `--append-system-prompt` (Claude, Pi).
@@ -115,6 +123,15 @@ mod tests {
     fn source_is_present_and_nonempty() {
         // The shipped default is non-empty; guards against an accidental blank.
         assert!(!text().is_empty());
+    }
+
+    #[test]
+    fn git_action_playbooks_are_injected() {
+        // The panel's `[app-action]` triggers only work if the playbook block
+        // reaches the agent's instructions.
+        let t = text();
+        assert!(t.contains("[app-action]"), "playbook block missing");
+        assert!(t.contains("### commit"), "commit playbook missing");
     }
 
     #[test]
