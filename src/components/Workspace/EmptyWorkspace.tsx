@@ -47,19 +47,13 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
       </div>
 
       <div className="empty-wrap fade-in">
-        <div className="empty-mark">
-          <span className="d" />
-          <span>NEW WORKSPACE</span>
-          <span style={{ color: "var(--fg-3)" }}>· in</span>
-          <span style={{ color: "var(--fg-1)", letterSpacing: 0, textTransform: "none" }}>
-            {projectName}
-          </span>
-        </div>
-
-        <h1 className="empty-title">
-          What should{" "}
-          <span
-            className="name"
+        <div className="empty-id">
+          <div className="empty-mark">
+            <span className="d" />
+            <span>NEW WORKSPACE</span>
+          </div>
+          <div
+            className="empty-name"
             onClick={() => rerollDraftName(draft.id)}
             title="Reroll name"
           >
@@ -72,15 +66,15 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
               />
             )}
             {draft.name}
-          </span>
-          <span> tackle?</span>
-        </h1>
+          </div>
+        </div>
+
+        <h1 className="empty-title">What should be the first task?</h1>
         <p className="empty-sub">
-          A worktree and branch will be created under{" "}
+          A worktree and sandbox will be created at{" "}
           <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
             ~/.quorum/worktrees/{draft.name}
           </span>
-          . Your first message starts the agent.
         </p>
 
         <div className="empty-composer">
