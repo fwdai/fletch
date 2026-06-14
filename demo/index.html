@@ -81,12 +81,12 @@
                     <span class="btn-i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></span>
                   </div>
                   <div class="empty-wrap">
-                    <div class="empty-mark"><span class="d"></span><span>New workspace</span><span style="color:var(--fg-3)">· in</span><span style="color:var(--fg-1);letter-spacing:0;text-transform:none">quorum</span></div>
-                    <h1 class="empty-title">What should
-                      <span class="name"><svg width="32" height="32" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"><path d="M1 13 L3.5 9 L5 11 L8 4 L10 8 L11.5 6 L14 11 L15 13"/></svg>dolomites</span>
-                      <span> tackle?</span>
-                    </h1>
-                    <p class="empty-sub">A worktree and branch will be created under <span class="mono">~/.quorum/worktrees/dolomites</span>. Your first message starts the agent.</p>
+                    <div class="empty-id">
+                      <div class="empty-mark"><span class="d"></span><span>New workspace</span></div>
+                      <div class="empty-name"><svg width="32" height="32" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"><path d="M1 13 L3.5 9 L5 11 L8 4 L10 8 L11.5 6 L14 11 L15 13"/></svg>dolomites</div>
+                    </div>
+                    <h1 class="empty-title">What should be the first task?</h1>
+                    <p class="empty-sub">A worktree and sandbox will be created at <span class="mono">~/.quorum/worktrees/dolomites</span></p>
                     <div class="empty-composer">
                       <div class="na-composer">
                         <div class="na-input"><span class="ph" id="naPh">Describe the task for the agent. ↵ to spawn.</span><span id="naText"></span><span class="na-caret" id="naCaret"></span></div>
@@ -163,7 +163,7 @@
                       </div>
                     </div>
                     <div class="ws-composer">
-                      <div class="ci">Reply to dolomites…</div>
+                      <div class="ci">Message agent · /commands · @ to attach · # for PRs</div>
                       <div class="cf"><span class="c-chip"><span class="chip-mono" id="wsProvIco" style="width:16px;height:16px;border-radius:4px"></span> Claude Code</span><span class="na-spacer"></span><span class="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span></div>
                     </div>
                   </div>
@@ -251,7 +251,7 @@
 
       <!-- provider reveal interstitial (full-screen cut, above the app) -->
       <div id="provReveal" style="opacity:0">
-        <div class="pr-label">Works with every agent</div>
+        <div class="pr-label">One IDE. Every agent.</div>
         <div class="pr-row" id="prRow"></div>
       </div>
 
@@ -265,18 +265,18 @@
                 <defs><linearGradient id="qmark_tail_brand" x1="407" y1="301" x2="407" y2="503" gradientUnits="userSpaceOnUse"><stop stop-color="#EE925A"/><stop offset="1" stop-color="#E58B55"/></linearGradient></defs>
               </svg>uorum</span>
           </div>
-          <div class="tg" id="brandTag">Run a fleet of coding agents.</div>
+          <div class="tg" id="brandTag">You don't write the code. You direct it.</div>
         </div>
       </div>
 
-      <div class="ovl lower-left"  id="o1" style="opacity:0"><div class="eb">Parallel by default</div><h2>Launch any agent<br>in one keystroke.</h2></div>
-      <div class="ovl lower-right" id="o2" style="opacity:0"><div class="eb">A fleet, not a tab</div><h2>As many agents<br>as the problem needs.</h2></div>
-      <div class="ovl lower-right" id="o3" style="opacity:0"><div class="eb">See it think</div><h2>Every step of reasoning,<br>normalized.</h2></div>
-      <div class="ovl lower-left"  id="o4" style="opacity:0"><div class="eb">Live diffs</div><h2>Watch code take shape<br>as it's written.</h2></div>
-      <div class="ovl lower-left"  id="o5" style="opacity:0"><div class="eb">Ship from here</div><h2>Commit, push, merge —<br>without leaving the room.</h2></div>
-      <div class="ovl lower-right" id="o6" style="opacity:0"><div class="eb">Total recall</div><h2>Time, tokens, outcome —<br>on every run.</h2></div>
+      <div class="ovl lower-left"  id="o1" style="opacity:0"><div class="eb">Describe the work</div><h2>Open a task,<br>not a file.</h2></div>
+      <div class="ovl lower-right" id="o2" style="opacity:0"><div class="eb">Run them in parallel</div><h2>Every task, its own<br>agent and branch.</h2></div>
+      <div class="ovl lower-right" id="o3" style="opacity:0"><div class="eb">No black box</div><h2>Watch it reason,<br>then watch it act.</h2></div>
+      <div class="ovl lower-left"  id="o4" style="opacity:0"><div class="eb">Code, front and center</div><h2>Read every diff<br>as it's written.</h2></div>
+      <div class="ovl lower-left"  id="o5" style="opacity:0"><div class="eb">Real git, built in</div><h2>Commit, push, merge —<br>without leaving the IDE.</h2></div>
+      <div class="ovl lower-right" id="o6" style="opacity:0"><div class="eb">Total recall</div><h2>Every run measured —<br>time, tokens, outcome.</h2></div>
 
-      <div id="closeLayer"><h2 id="closeTitle" style="opacity:0">A new IDE for<br><span class="accent">agentic engineering.</span></h2></div>
+      <div id="closeLayer"><h2 id="closeTitle" style="opacity:0">The IDE for<br><span class="accent">agentic engineering.</span></h2></div>
 
       <div id="clickRing"></div>
       <div id="cursor"><svg width="24" height="24" viewBox="0 0 24 24"><path d="M5 2l16 7-7 2-2 7-7-16z" fill="#fff"/></svg></div>

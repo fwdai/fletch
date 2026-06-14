@@ -1985,6 +1985,11 @@ button { cursor: default; }
   padding: 40px 40px 60px;
   position: relative;
 }
+/* identity group: eyebrow + rerollable workspace name, tightly grouped */
+.empty-id {
+  display: flex; flex-direction: column; align-items: center;
+  margin-bottom: 28px;
+}
 .empty-mark {
   display: flex; align-items: center; gap: 8px;
   font-family: var(--font-mono);
@@ -1992,30 +1997,36 @@ button { cursor: default; }
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--fg-3);
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 .empty-mark .d { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.empty-name {
+  display: inline-block;
+  font-family: var(--font-serif);
+  font-size: 50px; font-weight: 400;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  font-style: italic;
+  color: var(--accent);
+  border-bottom: 1px dashed var(--accent-line);
+  cursor: pointer;
+}
+.empty-name:hover { border-bottom-color: var(--accent); }
 .empty-title {
   font-family: var(--font-serif);
   font-size: 50px; font-weight: 400;
   letter-spacing: -0.025em;
   color: var(--fg-0);
-  margin: 0 0 10px;
+  margin: 0 0 14px;
   line-height: 1.05;
   text-align: center;
   font-style: italic;
 }
-.empty-title .name {
-  color: var(--accent);
-  border-bottom: 1px dashed var(--accent-line);
-  cursor: pointer;
-}
-.empty-title .name:hover { border-bottom-color: var(--accent); }
 .empty-sub {
   font-size: 14px;
   color: var(--fg-2);
   margin: 0 0 32px;
-  max-width: 480px;
+  max-width: 560px;
   text-align: center;
   line-height: 1.55;
   font-family: var(--font-sans);
