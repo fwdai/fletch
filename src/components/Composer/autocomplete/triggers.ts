@@ -1,6 +1,8 @@
 // Pure detection of an autocomplete trigger token under the caret, shared by
-// every source. A token is the trigger char plus following non-whitespace,
-// non-trigger characters (so `@`, `#`, `/` each delimit the next).
+// every source. A token is the trigger char plus the following run of
+// characters that are neither whitespace nor a mention trigger (`@`/`#`), so
+// `@`/`#` delimit each other. `/` is deliberately NOT a boundary — it must
+// stay inside a token for file paths like `@src/foo`.
 
 const TOKEN_CHARS = /[^\s@#]/;
 

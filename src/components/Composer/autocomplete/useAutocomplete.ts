@@ -34,8 +34,8 @@ export function useAutocomplete({
   setCaret,
   focusAt,
 }: Args): { menu: MenuProps | null; onKeyDown: (e: React.KeyboardEvent) => boolean } {
-  // Dismissed key is "trigger:query"; it clears itself once the query changes
-  // (so typing more re-opens the menu) without a separate reset effect.
+  // The Escape-dismissed menu, keyed by "trigger:query" so editing the query
+  // re-opens it; cleared when the token disappears (see the effect below).
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
 
@@ -45,6 +45,12 @@ export function useAutocomplete({
 
   useEffect(() => {
     setIndex(0);
+    // Forget a prior Escape once the trigger token goes away entirely (caret
+    // moves off it, or the text is cleared on send) so the same query opens
+    // again in a later message. While the token is still present, `dismissed`
+    // stays set — re-typing the exact query keeps it closed, but any change
+    // makes `key` differ and re-opens.
+    if (key === null) setDismissed(null);
   }, [key]);
 
   function pick(i: number) {

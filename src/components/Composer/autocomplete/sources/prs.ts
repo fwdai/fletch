@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PrSummary } from "../../../../api";
 import type { AcPick, AcSource } from "../types";
 
+/** How long a fetched PR list stays fresh before the next open refetches —
+ *  long enough to absorb rapid open/close cycling, short enough to pick up
+ *  newly-opened PRs within a session. */
+const PR_CACHE_MS = 15_000;
+
 /** Rank PRs against a numeric query: empty → most recent first; otherwise PRs
  *  whose number contains the digits, with prefix matches first. */
 export function filterPrs(prs: PrSummary[], query: string, limit = 8): PrSummary[] {
@@ -36,13 +41,19 @@ export function usePrSource({ query, listPrs }: Args): AcSource {
     [active, prs],
   );
 
-  // Refetch on open — it's a network call, held in a ref so an inline
-  // `listPrs` prop doesn't refire the effect.
+  // Fetch when the menu opens, but cache for a short window so rapid
+  // open/close cycles (type `#`, delete, retype) don't queue a burst of
+  // `gh pr list` processes. `lastFetch` is stamped before the call so even
+  // in-flight reopens skip. Held in refs so an inline `listPrs` prop and the
+  // timestamp don't refire the effect.
   const open = active !== null;
   const ref = useRef(listPrs);
   ref.current = listPrs;
+  const lastFetch = useRef(0);
   useEffect(() => {
     if (!open || !ref.current) return;
+    if (Date.now() - lastFetch.current < PR_CACHE_MS) return;
+    lastFetch.current = Date.now();
     let alive = true;
     ref
       .current()
