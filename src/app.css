@@ -829,6 +829,22 @@ button { cursor: default; }
 }
 .slash-item.active { background: var(--hover); color: var(--fg-0); }
 .slash-item.active .slash-desc { color: var(--fg-1); }
+.mention-item { gap: 8px; align-items: center; }
+.mention-item .mention-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-0);
+  flex-shrink: 0;
+}
+.mention-item .mention-dir {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+.mention-item.active { background: var(--hover); color: var(--fg-0); }
 .composer:focus-within {
   border-color: color-mix(in oklch, var(--accent), transparent 50%);
   box-shadow: var(--shadow-2), 0 0 0 4px color-mix(in oklch, var(--accent), transparent 88%);

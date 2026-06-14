@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import type { AgentRecord } from "../../api";
+import { api, type AgentRecord } from "../../api";
 import { useAppStore } from "../../store";
 import { applyPolicy, getAdapter } from "../../adapters";
 import { providerLabel } from "../../data/providers";
@@ -161,6 +161,10 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                   : "Agent is not ready"
           }
           stopping={busy}
+          mentionSource={() =>
+            api.listWorktreeTree(agent.id).then((files) => files.map((f) => f.path))
+          }
+          listDir={api.listDir}
           onSend={({ text, thinking, attachments }) => send(agent.id, text, attachments, thinking)}
           onStop={() => stop(agent.id)}
         />

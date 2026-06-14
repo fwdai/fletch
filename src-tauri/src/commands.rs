@@ -643,6 +643,23 @@ pub async fn get_all_shortstats(
 /// the UI shows a "no preview" notice instead of choking the editor.
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
+/// One entry in an arbitrary directory listing (for the composer's `@`
+/// file-mention autocomplete when the user types a filesystem path).
+#[derive(Serialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// A directory listing plus the absolute path that was listed, so the
+/// caller can build absolute attachment paths from entry names.
+#[derive(Serialize)]
+pub struct DirListing {
+    /// Absolute, tilde-expanded directory that was read.
+    pub base: String,
+    pub entries: Vec<DirEntry>,
+}
+
 /// One entry in the worktree file list. Directories are derived on the
 /// frontend from the path segments; only files are sent over IPC.
 #[derive(Serialize)]
@@ -763,6 +780,43 @@ pub async fn list_worktree_tree(
             }
         })
         .collect())
+}
+
+/// Expand a leading `~` (or `~/…`) to the user's home directory. Any other
+/// path is returned unchanged. Used to resolve filesystem paths the user
+/// types into the composer's `@` mention.
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix('~') {
+        if rest.is_empty() || rest.starts_with('/') {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(rest.strip_prefix('/').unwrap_or(rest));
+            }
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// List the entries of an arbitrary directory for the composer's `@`
+/// mention autocomplete (e.g. `@~/Downloads/`). The path may start with
+/// `~`; the resolved absolute directory comes back as `base` so the caller
+/// can attach files by absolute path.
+#[tauri::command]
+pub async fn list_dir(path: String) -> Result<DirListing> {
+    let dir = expand_tilde(&path);
+    let read = std::fs::read_dir(&dir)
+        .map_err(|e| Error::Other(format!("read_dir {}: {e}", dir.display())))?;
+
+    let mut entries = Vec::new();
+    for entry in read.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        entries.push(DirEntry { name, is_dir });
+    }
+
+    Ok(DirListing {
+        base: dir.to_string_lossy().to_string(),
+        entries,
+    })
 }
 
 /// Read a worktree file for the viewer/editor: contents, language hint,

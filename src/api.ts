@@ -162,6 +162,20 @@ export interface WorktreeFile {
   deletions: number;
 }
 
+/** One entry in an arbitrary directory listing, used by the composer's `@`
+ *  file-mention autocomplete when the user types a filesystem path. */
+export interface DirEntry {
+  name: string;
+  is_dir: boolean;
+}
+
+/** A directory listing plus the absolute (tilde-expanded) path that was
+ *  read, returned by `list_dir`. */
+export interface DirListing {
+  base: string;
+  entries: DirEntry[];
+}
+
 /** A worktree file's contents plus the metadata the File-panel editor
  *  needs. `chg_add` / `chg_mod` are 1-indexed line numbers the agent
  *  added / modified (drives the change gutter). */
@@ -402,6 +416,7 @@ export const api = {
     invoke<DetectedConfig[]>("detect_run_config", { agentId }),
   listWorktreeTree: (agentId: string) =>
     invoke<WorktreeFile[]>("list_worktree_tree", { agentId }),
+  listDir: (path: string) => invoke<DirListing>("list_dir", { path }),
   readWorktreeFile: (agentId: string, path: string) =>
     invoke<WorktreeFileContents>("read_worktree_file", { agentId, path }),
   getFileDiff: (agentId: string, path: string) =>
