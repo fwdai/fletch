@@ -71,6 +71,17 @@ export function filterDirEntries<T extends { name: string; is_dir: boolean }>(
   return scored.slice(0, limit).map((s) => s.e);
 }
 
+/** Index where the "@" token under the caret ends: the first whitespace or
+ *  "@" at or after `from`, else the end of the text. Mirrors the `[^\s@]`
+ *  token class `mentionQueryAt` uses, so picking removes the *whole* token
+ *  even when the caret was moved back into the middle of it (otherwise the
+ *  tail past the caret, e.g. "ponents" in "@components", would survive). */
+export function mentionTokenEnd(text: string, from: number): number {
+  let end = from;
+  while (end < text.length && !/[\s@]/.test(text[end])) end++;
+  return end;
+}
+
 /** True when `query`'s characters appear in `text` in order (fuzzy match). */
 function isSubsequence(text: string, query: string): boolean {
   let i = 0;

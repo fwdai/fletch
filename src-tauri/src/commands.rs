@@ -802,12 +802,18 @@ fn expand_tilde(path: &str) -> PathBuf {
 /// can attach files by absolute path.
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<DirListing> {
+    // Stop reading well above what the picker shows (the frontend filters and
+    // caps display at 10) so a huge directory like /usr/lib or node_modules
+    // can't stall the read or bloat the IPC payload. Hidden entries are kept
+    // so typing a leading "." can still reveal dotfiles.
+    const MAX_ENTRIES: usize = 1000;
+
     let dir = expand_tilde(&path);
     let read = std::fs::read_dir(&dir)
         .map_err(|e| Error::Other(format!("read_dir {}: {e}", dir.display())))?;
 
     let mut entries = Vec::new();
-    for entry in read.flatten() {
+    for entry in read.flatten().take(MAX_ENTRIES) {
         let name = entry.file_name().to_string_lossy().to_string();
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         entries.push(DirEntry { name, is_dir });

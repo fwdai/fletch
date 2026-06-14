@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   mentionQueryAt,
+  mentionTokenEnd,
   filterFiles,
   isFsPath,
   splitFsPath,
@@ -72,6 +73,26 @@ describe("filterFiles", () => {
 
   it("honors the result limit", () => {
     expect(filterFiles(files, "s").length).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("mentionTokenEnd", () => {
+  it("scans to the end when the caret is mid-token", () => {
+    // @components, caret moved back to 4 (after "@com") — the whole token
+    // ends at 11, so picking removes "ponents" too rather than leaving it.
+    expect(mentionTokenEnd("@components", 4)).toBe(11);
+  });
+
+  it("stops at the first whitespace after the caret", () => {
+    expect(mentionTokenEnd("@src more", 3)).toBe(4);
+  });
+
+  it("stops at a following @ (token boundary)", () => {
+    expect(mentionTokenEnd("@a@b", 1)).toBe(2);
+  });
+
+  it("returns the caret when it already sits at the token end", () => {
+    expect(mentionTokenEnd("@src", 4)).toBe(4);
   });
 });
 

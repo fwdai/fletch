@@ -20,6 +20,7 @@ import {
   isFsPath,
   joinTypedDir,
   mentionQueryAt,
+  mentionTokenEnd,
   splitFsPath,
 } from "./mentions";
 
@@ -331,19 +332,21 @@ export function Composer({
   function pickMention(i: number) {
     const action = actions[i];
     if (!action || !mention) return;
+    // Replace the entire "@token", not just up to the caret — the user may
+    // have moved the cursor back into the middle of it before picking.
+    const end = mentionTokenEnd(text, caret);
     if (action.kind === "attach") {
       addPaths([action.path]);
-      // Splice out the "@query" span; the file lives in the attachment chips,
-      // so it never pollutes the typed prose.
-      const next = text.slice(0, mention.start) + text.slice(caret);
+      // The file lives in the attachment chips, so it never pollutes prose.
+      const next = text.slice(0, mention.start) + text.slice(end);
       setText(next);
       setCaret(mention.start);
       placeCaret(mention.start);
     } else {
-      // Drill into the directory: rewrite the "@query" to the chosen path so
+      // Drill into the directory: rewrite the "@token" to the chosen path so
       // the next keystroke (or selection) continues from inside it.
       const inserted = `@${action.query}`;
-      const next = text.slice(0, mention.start) + inserted + text.slice(caret);
+      const next = text.slice(0, mention.start) + inserted + text.slice(end);
       const pos = mention.start + inserted.length;
       setText(next);
       setCaret(pos);
