@@ -1,28 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../store";
 import { DEFAULT_PROVIDER_ID } from "../../data/providers";
 import { PROVIDER_DETAIL } from "../../data/providerDetail";
 import { prettyModelLabel } from "../../data/modelLabel";
-import { filterCommands, type SlashCommand } from "../../data/slashCommands";
 import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
 import { ModelPicker } from "./ModelPicker";
 import { BranchPicker } from "./BranchPicker";
-import { SlashMenu } from "./SlashMenu";
-import { MentionMenu } from "./MentionMenu";
 import { AttachmentList } from "./AttachmentList";
 import { useFileDrop } from "./useFileDrop";
-import type { DirListing } from "../../api";
-import {
-  filterDirEntries,
-  filterFiles,
-  isFsPath,
-  joinTypedDir,
-  mentionQueryAt,
-  mentionTokenEnd,
-  splitFsPath,
-} from "./mentions";
+import type { DirListing, PrSummary } from "../../api";
+import { triggerQueryAt } from "./autocomplete/triggers";
+import { useAutocomplete } from "./autocomplete/useAutocomplete";
+import { AutocompleteMenu } from "./autocomplete/AutocompleteMenu";
+import { useFileSource } from "./autocomplete/sources/files";
+import { usePrSource } from "./autocomplete/sources/prs";
+import { useCommandSource } from "./autocomplete/sources/commands";
 
 interface Props {
   /** Initial provider id — defaults to claude. */
@@ -62,6 +56,9 @@ interface Props {
    *  user types (e.g. `@~/Downloads/`), attaching files outside the worktree
    *  by absolute path. Omit to restrict "@" to worktree files. */
   listDir?: (path: string) => Promise<DirListing>;
+  /** Lists the repo's open PRs for the "#" mention autocomplete, which
+   *  inserts a `#<number>` reference. Omit to disable "#" mentions. */
+  listPrs?: () => Promise<PrSummary[]>;
   /** True when rendered for an existing agent (ChatView) rather than a new
    *  session (EmptyWorkspace). A provider whose effort is set at spawn
    *  (`effortAtSpawn`, e.g. claude) shows a read-only badge here instead of
@@ -100,6 +97,7 @@ export function Composer({
   onLocalCommand,
   mentionSource,
   listDir,
+  listPrs,
   existingSession = false,
   initialThinking,
   activeModel,
@@ -121,22 +119,9 @@ export function Composer({
   useEffect(() => {
     setThinkingValue(resolveThinking(provider));
   }, [provider]);
-  const [slashDismissed, setSlashDismissed] = useState(false);
-  const [slashIndex, setSlashIndex] = useState(0);
-  // Caret offset, tracked so the "@" mention can be detected at the cursor
-  // rather than only at the start of the text (unlike slash commands).
+  // Caret offset, tracked so triggers can be detected at the cursor (not just
+  // at the start of the text).
   const [caret, setCaret] = useState(0);
-  const [mentionFiles, setMentionFiles] = useState<string[]>([]);
-  const [mentionIndex, setMentionIndex] = useState(0);
-  const [mentionDismissed, setMentionDismissed] = useState(false);
-  // Cached listing for the directory the user is currently typing a path
-  // into. `reqDir` is the typed dir it answers, so a stale in-flight result
-  // for a different dir isn't shown.
-  const [fsListing, setFsListing] = useState<{
-    reqDir: string;
-    base: string;
-    entries: DirListing["entries"];
-  } | null>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
 
   function addPaths(paths: string[]) {
@@ -155,122 +140,32 @@ export function Composer({
     addPaths(Array.isArray(sel) ? sel : [sel]);
   }
 
-  const slashQuery =
-    !slashDismissed && text.startsWith("/") && !text.includes("\n")
-      ? text.slice(1).split(/\s/)[0]
-      : null;
-  const slashMatches = useMemo(
-    () => (slashQuery === null ? [] : filterCommands(provider, slashQuery)),
-    [provider, slashQuery],
-  );
-  const slashOpen = slashMatches.length > 0;
-
-  useEffect(() => {
-    setSlashIndex(0);
-  }, [slashQuery, provider]);
-
-  // "@" mention: active when the caret sits in an "@token" and a source is
-  // wired (and the slash menu isn't already claiming the input).
-  const mention =
-    (mentionSource || listDir) && !slashOpen && !mentionDismissed
-      ? mentionQueryAt(text, caret)
-      : null;
-  // A "~/…" or "/…" style query completes real filesystem paths via listDir;
-  // anything else searches the agent's worktree files.
-  const fs =
-    mention && listDir && isFsPath(mention.query)
-      ? splitFsPath(mention.query)
-      : null;
-
-  // What picking a row does: attach a file (worktree-relative or absolute),
-  // or drill into a directory by rewriting the typed "@query".
-  type MentionAction =
-    | { kind: "attach"; path: string }
-    | { kind: "navigate"; query: string };
-
-  const { rows, actions } = useMemo<{
-    rows: { name: string; detail?: string; isDir: boolean }[];
-    actions: MentionAction[];
-  }>(() => {
-    if (!mention) return { rows: [], actions: [] };
-    if (fs) {
-      if (!fsListing || fsListing.reqDir !== fs.dir) return { rows: [], actions: [] };
-      const base = fsListing.base;
-      const matched = filterDirEntries(fsListing.entries, fs.partial);
-      return {
-        rows: matched.map((e) => ({ name: e.name, isDir: e.is_dir })),
-        actions: matched.map((e) =>
-          e.is_dir
-            ? { kind: "navigate", query: joinTypedDir(fs.dir, e.name) }
-            : {
-                kind: "attach",
-                path: base.endsWith("/") ? base + e.name : `${base}/${e.name}`,
-              },
-        ),
-      };
-    }
-    if (!mentionSource) return { rows: [], actions: [] };
-    const matched = filterFiles(mentionFiles, mention.query);
-    return {
-      rows: matched.map((p) => {
-        const i = p.lastIndexOf("/");
-        return {
-          name: i === -1 ? p : p.slice(i + 1),
-          detail: i === -1 ? undefined : p.slice(0, i + 1),
-          isDir: false,
-        };
-      }),
-      actions: matched.map((p) => ({ kind: "attach", path: p })),
-    };
-    // `mention`/`fs` objects recreate each render; depend on their fields.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mention?.query, fs?.dir, fs?.partial, fsListing, mentionFiles, mentionSource]);
-
-  const mentionOpen = rows.length > 0;
-
-  useEffect(() => {
-    setMentionIndex(0);
-  }, [mention?.query]);
-
-  // Worktree-file mode: refetch the list each time the mention opens (held in
-  // a ref so an inline `mentionSource` prop doesn't refire the effect).
-  const worktreeActive = mention !== null && !fs && !!mentionSource;
-  const mentionSrcRef = useRef(mentionSource);
-  mentionSrcRef.current = mentionSource;
-  useEffect(() => {
-    if (!worktreeActive || !mentionSrcRef.current) return;
-    let alive = true;
-    mentionSrcRef
-      .current()
-      .then((files) => {
-        if (alive) setMentionFiles(files);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [worktreeActive]);
-
-  // Filesystem mode: re-list only when the typed directory changes, not on
-  // every keystroke within the same directory.
-  const fsDir = fs?.dir ?? null;
-  const listDirRef = useRef(listDir);
-  listDirRef.current = listDir;
-  useEffect(() => {
-    if (fsDir === null || !listDirRef.current) return;
-    let alive = true;
-    listDirRef
-      .current(fsDir)
-      .then((res) => {
-        if (alive) setFsListing({ reqDir: fsDir, base: res.base, entries: res.entries });
-      })
-      .catch(() => {
-        if (alive) setFsListing(null);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [fsDir]);
+  // Autocompletions share one menu + keyboard mechanics (useAutocomplete);
+  // each source owns its data and what picking a row does. Triggers are
+  // mutually exclusive at a given caret, so only one menu is ever open.
+  const fileSource = useFileSource({
+    query: triggerQueryAt(text, caret, "@")?.query ?? null,
+    mentionSource,
+    listDir,
+    addPaths,
+  });
+  const prSource = usePrSource({
+    query: triggerQueryAt(text, caret, "#")?.query ?? null,
+    listPrs,
+  });
+  const commandSource = useCommandSource({
+    query: triggerQueryAt(text, caret, "/", true)?.query ?? null,
+    provider,
+    onLocalCommand,
+  });
+  const autocomplete = useAutocomplete({
+    sources: [commandSource, fileSource, prSource],
+    text,
+    caret,
+    setText,
+    setCaret,
+    focusAt: placeCaret,
+  });
 
   useEffect(() => {
     if (autoFocus) ta.current?.focus();
@@ -299,26 +194,6 @@ export function Composer({
     onStop?.();
   }
 
-  function pickSlash(cmd: SlashCommand) {
-    if (cmd.kind === "local") {
-      setText("");
-      setSlashDismissed(true);
-      if (ta.current) ta.current.style.height = "auto";
-      onLocalCommand?.(cmd.action);
-      return;
-    }
-    const next = `/${cmd.name} `;
-    setText(next);
-    setSlashDismissed(true);
-    requestAnimationFrame(() => {
-      const el = ta.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(next.length, next.length);
-      grow(el);
-    });
-  }
-
   function placeCaret(pos: number) {
     requestAnimationFrame(() => {
       const el = ta.current;
@@ -327,31 +202,6 @@ export function Composer({
       el.setSelectionRange(pos, pos);
       grow(el);
     });
-  }
-
-  function pickMention(i: number) {
-    const action = actions[i];
-    if (!action || !mention) return;
-    // Replace the entire "@token", not just up to the caret — the user may
-    // have moved the cursor back into the middle of it before picking.
-    const end = mentionTokenEnd(text, caret);
-    if (action.kind === "attach") {
-      addPaths([action.path]);
-      // The file lives in the attachment chips, so it never pollutes prose.
-      const next = text.slice(0, mention.start) + text.slice(end);
-      setText(next);
-      setCaret(mention.start);
-      placeCaret(mention.start);
-    } else {
-      // Drill into the directory: rewrite the "@token" to the chosen path so
-      // the next keystroke (or selection) continues from inside it.
-      const inserted = `@${action.query}`;
-      const next = text.slice(0, mention.start) + inserted + text.slice(end);
-      const pos = mention.start + inserted.length;
-      setText(next);
-      setCaret(pos);
-      placeCaret(pos);
-    }
   }
 
   const sendDisabled = stopping
@@ -366,22 +216,7 @@ export function Composer({
           <span>Drop files to attach</span>
         </div>
       )}
-      {slashOpen && (
-        <SlashMenu
-          commands={slashMatches}
-          highlight={slashIndex}
-          onPick={pickSlash}
-          onHighlight={setSlashIndex}
-        />
-      )}
-      {mentionOpen && (
-        <MentionMenu
-          items={rows}
-          highlight={mentionIndex}
-          onPick={pickMention}
-          onHighlight={setMentionIndex}
-        />
-      )}
+      {autocomplete.menu && <AutocompleteMenu {...autocomplete.menu} />}
       {attachments.length > 0 && (
         <AttachmentList
           paths={attachments}
@@ -398,59 +233,11 @@ export function Composer({
         onChange={(e) => {
           setText(e.target.value);
           setCaret(e.target.selectionStart ?? e.target.value.length);
-          setSlashDismissed(false);
-          setMentionDismissed(false);
           grow(e.target);
         }}
         onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
         onKeyDown={(e) => {
-          if (mentionOpen) {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setMentionIndex((i) => (i + 1) % rows.length);
-              return;
-            }
-            if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setMentionIndex((i) => (i - 1 + rows.length) % rows.length);
-              return;
-            }
-            if (e.key === "Enter" || e.key === "Tab") {
-              e.preventDefault();
-              pickMention(mentionIndex);
-              return;
-            }
-            if (e.key === "Escape") {
-              e.preventDefault();
-              setMentionDismissed(true);
-              return;
-            }
-          }
-          if (slashOpen) {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setSlashIndex((i) => (i + 1) % slashMatches.length);
-              return;
-            }
-            if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setSlashIndex(
-                (i) => (i - 1 + slashMatches.length) % slashMatches.length,
-              );
-              return;
-            }
-            if (e.key === "Enter" || e.key === "Tab") {
-              e.preventDefault();
-              const cmd = slashMatches[slashIndex];
-              if (cmd) pickSlash(cmd);
-              return;
-            }
-            if (e.key === "Escape") {
-              e.preventDefault();
-              setSlashDismissed(true);
-              return;
-            }
-          }
+          if (autocomplete.onKeyDown(e)) return;
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             send();

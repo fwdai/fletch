@@ -456,6 +456,22 @@ pub async fn get_pr_state(
     gh::pr_view(&worktree).await
 }
 
+/// List the open PRs for the agent's repo, for the composer's "#" mention
+/// autocomplete. Capped at 50 — the picker filters and shows a handful.
+#[tauri::command]
+pub async fn list_prs(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Vec<gh::PrSummary>> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = record
+        .repos
+        .first()
+        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    gh::pr_list(&worktree, 50).await
+}
+
 /// Fetch the PR merge gate + per-check detail (spec §6). Best-effort: any
 /// failure (no PR, gh missing, API error) returns `None` and the panel falls
 /// back to `mergeable`-only behavior.

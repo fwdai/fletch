@@ -30,6 +30,15 @@ pub struct PrState {
     pub mergeable: bool,
 }
 
+/// Lightweight PR summary for the composer's "#" mention autocomplete —
+/// just enough to list and reference a PR by number.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrSummary {
+    pub number: u32,
+    pub title: String,
+    pub state: PrStatus,
+}
+
 /// GitHub's combined merge gate (`mergeStateStatus`), normalized. This — not
 /// `mergeable` — is what actually decides whether a PR can land (spec §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -137,6 +146,51 @@ pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
 
     let raw: GhPrRaw = serde_json::from_slice(&out.stdout)?;
     Ok(Some(raw.into()))
+}
+
+/// List open PRs for the repo at `worktree` (most-recent first), for the
+/// composer's "#" mention autocomplete.
+pub async fn pr_list(worktree: &Path, limit: u32) -> Result<Vec<PrSummary>> {
+    let out = Command::new("gh")
+        .current_dir(worktree)
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,state",
+            "--limit",
+            &limit.to_string(),
+        ])
+        .output()
+        .await?;
+
+    if !out.status.success() {
+        return Err(Error::Gh(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        number: u32,
+        title: String,
+        state: String,
+    }
+    let raw: Vec<Raw> = serde_json::from_slice(&out.stdout)?;
+    Ok(raw
+        .into_iter()
+        .map(|r| PrSummary {
+            number: r.number,
+            title: r.title,
+            state: match r.state.as_str() {
+                "MERGED" => PrStatus::Merged,
+                "CLOSED" => PrStatus::Closed,
+                _ => PrStatus::Open,
+            },
+        })
+        .collect())
 }
 
 /// Fetch the merge gate + per-check detail for the current branch's PR.

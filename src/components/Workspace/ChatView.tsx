@@ -165,6 +165,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
             api.listWorktreeTree(agent.id).then((files) => files.map((f) => f.path))
           }
           listDir={api.listDir}
+          listPrs={() => api.listPrs(agent.id)}
           onSend={({ text, thinking, attachments }) => send(agent.id, text, attachments, thinking)}
           onStop={() => stop(agent.id)}
         />
