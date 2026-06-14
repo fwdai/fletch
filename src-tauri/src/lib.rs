@@ -199,6 +199,7 @@ pub fn run() {
             commands::detect_run_config,
             commands::list_worktree_tree,
             commands::list_dir,
+            commands::list_prs,
             commands::read_worktree_file,
             commands::get_file_diff,
             commands::write_worktree_file,

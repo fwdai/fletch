@@ -204,6 +204,13 @@ export interface PrStateChangedEvent {
   state: PrState | null;
 }
 
+/** Lightweight PR summary for the composer's "#" mention autocomplete. */
+export interface PrSummary {
+  number: number;
+  title: string;
+  state: PrStatus;
+}
+
 /** GitHub's combined merge gate (`mergeStateStatus`), normalized (spec §6). */
 export type MergeState =
   | "clean"
@@ -417,6 +424,7 @@ export const api = {
   listWorktreeTree: (agentId: string) =>
     invoke<WorktreeFile[]>("list_worktree_tree", { agentId }),
   listDir: (path: string) => invoke<DirListing>("list_dir", { path }),
+  listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),
   readWorktreeFile: (agentId: string, path: string) =>
     invoke<WorktreeFileContents>("read_worktree_file", { agentId, path }),
   getFileDiff: (agentId: string, path: string) =>

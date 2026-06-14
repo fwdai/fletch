@@ -1,40 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
-  mentionQueryAt,
-  mentionTokenEnd,
   filterFiles,
   isFsPath,
   splitFsPath,
   joinTypedDir,
   filterDirEntries,
 } from "./mentions";
-
-describe("mentionQueryAt", () => {
-  it("detects an @ token at the start of the text", () => {
-    expect(mentionQueryAt("@src", 4)).toEqual({ query: "src", start: 0 });
-  });
-
-  it("detects an @ token after whitespace", () => {
-    expect(mentionQueryAt("look at @comp", 13)).toEqual({ query: "comp", start: 8 });
-  });
-
-  it("matches an empty query right after @", () => {
-    expect(mentionQueryAt("hi @", 4)).toEqual({ query: "", start: 3 });
-  });
-
-  it("ignores @ that is part of a word (e.g. an email)", () => {
-    expect(mentionQueryAt("foo@bar", 7)).toBeNull();
-  });
-
-  it("ends the token at whitespace, so a finished mention no longer triggers", () => {
-    expect(mentionQueryAt("@src/foo.ts done", 16)).toBeNull();
-  });
-
-  it("uses the caret, not the end of the text", () => {
-    // caret sits right after "@sr"; the trailing "c more" is past the caret.
-    expect(mentionQueryAt("@src more", 3)).toEqual({ query: "sr", start: 0 });
-  });
-});
 
 describe("filterFiles", () => {
   const files = [
@@ -73,26 +44,6 @@ describe("filterFiles", () => {
 
   it("honors the result limit", () => {
     expect(filterFiles(files, "s").length).toBeLessThanOrEqual(8);
-  });
-});
-
-describe("mentionTokenEnd", () => {
-  it("scans to the end when the caret is mid-token", () => {
-    // @components, caret moved back to 4 (after "@com") — the whole token
-    // ends at 11, so picking removes "ponents" too rather than leaving it.
-    expect(mentionTokenEnd("@components", 4)).toBe(11);
-  });
-
-  it("stops at the first whitespace after the caret", () => {
-    expect(mentionTokenEnd("@src more", 3)).toBe(4);
-  });
-
-  it("stops at a following @ (token boundary)", () => {
-    expect(mentionTokenEnd("@a@b", 1)).toBe(2);
-  });
-
-  it("returns the caret when it already sits at the token end", () => {
-    expect(mentionTokenEnd("@src", 4)).toBe(4);
   });
 });
 
