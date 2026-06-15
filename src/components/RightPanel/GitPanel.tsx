@@ -183,7 +183,6 @@ function StatusHeader({
 function SplitAction({
   items,
   selectedKey,
-  primaryKey,
   tone,
   mainDisabled,
   busyLabel,
@@ -192,7 +191,6 @@ function SplitAction({
 }: {
   items: SplitActionItem[];
   selectedKey: string;
-  primaryKey: string;
   tone: ActionTone;
   mainDisabled: boolean;
   busyLabel: string | null;
@@ -239,7 +237,6 @@ function SplitAction({
               >
                 <div className="di-i"><Icon name={a.icon} size={12} /></div>
                 <span className="di-l">{a.label}</span>
-                {a.key === primaryKey && <span className="di-tag">default</span>}
                 {a.kbd && <span className="di-m">{a.kbd}</span>}
               </div>
             ))}
@@ -937,7 +934,6 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
           <SplitAction
             items={items}
             selectedKey={effectiveKey}
-            primaryKey={primary.key}
             tone={tone}
             mainDisabled={mainDisabled}
             busyLabel={busy ?? (delegation ? "Agent working…" : null)}

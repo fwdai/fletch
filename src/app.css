@@ -1725,16 +1725,9 @@ button { cursor: default; }
 /* menu opens upward from the split button (reuses .dd / .dd-item base) */
 .git-split .gsa-menu {
   bottom: calc(100% + 6px);
-  left: 0; right: auto;
+  left: auto; right: 0;
   width: max-content;
   min-width: 100%;
-}
-.git-split .gsa-menu .di-tag {
-  font-size: 9.5px; font-weight: 600;
-  letter-spacing: 0.04em; text-transform: uppercase;
-  color: var(--accent);
-  padding: 1px 5px; border-radius: 999px;
-  background: color-mix(in oklch, var(--accent), transparent 88%);
 }
 .dd-item.is-disabled { opacity: .45; cursor: default; }
 .dd-item.is-disabled:hover { background: transparent; color: var(--fg-1); }
