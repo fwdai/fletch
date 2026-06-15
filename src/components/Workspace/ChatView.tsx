@@ -187,7 +187,12 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           }
           listDir={api.listDir}
           listPrs={() => api.listPrs(agent.id)}
-          onSend={({ text, thinking, attachments }) => send(agent.id, text, attachments, thinking)}
+          onSend={({ text, thinking, attachments }) => {
+            // Sending is an explicit action: re-pin so the user follows their
+            // own new message even if they'd scrolled up to read history.
+            pinnedToBottom.current = true;
+            send(agent.id, text, attachments, thinking);
+          }}
           onStop={() => stop(agent.id)}
         />
       </div>
