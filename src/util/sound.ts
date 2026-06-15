@@ -9,7 +9,10 @@ let agentDone: HTMLAudioElement | null = null;
  *  a notification sound is never important enough to surface as an error. */
 export function playAgentDone(): void {
   try {
-    if (!agentDone) agentDone = new Audio("/agent_done.mp3");
+    if (!agentDone) {
+      agentDone = new Audio("/agent_done.mp3");
+      agentDone.volume = 0.5;
+    }
     agentDone.currentTime = 0;
     void agentDone.play().catch(() => {});
   } catch {
