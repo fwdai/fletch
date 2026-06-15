@@ -94,6 +94,11 @@ export function registerOutputSink(
 const shellSinks = new Map<string, OutputHandler>();
 const shellBuffers = new Map<string, Uint8Array>();
 
+// Agents the user just stopped. A killed turn may still flush a final `result`
+// event (→ turn_end) as it dies; this set suppresses the completion chime for
+// that one turn_end so a manual stop doesn't sound like a successful finish.
+const interruptedAgents = new Set<string>();
+
 export function getShellBuffer(agentId: string): Uint8Array | undefined {
   return shellBuffers.get(agentId);
 }
@@ -744,8 +749,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         return result.patch;
       });
       // Side effect lives here, at the call-site, rather than inside the pure
-      // updater: chime when an agent turn lands successfully.
-      if (turnEnded) playAgentDone();
+      // updater: chime when an agent turn lands successfully. Skip it if the
+      // user stopped this agent — the turn_end is just the killed process
+      // flushing its final event, not a real completion.
+      if (turnEnded) {
+        // Suppress the chime if this turn_end belongs to a manual stop;
+        // delete returns true when the agent was interrupted.
+        if (!interruptedAgents.delete(e.agent_id)) {
+          playAgentDone();
+        }
+      }
     });
 
     // A turn's transcript was ingested into session_records: replace the
@@ -840,6 +853,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     await onAgentStatus((e) => {
       const ws = get().workspace;
       if (!ws) return;
+      // A new turn starting clears any stale stop-suppression flag: if the
+      // killed process never flushed a turn_end, this ensures the next genuine
+      // completion still chimes.
+      if (e.status === "running") interruptedAgents.delete(e.agent_id);
       const next = {
         ...ws,
         agents: ws.agents.map((a) =>
@@ -1048,9 +1065,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   stop: async (id) => {
+    // Mark this agent as user-stopped so the completion chime is suppressed for
+    // any final turn_end the dying process flushes. Set before the await so it
+    // lands ahead of any event the backend emits in response.
+    interruptedAgents.add(id);
     try {
       await api.stopAgent(id);
     } catch (e) {
+      interruptedAgents.delete(id);
       set({ lastError: String(e) });
     }
   },
