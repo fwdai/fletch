@@ -2383,6 +2383,81 @@ button { cursor: default; }
   color: var(--fg-0);
 }
 
+/* update-ready toast — bottom-right, offers restart now / skip */
+.update-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 360px;
+  padding: 12px 14px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
+  z-index: 500;
+  transform-origin: bottom right;
+  /* Spring-like reveal: rise from below + overshoot past full size, then
+     settle. The back-eased curve gives the "pop". */
+  animation: update-toast-in 0.42s cubic-bezier(0.18, 0.9, 0.32, 1.4) both;
+}
+@keyframes update-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.update-toast > svg {
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  color: var(--accent);
+  flex: none;
+  /* The icon pops in just after the card lands. */
+  animation: update-toast-icon-in 0.5s 0.12s var(--ease) both;
+}
+@keyframes update-toast-icon-in {
+  from { opacity: 0; transform: scale(0.4) rotate(-12deg); }
+  60%  { opacity: 1; transform: scale(1.15) rotate(0deg); }
+  to   { opacity: 1; transform: scale(1) rotate(0deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-toast,
+  .update-toast > svg {
+    animation: none;
+  }
+}
+.update-toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.update-toast-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.update-toast-text strong {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+.update-toast-text span {
+  color: var(--fg-2);
+}
+.update-toast-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 /* scrollbar */
 *::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-track { background: transparent; }

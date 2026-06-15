@@ -356,6 +356,14 @@ interface AppState {
   loadHistoryTranscript: (id: string) => Promise<void>;
   clearError: () => void;
 
+  /** Version string of an update that's been downloaded + staged and is
+   *  waiting for a restart to take effect. `null` = none pending. */
+  updateReadyVersion: string | null;
+  /** Record that an update has been staged (drives the restart toast). */
+  setUpdateReady: (version: string) => void;
+  /** Dismiss the restart toast. The staged update still applies on next launch. */
+  dismissUpdate: () => void;
+
   // drafts
   createDraft: (repoPath: string) => Promise<void>;
   updateDraft: (id: string, patch: Partial<DraftAgent>) => void;
@@ -623,6 +631,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedAgentId: null,
   busy: false,
   lastError: null,
+  updateReadyVersion: null,
   initialized: false,
   managedLogs: {},
   transcriptLoading: {},
@@ -1404,6 +1413,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   clearError: () => set({ lastError: null }),
+
+  setUpdateReady: (version) => set({ updateReadyVersion: version }),
+  dismissUpdate: () => set({ updateReadyVersion: null }),
 
   // ── drafts ─────────────────────────────────────────────────────────────────
   createDraft: async (repoPath) => {
