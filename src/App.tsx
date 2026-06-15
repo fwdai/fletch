@@ -9,6 +9,7 @@ import { Settings } from "./components/Settings";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { Onboarding } from "./components/Onboarding";
 import { History } from "./components/History";
+import { UpdateToast } from "./components/UpdateToast";
 import { useSplitter } from "./util/splitter";
 import { useGlobalShortcuts } from "./util/shortcuts";
 import { usePoll } from "./util/hooks";
@@ -119,6 +120,8 @@ export function App() {
           </button>
         </div>
       )}
+
+      <UpdateToast />
     </div>
   );
 }
