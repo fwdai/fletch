@@ -753,9 +753,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // user stopped this agent — the turn_end is just the killed process
       // flushing its final event, not a real completion.
       if (turnEnded) {
-        if (interruptedAgents.delete(e.agent_id)) {
-          // suppressed: this turn_end belongs to a manual stop
-        } else {
+        // Suppress the chime if this turn_end belongs to a manual stop;
+        // delete returns true when the agent was interrupted.
+        if (!interruptedAgents.delete(e.agent_id)) {
           playAgentDone();
         }
       }
