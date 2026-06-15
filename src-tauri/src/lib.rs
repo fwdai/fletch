@@ -1,5 +1,6 @@
 mod activity;
 mod agent;
+mod bin_resolve;
 mod branding;
 mod commands;
 mod database;

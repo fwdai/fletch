@@ -4,10 +4,29 @@
 //! shells out to `gh` and maps exit-code / stderr to typed errors.
 
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::process::Command;
 
 use crate::error::{Error, Result};
+
+/// A `Command` for the `gh` CLI, resolved to an absolute path.
+///
+/// A GUI app launched from Finder/Dock inherits launchd's minimal PATH, which
+/// omits Homebrew (`/opt/homebrew/bin`) where `gh` is installed — so a bare
+/// `Command::new("gh")` fails with ENOENT ("No such file or directory"). We
+/// resolve the real path once (it may spawn a login shell) and cache it. If
+/// `gh` genuinely isn't installed anywhere we fall back to the bare name, so
+/// the same not-found error still surfaces (e.g. `auth_status` reports it as
+/// not installed).
+fn gh_command() -> Command {
+    static GH_PATH: OnceLock<String> = OnceLock::new();
+    let path = GH_PATH.get_or_init(|| {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        crate::bin_resolve::resolve_bin("gh", &home).unwrap_or_else(|| "gh".to_string())
+    });
+    Command::new(path)
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -130,7 +149,7 @@ impl From<GhPrRaw> for PrState {
 /// Returns `Ok(None)` when `gh` exits non-zero with "no pull requests found"
 /// in stderr (i.e. the branch simply has no open PR yet).
 pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
-    let out = Command::new("gh")
+    let out = gh_command()
         .current_dir(worktree)
         .args(["pr", "view", "--json", "number,url,state,title,mergeable"])
         .output()
@@ -151,7 +170,7 @@ pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
 /// List open PRs for the repo at `worktree` (most-recent first), for the
 /// composer's "#" mention autocomplete.
 pub async fn pr_list(worktree: &Path, limit: u32) -> Result<Vec<PrSummary>> {
-    let out = Command::new("gh")
+    let out = gh_command()
         .current_dir(worktree)
         .args([
             "pr",
@@ -198,7 +217,7 @@ pub async fn pr_list(worktree: &Path, limit: u32) -> Result<Vec<PrSummary>> {
 /// failures surface as `Err` — the command layer treats both as "checks
 /// unavailable" and the panel degrades to `mergeable`-only behavior.
 pub async fn pr_checks(worktree: &Path) -> Result<Option<PrChecks>> {
-    let out = Command::new("gh")
+    let out = gh_command()
         .current_dir(worktree)
         .args(["pr", "view", "--json", "mergeStateStatus,statusCheckRollup"])
         .output()
@@ -341,7 +360,7 @@ pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> 
         args.extend_from_slice(&["--title", title, "--body", body]);
     }
 
-    let out = Command::new("gh")
+    let out = gh_command()
         .current_dir(worktree)
         .args(&args)
         .output()
@@ -372,7 +391,7 @@ pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> 
 /// Merge the open PR for the branch checked out in `worktree` using a merge
 /// commit and the `--auto` flag (merges as soon as all checks pass).
 pub async fn pr_merge(worktree: &Path) -> Result<()> {
-    let out = Command::new("gh")
+    let out = gh_command()
         .current_dir(worktree)
         .args(["pr", "merge", "--merge", "--auto"])
         .output()
@@ -435,7 +454,7 @@ impl From<GhRepoRaw> for GhRepoSummary {
 /// Probe `gh` availability and auth. Never errors — a missing binary or a
 /// logged-out state are reported as fields, not failures.
 pub async fn auth_status() -> Result<GhStatus> {
-    let out = match Command::new("gh").args(["auth", "status"]).output().await {
+    let out = match gh_command().args(["auth", "status"]).output().await {
         Ok(out) => out,
         Err(e) if e.kind() == ErrorKind::NotFound => {
             return Ok(GhStatus { installed: false, authenticated: false, login: None });
@@ -449,7 +468,7 @@ pub async fn auth_status() -> Result<GhStatus> {
     }
 
     // Best-effort login name; never fail the whole probe on it.
-    let login = Command::new("gh")
+    let login = gh_command()
         .args(["api", "user", "--jq", ".login"])
         .output()
         .await
@@ -464,7 +483,7 @@ pub async fn auth_status() -> Result<GhStatus> {
 /// List the authenticated user's repos (most-recently-updated first). The
 /// New Project picker filters this list client-side.
 pub async fn repo_list(limit: u32) -> Result<Vec<GhRepoSummary>> {
-    let out = Command::new("gh")
+    let out = gh_command()
         .args([
             "repo",
             "list",
@@ -492,7 +511,7 @@ pub async fn repo_clone(spec: &str, target: &Path) -> Result<()> {
     let target = target.to_str().ok_or_else(|| {
         Error::InvalidPath(target.display().to_string())
     })?;
-    let out = Command::new("gh")
+    let out = gh_command()
         .args(["repo", "clone", spec, target])
         .output()
         .await?;
@@ -527,7 +546,7 @@ pub async fn repo_create_and_push(
         args.push(desc.to_string());
     }
 
-    let out = Command::new("gh")
+    let out = gh_command()
         .current_dir(target)
         .args(&args)
         .output()
