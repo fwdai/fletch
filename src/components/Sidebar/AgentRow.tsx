@@ -36,6 +36,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const rawTokens = useAppStore((s) => s.tokens[agent.id]);
   const prState = useAppStore((s) => s.prStates[agent.id] ?? null);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
+  const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
   const now = useMinuteClock();
@@ -96,6 +97,13 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
         <span className="ag-slot">
           <span className="ag-meta">
             {working && <span className="ag-loader" aria-label="Working" />}
+            {agent.status === "idle" && !active && unseen && (
+              <span
+                className="ag-unseen tip"
+                data-tip="New results to review"
+                aria-label="New results to review"
+              />
+            )}
             {agent.status === "error" && <span className="ag-badge err">error</span>}
           </span>
           <span className="ag-actions">

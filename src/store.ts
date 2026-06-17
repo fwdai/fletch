@@ -223,6 +223,11 @@ interface AppState {
   managedBusyLabel: Record<string, string | undefined>;
   /** True while a view switch is in flight — disable toggle UI. */
   switchInFlight: Record<string, boolean>;
+  /** True for agents that completed a turn while not focused — drives the
+   *  "new results to review" dot in the sidebar. Set on turn-end for any
+   *  non-selected agent (covers research-only turns with no diff), cleared
+   *  when the agent is selected. */
+  unseenResults: Record<string, boolean>;
   /** Last observed input-token count from the agent's most recent
    *  `result` event. Persists across agents so the right-rail
    *  cost panel can show a stable number after a turn completes. */
@@ -644,6 +649,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   managedBusy: {},
   managedBusyLabel: {},
   switchInFlight: {},
+  unseenResults: {},
   tokens: {},
   gitStates: {},
   gitShortstats: {},
@@ -753,10 +759,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       // user stopped this agent — the turn_end is just the killed process
       // flushing its final event, not a real completion.
       if (turnEnded) {
-        // Suppress the chime if this turn_end belongs to a manual stop;
-        // delete returns true when the agent was interrupted.
+        // `delete` returns true when the agent was interrupted; consume the
+        // flag once and gate both the chime and the unseen-results marker on
+        // a genuine completion (a manual stop is neither).
         if (!interruptedAgents.delete(e.agent_id)) {
           playAgentDone();
+          // Flag results for review on any agent the user isn't currently
+          // looking at — this is the only signal for research-only turns that
+          // leave no diff behind. Cleared when the agent is selected.
+          if (get().selectedAgentId !== e.agent_id) {
+            set((state) => ({
+              unseenResults: { ...state.unseenResults, [e.agent_id]: true },
+            }));
+          }
         }
       }
     });
@@ -917,11 +932,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectAgent: (id) =>
-    set({
-      selectedAgentId: id,
-      activeDraftId: null,
-      historyOpen: false,
-      selectedHistoryAgentId: null,
+    set((state) => {
+      // Focusing an agent marks its results as seen — drop the key entirely
+      // so the map stays minimal and an absent key is the canonical "seen"
+      // state (matching how the component reads it with `?? false`).
+      let unseenResults = state.unseenResults;
+      if (id && id in unseenResults) {
+        const { [id]: _seen, ...rest } = unseenResults;
+        unseenResults = rest;
+      }
+      return {
+        selectedAgentId: id,
+        activeDraftId: null,
+        historyOpen: false,
+        selectedHistoryAgentId: null,
+        unseenResults,
+      };
     }),
 
   addWorkspaceRepo: async (path) => {
