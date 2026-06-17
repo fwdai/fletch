@@ -59,6 +59,11 @@ interface Props {
   /** Lists the repo's open PRs for the "#" mention autocomplete, which
    *  inserts a `#<number>` reference. Omit to disable "#" mentions. */
   listPrs?: () => Promise<PrSummary[]>;
+  /** Text to inject into the input from elsewhere (e.g. the Git panel's
+   *  "→ chat" review-comment action). Appended to whatever is already typed,
+   *  then `onSeedConsumed` fires so the parent can clear it. */
+  seed?: string;
+  onSeedConsumed?: () => void;
   /** True when rendered for an existing agent (ChatView) rather than a new
    *  session (EmptyWorkspace). A provider whose effort is set at spawn
    *  (`effortAtSpawn`, e.g. claude) shows a read-only badge here instead of
@@ -98,6 +103,8 @@ export function Composer({
   mentionSource,
   listDir,
   listPrs,
+  seed,
+  onSeedConsumed,
   existingSession = false,
   initialThinking,
   activeModel,
@@ -170,6 +177,26 @@ export function Composer({
   useEffect(() => {
     if (autoFocus) ta.current?.focus();
   }, [autoFocus]);
+
+  // Apply an externally-supplied seed: append to the current draft (with a
+  // blank-line separator), focus, resize, and notify the parent to clear it.
+  useEffect(() => {
+    if (!seed) return;
+    setText((cur) => {
+      const next = cur.trim() ? `${cur}\n\n${seed}` : seed;
+      requestAnimationFrame(() => {
+        const el = ta.current;
+        if (!el) return;
+        el.focus();
+        grow(el);
+        const end = next.length;
+        el.setSelectionRange(end, end);
+        setCaret(end);
+      });
+      return next;
+    });
+    onSeedConsumed?.();
+  }, [seed, onSeedConsumed]);
 
   function grow(el: HTMLTextAreaElement) {
     el.style.height = "auto";

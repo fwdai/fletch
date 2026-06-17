@@ -16,6 +16,7 @@ import {
   type AgentView,
   type GitState,
   type PrChecks,
+  type PrComments,
   type PrState,
   type SessionRecord,
   type ShortStats,
@@ -254,6 +255,16 @@ interface AppState {
    *  `null` = confirmed unavailable (no PR / gh failure). */
   prChecks: Record<string, PrChecks | null>;
   fetchPrChecks: (agentId: string) => Promise<void>;
+  /** Unresolved PR review comments per agent. Absent = not yet fetched;
+   *  `null` = confirmed unavailable (no PR / gh failure). */
+  prComments: Record<string, PrComments | null>;
+  fetchPrComments: (agentId: string) => Promise<void>;
+  /** Pending text to push into an agent's chat composer (the "→ chat" quick
+   *  action on a review comment). Generic, single-channel: a new seed for an
+   *  agent appends to any unconsumed one. The Composer applies and clears it. */
+  composerSeeds: Record<string, string>;
+  seedComposer: (agentId: string, text: string) => void;
+  consumeComposerSeed: (agentId: string) => void;
   /** Active agent-delegated git action per agent (absent = none). Set when a
    *  panel action hands control to the agent; cleared by the panel when the
    *  watched git/PR transition lands or the agent gives up. */
@@ -655,6 +666,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   gitShortstats: {},
   prStates: {},
   prChecks: {},
+  prComments: {},
+  composerSeeds: {},
   gitDelegations: {},
   gitCommitAction: "agent-commit-pr" as GitCommitAction,
 
@@ -1120,6 +1133,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _droppedShortstats, ...restShortstats } = s.gitShortstats;
         const { [id]: _droppedPrState, ...restPrStates } = s.prStates;
         const { [id]: _droppedChecks, ...restPrChecks } = s.prChecks;
+        const { [id]: _droppedComments, ...restPrComments } = s.prComments;
+        const { [id]: _droppedSeed, ...restComposerSeeds } = s.composerSeeds;
         const { [id]: _droppedDelegation, ...restDelegations } = s.gitDelegations;
         return {
           workspace: fresh,
@@ -1133,6 +1148,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           gitShortstats: restShortstats,
           prStates: restPrStates,
           prChecks: restPrChecks,
+          prComments: restPrComments,
+          composerSeeds: restComposerSeeds,
           gitDelegations: restDelegations,
         };
       });
@@ -1158,6 +1175,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _s, ...restShortstats } = s.gitShortstats;
         const { [id]: _p, ...restPrStates } = s.prStates;
         const { [id]: _c, ...restPrChecks } = s.prChecks;
+        const { [id]: _pc, ...restPrComments } = s.prComments;
+        const { [id]: _cs, ...restComposerSeeds } = s.composerSeeds;
         const { [id]: _d, ...restDelegations } = s.gitDelegations;
         return {
           workspace: fresh ?? s.workspace,
@@ -1171,6 +1190,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           gitShortstats: restShortstats,
           prStates: restPrStates,
           prChecks: restPrChecks,
+          prComments: restPrComments,
+          composerSeeds: restComposerSeeds,
           gitDelegations: restDelegations,
         };
       });
@@ -1288,6 +1309,37 @@ export const useAppStore = create<AppState>((set, get) => ({
           : { prChecks: { ...s.prChecks, [agentId]: null } },
       );
     }
+  },
+
+  fetchPrComments: async (agentId) => {
+    try {
+      const comments = await api.getPrComments(agentId);
+      set((s) => ({ prComments: { ...s.prComments, [agentId]: comments } }));
+    } catch {
+      // Non-fatal — the next poll tick retries. Degrade a first failure to
+      // null (section omitted) rather than leaving the key absent.
+      set((s) =>
+        agentId in s.prComments
+          ? {}
+          : { prComments: { ...s.prComments, [agentId]: null } },
+      );
+    }
+  },
+
+  seedComposer: (agentId, text) => {
+    set((s) => {
+      const pending = s.composerSeeds[agentId];
+      const next = pending ? `${pending}\n\n${text}` : text;
+      return { composerSeeds: { ...s.composerSeeds, [agentId]: next } };
+    });
+  },
+
+  consumeComposerSeed: (agentId) => {
+    set((s) => {
+      if (!(agentId in s.composerSeeds)) return s;
+      const { [agentId]: _dropped, ...rest } = s.composerSeeds;
+      return { composerSeeds: rest };
+    });
   },
 
   delegateGitAction: (agentId, kind, prompt) => {

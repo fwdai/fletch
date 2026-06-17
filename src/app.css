@@ -1735,6 +1735,45 @@ button { cursor: default; }
 }
 .pr-checks-more:hover { color: var(--fg-1); }
 
+/* review comments — same visual language as .pr-checks */
+.pr-comments { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.pr-comments-h {
+  display: flex; align-items: baseline; justify-content: space-between;
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--fg-3); margin-bottom: 2px;
+}
+.pr-comments-sum { color: var(--fg-3); }
+.pr-comment {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 4px; border-radius: 5px; color: var(--fg-2); min-width: 0;
+}
+.pr-comment:hover { background: var(--bg-3); }
+.pr-comment > svg { flex: none; margin-top: 1px; opacity: .7; }
+.pr-comment .pc-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.pr-comment .pc-top {
+  display: flex; align-items: baseline; gap: 6px; min-width: 0;
+  font-size: 11px;
+}
+.pr-comment .pc-author { color: var(--fg-1); font-weight: 500; flex: none; }
+.pr-comment .pc-loc {
+  color: var(--fg-3); font-family: var(--mono, monospace); font-size: 10.5px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pr-comment .pc-replies { color: var(--fg-3); flex: none; margin-left: auto; }
+.pr-comment .pc-text {
+  font-size: 11.5px; color: var(--fg-2); line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pr-comment .pc-acts { display: flex; gap: 2px; flex: none; opacity: 0; }
+.pr-comment:hover .pc-acts { opacity: 1; }
+.pr-comment .pc-act {
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border: 0; border-radius: 5px;
+  background: none; color: var(--fg-3); cursor: pointer;
+}
+.pr-comment .pc-act:hover { background: var(--bg-4, var(--bg-2)); color: var(--fg-1); }
+
 /* menu opens upward from the split button (reuses .dd / .dd-item base) */
 .git-split .gsa-menu {
   bottom: calc(100% + 6px);

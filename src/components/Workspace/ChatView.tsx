@@ -26,6 +26,8 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const send = useAppStore((s) => s.sendUserMessage);
   const stop = useAppStore((s) => s.stop);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
+  const composerSeed = useAppStore((s) => s.composerSeeds[agent.id]);
+  const consumeComposerSeed = useAppStore((s) => s.consumeComposerSeed);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // Whether the chat is "pinned" to the bottom. While true we follow new
@@ -169,6 +171,8 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           }
           listDir={api.listDir}
           listPrs={() => api.listPrs(agent.id)}
+          seed={composerSeed}
+          onSeedConsumed={() => consumeComposerSeed(agent.id)}
           onSend={({ text, thinking, attachments }) => {
             // Sending is an explicit action: re-pin so the user follows their
             // own new message even if they'd scrolled up to read history.
