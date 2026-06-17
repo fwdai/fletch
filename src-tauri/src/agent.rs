@@ -1371,55 +1371,11 @@ fn pi_pty_args(session_id: Option<&str>) -> Vec<String> {
 /// PATH misses), then the usual install dirs. `label` is the
 /// human-facing product name used only in the not-found error.
 fn resolve_agent_bin(name: &str, label: &str, home: &Path) -> Result<String> {
-    if let Some(path) = command_in_path(name) {
-        return Ok(path);
-    }
-    if let Some(path) = command_from_login_shell(name) {
-        return Ok(path);
-    }
-    for candidate in common_bin_paths(name, home) {
-        if candidate.is_file() {
-            return Ok(candidate.to_string_lossy().into_owned());
-        }
-    }
-    Err(Error::Other(format!(
-        "Could not find the `{name}` executable. Install {label} or make it available on PATH."
-    )))
-}
-
-fn common_bin_paths(name: &str, home: &Path) -> Vec<PathBuf> {
-    vec![
-        home.join(format!(".local/bin/{name}")),
-        home.join(format!(".npm-global/bin/{name}")),
-        home.join(format!(".bun/bin/{name}")),
-        PathBuf::from(format!("/opt/homebrew/bin/{name}")),
-        PathBuf::from(format!("/usr/local/bin/{name}")),
-    ]
-}
-
-fn command_in_path(name: &str) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-        .map(|path| path.to_string_lossy().into_owned())
-}
-
-fn command_from_login_shell(name: &str) -> Option<String> {
-    let script = format!("command -v {name}");
-    let out = Command::new("/bin/zsh")
-        .args(["-lc", &script])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if path.is_empty() {
-        None
-    } else {
-        Some(path)
-    }
+    crate::bin_resolve::resolve_bin(name, home).ok_or_else(|| {
+        Error::Other(format!(
+            "Could not find the `{name}` executable. Install {label} or make it available on PATH."
+        ))
+    })
 }
 
 // ── Version probing ───────────────────────────────────────────────────────────

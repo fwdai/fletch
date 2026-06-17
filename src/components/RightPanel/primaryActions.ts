@@ -314,7 +314,7 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
       // whichever is the sticky primary. With a PR open, "open PR" is
       // meaningless (push updates it) and Merge joins the menu.
       return [
-        { key: "agent-commit", label: "Commit", icon: "commit", kbd: "⌘K" },
+        { key: "agent-commit", label: "Commit", icon: "commit" },
         { key: "agent-commit-push", label: "Commit & push", icon: "push" },
         ...(prOpen
           ? [{ key: "merge", label: "Merge PR without changes", icon: "merge" as IconName }]

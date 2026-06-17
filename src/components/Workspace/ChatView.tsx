@@ -46,6 +46,10 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Whether the chat is "pinned" to the bottom. While true we follow new
+  // messages; once the user scrolls up we stop auto-scrolling and leave their
+  // position alone until they scroll back down to the bottom.
+  const pinnedToBottom = useRef(true);
   const hasSession = Boolean(agent.session_id);
   const hasPriorConversation = agent.task.trim().length > 0;
 
@@ -73,10 +77,27 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     transcriptLoading,
   ]);
 
+  // Re-pin to the bottom whenever we switch to a different agent, so each
+  // conversation opens scrolled to its latest message.
+  useEffect(() => {
+    pinnedToBottom.current = true;
+  }, [agent.id]);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // Allow a small slop so the user counts as "at the bottom" even a few
+    // pixels short — sub-pixel rounding and the trailing typing indicator
+    // otherwise make exact equality flaky.
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    pinnedToBottom.current = distanceFromBottom <= 40;
+  };
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     if (transcriptLoading) return;
+    if (!pinnedToBottom.current) return;
     el.scrollTop = el.scrollHeight;
   }, [log, transcriptLoading]);
 
@@ -105,7 +126,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
 
   return (
     <div className="chat">
-      <div className="chat-scroll" ref={scrollRef}>
+      <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
         <div className="chat-inner fade-in" key={agent.id}>
           {transcriptLoading && items.length === 0 ? (
             <div className="writing">
@@ -166,7 +187,12 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           }
           listDir={api.listDir}
           listPrs={() => api.listPrs(agent.id)}
-          onSend={({ text, thinking, attachments }) => send(agent.id, text, attachments, thinking)}
+          onSend={({ text, thinking, attachments }) => {
+            // Sending is an explicit action: re-pin so the user follows their
+            // own new message even if they'd scrolled up to read history.
+            pinnedToBottom.current = true;
+            send(agent.id, text, attachments, thinking);
+          }}
           onStop={() => stop(agent.id)}
         />
       </div>
