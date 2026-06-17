@@ -457,6 +457,19 @@ button { cursor: default; }
   100% { top: -2px; opacity: 1; }
 }
 
+/* unseen-results dot — a turn finished on an agent the user wasn't viewing.
+   Subtle accent dot with a soft halo; the only cue for research-only turns. */
+.ag-unseen {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); flex-shrink: 0;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: agUnseenIn .2s var(--ease);
+}
+@keyframes agUnseenIn {
+  from { transform: scale(.4); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
+}
+
 /* compact status badges (PR state, error, draft) */
 .ag-badge {
   display: inline-flex; align-items: center; gap: 3px;

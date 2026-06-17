@@ -218,6 +218,11 @@ interface AppState {
   managedBusyLabel: Record<string, string | undefined>;
   /** True while a view switch is in flight — disable toggle UI. */
   switchInFlight: Record<string, boolean>;
+  /** True for agents that completed a turn while not focused — drives the
+   *  "new results to review" dot in the sidebar. Set on turn-end for any
+   *  non-selected agent (covers research-only turns with no diff), cleared
+   *  when the agent is selected. */
+  unseenResults: Record<string, boolean>;
   /** Last observed input-token count from the agent's most recent
    *  `result` event. Persists across agents so the right-rail
    *  cost panel can show a stable number after a turn completes. */
@@ -639,6 +644,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   managedBusy: {},
   managedBusyLabel: {},
   switchInFlight: {},
+  unseenResults: {},
   tokens: {},
   gitStates: {},
   gitShortstats: {},
@@ -745,7 +751,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       // Side effect lives here, at the call-site, rather than inside the pure
       // updater: chime when an agent turn lands successfully.
-      if (turnEnded) playAgentDone();
+      if (turnEnded) {
+        playAgentDone();
+        // Flag results for review on any agent the user isn't currently
+        // looking at — this is the only signal for research-only turns that
+        // leave no diff behind. Cleared when the agent is selected.
+        if (get().selectedAgentId !== e.agent_id) {
+          set((state) => ({
+            unseenResults: { ...state.unseenResults, [e.agent_id]: true },
+          }));
+        }
+      }
     });
 
     // A turn's transcript was ingested into session_records: replace the
@@ -900,12 +916,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectAgent: (id) =>
-    set({
+    set((state) => ({
       selectedAgentId: id,
       activeDraftId: null,
       historyOpen: false,
       selectedHistoryAgentId: null,
-    }),
+      // Focusing an agent marks its results as seen.
+      unseenResults: id
+        ? { ...state.unseenResults, [id]: false }
+        : state.unseenResults,
+    })),
 
   addWorkspaceRepo: async (path) => {
     set({ busy: true, lastError: null });
