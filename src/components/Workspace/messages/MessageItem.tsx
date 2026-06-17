@@ -6,6 +6,8 @@ import { pairToolItems, rowKey, type ViewItem } from "./pair";
 import { ToolResultItem } from "./ToolResultItem";
 import { ToolRow } from "./ToolRow";
 import { getPresenter } from "./presenters";
+import { UserInput } from "./UserInput";
+import { isUserInputTool } from "./UserInput/parse";
 import { AttachmentList } from "../../Composer/AttachmentList";
 import { stripInjectedInstructions } from "../../../util/instructions";
 import { APP_ACTION_PREFIX } from "../../RightPanel/delegation";
@@ -13,13 +15,16 @@ import { APP_ACTION_PREFIX } from "../../RightPanel/delegation";
 /** Dispatcher for one rendered row. Accepts either a raw ChatItem or
  *  the derived `tool_pair` from pairToolItems(). `provider` carries the
  *  agent's adapter id down so nested subagent threads filter/pair their
- *  rows with the same display policy as the main log. */
+ *  rows with the same display policy as the main log. `agentId` lets the
+ *  user-input widget route its answer back to this agent's stdin. */
 export function MessageItem({
   item,
   provider,
+  agentId,
 }: {
   item: ViewItem;
   provider?: string;
+  agentId?: string;
 }) {
   switch (item.kind) {
     case "user_message":
@@ -52,6 +57,16 @@ export function MessageItem({
         </div>
       );
     case "tool_pair": {
+      if (isUserInputTool(item.call.name)) {
+        return (
+          <UserInput
+            tool={item.call.name}
+            call={item.call}
+            result={item.result}
+            agentId={agentId}
+          />
+        );
+      }
       const presenter = getPresenter(item.call.name);
       const children = item.call.children ?? [];
       return (
@@ -64,7 +79,11 @@ export function MessageItem({
             <>
               {presenter.expanded(item.call, item.result)}
               {children.length > 0 && (
-                <SubagentThread items={children} provider={provider} />
+                <SubagentThread
+                  items={children}
+                  provider={provider}
+                  agentId={agentId}
+                />
               )}
             </>
           }
@@ -75,6 +94,11 @@ export function MessageItem({
       // Bare tool_call without pairing — happens only if the caller
       // bypasses pairToolItems(). Render through the presenter anyway,
       // with a null result.
+      if (isUserInputTool(item.name)) {
+        return (
+          <UserInput tool={item.name} call={item} result={null} agentId={agentId} />
+        );
+      }
       const presenter = getPresenter(item.name);
       return (
         <ToolRow
@@ -100,9 +124,11 @@ export function MessageItem({
 function SubagentThread({
   items,
   provider,
+  agentId,
 }: {
   items: ChatItem[];
   provider?: string;
+  agentId?: string;
 }) {
   // Re-derive only when the children or provider change — not on every parent
   // re-render (e.g. a streaming token elsewhere in the main log).
@@ -120,7 +146,12 @@ function SubagentThread({
       }}
     >
       {rows.map((row, i) => (
-        <MessageItem key={rowKey(row, i)} item={row} provider={provider} />
+        <MessageItem
+          key={rowKey(row, i)}
+          item={row}
+          provider={provider}
+          agentId={agentId}
+        />
       ))}
     </div>
   );

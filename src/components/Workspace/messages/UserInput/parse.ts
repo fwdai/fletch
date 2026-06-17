@@ -1,0 +1,158 @@
+// Normalizes the two Claude tools that pause to ask the user — `AskUserQuestion`
+// (structured multiple-choice) and `ExitPlanMode` (plan approval) — into one
+// model the widget renders, plus the inverse: turning the user's picks back
+// into the `tool_result` text we feed to Claude's stdin to unblock the turn.
+//
+// Only Claude surfaces these in the custom-view JSON stream today; every other
+// provider Quorum drives runs fully auto-approved (see the adapter map). The
+// model is provider-agnostic, so any tool reported under these names renders
+// the widget without per-adapter branching.
+
+export const USER_INPUT_TOOLS = ["AskUserQuestion", "ExitPlanMode"] as const;
+export type UserInputTool = (typeof USER_INPUT_TOOLS)[number];
+
+export function isUserInputTool(name: string): name is UserInputTool {
+  return (USER_INPUT_TOOLS as readonly string[]).includes(name);
+}
+
+export interface UIOption {
+  id: string;
+  label: string;
+  desc?: string;
+  recommended?: boolean;
+}
+
+export interface UIQuestion {
+  id: string;
+  /** Short context tag shown in the card header (AskUserQuestion `header`). */
+  header?: string;
+  /** The question text itself. */
+  prompt: string;
+  /** Optional markdown body shown above the options (the ExitPlanMode plan). */
+  body?: string;
+  options: UIOption[];
+  multiSelect: boolean;
+  /** Whether to offer the free-text "Something else…" escape hatch. */
+  allowOther: boolean;
+}
+
+export interface UserInputModel {
+  tool: UserInputTool;
+  questions: UIQuestion[];
+}
+
+/** One answer per question: the chosen option labels (one unless multiSelect),
+ *  or free-text when the user took the "Something else…" path. */
+export interface UIAnswer {
+  labels: string[];
+  /** True when the labels came from the free-text composer, not an option. */
+  isOther: boolean;
+}
+
+function asRecord(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+
+function asString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
+function parseOptions(raw: unknown): UIOption[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((o, i) => {
+    const r = asRecord(o);
+    return {
+      id: asString(r.id) ?? `opt-${i}`,
+      label: asString(r.label) ?? asString(r.title) ?? `Option ${i + 1}`,
+      desc: asString(r.description) ?? asString(r.desc),
+      recommended: r.recommended === true,
+    };
+  });
+}
+
+function parseAskUserQuestion(input: Record<string, unknown>): UIQuestion[] {
+  const raw = Array.isArray(input.questions) ? input.questions : [];
+  const questions = raw.map((q, i): UIQuestion => {
+    const r = asRecord(q);
+    return {
+      id: asString(r.id) ?? `q-${i}`,
+      header: asString(r.header),
+      prompt: asString(r.question) ?? asString(r.prompt) ?? "",
+      options: parseOptions(r.options),
+      multiSelect: r.multiSelect === true,
+      allowOther: true,
+    };
+  });
+  // Defensive fallback: a flat {question, options} shape with no `questions[]`.
+  if (questions.length === 0 && (input.question || input.options)) {
+    return [
+      {
+        id: "q-0",
+        header: asString(input.header),
+        prompt: asString(input.question) ?? "",
+        options: parseOptions(input.options),
+        multiSelect: input.multiSelect === true,
+        allowOther: true,
+      },
+    ];
+  }
+  return questions;
+}
+
+function parseExitPlanMode(input: Record<string, unknown>): UIQuestion[] {
+  const plan = asString(input.plan) ?? "";
+  return [
+    {
+      id: "plan",
+      header: "Plan review",
+      prompt: "Ready to proceed with this plan?",
+      body: plan || undefined,
+      options: [
+        { id: "approve", label: "Approve & proceed", recommended: true },
+        { id: "reject", label: "Keep planning" },
+      ],
+      multiSelect: false,
+      allowOther: true,
+    },
+  ];
+}
+
+export function parseUserInput(
+  tool: UserInputTool,
+  rawInput: unknown,
+): UserInputModel {
+  const input = asRecord(rawInput);
+  const questions =
+    tool === "ExitPlanMode"
+      ? parseExitPlanMode(input)
+      : parseAskUserQuestion(input);
+  return { tool, questions };
+}
+
+/** Build the `tool_result` text sent back to Claude from the collected answers.
+ *  Single-question calls send just the answer; multi-question calls label each
+ *  line with its header/prompt so the model can tell them apart. */
+export function formatToolResult(
+  model: UserInputModel,
+  answers: UIAnswer[],
+): string {
+  if (model.tool === "ExitPlanMode") {
+    const a = answers[0];
+    const picked = a?.labels[0] ?? "";
+    if (a?.isOther) {
+      return `Not yet — keep planning. ${a.labels.join(" ")}`.trim();
+    }
+    return picked === "Approve & proceed"
+      ? "Approved. Proceed with the plan."
+      : "Not yet — keep planning.";
+  }
+
+  const lines = model.questions.map((q, i) => {
+    const a = answers[i];
+    const value = a ? a.labels.join(", ") : "";
+    if (model.questions.length === 1) return value;
+    const tag = q.header || q.prompt;
+    return `${tag}: ${value}`;
+  });
+  return lines.join("\n");
+}

@@ -162,13 +162,36 @@ impl ManagedSession {
         for path in attachments {
             content.push(json!({"type": "text", "text": format!("Attached file: {path}")}));
         }
-        let envelope = json!({
+        self.write_envelope(json!({
             "type": "user",
             "message": {
                 "role": "user",
                 "content": content
             }
-        });
+        }))
+    }
+
+    /// Answer a tool the agent paused on (Claude's `AskUserQuestion` /
+    /// `ExitPlanMode`) by writing a `tool_result` block keyed to its
+    /// `tool_use_id`. In stream-json mode the SDK leaves the tool_use open
+    /// until this arrives, so a plain user message would not unblock the turn.
+    pub fn send_tool_result(&self, tool_use_id: &str, content: &str) -> Result<()> {
+        self.write_envelope(json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content,
+                }]
+            }
+        }))
+    }
+
+    /// Serialize one stream-json envelope as a newline-delimited line to the
+    /// agent's stdin.
+    fn write_envelope(&self, envelope: serde_json::Value) -> Result<()> {
         let mut line = envelope.to_string();
         line.push('\n');
 

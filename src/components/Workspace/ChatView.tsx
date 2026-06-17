@@ -6,6 +6,7 @@ import { providerLabel } from "../../data/providers";
 import { Composer } from "../Composer";
 import { MessageItem } from "./messages/MessageItem";
 import { pairToolItems, rowKey } from "./messages/pair";
+import { isUserInputTool } from "./messages/UserInput/parse";
 
 /** Custom-view body: scrolling chat log + composer at the bottom.
  *  The composer here dispatches the user's message via the store; it
@@ -100,6 +101,19 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     }
     return undefined;
   }, [items]);
+  // When the last row is an unanswered user-input widget, the agent is paused
+  // on that tool waiting for the user — not working — so suppress the
+  // "is thinking" spinner (the widget itself signals it's the user's turn).
+  const awaitingInput = useMemo(() => {
+    const last = items[items.length - 1];
+    return Boolean(
+      last &&
+        last.kind === "tool_pair" &&
+        isUserInputTool(last.call.name) &&
+        !last.result,
+    );
+  }, [items]);
+
   const canSend =
     !transcriptLoading &&
     !switchInFlight &&
@@ -130,10 +144,15 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
             </div>
           ) : (
             items.map((item, i) => (
-              <MessageItem key={rowKey(item, i)} item={item} provider={agent.provider} />
+              <MessageItem
+                key={rowKey(item, i)}
+                item={item}
+                provider={agent.provider}
+                agentId={agent.id}
+              />
             ))
           )}
-          {busy && (
+          {busy && !awaitingInput && (
             <div className="writing">
               <span className="dots">
                 <i /><i /><i />

@@ -180,6 +180,18 @@ pub fn send_user_message(
 }
 
 #[tauri::command]
+pub fn send_tool_result(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    tool_use_id: String,
+    content: String,
+) -> Result<()> {
+    supervisor
+        .inner()
+        .send_tool_result(&agent_id, &tool_use_id, &content)
+}
+
+#[tauri::command]
 pub fn resize_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
