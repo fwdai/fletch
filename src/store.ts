@@ -932,16 +932,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectAgent: (id) =>
-    set((state) => ({
-      selectedAgentId: id,
-      activeDraftId: null,
-      historyOpen: false,
-      selectedHistoryAgentId: null,
-      // Focusing an agent marks its results as seen.
-      unseenResults: id
-        ? { ...state.unseenResults, [id]: false }
-        : state.unseenResults,
-    })),
+    set((state) => {
+      // Focusing an agent marks its results as seen — drop the key entirely
+      // so the map stays minimal and an absent key is the canonical "seen"
+      // state (matching how the component reads it with `?? false`).
+      let unseenResults = state.unseenResults;
+      if (id && id in unseenResults) {
+        const { [id]: _seen, ...rest } = unseenResults;
+        unseenResults = rest;
+      }
+      return {
+        selectedAgentId: id,
+        activeDraftId: null,
+        historyOpen: false,
+        selectedHistoryAgentId: null,
+        unseenResults,
+      };
+    }),
 
   addWorkspaceRepo: async (path) => {
     set({ busy: true, lastError: null });

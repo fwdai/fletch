@@ -97,7 +97,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
         <span className="ag-slot">
           <span className="ag-meta">
             {working && <span className="ag-loader" aria-label="Working" />}
-            {!working && !active && unseen && (
+            {agent.status === "idle" && !active && unseen && (
               <span
                 className="ag-unseen tip"
                 data-tip="New results to review"
