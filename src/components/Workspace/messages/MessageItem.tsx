@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Markdown } from "../../Markdown";
 import type { ChatItem } from "../../../store";
 import { applyPolicy, getAdapter } from "../../../adapters";
@@ -103,8 +104,12 @@ function SubagentThread({
   items: ChatItem[];
   provider?: string;
 }) {
-  const adapter = getAdapter(provider);
-  const rows = pairToolItems(applyPolicy(items, adapter.policy));
+  // Re-derive only when the children or provider change — not on every parent
+  // re-render (e.g. a streaming token elsewhere in the main log).
+  const rows = useMemo(
+    () => pairToolItems(applyPolicy(items, getAdapter(provider).policy)),
+    [items, provider],
+  );
   if (rows.length === 0) return null;
   return (
     <div

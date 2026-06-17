@@ -276,6 +276,49 @@ describe("claudeAdapter.reduce — subagent sidechain routing", () => {
     }
   });
 
+  it("routes streaming tool_use deltas into the children slice", () => {
+    const items = reduceAll([
+      spawn,
+      // The subagent's tool call streams in: content_block_start opens it,
+      // input_json_delta fills its input — both tagged with the parent id, so
+      // upsertToolCall / appendToolInputDelta must operate on the children
+      // slice (positional index 0 there), not the main items list.
+      {
+        type: "stream_event",
+        parent_tool_use_id: "toolu_task",
+        event: {
+          type: "content_block_start",
+          content_block: { type: "tool_use", id: "toolu_child", name: "Read", input: "" },
+        },
+      },
+      {
+        type: "stream_event",
+        parent_tool_use_id: "toolu_task",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: '{"path":"/x"}' },
+        },
+      },
+    ] as RawEvent[]);
+
+    // Main timeline holds only the spawning Agent call.
+    expect(items.map((i) => i.kind)).toEqual(["tool_call"]);
+    const call = items[0];
+    expect(call.kind).toBe("tool_call");
+    if (call.kind === "tool_call") {
+      expect(call.children).toEqual([
+        {
+          kind: "tool_call",
+          id: "toolu_child",
+          name: "Read",
+          input: '{"path":"/x"}',
+          streaming: true,
+        },
+      ]);
+    }
+  });
+
   it("drops a sidechain event whose parent tool_call hasn't arrived yet", () => {
     const items = reduceAll([
       {
