@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { api, type AgentRecord } from "../../api";
 import { useAppStore } from "../../store";
 import { applyPolicy, getAdapter } from "../../adapters";
@@ -28,6 +28,13 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
   const composerSeed = useAppStore((s) => s.composerSeeds[agent.id]);
   const consumeComposerSeed = useAppStore((s) => s.consumeComposerSeed);
+  // Stable identity: the Composer's seed effect lists this in its deps, so an
+  // inline arrow would re-fire it on every ChatView render (and double-append
+  // under StrictMode's double-invoked effects).
+  const onSeedConsumed = useCallback(
+    () => consumeComposerSeed(agent.id),
+    [agent.id, consumeComposerSeed],
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // Whether the chat is "pinned" to the bottom. While true we follow new
@@ -172,7 +179,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           listDir={api.listDir}
           listPrs={() => api.listPrs(agent.id)}
           seed={composerSeed}
-          onSeedConsumed={() => consumeComposerSeed(agent.id)}
+          onSeedConsumed={onSeedConsumed}
           onSend={({ text, thinking, attachments }) => {
             // Sending is an explicit action: re-pin so the user follows their
             // own new message even if they'd scrolled up to read history.

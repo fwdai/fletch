@@ -1766,7 +1766,8 @@ button { cursor: default; }
   overflow: hidden;
 }
 .pr-comment .pc-acts { display: flex; gap: 2px; flex: none; opacity: 0; }
-.pr-comment:hover .pc-acts { opacity: 1; }
+.pr-comment:hover .pc-acts,
+.pr-comment:focus-within .pc-acts { opacity: 1; }
 .pr-comment .pc-act {
   display: flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; border: 0; border-radius: 5px;
