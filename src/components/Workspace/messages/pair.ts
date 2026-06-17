@@ -39,3 +39,21 @@ export function pairToolItems(items: ChatItem[]): ViewItem[] {
 
   return out;
 }
+
+/** Stable React key for a rendered row. Tool pairs/results key off their tool
+ *  id so a row's expand state stays anchored to the tool rather than to a list
+ *  position. Messages and notices have no id and the log is append-only, so
+ *  their array index is a stable key — and keying them by text would remount on
+ *  every streaming token. */
+export function rowKey(item: ViewItem, index: number): string {
+  switch (item.kind) {
+    case "tool_pair":
+      return item.call.id ? `tp:${item.call.id}` : `i:${index}`;
+    // No `tool_call` case: pairToolItems wraps every tool_call into a
+    // tool_pair, so only orphan tool_results reach here standalone.
+    case "tool_result":
+      return item.tool_use_id ? `tr:${item.tool_use_id}` : `i:${index}`;
+    default:
+      return `i:${index}`;
+  }
+}
