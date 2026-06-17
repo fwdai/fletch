@@ -18,6 +18,15 @@ import { contentText } from "./content";
 import { sanitizeUserText } from "./sanitize";
 
 export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
+  // Subagent (sidechain) events are tagged with the parent Task/Agent
+  // tool_use id; route them under that tool_call's nested log instead of the
+  // main timeline. Main-agent events have no parent and reduce normally.
+  const parentId = parentToolUseId(ev);
+  if (parentId) return routeToChild(prev, parentId, ev);
+  return reduceTop(prev, ev);
+}
+
+function reduceTop(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const type = typeof ev.type === "string" ? ev.type : undefined;
 
   if (type === "stream_event") return handleStreamEvent(prev, ev);
@@ -25,6 +34,47 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   if (type === "user") return handleUser(prev, ev);
   if (type === "result") return handleResult(prev, ev);
   return prev;
+}
+
+/** Claude's stream-json tags every event belonging to a subagent with the
+ *  spawning Task/Agent tool_use id (top-level `parent_tool_use_id`, set on
+ *  user/assistant/result/stream_event envelopes alike). Null/absent for the
+ *  main agent. */
+function parentToolUseId(ev: RawEvent): string | null {
+  const v = ev.parent_tool_use_id;
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/** Fold a sidechain event into the children of the tool_call it belongs to,
+ *  reducing it there with the same top-level logic. Searches nested
+ *  tool_calls so a subagent that itself spawns a subagent threads correctly.
+ *  If the parent tool_call isn't present yet (ordering race), returns `items`
+ *  unchanged — the event is dropped rather than leaked into the main log. */
+function routeToChild(
+  items: ChatItem[],
+  parentId: string,
+  ev: RawEvent,
+): ChatItem[] {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const it = items[i];
+    if (it.kind !== "tool_call") continue;
+    if (it.id === parentId) {
+      const next = items.slice();
+      next[i] = { ...it, children: reduceTop(it.children ?? [], ev) };
+      return next;
+    }
+    if (it.children && it.children.length > 0) {
+      const updated = routeToChild(it.children, parentId, ev);
+      // routeToChild returns the same array reference when it finds no match,
+      // so an identity change means the parent lived inside these children.
+      if (updated !== it.children) {
+        const next = items.slice();
+        next[i] = { ...it, children: updated };
+        return next;
+      }
+    }
+  }
+  return items;
 }
 
 function handleStreamEvent(prev: ChatItem[], ev: RawEvent): ChatItem[] {

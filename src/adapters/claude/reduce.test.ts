@@ -222,3 +222,103 @@ describe("claudeAdapter.reduce — model", () => {
     ]);
   });
 });
+
+describe("claudeAdapter.reduce — subagent sidechain routing", () => {
+  const spawn: RawEvent = {
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_task",
+          name: "Agent",
+          input: { subagent_type: "Explore", description: "look", prompt: "go" },
+        },
+      ],
+    },
+  };
+
+  it("nests sidechain events under the spawning tool_call, not the main log", () => {
+    const items = reduceAll([
+      spawn,
+      // The subagent's own turns, tagged with the parent Task tool_use id.
+      {
+        type: "user",
+        parent_tool_use_id: "toolu_task",
+        message: { role: "user", content: "go" },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: "toolu_task",
+        message: { role: "assistant", content: [{ type: "text", text: "found it" }] },
+      },
+      // The Task's own result rides on a main-level user message (no parent).
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_task", content: "done" }],
+        },
+      },
+    ] as RawEvent[]);
+
+    // Main timeline holds only the tool_call and its result — no stray
+    // user/agent bubbles from the subagent.
+    expect(items.map((i) => i.kind)).toEqual(["tool_call", "tool_result"]);
+    const call = items[0];
+    expect(call.kind).toBe("tool_call");
+    if (call.kind === "tool_call") {
+      expect(call.children).toEqual([
+        { kind: "user_message", text: "go" },
+        { kind: "agent_message", text: "found it", streaming: false },
+      ]);
+    }
+  });
+
+  it("drops a sidechain event whose parent tool_call hasn't arrived yet", () => {
+    const items = reduceAll([
+      {
+        type: "user",
+        parent_tool_use_id: "toolu_missing",
+        message: { role: "user", content: "orphan" },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([]);
+  });
+
+  it("threads a nested subagent under its parent subagent", () => {
+    const items = reduceAll([
+      spawn,
+      // The outer subagent spawns its own Task.
+      {
+        type: "assistant",
+        parent_tool_use_id: "toolu_task",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_inner", name: "Agent", input: {} },
+          ],
+        },
+      },
+      // The inner subagent's turn references the inner tool_use id.
+      {
+        type: "assistant",
+        parent_tool_use_id: "toolu_inner",
+        message: { role: "assistant", content: [{ type: "text", text: "deep" }] },
+      },
+    ] as RawEvent[]);
+
+    const outer = items[0];
+    expect(outer.kind).toBe("tool_call");
+    if (outer.kind === "tool_call") {
+      const inner = outer.children?.[0];
+      expect(inner?.kind).toBe("tool_call");
+      if (inner?.kind === "tool_call") {
+        expect(inner.children).toEqual([
+          { kind: "agent_message", text: "deep", streaming: false },
+        ]);
+      }
+    }
+  });
+});

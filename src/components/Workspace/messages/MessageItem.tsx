@@ -1,6 +1,7 @@
 import { Markdown } from "../../Markdown";
 import type { ChatItem } from "../../../store";
-import type { ViewItem } from "./pair";
+import { applyPolicy, getAdapter } from "../../../adapters";
+import { pairToolItems, rowKey, type ViewItem } from "./pair";
 import { ToolResultItem } from "./ToolResultItem";
 import { ToolRow } from "./ToolRow";
 import { getPresenter } from "./presenters";
@@ -9,8 +10,16 @@ import { stripInjectedInstructions } from "../../../util/instructions";
 import { APP_ACTION_PREFIX } from "../../RightPanel/delegation";
 
 /** Dispatcher for one rendered row. Accepts either a raw ChatItem or
- *  the derived `tool_pair` from pairToolItems(). */
-export function MessageItem({ item }: { item: ViewItem }) {
+ *  the derived `tool_pair` from pairToolItems(). `provider` carries the
+ *  agent's adapter id down so nested subagent threads filter/pair their
+ *  rows with the same display policy as the main log. */
+export function MessageItem({
+  item,
+  provider,
+}: {
+  item: ViewItem;
+  provider?: string;
+}) {
   switch (item.kind) {
     case "user_message":
       // App-sent git-action triggers fold into a quiet chip (like slash
@@ -43,13 +52,21 @@ export function MessageItem({ item }: { item: ViewItem }) {
       );
     case "tool_pair": {
       const presenter = getPresenter(item.call.name);
+      const children = item.call.children ?? [];
       return (
         <ToolRow
           name={item.call.name}
           icon={presenter.icon}
           isError={item.result?.is_error}
           summary={presenter.summary(item.call, item.result)}
-          expanded={presenter.expanded(item.call, item.result)}
+          expanded={
+            <>
+              {presenter.expanded(item.call, item.result)}
+              {children.length > 0 && (
+                <SubagentThread items={children} provider={provider} />
+              )}
+            </>
+          }
         />
       );
     }
@@ -72,6 +89,36 @@ export function MessageItem({ item }: { item: ViewItem }) {
     case "notice":
       return <NoticeView item={item} />;
   }
+}
+
+/** A subagent's threaded sub-conversation, rendered inside its spawning
+ *  tool row's expanded body. Runs the children through the same
+ *  policy → pairing → MessageItem pipeline as the main log (so tool calls
+ *  pair with their results and hidden notices stay hidden), nested under a
+ *  quiet left rail. Recurses for subagents that spawn their own subagents. */
+function SubagentThread({
+  items,
+  provider,
+}: {
+  items: ChatItem[];
+  provider?: string;
+}) {
+  const adapter = getAdapter(provider);
+  const rows = pairToolItems(applyPolicy(items, adapter.policy));
+  if (rows.length === 0) return null;
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        paddingLeft: 12,
+        borderLeft: "2px solid var(--accent-line)",
+      }}
+    >
+      {rows.map((row, i) => (
+        <MessageItem key={rowKey(row, i)} item={row} provider={provider} />
+      ))}
+    </div>
+  );
 }
 
 function NoticeView({
