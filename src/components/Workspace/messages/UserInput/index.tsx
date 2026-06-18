@@ -78,6 +78,28 @@ export function UserInput({
 
   if (model.questions.length === 0) return null;
 
+  // Interrupted: an is_error result with no live prompt means the user hit Stop
+  // (the held prompt was denied) — or it's an old pre-feature auto-deny. Either
+  // way the agent is no longer waiting, so show a quiet "Dismissed" state rather
+  // than answerable options that would imply it still is.
+  if (!committedLocally && result?.is_error && !pendingRequestId) {
+    return (
+      <div className="m-q is-dismissed">
+        <div className="q-head">
+          <span className="q-label dismissed">
+            <Icon name="close" size={11} /> Dismissed
+          </span>
+        </div>
+        {model.questions.map((q) => (
+          <div key={q.id} className="q-prompt resolved">
+            {q.prompt}
+          </div>
+        ))}
+        <div className="q-dismissed-note">Not answered — you stopped the agent.</div>
+      </div>
+    );
+  }
+
   // Resolved purely from the transcript (the widget was rebuilt after the turn
   // completed): the CLI's `is_error` auto-rejection is NOT a real answer, so we
   // only treat a genuine result as resolved. Reconstruct the structured answers
