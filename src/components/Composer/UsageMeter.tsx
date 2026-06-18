@@ -13,10 +13,10 @@ import { formatTokens, formatCost } from "../../util/format";
 export function UsageMeter({ usage }: { usage: AgentUsage }) {
   const [open, setOpen] = useState(false);
 
-  const window = usage.contextWindow || DEFAULT_CONTEXT_WINDOW;
+  const contextWindow = usage.contextWindow || DEFAULT_CONTEXT_WINDOW;
   const used = usage.contextTokens;
-  const free = Math.max(0, window - used);
-  const pct = Math.min(100, Math.round((used / window) * 100));
+  const free = Math.max(0, contextWindow - used);
+  const pct = Math.min(100, Math.round((used / contextWindow) * 100));
 
   const segments = [
     { key: "cacheRead", label: "Cache read", tokens: usage.contextCacheRead, color: "var(--accent)" },
@@ -55,7 +55,7 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
           <div className="up-head">
             <span className="up-title">Context window</span>
             <span className="up-frac">
-              <b>{formatTokens(used)}</b> / {formatTokens(window)}
+              <b>{formatTokens(used)}</b> / {formatTokens(contextWindow)}
             </span>
           </div>
 

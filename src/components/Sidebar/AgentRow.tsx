@@ -56,7 +56,10 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
     contextTokens: hasUsage ? usage!.contextTokens : null,
     contextWindow,
     contextPct: hasUsage ? contextPct(usage!.contextTokens, contextWindow) : 0,
-    totalInput: usage ? usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens : null,
+    // Fresh input only — matching the composer gauge. Cumulative cache read
+    // balloons (the same cached prefix re-read every turn) and is misleading
+    // as a session "input" total.
+    totalInput: usage ? usage.inputTokens : null,
     totalOutput: usage ? usage.outputTokens : null,
     costUsd: usage ? usage.costUsd : null,
   };
