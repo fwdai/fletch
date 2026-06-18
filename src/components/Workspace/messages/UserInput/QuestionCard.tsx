@@ -32,6 +32,11 @@ export function QuestionCard({
 
   const answerOne = (option: UIQuestion["options"][number]) =>
     onAnswer({ labels: [option.label], optionIds: [option.id], isOther: false });
+  // Keep the keydown listener (below) pointed at the current answer handler
+  // without re-subscribing on every render: `onAnswer` is a fresh closure each
+  // parent render and closes over the parent's latest answers/committed state.
+  const answerOneRef = useRef(answerOne);
+  answerOneRef.current = answerOne;
   const confirmMulti = () => {
     if (picks.size === 0) return;
     onAnswer({
@@ -56,12 +61,11 @@ export function QuestionCard({
       const n = Number.parseInt(e.key, 10);
       if (n >= 1 && n <= opts.length) {
         e.preventDefault();
-        answerOne(opts[n - 1]);
+        answerOneRef.current(opts[n - 1]);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [committed, total, question.multiSelect, opts]);
 
   useEffect(() => {
