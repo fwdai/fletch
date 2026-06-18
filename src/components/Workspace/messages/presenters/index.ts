@@ -7,6 +7,7 @@ import { multiEditPresenter } from "./MultiEdit";
 import { writePresenter } from "./Write";
 import { grepPresenter } from "./Grep";
 import { globPresenter } from "./Glob";
+import { taskCreatePresenter } from "./TaskCreate";
 import { defaultPresenter } from "./default";
 
 export type { ToolPresenter, ToolCall, ToolResult } from "./types";
@@ -22,6 +23,7 @@ export const PRESENTERS: Record<string, ToolPresenter> = {
   Write: writePresenter,
   Grep: grepPresenter,
   Glob: globPresenter,
+  TaskCreate: taskCreatePresenter,
 };
 
 // Look up on the lowercased tool name so adapters that report the same tool
