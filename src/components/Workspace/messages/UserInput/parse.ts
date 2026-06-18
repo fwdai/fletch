@@ -129,6 +129,34 @@ export function parseUserInput(
   return { tool, questions };
 }
 
+/** Reconstruct per-question answers from the tool_result the CLI writes once an
+ *  AskUserQuestion is answered — format: `… "Question"="Answer", "Q2"="A2". …`.
+ *  Lets a widget rebuilt from the transcript show the same clean answer chips as
+ *  the live session, instead of the raw sentence. Returns one entry per question
+ *  (null where unmatched), or null if nothing parsed. An answer that isn't one
+ *  of the question's option labels is flagged `isOther` (free text). */
+export function answersFromResultText(
+  model: UserInputModel,
+  text: string,
+): (UIAnswer | null)[] | null {
+  const pairs: Record<string, string> = {};
+  const re = /"([^"]+)"\s*=\s*"([^"]*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) pairs[m[1]] = m[2];
+
+  let matched = false;
+  const answers = model.questions.map((q): UIAnswer | null => {
+    const value = pairs[q.prompt];
+    if (value == null) return null;
+    matched = true;
+    return {
+      labels: [value],
+      isOther: !q.options.some((o) => o.label === value),
+    };
+  });
+  return matched ? answers : null;
+}
+
 /** Build the `answers` map for an `AskUserQuestion` tool result: keys are the
  *  original question text, values the chosen option label(s) (an array for
  *  multiSelect, the user's free text for an "other" answer). This is merged

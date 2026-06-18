@@ -4,6 +4,7 @@ import {
   parseUserInput,
   formatAnswer,
   buildAnswers,
+  answersFromResultText,
   type UIAnswer,
 } from "./parse";
 
@@ -134,6 +135,35 @@ describe("formatAnswer", () => {
       { labels: ["Use a queue instead"], isOther: true },
     ]);
     expect(out).toBe("Not yet — keep planning. Use a queue instead");
+  });
+});
+
+describe("answersFromResultText", () => {
+  const model = parseUserInput("AskUserQuestion", {
+    questions: [
+      {
+        question: "Do you prefer tabs or spaces for indentation?",
+        options: [{ label: "Tabs" }, { label: "Spaces" }],
+      },
+    ],
+  });
+
+  it("reconstructs a chosen option label from the CLI result sentence", () => {
+    const text =
+      'Your questions have been answered: "Do you prefer tabs or spaces for indentation?"="Tabs". You can now continue with these answers in mind.';
+    const out = answersFromResultText(model, text);
+    expect(out).toEqual([{ labels: ["Tabs"], isOther: false }]);
+  });
+
+  it("flags a free-text answer that isn't one of the options as isOther", () => {
+    const text =
+      'Your questions have been answered: "Do you prefer tabs or spaces for indentation?"="whatever the file uses".';
+    const out = answersFromResultText(model, text);
+    expect(out).toEqual([{ labels: ["whatever the file uses"], isOther: true }]);
+  });
+
+  it("returns null when nothing parses", () => {
+    expect(answersFromResultText(model, "no pairs here")).toBeNull();
   });
 });
 

@@ -4,6 +4,7 @@ import { useAppStore } from "../../../../store";
 import type { ToolCall, ToolResult } from "../presenters/types";
 import { QuestionCard } from "./QuestionCard";
 import {
+  answersFromResultText,
   buildAnswers,
   formatAnswer,
   parseUserInput,
@@ -77,10 +78,23 @@ export function UserInput({
 
   if (model.questions.length === 0) return null;
 
-  // A genuine (non-error) tool_result means the question was actually answered
-  // through it — show a compact summary. The CLI's `is_error` auto-rejection
-  // (headless mode) is NOT a real answer, so we fall through to live options.
-  if (!committedLocally && result && !result.is_error) {
+  // Resolved purely from the transcript (the widget was rebuilt after the turn
+  // completed): the CLI's `is_error` auto-rejection is NOT a real answer, so we
+  // only treat a genuine result as resolved. Reconstruct the structured answers
+  // from the result text so reload shows the same answer chips as the live
+  // session rather than the CLI's raw "Your questions have been answered…"
+  // sentence.
+  const fromTranscript =
+    !committedLocally && result && !result.is_error
+      ? answersFromResultText(model, resultText(result.content))
+      : null;
+  const committed = committedLocally || !!fromTranscript;
+  const answerFor = (i: number): UIAnswer | null =>
+    committedLocally ? (answers[i] ?? null) : (fromTranscript?.[i] ?? null);
+
+  // Answered, but the result didn't parse into per-question answers — fall back
+  // to a compact summary of the raw result text rather than showing nothing.
+  if (!committedLocally && result && !result.is_error && !fromTranscript) {
     return (
       <div className="m-q is-answered">
         <div className="q-head">
@@ -111,8 +125,8 @@ export function UserInput({
           question={q}
           index={i}
           total={model.questions.length}
-          committed={committedLocally}
-          answer={answers[i] ?? null}
+          committed={committed}
+          answer={answerFor(i)}
           onAnswer={(ans) => handleAnswer(i, ans)}
         />
       ))}
