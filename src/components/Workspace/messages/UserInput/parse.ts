@@ -45,6 +45,8 @@ export interface UserInputModel {
  *  or free-text when the user took the "Something else…" path. */
 export interface UIAnswer {
   labels: string[];
+  /** Original option ids for non-free-text answers, used for tool semantics. */
+  optionIds?: string[];
   /** True when the labels came from the free-text composer, not an option. */
   isOther: boolean;
 }
@@ -129,6 +131,51 @@ export function parseUserInput(
   return { tool, questions };
 }
 
+/** Reconstruct per-question answers from the tool_result the CLI writes once an
+ *  AskUserQuestion is answered — format: `… "Question"="Answer", "Q2"="A2". …`.
+ *  Lets a widget rebuilt from the transcript show the same clean answer chips as
+ *  the live session, instead of the raw sentence. Returns one entry per question
+ *  (null where unmatched), or null if nothing parsed. An answer that isn't one
+ *  of the question's option labels is flagged `isOther` (free text). */
+export function answersFromResultText(
+  model: UserInputModel,
+  text: string,
+): (UIAnswer | null)[] | null {
+  const pairs: Record<string, string> = {};
+  const re = /"([^"]+)"\s*=\s*"([^"]*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) pairs[m[1]] = m[2];
+
+  let matched = false;
+  const answers = model.questions.map((q): UIAnswer | null => {
+    const value = pairs[q.prompt];
+    if (value == null) return null;
+    matched = true;
+    return {
+      labels: [value],
+      isOther: !q.options.some((o) => o.label === value),
+    };
+  });
+  return matched ? answers : null;
+}
+
+/** Build the `answers` map for an `AskUserQuestion` tool result: keys are the
+ *  original question text, values the chosen option label(s) (an array for
+ *  multiSelect, the user's free text for an "other" answer). This is merged
+ *  into the tool's input and returned to the model via the control protocol. */
+export function buildAnswers(
+  model: UserInputModel,
+  answers: UIAnswer[],
+): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  model.questions.forEach((q, i) => {
+    const a = answers[i];
+    if (!a) return;
+    out[q.prompt] = q.multiSelect ? a.labels : a.labels.join(", ");
+  });
+  return out;
+}
+
 /** Build the answer text sent back to the agent as the next user message.
  *  The CLI auto-rejects AskUserQuestion in headless mode before we could return
  *  a real tool_result (see UserInput/index.tsx), so the answer rides in as a
@@ -140,11 +187,11 @@ export function formatAnswer(
 ): string {
   if (model.tool === "ExitPlanMode") {
     const a = answers[0];
-    const picked = a?.labels[0] ?? "";
+    const picked = a?.optionIds?.[0] ?? a?.labels[0] ?? "";
     if (a?.isOther) {
       return `Not yet — keep planning. ${a.labels.join(" ")}`.trim();
     }
-    return picked === "Approve & proceed"
+    return picked === "approve" || picked === "Approve & proceed"
       ? "Approved. Proceed with the plan."
       : "Not yet — keep planning.";
   }
