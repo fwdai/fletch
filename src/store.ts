@@ -34,7 +34,7 @@ import {
 } from "./components/RightPanel/primaryActions";
 import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
-import { usageFromRecords, type AgentUsage } from "./adapters/usage";
+import { usageFromRecords, hasUsage, type AgentUsage } from "./adapters/usage";
 import { getAllSettings, setSetting } from "./storage/settings";
 import {
   getAccount,
@@ -616,6 +616,37 @@ function applyEvent(
   };
 }
 
+/** Cursor reports token usage only on its live `result` event (never on disk),
+ *  so persist that event into session_records (`live_compiled`) when it lands —
+ *  then usage folds from records like every other agent, surviving restarts.
+ *  Idempotent on the event's `request_id`; after persisting, re-fold so the
+ *  gauge updates this turn rather than only on the next records refresh. */
+async function persistLiveUsage(
+  get: () => AppState,
+  set: (patch: Partial<AppState>) => void,
+  agentId: string,
+  rawEvent: RawEvent,
+): Promise<void> {
+  const provider = providerFor(get(), agentId);
+  const adapter = getAdapter(provider);
+  if (!adapter.persistLiveUsage || !adapter.extractUsage) return;
+  if (!adapter.extractUsage(rawEvent)) return; // nothing to persist this event
+  const nativeId =
+    typeof rawEvent.request_id === "string" && rawEvent.request_id
+      ? rawEvent.request_id
+      : `usage:${Date.now()}`;
+  try {
+    await api.appendLiveRecord(agentId, provider ?? adapter.id, nativeId, rawEvent);
+    const records = await api.readSessionRecords(agentId);
+    const usage = usageFromRecords(provider, records);
+    if (hasUsage(usage)) {
+      set({ usage: { ...get().usage, [agentId]: usage } });
+    }
+  } catch {
+    // Non-critical: the next records refresh or restart re-folds it.
+  }
+}
+
 /** A per-turn agent captures its session id on its first turn (e.g. agy reads
  *  it from disk at turn-end), but the id only reaches the live frontend via a
  *  full `getWorkspace`. True when an agent's turn just landed yet its session
@@ -801,6 +832,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         turnEnded = result.turnEnded;
         return result.patch;
       });
+      // Capture usage that lives only on the live stream (cursor) into
+      // session_records so it folds like every other agent (see persistLiveUsage).
+      void persistLiveUsage(get, set, e.agent_id, e.event as RawEvent);
       // A turn can't end with prompts still held — clear any stale entries
       // (e.g. an interrupt that denied a pending question).
       if (turnEnded && get().pendingToolUse[e.agent_id]) {
@@ -847,7 +881,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           const usage = usageFromRecords(provider, records);
           set((state) => ({
             managedLogs: { ...state.managedLogs, [id]: items },
-            usage: { ...state.usage, [id]: usage },
+            // Only overwrite when records carried usage — cursor folds usage
+            // live, so an empty records result must not wipe it.
+            usage: hasUsage(usage) ? { ...state.usage, [id]: usage } : state.usage,
           }));
           // The first turn captures the agent's session id in the DB; pull it
           // into the live workspace so the Native toggle unblocks without a
@@ -1314,7 +1350,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         return {
           managedLogs: { ...state.managedLogs, [id]: items },
           managedBusy: { ...state.managedBusy, [id]: false },
-          usage: { ...state.usage, [id]: usage },
+          // Only overwrite when records carried usage — cursor folds usage
+          // live, so an empty records result must not wipe it.
+          ...(hasUsage(usage) ? { usage: { ...state.usage, [id]: usage } } : {}),
         };
       });
     } catch (e) {

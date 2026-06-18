@@ -6,7 +6,7 @@ import { opencodeAdapter } from "./opencode";
 import { piAdapter } from "./pi";
 import { cursorAdapter } from "./cursor";
 import { antigravityAdapter } from "./antigravity";
-import { usageFromRecords, EMPTY_USAGE } from "./usage";
+import { usageFromRecords, addTurnUsage, EMPTY_USAGE } from "./usage";
 import type { SessionRecord } from "../api";
 import type { RawEvent } from "./types";
 
@@ -143,8 +143,40 @@ describe("pi extractUsage", () => {
   });
 });
 
-it("cursor and antigravity expose no usage extractor", () => {
-  expect(cursorAdapter.extractUsage).toBeUndefined();
+describe("cursor extractUsage (persisted live result)", () => {
+  const body = {
+    type: "result",
+    subtype: "success",
+    request_id: "req-1",
+    usage: { inputTokens: 2, outputTokens: 122, cacheReadTokens: 0, cacheWriteTokens: 27987 },
+  } as RawEvent;
+
+  it("is marked persistLiveUsage and reads the result event", () => {
+    expect(cursorAdapter.persistLiveUsage).toBe(true);
+    expect(cursorAdapter.extractUsage!(body)).toEqual({
+      inputTokens: 2,
+      outputTokens: 122,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 27987,
+      context: { input: 2, cacheRead: 0, cacheWrite: 27987 },
+    });
+  });
+
+  it("ignores cursor's on-disk transcript bodies (no usage there)", () => {
+    expect(
+      cursorAdapter.extractUsage!({ type: "assistant", message: {} } as RawEvent),
+    ).toBeUndefined();
+  });
+
+  it("folds from records once the result is persisted (live_compiled)", () => {
+    const u = usageFromRecords("cursor", [record("cursor", body)]);
+    expect(u.outputTokens).toBe(122);
+    expect(u.cacheWriteTokens).toBe(27987);
+    expect(u.contextTokens).toBe(2 + 0 + 27987);
+  });
+});
+
+it("antigravity exposes no usage extractor", () => {
   expect(antigravityAdapter.extractUsage).toBeUndefined();
 });
 
@@ -204,5 +236,23 @@ describe("usageFromRecords fold", () => {
   it("returns EMPTY_USAGE for providers without an extractor or with no usage", () => {
     expect(usageFromRecords("cursor", [record("cursor", { type: "assistant" } as RawEvent)])).toBe(EMPTY_USAGE);
     expect(usageFromRecords("claude", [])).toBe(EMPTY_USAGE);
+  });
+});
+
+describe("addTurnUsage (fold primitive)", () => {
+  it("sums deltas across turns and tracks the latest context fill", () => {
+    let acc = { ...EMPTY_USAGE };
+    for (const body of [
+      { type: "result", usage: { inputTokens: 2, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 5000 } },
+      { type: "result", usage: { inputTokens: 3, outputTokens: 50, cacheReadTokens: 5000, cacheWriteTokens: 80 } },
+    ] as RawEvent[]) {
+      acc = addTurnUsage(acc, cursorAdapter.extractUsage!(body)!);
+    }
+    expect(acc.inputTokens).toBe(5);
+    expect(acc.outputTokens).toBe(150);
+    expect(acc.cacheWriteTokens).toBe(5080);
+    // latest turn wins for the window breakdown
+    expect(acc.contextTokens).toBe(3 + 5000 + 80);
+    expect(acc.contextCacheRead).toBe(5000);
   });
 });

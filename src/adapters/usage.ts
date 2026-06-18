@@ -52,10 +52,45 @@ export function hasUsage(u: AgentUsage): boolean {
   return u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWriteTokens > 0;
 }
 
+/** Apply one extracted `TurnUsage` to a running total, returning a new object.
+ *  Shared by the records fold and the live accumulator (cursor) so both treat
+ *  cumulative-vs-delta and the context breakdown identically. */
+export function addTurnUsage(acc: AgentUsage, u: TurnUsage): AgentUsage {
+  const next: AgentUsage = { ...acc };
+  if (u.cumulative) {
+    // Running total — the latest record wins, don't sum.
+    next.inputTokens = u.inputTokens;
+    next.outputTokens = u.outputTokens;
+    next.cacheReadTokens = u.cacheReadTokens;
+    next.cacheWriteTokens = u.cacheWriteTokens;
+    if (u.costUsd != null) next.costUsd = u.costUsd;
+  } else {
+    next.inputTokens += u.inputTokens;
+    next.outputTokens += u.outputTokens;
+    next.cacheReadTokens += u.cacheReadTokens;
+    next.cacheWriteTokens += u.cacheWriteTokens;
+    if (u.costUsd != null) next.costUsd += u.costUsd;
+  }
+  if (u.context) {
+    const fill = u.context.input + u.context.cacheRead + u.context.cacheWrite;
+    if (fill > 0) {
+      // Latest turn wins — the window reflects the most recent turn, not a sum.
+      next.contextInput = u.context.input;
+      next.contextCacheRead = u.context.cacheRead;
+      next.contextCacheWrite = u.context.cacheWrite;
+      next.contextTokens = fill;
+    }
+  }
+  if (u.contextWindow != null && u.contextWindow > 0) next.contextWindow = u.contextWindow;
+  if (u.model) next.model = u.model;
+  return next;
+}
+
 /** Fold a session's records into one cumulative usage total. Returns the shared
- *  `EMPTY_USAGE` when the provider doesn't extract usage (cursor, antigravity)
- *  or no record carried any. Defensive: a throwing extractor skips its record
- *  rather than failing the whole fold. */
+ *  `EMPTY_USAGE` when the provider doesn't extract usage (antigravity) or no
+ *  record carried any. Cursor is included: its live `result` is persisted into
+ *  session_records (see `persistLiveUsage`), so it folds here like the rest.
+ *  Defensive: a throwing extractor skips its record, not the whole fold. */
 export function usageFromRecords(
   provider: string | undefined,
   records: SessionRecord[],
@@ -63,7 +98,7 @@ export function usageFromRecords(
   const adapter = getAdapter(provider);
   if (!adapter.extractUsage) return EMPTY_USAGE;
 
-  const acc: AgentUsage = { ...EMPTY_USAGE };
+  let acc: AgentUsage = { ...EMPTY_USAGE };
   for (const rec of records) {
     let u: TurnUsage | undefined;
     try {
@@ -71,36 +106,7 @@ export function usageFromRecords(
     } catch {
       u = undefined;
     }
-    if (!u) continue;
-
-    if (u.cumulative) {
-      // Running total — the latest record wins, don't sum.
-      acc.inputTokens = u.inputTokens;
-      acc.outputTokens = u.outputTokens;
-      acc.cacheReadTokens = u.cacheReadTokens;
-      acc.cacheWriteTokens = u.cacheWriteTokens;
-      if (u.costUsd != null) acc.costUsd = u.costUsd;
-    } else {
-      acc.inputTokens += u.inputTokens;
-      acc.outputTokens += u.outputTokens;
-      acc.cacheReadTokens += u.cacheReadTokens;
-      acc.cacheWriteTokens += u.cacheWriteTokens;
-      if (u.costUsd != null) acc.costUsd += u.costUsd;
-    }
-    if (u.context) {
-      const fill = u.context.input + u.context.cacheRead + u.context.cacheWrite;
-      if (fill > 0) {
-        // Latest turn wins — the window reflects the most recent turn, not a sum.
-        acc.contextInput = u.context.input;
-        acc.contextCacheRead = u.context.cacheRead;
-        acc.contextCacheWrite = u.context.cacheWrite;
-        acc.contextTokens = fill;
-      }
-    }
-    if (u.contextWindow != null && u.contextWindow > 0) {
-      acc.contextWindow = u.contextWindow;
-    }
-    if (u.model) acc.model = u.model;
+    if (u) acc = addTurnUsage(acc, u);
   }
   return hasUsage(acc) ? acc : EMPTY_USAGE;
 }

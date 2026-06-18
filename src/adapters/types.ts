@@ -101,8 +101,14 @@ export interface ChatAdapter {
   reduce(prevItems: ChatItem[], rawEvent: RawEvent): ChatItem[];
   normalizeTranscript(transcriptLines: unknown[]): RawEvent[];
   readonly policy: DisplayPolicy;
-  /** Extract token usage from one persisted session_record body, or undefined
-   *  when the record carries none. Optional: agents that don't persist usage
-   *  on disk (cursor, antigravity) omit it entirely. */
+  /** True when the agent emits usage ONLY on its live `result` event and never
+   *  persists it on disk (cursor). The store persists that event into
+   *  session_records (`source = 'live_compiled'`) at turn-end so usage is then
+   *  folded uniformly from records like every other agent — restart-safe, no
+   *  in-memory accumulation. `extractUsage` reads that same `result` body. */
+  readonly persistLiveUsage?: boolean;
+  /** Extract token usage from one session_record body, or undefined when it
+   *  carries none. Optional: agents that report no usage at all (antigravity)
+   *  omit it entirely. */
   extractUsage?(recordBody: RawEvent): TurnUsage | undefined;
 }
