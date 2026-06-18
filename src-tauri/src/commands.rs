@@ -24,6 +24,17 @@ pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace
     supervisor.current_workspace()
 }
 
+/// The ref a worktree's *committed* changes are diffed against: the immutable
+/// fork-point SHA captured at spawn when known, else the parent branch name
+/// (pre-migration agents), which may have drifted from the actual fork point.
+/// PR/merge/rebase bases and ahead/behind use `parent_branch` directly instead,
+/// since those need a live branch name, not a commit.
+fn diff_base(repo: &TrackedRepo) -> Option<String> {
+    repo.base_sha
+        .clone()
+        .or_else(|| repo.parent_branch.clone())
+}
+
 #[tauri::command]
 pub async fn get_agent_diff_stats(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -34,7 +45,8 @@ pub async fn get_agent_diff_stats(
 
     for repo in &record.repos {
         let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
-        let base_ref = repo.parent_branch.as_deref().unwrap_or("HEAD");
+        let base = diff_base(repo);
+        let base_ref = base.as_deref().unwrap_or("HEAD");
         let diff = match git::worktree_diff_shortstat(&worktree, base_ref).await {
             Ok(diff) => diff,
             Err(err) if base_ref != "HEAD" => {
@@ -748,7 +760,8 @@ fn primary_worktree(
         .first()
         .ok_or_else(|| Error::Other("agent has no repos".into()))?;
     let worktree = repo_worktree_path(agent_id, &repo.subdir)?;
-    let parent = repo.parent_branch.clone().unwrap_or_else(|| "main".to_string());
+    // File tree / per-file diffs compare committed work against the fork point.
+    let parent = diff_base(repo).unwrap_or_else(|| "main".to_string());
     Ok((worktree, parent))
 }
 

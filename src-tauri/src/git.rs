@@ -13,17 +13,25 @@ use crate::error::{Error, Result};
 /// that may never receive a user message. The branch is created
 /// later via `checkout_new_branch` when we have a slug from the
 /// first user message.
-pub async fn worktree_add_detached(repo: &Path, worktree_path: &Path) -> Result<()> {
+///
+/// `base` is the commit-ish the worktree starts from (e.g. `origin/main`
+/// after a fresh fetch). When `None`, it starts from the repo's current
+/// HEAD — the legacy behavior.
+pub async fn worktree_add_detached(
+    repo: &Path,
+    worktree_path: &Path,
+    base: Option<&str>,
+) -> Result<()> {
+    let path = worktree_path
+        .to_str()
+        .ok_or_else(|| Error::InvalidPath(worktree_path.display().to_string()))?;
+    let mut args = vec!["worktree", "add", "--detach", path];
+    if let Some(base) = base {
+        args.push(base);
+    }
     let out = Command::new("git")
         .current_dir(repo)
-        .args([
-            "worktree",
-            "add",
-            "--detach",
-            worktree_path.to_str().ok_or_else(|| {
-                Error::InvalidPath(worktree_path.display().to_string())
-            })?,
-        ])
+        .args(&args)
         .output()
         .await?;
     if !out.status.success() {
@@ -33,6 +41,31 @@ pub async fn worktree_add_detached(repo: &Path, worktree_path: &Path) -> Result<
         )));
     }
     Ok(())
+}
+
+/// Best-effort fetch of `branch` from `origin` so a freshly-spawned worktree
+/// can fork from the latest remote state rather than a stale local ref.
+/// Returns the commit-ish a worktree should be based on — `origin/<branch>`
+/// when the fetch succeeded and the remote branch resolves — otherwise `None`,
+/// signalling the caller to fall back to local HEAD.
+///
+/// Never errors: a missing `origin`, an offline machine, or a purely local
+/// branch are all expected and simply mean "use local state".
+pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
+    let fetched = Command::new("git")
+        .current_dir(repo)
+        .args(["fetch", "origin", branch])
+        .output()
+        .await;
+    match fetched {
+        Ok(out) if out.status.success() => {}
+        _ => return None,
+    }
+    // Confirm the remote-tracking ref resolves before handing it back — a
+    // refspec that doesn't map this branch into refs/remotes would otherwise
+    // leave us pointing at a ref that `worktree add` can't use.
+    let remote_ref = format!("origin/{branch}");
+    rev_parse(repo, &remote_ref).await.ok().map(|_| remote_ref)
 }
 
 /// Inside an existing worktree, create a new branch at the current
@@ -329,6 +362,49 @@ mod tests {
         let err = commit_all(repo, "second").await.unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("nothing to commit"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn fetch_fork_point_without_remote_is_none() {
+        // No `origin` configured → best-effort fetch fails and we fall back to
+        // local HEAD (None), never an error.
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        commit_all(repo, "first").await.unwrap();
+
+        assert_eq!(fetch_fork_point(repo, "main").await, None);
+    }
+
+    #[tokio::test]
+    async fn worktree_add_detached_uses_base_commit_when_given() {
+        // A worktree forked from an explicit commit-ish starts at that commit,
+        // not at the repo's current HEAD.
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+
+        std::fs::write(repo.join("a.txt"), b"one").unwrap();
+        commit_all(repo, "first").await.unwrap();
+        let first = rev_parse(repo, "HEAD").await.unwrap();
+        std::fs::write(repo.join("b.txt"), b"two").unwrap();
+        commit_all(repo, "second").await.unwrap();
+
+        // Base the worktree on the first commit even though HEAD is now `second`.
+        let wt = td.path().join("wt");
+        worktree_add_detached(repo, &wt, Some(&first)).await.unwrap();
+        assert_eq!(rev_parse(&wt, "HEAD").await.unwrap(), first);
+
+        // With no base it tracks current HEAD (`second`).
+        let head = rev_parse(repo, "HEAD").await.unwrap();
+        let wt2 = td.path().join("wt2");
+        worktree_add_detached(repo, &wt2, None).await.unwrap();
+        assert_eq!(rev_parse(&wt2, "HEAD").await.unwrap(), head);
     }
 }
 
