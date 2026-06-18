@@ -455,12 +455,17 @@ impl Supervisor {
         // branch the user was on when they hit Spawn.
         let parent_branch = git::current_branch(&repo_path).await.ok().flatten();
         let subdir = allocate_repo_subdir(&repo_path, &[]);
+        // Cloned for the background fork task — `parent_branch`/`subdir` are
+        // moved into `primary` below.
+        let parent_for_fork = parent_branch.clone();
+        let subdir_for_fork = subdir.clone();
 
         let primary = TrackedRepo {
             repo_path: repo_path.clone(),
             subdir: subdir.clone(),
             branch: None, // created later from first user message
             parent_branch,
+            base_sha: None, // captured by the fork task once HEAD is known
         };
 
         let mut record = new_agent_record(
@@ -490,9 +495,27 @@ impl Supervisor {
                 return;
             }
 
-            if let Err(e) = git::worktree_add_detached(&repo_path, &primary_worktree).await {
+            // Fork from the freshest remote state of the parent branch so the
+            // agent never starts on stale local refs. Best-effort: offline, no
+            // remote, or a local-only branch all fall back to local HEAD.
+            let base = match &parent_for_fork {
+                Some(b) => git::fetch_fork_point(&repo_path, b).await,
+                None => None,
+            };
+            if let Err(e) =
+                git::worktree_add_detached(&repo_path, &primary_worktree, base.as_deref()).await
+            {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                 return;
+            }
+
+            // Record the fork point so diffs measure against the exact starting
+            // commit rather than a branch name that can drift. Non-fatal: a
+            // missing base_sha just falls back to the parent branch name.
+            if let Ok(sha) = git::rev_parse(&primary_worktree, "HEAD").await {
+                let _ = sup
+                    .workspace
+                    .set_repo_base_sha(&id_for_task, &subdir_for_fork, &sha);
             }
 
             tokio::time::sleep(Duration::from_millis(350)).await;
@@ -535,13 +558,21 @@ impl Supervisor {
         let worktree = repo_worktree_path(agent_id, &subdir)?;
         let parent_branch = git::current_branch(&repo_path).await.ok().flatten();
 
-        git::worktree_add_detached(&repo_path, &worktree).await?;
+        // Fork from the freshest remote state of the parent branch (best-effort,
+        // falls back to local HEAD), then record the fork point as the diff base.
+        let base = match &parent_branch {
+            Some(b) => git::fetch_fork_point(&repo_path, b).await,
+            None => None,
+        };
+        git::worktree_add_detached(&repo_path, &worktree, base.as_deref()).await?;
+        let base_sha = git::rev_parse(&worktree, "HEAD").await.ok();
 
         let repo = TrackedRepo {
             repo_path: repo_path.clone(),
             subdir: subdir.clone(),
             branch: None,
             parent_branch,
+            base_sha,
         };
         self.workspace
             .append_tracked_repo(agent_id, repo.clone())?;
@@ -993,10 +1024,15 @@ impl Supervisor {
             } else {
                 None
             };
-            let parent_branch_sha = if let Some(b) = &repo.parent_branch {
-                git::rev_parse(&repo.repo_path, b).await.ok()
-            } else {
-                None
+            // Prefer the immutable fork point; only fall back to resolving the
+            // parent branch name (which may have drifted) for pre-migration
+            // agents that never captured a base_sha.
+            let parent_branch_sha = match &repo.base_sha {
+                Some(sha) => Some(sha.clone()),
+                None => match &repo.parent_branch {
+                    Some(b) => git::rev_parse(&repo.repo_path, b).await.ok(),
+                    None => None,
+                },
             };
 
             let mut adds = 0u32;
@@ -1151,6 +1187,11 @@ impl Supervisor {
                 subdir: snap.subdir.clone(),
                 branch: Some(chosen),
                 parent_branch: snap.parent_branch.clone(),
+                // The fork point persists in the worktrees row across
+                // archive/restore (restore_agent doesn't clear base_sha), so
+                // this literal value is never written back — None is a
+                // placeholder to satisfy the struct.
+                base_sha: None,
             });
         }
 
@@ -2476,6 +2517,7 @@ mod tests {
                 subdir: "repo".to_string(),
                 branch: None,
                 parent_branch: None,
+                base_sha: None,
             },
             String::new(),
             AgentView::Custom,

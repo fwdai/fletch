@@ -57,6 +57,15 @@ pub struct TrackedRepo {
     pub branch: Option<String>,
     #[serde(default)]
     pub parent_branch: Option<String>,
+    /// The immutable fork-point commit this worktree was created from,
+    /// captured at spawn after a best-effort fetch. Used as the diff base so
+    /// agent changes are measured against the exact starting commit rather
+    /// than a branch name that may drift. `None` for pre-migration agents and
+    /// when the fork SHA couldn't be resolved; readers fall back to
+    /// `parent_branch`. Distinct from `parent_branch`, which names the branch
+    /// for PR/merge bases.
+    #[serde(default)]
+    pub base_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -434,6 +443,24 @@ impl WorkspaceManager {
             rusqlite::params![branch, agent_id, subdir],
         )?;
         Ok(changed > 0)
+    }
+
+    /// Record the fork-point SHA for a tracked repo, identified by subdir.
+    /// Written once the spawn task has created the worktree and resolved its
+    /// HEAD. Overwrites unconditionally — the fork point is fixed for the
+    /// worktree's life, so a re-write only ever sets the same value.
+    pub fn set_repo_base_sha(
+        &self,
+        agent_id: &str,
+        subdir: &str,
+        base_sha: &str,
+    ) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "UPDATE worktrees SET base_sha = ?1 WHERE workspace_id = ?2 AND subdir = ?3",
+            rusqlite::params![base_sha, agent_id, subdir],
+        )?;
+        Ok(())
     }
 
     pub fn append_tracked_repo(&self, agent_id: &str, repo: TrackedRepo) -> Result<()> {
@@ -1059,7 +1086,7 @@ impl WorkspaceManager {
 
     fn query_tracked_repos(conn: &Connection, agent_id: &str) -> Vec<TrackedRepo> {
         let mut stmt = match conn.prepare(
-            "SELECT r.path, w.subdir, w.branch, w.parent_branch
+            "SELECT r.path, w.subdir, w.branch, w.parent_branch, w.base_sha
              FROM worktrees w
              JOIN repos r ON r.id = w.repo_id
              WHERE w.workspace_id = ?1
@@ -1074,11 +1101,13 @@ impl WorkspaceManager {
             let subdir: String = row.get(1)?;
             let branch: Option<String> = row.get(2)?;
             let parent_branch: Option<String> = row.get(3)?;
+            let base_sha: Option<String> = row.get(4)?;
             Ok(TrackedRepo {
                 repo_path: PathBuf::from(path),
                 subdir,
                 branch,
                 parent_branch,
+                base_sha,
             })
         })
         .ok()
@@ -1223,8 +1252,8 @@ impl WorkspaceManager {
 
         let wt_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO worktrees (id, workspace_id, repo_id, subdir, branch, parent_branch, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO worktrees (id, workspace_id, repo_id, subdir, branch, parent_branch, base_sha, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 wt_id,
                 agent_id,
@@ -1232,6 +1261,7 @@ impl WorkspaceManager {
                 repo.subdir,
                 repo.branch,
                 repo.parent_branch,
+                repo.base_sha,
                 now_millis(),
             ],
         )?;
@@ -1436,6 +1466,7 @@ mod tests {
             subdir: "repo".into(),
             branch: None,
             parent_branch: None,
+            base_sha: None,
         }
     }
 
@@ -1705,6 +1736,7 @@ mod tests {
             subdir: "repo".into(),
             branch: Some("quorum/do-the-thing".into()),
             parent_branch: Some("main".into()),
+            base_sha: None,
         }];
         wm.restore_agent(&id, restored).unwrap();
         let a = wm.agent(&id).unwrap();
@@ -1768,6 +1800,7 @@ mod tests {
                 subdir: "repo".into(),
                 branch: None,
                 parent_branch: None,
+                base_sha: None,
             },
             "task".into(),
             AgentView::Custom,
