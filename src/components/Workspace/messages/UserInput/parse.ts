@@ -129,6 +129,23 @@ export function parseUserInput(
   return { tool, questions };
 }
 
+/** Build the `answers` map for an `AskUserQuestion` tool result: keys are the
+ *  original question text, values the chosen option label(s) (an array for
+ *  multiSelect, the user's free text for an "other" answer). This is merged
+ *  into the tool's input and returned to the model via the control protocol. */
+export function buildAnswers(
+  model: UserInputModel,
+  answers: UIAnswer[],
+): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  model.questions.forEach((q, i) => {
+    const a = answers[i];
+    if (!a) return;
+    out[q.prompt] = q.multiSelect ? a.labels : a.labels.join(", ");
+  });
+  return out;
+}
+
 /** Build the answer text sent back to the agent as the next user message.
  *  The CLI auto-rejects AskUserQuestion in headless mode before we could return
  *  a real tool_result (see UserInput/index.tsx), so the answer rides in as a

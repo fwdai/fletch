@@ -180,6 +180,18 @@ pub fn send_user_message(
 }
 
 #[tauri::command]
+pub fn answer_tool_use(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    request_id: String,
+    updated_input: serde_json::Value,
+) -> Result<()> {
+    supervisor
+        .inner()
+        .answer_tool_use(&agent_id, &request_id, updated_input)
+}
+
+#[tauri::command]
 pub fn resize_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,

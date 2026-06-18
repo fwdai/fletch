@@ -4,6 +4,7 @@ import { useAppStore } from "../../../../store";
 import type { ToolCall, ToolResult } from "../presenters/types";
 import { QuestionCard } from "./QuestionCard";
 import {
+  buildAnswers,
   formatAnswer,
   parseUserInput,
   type UIAnswer,
@@ -12,19 +13,18 @@ import {
 
 /** Rich widget for the agent's "needs your input" tools (Claude's
  *  `AskUserQuestion` / `ExitPlanMode`). Renders one card per question; once
- *  every question is answered it sends the chosen answer back as the next
- *  user message.
+ *  every question is answered it delivers the answer to the agent.
  *
- *  Why a user message and not a tool_result: in headless `--print` mode the
- *  Claude CLI has no interactive surface to present the question, so it
- *  auto-rejects the tool with an `is_error` tool_result within milliseconds
- *  and the model continues. By the time we render, that tool_use is already
- *  closed — a tool_result keyed to it would be a duplicate. So we ignore the
- *  CLI's error result, surface the options as quick replies, and let the
- *  user's pick ride in as an ordinary turn, which the model reads and answers.
+ *  Two answer routes:
+ *   - **True pause** (live): when the backend is holding this tool's
+ *     `can_use_tool` prompt open (a `request_id` for `call.id` exists in
+ *     `pendingToolUse`), the agent is genuinely suspended. We answer via
+ *     `answerToolUse`, which returns the selection as the tool result and
+ *     resumes the turn — no failed tool call, no redundant text.
+ *   - **Fallback** (replayed/legacy history, no held prompt): send the answer
+ *     as an ordinary user message so it still reaches the model.
  *
- *  A genuine (non-error) `result` — e.g. from a future interactive flow —
- *  still folds the widget into a resolved summary. */
+ *  A genuine (non-error) `result` folds the widget into a resolved summary. */
 export function UserInput({
   tool,
   call,
@@ -38,6 +38,12 @@ export function UserInput({
 }) {
   const model = useMemo(() => parseUserInput(tool, call.input), [tool, call.input]);
   const sendUserMessage = useAppStore((s) => s.sendUserMessage);
+  const answerToolUse = useAppStore((s) => s.answerToolUse);
+  // The held control-protocol request for this tool call, if the agent is
+  // currently paused on it (true-pause path). Undefined for replayed history.
+  const pendingRequestId = useAppStore((s) =>
+    agentId ? s.pendingToolUse[agentId]?.[call.id] : undefined,
+  );
 
   // Keyed by question index rather than a fixed-length array: the model's
   // question count can grow as the tool_use input streams in, and we must not
@@ -50,8 +56,20 @@ export function UserInput({
     setAnswers(next);
     if (model.questions.every((_, idx) => next[idx])) {
       setCommittedLocally(true);
-      if (agentId) {
-        const ordered = model.questions.map((_, idx) => next[idx]);
+      if (!agentId) return;
+      const ordered = model.questions.map((_, idx) => next[idx]);
+      if (pendingRequestId) {
+        // True pause: return the structured answer as the tool result.
+        const rawInput =
+          call.input && typeof call.input === "object"
+            ? (call.input as Record<string, unknown>)
+            : {};
+        void answerToolUse(agentId, call.id, {
+          ...rawInput,
+          answers: buildAnswers(model, ordered),
+        });
+      } else {
+        // No held prompt (replayed history) — answer as an ordinary message.
         void sendUserMessage(agentId, formatAnswer(model, ordered));
       }
     }

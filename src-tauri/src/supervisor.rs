@@ -849,6 +849,21 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Deliver the user's answer to a held question-tool prompt (Claude's
+    /// `AskUserQuestion`) as the tool result, unblocking the paused turn.
+    pub fn answer_tool_use(
+        &self,
+        agent_id: &str,
+        request_id: &str,
+        updated_input: serde_json::Value,
+    ) -> Result<()> {
+        let agents = self.agents.lock();
+        let agent = agents
+            .get(agent_id)
+            .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
+        agent.answer_tool_use(request_id, updated_input)
+    }
+
     pub fn resize_agent(&self, agent_id: &str, cols: u16, rows: u16) -> Result<()> {
         let agents = self.agents.lock();
         let agent = agents

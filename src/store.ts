@@ -208,6 +208,13 @@ interface AppState {
   lastError: string | null;
   initialized: boolean;
   managedLogs: Record<string, ChatItem[]>;
+  /** Question tools the agent is paused on, awaiting a human answer.
+   *  Keyed by agent id, then by the tool_use id of the held `AskUserQuestion`
+   *  call → the control-protocol `request_id` to answer it with. Populated when
+   *  the backend forwards a held `can_use_tool` request; cleared on answer or
+   *  turn end. The widget uses it to know a question is answerable and to route
+   *  the answer back as the tool result (the real pause). */
+  pendingToolUse: Record<string, Record<string, string>>;
   /** True while an on-disk Claude transcript is being replayed into
    *  the custom-view log. */
   transcriptLoading: Record<string, boolean>;
@@ -354,6 +361,16 @@ interface AppState {
     text: string,
     attachments?: string[],
     thinking?: string,
+  ) => Promise<void>;
+  /** Answer a paused question tool (Claude's AskUserQuestion). Looks up the
+   *  held control-protocol request for `toolUseId` and delivers `updatedInput`
+   *  (the tool's input with the user's `answers` merged in) as the tool result,
+   *  resuming the turn. No-op if no held request matches (e.g. replayed
+   *  history, where the answer routes as a normal message instead). */
+  answerToolUse: (
+    id: string,
+    toolUseId: string,
+    updatedInput: unknown,
   ) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
   resume: (id: string) => Promise<void>;
@@ -644,6 +661,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   updateReadyVersion: null,
   initialized: false,
   managedLogs: {},
+  pendingToolUse: {},
   transcriptLoading: {},
   transcriptLoaded: {},
   managedBusy: {},
@@ -748,12 +766,42 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
 
     await onAgentEvent((e) => {
+      const ev = e.event as RawEvent;
+      // A held permission prompt the backend forwarded for a human to answer
+      // (Claude's AskUserQuestion). Record request_id ↔ tool_use_id so the
+      // widget can answer it; this is control plane, not a transcript event, so
+      // don't feed the reducer. The agent is paused awaiting input — the
+      // composer stays disabled (busy) and ChatView hides the "thinking" dots.
+      if (ev?.type === "control_request") {
+        const req = (ev as { request?: Record<string, unknown> }).request;
+        const requestId = (ev as { request_id?: string }).request_id;
+        const toolUseId = req?.tool_use_id;
+        if (req?.subtype === "can_use_tool" && typeof toolUseId === "string" && requestId) {
+          set((state) => ({
+            pendingToolUse: {
+              ...state.pendingToolUse,
+              [e.agent_id]: {
+                ...(state.pendingToolUse[e.agent_id] ?? {}),
+                [toolUseId]: requestId,
+              },
+            },
+          }));
+        }
+        return;
+      }
       let turnEnded = false;
       set((state) => {
         const result = applyEvent(state, e.agent_id, e.event as RawEvent);
         turnEnded = result.turnEnded;
         return result.patch;
       });
+      // A turn can't end with prompts still held — clear any stale entries
+      // (e.g. an interrupt that denied a pending question).
+      if (turnEnded && get().pendingToolUse[e.agent_id]) {
+        set((state) => ({
+          pendingToolUse: { ...state.pendingToolUse, [e.agent_id]: {} },
+        }));
+      }
       // Side effect lives here, at the call-site, rather than inside the pure
       // updater: chime when an agent turn lands successfully. Skip it if the
       // user stopped this agent — the turn_end is just the killed process
@@ -1046,6 +1094,31 @@ export const useAppStore = create<AppState>((set, get) => ({
           throw e;
         }
       }
+    } catch (e) {
+      set((state) => ({
+        lastError: String(e),
+        managedBusy: { ...state.managedBusy, [id]: false },
+      }));
+    }
+  },
+
+  answerToolUse: async (id, toolUseId, updatedInput) => {
+    const requestId = get().pendingToolUse[id]?.[toolUseId];
+    if (!requestId) return;
+    // Drop the held prompt and mark busy: feeding the answer resumes the
+    // paused turn. The transcript records the resulting tool_result, so there's
+    // no separate durable row to write.
+    set((state) => {
+      const forAgent = { ...(state.pendingToolUse[id] ?? {}) };
+      delete forAgent[toolUseId];
+      return {
+        pendingToolUse: { ...state.pendingToolUse, [id]: forAgent },
+        managedBusy: { ...state.managedBusy, [id]: true },
+        managedBusyLabel: { ...state.managedBusyLabel, [id]: undefined },
+      };
+    });
+    try {
+      await api.answerToolUse(id, requestId, updatedInput);
     } catch (e) {
       set((state) => ({
         lastError: String(e),

@@ -3,8 +3,25 @@
 //! Launches `claude --print` with `--input-format stream-json` and
 //! `--output-format stream-json` so the app owns the input box and
 //! renders structured events instead of raw terminal bytes.
+//!
+//! ## Permission control protocol
+//!
+//! We run Claude in `--permission-mode default --permission-prompt-tool stdio`
+//! (not `bypassPermissions`). In that mode the CLI does not execute a tool
+//! until the client approves it: it writes a `control_request`
+//! (`subtype: "can_use_tool"`) to stdout and blocks until we write a matching
+//! `control_response` to stdin. We auto-approve every tool the instant it
+//! arrives — preserving the prior fully-headless "run without nagging" feel —
+//! **except** the question tools (`AskUserQuestion`), which we hold open and
+//! surface to the UI so the human actually answers. Holding the response is
+//! the real pause: the agent's turn is suspended until `answer_tool_use`
+//! delivers the user's selection as the tool result.
+//!
+//! `bypassPermissions` cannot do this — it short-circuits the permission flow
+//! and auto-denies `AskUserQuestion` before the client ever sees it.
 
 use parking_lot::Mutex;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -16,9 +33,18 @@ use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 
+/// Tools whose `can_use_tool` request we hold open for a human answer instead
+/// of auto-approving. Everything else runs unattended.
+const HOLD_TOOLS: &[&str] = &["AskUserQuestion"];
+
+type Stdin = Arc<Mutex<Option<ChildStdin>>>;
+
 pub struct ManagedSession {
     child: Arc<Mutex<Option<Child>>>,
-    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    stdin: Stdin,
+    /// `request_id`s of `can_use_tool` prompts we're holding open, awaiting a
+    /// human answer. Drained on interrupt so the turn can unwind.
+    pending: Arc<Mutex<HashSet<String>>>,
 }
 
 pub struct ManagedSpawn<'a> {
@@ -70,15 +96,44 @@ impl ManagedSession {
             .ok_or_else(|| Error::Other("managed: child stdin missing".into()))?;
 
         let child_arc = Arc::new(Mutex::new(Some(child)));
-        let stdin_arc = Arc::new(Mutex::new(Some(stdin)));
+        let stdin_arc: Stdin = Arc::new(Mutex::new(Some(stdin)));
+        let pending: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
+        // Establish the control channel so the CLI routes permission prompts to
+        // us (rather than auto-denying). The reply (request_id "quorum-init")
+        // comes back as a control_response, which the reader drops.
+        let _ = write_line(
+            &stdin_arc,
+            json!({
+                "type": "control_request",
+                "request_id": "quorum-init",
+                "request": { "subtype": "initialize", "hooks": {} }
+            }),
+        );
+
+        let stdin_for_reader = stdin_arc.clone();
+        let pending_for_reader = pending.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 match line {
                     Ok(l) if l.trim().is_empty() => continue,
                     Ok(l) => match serde_json::from_str::<Value>(&l) {
-                        Ok(v) => on_event(v),
+                        Ok(v) => {
+                            match v.get("type").and_then(Value::as_str) {
+                                // Permission gate from the CLI: respond on stdin.
+                                Some("control_request") => handle_control_request(
+                                    &stdin_for_reader,
+                                    &pending_for_reader,
+                                    &on_event,
+                                    v,
+                                ),
+                                // Reply to a request we sent (e.g. initialize) —
+                                // control plane, never a transcript event.
+                                Some("control_response") => {}
+                                _ => on_event(v),
+                            }
+                        }
                         Err(e) => {
                             tracing::warn!(error = %e, raw = %l, "managed: bad json line");
                         }
@@ -148,6 +203,7 @@ impl ManagedSession {
         Ok(Self {
             child: child_arc,
             stdin: stdin_arc,
+            pending,
         })
     }
 
@@ -162,39 +218,31 @@ impl ManagedSession {
         for path in attachments {
             content.push(json!({"type": "text", "text": format!("Attached file: {path}")}));
         }
-        self.write_envelope(json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": content
-            }
-        }))
+        write_line(
+            &self.stdin,
+            json!({
+                "type": "user",
+                "message": { "role": "user", "content": content }
+            }),
+        )
     }
 
-    /// Serialize one stream-json envelope as a newline-delimited line to the
-    /// agent's stdin.
-    fn write_envelope(&self, envelope: serde_json::Value) -> Result<()> {
-        let mut line = envelope.to_string();
-        line.push('\n');
-
-        let mut guard = self.stdin.lock();
-        let stdin = guard
-            .as_mut()
-            .ok_or_else(|| Error::Other("managed: stdin closed".into()))?;
-        stdin
-            .write_all(line.as_bytes())
-            .map_err(|e| Error::Other(format!("managed write: {e}")))?;
-        stdin
-            .flush()
-            .map_err(|e| Error::Other(format!("managed flush: {e}")))
+    /// Answer a held `can_use_tool` prompt (the question tools). `updated_input`
+    /// is the tool's input with the user's `answers` merged in; the CLI feeds it
+    /// back to the model as the tool result and resumes the turn.
+    pub fn answer_tool_use(&self, request_id: &str, updated_input: Value) -> Result<()> {
+        self.pending.lock().remove(request_id);
+        write_line(&self.stdin, allow_response(request_id, updated_input))
     }
 
     /// Send SIGINT to the child process to interrupt the current turn
-    /// without killing it. Claude in stream-json mode handles SIGINT by
-    /// aborting the current turn and emitting a result event, then
-    /// returning to idle. If the process does not survive SIGINT the
-    /// exit handler will transition the agent to Idle automatically.
+    /// without killing it. First releases any held permission prompts (denied),
+    /// so a turn paused on a question can unwind rather than hang.
     pub fn interrupt(&self) {
+        let held: Vec<String> = self.pending.lock().drain().collect();
+        for rid in held {
+            let _ = write_line(&self.stdin, deny_response(&rid, "Interrupted by user"));
+        }
         #[cfg(unix)]
         {
             use nix::sys::signal::{kill, Signal};
@@ -221,5 +269,127 @@ impl ManagedSession {
 impl Drop for ManagedSession {
     fn drop(&mut self) {
         let _ = self.kill();
+    }
+}
+
+/// Decide what to do with one `can_use_tool` request and act on it: auto-approve
+/// ordinary tools immediately, or hold the question tools open for the user
+/// (recording the `request_id` and surfacing the request to the UI). Non-tool
+/// control requests (hook/mcp callbacks, which we never register) are
+/// acknowledged so the agent never stalls waiting on us.
+fn handle_control_request<F: Fn(Value)>(
+    stdin: &Stdin,
+    pending: &Arc<Mutex<HashSet<String>>>,
+    on_event: &F,
+    v: Value,
+) {
+    let request_id = v
+        .get("request_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let req = v.get("request");
+    let subtype = req
+        .and_then(|r| r.get("subtype"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    if subtype == "can_use_tool" {
+        let tool = req
+            .and_then(|r| r.get("tool_name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if HOLD_TOOLS.contains(&tool) {
+            // The real pause: don't respond. Record it and hand the request to
+            // the UI, which answers via `answer_tool_use`.
+            pending.lock().insert(request_id);
+            on_event(v);
+        } else {
+            let input = req
+                .and_then(|r| r.get("input"))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let _ = write_line(stdin, allow_response(&request_id, input));
+        }
+    } else {
+        // hook_callback / mcp_message / unknown — we register neither hooks nor
+        // SDK MCP servers, so this is unexpected; ack so the turn keeps moving.
+        tracing::warn!(subtype, "managed: unexpected control_request, acking");
+        let _ = write_line(
+            stdin,
+            json!({
+                "type": "control_response",
+                "response": { "subtype": "success", "request_id": request_id, "response": {} }
+            }),
+        );
+    }
+}
+
+fn allow_response(request_id: &str, updated_input: Value) -> Value {
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": { "behavior": "allow", "updatedInput": updated_input }
+        }
+    })
+}
+
+fn deny_response(request_id: &str, message: &str) -> Value {
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": { "behavior": "deny", "message": message }
+        }
+    })
+}
+
+/// Serialize one stream-json envelope as a newline-delimited line to the
+/// agent's stdin.
+fn write_line(stdin: &Stdin, value: Value) -> Result<()> {
+    let mut line = value.to_string();
+    line.push('\n');
+
+    let mut guard = stdin.lock();
+    let stdin = guard
+        .as_mut()
+        .ok_or_else(|| Error::Other("managed: stdin closed".into()))?;
+    stdin
+        .write_all(line.as_bytes())
+        .map_err(|e| Error::Other(format!("managed write: {e}")))?;
+    stdin
+        .flush()
+        .map_err(|e| Error::Other(format!("managed flush: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn holds_only_question_tools() {
+        assert!(HOLD_TOOLS.contains(&"AskUserQuestion"));
+        assert!(!HOLD_TOOLS.contains(&"Bash"));
+        assert!(!HOLD_TOOLS.contains(&"Edit"));
+    }
+
+    #[test]
+    fn allow_response_shape() {
+        let v = allow_response("req-1", json!({"questions": [], "answers": {"q": "a"}}));
+        assert_eq!(v["type"], "control_response");
+        assert_eq!(v["response"]["subtype"], "success");
+        assert_eq!(v["response"]["request_id"], "req-1");
+        assert_eq!(v["response"]["response"]["behavior"], "allow");
+        assert_eq!(v["response"]["response"]["updatedInput"]["answers"]["q"], "a");
+    }
+
+    #[test]
+    fn deny_response_shape() {
+        let v = deny_response("req-2", "nope");
+        assert_eq!(v["response"]["response"]["behavior"], "deny");
+        assert_eq!(v["response"]["response"]["message"], "nope");
     }
 }

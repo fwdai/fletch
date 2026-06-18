@@ -3,6 +3,7 @@ import {
   isUserInputTool,
   parseUserInput,
   formatAnswer,
+  buildAnswers,
   type UIAnswer,
 } from "./parse";
 
@@ -133,5 +134,30 @@ describe("formatAnswer", () => {
       { labels: ["Use a queue instead"], isOther: true },
     ]);
     expect(out).toBe("Not yet — keep planning. Use a queue instead");
+  });
+});
+
+describe("buildAnswers", () => {
+  const opt = (label: string): UIAnswer => ({ labels: [label], isOther: false });
+
+  it("keys answers by original question text", () => {
+    const model = parseUserInput("AskUserQuestion", {
+      questions: [{ question: "Which DB?", options: [{ label: "Postgres" }] }],
+    });
+    expect(buildAnswers(model, [opt("Postgres")])).toEqual({ "Which DB?": "Postgres" });
+  });
+
+  it("returns an array for multiSelect and a joined string otherwise", () => {
+    const model = parseUserInput("AskUserQuestion", {
+      questions: [
+        { question: "Langs?", multiSelect: true, options: [] },
+        { question: "License?", options: [] },
+      ],
+    });
+    const out = buildAnswers(model, [
+      { labels: ["TS", "Rust"], isOther: false },
+      opt("MIT"),
+    ]);
+    expect(out).toEqual({ "Langs?": ["TS", "Rust"], "License?": "MIT" });
   });
 });
