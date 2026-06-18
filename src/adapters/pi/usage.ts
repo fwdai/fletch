@@ -1,0 +1,38 @@
+// Token usage from Pi's on-disk transcript.
+//
+// Pi persists settled `type:"message"` records; assistant messages carry a
+// per-message usage delta with native cost:
+//   {"type":"message","message":{"role":"assistant","model":"claude-…",
+//      "usage":{"input":2,"output":14,"cacheRead":0,"cacheWrite":3159,
+//               "totalTokens":3175,"cost":{"total":0.0201}}}}
+// `input` is FRESH input (cache read/write are separate), so summing the
+// per-message deltas yields the session total. Pi does not persist a
+// context-window size.
+
+import type { RawEvent, TurnUsage } from "../types";
+import { asNumber, asRecord } from "../shared/json";
+
+export function extractUsage(body: RawEvent): TurnUsage | undefined {
+  if (body.type !== "message") return undefined;
+  const message = asRecord(body.message);
+  if (message.role !== "assistant") return undefined;
+
+  const usage = asRecord(message.usage);
+  const inputTokens = asNumber(usage.input);
+  const outputTokens = asNumber(usage.output);
+  const cacheReadTokens = asNumber(usage.cacheRead);
+  const cacheWriteTokens = asNumber(usage.cacheWrite);
+  if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) {
+    return undefined;
+  }
+
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    costUsd: asNumber(asRecord(usage.cost).total),
+    context: { input: inputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheWriteTokens },
+    model: typeof message.model === "string" ? message.model : undefined,
+  };
+}

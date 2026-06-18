@@ -2,6 +2,7 @@ import type { ChatAdapter } from "../types";
 import { reduce } from "./reduce";
 import { normalizeTranscript } from "./normalize";
 import { codexPolicy } from "./policy";
+import { extractUsage } from "./usage";
 
 // Reduces Codex's `codex exec --json` thread/turn/item event stream
 // (verified against codex-cli 0.135.0 — see ./reduce.ts). Transcript
@@ -11,4 +12,5 @@ export const codexAdapter: ChatAdapter = {
   reduce,
   normalizeTranscript,
   policy: codexPolicy,
+  extractUsage,
 };

@@ -33,7 +33,7 @@ export function AgentRow(props: Props) {
 // ── real agent ───────────────────────────────────────────────────────────────
 
 function RealRow({ agent, active, onClick }: RealRowProps) {
-  const rawTokens = useAppStore((s) => s.tokens[agent.id]);
+  const usage = useAppStore((s) => s.usage[agent.id]);
   const prState = useAppStore((s) => s.prStates[agent.id] ?? null);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
@@ -48,11 +48,20 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // spawning is the start of a run — show it as "working" too, not a dead row
   const working = agent.status === "running" || agent.status === "spawning";
 
+  const hasUsage = !!usage && usage.contextTokens > 0;
+  const contextWindow = usage?.contextWindow || DEFAULT_CONTEXT_WINDOW;
   const stats: AgentStats = {
     launched: age || "just now",
     runtime: liveRuntime(agent.created_at, now, agent.status),
-    tokens: rawTokens ?? null,
-    contextPct: contextPctFromTokens(rawTokens),
+    contextTokens: hasUsage ? usage!.contextTokens : null,
+    contextWindow,
+    contextPct: hasUsage ? contextPct(usage!.contextTokens, contextWindow) : 0,
+    // Fresh input only — matching the composer gauge. Cumulative cache read
+    // balloons (the same cached prefix re-read every turn) and is misleading
+    // as a session "input" total.
+    totalInput: usage ? usage.inputTokens : null,
+    totalOutput: usage ? usage.outputTokens : null,
+    costUsd: usage ? usage.costUsd : null,
   };
 
   const stoppable =
@@ -244,7 +253,11 @@ function liveRuntime(iso: string, now: number, status: AgentStatus): string {
   return `${m}m ${s}s`;
 }
 
-function contextPctFromTokens(tokens: number | undefined): number {
-  if (typeof tokens !== "number" || tokens <= 0) return 0;
-  return Math.min(100, Math.round((tokens / 200_000) * 100));
+/** Fallback context window for agents that don't report their own (claude,
+ *  opencode, pi all run 200k-class models here). */
+const DEFAULT_CONTEXT_WINDOW = 200_000;
+
+function contextPct(tokens: number, window: number): number {
+  if (tokens <= 0 || window <= 0) return 0;
+  return Math.min(100, Math.round((tokens / window) * 100));
 }

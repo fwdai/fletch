@@ -8,6 +8,8 @@ import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
 import { ModelPicker } from "./ModelPicker";
 import { BranchPicker } from "./BranchPicker";
+import { UsageMeter } from "./UsageMeter";
+import type { AgentUsage } from "../../store";
 import { AttachmentList } from "./AttachmentList";
 import { useFileDrop } from "./useFileDrop";
 import type { DirListing, PrSummary } from "../../api";
@@ -78,6 +80,10 @@ interface Props {
    *  Undefined for Cursor / Antigravity (no model in their transcript) or
    *  before the first agent turn. */
   activeModel?: string;
+  /** Per-agent token usage for the context gauge in the foot. Omit for new
+   *  sessions (no agent yet) or agents that report no usage (cursor,
+   *  antigravity) — the gauge then hides. */
+  usage?: AgentUsage;
 }
 
 function resolveThinking(providerId: string): string | undefined {
@@ -108,6 +114,7 @@ export function Composer({
   existingSession = false,
   initialThinking,
   activeModel,
+  usage,
 }: Props) {
   const features = useAppStore((s) => s.features);
 
@@ -329,6 +336,7 @@ export function Composer({
           <Icon name="attach" size={11} />
         </Chip>
         <span style={{ flex: 1 }} />
+        {usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
         <button
           type="button"
           className={`send ${stopping ? "is-stop" : ""}`}

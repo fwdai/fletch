@@ -300,6 +300,29 @@ pub fn sync_session(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) ->
     Ok(())
 }
 
+/// Persist a runtime-compiled record (`source = 'live_compiled'`) the frontend
+/// holds but the on-disk transcript lacks — currently cursor's per-turn token
+/// usage, which it emits only on its live `result` event. Idempotent on
+/// `native_id` (use the event's `request_id`), so re-sending a turn is a no-op.
+/// Returns whether a new row was inserted.
+#[tauri::command]
+pub fn append_live_record(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    provider: String,
+    native_id: String,
+    body: serde_json::Value,
+) -> Result<bool> {
+    let inserted = supervisor.workspace.append_session_records(
+        &agent_id,
+        &provider,
+        "live_compiled",
+        None,
+        &[(native_id.as_str(), &body)],
+    )?;
+    Ok(inserted > 0)
+}
+
 #[tauri::command]
 pub async fn add_repo_to_agent(
     supervisor: State<'_, Arc<Supervisor>>,

@@ -27,6 +27,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const send = useAppStore((s) => s.sendUserMessage);
   const stop = useAppStore((s) => s.stop);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
+  const usage = useAppStore((s) => s.usage[agent.id]);
   const composerSeed = useAppStore((s) => s.composerSeeds[agent.id]);
   const consumeComposerSeed = useAppStore((s) => s.consumeComposerSeed);
   // Stable identity: the Composer's seed effect lists this in its deps, so an
@@ -177,6 +178,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         <Composer
           existingSession
           activeModel={activeModel}
+          usage={usage}
           defaultProvider={agent.provider}
           initialThinking={agent.effort ?? undefined}
           disabled={!canSend}

@@ -34,6 +34,7 @@ import {
 } from "./components/RightPanel/primaryActions";
 import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
+import { usageFromRecords, hasUsage, type AgentUsage } from "./adapters/usage";
 import { getAllSettings, setSetting } from "./storage/settings";
 import {
   getAccount,
@@ -118,6 +119,7 @@ export function registerShellSink(
 //      import from "./adapters" directly; managedLogs is typed in terms
 //      of this. -----------------------------------------------------------
 export type { ChatItem } from "./adapters";
+export type { AgentUsage } from "./adapters/usage";
 
 // ---- Drafts ----------------------------------------------------------------
 // A draft is a new agent the user is about to spawn. It owns a landmark
@@ -236,10 +238,11 @@ interface AppState {
    *  non-selected agent (covers research-only turns with no diff), cleared
    *  when the agent is selected. */
   unseenResults: Record<string, boolean>;
-  /** Last observed input-token count from the agent's most recent
-   *  `result` event. Persists across agents so the right-rail
-   *  cost panel can show a stable number after a turn completes. */
-  tokens: Record<string, number>;
+  /** Per-agent cumulative token usage (and latest context-window fill),
+   *  folded from session_records at turn-end and on transcript load. Keyed by
+   *  agent_id; absent until the agent's first turn lands. Empty for agents that
+   *  don't persist usage on disk (cursor, antigravity). See adapters/usage.ts. */
+  usage: Record<string, AgentUsage>;
   /** Full git state, keyed by agent_id — branch, ahead/behind, file list,
    *  totals. Only populated for the focused agent (by GitPanel's 1s poll
    *  while it's mounted). For sidebar shortstats / right-rail badges of
@@ -599,8 +602,6 @@ function applyEvent(
     next[next.length - 1]?.kind === "notice" &&
     (next[next.length - 1] as { subtype?: string }).subtype === "turn_end";
 
-  const tokens = extractInputTokens(rawEvent);
-
   return {
     turnEnded,
     patch: {
@@ -611,19 +612,39 @@ function applyEvent(
       managedBusyLabel: turnEnded
         ? { ...state.managedBusyLabel, [agentId]: undefined }
         : state.managedBusyLabel,
-      tokens:
-        tokens !== undefined
-          ? { ...state.tokens, [agentId]: tokens }
-          : state.tokens,
     },
   };
 }
 
-function extractInputTokens(ev: RawEvent): number | undefined {
-  if (ev.type !== "result") return undefined;
-  const usage = ev.usage as Record<string, unknown> | undefined;
-  const n = usage?.input_tokens;
-  return typeof n === "number" && n > 0 ? n : undefined;
+/** Cursor reports token usage only on its live `result` event (never on disk),
+ *  so persist that event into session_records (`live_compiled`) when it lands —
+ *  then usage folds from records like every other agent, surviving restarts.
+ *  Idempotent on the event's `request_id`; after persisting, re-fold so the
+ *  gauge updates this turn rather than only on the next records refresh. */
+async function persistLiveUsage(
+  get: () => AppState,
+  set: (patch: Partial<AppState>) => void,
+  agentId: string,
+  rawEvent: RawEvent,
+): Promise<void> {
+  const provider = providerFor(get(), agentId);
+  const adapter = getAdapter(provider);
+  if (!adapter.persistLiveUsage || !adapter.extractUsage) return;
+  if (!adapter.extractUsage(rawEvent)) return; // nothing to persist this event
+  const nativeId =
+    typeof rawEvent.request_id === "string" && rawEvent.request_id
+      ? rawEvent.request_id
+      : `usage:${Date.now()}`;
+  try {
+    await api.appendLiveRecord(agentId, provider ?? adapter.id, nativeId, rawEvent);
+    const records = await api.readSessionRecords(agentId);
+    const usage = usageFromRecords(provider, records);
+    if (hasUsage(usage)) {
+      set({ usage: { ...get().usage, [agentId]: usage } });
+    }
+  } catch {
+    // Non-critical: the next records refresh or restart re-folds it.
+  }
 }
 
 /** A per-turn agent captures its session id on its first turn (e.g. agy reads
@@ -682,7 +703,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   managedBusyLabel: {},
   switchInFlight: {},
   unseenResults: {},
-  tokens: {},
+  usage: {},
   gitStates: {},
   gitShortstats: {},
   prStates: {},
@@ -811,6 +832,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         turnEnded = result.turnEnded;
         return result.patch;
       });
+      // Capture usage that lives only on the live stream (cursor) into
+      // session_records so it folds like every other agent (see persistLiveUsage).
+      void persistLiveUsage(get, set, e.agent_id, e.event as RawEvent);
       // A turn can't end with prompts still held — clear any stale entries
       // (e.g. an interrupt that denied a pending question).
       if (turnEnded && get().pendingToolUse[e.agent_id]) {
@@ -854,8 +878,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (records.length === 0) return;
           const provider = providerFor(get(), id);
           const items = applyUserTurns(reduceRecords(provider, records), turns);
+          const usage = usageFromRecords(provider, records);
           set((state) => ({
             managedLogs: { ...state.managedLogs, [id]: items },
+            // Only overwrite when records carried usage — cursor folds usage
+            // live, so an empty records result must not wipe it.
+            usage: hasUsage(usage) ? { ...state.usage, [id]: usage } : state.usage,
           }));
           // The first turn captures the agent's session id in the DB; pull it
           // into the live workspace so the Native toggle unblocks without a
@@ -1204,7 +1232,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _droppedTranscriptLoaded, ...restTranscriptLoaded } =
           s.transcriptLoaded;
         const { [id]: _droppedBusy, ...restBusy } = s.managedBusy;
-        const { [id]: _droppedTokens, ...restTokens } = s.tokens;
+        const { [id]: _droppedUsage, ...restUsage } = s.usage;
         const { [id]: _droppedGitState, ...restGitStates } = s.gitStates;
         const { [id]: _droppedShortstats, ...restShortstats } = s.gitShortstats;
         const { [id]: _droppedPrState, ...restPrStates } = s.prStates;
@@ -1219,7 +1247,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           transcriptLoading: restTranscriptLoading,
           transcriptLoaded: restTranscriptLoaded,
           managedBusy: restBusy,
-          tokens: restTokens,
+          usage: restUsage,
           gitStates: restGitStates,
           gitShortstats: restShortstats,
           prStates: restPrStates,
@@ -1246,7 +1274,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _tl, ...restTranscriptLoading } = s.transcriptLoading;
         const { [id]: _td, ...restTranscriptLoaded } = s.transcriptLoaded;
         const { [id]: _b, ...restBusy } = s.managedBusy;
-        const { [id]: _t, ...restTokens } = s.tokens;
+        const { [id]: _t, ...restUsage } = s.usage;
         const { [id]: _g, ...restGitStates } = s.gitStates;
         const { [id]: _s, ...restShortstats } = s.gitShortstats;
         const { [id]: _p, ...restPrStates } = s.prStates;
@@ -1261,7 +1289,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           transcriptLoading: restTranscriptLoading,
           transcriptLoaded: restTranscriptLoaded,
           managedBusy: restBusy,
-          tokens: restTokens,
+          usage: restUsage,
           gitStates: restGitStates,
           gitShortstats: restShortstats,
           prStates: restPrStates,
@@ -1313,6 +1341,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // a failed send still shows on reload even when there are no records yet.
       const turns = await api.readUserTurns(id);
       const items = applyUserTurns(reduceRecords(provider, records), turns);
+      const usage = usageFromRecords(provider, records);
       set((state) => {
         // Nothing stored but a live turn is already rendering — don't clobber it.
         if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {
@@ -1321,6 +1350,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         return {
           managedLogs: { ...state.managedLogs, [id]: items },
           managedBusy: { ...state.managedBusy, [id]: false },
+          // Only overwrite when records carried usage — cursor folds usage
+          // live, so an empty records result must not wipe it.
+          ...(hasUsage(usage) ? { usage: { ...state.usage, [id]: usage } } : {}),
         };
       });
     } catch (e) {

@@ -174,6 +174,7 @@ pub fn run() {
             commands::read_session_records,
             commands::read_user_turns,
             commands::sync_session,
+            commands::append_live_record,
             commands::add_repo_to_agent,
             commands::allocate_draft_name,
             commands::get_git_state,
