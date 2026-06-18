@@ -13,6 +13,7 @@ use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnS
 use crate::branding;
 use crate::error::{Error, Result};
 use crate::git;
+use crate::managed_session::ToolUseBehavior;
 use crate::pty_session::{PtySession, PtySpawn};
 use crate::rpc;
 use crate::run_session::{
@@ -849,19 +850,21 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Deliver the user's answer to a held question-tool prompt (Claude's
-    /// `AskUserQuestion`) as the tool result, unblocking the paused turn.
+    /// Deliver the user's answer to a held user-input prompt as a control
+    /// response, unblocking the paused turn.
     pub fn answer_tool_use(
         &self,
         agent_id: &str,
         request_id: &str,
         updated_input: serde_json::Value,
+        behavior: ToolUseBehavior,
+        message: Option<String>,
     ) -> Result<()> {
         let agents = self.agents.lock();
         let agent = agents
             .get(agent_id)
             .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
-        agent.answer_tool_use(request_id, updated_input)
+        agent.answer_tool_use(request_id, updated_input, behavior, message)
     }
 
     pub fn resize_agent(&self, agent_id: &str, cols: u16, rows: u16) -> Result<()> {

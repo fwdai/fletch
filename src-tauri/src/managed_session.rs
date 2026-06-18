@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
@@ -38,6 +39,13 @@ use crate::error::{Error, Result};
 const HOLD_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode"];
 
 type Stdin = Arc<Mutex<Option<ChildStdin>>>;
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolUseBehavior {
+    Allow,
+    Deny,
+}
 
 pub struct ManagedSession {
     child: Arc<Mutex<Option<Child>>>,
@@ -230,7 +238,13 @@ impl ManagedSession {
     /// Answer a held `can_use_tool` prompt (the question tools). `updated_input`
     /// is the tool's input with the user's `answers` merged in; the CLI feeds it
     /// back to the model as the tool result and resumes the turn.
-    pub fn answer_tool_use(&self, request_id: &str, updated_input: Value) -> Result<()> {
+    pub fn answer_tool_use(
+        &self,
+        request_id: &str,
+        updated_input: Value,
+        behavior: ToolUseBehavior,
+        message: Option<String>,
+    ) -> Result<()> {
         if !self.pending.lock().remove(request_id) {
             tracing::debug!(
                 request_id,
@@ -238,7 +252,13 @@ impl ManagedSession {
             );
             return Ok(());
         }
-        write_line(&self.stdin, allow_response(request_id, updated_input))
+        let response = match behavior {
+            ToolUseBehavior::Allow => allow_response(request_id, updated_input),
+            ToolUseBehavior::Deny => {
+                deny_response(request_id, message.as_deref().unwrap_or("Denied by user"))
+            }
+        };
+        write_line(&self.stdin, response)
     }
 
     /// Send SIGINT to the child process to interrupt the current turn
@@ -391,7 +411,26 @@ mod tests {
             pending: Arc::new(Mutex::new(HashSet::new())),
         };
 
-        assert!(session.answer_tool_use("already-drained", json!({})).is_ok());
+        assert!(session
+            .answer_tool_use(
+                "already-drained",
+                json!({}),
+                ToolUseBehavior::Allow,
+                None,
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn tool_use_behavior_deserializes_from_ipc_strings() {
+        assert_eq!(
+            serde_json::from_value::<ToolUseBehavior>(json!("allow")).unwrap(),
+            ToolUseBehavior::Allow
+        );
+        assert_eq!(
+            serde_json::from_value::<ToolUseBehavior>(json!("deny")).unwrap(),
+            ToolUseBehavior::Deny
+        );
     }
 
     #[test]

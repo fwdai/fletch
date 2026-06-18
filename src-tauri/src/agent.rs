@@ -24,7 +24,7 @@ use crate::activity::{Activity, ManagedActivity};
 use crate::error::{Error, Result};
 use crate::exec_session::{ExecCallbacks, ExecSession, ExecSpawn};
 use crate::instructions;
-use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn};
+use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
 
@@ -38,6 +38,7 @@ pub enum Agent {
     /// sandboxes itself, so there's no sandbox-exec profile.
     PerTurn(PerTurnAgent),
 }
+
 
 pub struct PtyAgent {
     pty: PtySession,
@@ -1013,17 +1014,21 @@ impl Agent {
         }
     }
 
-    /// Answer a held question-tool prompt (Claude's `AskUserQuestion`) by
-    /// delivering the user's selection as the tool result. Only the managed
+    /// Answer a held user-input prompt (`AskUserQuestion` / `ExitPlanMode`) by
+    /// delivering the user's selection as a control response. Only the managed
     /// (Claude stream-json) transport pauses on tools this way; per-turn and
     /// PTY agents run fully auto-approved and never surface such a prompt.
     pub fn answer_tool_use(
         &self,
         request_id: &str,
         updated_input: serde_json::Value,
+        behavior: ToolUseBehavior,
+        message: Option<String>,
     ) -> Result<()> {
         match self {
-            Self::Managed(a) => a.session.answer_tool_use(request_id, updated_input),
+            Self::Managed(a) => a
+                .session
+                .answer_tool_use(request_id, updated_input, behavior, message),
             Self::PerTurn(_) | Self::Pty(_) => Err(Error::Other(
                 "answer_tool_use is only supported for managed agents".into(),
             )),
@@ -1894,4 +1899,3 @@ mod tests {
         }
     }
 }
-

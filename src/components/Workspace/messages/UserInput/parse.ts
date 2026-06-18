@@ -45,6 +45,8 @@ export interface UserInputModel {
  *  or free-text when the user took the "Something else…" path. */
 export interface UIAnswer {
   labels: string[];
+  /** Original option ids for non-free-text answers, used for tool semantics. */
+  optionIds?: string[];
   /** True when the labels came from the free-text composer, not an option. */
   isOther: boolean;
 }
@@ -185,11 +187,11 @@ export function formatAnswer(
 ): string {
   if (model.tool === "ExitPlanMode") {
     const a = answers[0];
-    const picked = a?.labels[0] ?? "";
+    const picked = a?.optionIds?.[0] ?? a?.labels[0] ?? "";
     if (a?.isOther) {
       return `Not yet — keep planning. ${a.labels.join(" ")}`.trim();
     }
-    return picked === "Approve & proceed"
+    return picked === "approve" || picked === "Approve & proceed"
       ? "Approved. Proceed with the plan."
       : "Not yet — keep planning.";
   }

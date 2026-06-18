@@ -30,11 +30,13 @@ export function QuestionCard({
   const [otherText, setOtherText] = useState("");
   const otherRef = useRef<HTMLTextAreaElement>(null);
 
-  const answerOne = (label: string) => onAnswer({ labels: [label], isOther: false });
+  const answerOne = (option: UIQuestion["options"][number]) =>
+    onAnswer({ labels: [option.label], optionIds: [option.id], isOther: false });
   const confirmMulti = () => {
     if (picks.size === 0) return;
     onAnswer({
       labels: opts.filter((o) => picks.has(o.id)).map((o) => o.label),
+      optionIds: opts.filter((o) => picks.has(o.id)).map((o) => o.id),
       isOther: false,
     });
   };
@@ -54,7 +56,7 @@ export function QuestionCard({
       const n = Number.parseInt(e.key, 10);
       if (n >= 1 && n <= opts.length) {
         e.preventDefault();
-        answerOne(opts[n - 1].label);
+        answerOne(opts[n - 1]);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -128,7 +130,7 @@ export function QuestionCard({
                     return next;
                   });
                 } else {
-                  answerOne(o.label);
+                  answerOne(o);
                 }
               }}
             >

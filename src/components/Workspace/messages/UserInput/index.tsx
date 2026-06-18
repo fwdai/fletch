@@ -60,15 +60,26 @@ export function UserInput({
       if (!agentId) return;
       const ordered = model.questions.map((_, idx) => next[idx]);
       if (pendingRequestId) {
-        // True pause: return the structured answer as the tool result.
+        // True pause: return the structured answer as the tool result. For
+        // ExitPlanMode, "Keep planning" is a permission denial, not a tool
+        // result approval.
         const rawInput =
           call.input && typeof call.input === "object"
             ? (call.input as Record<string, unknown>)
             : {};
-        void answerToolUse(agentId, call.id, {
-          ...rawInput,
-          answers: buildAnswers(model, ordered),
-        });
+        const keepPlanning =
+          model.tool === "ExitPlanMode" &&
+          (ordered[0]?.optionIds?.[0] === "reject" || ordered[0]?.isOther);
+        void answerToolUse(
+          agentId,
+          call.id,
+          {
+            ...rawInput,
+            answers: buildAnswers(model, ordered),
+          },
+          keepPlanning ? "deny" : "allow",
+          keepPlanning ? formatAnswer(model, ordered) : undefined,
+        );
       } else {
         // No held prompt (replayed history) — answer as an ordinary message.
         void sendUserMessage(agentId, formatAnswer(model, ordered));

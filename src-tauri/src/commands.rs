@@ -12,6 +12,7 @@ use crate::gh::{self, GhRepoSummary, GhStatus, PrState};
 use crate::git;
 use crate::new_project;
 use crate::git_state::{self, FileStatus, GitState, ShortStats, StatusKind};
+use crate::managed_session::ToolUseBehavior;
 use crate::names;
 use crate::run_session::RunStateSnapshot;
 use crate::supervisor::Supervisor;
@@ -185,10 +186,12 @@ pub fn answer_tool_use(
     agent_id: String,
     request_id: String,
     updated_input: serde_json::Value,
+    behavior: ToolUseBehavior,
+    message: Option<String>,
 ) -> Result<()> {
     supervisor
         .inner()
-        .answer_tool_use(&agent_id, &request_id, updated_input)
+        .answer_tool_use(&agent_id, &request_id, updated_input, behavior, message)
 }
 
 #[tauri::command]

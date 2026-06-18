@@ -362,15 +362,18 @@ interface AppState {
     attachments?: string[],
     thinking?: string,
   ) => Promise<void>;
-  /** Answer a paused question tool (Claude's AskUserQuestion). Looks up the
-   *  held control-protocol request for `toolUseId` and delivers `updatedInput`
-   *  (the tool's input with the user's `answers` merged in) as the tool result,
-   *  resuming the turn. No-op if no held request matches (e.g. replayed
-   *  history, where the answer routes as a normal message instead). */
+  /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
+   *  Looks up the held control-protocol request for `toolUseId` and delivers
+   *  `updatedInput` (the tool's input with the user's `answers` merged in) as
+   *  an allow/deny control response, resuming the turn. No-op if no held request
+   *  matches (e.g. replayed history, where the answer routes as a normal
+   *  message instead). */
   answerToolUse: (
     id: string,
     toolUseId: string,
     updatedInput: unknown,
+    behavior?: "allow" | "deny",
+    message?: string,
   ) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
   resume: (id: string) => Promise<void>;
@@ -768,9 +771,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     await onAgentEvent((e) => {
       const ev = e.event as RawEvent;
       // A held permission prompt the backend forwarded for a human to answer
-      // (Claude's AskUserQuestion). Record request_id ↔ tool_use_id so the
-      // widget can answer it; this is control plane, not a transcript event, so
-      // don't feed the reducer. The agent is paused awaiting input — the
+      // (Claude's AskUserQuestion / ExitPlanMode). Record request_id ↔
+      // tool_use_id so the widget can answer it; this is control plane, not a
+      // transcript event, so don't feed the reducer. The agent is paused awaiting input — the
       // composer stays disabled (busy) and ChatView hides the "thinking" dots.
       if (ev?.type === "control_request") {
         const req = (ev as { request?: Record<string, unknown> }).request;
@@ -1102,7 +1105,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  answerToolUse: async (id, toolUseId, updatedInput) => {
+  answerToolUse: async (id, toolUseId, updatedInput, behavior = "allow", message) => {
     const requestId = get().pendingToolUse[id]?.[toolUseId];
     if (!requestId) return;
     // Drop the held prompt and mark busy: feeding the answer resumes the
@@ -1118,7 +1121,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     });
     try {
-      await api.answerToolUse(id, requestId, updatedInput);
+      await api.answerToolUse(id, requestId, updatedInput, behavior, message);
     } catch (e) {
       set((state) => ({
         lastError: String(e),

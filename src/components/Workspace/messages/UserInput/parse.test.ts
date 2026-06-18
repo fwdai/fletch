@@ -121,12 +121,16 @@ describe("formatAnswer", () => {
 
   it("approves or keeps planning for ExitPlanMode", () => {
     const model = parseUserInput("ExitPlanMode", { plan: "x" });
-    expect(formatAnswer(model, [opt("Approve & proceed")])).toBe(
-      "Approved. Proceed with the plan.",
-    );
-    expect(formatAnswer(model, [opt("Keep planning")])).toBe(
-      "Not yet — keep planning.",
-    );
+    expect(
+      formatAnswer(model, [
+        { labels: ["Approve & proceed"], optionIds: ["approve"], isOther: false },
+      ]),
+    ).toBe("Approved. Proceed with the plan.");
+    expect(
+      formatAnswer(model, [
+        { labels: ["Keep planning"], optionIds: ["reject"], isOther: false },
+      ]),
+    ).toBe("Not yet — keep planning.");
   });
 
   it("includes free-text feedback when keeping planning", () => {
