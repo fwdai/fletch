@@ -1013,18 +1013,6 @@ impl Agent {
         }
     }
 
-    /// Answer a paused tool call by injecting a `tool_result`. Only the managed
-    /// (Claude stream-json) transport pauses on tools this way; the per-turn and
-    /// PTY agents run fully auto-approved and never surface such a prompt.
-    pub fn send_tool_result(&self, tool_use_id: &str, content: &str) -> Result<()> {
-        match self {
-            Self::Managed(a) => a.session.send_tool_result(tool_use_id, content),
-            Self::PerTurn(_) | Self::Pty(_) => Err(Error::Other(
-                "send_tool_result is only supported for managed agents".into(),
-            )),
-        }
-    }
-
     /// Interrupt the agent's current turn without terminating the process.
     /// For PTY agents this writes Ctrl+C; for managed agents this sends SIGINT.
     pub fn interrupt(&self) {

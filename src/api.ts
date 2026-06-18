@@ -359,8 +359,6 @@ export const api = {
       attachments,
       thinking: thinking ?? null,
     }),
-  sendToolResult: (agentId: string, toolUseId: string, content: string) =>
-    invoke<void>("send_tool_result", { agentId, toolUseId, content }),
   resizeAgent: (agentId: string, cols: number, rows: number) =>
     invoke<void>("resize_agent", { agentId, cols, rows }),
   switchView: (agentId: string, view: AgentView) =>

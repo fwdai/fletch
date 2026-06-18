@@ -849,23 +849,6 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Deliver a user's answer to a paused tool call (Claude's
-    /// `AskUserQuestion` / `ExitPlanMode`) as a `tool_result` on the agent's
-    /// stdin. The agent's transcript records the injected result, so — unlike
-    /// `send_user_message` — there is no separate durable turn row to write.
-    pub fn send_tool_result(
-        &self,
-        agent_id: &str,
-        tool_use_id: &str,
-        content: &str,
-    ) -> Result<()> {
-        let agents = self.agents.lock();
-        let agent = agents
-            .get(agent_id)
-            .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
-        agent.send_tool_result(tool_use_id, content)
-    }
-
     pub fn resize_agent(&self, agent_id: &str, cols: u16, rows: u16) -> Result<()> {
         let agents = self.agents.lock();
         let agent = agents

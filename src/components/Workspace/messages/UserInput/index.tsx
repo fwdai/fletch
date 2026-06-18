@@ -4,7 +4,7 @@ import { useAppStore } from "../../../../store";
 import type { ToolCall, ToolResult } from "../presenters/types";
 import { QuestionCard } from "./QuestionCard";
 import {
-  formatToolResult,
+  formatAnswer,
   parseUserInput,
   type UIAnswer,
   type UserInputTool,
@@ -12,10 +12,19 @@ import {
 
 /** Rich widget for the agent's "needs your input" tools (Claude's
  *  `AskUserQuestion` / `ExitPlanMode`). Renders one card per question; once
- *  every question is answered it sends a `tool_result` back to the agent's
- *  stdin (keyed to the tool_use id) to unblock the paused turn. A paired
- *  `result` — present after the turn is replayed from the transcript — folds
- *  the widget into a resolved summary. */
+ *  every question is answered it sends the chosen answer back as the next
+ *  user message.
+ *
+ *  Why a user message and not a tool_result: in headless `--print` mode the
+ *  Claude CLI has no interactive surface to present the question, so it
+ *  auto-rejects the tool with an `is_error` tool_result within milliseconds
+ *  and the model continues. By the time we render, that tool_use is already
+ *  closed — a tool_result keyed to it would be a duplicate. So we ignore the
+ *  CLI's error result, surface the options as quick replies, and let the
+ *  user's pick ride in as an ordinary turn, which the model reads and answers.
+ *
+ *  A genuine (non-error) `result` — e.g. from a future interactive flow —
+ *  still folds the widget into a resolved summary. */
 export function UserInput({
   tool,
   call,
@@ -28,7 +37,7 @@ export function UserInput({
   agentId?: string;
 }) {
   const model = useMemo(() => parseUserInput(tool, call.input), [tool, call.input]);
-  const sendToolResult = useAppStore((s) => s.sendToolResult);
+  const sendUserMessage = useAppStore((s) => s.sendUserMessage);
 
   // Keyed by question index rather than a fixed-length array: the model's
   // question count can grow as the tool_use input streams in, and we must not
@@ -43,17 +52,17 @@ export function UserInput({
       setCommittedLocally(true);
       if (agentId) {
         const ordered = model.questions.map((_, idx) => next[idx]);
-        void sendToolResult(agentId, call.id, formatToolResult(model, ordered));
+        void sendUserMessage(agentId, formatAnswer(model, ordered));
       }
     }
   };
 
   if (model.questions.length === 0) return null;
 
-  // Resolved from the transcript (loaded after the turn already completed):
-  // we have the answer text the agent received but not the structured picks,
-  // so show a compact summary rather than reconstructing each card.
-  if (!committedLocally && result) {
+  // A genuine (non-error) tool_result means the question was actually answered
+  // through it — show a compact summary. The CLI's `is_error` auto-rejection
+  // (headless mode) is NOT a real answer, so we fall through to live options.
+  if (!committedLocally && result && !result.is_error) {
     return (
       <div className="m-q is-answered">
         <div className="q-head">

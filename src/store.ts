@@ -355,13 +355,6 @@ interface AppState {
     attachments?: string[],
     thinking?: string,
   ) => Promise<void>;
-  /** Answer a paused tool call (Claude's AskUserQuestion / ExitPlanMode) by
-   *  writing a tool_result keyed to `toolUseId` to the agent's stdin. */
-  sendToolResult: (
-    id: string,
-    toolUseId: string,
-    content: string,
-  ) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
   resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
@@ -1053,24 +1046,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           throw e;
         }
       }
-    } catch (e) {
-      set((state) => ({
-        lastError: String(e),
-        managedBusy: { ...state.managedBusy, [id]: false },
-      }));
-    }
-  },
-
-  sendToolResult: async (id, toolUseId, content) => {
-    // Mark busy optimistically: feeding the tool_result unblocks the paused
-    // turn, so the agent resumes immediately. The transcript records the
-    // injected result, so no durable user-turn row is needed here.
-    set((state) => ({
-      managedBusy: { ...state.managedBusy, [id]: true },
-      managedBusyLabel: { ...state.managedBusyLabel, [id]: undefined },
-    }));
-    try {
-      await api.sendToolResult(id, toolUseId, content);
     } catch (e) {
       set((state) => ({
         lastError: String(e),

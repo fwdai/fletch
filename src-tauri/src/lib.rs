@@ -163,7 +163,6 @@ pub fn run() {
             commands::spawn_agent,
             commands::write_to_agent,
             commands::send_user_message,
-            commands::send_tool_result,
             commands::resize_agent,
             commands::switch_view,
             commands::resume_agent,

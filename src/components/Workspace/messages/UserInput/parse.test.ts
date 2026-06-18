@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   isUserInputTool,
   parseUserInput,
-  formatToolResult,
+  formatAnswer,
   type UIAnswer,
 } from "./parse";
 
@@ -87,14 +87,14 @@ describe("parseUserInput — ExitPlanMode", () => {
   });
 });
 
-describe("formatToolResult", () => {
+describe("formatAnswer", () => {
   const opt = (label: string): UIAnswer => ({ labels: [label], isOther: false });
 
   it("sends just the answer for a single question", () => {
     const model = parseUserInput("AskUserQuestion", {
       questions: [{ question: "DB?", options: [{ label: "Postgres" }] }],
     });
-    expect(formatToolResult(model, [opt("Postgres")])).toBe("Postgres");
+    expect(formatAnswer(model, [opt("Postgres")])).toBe("Postgres");
   });
 
   it("joins multiSelect labels with commas", () => {
@@ -102,7 +102,7 @@ describe("formatToolResult", () => {
       questions: [{ question: "Langs?", multiSelect: true, options: [] }],
     });
     expect(
-      formatToolResult(model, [{ labels: ["TS", "Rust"], isOther: false }]),
+      formatAnswer(model, [{ labels: ["TS", "Rust"], isOther: false }]),
     ).toBe("TS, Rust");
   });
 
@@ -113,23 +113,23 @@ describe("formatToolResult", () => {
         { question: "License?", header: "License", options: [] },
       ],
     });
-    const out = formatToolResult(model, [opt("Postgres"), opt("MIT")]);
+    const out = formatAnswer(model, [opt("Postgres"), opt("MIT")]);
     expect(out).toBe("Storage: Postgres\nLicense: MIT");
   });
 
   it("approves or keeps planning for ExitPlanMode", () => {
     const model = parseUserInput("ExitPlanMode", { plan: "x" });
-    expect(formatToolResult(model, [opt("Approve & proceed")])).toBe(
+    expect(formatAnswer(model, [opt("Approve & proceed")])).toBe(
       "Approved. Proceed with the plan.",
     );
-    expect(formatToolResult(model, [opt("Keep planning")])).toBe(
+    expect(formatAnswer(model, [opt("Keep planning")])).toBe(
       "Not yet — keep planning.",
     );
   });
 
   it("includes free-text feedback when keeping planning", () => {
     const model = parseUserInput("ExitPlanMode", { plan: "x" });
-    const out = formatToolResult(model, [
+    const out = formatAnswer(model, [
       { labels: ["Use a queue instead"], isOther: true },
     ]);
     expect(out).toBe("Not yet — keep planning. Use a queue instead");

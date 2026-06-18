@@ -129,10 +129,12 @@ export function parseUserInput(
   return { tool, questions };
 }
 
-/** Build the `tool_result` text sent back to Claude from the collected answers.
- *  Single-question calls send just the answer; multi-question calls label each
- *  line with its header/prompt so the model can tell them apart. */
-export function formatToolResult(
+/** Build the answer text sent back to the agent as the next user message.
+ *  The CLI auto-rejects AskUserQuestion in headless mode before we could return
+ *  a real tool_result (see UserInput/index.tsx), so the answer rides in as a
+ *  normal turn instead. Single-question calls send just the answer;
+ *  multi-question calls label each line so the model can tell them apart. */
+export function formatAnswer(
   model: UserInputModel,
   answers: UIAnswer[],
 ): string {
