@@ -63,9 +63,46 @@ export type DisplayMode = "show" | "hide";
 // `${kind}:${subtype}` entry wins when both are present.
 export type DisplayPolicy = Record<string, DisplayMode>;
 
+/** Normalized token usage extracted from ONE persisted session_record body.
+ *
+ *  Unlike `reduce`/`normalizeTranscript`, the usage extractors read each
+ *  agent's ON-DISK transcript body shape directly (see `<agent>/usage.ts`),
+ *  not the live event stream. Usage is folded over session_records — the
+ *  canonical store — rather than the ephemeral live stream, so cumulative
+ *  totals survive restarts and never double-count a turn rendered both live
+ *  and from records. See src/adapters/usage.ts for the fold. */
+export interface TurnUsage {
+  /** When true, the fields are running cumulative totals and the latest record
+   *  wins; when false/absent they are a per-record delta and are summed. Codex
+   *  reports cumulative `total_token_usage`; claude/opencode/pi report deltas. */
+  cumulative?: boolean;
+  /** Fresh, non-cached input tokens. */
+  inputTokens: number;
+  /** Output tokens, including reasoning/thinking tokens. */
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** Dollar cost, only for agents that report it natively (opencode, pi). */
+  costUsd?: number;
+  /** This record's context-window composition (latest record wins in the fold).
+   *  Its parts sum to the window fill and drive the meter's segmented bar:
+   *  `cacheRead` = reused/cached context, `cacheWrite` = newly cached this turn,
+   *  `input` = fresh non-cached input. The semantic split the design mocks up
+   *  (system / conversation / reasoning) is NOT recoverable from any agent's
+   *  transcript — this cache-state split is the truthful equivalent. */
+  context?: { input: number; cacheRead: number; cacheWrite: number };
+  /** Model context window size in tokens, when the agent reports it (codex). */
+  contextWindow?: number;
+  model?: string;
+}
+
 export interface ChatAdapter {
   readonly id: string;
   reduce(prevItems: ChatItem[], rawEvent: RawEvent): ChatItem[];
   normalizeTranscript(transcriptLines: unknown[]): RawEvent[];
   readonly policy: DisplayPolicy;
+  /** Extract token usage from one persisted session_record body, or undefined
+   *  when the record carries none. Optional: agents that don't persist usage
+   *  on disk (cursor, antigravity) omit it entirely. */
+  extractUsage?(recordBody: RawEvent): TurnUsage | undefined;
 }

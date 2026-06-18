@@ -61,3 +61,10 @@ export function formatTokens(n: number): string {
   if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
+
+/** A dollar cost: cents-precision below $10, sub-cent below $1 so small
+ *  sessions don't round to "$0.00". */
+export function formatCost(usd: number): string {
+  if (usd > 0 && usd < 0.01) return "<$0.01";
+  return `$${usd.toFixed(usd < 10 ? 3 : 2)}`;
+}
