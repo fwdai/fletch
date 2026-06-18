@@ -4,9 +4,18 @@
 //! worktree on a fresh branch and remove it later.
 
 use std::path::Path;
+use std::time::Duration;
 use tokio::process::Command;
 
 use crate::error::{Error, Result};
+
+/// Hard cap on the spawn-time `git fetch`. A fetch over a hung SSH/TCP
+/// connection can otherwise block for the OS keep-alive window (75–120s), far
+/// past the supervisor's 15s spawn watchdog — which would mark the agent
+/// `Error` while the background task later still runs `start_process`, leaving
+/// a live process under a failed-looking agent. Bounding it keeps the fetch
+/// inside the spawn budget; on timeout we fall back to local HEAD.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Create a worktree on detached HEAD (no branch yet). Used by the
 /// instant-spawn flow so we don't pollute `git branch` for agents
@@ -52,13 +61,21 @@ pub async fn worktree_add_detached(
 /// Never errors: a missing `origin`, an offline machine, or a purely local
 /// branch are all expected and simply mean "use local state".
 pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
-    let fetched = Command::new("git")
-        .current_dir(repo)
-        .args(["fetch", "origin", branch])
-        .output()
-        .await;
+    // `kill_on_drop` so a timeout actually tears down the hung git process
+    // (and its SSH child) rather than orphaning it to keep blocking on the
+    // dead connection.
+    let fetched = tokio::time::timeout(
+        FETCH_TIMEOUT,
+        Command::new("git")
+            .current_dir(repo)
+            .args(["fetch", "origin", branch])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    // Timed out, failed to spawn, or non-zero exit → fall back to local HEAD.
     match fetched {
-        Ok(out) if out.status.success() => {}
+        Ok(Ok(out)) if out.status.success() => {}
         _ => return None,
     }
     // Confirm the remote-tracking ref resolves before handing it back — a
