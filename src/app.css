@@ -781,6 +781,194 @@ button { cursor: default; }
   font-weight: 500;
 }
 
+/* ─── "Needs your input" widget ─────────────────────────────────────
+   The agent reaches a fork and asks the user to choose (Claude's
+   AskUserQuestion / ExitPlanMode). A quiet card that reads as part of the
+   prose but is clearly actionable. Click a variant to answer; "Something
+   else…" expands an inline composer; once answered it folds to a summary. */
+.m-q-stack { display: flex; flex-direction: column; gap: 10px; }
+.m-q {
+  border: 1px solid var(--bd);
+  border-radius: var(--r-lg);
+  background: var(--bg-2);
+  padding: 15px 16px 14px;
+  box-shadow: var(--shadow-1);
+  position: relative;
+  overflow: hidden;
+}
+/* a hairline accent down the left edge — "your turn" */
+.m-q::before {
+  content: "";
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: linear-gradient(var(--accent), color-mix(in oklch, var(--accent), transparent 55%));
+}
+
+.q-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.q-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px; font-weight: 600;
+  letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--accent);
+}
+.q-label svg { opacity: .9; }
+.q-label.resolved { color: var(--fg-3); }
+.q-step {
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: .04em; color: var(--accent);
+  background: var(--accent-soft); padding: 1px 5px; border-radius: 999px;
+}
+.q-ctx {
+  margin-left: auto;
+  font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--fg-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+
+.q-prompt { font-size: 14px; line-height: 1.6; color: var(--fg-0); text-wrap: pretty; }
+.q-prompt em { font-family: var(--font-serif); font-style: italic; color: var(--accent); font-size: 1.05em; }
+.q-prompt.resolved { color: var(--fg-2); }
+.q-body {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  font-size: 12.5px; line-height: 1.55; color: var(--fg-1);
+  max-height: 280px; overflow: auto;
+}
+.q-body > *:first-child { margin-top: 0; }
+.q-body > *:last-child { margin-bottom: 0; }
+
+.q-opts { display: flex; flex-direction: column; gap: 7px; margin-top: 13px; }
+.q-opt {
+  display: flex; align-items: flex-start; gap: 11px;
+  width: 100%; text-align: left;
+  padding: 11px 12px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  transition: border-color .14s var(--ease), background .14s var(--ease), transform .08s var(--ease);
+  animation: q-opt-in .34s var(--ease) both;
+}
+@keyframes q-opt-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.q-opt:hover { border-color: var(--accent-line); background: var(--hover); }
+.q-opt:active { transform: scale(.992); }
+.q-opt.is-checked { border-color: var(--accent-line); background: var(--accent-soft); }
+
+.q-radio {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bd-strong);
+  flex-shrink: 0; margin-top: 1px;
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--fg-3);
+  transition: border-color .14s, color .14s;
+}
+.q-radio::after {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); transform: scale(0);
+  transition: transform .14s var(--ease);
+}
+.q-opt:hover .q-radio { border-color: var(--accent); }
+.q-opt:hover .q-radio::after { transform: scale(1); }
+.q-radio.plus { border-style: dashed; }
+.q-radio.plus::after, .q-radio.check::after { display: none; }
+.q-radio.check { border-radius: 5px; }
+.q-opt.is-checked .q-radio.check { border-color: var(--accent); color: var(--accent); }
+.q-opt:hover .q-radio.plus { color: var(--accent); }
+
+.q-opt-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.q-opt-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.q-opt-label { font-size: 13px; font-weight: 500; color: var(--fg-0); letter-spacing: -0.005em; }
+.q-opt-label.muted { color: var(--fg-2); }
+.q-rec {
+  font-size: 9px; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-soft);
+  padding: 1.5px 6px; border-radius: 999px;
+}
+.q-opt-desc { font-size: 12px; line-height: 1.5; color: var(--fg-2); text-wrap: pretty; }
+.q-kbd {
+  flex-shrink: 0; width: 18px; height: 18px; margin-top: 1px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--bd-soft); border-radius: 4px;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3);
+  transition: border-color .14s, color .14s;
+}
+.q-opt:hover .q-kbd { border-color: var(--accent-line); color: var(--accent); }
+
+/* "other" composer */
+.q-other {
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  overflow: hidden;
+  animation: q-opt-in .2s var(--ease) both;
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 90%);
+}
+.q-other-input {
+  width: 100%; padding: 11px 12px 6px;
+  font-size: 13px; line-height: 1.55; color: var(--fg-0);
+  resize: none; min-height: 56px; max-height: 160px;
+  background: transparent; border: 0; font-family: inherit;
+}
+.q-other-input:focus { outline: none; }
+.q-other-input::placeholder { color: var(--fg-3); }
+.q-other-foot { display: flex; align-items: center; gap: 8px; padding: 6px 8px 8px 12px; }
+.q-other-hint { font-size: 11px; color: var(--fg-3); display: inline-flex; align-items: center; gap: 6px; }
+.q-other-hint .kbd, .q-other-hint .grow { }
+.q-other-foot .grow { flex: 1; }
+.q-multi-foot { display: flex; justify-content: flex-end; margin-top: 2px; }
+.q-other-cancel {
+  height: 26px; padding: 0 10px; border-radius: var(--r-sm);
+  font-size: 12px; color: var(--fg-2); font-weight: 500;
+  background: transparent; border: 0;
+  transition: background .12s, color .12s;
+}
+.q-other-cancel:hover { background: var(--hover); color: var(--fg-0); }
+.q-other-send {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 11px; border-radius: var(--r-sm);
+  font-size: 12px; font-weight: 600;
+  background: var(--accent); color: oklch(0.16 0.02 60);
+  border: 0; transition: background .12s, opacity .12s;
+}
+.theme-light .q-other-send { color: oklch(0.98 0.005 60); }
+.q-other-send:hover:not(:disabled) { background: oklch(from var(--accent) calc(l + 0.04) c h); }
+.q-other-send svg { opacity: .9; }
+.q-other-send:disabled { background: var(--hover); color: var(--fg-3); cursor: default; }
+
+/* answered (resolved) state */
+.m-q.is-answered { background: var(--bg-1); border-color: var(--bd-soft); }
+.m-q.is-answered::before { background: var(--accent-line); }
+.q-answer {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 12px; padding: 10px 12px;
+  border: 1px solid var(--accent-line); border-radius: var(--r-md);
+  background: var(--accent-soft);
+  animation: q-opt-in .26s var(--ease) both;
+}
+.qa-mark {
+  flex-shrink: 0; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent); color: oklch(0.16 0.02 60);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.theme-light .qa-mark { color: oklch(0.98 0.005 60); }
+.qa-text { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; color: var(--fg-0); text-wrap: pretty; }
+.qa-text.other { font-weight: 400; font-style: italic; color: var(--fg-1); }
+
+/* dismissed (interrupted before answering) — quiet, non-interactive */
+.m-q.is-dismissed { background: var(--bg-1); border-color: var(--bd-soft); }
+.m-q.is-dismissed::before { background: var(--bd-soft); }
+.q-label.dismissed { color: var(--fg-3); }
+.q-dismissed-note { margin-top: 8px; font-size: 12px; color: var(--fg-3); font-style: italic; }
+
 .m-tool {
   display: flex; align-items: center; gap: 10px;
   font-family: var(--font-mono);

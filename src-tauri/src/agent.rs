@@ -24,7 +24,7 @@ use crate::activity::{Activity, ManagedActivity};
 use crate::error::{Error, Result};
 use crate::exec_session::{ExecCallbacks, ExecSession, ExecSpawn};
 use crate::instructions;
-use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn};
+use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
 
@@ -38,6 +38,7 @@ pub enum Agent {
     /// sandboxes itself, so there's no sandbox-exec profile.
     PerTurn(PerTurnAgent),
 }
+
 
 pub struct PtyAgent {
     pty: PtySession,
@@ -1013,6 +1014,27 @@ impl Agent {
         }
     }
 
+    /// Answer a held user-input prompt (`AskUserQuestion` / `ExitPlanMode`) by
+    /// delivering the user's selection as a control response. Only the managed
+    /// (Claude stream-json) transport pauses on tools this way; per-turn and
+    /// PTY agents run fully auto-approved and never surface such a prompt.
+    pub fn answer_tool_use(
+        &self,
+        request_id: &str,
+        updated_input: serde_json::Value,
+        behavior: ToolUseBehavior,
+        message: Option<String>,
+    ) -> Result<()> {
+        match self {
+            Self::Managed(a) => a
+                .session
+                .answer_tool_use(request_id, updated_input, behavior, message),
+            Self::PerTurn(_) | Self::Pty(_) => Err(Error::Other(
+                "answer_tool_use is only supported for managed agents".into(),
+            )),
+        }
+    }
+
     /// Interrupt the agent's current turn without terminating the process.
     /// For PTY agents this writes Ctrl+C; for managed agents this sends SIGINT.
     pub fn interrupt(&self) {
@@ -1128,6 +1150,13 @@ fn prepare_managed_args(
     // over stdio. --verbose is required when using stream-json output
     // so events keep flowing. --include-partial-messages emits
     // incremental assistant text deltas for a responsive UI.
+    //
+    // `--permission-mode default --permission-prompt-tool stdio` (instead of
+    // `bypassPermissions`) routes every tool through a `can_use_tool` control
+    // request on stdio. `ManagedSession` auto-approves all of them except the
+    // question tools, which it holds open so the user actually answers — see
+    // managed_session.rs. `bypassPermissions` can't do this: it auto-denies
+    // AskUserQuestion before the client is consulted.
     let mut args: Vec<String> = vec![
         "-f".into(),
         profile_path,
@@ -1139,9 +1168,10 @@ fn prepare_managed_args(
         "stream-json".into(),
         "--verbose".into(),
         "--include-partial-messages".into(),
-        "--dangerously-skip-permissions".into(),
         "--permission-mode".into(),
-        "bypassPermissions".into(),
+        "default".into(),
+        "--permission-prompt-tool".into(),
+        "stdio".into(),
     ];
     args.extend(effort_args(spec.effort));
     args.extend(instructions::append_system_prompt_args());
@@ -1869,4 +1899,3 @@ mod tests {
         }
     }
 }
-
