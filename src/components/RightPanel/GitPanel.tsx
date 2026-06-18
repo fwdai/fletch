@@ -1,10 +1,21 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
-import type { AgentRecord, CheckRun, FileStatus, GitState, MergeState, PrChecks, PrState } from "../../api";
+import type {
+  AgentRecord,
+  CheckRun,
+  FileStatus,
+  GitState,
+  MergeState,
+  PrChecks,
+  PrComment,
+  PrComments,
+  PrState,
+} from "../../api";
 import { useAppStore } from "../../store";
 import { usePoll } from "../../util/hooks";
 import { Icon, type IconName } from "../Icon";
 import { IconButton } from "../ui/IconButton";
+import { commentLocation, formatCommentForChat } from "./prComments";
 import {
   appActionMessage,
   delegationDone,
@@ -387,7 +398,83 @@ function ChecksSection({ checks, prUrl }: { checks: PrChecks; prUrl: string }) {
   );
 }
 
-function PRCard({ pr, base, checks }: { pr: PrState; base: string; checks: PrChecks | null }) {
+// ── Review comments ───────────────────────────────────────────────
+// Unresolved PR review threads (Greptile / other bots / humans), each
+// flattened to its root comment. Mirrors ChecksSection's visual language.
+// Each row links out to the thread (↗) and offers a "→ chat" quick action
+// that drops the comment into the composer for the user to send to the agent.
+function CommentsSection({
+  comments,
+  onAddToChat,
+}: {
+  comments: PrComments;
+  onAddToChat: (c: PrComment) => void;
+}) {
+  const list = comments.unresolved;
+  if (list.length === 0) return null;
+  // Bots (the AI reviewers this feature targets) lead; otherwise stable order.
+  const rows = [...list].sort((a, b) => Number(b.is_bot) - Number(a.is_bot));
+  return (
+    <div className="pr-comments">
+      <div className="pr-comments-h">
+        <span>Comments</span>
+        <span className="pr-comments-sum">{list.length} unresolved</span>
+      </div>
+      {rows.map((c) => {
+        const loc = commentLocation(c);
+        return (
+          <div key={c.url} className="pr-comment">
+            <Icon name={c.is_bot ? "bot" : "user"} size={12} />
+            <div className="pc-body">
+              <div className="pc-top">
+                <span className="pc-author">{c.author}</span>
+                {loc && <span className="pc-loc">{loc}</span>}
+                {c.replies > 0 && (
+                  <span className="pc-replies">+{c.replies} {c.replies === 1 ? "reply" : "replies"}</span>
+                )}
+              </div>
+              <div className="pc-text">{c.body}</div>
+            </div>
+            <div className="pc-acts">
+              <button
+                type="button"
+                className="pc-act tip"
+                data-tip="Add to chat"
+                aria-label="Add comment to chat"
+                onClick={() => onAddToChat(c)}
+              >
+                <Icon name="arrowR" size={12} />
+              </button>
+              <button
+                type="button"
+                className="pc-act tip"
+                data-tip="View on GitHub"
+                aria-label="View comment on GitHub"
+                onClick={() => void open(c.url)}
+              >
+                <Icon name="external" size={11} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PRCard({
+  pr,
+  base,
+  checks,
+  comments,
+  onAddToChat,
+}: {
+  pr: PrState;
+  base: string;
+  checks: PrChecks | null;
+  comments: PrComments | null;
+  onAddToChat: (c: PrComment) => void;
+}) {
   // One merge-gate line, from `merge_state` when available (spec §7); the
   // `mergeable`-only fallback claims no more than "no conflicts".
   const ms = checks?.merge_state ?? null;
@@ -410,6 +497,7 @@ function PRCard({ pr, base, checks }: { pr: PrState; base: string; checks: PrChe
         <span className={gate.cls}>{gate.text}</span>
       </div>
       {checks && <ChecksSection checks={checks} prUrl={pr.url} />}
+      {comments && <CommentsSection comments={comments} onAddToChat={onAddToChat} />}
       <div className="git-card-links">
         <button type="button" className="git-card-link" onClick={() => void open(pr.url)}>
           <Icon name="github" size={11} />
@@ -484,6 +572,9 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   const deleteBranch     = useAppStore((s) => s.deleteBranch);
   const prChecksEntry = useAppStore((s) => s.prChecks[agent.id]);
   const fetchPrChecks = useAppStore((s) => s.fetchPrChecks);
+  const prCommentsEntry = useAppStore((s) => s.prComments[agent.id]);
+  const fetchPrComments = useAppStore((s) => s.fetchPrComments);
+  const seedComposer = useAppStore((s) => s.seedComposer);
   const delegation = useAppStore((s) => s.gitDelegations[agent.id]);
   const delegateGitAction = useAppStore((s) => s.delegateGitAction);
   const markGitDelegationRunning = useAppStore((s) => s.markGitDelegationRunning);
@@ -508,13 +599,16 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   // the "checking…" sub-state; null means confirmed unavailable → fall back
   // to mergeable-only behavior.
   const prOpen = prState?.state === "open";
-  const pollChecks = useCallback(() => {
-    if (!prOpen) return Promise.resolve();
-    return fetchPrChecks(agent.id);
-  }, [agent.id, prOpen, fetchPrChecks]);
+  const pollChecks = useCallback(async () => {
+    if (!prOpen) return;
+    // Checks + review comments share the slow cadence: both are heavier gh
+    // reads that only matter while a PR is open.
+    await Promise.all([fetchPrChecks(agent.id), fetchPrComments(agent.id)]);
+  }, [agent.id, prOpen, fetchPrChecks, fetchPrComments]);
   usePoll(pollChecks, 7000, [pollChecks]);
 
   const checks = prChecksEntry ?? null;
+  const comments = prCommentsEntry ?? null;
   const mergeState: MergeState | null =
     checks?.merge_state ?? (prOpen && prChecksEntry === undefined ? "unknown" : null);
 
@@ -636,6 +730,17 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
       delegateGitAction(agent.id, kind, prompt);
     },
     [agent.id, delegateGitAction],
+  );
+
+  // "→ chat" on a review comment: drop the formatted comment into this
+  // agent's composer (not sent), so the user can edit and send it. Bots like
+  // Greptile are inserted verbatim; human comments get a file/line wrapper.
+  const addCommentToChat = useCallback(
+    (c: PrComment) => {
+      seedComposer(agent.id, formatCommentForChat(c));
+      showNotice("Added to chat — edit & send to the agent");
+    },
+    [agent.id, seedComposer, showNotice],
   );
 
   // Single dispatch table for every action a state can offer — the split
@@ -813,7 +918,9 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 
       {/* ── scrollable body: the changes are the focus ── */}
       <div className={`git-body ${busy ? "busy" : ""}`}>
-        {panelState === "pr-open"   && prState && <PRCard pr={prState} base={base} checks={checks} />}
+        {panelState === "pr-open"   && prState && (
+          <PRCard pr={prState} base={base} checks={checks} comments={comments} onAddToChat={addCommentToChat} />
+        )}
         {panelState === "pr-closed" && prState && <ClosedPRCard pr={prState} />}
         {panelState === "conflicts" && gitState && <ConflictCard files={gitState.files} />}
 

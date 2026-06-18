@@ -495,6 +495,29 @@ pub async fn get_pr_checks(
     Ok(gh::pr_checks(&worktree).await.unwrap_or(None))
 }
 
+/// Fetch the unresolved PR review threads (Greptile / other bots / humans),
+/// flattened to each thread's root comment. Best-effort: any failure (no PR,
+/// gh missing, API error) returns `None` and the panel omits the section.
+#[tauri::command]
+pub async fn get_pr_comments(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Option<gh::PrComments>> {
+    let record = match supervisor.workspace.agent(&agent_id) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+    let repo = match record.repos.first() {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    if repo.branch.is_none() {
+        return Ok(None);
+    }
+    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    Ok(gh::pr_comments(&worktree).await.unwrap_or(None))
+}
+
 /// Open an interactive shell PTY in the agent's primary worktree.
 /// Idempotent: if a shell is already running for this agent, does nothing.
 #[tauri::command]

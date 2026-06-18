@@ -109,6 +109,36 @@ pub struct PrChecks {
     pub runs: Vec<CheckRun>,
 }
 
+/// One unresolved PR review thread, flattened to its root comment. Surfaced
+/// in the Git panel so review feedback (Greptile, other bots, humans) is
+/// visible without leaving the app, with a quick action to hand it to the
+/// coding agent.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrComment {
+    /// Comment author's login.
+    pub author: String,
+    /// True when the author is a GitHub App / bot (`__typename == "Bot"`).
+    /// Bots like Greptile already phrase their comments for an AI, so the UI
+    /// inserts them as-is; human comments get a file/line context wrapper.
+    pub is_bot: bool,
+    pub body: String,
+    /// File the thread is anchored to. `None` for an unanchored thread (e.g.
+    /// the line was deleted).
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    /// Permalink to the thread on GitHub.
+    pub url: String,
+    /// Replies after the root comment (thread length − 1, clamped at 0).
+    pub replies: u32,
+}
+
+/// Unresolved review threads for a PR. Heavier than `pr_view` — polled on the
+/// same slow cadence as `pr_checks` while a PR is open.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrComments {
+    pub unresolved: Vec<PrComment>,
+}
+
 // ---------------------------------------------------------------------------
 // Internal deserialization helpers
 // ---------------------------------------------------------------------------
@@ -335,6 +365,125 @@ fn parse_pr_checks(merge_state_status: &str, rollup: &[serde_json::Value]) -> Pr
         required_failing,
         runs,
     }
+}
+
+/// GraphQL query fetching a PR's review threads with resolution state. REST's
+/// `/pulls/{n}/comments` does not expose `isResolved`/`isOutdated`, which we
+/// need to keep only the actionable (unresolved) threads — so we use GraphQL.
+const REVIEW_THREADS_QUERY: &str = r#"
+query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      reviewThreads(first:100){
+        nodes{
+          isResolved
+          isOutdated
+          comments(first:1){
+            totalCount
+            nodes{ author{ login __typename } body path line url }
+          }
+        }
+      }
+    }
+  }
+}
+"#;
+
+/// Owner + name parsed from a PR's HTML URL
+/// (`https://github.com/OWNER/REPO/pull/N`). The PR lives in the base repo
+/// the URL points at, so this is correct for forked-branch PRs too.
+fn parse_repo_from_url(url: &str) -> Option<(String, String)> {
+    let rest = url.split("github.com/").nth(1)?;
+    let mut parts = rest.split('/');
+    let owner = parts.next().filter(|s| !s.is_empty())?;
+    let repo = parts.next().filter(|s| !s.is_empty())?;
+    Some((owner.to_string(), repo.to_string()))
+}
+
+/// Fetch the unresolved review threads for the current branch's PR.
+///
+/// Two `gh` calls: `gh pr view` to resolve the PR's repo + number from the
+/// worktree, then one `gh api graphql` for the threads. Returns `Ok(None)`
+/// when there is no PR; other gh failures surface as `Err` — the command
+/// layer maps both to "comments unavailable" and the panel simply omits the
+/// section.
+pub async fn pr_comments(worktree: &Path) -> Result<Option<PrComments>> {
+    let out = gh_command()
+        .current_dir(worktree)
+        .args(["pr", "view", "--json", "url,number"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.to_lowercase().contains("no pull requests found") {
+            return Ok(None);
+        }
+        return Err(Error::Gh(stderr.trim().to_string()));
+    }
+
+    let raw: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let url = raw["url"].as_str().unwrap_or_default();
+    let number = raw["number"].as_u64().unwrap_or_default();
+    let Some((owner, repo)) = parse_repo_from_url(url) else {
+        return Ok(None);
+    };
+
+    let gql = gh_command()
+        .current_dir(worktree)
+        .args([
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={REVIEW_THREADS_QUERY}"),
+            "-F",
+            &format!("owner={owner}"),
+            "-F",
+            &format!("repo={repo}"),
+            "-F",
+            &format!("number={number}"),
+        ])
+        .output()
+        .await?;
+    if !gql.status.success() {
+        return Err(Error::Gh(
+            String::from_utf8_lossy(&gql.stderr).trim().to_string(),
+        ));
+    }
+
+    let data: serde_json::Value = serde_json::from_slice(&gql.stdout)?;
+    let nodes = data["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    Ok(Some(PrComments {
+        unresolved: parse_review_threads(&nodes),
+    }))
+}
+
+/// Flatten review-thread nodes into the root comment of each *unresolved,
+/// non-outdated* thread. Pure — unit tested against captured fixtures.
+fn parse_review_threads(nodes: &[serde_json::Value]) -> Vec<PrComment> {
+    nodes
+        .iter()
+        .filter(|t| {
+            !t["isResolved"].as_bool().unwrap_or(false)
+                && !t["isOutdated"].as_bool().unwrap_or(false)
+        })
+        .filter_map(|t| {
+            let comments = &t["comments"];
+            let root = comments["nodes"].get(0)?;
+            let total = comments["totalCount"].as_u64().unwrap_or(1);
+            Some(PrComment {
+                author: root["author"]["login"].as_str().unwrap_or("unknown").to_string(),
+                is_bot: root["author"]["__typename"].as_str() == Some("Bot"),
+                body: root["body"].as_str().unwrap_or_default().to_string(),
+                path: root["path"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()),
+                line: root["line"].as_u64().map(|n| n as u32),
+                url: root["url"].as_str().unwrap_or_default().to_string(),
+                replies: total.saturating_sub(1) as u32,
+            })
+        })
+        .collect()
 }
 
 /// Create a PR for the branch checked out in `worktree`.
@@ -707,6 +856,73 @@ mod tests {
             let got = parse_pr_checks(raw, &[]).merge_state;
             assert_eq!(got, want, "for {raw}");
         }
+    }
+
+    fn review_threads_fixture() -> Vec<serde_json::Value> {
+        serde_json::from_str(
+            r#"[
+              {"isResolved":false,"isOutdated":false,"comments":{"totalCount":1,"nodes":[
+                {"author":{"login":"greptileai","__typename":"Bot"},
+                 "body":"Consider handling the null case here.",
+                 "path":"src/foo.rs","line":42,
+                 "url":"https://github.com/o/r/pull/1#discussion_r1"}]}},
+              {"isResolved":false,"isOutdated":false,"comments":{"totalCount":3,"nodes":[
+                {"author":{"login":"alice","__typename":"User"},
+                 "body":"Can we rename this?",
+                 "path":"src/bar.rs","line":7,
+                 "url":"https://github.com/o/r/pull/1#discussion_r2"}]}},
+              {"isResolved":true,"isOutdated":false,"comments":{"totalCount":1,"nodes":[
+                {"author":{"login":"bob","__typename":"User"},"body":"resolved one",
+                 "path":"src/baz.rs","line":1,"url":"u3"}]}},
+              {"isResolved":false,"isOutdated":true,"comments":{"totalCount":1,"nodes":[
+                {"author":{"login":"carol","__typename":"User"},"body":"stale one",
+                 "path":"src/qux.rs","line":1,"url":"u4"}]}},
+              {"isResolved":false,"isOutdated":false,"comments":{"totalCount":1,"nodes":[
+                {"author":{"login":"dave","__typename":"User"},"body":"unanchored",
+                 "path":null,"line":null,"url":"u5"}]}}
+            ]"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn review_threads_keep_only_unresolved_active() {
+        let comments = parse_review_threads(&review_threads_fixture());
+        // Resolved + outdated dropped; 3 remain (greptile, alice, dave).
+        assert_eq!(comments.len(), 3);
+        assert!(comments.iter().all(|c| c.author != "bob" && c.author != "carol"));
+    }
+
+    #[test]
+    fn review_threads_flag_bots_and_count_replies() {
+        let comments = parse_review_threads(&review_threads_fixture());
+        let greptile = comments.iter().find(|c| c.author == "greptileai").unwrap();
+        assert!(greptile.is_bot);
+        assert_eq!(greptile.replies, 0);
+        assert_eq!(greptile.path.as_deref(), Some("src/foo.rs"));
+        assert_eq!(greptile.line, Some(42));
+
+        let alice = comments.iter().find(|c| c.author == "alice").unwrap();
+        assert!(!alice.is_bot);
+        assert_eq!(alice.replies, 2); // totalCount 3 − root
+    }
+
+    #[test]
+    fn review_threads_tolerate_null_anchor() {
+        let comments = parse_review_threads(&review_threads_fixture());
+        let dave = comments.iter().find(|c| c.author == "dave").unwrap();
+        assert_eq!(dave.path, None);
+        assert_eq!(dave.line, None);
+    }
+
+    #[test]
+    fn parses_repo_from_pr_url() {
+        assert_eq!(
+            parse_repo_from_url("https://github.com/fwdai/quorum/pull/158"),
+            Some(("fwdai".into(), "quorum".into())),
+        );
+        // Enterprise / trailing path tolerated; bad input → None.
+        assert_eq!(parse_repo_from_url("not a url"), None);
     }
 
     #[test]

@@ -246,6 +246,26 @@ export interface PrChecks {
   runs: CheckRun[];
 }
 
+/** One unresolved PR review thread, flattened to its root comment. */
+export interface PrComment {
+  author: string;
+  /** Author is a GitHub App / bot (Greptile, CodeRabbit, …). Bots phrase
+   *  their comments for an AI already, so the panel inserts them as-is;
+   *  human comments get a file/line context wrapper. */
+  is_bot: boolean;
+  body: string;
+  path: string | null;
+  line: number | null;
+  url: string;
+  /** Replies after the root comment. */
+  replies: number;
+}
+
+/** Unresolved review threads for a PR — polled on the slow checks cadence. */
+export interface PrComments {
+  unresolved: PrComment[];
+}
+
 export type RunPhase = "idle" | "setup" | "running" | "stopped";
 
 export interface RunStateSnapshot {
@@ -390,6 +410,8 @@ export const api = {
     invoke<PrState | null>("get_pr_state", { agentId }),
   getPrChecks: (agentId: string) =>
     invoke<PrChecks | null>("get_pr_checks", { agentId }),
+  getPrComments: (agentId: string) =>
+    invoke<PrComments | null>("get_pr_comments", { agentId }),
   pushAgent: (agentId: string) => invoke<string>("push_agent", { agentId }),
   pullAgent: (agentId: string) => invoke<void>("pull_agent", { agentId }),
   rebaseAgent: (agentId: string) => invoke<void>("rebase_agent", { agentId }),

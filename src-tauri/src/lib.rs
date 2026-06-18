@@ -190,6 +190,7 @@ pub fn run() {
             commands::merge_pr,
             commands::get_pr_state,
             commands::get_pr_checks,
+            commands::get_pr_comments,
             commands::open_agent_shell,
             commands::close_agent_shell,
             commands::write_to_shell,
