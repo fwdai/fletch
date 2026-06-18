@@ -12,10 +12,10 @@
 //! (`subtype: "can_use_tool"`) to stdout and blocks until we write a matching
 //! `control_response` to stdin. We auto-approve every tool the instant it
 //! arrives — preserving the prior fully-headless "run without nagging" feel —
-//! **except** the question tools (`AskUserQuestion`), which we hold open and
-//! surface to the UI so the human actually answers. Holding the response is
-//! the real pause: the agent's turn is suspended until `answer_tool_use`
-//! delivers the user's selection as the tool result.
+//! **except** the user-input tools (`AskUserQuestion`, `ExitPlanMode`), which
+//! we hold open and surface to the UI so the human actually answers. Holding
+//! the response is the real pause: the agent's turn is suspended until
+//! `answer_tool_use` delivers the user's selection as the tool result.
 //!
 //! `bypassPermissions` cannot do this — it short-circuits the permission flow
 //! and auto-denies `AskUserQuestion` before the client ever sees it.
@@ -35,7 +35,7 @@ use crate::error::{Error, Result};
 
 /// Tools whose `can_use_tool` request we hold open for a human answer instead
 /// of auto-approving. Everything else runs unattended.
-const HOLD_TOOLS: &[&str] = &["AskUserQuestion"];
+const HOLD_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode"];
 
 type Stdin = Arc<Mutex<Option<ChildStdin>>>;
 
@@ -231,7 +231,13 @@ impl ManagedSession {
     /// is the tool's input with the user's `answers` merged in; the CLI feeds it
     /// back to the model as the tool result and resumes the turn.
     pub fn answer_tool_use(&self, request_id: &str, updated_input: Value) -> Result<()> {
-        self.pending.lock().remove(request_id);
+        if !self.pending.lock().remove(request_id) {
+            tracing::debug!(
+                request_id,
+                "managed: ignoring answer for non-pending tool request"
+            );
+            return Ok(());
+        }
         write_line(&self.stdin, allow_response(request_id, updated_input))
     }
 
@@ -372,8 +378,20 @@ mod tests {
     #[test]
     fn holds_only_question_tools() {
         assert!(HOLD_TOOLS.contains(&"AskUserQuestion"));
+        assert!(HOLD_TOOLS.contains(&"ExitPlanMode"));
         assert!(!HOLD_TOOLS.contains(&"Bash"));
         assert!(!HOLD_TOOLS.contains(&"Edit"));
+    }
+
+    #[test]
+    fn stale_tool_answer_does_not_write() {
+        let session = ManagedSession {
+            child: Arc::new(Mutex::new(None)),
+            stdin: Arc::new(Mutex::new(None)),
+            pending: Arc::new(Mutex::new(HashSet::new())),
+        };
+
+        assert!(session.answer_tool_use("already-drained", json!({})).is_ok());
     }
 
     #[test]
