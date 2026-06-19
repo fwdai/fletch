@@ -29,7 +29,7 @@ describe("slimFullCatalog", () => {
   };
 
   it("flattens models by bare id and keeps only used fields", () => {
-    const c = slimFullCatalog(api as never);
+    const c = slimFullCatalog(api);
     expect(c["claude-3-5-haiku-20241022"]).toEqual({
       name: "Claude 3.5 Haiku",
       contextWindow: 200_000,
@@ -38,18 +38,18 @@ describe("slimFullCatalog", () => {
   });
 
   it("lets the canonical provider win on id collisions", () => {
-    const c = slimFullCatalog(api as never);
+    const c = slimFullCatalog(api);
     expect(c["claude-opus-4-8"].contextWindow).toBe(1_000_000);
     expect(c["claude-opus-4-8"].name).toBe("Claude Opus 4.8");
   });
 
   it("still includes router-only models", () => {
-    const c = slimFullCatalog(api as never);
+    const c = slimFullCatalog(api);
     expect(c["some-router-only"].contextWindow).toBe(32_000);
   });
 
   it("defaults reasoning to false and contextWindow to 0 when absent", () => {
-    const c = slimFullCatalog({ x: { models: { m: { name: "M" } } } } as never);
+    const c = slimFullCatalog({ x: { models: { m: { name: "M" } } } });
     expect(c.m).toEqual({ name: "M", contextWindow: 0, reasoning: false });
   });
 });

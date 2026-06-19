@@ -65,7 +65,7 @@ export async function refreshCatalog(): Promise<SlimCatalog | null> {
     const res = await fetch(MODELS_DEV_URL);
     if (!res.ok) return null;
     const apiJson = (await res.json()) as Record<string, unknown>;
-    const catalog = slimFullCatalog(apiJson as never);
+    const catalog = slimFullCatalog(apiJson);
     if (Object.keys(catalog).length === 0) return null;
     try {
       const env: CacheEnvelope = { fetchedAt: Date.now(), catalog };

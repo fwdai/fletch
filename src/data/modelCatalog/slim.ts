@@ -26,8 +26,11 @@ interface RawProvider {
   models?: Record<string, RawModel>;
 }
 
-/** Transform the full api.json object into a slim, flat-by-model-id catalog. */
-export function slimFullCatalog(api: Record<string, RawProvider>): SlimCatalog {
+/** Transform the full api.json object into a slim, flat-by-model-id catalog.
+ *  Accepts `unknown`-valued input because the source is untrusted external
+ *  JSON; every field is read defensively below, so the one narrowing cast per
+ *  provider is safe. */
+export function slimFullCatalog(api: Record<string, unknown>): SlimCatalog {
   const out: SlimCatalog = {};
   const providerIds = Object.keys(api);
   // Canonical providers first, then the rest — first writer of an id wins.
@@ -37,7 +40,8 @@ export function slimFullCatalog(api: Record<string, RawProvider>): SlimCatalog {
   ];
 
   for (const providerId of ordered) {
-    const models = api[providerId]?.models;
+    // Narrowed from `unknown`; fields below are all optional-accessed.
+    const models = (api[providerId] as RawProvider | undefined)?.models;
     if (!models) continue;
     for (const [modelId, m] of Object.entries(models)) {
       if (modelId in out) continue; // canonical / first definition wins

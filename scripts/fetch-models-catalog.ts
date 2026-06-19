@@ -28,7 +28,7 @@ if (!res.ok) {
   console.error(`Failed to fetch ${URL}: ${res.status} ${res.statusText}`);
   process.exit(1);
 }
-const api = (await res.json()) as Record<string, never>;
+const api = (await res.json()) as Record<string, unknown>;
 const slim = slimFullCatalog(api);
 const count = Object.keys(slim).length;
 if (count === 0) {
