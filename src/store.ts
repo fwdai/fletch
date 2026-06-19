@@ -644,10 +644,17 @@ async function persistLiveUsage(
   const adapter = getAdapter(provider);
   if (!adapter.persistLiveUsage || !adapter.extractUsage) return;
   if (!adapter.extractUsage(rawEvent)) return; // nothing to persist this event
+  // Idempotency key: cursor's `request_id`, else a stable per-event id (opencode
+  // nests a unique `prt_…` part id), else a timestamp as a last resort.
+  const part =
+    typeof rawEvent.part === "object" && rawEvent.part
+      ? (rawEvent.part as Record<string, unknown>)
+      : undefined;
+  const partId = part && typeof part.id === "string" ? part.id : undefined;
   const nativeId =
-    typeof rawEvent.request_id === "string" && rawEvent.request_id
-      ? rawEvent.request_id
-      : `usage:${Date.now()}`;
+    (typeof rawEvent.request_id === "string" && rawEvent.request_id) ||
+    partId ||
+    `usage:${Date.now()}`;
   try {
     await api.appendLiveRecord(agentId, provider ?? adapter.id, nativeId, rawEvent);
     const records = await api.readSessionRecords(agentId);

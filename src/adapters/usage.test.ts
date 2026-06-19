@@ -132,6 +132,35 @@ describe("opencode extractUsage", () => {
   it("ignores user/non-usage messages", () => {
     expect(opencodeAdapter.extractUsage!({ role: "user" } as RawEvent)).toBeUndefined();
   });
+
+  // The live `run --format json` stream wraps the step-finish delta under
+  // `.part`; this is what persistLiveUsage captures and stores.
+  const liveStepFinish = {
+    type: "step_finish",
+    part: {
+      type: "step-finish",
+      reason: "stop",
+      modelID: "claude-sonnet-4-6",
+      tokens: { input: 57, output: 4, reasoning: 6, cache: { read: 18560, write: 0 } },
+      cost: 0.002,
+    },
+  } as RawEvent;
+
+  it("maps the live step_finish wrapper (tokens under .part)", () => {
+    expect(opencodeAdapter.extractUsage!(liveStepFinish)).toEqual({
+      inputTokens: 57,
+      outputTokens: 4 + 6,
+      cacheReadTokens: 18560,
+      cacheWriteTokens: 0,
+      costUsd: 0.002,
+      context: { input: 57, cacheRead: 18560, cacheWrite: 0 },
+      model: "claude-sonnet-4-6",
+    });
+  });
+
+  it("is marked persistLiveUsage (run mode never writes the blob store)", () => {
+    expect(opencodeAdapter.persistLiveUsage).toBe(true);
+  });
 });
 
 describe("pi extractUsage", () => {
