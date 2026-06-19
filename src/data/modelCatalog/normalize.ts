@@ -23,13 +23,19 @@ export function modelIdCandidates(rawId: string): string[] {
   const bare = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
   add(bare);
 
+  // Strip a trailing bracketed variant tag — Claude Code reports its 1M-context
+  // models as "claude-opus-4-8[1m]", which no catalog key carries.
+  const untagged = bare.replace(/\[[^\]]*\]$/, "");
+  add(untagged);
+
   // Strip a trailing release date ("-20250514"): the catalog often keys on the
-  // undated base id as well.
-  const undated = bare.replace(/-\d{8}$/, "");
+  // undated base id as well. Apply after the tag strip so both can compose
+  // (e.g. "claude-haiku-4-5-20251001[1m]" -> "claude-haiku-4-5").
+  const undated = untagged.replace(/-\d{8}$/, "");
   add(undated);
 
   // Lowercased variants, for case-insensitive matching.
-  add(bare.toLowerCase());
+  add(untagged.toLowerCase());
   add(undated.toLowerCase());
 
   return candidates;

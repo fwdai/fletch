@@ -66,6 +66,26 @@ describe("modelIdCandidates", () => {
   it("includes a lowercased fallback for mixed-case ids", () => {
     expect(modelIdCandidates("GPT-5")).toContain("gpt-5");
   });
+
+  it("strips a trailing bracketed variant tag (Claude's [1m])", () => {
+    expect(modelIdCandidates("claude-opus-4-8[1m]")).toContain("claude-opus-4-8");
+  });
+
+  it("strips a bracket tag together with a date suffix", () => {
+    expect(modelIdCandidates("claude-haiku-4-5-20251001[1m]")).toContain(
+      "claude-haiku-4-5",
+    );
+  });
+});
+
+describe("lookupModel against the bundled snapshot", () => {
+  it("resolves Claude's 1M variant to the 1M context window", async () => {
+    const snapshot = (await import("../../../src-tauri/resources/models-catalog.json"))
+      .default as SlimCatalog;
+    expect(lookupModel(snapshot, "claude-opus-4-8[1m]")?.contextWindow).toBe(
+      1_000_000,
+    );
+  });
 });
 
 describe("lookupModel", () => {
