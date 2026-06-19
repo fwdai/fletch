@@ -105,6 +105,33 @@ describe("opencode extractUsage", () => {
       context: { input: 1532, cacheRead: 12864, cacheWrite: 0 },
     });
   });
+
+  // session_records persists OpenCode's ON-DISK shape: usage lives on the
+  // assistant message blob (type is absent), NOT a live `step-finish` part.
+  // This is what the usage fold actually sees.
+  const onDiskMessage = {
+    role: "assistant",
+    modelID: "claude-sonnet-4-6",
+    providerID: "opencode",
+    tokens: { input: 98, output: 18, reasoning: 0, cache: { read: 10624, write: 0 } },
+    cost: 0,
+  } as RawEvent;
+
+  it("maps the on-disk assistant-message shape (no step-finish type)", () => {
+    expect(opencodeAdapter.extractUsage!(onDiskMessage)).toEqual({
+      inputTokens: 98,
+      outputTokens: 18,
+      cacheReadTokens: 10624,
+      cacheWriteTokens: 0,
+      costUsd: 0,
+      context: { input: 98, cacheRead: 10624, cacheWrite: 0 },
+      model: "claude-sonnet-4-6",
+    });
+  });
+
+  it("ignores user/non-usage messages", () => {
+    expect(opencodeAdapter.extractUsage!({ role: "user" } as RawEvent)).toBeUndefined();
+  });
 });
 
 describe("pi extractUsage", () => {
