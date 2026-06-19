@@ -213,6 +213,7 @@ pub fn run() {
             commands::create_worktree_dir,
             commands::copy_worktree_file,
             commands::probe_provider_versions,
+            commands::read_bundled_model_catalog,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quorum");

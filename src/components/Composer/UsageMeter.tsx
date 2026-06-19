@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { AgentUsage } from "../../store";
+import { useAppStore, type AgentUsage } from "../../store";
+import { lookupModel } from "../../data/modelCatalog";
 import { formatTokens, formatCost } from "../../util/format";
 
 /** Laconic context gauge for the composer foot — a donut ring + %, hover for a
@@ -12,8 +13,15 @@ import { formatTokens, formatCost } from "../../util/format";
  *  The rows below are SESSION cumulative totals. */
 export function UsageMeter({ usage }: { usage: AgentUsage }) {
   const [open, setOpen] = useState(false);
+  const catalog = useAppStore((s) => s.modelCatalog);
 
-  const contextWindow = usage.contextWindow || DEFAULT_CONTEXT_WINDOW;
+  // Prefer the window the agent reports for the live deployment (codex does);
+  // otherwise look the model up in the catalog (claude/opencode/pi don't
+  // report one); fall back to a default only when the model is unknown.
+  const contextWindow =
+    usage.contextWindow ||
+    lookupModel(catalog, usage.model)?.contextWindow ||
+    DEFAULT_CONTEXT_WINDOW;
   const used = usage.contextTokens;
   const free = Math.max(0, contextWindow - used);
   const pct = Math.min(100, Math.round((used / contextWindow) * 100));

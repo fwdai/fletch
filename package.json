@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "tauri": "if [ -f .env ]; then set -a; . ./.env; set +a; fi; tauri",
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "models:refresh": "bun run scripts/fetch-models-catalog.ts"
   },
   "dependencies": {
     "@fontsource/geist-sans": "^5.2.5",
