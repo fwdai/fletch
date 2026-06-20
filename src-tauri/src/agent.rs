@@ -587,6 +587,9 @@ fn opencode_read(message_paths: &[PathBuf]) -> Vec<RawRecord> {
 // exit ends the turn, and history comes entirely from its on-disk transcript.
 // The conversation id (== session id) lives in agy's filesystem, not its output.
 
+// `_model` is intentionally unused: agy's `--print` runner ignores model
+// selection (the `--model` flag is inert in print mode), so the picker offers
+// no selectable models for antigravity (see `model_catalog::discover_one`).
 fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>, _model: Option<&str>) -> Vec<String> {
     // `--print` takes the prompt as its *value* (i.e. `--print <prompt>`), so the
     // prompt must come last, directly after `--print`. Putting another flag
@@ -601,6 +604,8 @@ fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Opt
     args
 }
 
+// `_model` unused: agy's TUI manages its own model selection (see
+// `antigravity_build_args` and `model_catalog::discover_one`).
 fn antigravity_pty_args(session_id: Option<&str>, _model: Option<&str>) -> Vec<String> {
     // Native view: launch agy's interactive TUI (NOT `--print`, the
     // non-interactive turn runner), resuming the conversation by id.

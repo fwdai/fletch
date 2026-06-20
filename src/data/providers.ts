@@ -24,13 +24,16 @@ export interface Provider {
   version: string;
   hue: number;
   sub: string;
+  /** Agent manages its own model and ignores a per-session selection, so the
+   *  picker offers no model choice (e.g. antigravity's `agy --print` runner). */
+  fixedModel?: boolean;
 }
 
 export const PROVIDERS: Provider[] = [
   { id: "claude",      label: "Claude Code",  short: "CC", version: "v1.0.42",     hue: 28,  sub: "Opus 4.7 · Sonnet 4.6" },
   { id: "codex",       label: "Codex",        short: "CX", version: "v0.133.0",    hue: 145, sub: "ChatGPT Plus" },
   { id: "cursor",      label: "Cursor Agent", short: "CR", version: "v2026.05.24", hue: 215, sub: "Pro Subscription" },
-  { id: "antigravity", label: "Antigravity",  short: "AG", version: "v1.0",        hue: 260, sub: "Gemini 3 Pro" },
+  { id: "antigravity", label: "Antigravity",  short: "AG", version: "v1.0",        hue: 260, sub: "Gemini 3 Pro", fixedModel: true },
   { id: "opencode",    label: "OpenCode",     short: "OC", version: "v1.15.12",    hue: 195, sub: "1 upstream connected" },
   { id: "pi",          label: "Pi",           short: "PI", version: "v0.4",        hue: 320, sub: "Pi · experimental" },
 ];

@@ -83,7 +83,12 @@ async fn discover_one(agent: &str, home: &Path) -> AgentModels {
         "cursor" => (None, run_cli("cursor-agent", &["models"], home).await.map(|t| parse_cursor_models(&t)).unwrap_or_default()),
         "opencode" => (None, run_cli("opencode", &["models"], home).await.map(|t| parse_opencode_models(&t)).unwrap_or_default()),
         "claude" => (Some("anthropic".to_string()), Vec::new()),
-        "antigravity" => (Some("google".to_string()), Vec::new()),
+        // agy's `--print` runner ignores model selection entirely (the `--model`
+        // flag and its persisted setting are both inert in print mode), and its
+        // model ids are display labels ("Gemini 3.5 Flash (High)"), not the
+        // models.dev ids a provider hint would yield. So antigravity contributes
+        // no selectable models — the picker treats it as a fixed-model agent.
+        "antigravity" => (None, Vec::new()),
         _ => (None, Vec::new()),
     };
     AgentModels { agent: agent.to_string(), provider_hint, models }

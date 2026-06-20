@@ -1,7 +1,7 @@
 // Assemble the unified catalog from agent discovery + models.dev enrichment.
 //
 // For each agent:
-//   - providerHint set (claude/antigravity) → expand that models.dev provider.
+//   - providerHint set (claude) → expand that models.dev provider.
 //   - otherwise → use the CLI-reported ids, enriching each with models.dev
 //     metadata, falling back to whatever the CLI reported for ids models.dev
 //     doesn't know (e.g. OpenCode's free "zen" models).
@@ -26,6 +26,54 @@ function sortByReleaseDateDesc(models: ModelMeta[]): ModelMeta[] {
       return byDate || a.index - b.index;
     })
     .map(({ meta }) => meta);
+}
+
+// Shared curation primitives. Every agent's model list is curated by the same
+// shape — collapse near-duplicate releases to one representative, then keep only
+// the newest few per class — so both steps live here and the per-agent curators
+// supply the classifier/scorer/caps that genuinely differ between providers.
+
+/** Collapse models sharing a key down to a single representative, keeping the
+ *  one `prefer` ranks highest. A null key drops the model. The survivor keeps
+ *  its group's first-seen position, so a release-desc input stays release-desc. */
+export function dedupeBest(
+  models: ModelMeta[],
+  keyFn: (meta: ModelMeta) => string | null,
+  prefer: (candidate: ModelMeta, current: ModelMeta) => boolean,
+): ModelMeta[] {
+  const byKey = new Map<string, ModelMeta>();
+  const order: string[] = [];
+  for (const meta of models) {
+    const key = keyFn(meta);
+    if (key === null) continue;
+    const current = byKey.get(key);
+    if (!current) {
+      byKey.set(key, meta);
+      order.push(key);
+    } else if (prefer(meta, current)) {
+      byKey.set(key, meta);
+    }
+  }
+  return order.map((key) => byKey.get(key) as ModelMeta);
+}
+
+/** Keep at most `caps[group]` models per group, in the order given. An
+ *  unclassifiable model (null group) is dropped. Feed a release-desc list to
+ *  keep the newest N per group. */
+export function capPerGroup<G extends string>(
+  models: ModelMeta[],
+  groupFn: (meta: ModelMeta) => G | null,
+  caps: Record<G, number>,
+): ModelMeta[] {
+  const counts = {} as Record<G, number>;
+  return models.filter((meta) => {
+    const group = groupFn(meta);
+    if (group === null) return false;
+    const used = counts[group] ?? 0;
+    if (used >= caps[group]) return false;
+    counts[group] = used + 1;
+    return true;
+  });
 }
 
 function cleanModelName(name: string): string {
@@ -112,102 +160,33 @@ function latestAliasScore(meta: ModelMeta): number {
   return 0;
 }
 
-function dedupeClaudeReleases(models: ModelMeta[]): ModelMeta[] {
-  const byKey = new Map<string, ModelMeta>();
-  for (const meta of models) {
-    const key = claudeDedupeKey(meta);
-    const prev = byKey.get(key);
-    if (
-      !prev ||
-      latestAliasScore(meta) > latestAliasScore(prev) ||
-      (latestAliasScore(meta) === latestAliasScore(prev) && releaseRank(meta) > releaseRank(prev))
-    ) {
-      byKey.set(key, meta);
-    }
-  }
-  return [...byKey.values()];
+/** Prefer the `(latest)` alias over a dated id, then the newer release. */
+function preferClaudeRelease(candidate: ModelMeta, current: ModelMeta): boolean {
+  const byAlias = latestAliasScore(candidate) - latestAliasScore(current);
+  return byAlias > 0 || (byAlias === 0 && releaseRank(candidate) > releaseRank(current));
 }
 
 function curateClaudeModels(models: ModelMeta[]): ModelMeta[] {
   const caps = { opus: 3, sonnet: 2, haiku: 1 };
-  const counts = { opus: 0, sonnet: 0, haiku: 0 };
 
-  const selected = dedupeClaudeReleases(models)
-    .filter((meta) => {
-      const family = claudeFamily(meta);
-      return family !== null && claudeMajor(meta) >= 4;
-    })
-    .filter((meta) => {
-      const family = claudeFamily(meta);
-      if (!family) return false;
-      if (counts[family] >= caps[family]) return false;
-      counts[family] += 1;
-      return true;
-    });
+  const deduped = dedupeBest(models, claudeDedupeKey, preferClaudeRelease).filter(
+    (meta) => claudeFamily(meta) !== null && claudeMajor(meta) >= 4,
+  );
 
-  return selected.sort((a, b) => {
+  return capPerGroup(deduped, claudeFamily, caps).sort((a, b) => {
     const byFamily = claudeFamilyRank(a) - claudeFamilyRank(b);
     return byFamily || releaseRank(b) - releaseRank(a);
   });
 }
 
-function geminiVersion(meta: ModelMeta): string | null {
-  const m = `${meta.id} ${meta.name}`.toLowerCase().match(/gemini[-\s](\d+(?:\.\d+)?)/);
-  return m?.[1] ?? null;
-}
-
-function geminiTier(meta: ModelMeta): "pro" | "flash" | null {
-  const text = `${meta.id} ${meta.name}`.toLowerCase();
-  if (/\bpro\b/.test(text)) return "pro";
-  if (/\bflash\b/.test(text)) return "flash";
-  return null;
-}
-
-function isGeminiFlagship(meta: ModelMeta): boolean {
-  const text = `${meta.id} ${meta.name}`.toLowerCase();
-  return (
-    text.includes("gemini") &&
-    geminiTier(meta) !== null &&
-    !text.includes("nano banana") &&
-    !text.includes("banana") &&
-    !text.includes("lite") &&
-    !text.includes("tts") &&
-    !text.includes("embedding") &&
-    !text.includes("image") &&
-    !text.includes("imagen") &&
-    !text.includes("veo")
-  );
-}
-
-function geminiVariantScore(meta: ModelMeta): number {
-  const text = `${meta.id} ${meta.name}`.toLowerCase();
-  let score = 0;
-  if (/\bpro\b/.test(text)) score += 20;
-  if (!text.includes("preview")) score += 8;
-  if (!text.includes("experimental") && !text.includes("exp")) score += 4;
-  return score;
-}
-
-function curateAntigravityModels(models: ModelMeta[]): ModelMeta[] {
-  const byVersion = new Map<string, ModelMeta>();
-
-  for (const meta of models) {
-    if (!isGeminiFlagship(meta)) continue;
-    const version = geminiVersion(meta);
-    const tier = geminiTier(meta);
-    if (!version || !tier) continue;
-    const key = `${version}:${tier}`;
-    const prev = byVersion.get(key);
-    if (
-      !prev ||
-      releaseRank(meta) > releaseRank(prev) ||
-      (releaseRank(meta) === releaseRank(prev) && geminiVariantScore(meta) > geminiVariantScore(prev))
-    ) {
-      byVersion.set(key, meta);
-    }
-  }
-
-  return sortByReleaseDateDesc([...byVersion.values()]).slice(0, 4);
+// Pi is a multi-provider router whose list is dominated by the full Claude
+// lineage (v3 → v4, dated + (latest) aliases). Reuse the Claude family
+// grouping for its Anthropic models and keep any other providers after them,
+// already release-desc ordered by buildCatalog.
+function curatePiModels(models: ModelMeta[]): ModelMeta[] {
+  const claude = models.filter((meta) => claudeFamily(meta) !== null);
+  const others = models.filter((meta) => claudeFamily(meta) === null);
+  return [...curateClaudeModels(claude), ...others];
 }
 
 type CursorProvider = "anthropic" | "openai" | "google" | "xai" | "kimi";
@@ -260,69 +239,41 @@ function cursorVariantScore(meta: ModelMeta): number {
   return score;
 }
 
+const CURSOR_CAPS: Record<CursorProvider, number> = {
+  anthropic: 3,
+  openai: 3,
+  google: 3,
+  xai: 2,
+  kimi: 2,
+};
+
+/** Group key that keeps providers separate so the same base name under two
+ *  providers can't collide. Null when the model isn't a known provider/base. */
+function cursorProviderBaseKey(meta: ModelMeta): string | null {
+  const provider = cursorProvider(meta);
+  const base = cursorBaseKey(meta);
+  return provider && base ? `${provider}::${base}` : null;
+}
+
 function cursorBaseRepresentatives(models: ModelMeta[]): ModelMeta[] {
-  const byProvider = new Map<
-    CursorProvider,
-    Map<string, { firstIndex: number; provider: CursorProvider; best: ModelMeta }>
-  >();
-  models.forEach((meta, index) => {
-    const provider = cursorProvider(meta);
-    if (!provider) return;
-    const key = cursorBaseKey(meta);
-    if (!key) return;
-    let providerMap = byProvider.get(provider);
-    if (!providerMap) {
-      providerMap = new Map();
-      byProvider.set(provider, providerMap);
+  const reps = dedupeBest(
+    models,
+    cursorProviderBaseKey,
+    (candidate, current) => cursorVariantScore(candidate) > cursorVariantScore(current),
+  );
+
+  // `reps` is in first-seen (release-desc) order, so capPerGroup keeps the
+  // newest per provider and the stable sort below preserves that order on ties.
+  return capPerGroup(reps, cursorProvider, CURSOR_CAPS).sort((a, b) => {
+    const byProvider = cursorProviderRank(cursorProvider(a) as CursorProvider) -
+      cursorProviderRank(cursorProvider(b) as CursorProvider);
+    if (byProvider) return byProvider;
+    if (cursorProvider(a) === "anthropic") {
+      const byFamily = claudeFamilyRank(a) - claudeFamilyRank(b);
+      if (byFamily) return byFamily;
     }
-    const prev = providerMap.get(key);
-    if (!prev) {
-      providerMap.set(key, { firstIndex: index, provider, best: meta });
-      return;
-    }
-    if (cursorVariantScore(meta) > cursorVariantScore(prev.best)) {
-      providerMap.set(key, { ...prev, best: meta });
-    }
+    return releaseRank(b) - releaseRank(a);
   });
-
-  const caps: Record<CursorProvider, number> = {
-    anthropic: 3,
-    openai: 3,
-    google: 3,
-    xai: 2,
-    kimi: 2,
-  };
-  const counts: Record<CursorProvider, number> = {
-    anthropic: 0,
-    openai: 0,
-    google: 0,
-    xai: 0,
-    kimi: 0,
-  };
-
-  const selected = [...byProvider.values()]
-    .flatMap((providerMap) => [...providerMap.values()])
-    .sort((a, b) => a.firstIndex - b.firstIndex)
-    .filter((entry) => {
-      if (counts[entry.provider] >= caps[entry.provider]) return false;
-      counts[entry.provider] += 1;
-      return true;
-    });
-
-  return selected
-    .sort((a, b) => {
-      const byProvider = cursorProviderRank(a.provider) - cursorProviderRank(b.provider);
-      if (byProvider) return byProvider;
-      if (a.provider === "anthropic" && b.provider === "anthropic") {
-        const byFamily = claudeFamilyRank(a.best) - claudeFamilyRank(b.best);
-        if (byFamily) return byFamily;
-        const byDate = releaseRank(b.best) - releaseRank(a.best);
-        return byDate || a.firstIndex - b.firstIndex;
-      }
-      const byDate = releaseRank(b.best) - releaseRank(a.best);
-      return byDate || a.firstIndex - b.firstIndex;
-    })
-    .map((entry) => entry.best);
 }
 
 function curateCursorModels(models: ModelMeta[]): ModelMeta[] {
@@ -387,8 +338,8 @@ export function buildCatalog(agents: AgentModels[], index: ModelsDevIndex): Unif
     const agentModels =
       agent === "claude"
         ? curateClaudeModels(sorted)
-        : agent === "antigravity"
-          ? curateAntigravityModels(sorted)
+        : agent === "pi"
+          ? curatePiModels(sorted)
         : agent === "cursor"
           ? curateCursorModels(sorted)
           : sorted;

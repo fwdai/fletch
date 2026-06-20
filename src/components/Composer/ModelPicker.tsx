@@ -126,7 +126,9 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
 
                 {focusedModels.length === 0 ? (
                   <div className="model-empty">
-                    Model catalog unavailable for {focused.label}.
+                    {focused.fixedModel
+                      ? `${focused.label} manages its own model — no selection needed.`
+                      : `Model catalog unavailable for ${focused.label}.`}
                   </div>
                 ) : (
                   focusedModels.map((m) => {

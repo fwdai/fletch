@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { indexModelsDev } from "./modelsDev";
-import { buildCatalog } from "./build";
+import { buildCatalog, dedupeBest, capPerGroup } from "./build";
 import { lookupModel, modelIdCandidates } from "./normalize";
-import type { AgentModels, SlimCatalog } from "./types";
+import type { AgentModels, ModelMeta, SlimCatalog } from "./types";
 
 const API = {
   anthropic: {
@@ -114,22 +114,13 @@ describe("buildCatalog", () => {
     expect(cat.byAgent.codex).toHaveLength(1);
   });
 
-  it("curates Antigravity to a short Gemini Pro and Flash flagship list", () => {
-    const agents: AgentModels[] = [{ agent: "antigravity", providerHint: "google", models: [] }];
+  it("offers no selectable models for Antigravity (agy ignores model selection)", () => {
+    // Discovery contributes no hint and no models for antigravity, so the
+    // picker shows it as a fixed-model agent rather than offering Gemini ids
+    // agy can't honor.
+    const agents: AgentModels[] = [{ agent: "antigravity", models: [] }];
     const cat = buildCatalog(agents, idx);
-
-    expect(cat.byAgent.antigravity.map((m) => m.id)).toEqual([
-      "gemini-3.5-pro",
-      "gemini-3.5-flash",
-      "gemini-3.1-pro",
-      "gemini-3.0-flash",
-    ]);
-    expect(cat.byAgent.antigravity.map((m) => m.id)).not.toContain("nano-banana");
-    expect(cat.byAgent.antigravity.map((m) => m.id)).not.toContain("gemini-3-pro-image-preview");
-    expect(cat.byAgent.antigravity.map((m) => m.id)).not.toContain("gemini-3.1-flash-lite");
-    expect(cat.byAgent.antigravity.map((m) => m.id)).not.toContain("gemini-2.5-flash-preview-tts");
-    expect(cat.byAgent.antigravity.map((m) => m.id)).not.toContain("gemini-3.1-pro-preview");
-    expect(cat.byAgent.antigravity.map((m) => m.id)).not.toContain("gemini-1.5-pro");
+    expect(cat.byAgent.antigravity).toEqual([]);
   });
 
   it("orders discovered models by release date descending, unknown dates last", () => {
@@ -244,6 +235,58 @@ describe("buildCatalog", () => {
     ]);
   });
 
+  it("curates Pi like Claude: group by family, newest first, capped per family", () => {
+    const agents: AgentModels[] = [
+      {
+        agent: "pi",
+        models: [
+          { id: "claude-3-5-haiku-20241022" },
+          { id: "claude-3-7-sonnet-20250219" },
+          { id: "claude-3-opus-20240229" },
+          { id: "claude-haiku-4-5" },
+          { id: "claude-haiku-4-5-20251001" },
+          { id: "claude-opus-4-0" },
+          { id: "claude-opus-4-1" },
+          { id: "claude-opus-4-5" },
+          { id: "claude-opus-4-5-20251101" },
+          { id: "claude-opus-4-6" },
+          { id: "claude-opus-4-7" },
+          { id: "claude-opus-4-8" },
+          { id: "claude-sonnet-4-0" },
+          { id: "claude-sonnet-4-5" },
+          { id: "claude-sonnet-4-5-20250929" },
+          { id: "claude-sonnet-4-6" },
+        ],
+      },
+    ];
+    const cat = buildCatalog(agents, idx);
+
+    expect(cat.byAgent.pi.map((m) => m.id)).toEqual([
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-sonnet-4-5",
+      "claude-haiku-4-5",
+    ]);
+    expect(cat.byAgent.pi.map((m) => m.id)).not.toContain("claude-3-5-haiku-20241022");
+    expect(cat.byAgent.pi.map((m) => m.id)).not.toContain("claude-3-7-sonnet-20250219");
+    expect(cat.byAgent.pi.map((m) => m.id)).not.toContain("claude-opus-4-1");
+    expect(cat.byAgent.pi.map((m) => m.name).some((name) => name.includes("(latest)"))).toBe(false);
+  });
+
+  it("keeps Pi models from other providers after the Claude families", () => {
+    const agents: AgentModels[] = [
+      {
+        agent: "pi",
+        models: [{ id: "claude-opus-4-8" }, { id: "gpt-5.5" }, { id: "gemini-3.5-pro" }],
+      },
+    ];
+    const cat = buildCatalog(agents, idx);
+
+    expect(cat.byAgent.pi.map((m) => m.id)).toEqual(["claude-opus-4-8", "gemini-3.5-pro", "gpt-5.5"]);
+  });
+
   it("falls back to CLI metadata for ids models.dev doesn't know", () => {
     const agents: AgentModels[] = [
       { agent: "opencode", models: [{ id: "big-pickle", name: "Big Pickle", contextWindow: 32_000 }] },
@@ -279,5 +322,53 @@ describe("lookupModel", () => {
   it("returns undefined for unknown or empty ids", () => {
     expect(lookupModel(catalog, "made-up")).toBeUndefined();
     expect(lookupModel(catalog, undefined)).toBeUndefined();
+  });
+});
+
+const model = (id: string, name = id): ModelMeta => ({ id, name, contextWindow: 0, reasoning: false });
+
+describe("dedupeBest", () => {
+  // Group every model by its leading token: "a-1" and "a-2" share group "a".
+  const byPrefix = (m: ModelMeta) => m.id.split("-")[0];
+  // Higher trailing number wins.
+  const preferHigher = (a: ModelMeta, b: ModelMeta) =>
+    Number(a.id.split("-")[1]) > Number(b.id.split("-")[1]);
+
+  it("keeps the preferred representative at the group's first-seen position", () => {
+    // 'a' first appears at index 0; its best (a-3) must land there, not at a-3's index.
+    const out = dedupeBest([model("a-1"), model("b-1"), model("a-3"), model("a-2")], byPrefix, preferHigher);
+    expect(out.map((m) => m.id)).toEqual(["a-3", "b-1"]);
+  });
+
+  it("keeps the current representative when prefer rejects the candidate", () => {
+    const out = dedupeBest([model("a-3"), model("a-1")], byPrefix, preferHigher);
+    expect(out.map((m) => m.id)).toEqual(["a-3"]);
+  });
+
+  it("drops models whose key is null", () => {
+    const keyFn = (m: ModelMeta) => (m.id.startsWith("keep") ? "k" : null);
+    const out = dedupeBest([model("drop-1"), model("keep-1"), model("drop-2")], keyFn, () => false);
+    expect(out.map((m) => m.id)).toEqual(["keep-1"]);
+  });
+});
+
+describe("capPerGroup", () => {
+  const byPrefix = (m: ModelMeta) => m.id.split("-")[0] as "a" | "b";
+
+  it("keeps at most caps[group] per group, in input order", () => {
+    const models = [model("a-1"), model("a-2"), model("b-1"), model("a-3"), model("b-2")];
+    const out = capPerGroup(models, byPrefix, { a: 2, b: 1 });
+    expect(out.map((m) => m.id)).toEqual(["a-1", "a-2", "b-1"]);
+  });
+
+  it("drops models whose group is null", () => {
+    const keyFn = (m: ModelMeta) => (m.id.startsWith("keep") ? ("k" as const) : null);
+    const out = capPerGroup([model("keep-1"), model("skip-1")], keyFn, { k: 5 });
+    expect(out.map((m) => m.id)).toEqual(["keep-1"]);
+  });
+
+  it("drops every model in a group capped at zero", () => {
+    const out = capPerGroup([model("a-1"), model("b-1")], byPrefix, { a: 0, b: 1 });
+    expect(out.map((m) => m.id)).toEqual(["b-1"]);
   });
 });
