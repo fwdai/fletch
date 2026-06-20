@@ -16,7 +16,7 @@
 //!   - antigravity→ no CLI → `provider_hint = "google"`
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -60,7 +60,7 @@ pub async fn discover_supported_models() -> Vec<AgentModels> {
     let mut handles = Vec::new();
     for agent in ["codex", "pi", "cursor", "opencode", "claude", "antigravity"] {
         let home = home.clone();
-        handles.push(tokio::task::spawn_blocking(move || discover_one(agent, &home)));
+        handles.push(tokio::spawn(async move { discover_one(agent, &home).await }));
     }
     let mut out = Vec::new();
     for h in handles {
@@ -71,12 +71,17 @@ pub async fn discover_supported_models() -> Vec<AgentModels> {
     out
 }
 
-fn discover_one(agent: &str, home: &Path) -> AgentModels {
+/// Max wall-clock per CLI listing. A hung agent is skipped (and its process
+/// killed) rather than stalling the whole discovery — keeping the catalog from
+/// getting stuck permanently stale.
+const CLI_TIMEOUT: Duration = Duration::from_secs(15);
+
+async fn discover_one(agent: &str, home: &Path) -> AgentModels {
     let (provider_hint, models) = match agent {
         "codex" => (None, discover_codex(home)),
-        "pi" => (None, run_cli("pi", &["--list-models"], home).map(|t| parse_pi_table(&t)).unwrap_or_default()),
-        "cursor" => (None, run_cli("cursor-agent", &["models"], home).map(|t| parse_cursor_models(&t)).unwrap_or_default()),
-        "opencode" => (None, run_cli("opencode", &["models"], home).map(|t| parse_opencode_models(&t)).unwrap_or_default()),
+        "pi" => (None, run_cli("pi", &["--list-models"], home).await.map(|t| parse_pi_table(&t)).unwrap_or_default()),
+        "cursor" => (None, run_cli("cursor-agent", &["models"], home).await.map(|t| parse_cursor_models(&t)).unwrap_or_default()),
+        "opencode" => (None, run_cli("opencode", &["models"], home).await.map(|t| parse_opencode_models(&t)).unwrap_or_default()),
         "claude" => (Some("anthropic".to_string()), Vec::new()),
         "antigravity" => (Some("google".to_string()), Vec::new()),
         _ => (None, Vec::new()),
@@ -84,10 +89,17 @@ fn discover_one(agent: &str, home: &Path) -> AgentModels {
     AgentModels { agent: agent.to_string(), provider_hint, models }
 }
 
-/// Resolve `bin` and capture its stdout. None on resolve/spawn/exit failure.
-fn run_cli(bin: &str, args: &[&str], home: &Path) -> Option<String> {
+/// Resolve `bin` and capture its stdout, bounded by `CLI_TIMEOUT`. None on
+/// resolve/spawn/timeout/non-zero-exit. `kill_on_drop` ensures a timed-out
+/// child is reaped rather than leaked.
+async fn run_cli(bin: &str, args: &[&str], home: &Path) -> Option<String> {
     let path = crate::bin_resolve::resolve_bin(bin, home)?;
-    let out = Command::new(&path).args(args).output().ok()?;
+    let run = tokio::process::Command::new(&path)
+        .args(args)
+        .kill_on_drop(true)
+        .output();
+    // Outer `?` = timed out; inner `?` = spawn/IO error.
+    let out = tokio::time::timeout(CLI_TIMEOUT, run).await.ok()?.ok()?;
     // A non-zero exit means the listing failed (not logged in, bad flag, …);
     // its stdout is an error message, not a model list — don't feed it to the
     // parser.
