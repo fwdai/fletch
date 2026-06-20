@@ -13,6 +13,7 @@ const MODELS_DEV_URL = "https://models.dev/api.json";
 interface RawModel {
   name?: string;
   reasoning?: boolean;
+  release_date?: string;
   limit?: { context?: number };
 }
 
@@ -25,9 +26,11 @@ export interface ModelsDevIndex {
 
 function toMeta(id: string, m: RawModel): ModelMeta {
   return {
+    id,
     name: m.name ?? id,
     contextWindow: m.limit?.context ?? 0,
     reasoning: m.reasoning === true,
+    ...(m.release_date ? { releaseDate: m.release_date } : {}),
   };
 }
 

@@ -31,7 +31,7 @@ use crate::error::{Error, Result};
 type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
 type SessionIdCb = Arc<dyn Fn(String) + Send + Sync>;
 type ExitCb = Arc<dyn Fn(bool) + Send + Sync>;
-type ArgsBuilder = Arc<dyn Fn(&str, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
+type ArgsBuilder = Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
 type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 
 pub struct ExecSpawn {
@@ -49,6 +49,8 @@ pub struct ExecSpawn {
     pub cwd: PathBuf,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
+    /// Session-level model override. `None` keeps the provider CLI default.
+    pub model: Option<String>,
     /// When false, the turn's stdout is **plaintext** — drained without JSON
     /// parsing (no events emitted). History for such agents comes from their
     /// on-disk transcript, and the session id from the filesystem.
@@ -67,6 +69,7 @@ pub struct ExecSession {
     stdout_is_json: bool,
     env: Vec<(String, String)>,
     session_id: Arc<Mutex<Option<String>>>,
+    model: Option<String>,
     child: Arc<Mutex<Option<Child>>>,
     /// Monotonic turn counter. A reap thread only reports its exit if its
     /// turn is still the latest — so a superseded turn's late exit can't
@@ -95,7 +98,7 @@ impl ExecSession {
         cb: ExecCallbacks<F, G, H>,
     ) -> Self
     where
-        A: Fn(&str, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync + 'static,
+        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync + 'static,
         I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
@@ -109,6 +112,7 @@ impl ExecSession {
             stdout_is_json: spec.stdout_is_json,
             env: spec.env,
             session_id: Arc::new(Mutex::new(spec.session_id)),
+            model: spec.model,
             child: Arc::new(Mutex::new(None)),
             turn_seq: Arc::new(AtomicU64::new(0)),
             build_args: Arc::new(build_args),
@@ -144,7 +148,7 @@ impl ExecSession {
 
         let args = {
             let id = self.session_id.lock();
-            (self.build_args)(&prompt, id.as_deref(), thinking)
+            (self.build_args)(&prompt, id.as_deref(), thinking, self.model.as_deref())
         };
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.prefix_args);
@@ -325,11 +329,15 @@ mod tests {
     }
 
     // A codex-style config: id from `thread.started`, end on `turn.completed`.
-    fn codex_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>) -> Vec<String> {
+    fn codex_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>, model: Option<&str>) -> Vec<String> {
         let mut a = vec!["exec".to_string()];
         if let Some(id) = session_id {
             a.push("resume".into());
             a.push(id.to_string());
+        }
+        if let Some(model) = model {
+            a.push("--model".into());
+            a.push(model.to_string());
         }
         a.push("--json".into());
         a.push(prompt.to_string());
@@ -365,6 +373,7 @@ mod tests {
                 profile: None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
+                model: None,
                 stdout_is_json: true,
                 env: vec![],
             },
@@ -422,6 +431,7 @@ mod tests {
                 profile: None,
                 cwd: dir.path().to_path_buf(),
                 session_id: Some("prev-thread".into()),
+                model: Some("gpt-5.2-codex".into()),
                 stdout_is_json: true,
                 env: vec![],
             },
@@ -440,6 +450,7 @@ mod tests {
         erx.recv_timeout(Duration::from_secs(5)).unwrap();
         let args = std::fs::read_to_string(dir.path().join("argv.txt")).unwrap();
         assert!(args.contains("exec resume prev-thread"), "argv was: {args}");
+        assert!(args.contains("--model gpt-5.2-codex"), "argv was: {args}");
         assert!(args.contains("--json"));
     }
 }

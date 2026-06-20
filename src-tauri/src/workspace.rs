@@ -143,6 +143,10 @@ pub struct AgentRecord {
     /// per-turn agents take effort per-turn instead.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Model selected at session creation. `None` means the provider CLI should
+    /// use its configured/default model.
+    #[serde(default)]
+    pub model: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -385,8 +389,8 @@ impl WorkspaceManager {
         // not persisted — it derives from the workspace/session dispositions.
         let session_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 session_id,
                 record.id,
@@ -395,6 +399,7 @@ impl WorkspaceManager {
                 record.session_id,
                 record.last_error,
                 record.effort,
+                record.model,
                 created_millis,
             ],
         )?;
@@ -984,7 +989,7 @@ impl WorkspaceManager {
             "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
                     w.stopped_at, w.archived_at,
                     s.provider, s.view, s.provider_session_id, s.last_error,
-                    s.effort
+                    s.effort, s.model
              FROM workspaces w
              LEFT JOIN sessions s ON s.workspace_id = w.id
              ORDER BY w.created_at",
@@ -1007,6 +1012,7 @@ impl WorkspaceManager {
                 let session_id: Option<String> = row.get(9)?;
                 let last_error: Option<String> = row.get(10)?;
                 let effort: Option<String> = row.get(11)?;
+                let model: Option<String> = row.get(12)?;
 
                 Ok((
                     id,
@@ -1021,6 +1027,7 @@ impl WorkspaceManager {
                     session_id,
                     last_error,
                     effort,
+                    model,
                 ))
             })
             .ok()
@@ -1041,6 +1048,7 @@ impl WorkspaceManager {
                     session_id,
                     last_error,
                     effort,
+                    model,
                 )| {
                     let is_archived = archived_millis.is_some();
 
@@ -1073,6 +1081,7 @@ impl WorkspaceManager {
                         view: str_to_view(view_str.as_deref().unwrap_or("custom")),
                         session_id,
                         effort,
+                        model,
                         created_at: millis_to_iso(created_millis),
                         last_error,
                         archive,
@@ -1288,7 +1297,7 @@ impl WorkspaceManager {
                 "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
                         w.stopped_at, w.archived_at,
                         s.provider, s.view, s.provider_session_id, s.last_error,
-                        s.effort
+                        s.effort, s.model
                  FROM workspaces w
                  LEFT JOIN sessions s ON s.workspace_id = w.id
                  WHERE w.id = ?1",
@@ -1307,6 +1316,7 @@ impl WorkspaceManager {
                         row.get::<_, Option<String>>(9)?,
                         row.get::<_, Option<String>>(10)?,
                         row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
                     ))
                 },
             )
@@ -1325,6 +1335,7 @@ impl WorkspaceManager {
             session_id,
             last_error,
             effort,
+            model,
         ) = row;
 
         let is_archived = archived_millis.is_some();
@@ -1356,6 +1367,7 @@ impl WorkspaceManager {
             view: str_to_view(view_str.as_deref().unwrap_or("custom")),
             session_id,
             effort,
+            model,
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,
@@ -1402,6 +1414,7 @@ pub fn new_agent_record(
         view,
         session_id,
         effort: None,
+        model: None,
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         archive: None,

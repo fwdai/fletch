@@ -141,6 +141,8 @@ export interface DraftAgent {
   name: string;
   /** Provider id (mocked — only "claude" currently spawns anything). */
   provider: string;
+  /** Optional model id to pass to the chosen provider CLI at spawn. */
+  model?: string;
   /** Base branch to fork from. */
   base: string;
 }
@@ -433,6 +435,7 @@ interface AppState {
     id: string,
     text: string,
     provider: string,
+    model?: string,
     attachments?: string[],
     thinking?: string,
   ) => Promise<void>;
@@ -1705,7 +1708,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
-  spawnFromDraft: async (id, text, provider, attachments = [], thinking?) => {
+  spawnFromDraft: async (id, text, provider, model, attachments = [], thinking?) => {
     const draft = get().drafts.find((d) => d.id === id);
     if (!draft) return;
     set({ busy: true, lastError: null });
@@ -1721,6 +1724,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         provider,
         draft.name,
         thinking,
+        model,
       );
       const fresh = await api.getWorkspace();
       set((state) => {

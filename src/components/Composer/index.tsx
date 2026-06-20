@@ -24,6 +24,8 @@ import { useCommandSource } from "./autocomplete/sources/commands";
 interface Props {
   /** Initial provider id — defaults to claude. */
   defaultProvider?: string;
+  /** Initial model id for new-agent drafts. Undefined means provider default. */
+  defaultModel?: string;
   /** When set, render a branch picker chip showing the current base branch. */
   baseBranch?: string;
   /** Repo path used to fetch available branches for the picker. */
@@ -39,6 +41,7 @@ interface Props {
   onSend: (payload: {
     text: string;
     provider: string;
+    model: string | undefined;
     /** Raw effort value for the selected provider, or undefined when the
      *  provider has no thinking levels (e.g. Cursor). */
     thinking: string | undefined;
@@ -50,6 +53,8 @@ interface Props {
    *  `action` identifier comes from the `SlashCommand` entry. The text
    *  is NOT sent to the agent; the parent decides what to do. */
   onLocalCommand?: (action: string) => void;
+  /** Fired when a new-agent draft changes its provider/model selection. */
+  onChangeSelection?: (provider: string, model?: string) => void;
   /** Supplies candidate worktree-relative file paths for the "@" mention
    *  autocomplete. Called each time a mention opens, so the list stays fresh
    *  as the agent edits files. Omit it (e.g. new sessions with no worktree
@@ -97,6 +102,7 @@ function resolveThinking(providerId: string): string | undefined {
 
 export function Composer({
   defaultProvider = DEFAULT_PROVIDER_ID,
+  defaultModel,
   baseBranch,
   repoPath,
   onChangeBase,
@@ -107,6 +113,7 @@ export function Composer({
   onSend,
   onStop,
   onLocalCommand,
+  onChangeSelection,
   mentionSource,
   listDir,
   listPrs,
@@ -124,11 +131,12 @@ export function Composer({
   // When the model is unknown (a new session before the first turn, or one the
   // catalog doesn't list) we keep the picker — better to show a no-op control
   // than to wrongly hide a real one.
-  const activeMeta = lookupModel(modelCatalog, activeModel);
-  const modelSupportsThinking = activeMeta ? activeMeta.reasoning : true;
-
   const [text, setText] = useState("");
   const [provider, setProvider] = useState(defaultProvider);
+  const [model, setModel] = useState<string | undefined>(defaultModel);
+  const activeMeta = lookupModel(modelCatalog, existingSession ? activeModel : model);
+  const modelSupportsThinking = activeMeta ? activeMeta.reasoning : true;
+
   const [attachments, setAttachments] = useState<string[]>([]);
 
   const detail = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
@@ -226,7 +234,7 @@ export function Composer({
       return;
     }
     if ((!trimmed && attachments.length === 0) || disabled) return;
-    onSend({ text: trimmed, provider, thinking: thinkingValue, attachments });
+    onSend({ text: trimmed, provider, model, thinking: thinkingValue, attachments });
     setText("");
     setAttachments([]);
     if (ta.current) ta.current.style.height = "auto";
@@ -288,7 +296,16 @@ export function Composer({
         }}
       />
       <div className="composer-foot">
-        <ModelPicker value={provider} onChange={setProvider} />
+        <ModelPicker
+          provider={provider}
+          model={model}
+          locked={existingSession}
+          onChange={(nextProvider, nextModel) => {
+            setProvider(nextProvider);
+            setModel(nextModel);
+            onChangeSelection?.(nextProvider, nextModel);
+          }}
+        />
         {existingSession && activeModel && (
           <Chip tip={`Model in use · ${activeModel}`}>
             <span style={{ color: "var(--fg-2)" }}>
