@@ -7,11 +7,11 @@
 // newly-released model shows up automatically without an app release.
 
 import { api } from "../../api";
-import type { SlimCatalog, UnifiedCatalog } from "./types";
+import type { UnifiedCatalog } from "./types";
 import { fetchModelsDevIndex } from "./modelsDev";
 import { buildCatalog } from "./build";
 
-export type { ModelMeta, SlimCatalog, UnifiedCatalog, AgentModels } from "./types";
+export type { ModelMeta, SlimCatalog } from "./types";
 export { lookupModel } from "./normalize";
 
 const CACHE_KEY = "modelCatalog.cache.v2";
@@ -66,6 +66,3 @@ export async function rebuildCatalog(): Promise<UnifiedCatalog | null> {
   }
   return catalog;
 }
-
-/** Convenience for consumers that only need metadata lookup. */
-export type { SlimCatalog as ByIdCatalog };

@@ -88,7 +88,10 @@ fn discover_one(agent: &str, home: &Path) -> AgentModels {
 fn run_cli(bin: &str, args: &[&str], home: &Path) -> Option<String> {
     let path = crate::bin_resolve::resolve_bin(bin, home)?;
     let out = Command::new(&path).args(args).output().ok()?;
-    if !out.status.success() && out.stdout.is_empty() {
+    // A non-zero exit means the listing failed (not logged in, bad flag, …);
+    // its stdout is an error message, not a model list — don't feed it to the
+    // parser.
+    if !out.status.success() {
         return None;
     }
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -129,11 +132,12 @@ fn parse_codex_cache(root: &Value) -> Vec<DiscoveredModel> {
         .filter_map(|m| {
             let id = m.get("slug").and_then(|v| v.as_str())?.to_string();
             let name = m.get("display_name").and_then(|v| v.as_str()).map(str::to_string);
+            let context_window = m.get("context_window").and_then(|v| v.as_u64());
             let reasoning = m
                 .get("supported_reasoning_levels")
                 .and_then(|v| v.as_array())
                 .map(|a| !a.is_empty());
-            Some(DiscoveredModel { id, name, context_window: None, reasoning })
+            Some(DiscoveredModel { id, name, context_window, reasoning })
         })
         .collect()
 }
@@ -210,6 +214,7 @@ mod tests {
     fn parses_codex_cache_and_skips_hidden() {
         let v = json!({"models": [
             {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list",
+             "context_window": 372000,
              "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]},
             {"slug": "codex-auto-review", "display_name": "Review", "visibility": "hide",
              "supported_reasoning_levels": [{"effort": "low"}]},
@@ -218,6 +223,7 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].id, "gpt-5.5");
         assert_eq!(got[0].name.as_deref(), Some("GPT-5.5"));
+        assert_eq!(got[0].context_window, Some(372_000));
         assert_eq!(got[0].reasoning, Some(true));
     }
 

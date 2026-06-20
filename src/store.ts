@@ -712,6 +712,10 @@ async function sendWhenAgentReady(send: () => Promise<void>) {
   throw lastError;
 }
 
+// Seed the catalog from the localStorage cache once (read + parse), then split
+// into the two views; init() rebuilds it in the background when stale.
+const cachedCatalog = loadCachedCatalog();
+
 export const useAppStore = create<AppState>((set, get) => ({
   workspace: null,
   selectedAgentId: null,
@@ -761,8 +765,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   providerFlags: {},
   providerVersions: {},
   providerPaths: {},
-  modelCatalog: loadCachedCatalog().byId,
-  modelsByAgent: loadCachedCatalog().byAgent,
+  modelCatalog: cachedCatalog.byId,
+  modelsByAgent: cachedCatalog.byAgent,
   viewMode: "custom" as WorkspaceView,
 
   init: async () => {

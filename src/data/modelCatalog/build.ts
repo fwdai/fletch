@@ -10,20 +10,12 @@
 
 import type { AgentModels, DiscoveredModel, ModelMeta, UnifiedCatalog } from "./types";
 import type { ModelsDevIndex } from "./modelsDev";
-import { modelIdCandidates } from "./normalize";
+import { lookupModel } from "./normalize";
 
-/** models.dev metadata for an id, trying the normalizer's candidate keys. */
-function fromModelsDev(index: ModelsDevIndex, id: string): ModelMeta | undefined {
-  for (const key of modelIdCandidates(id)) {
-    const hit = index.byId[key];
-    if (hit) return hit;
-  }
-  return undefined;
-}
-
-/** Resolve a discovered model's metadata: models.dev wins, the CLI fills gaps. */
+/** Resolve a discovered model's metadata: models.dev wins, the CLI fills gaps.
+ *  `index.byId` is a SlimCatalog, so the shared normalizer does the matching. */
 function metaFor(d: DiscoveredModel, index: ModelsDevIndex): ModelMeta {
-  const dev = fromModelsDev(index, d.id);
+  const dev = lookupModel(index.byId, d.id);
   return {
     name: dev?.name ?? d.name ?? d.id,
     contextWindow: dev?.contextWindow || d.contextWindow || 0,
