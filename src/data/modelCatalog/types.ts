@@ -1,23 +1,44 @@
-// Slim model-metadata catalog derived from models.dev (https://models.dev/api.json).
+// Types for the hybrid model catalog.
 //
-// We keep only the fields the UI consumes — the upstream api.json is ~2.3MB
-// across 145 providers, far more than we bundle or ship over the wire. The slim
-// shape below is the single contract shared by the build-time snapshot
-// generator (scripts/fetch-models-catalog.ts) and the runtime refresh, so both
-// produce identical data.
+// Each agent CLI is asked which models it supports (DiscoveredModel/AgentModels,
+// mirrored from the Rust `discover_supported_models` command). Those ids are
+// enriched against models.dev into ModelMeta and assembled into a UnifiedCatalog
+// — a flat id→meta map (`byId`, for the usage gauge) plus per-agent lists
+// (`byAgent`, for the future model picker).
 
-/** Metadata for one model, keyed in `SlimCatalog` by its bare model id. */
+/** Metadata for one model, keyed in `byId` by its bare model id. */
 export interface ModelMeta {
-  /** Human-facing model name from the catalog (e.g. "Claude Opus 4.5"). */
+  /** Human-facing model name (e.g. "Claude Opus 4.5"). */
   name: string;
-  /** Context window in tokens (`limit.context`). 0 when the catalog omits it. */
+  /** Context window in tokens. 0 when unknown. */
   contextWindow: number;
-  /** Whether the model supports reasoning / extended thinking. Gates the
-   *  composer's thinking-effort picker for known models. */
+  /** Whether the model supports reasoning / extended thinking. */
   reasoning: boolean;
 }
 
-/** Flat map keyed by bare model id (e.g. "claude-opus-4-8", "gpt-5.2-codex").
- *  Canonical providers (anthropic/openai/google) win over routers on id
- *  collisions — see slim.ts. */
+/** One model an agent reports it supports (from the Rust discovery command).
+ *  Optional fields are present only when the CLI itself reports them. */
+export interface DiscoveredModel {
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  reasoning?: boolean;
+}
+
+/** An agent and the models it supports. `providerHint` is set for agents with
+ *  no list command (claude→"anthropic", antigravity→"google") — the frontend
+ *  expands that models.dev provider instead. */
+export interface AgentModels {
+  agent: string;
+  providerHint?: string;
+  models: DiscoveredModel[];
+}
+
+/** Flat id→meta map (e.g. "claude-opus-4-8" → {…}). Drives metadata lookup. */
 export type SlimCatalog = Record<string, ModelMeta>;
+
+/** The assembled catalog: metadata by id, plus the per-agent model lists. */
+export interface UnifiedCatalog {
+  byId: SlimCatalog;
+  byAgent: Record<string, ModelMeta[]>;
+}

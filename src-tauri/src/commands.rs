@@ -4,8 +4,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use tauri::path::BaseDirectory;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 use crate::agent::ProviderProbe;
 use crate::error::{Error, Result};
@@ -1112,18 +1111,13 @@ pub async fn probe_provider_versions() -> Vec<ProviderProbe> {
     crate::agent::probe_all_providers().await
 }
 
-/// Read the model-metadata catalog packaged as an app resource. Returns the raw
-/// JSON string (the slim shape produced by scripts/fetch-models-catalog.ts).
-/// Errors when the resource is missing/unreadable — the frontend then falls
-/// back to its cached or empty catalog, so this is non-fatal.
+/// Discover the models each agent CLI reports it supports (raw ids + any cheap
+/// metadata the CLI provides). The frontend enriches these against models.dev
+/// to build the unified catalog. Never errors — an absent/broken CLI just
+/// contributes no models.
 #[tauri::command]
-pub async fn read_bundled_model_catalog(app: AppHandle) -> Result<String> {
-    let path = app
-        .path()
-        .resolve("resources/models-catalog.json", BaseDirectory::Resource)
-        .map_err(|e| Error::Other(e.to_string()))?;
-    let text = std::fs::read_to_string(&path)?;
-    Ok(text)
+pub async fn discover_supported_models() -> Vec<crate::model_catalog::AgentModels> {
+    crate::model_catalog::discover_supported_models().await
 }
 
 #[cfg(test)]

@@ -1,80 +1,71 @@
-// Public entrypoint for the model-metadata catalog.
+// Public entrypoint for the hybrid model catalog.
 //
-// Resilience model (packaged resource + background refresh):
-//   1. A successful live fetch is cached in localStorage; on later launches the
-//      cache is the synchronous baseline, even offline.
-//   2. With no cache yet (first run), the store loads the snapshot packaged with
-//      the app — read from disk via a Tauri command, NOT bundled into the JS —
-//      so metadata works offline on the very first launch.
-//   3. On startup the store refreshes from models.dev in the background and
-//      updates both the cache and live state.
-//
-// New models therefore appear without an app release: once models.dev lists a
-// model, the next launch's refresh (or the current session's, on success)
-// picks it up.
+// Pipeline: ask each agent CLI which models it supports (Rust discovery) →
+// enrich those ids against models.dev → assemble a UnifiedCatalog (id→meta for
+// the usage gauge, per-agent lists for the future picker). The result is cached
+// in localStorage with a 24h TTL and rebuilt in the background on expiry, so a
+// newly-released model shows up automatically without an app release.
 
 import { api } from "../../api";
-import type { SlimCatalog } from "./types";
-import { slimFullCatalog } from "./slim";
+import type { SlimCatalog, UnifiedCatalog } from "./types";
+import { fetchModelsDevIndex } from "./modelsDev";
+import { buildCatalog } from "./build";
 
-export type { ModelMeta, SlimCatalog } from "./types";
+export type { ModelMeta, SlimCatalog, UnifiedCatalog, AgentModels } from "./types";
 export { lookupModel } from "./normalize";
 
-const MODELS_DEV_URL = "https://models.dev/api.json";
-const CACHE_KEY = "modelCatalog.cache.v1";
+const CACHE_KEY = "modelCatalog.cache.v2";
+const TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+const EMPTY: UnifiedCatalog = { byId: {}, byAgent: {} };
 
 interface CacheEnvelope {
-  fetchedAt: number;
-  catalog: SlimCatalog;
+  builtAt: number;
+  catalog: UnifiedCatalog;
 }
 
-/** Catalog available synchronously without disk or network: a previously-fetched
- *  copy from localStorage, or an empty map. The store seeds from the packaged
- *  resource (loadPackagedCatalog) when this is empty. Synchronous so the store
- *  has real data on first render for returning users. */
-export function loadCachedCatalog(): SlimCatalog {
+function readCache(): CacheEnvelope | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
-    if (raw) {
-      const env = JSON.parse(raw) as CacheEnvelope;
-      if (env?.catalog && Object.keys(env.catalog).length > 0) return env.catalog;
-    }
+    if (!raw) return null;
+    const env = JSON.parse(raw) as CacheEnvelope;
+    if (env?.catalog?.byId && Object.keys(env.catalog.byId).length > 0) return env;
   } catch {
-    // Corrupt cache — fall through to an empty catalog.
+    // Corrupt cache — treat as absent.
   }
-  return {};
+  return null;
 }
 
-/** Read the snapshot packaged with the app (a Tauri resource on disk). Returns
- *  null on any failure so the caller keeps whatever it already has. */
-export async function loadPackagedCatalog(): Promise<SlimCatalog | null> {
-  try {
-    const text = await api.readBundledModelCatalog();
-    const catalog = JSON.parse(text) as SlimCatalog;
-    return Object.keys(catalog).length > 0 ? catalog : null;
-  } catch {
-    return null;
-  }
+/** Best catalog available without rebuilding: the cached copy, or empty. Used to
+ *  seed the store synchronously so lookups work on the first render. */
+export function loadCachedCatalog(): UnifiedCatalog {
+  return readCache()?.catalog ?? EMPTY;
 }
 
-/** Fetch the latest catalog from models.dev, slim it, and persist to the cache.
- *  Returns the fresh catalog, or null on any failure (offline, parse error) so
- *  the caller keeps whatever it already has. */
-export async function refreshCatalog(): Promise<SlimCatalog | null> {
-  try {
-    const res = await fetch(MODELS_DEV_URL);
-    if (!res.ok) return null;
-    const apiJson = (await res.json()) as Record<string, unknown>;
-    const catalog = slimFullCatalog(apiJson);
-    if (Object.keys(catalog).length === 0) return null;
-    try {
-      const env: CacheEnvelope = { fetchedAt: Date.now(), catalog };
-      localStorage.setItem(CACHE_KEY, JSON.stringify(env));
-    } catch {
-      // Storage full / unavailable — the in-memory result is still usable.
-    }
-    return catalog;
-  } catch {
-    return null;
-  }
+/** True when there is no cache or it has aged past the TTL. */
+export function isCatalogStale(): boolean {
+  const env = readCache();
+  return !env || Date.now() - env.builtAt > TTL_MS;
 }
+
+/** Rebuild the catalog from agent discovery + models.dev, and cache it. Returns
+ *  null on failure (no agents and no models.dev) so the caller keeps the cache.
+ *  A models.dev outage still yields a usable catalog from CLI-reported ids. */
+export async function rebuildCatalog(): Promise<UnifiedCatalog | null> {
+  const [agents, index] = await Promise.all([
+    api.discoverSupportedModels().catch(() => []),
+    fetchModelsDevIndex(),
+  ]);
+  const catalog = buildCatalog(agents, index ?? { byId: {}, byProvider: {} });
+  if (Object.keys(catalog.byId).length === 0) return null;
+  try {
+    const env: CacheEnvelope = { builtAt: Date.now(), catalog };
+    localStorage.setItem(CACHE_KEY, JSON.stringify(env));
+  } catch {
+    // Storage unavailable — the in-memory result is still usable this session.
+  }
+  return catalog;
+}
+
+/** Convenience for consumers that only need metadata lookup. */
+export type { SlimCatalog as ByIdCatalog };

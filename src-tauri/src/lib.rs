@@ -11,6 +11,7 @@ mod git;
 mod git_state;
 mod instructions;
 mod managed_session;
+mod model_catalog;
 mod names;
 mod new_project;
 mod oauth;
@@ -213,7 +214,7 @@ pub fn run() {
             commands::create_worktree_dir,
             commands::copy_worktree_file,
             commands::probe_provider_versions,
-            commands::read_bundled_model_catalog,
+            commands::discover_supported_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quorum");

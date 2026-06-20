@@ -37,9 +37,10 @@ import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 import { usageFromRecords, hasUsage, type AgentUsage } from "./adapters/usage";
 import {
   loadCachedCatalog,
-  loadPackagedCatalog,
-  refreshCatalog,
+  isCatalogStale,
+  rebuildCatalog,
   type SlimCatalog,
+  type ModelMeta,
 } from "./data/modelCatalog";
 import { getAllSettings, setSetting } from "./storage/settings";
 import {
@@ -356,10 +357,13 @@ interface AppState {
   providerVersions: Record<string, string>;
   /** Resolved binary paths keyed by provider id, from the version probe. */
   providerPaths: Record<string, string>;
-  /** Per-model metadata (context window, reasoning support) keyed by bare model
-   *  id, sourced from models.dev. Initialized synchronously from the cached or
-   *  bundled snapshot, then refreshed from the network on init. */
+  /** Per-model metadata (context window, reasoning) keyed by bare model id —
+   *  the `byId` view of the hybrid catalog. Seeded from the localStorage cache
+   *  on init, rebuilt from agent discovery + models.dev when stale (24h). */
   modelCatalog: SlimCatalog;
+  /** Supported models grouped by agent — the `byAgent` view, for the model
+   *  picker. Same provenance and refresh cadence as `modelCatalog`. */
+  modelsByAgent: Record<string, ModelMeta[]>;
   /** View mode preference for the workspace pane. Persisted; falls
    *  back to the agent's own `view` field for native vs. custom
    *  switching. */
@@ -466,8 +470,8 @@ interface AppState {
   /** Re-probe installed provider CLIs for versions + binary paths. Runs once
    *  on init and again when the user re-scans from the Providers settings. */
   refreshProviderVersions: () => Promise<void>;
-  /** Pull the latest model metadata from models.dev and update state + cache.
-   *  Runs once on init; non-fatal on failure (keeps cached/bundled data). */
+  /** Rebuild the model catalog (agent discovery + models.dev) when the cache is
+   *  stale (24h). Runs once on init; non-fatal on failure (keeps cached data). */
   refreshModelCatalog: () => Promise<void>;
   setViewMode: (v: WorkspaceView) => void;
 }
@@ -757,7 +761,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   providerFlags: {},
   providerVersions: {},
   providerPaths: {},
-  modelCatalog: loadCachedCatalog(),
+  modelCatalog: loadCachedCatalog().byId,
+  modelsByAgent: loadCachedCatalog().byAgent,
   viewMode: "custom" as WorkspaceView,
 
   init: async () => {
@@ -797,8 +802,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     // non-blocking). Errors are non-fatal — UI falls back to hardcoded versions.
     void get().refreshProviderVersions();
 
-    // Refresh model metadata from models.dev (async, non-blocking). State starts
-    // from the cached/bundled snapshot, so lookups work immediately regardless.
+    // Rebuild the model catalog if stale (async, non-blocking). State is seeded
+    // from the localStorage cache, so lookups work immediately regardless.
     void get().refreshModelCatalog();
 
     await onAgentOutput((e) => {
@@ -1854,14 +1859,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   refreshModelCatalog: async () => {
-    // With no cached catalog yet (first run), seed from the packaged resource
-    // on disk so lookups work before/without the network fetch.
-    if (Object.keys(get().modelCatalog).length === 0) {
-      const packaged = await loadPackagedCatalog();
-      if (packaged) set({ modelCatalog: packaged });
-    }
-    const fresh = await refreshCatalog();
-    if (fresh) set({ modelCatalog: fresh });
+    // Cache holds for 24h; the init seed already reflects it when fresh.
+    if (!isCatalogStale()) return;
+    const catalog = await rebuildCatalog();
+    if (catalog) set({ modelCatalog: catalog.byId, modelsByAgent: catalog.byAgent });
   },
   setViewMode: (v) => {
     set({ viewMode: v });
