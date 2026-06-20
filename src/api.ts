@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { AgentModels } from "./data/modelCatalog/types";
 
 export type AgentStatus =
   | "spawning"
@@ -487,6 +488,10 @@ export const api = {
     invoke<void>("copy_worktree_file", { agentId, from, to }),
   probeProviderVersions: () =>
     invoke<ProviderProbe[]>("probe_provider_versions"),
+  /** Per-agent supported-model discovery (raw ids + any cheap CLI metadata).
+   *  The frontend enriches these against models.dev. */
+  discoverSupportedModels: () =>
+    invoke<AgentModels[]>("discover_supported_models"),
 };
 
 export function onAgentOutput(

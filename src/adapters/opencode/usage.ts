@@ -1,18 +1,32 @@
-// Token usage from OpenCode's on-disk part blobs.
+// Token usage from OpenCode records.
 //
-// Each `step-finish` part blob carries that step's usage delta and cost:
-//   {"type":"step-finish","tokens":{"input":1532,"output":33,"reasoning":51,
-//      "cache":{"read":12864,"write":0}},"cost":0}
+// OpenCode reports usage in three shapes depending on the source:
+//   - LIVE `run --format json` stream — the per-step delta nested under `.part`:
+//       {"type":"step_finish","part":{"tokens":{…},"cost":0,"modelID":"…"}}
+//     This is the only path that fires for Quorum: `opencode run` never writes
+//     the on-disk blob store, so usage is captured live (persistLiveUsage) and
+//     stored into session_records.
+//   - ON-DISK assistant message blob (when a transcript is read):
+//       {"role":"assistant","modelID":"…","tokens":{…},"cost":0}
+//   - a bare step-finish part (older shape / tests): {"type":"step-finish","tokens":{…}}
+//
 // `tokens.input` is FRESH input (cache reads are separate), so summing the
 // per-step deltas yields the session total. Cost is reported natively (0 for
-// local models). OpenCode does not persist a context-window size.
+// local models). OpenCode does not persist a context-window size — the meter
+// resolves that from the catalog via `model`.
 
 import type { RawEvent, TurnUsage } from "../types";
 import { asNumber, asRecord } from "../shared/json";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
-  if (body.type !== "step-finish") return undefined;
-  const tokens = asRecord(body.tokens);
+  const isLiveFinish = body.type === "step_finish";
+  const carriesUsage =
+    isLiveFinish || body.type === "step-finish" || body.role === "assistant";
+  if (!carriesUsage) return undefined;
+  // The live event nests the usage under `.part`; the other shapes carry it
+  // directly on the record body.
+  const src = isLiveFinish ? asRecord(body.part) : body;
+  const tokens = asRecord(src.tokens);
   const cache = asRecord(tokens.cache);
 
   const inputTokens = asNumber(tokens.input);
@@ -28,7 +42,8 @@ export function extractUsage(body: RawEvent): TurnUsage | undefined {
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
-    costUsd: asNumber(body.cost),
+    costUsd: asNumber(src.cost),
     context: { input: inputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheWriteTokens },
+    ...(typeof src.modelID === "string" ? { model: src.modelID } : {}),
   };
 }

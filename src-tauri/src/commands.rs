@@ -1111,6 +1111,15 @@ pub async fn probe_provider_versions() -> Vec<ProviderProbe> {
     crate::agent::probe_all_providers().await
 }
 
+/// Discover the models each agent CLI reports it supports (raw ids + any cheap
+/// metadata the CLI provides). The frontend enriches these against models.dev
+/// to build the unified catalog. Never errors — an absent/broken CLI just
+/// contributes no models.
+#[tauri::command]
+pub async fn discover_supported_models() -> Vec<crate::model_catalog::AgentModels> {
+    crate::model_catalog::discover_supported_models().await
+}
+
 #[cfg(test)]
 mod safe_join_tests {
     use super::safe_join;

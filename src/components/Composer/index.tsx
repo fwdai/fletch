@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../store";
 import { DEFAULT_PROVIDER_ID } from "../../data/providers";
 import { PROVIDER_DETAIL } from "../../data/providerDetail";
+import { lookupModel } from "../../data/modelCatalog";
 import { prettyModelLabel } from "../../data/modelLabel";
 import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
@@ -117,6 +118,14 @@ export function Composer({
   usage,
 }: Props) {
   const features = useAppStore((s) => s.features);
+  const modelCatalog = useAppStore((s) => s.modelCatalog);
+
+  // Hide the thinking-effort picker for a model the catalog knows can't reason.
+  // When the model is unknown (a new session before the first turn, or one the
+  // catalog doesn't list) we keep the picker — better to show a no-op control
+  // than to wrongly hide a real one.
+  const activeMeta = lookupModel(modelCatalog, activeModel);
+  const modelSupportsThinking = activeMeta ? activeMeta.reasoning : true;
 
   const [text, setText] = useState("");
   const [provider, setProvider] = useState(defaultProvider);
@@ -287,7 +296,7 @@ export function Composer({
             </span>
           </Chip>
         )}
-        {features.thinkingBudget && thinkingLevels.length > 0 && (
+        {features.thinkingBudget && thinkingLevels.length > 0 && modelSupportsThinking && (
           existingSession && detail?.effortAtSpawn ? (
             initialThinking && (
               <Chip tip="Thinking effort — fixed at spawn" disabled>

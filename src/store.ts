@@ -35,6 +35,13 @@ import {
 import { commandsFor } from "./data/slashCommands";
 import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
 import { usageFromRecords, hasUsage, type AgentUsage } from "./adapters/usage";
+import {
+  loadCachedCatalog,
+  isCatalogStale,
+  rebuildCatalog,
+  type SlimCatalog,
+  type ModelMeta,
+} from "./data/modelCatalog";
 import { getAllSettings, setSetting } from "./storage/settings";
 import {
   getAccount,
@@ -350,6 +357,13 @@ interface AppState {
   providerVersions: Record<string, string>;
   /** Resolved binary paths keyed by provider id, from the version probe. */
   providerPaths: Record<string, string>;
+  /** Per-model metadata (context window, reasoning) keyed by bare model id —
+   *  the `byId` view of the hybrid catalog. Seeded from the localStorage cache
+   *  on init, rebuilt from agent discovery + models.dev when stale (24h). */
+  modelCatalog: SlimCatalog;
+  /** Supported models grouped by agent — the `byAgent` view, for the model
+   *  picker. Same provenance and refresh cadence as `modelCatalog`. */
+  modelsByAgent: Record<string, ModelMeta[]>;
   /** View mode preference for the workspace pane. Persisted; falls
    *  back to the agent's own `view` field for native vs. custom
    *  switching. */
@@ -456,6 +470,9 @@ interface AppState {
   /** Re-probe installed provider CLIs for versions + binary paths. Runs once
    *  on init and again when the user re-scans from the Providers settings. */
   refreshProviderVersions: () => Promise<void>;
+  /** Rebuild the model catalog (agent discovery + models.dev) when the cache is
+   *  stale (24h). Runs once on init; non-fatal on failure (keeps cached data). */
+  refreshModelCatalog: () => Promise<void>;
   setViewMode: (v: WorkspaceView) => void;
 }
 
@@ -631,10 +648,17 @@ async function persistLiveUsage(
   const adapter = getAdapter(provider);
   if (!adapter.persistLiveUsage || !adapter.extractUsage) return;
   if (!adapter.extractUsage(rawEvent)) return; // nothing to persist this event
+  // Idempotency key: cursor's `request_id`, else a stable per-event id (opencode
+  // nests a unique `prt_…` part id), else a timestamp as a last resort.
+  const part =
+    typeof rawEvent.part === "object" && rawEvent.part
+      ? (rawEvent.part as Record<string, unknown>)
+      : undefined;
+  const partId = part && typeof part.id === "string" ? part.id : undefined;
   const nativeId =
-    typeof rawEvent.request_id === "string" && rawEvent.request_id
-      ? rawEvent.request_id
-      : `usage:${Date.now()}`;
+    (typeof rawEvent.request_id === "string" && rawEvent.request_id) ||
+    partId ||
+    `usage:${Date.now()}`;
   try {
     await api.appendLiveRecord(agentId, provider ?? adapter.id, nativeId, rawEvent);
     const records = await api.readSessionRecords(agentId);
@@ -688,6 +712,10 @@ async function sendWhenAgentReady(send: () => Promise<void>) {
   throw lastError;
 }
 
+// Seed the catalog from the localStorage cache once (read + parse), then split
+// into the two views; init() rebuilds it in the background when stale.
+const cachedCatalog = loadCachedCatalog();
+
 export const useAppStore = create<AppState>((set, get) => ({
   workspace: null,
   selectedAgentId: null,
@@ -737,6 +765,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   providerFlags: {},
   providerVersions: {},
   providerPaths: {},
+  modelCatalog: cachedCatalog.byId,
+  modelsByAgent: cachedCatalog.byAgent,
   viewMode: "custom" as WorkspaceView,
 
   init: async () => {
@@ -775,6 +805,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Probe installed provider CLIs for real versions + paths (async,
     // non-blocking). Errors are non-fatal — UI falls back to hardcoded versions.
     void get().refreshProviderVersions();
+
+    // Rebuild the model catalog if stale (async, non-blocking). State is seeded
+    // from the localStorage cache, so lookups work immediately regardless.
+    void get().refreshModelCatalog();
 
     await onAgentOutput((e) => {
       const chunk = new Uint8Array(e.bytes);
@@ -1827,6 +1861,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch {
       // Non-fatal — UI falls back to hardcoded versions.
     }
+  },
+  refreshModelCatalog: async () => {
+    // Cache holds for 24h; the init seed already reflects it when fresh.
+    if (!isCatalogStale()) return;
+    const catalog = await rebuildCatalog();
+    if (catalog) set({ modelCatalog: catalog.byId, modelsByAgent: catalog.byAgent });
   },
   setViewMode: (v) => {
     set({ viewMode: v });

@@ -12,5 +12,9 @@ export const opencodeAdapter: ChatAdapter = {
   reduce,
   normalizeTranscript,
   policy: opencodePolicy,
+  // `opencode run` never writes the on-disk blob store Quorum reads, so usage
+  // would never fold from a transcript. Capture it from the live `step_finish`
+  // stream instead — persisted into session_records like Cursor's.
+  persistLiveUsage: true,
   extractUsage,
 };
