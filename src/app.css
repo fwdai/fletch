@@ -1114,9 +1114,26 @@ button { cursor: default; }
   min-width: 0; flex-shrink: 0;
 }
 .c-chip:hover { background: var(--hover); color: var(--fg-0); }
-.c-chip svg { width: 11px; height: 11px; color: var(--fg-2); }
+.c-chip > svg { width: 11px; height: 11px; color: var(--fg-2); }
 .c-chip .dot { width: 6px; height: 6px; border-radius: 50%; }
 .c-chip.with-border { border-color: var(--bd); }
+.c-chip:disabled { opacity: .78; cursor: default; }
+.c-chip:disabled:hover { background: transparent; color: var(--fg-1); }
+
+.model-picker { position: relative; min-width: 0; }
+.model-chip { max-width: min(390px, 48vw); }
+.model-chip-agent {
+  font-weight: 550;
+  white-space: nowrap;
+}
+.model-chip-model {
+  min-width: 0;
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+}
 
 .send {
   width: 28px; height: 28px;
@@ -1249,6 +1266,187 @@ button { cursor: default; }
   font-size: 10px; font-weight: 600;
   letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--fg-3);
+}
+
+.model-dd {
+  width: min(680px, calc(100vw - 48px));
+  padding: 0;
+  overflow: hidden;
+}
+.model-dd-head {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 0;
+  padding: 9px 10px 8px;
+  border-bottom: 1px solid var(--bd-soft);
+  color: var(--fg-3);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.model-dd-grid {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  height: min(390px, calc(100vh - 180px));
+  min-height: 270px;
+  overflow: hidden;
+}
+.model-agent-list {
+  min-height: 0;
+  padding: 6px;
+  border-right: 1px solid var(--bd-soft);
+  overflow: auto;
+}
+.model-agent {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px;
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+  text-align: left;
+}
+.model-agent:hover:not(:disabled),
+.model-agent.active {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.model-agent:disabled {
+  opacity: .42;
+}
+.model-agent-text {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.model-agent-text span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 540;
+}
+.model-agent-text span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.model-agent > svg,
+.model-mark svg {
+  color: var(--accent);
+}
+.model-list {
+  min-height: 0;
+  padding: 6px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.model-option {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+  text-align: left;
+}
+.model-option:hover,
+.model-option.active {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.model-mark {
+  width: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.model-option-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.model-option-main span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 560;
+}
+.model-option-main span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.model-option-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 190px;
+}
+.model-option-meta span {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.model-empty {
+  margin: 12px;
+  padding: 18px 14px;
+  border: 1px dashed var(--bd);
+  border-radius: var(--r-sm);
+  color: var(--fg-3);
+  font-size: 12px;
+  text-align: center;
+}
+.model-dd-foot {
+  padding: 8px 10px;
+  border-top: 1px solid var(--bd-soft);
+  color: var(--fg-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .model-dd {
+    width: calc(100vw - 28px);
+  }
+  .model-dd-head,
+  .model-dd-grid {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+  .model-option {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+  .model-option-meta {
+    grid-column: 2;
+    justify-content: flex-start;
+    max-width: none;
+  }
+  .model-chip-agent {
+    display: none;
+  }
 }
 
 /* branch picker scroll buttons */
@@ -3862,15 +4060,18 @@ button { cursor: default; }
 /* Theme-aware ink for the chip — drives `currentColor` in inlined icons and
    the monogram text, so monochrome marks are dark in light mode, light in dark. */
 .theme-light .chip-mono { color: oklch(.45 .14 var(--ph-h, 50)); }
+.chip-mono.has-brand-icon { color: white; }
 .chip-mono-svg {
   display: inline-flex;
   width: 70%; height: 70%;
-  /* Neutral, theme-aware ink for monochrome (currentColor) icons — white in
-     dark, near-black in light — so they don't pick up the chip's hue tint.
-     Full-color logos with hardcoded fills are unaffected. */
-  color: var(--fg-0);
+  /* Brand SVGs authored with currentColor should render as white marks; the
+     hue tint belongs to the chip shell and monogram fallback only. */
+  color: currentColor;
 }
-.chip-mono-svg svg { width: 100%; height: 100%; display: block; }
+.chip-mono.has-brand-icon .chip-mono-svg svg {
+  width: 100%; height: 100%; display: block;
+  color: white;
+}
 
 .set-prov-id { flex: 1; min-width: 0; }
 .set-prov-name {

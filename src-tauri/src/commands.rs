@@ -147,6 +147,7 @@ pub async fn spawn_agent(
     provider: Option<String>,
     name: Option<String>,
     effort: Option<String>,
+    model: Option<String>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
     sup.spawn_agent(
@@ -156,6 +157,7 @@ pub async fn spawn_agent(
         provider.unwrap_or_else(|| "claude".to_string()),
         name,
         effort,
+        model,
     )
     .await
 }

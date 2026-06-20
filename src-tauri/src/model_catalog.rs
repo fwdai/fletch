@@ -83,7 +83,12 @@ async fn discover_one(agent: &str, home: &Path) -> AgentModels {
         "cursor" => (None, run_cli("cursor-agent", &["models"], home).await.map(|t| parse_cursor_models(&t)).unwrap_or_default()),
         "opencode" => (None, run_cli("opencode", &["models"], home).await.map(|t| parse_opencode_models(&t)).unwrap_or_default()),
         "claude" => (Some("anthropic".to_string()), Vec::new()),
-        "antigravity" => (Some("google".to_string()), Vec::new()),
+        // agy's `--print` runner ignores model selection entirely (the `--model`
+        // flag and its persisted setting are both inert in print mode), and its
+        // model ids are display labels ("Gemini 3.5 Flash (High)"), not the
+        // models.dev ids a provider hint would yield. So antigravity contributes
+        // no selectable models — the picker treats it as a fixed-model agent.
+        "antigravity" => (None, Vec::new()),
         _ => (None, Vec::new()),
     };
     AgentModels { agent: agent.to_string(), provider_hint, models }
@@ -106,7 +111,15 @@ async fn run_cli(bin: &str, args: &[&str], home: &Path) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    Some(cli_output_text(&out.stdout, &out.stderr))
+}
+
+fn cli_output_text(stdout: &[u8], stderr: &[u8]) -> String {
+    if stdout.iter().any(|b| !b.is_ascii_whitespace()) {
+        String::from_utf8_lossy(stdout).into_owned()
+    } else {
+        String::from_utf8_lossy(stderr).into_owned()
+    }
 }
 
 fn discover_codex(home: &Path) -> Vec<DiscoveredModel> {
@@ -193,8 +206,9 @@ fn parse_cursor_models(text: &str) -> Vec<DiscoveredModel> {
         .collect()
 }
 
-/// opencode `models`: `provider/model` per line. We key on the bare model id
-/// (what the transcript reports), dropping the provider prefix.
+/// opencode `models`: `provider/model` per line. Keep the full CLI id so the
+/// frontend can pass it back to `opencode --model`; the catalog adds a bare-id
+/// alias for transcript lookup.
 fn parse_opencode_models(text: &str) -> Vec<DiscoveredModel> {
     text.lines()
         .filter_map(|line| {
@@ -202,8 +216,7 @@ fn parse_opencode_models(text: &str) -> Vec<DiscoveredModel> {
             if line.is_empty() {
                 return None;
             }
-            let id = line.rsplit('/').next().unwrap_or(line);
-            Some(DiscoveredModel::id(id))
+            Some(DiscoveredModel::id(line))
         })
         .collect()
 }
@@ -254,6 +267,15 @@ mod tests {
     }
 
     #[test]
+    fn uses_stderr_when_successful_cli_has_empty_stdout() {
+        let text = cli_output_text(b"", b"provider model context\nanthropic claude-opus-4-8 1M\n");
+        assert!(text.contains("claude-opus-4-8"));
+
+        let text = cli_output_text(b"stdout wins", b"stderr fallback");
+        assert_eq!(text, "stdout wins");
+    }
+
+    #[test]
     fn parses_cursor_models() {
         let t = "Available models\n\nauto - Auto\ngpt-5.3-codex - Codex 5.3";
         let got = parse_cursor_models(t);
@@ -264,11 +286,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_opencode_models_bare_id() {
+    fn parses_opencode_models_cli_id() {
         let t = "opencode/big-pickle\nollama/gemma4:12b\n";
         let got = parse_opencode_models(t);
         assert_eq!(got.len(), 2);
-        assert_eq!(got[0].id, "big-pickle");
-        assert_eq!(got[1].id, "gemma4:12b");
+        assert_eq!(got[0].id, "opencode/big-pickle");
+        assert_eq!(got[1].id, "ollama/gemma4:12b");
     }
 }

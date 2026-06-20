@@ -62,6 +62,8 @@ export interface AgentRecord {
   /** Claude's session-level reasoning effort (`--effort <level>`), chosen at
    *  spawn. Null for agents where effort wasn't set or isn't session-scoped. */
   effort?: string | null;
+  /** Model chosen at spawn. Null/undefined means the provider CLI default. */
+  model?: string | null;
 }
 
 export interface Workspace {
@@ -356,6 +358,7 @@ export const api = {
     provider?: string,
     name?: string,
     effort?: string,
+    model?: string,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
       view,
@@ -363,6 +366,7 @@ export const api = {
       provider,
       name,
       effort: effort ?? null,
+      model: model ?? null,
     }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),

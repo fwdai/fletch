@@ -425,6 +425,7 @@ impl Supervisor {
         provider: String,
         name: Option<String>,
         effort: Option<String>,
+        model: Option<String>,
     ) -> Result<AgentRecord> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -479,6 +480,9 @@ impl Supervisor {
         // Session-level effort (claude `--effort`); persisted so start_process
         // re-applies it on every spawn. Per-turn agents ignore it at spawn.
         record.effort = effort;
+        // Session-level model selection. `None` preserves the provider CLI
+        // default; selected values are reapplied on resume and view switches.
+        record.model = model;
         let parent_dir = agent_parent_dir(&agent_id)?;
         let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
 
@@ -695,6 +699,7 @@ impl Supervisor {
                         // Per-turn agents take effort per-turn (build-args),
                         // not at spawn.
                         effort: None,
+                        model: record.model.as_deref(),
                         rpc_dir: rpc_dir.clone(),
                         cols: 120,
                         rows: 32,
@@ -717,6 +722,7 @@ impl Supervisor {
                         cwd,
                         sandbox_root: sandbox_root.clone(),
                         session_id: session_id.clone(),
+                        model: record.model.clone(),
                         rpc_dir: rpc_dir.clone(),
                     },
                     app.clone(),
@@ -738,6 +744,7 @@ impl Supervisor {
                 // Claude's session-level effort, persisted on the record so it
                 // re-applies on every spawn (fresh, view-switch, resume).
                 effort: record.effort.as_deref(),
+                model: record.model.as_deref(),
                 rpc_dir: rpc_dir.clone(),
                 cols: 120,
                 rows: 32,

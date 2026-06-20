@@ -14,7 +14,7 @@ import { buildCatalog } from "./build";
 export type { ModelMeta, SlimCatalog } from "./types";
 export { lookupModel } from "./normalize";
 
-const CACHE_KEY = "modelCatalog.cache.v2";
+const CACHE_KEY = "modelCatalog.cache.v12";
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
 const EMPTY: UnifiedCatalog = { byId: {}, byAgent: {} };

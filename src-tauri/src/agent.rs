@@ -69,6 +69,8 @@ pub struct PerTurnSpec {
     pub sandbox_root: PathBuf,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
+    /// Session-level model override. `None` keeps the provider CLI default.
+    pub model: Option<String>,
     /// The agent's RPC mailbox dir, exposed to the child as `QUORUM_RPC_DIR`.
     pub rpc_dir: PathBuf,
 }
@@ -86,11 +88,11 @@ pub struct PerTurnDescriptor {
     bin: &'static str,
     /// Human-facing product name, used only in the not-found error.
     label: &'static str,
-    /// Builds the CLI args for a turn: `(prompt, resume_session_id, thinking_effort)`.
-    build_args: fn(&str, Option<&str>, Option<&str>) -> Vec<String>,
+    /// Builds the CLI args for a turn: `(prompt, resume_session_id, thinking_effort, model)`.
+    build_args: fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String>,
     /// Builds the args to launch this agent's interactive TUI in the native
-    /// (PTY) view: `None` = fresh session, `Some(id)` = resume.
-    pty_args: fn(Option<&str>) -> Vec<String>,
+    /// (PTY) view: first arg is session (`None` = fresh), second is model.
+    pty_args: fn(Option<&str>, Option<&str>) -> Vec<String>,
     /// Extracts the agent-assigned session id from a turn's events. No-op for
     /// `plaintext` agents (they emit no events — see `session_id_from_cwd`).
     session_id: fn(&Value) -> Option<String>,
@@ -585,7 +587,10 @@ fn opencode_read(message_paths: &[PathBuf]) -> Vec<RawRecord> {
 // exit ends the turn, and history comes entirely from its on-disk transcript.
 // The conversation id (== session id) lives in agy's filesystem, not its output.
 
-fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>) -> Vec<String> {
+// `_model` is intentionally unused: agy's `--print` runner ignores model
+// selection (the `--model` flag is inert in print mode), so the picker offers
+// no selectable models for antigravity (see `model_catalog::discover_one`).
+fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>, _model: Option<&str>) -> Vec<String> {
     // `--print` takes the prompt as its *value* (i.e. `--print <prompt>`), so the
     // prompt must come last, directly after `--print`. Putting another flag
     // between them makes that flag the prompt (agy then "answers" the flag name).
@@ -599,7 +604,9 @@ fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Opt
     args
 }
 
-fn antigravity_pty_args(session_id: Option<&str>) -> Vec<String> {
+// `_model` unused: agy's TUI manages its own model selection (see
+// `antigravity_build_args` and `model_catalog::discover_one`).
+fn antigravity_pty_args(session_id: Option<&str>, _model: Option<&str>) -> Vec<String> {
     // Native view: launch agy's interactive TUI (NOT `--print`, the
     // non-interactive turn runner), resuming the conversation by id.
     let mut args = vec!["--dangerously-skip-permissions".to_string()];
@@ -731,6 +738,8 @@ pub struct SpawnSpec<'a> {
     /// no selection; claude uses its own default. Ignored by per-turn agents,
     /// which take effort per-turn via their `thinking` build-args instead.
     pub effort: Option<&'a str>,
+    /// Session-level model override. `None` keeps the provider CLI default.
+    pub model: Option<&'a str>,
     /// The agent's RPC mailbox dir, exposed to the child as `QUORUM_RPC_DIR`.
     pub rpc_dir: PathBuf,
     pub cols: u16,
@@ -812,7 +821,7 @@ impl Agent {
         } else {
             Some(spec.session_id)
         };
-        let agent_args = (desc.pty_args)(session);
+        let agent_args = (desc.pty_args)(session, spec.model);
         let env = rpc_env(&spec.rpc_dir);
 
         // Unified sandbox: run the agent's TUI under sandbox-exec with Quorum's
@@ -945,7 +954,7 @@ impl Agent {
         cb: ExecCallbacks<F, G, H>,
     ) -> Result<Self>
     where
-        A: Fn(&str, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync + 'static,
+        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync + 'static,
         I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
@@ -985,6 +994,7 @@ impl Agent {
                 profile: Some(profile_file),
                 cwd: spec.cwd,
                 session_id: spec.session_id,
+                model: spec.model,
                 stdout_is_json,
                 env,
             },
@@ -1096,6 +1106,13 @@ fn effort_args(effort: Option<&str>) -> Vec<String> {
     }
 }
 
+fn model_args(model: Option<&str>) -> Vec<String> {
+    match model {
+        Some(id) if !id.trim().is_empty() => vec!["--model".into(), id.to_string()],
+        _ => Vec::new(),
+    }
+}
+
 fn prepare_pty_args(
     spec: &SpawnSpec<'_>,
 ) -> Result<(tempfile::NamedTempFile, Vec<String>)> {
@@ -1119,6 +1136,7 @@ fn prepare_pty_args(
         "bypassPermissions".into(),
     ];
     args.extend(effort_args(spec.effort));
+    args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args());
 
     if spec.fresh {
@@ -1174,6 +1192,7 @@ fn prepare_managed_args(
         "stdio".into(),
     ];
     args.extend(effort_args(spec.effort));
+    args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args());
 
     if spec.fresh {
@@ -1199,7 +1218,7 @@ fn resolve_claude(home: &Path) -> Result<String> {
 /// sandbox-exec like every other agent, so codex's own confinement is disabled
 /// to leave a single boundary — and so codex can reach its RPC mailbox, which
 /// lives outside the worktree that `workspace-write` would have confined it to.
-fn codex_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>) -> Vec<String> {
+fn codex_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["exec".into()];
     if let Some(id) = session_id {
         args.push("resume".into());
@@ -1215,6 +1234,7 @@ fn codex_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&st
         args.push("-c".into());
         args.push(format!("reasoning_effort=\"{effort}\""));
     }
+    args.extend(model_args(model));
     args.extend(instructions::codex_config_args());
     args.push(prompt.to_string());
     args
@@ -1235,7 +1255,7 @@ fn codex_session_id(event: &Value) -> Option<String> {
 /// `--force` runs commands without approval prompts; `--trust` trusts the
 /// workspace in headless mode. Cursor's own sandbox applies; cwd comes from
 /// the child process working directory.
-fn cursor_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>) -> Vec<String> {
+fn cursor_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-p".into(),
         "--output-format".into(),
@@ -1247,6 +1267,7 @@ fn cursor_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&
         args.push("--resume".into());
         args.push(id.to_string());
     }
+    args.extend(model_args(model));
     // Prompt is positional and must come after options.
     args.push(instructions::prepend_to_prompt(prompt, session_id));
     args
@@ -1273,7 +1294,7 @@ fn cursor_session_id(event: &Value) -> Option<String> {
 /// 1.15.12. OpenCode runs in the child's cwd (no `--dir` needed) and assigns
 /// its own session id on the first turn. The prompt is positional and must
 /// come after the flags.
-fn opencode_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>) -> Vec<String> {
+fn opencode_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "run".into(),
         "--format".into(),
@@ -1287,6 +1308,7 @@ fn opencode_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<
         args.push("--variant".into());
         args.push(variant.to_string());
     }
+    args.extend(model_args(model));
     if let Some(id) = session_id {
         args.push("--session".into());
         args.push(id.to_string());
@@ -1313,8 +1335,9 @@ fn opencode_session_id(event: &Value) -> Option<String> {
 /// it's the resume flag common to the versions we target — 0.74.x lacks
 /// `--session-id` entirely. Verified end-to-end against pi 0.74.2. Pi runs in
 /// the child's cwd; the prompt is positional and must come after the flags.
-fn pi_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>) -> Vec<String> {
+fn pi_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["-p".into(), "--mode".into(), "json".into()];
+    args.extend(model_args(model));
     if let Some(level) = thinking {
         args.push("--thinking".into());
         args.push(level.to_string());
@@ -1348,8 +1371,9 @@ fn pi_session_id(event: &Value) -> Option<String> {
 /// Codex: bare `codex` launches the interactive TUI;
 /// `--dangerously-bypass-approvals-and-sandbox` runs it unattended (Quorum
 /// already isolates the worktree). `resume <id>` continues a prior session.
-fn codex_pty_args(session_id: Option<&str>) -> Vec<String> {
+fn codex_pty_args(session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["--dangerously-bypass-approvals-and-sandbox".into()];
+    args.extend(model_args(model));
     args.extend(instructions::codex_config_args());
     if let Some(id) = session_id {
         args.push("resume".into());
@@ -1360,8 +1384,9 @@ fn codex_pty_args(session_id: Option<&str>) -> Vec<String> {
 
 /// Cursor: bare `cursor-agent` launches the TUI; `--force` auto-allows
 /// commands. `--resume <id>` continues a prior chat.
-fn cursor_pty_args(session_id: Option<&str>) -> Vec<String> {
+fn cursor_pty_args(session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["--force".into()];
+    args.extend(model_args(model));
     if let Some(id) = session_id {
         args.push("--resume".into());
         args.push(id.to_string());
@@ -1375,8 +1400,9 @@ fn cursor_pty_args(session_id: Option<&str>) -> Vec<String> {
 /// subcommand and makes the *default* (TUI) command print help and exit. The
 /// TUI prompts for tool permissions interactively, which the native view
 /// handles like any other keystroke.
-fn opencode_pty_args(session_id: Option<&str>) -> Vec<String> {
+fn opencode_pty_args(session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
+    args.extend(model_args(model));
     if let Some(id) = session_id {
         args.push("--session".into());
         args.push(id.to_string());
@@ -1387,8 +1413,9 @@ fn opencode_pty_args(session_id: Option<&str>) -> Vec<String> {
 /// Pi: bare `pi` launches the interactive TUI (tools auto-run there).
 /// `--session <id>` resumes — same flag the Custom-view runner uses, since the
 /// versions we target (0.74.x) lack `--session-id`.
-fn pi_pty_args(session_id: Option<&str>) -> Vec<String> {
+fn pi_pty_args(session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = instructions::append_system_prompt_args();
+    args.extend(model_args(model));
     if let Some(id) = session_id {
         args.push("--session".into());
         args.push(id.to_string());
@@ -1724,7 +1751,7 @@ mod tests {
     #[test]
     fn opencode_args_request_thinking() {
         // Without --thinking, opencode emits no `reasoning` events at all.
-        let args = opencode_build_args("hi", None, None);
+        let args = opencode_build_args("hi", None, None, None);
         assert!(args.contains(&"--thinking".to_string()));
         assert!(args.contains(&"--format".to_string()));
         // Prompt is positional and last (possibly prefixed with injected
@@ -1738,11 +1765,11 @@ mod tests {
     fn codex_pty_args_launch_tui_fresh_and_resume() {
         // Fresh: bypass approvals/sandbox so the TUI runs unattended; no
         // `exec`/`resume` subcommand means the interactive CLI.
-        let fresh = codex_pty_args(None);
+        let fresh = codex_pty_args(None, None);
         assert!(fresh.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
         assert!(!fresh.iter().any(|a| a == "resume"));
         // Resume: `resume <id>` continues the prior interactive session.
-        let resume = codex_pty_args(Some("abc123"));
+        let resume = codex_pty_args(Some("abc123"), None);
         assert!(resume.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
         let pos = resume
             .iter()
@@ -1753,10 +1780,10 @@ mod tests {
 
     #[test]
     fn cursor_pty_args_force_and_resume() {
-        let fresh = cursor_pty_args(None);
+        let fresh = cursor_pty_args(None, None);
         assert!(fresh.contains(&"--force".to_string()));
         assert!(!fresh.iter().any(|a| a == "--resume"));
-        let resume = cursor_pty_args(Some("chat-1"));
+        let resume = cursor_pty_args(Some("chat-1"), None);
         assert!(resume.contains(&"--force".to_string()));
         let pos = resume
             .iter()
@@ -1770,11 +1797,11 @@ mod tests {
         // Fresh: bare `opencode` launches the TUI. It must NOT carry
         // `--dangerously-skip-permissions` — that's a `run`-only flag, and
         // the default (TUI) command prints help and exits when given it.
-        let fresh = opencode_pty_args(None);
+        let fresh = opencode_pty_args(None, None);
         assert!(!fresh.iter().any(|a| a == "--dangerously-skip-permissions"));
         assert!(fresh.is_empty());
         // Resume: `--session <id>` continues the prior session.
-        let resume = opencode_pty_args(Some("ses_9"));
+        let resume = opencode_pty_args(Some("ses_9"), None);
         assert!(!resume.iter().any(|a| a == "--dangerously-skip-permissions"));
         let pos = resume
             .iter()
@@ -1787,10 +1814,10 @@ mod tests {
     fn pi_pty_args_bare_tui_and_session() {
         // Fresh: bare `pi` launches the interactive TUI; tools auto-run there.
         // (May carry injected --append-system-prompt args, but never a resume.)
-        let fresh = pi_pty_args(None);
+        let fresh = pi_pty_args(None, None);
         assert!(!fresh.iter().any(|a| a == "--session"), "fresh TUI has no resume flag");
         // Resume uses `--session <id>` (target pi 0.74.x lacks `--session-id`).
-        let resume = pi_pty_args(Some("u-7"));
+        let resume = pi_pty_args(Some("u-7"), None);
         let pos = resume
             .iter()
             .position(|a| a == "--session")
@@ -1803,7 +1830,7 @@ mod tests {
         // Native view is wired for every per-turn agent, so each descriptor
         // must carry a TUI arg-builder. Fresh launch never references resume.
         for d in PER_TURN_AGENTS {
-            let fresh = (d.pty_args)(None);
+            let fresh = (d.pty_args)(None, None);
             assert!(
                 !fresh
                     .iter()
@@ -1816,14 +1843,14 @@ mod tests {
 
     #[test]
     fn opencode_args_variant_when_thinking_set() {
-        let args = opencode_build_args("hi", None, Some("max"));
+        let args = opencode_build_args("hi", None, Some("max"), None);
         assert!(args.contains(&"--variant".to_string()));
         assert!(args.contains(&"max".to_string()));
     }
 
     #[test]
     fn codex_args_reasoning_effort_when_thinking_set() {
-        let args = codex_build_args("hi", None, Some("high"));
+        let args = codex_build_args("hi", None, Some("high"), None);
         assert!(args.contains(&"reasoning_effort=\"high\"".to_string()));
     }
 
@@ -1832,7 +1859,7 @@ mod tests {
         // Quorum now wraps codex in sandbox-exec, so codex's own confinement is
         // turned fully off — otherwise its workspace-write sandbox would block
         // the RPC mailbox, which lives outside the worktree.
-        let args = codex_build_args("hi", None, None);
+        let args = codex_build_args("hi", None, None, None);
         assert!(args.contains(&"sandbox_mode=\"danger-full-access\"".to_string()));
         assert!(!args.iter().any(|a| a.contains("workspace-write")));
         assert!(args.contains(&"approval_policy=\"never\"".to_string()));
@@ -1840,7 +1867,7 @@ mod tests {
 
     #[test]
     fn pi_args_thinking_when_set() {
-        let args = pi_build_args("hi", None, Some("xhigh"));
+        let args = pi_build_args("hi", None, Some("xhigh"), None);
         assert!(args.contains(&"--thinking".to_string()));
         assert!(args.contains(&"xhigh".to_string()));
     }
@@ -1860,8 +1887,8 @@ mod tests {
 
     #[test]
     fn cursor_args_ignores_thinking() {
-        let with_none = cursor_build_args("hi", None, None);
-        let with_some = cursor_build_args("hi", None, Some("high"));
+        let with_none = cursor_build_args("hi", None, None, None);
+        let with_some = cursor_build_args("hi", None, Some("high"), None);
         assert_eq!(with_none, with_some);
     }
 

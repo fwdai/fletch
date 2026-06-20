@@ -81,12 +81,16 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
           <Composer
             autoFocus
             defaultProvider={draft.provider}
+            defaultModel={draft.model}
             baseBranch={draft.base}
             repoPath={draft.repoPath}
             onChangeBase={(branch) => updateDraft(draft.id, { base: branch })}
+            onChangeSelection={(provider, model) =>
+              updateDraft(draft.id, { provider, model })
+            }
             placeholder="Describe the task for the agent. ↵ to spawn."
-            onSend={({ text, provider, attachments, thinking }) =>
-              spawnFromDraft(draft.id, text, provider, attachments, thinking)
+            onSend={({ text, provider, model, attachments, thinking }) =>
+              spawnFromDraft(draft.id, text, provider, model, attachments, thinking)
             }
           />
           <div className="empty-meta">

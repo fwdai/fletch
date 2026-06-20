@@ -6,14 +6,18 @@
 // — a flat id→meta map (`byId`, for the usage gauge) plus per-agent lists
 // (`byAgent`, for the future model picker).
 
-/** Metadata for one model, keyed in `byId` by its bare model id. */
+/** Metadata for one model, keyed in `byId` by the id used for lookup/launch. */
 export interface ModelMeta {
+  /** Bare model id as passed to the agent CLI (e.g. "claude-opus-4-8"). */
+  id: string;
   /** Human-facing model name (e.g. "Claude Opus 4.5"). */
   name: string;
   /** Context window in tokens. 0 when unknown. */
   contextWindow: number;
   /** Whether the model supports reasoning / extended thinking. */
   reasoning: boolean;
+  /** Model release date from models.dev (`YYYY-MM-DD`), when known. */
+  releaseDate?: string;
 }
 
 /** One model an agent reports it supports (from the Rust discovery command).
