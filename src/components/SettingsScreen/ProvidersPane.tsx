@@ -2,9 +2,9 @@ import { useState } from "react";
 import { useAppStore } from "../../store";
 import { PROVIDERS, type Provider } from "../../data/providers";
 import { PROVIDER_DETAIL } from "../../data/providerDetail";
+import { hasAdapter } from "../../adapters";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
-import { ProviderReadiness } from "../ProviderReadiness";
 import { SetHead, SetGroup, SetToggle } from "./primitives";
 import { BinaryPathRow } from "./BinaryPathRow";
 
@@ -18,7 +18,7 @@ export function ProvidersPane() {
   const refreshProviderVersions = useAppStore((s) => s.refreshProviderVersions);
   const [scanning, setScanning] = useState(false);
 
-  const installed = PROVIDERS.filter((p) => PROVIDER_DETAIL[p.id]?.installed);
+  const installed = PROVIDERS.filter((p) => hasAdapter(p.id));
   const enabledCount = installed.filter((p) => providerFlags[p.id] !== false).length;
 
   const rescan = async () => {
@@ -36,7 +36,7 @@ export function ProvidersPane() {
       <SetHead
         eyebrow="Settings · Providers"
         title="Providers"
-        desc={`${enabledCount} of ${installed.length} installed agents enabled. Toggle an agent off to hide it from the composer's model picker without signing out.`}
+        desc={`${enabledCount} of ${installed.length} agents enabled. Toggle an agent off to hide it from the composer's model picker without signing out.`}
         actions={
           <>
             {scanning && <span className="set-checked mono">Scanning…</span>}
@@ -62,10 +62,6 @@ export function ProvidersPane() {
           </>
         }
       />
-
-      <SetGroup label="Readiness">
-        <ProviderReadiness />
-      </SetGroup>
 
       <SetGroup label="Installed on this system" last>
         <div className="set-prov-list">

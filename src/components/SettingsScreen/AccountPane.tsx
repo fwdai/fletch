@@ -3,6 +3,7 @@ import { useAppStore } from "../../store";
 import { accountInitials } from "../../util/format";
 import { Avatar } from "../Avatar";
 import { SetHead, SetGroup } from "./primitives";
+import { DevToolsStatus } from "./DevToolsStatus";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -67,7 +68,7 @@ export function AccountPane() {
         </div>
       </div>
 
-      <SetGroup label="Profile" last>
+      <SetGroup label="Profile">
         <div className="set-form">
           <div className="set-form-grid">
             <label className="set-field">
@@ -128,6 +129,10 @@ export function AccountPane() {
             </button>
           </div>
         </div>
+      </SetGroup>
+
+      <SetGroup label="Developer tools" last>
+        <DevToolsStatus />
       </SetGroup>
     </div>
   );
