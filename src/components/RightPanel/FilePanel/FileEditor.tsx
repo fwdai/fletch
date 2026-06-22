@@ -39,6 +39,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
   const isQuorum = useHljsTheme();
   const codeTheme = useAppStore((s) => s.codeTheme);
   const setCodeTheme = useAppStore((s) => s.setCodeTheme);
+  const setLastError = useAppStore((s) => s.setLastError);
 
   const taRef = useRef<HTMLTextAreaElement>(null);
   const hlRef = useRef<HTMLPreElement>(null);
@@ -129,7 +130,14 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
       if (timerRef.current) clearTimeout(timerRef.current);
       const text = valueRef.current;
       if (text !== savedRef.current) {
-        void api.writeWorktreeFile(agent.id, path, text).catch(() => {});
+        // The component is unmounting, so local state is gone — surface a
+        // failed final save through the global banner instead of losing it
+        // silently. `getState()` avoids a stale closure in cleanup.
+        void api.writeWorktreeFile(agent.id, path, text).catch((e) => {
+          useAppStore
+            .getState()
+            .setLastError(`Couldn't save ${path}: ${String(e)}`);
+        });
       }
     };
   }, [agent.id, path]);
@@ -137,11 +145,19 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
   const revert = async () => {
     // Restore the agent's version on disk and in the editor.
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-    await api.writeWorktreeFile(agent.id, path, originalText).catch(() => {});
-    savedRef.current = originalText;
-    setValue(originalText);
-    setSaveState("idle");
-    requestAnimationFrame(syncScroll);
+    setSaveState("saving");
+    try {
+      await api.writeWorktreeFile(agent.id, path, originalText);
+      savedRef.current = originalText;
+      setValue(originalText);
+      setSaveState("idle");
+      requestAnimationFrame(syncScroll);
+    } catch (e) {
+      // Don't update the buffer/savedRef — disk still holds the edits, so the
+      // editor must keep showing them rather than claim a revert that failed.
+      setSaveState("error");
+      setLastError(`Couldn't revert ${name}: ${String(e)}`);
+    }
   };
 
   const onChange = (next: string) => {

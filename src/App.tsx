@@ -5,6 +5,7 @@ import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
 import { RightPanel } from "./components/RightPanel";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Settings } from "./components/Settings";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { Onboarding } from "./components/Onboarding";
@@ -82,7 +83,10 @@ export function App() {
             </div>
             {!leftCollapsed && <div className="splitter" onMouseDown={onLeftDrag} />}
 
-            <Workspace />
+            {/* Keyed by agent so switching agents clears a stuck error. */}
+            <ErrorBoundary label="the workspace" key={selectedAgentId ?? "none"}>
+              <Workspace />
+            </ErrorBoundary>
 
             {rightPaneVisible && <div className="splitter" onMouseDown={onRightDrag} />}
             {!activeDraftId && (
@@ -102,7 +106,9 @@ export function App() {
                 }}
               >
                 {!rightCollapsed && selectedAgent && (
-                  <RightPanel agent={selectedAgent} />
+                  <ErrorBoundary label="the side panel" key={selectedAgent.id}>
+                    <RightPanel agent={selectedAgent} />
+                  </ErrorBoundary>
                 )}
               </div>
             )}

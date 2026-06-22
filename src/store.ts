@@ -471,6 +471,9 @@ interface AppState {
    *  same adapter that processes live events. */
   loadHistoryTranscript: (id: string) => Promise<void>;
   clearError: () => void;
+  /** Surface a message in the global error banner. For components (which can't
+   *  call `set`) to report a failure they'd otherwise have to swallow. */
+  setLastError: (message: string) => void;
 
   /** Version string of an update that's been downloaded + staged and is
    *  waiting for a restart to take effect. `null` = none pending. */
@@ -1737,6 +1740,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   clearError: () => set({ lastError: null }),
+  setLastError: (message) => set({ lastError: message }),
 
   setUpdateReady: (version) => set({ updateReadyVersion: version }),
   dismissUpdate: () => set({ updateReadyVersion: null }),
