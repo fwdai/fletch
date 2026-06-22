@@ -51,11 +51,37 @@ export function Workspace() {
   return (
     <div className="pane center fade-in" key={agent.id}>
       <WorkspaceHeader agent={agent} />
+      {agent.status === "error" && <CrashBanner agent={agent} />}
       {agent.view === "native" ? (
         <NativeBody agent={agent} />
       ) : (
         <ChatView agent={agent} />
       )}
+    </div>
+  );
+}
+
+/** Shown when an agent's process exited with an error. Surfaces the crash
+ *  reason (otherwise only a red dot in the sidebar) and a Resume action —
+ *  both already captured on the record / available in the store, just never
+ *  rendered. Sits under the header so the transcript leading up to the crash
+ *  stays visible. */
+function CrashBanner({ agent }: { agent: AgentRecord }) {
+  const resume = useAppStore((s) => s.resume);
+  return (
+    <div className="crash-banner" role="alert">
+      <div className="crash-text">
+        <span className="crash-title">Agent stopped unexpectedly</span>
+        {agent.last_error && <span className="crash-detail">{agent.last_error}</span>}
+      </div>
+      <button
+        type="button"
+        className="btn-t outline"
+        onClick={() => void resume(agent.id)}
+      >
+        <Icon name="play" size={12} />
+        Resume
+      </button>
     </div>
   );
 }
