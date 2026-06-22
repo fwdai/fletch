@@ -2,11 +2,11 @@
 
 use parking_lot::Mutex;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
 use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnSpec};
@@ -120,6 +120,11 @@ pub struct Supervisor {
     /// Per-agent run-panel processes (dev server + setup). Reused
     /// across start/stop cycles so the log buffer survives.
     pub runs: Mutex<HashMap<String, Arc<RunSession>>>,
+    /// Agent ids whose binary-path change couldn't be applied immediately
+    /// because the agent was mid-turn. Drained at the next turn-end Idle
+    /// transition (see `transition_active`), which respawns them onto the
+    /// new binary. Empty in the common case.
+    pub respawn_pending: Mutex<HashSet<String>>,
 }
 
 impl Supervisor {
@@ -133,6 +138,7 @@ impl Supervisor {
             native_input_lines: Mutex::new(HashMap::new()),
             shells: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
+            respawn_pending: Mutex::new(HashSet::new()),
         }
     }
 
@@ -1008,55 +1014,91 @@ impl Supervisor {
     /// changed binary path. The binary is resolved only inside `start_process`
     /// (spawn / resume / view-switch), so a live agent keeps the old binary —
     /// baked into its running process (claude, persistent) or frozen spawn args
-    /// (per-turn) — until torn down and restarted. We resume the existing
-    /// session (`fresh = false`), so transcripts/conversation are preserved.
-    ///
-    /// Agents mid-turn (Spawning/Running) are left alone: tearing them down
-    /// would drop in-flight work. They pick up the new binary on their next
-    /// respawn (next resume / view switch). Callers must refresh the
+    /// (per-turn) — until torn down and restarted. Callers must refresh the
     /// `bin_resolve` override registry *before* calling this so the restarted
     /// processes resolve the new path.
+    ///
+    /// Only currently-live agents need this; anything not in the `agents` map
+    /// will resolve the new binary on its next spawn anyway.
     pub async fn respawn_provider(self: &Arc<Self>, app: &AppHandle, provider_id: &str) {
         // Snapshot ids under a short-lived lock; never hold a guard across the
-        // `start_process` await below (parking_lot guards aren't Send, and
-        // `start_process` re-locks these maps internally → deadlock).
+        // `start_process` await in `respawn_agent_for_bin` (parking_lot guards
+        // aren't Send, and `start_process` re-locks these maps → deadlock).
         let ids: Vec<String> = self.agents.lock().keys().cloned().collect();
         for id in ids {
-            let record = match self.workspace.agent(&id) {
-                Ok(r) => r,
-                Err(_) => continue, // agent removed out from under us
-            };
-            if record.provider != provider_id {
-                continue;
+            match self.workspace.agent(&id) {
+                Ok(r) if r.provider == provider_id => {}
+                _ => continue, // wrong provider, or removed out from under us
             }
-            if matches!(
-                self.effective_status(&id, &record),
+            self.respawn_agent_for_bin(app, &id).await;
+        }
+    }
+
+    /// Tear down and restart one live agent so it execs the freshly resolved
+    /// binary, resuming its existing session (`fresh = false`) so the
+    /// transcript/conversation is preserved.
+    ///
+    /// The idle-check and the `agents` removal happen atomically under a single
+    /// `agents` lock: a concurrent send can flip an agent Idle→Running on
+    /// another thread (`transition_active` touches only `statuses`), so a
+    /// separate check-then-remove would risk shutting down an in-flight turn.
+    /// If the agent is mid-turn (Spawning/Running) we leave it running and flag
+    /// it in `respawn_pending`; the next turn-end Idle transition retries it
+    /// (see `transition_active`). This is what keeps the "swap binary → keep
+    /// going" flow working for an agent that's busy at swap time.
+    async fn respawn_agent_for_bin(self: &Arc<Self>, app: &AppHandle, agent_id: &str) {
+        let record = match self.workspace.agent(agent_id) {
+            Ok(r) => r,
+            Err(_) => {
+                self.respawn_pending.lock().remove(agent_id);
+                return;
+            }
+        };
+        // Atomic idle-check + remove. `busy` distinguishes "left running" from
+        // "already gone" when no agent is taken.
+        let mut busy = false;
+        let taken = {
+            let mut agents = self.agents.lock();
+            if !agents.contains_key(agent_id) {
+                None // gone — next spawn resolves the new binary anyway
+            } else if matches!(
+                self.effective_status(agent_id, &record),
                 AgentStatus::Spawning | AgentStatus::Running
             ) {
-                tracing::info!(agent_id = %id, provider = %provider_id,
-                    "skipping binary-swap respawn: agent busy");
-                continue;
+                busy = true;
+                None
+            } else {
+                agents.remove(agent_id)
             }
-
-            if let Some(agent) = self.agents.lock().remove(&id) {
-                let _ = agent.shutdown();
+        };
+        let agent = match taken {
+            Some(agent) => agent,
+            None if busy => {
+                self.respawn_pending.lock().insert(agent_id.to_string());
+                tracing::info!(agent_id, "binary-swap respawn deferred: agent busy");
+                return;
             }
-            self.activities.lock().remove(&id);
-            self.native_input_lines.lock().remove(&id);
-
-            self.set_status(app, &id, AgentStatus::Spawning, None);
-            arm_spawn_timeout(self.clone(), app.clone(), id.clone());
-
-            // Let the old process fully release its session before resuming it
-            // (mirrors `switch_view`).
-            tokio::time::sleep(Duration::from_millis(150)).await;
-
-            if let Err(e) = self.start_process(app, &id, false).await {
-                let err = e.to_string();
-                tracing::warn!(agent_id = %id, error = %err,
-                    "binary-swap respawn failed");
-                self.set_status(app, &id, AgentStatus::Error, Some(err));
+            None => {
+                self.respawn_pending.lock().remove(agent_id);
+                return;
             }
+        };
+        self.respawn_pending.lock().remove(agent_id);
+        let _ = agent.shutdown();
+        self.activities.lock().remove(agent_id);
+        self.native_input_lines.lock().remove(agent_id);
+
+        self.set_status(app, agent_id, AgentStatus::Spawning, None);
+        arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
+
+        // Let the old process fully release its session before resuming it
+        // (mirrors `switch_view`).
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        if let Err(e) = self.start_process(app, agent_id, false).await {
+            let err = e.to_string();
+            tracing::warn!(agent_id, error = %err, "binary-swap respawn failed");
+            self.set_status(app, agent_id, AgentStatus::Error, Some(err));
         }
     }
 
@@ -2330,8 +2372,28 @@ fn transition_active(
             // session_records. Idempotent + reader-gated, so it's a cheap no-op
             // for agents without a reader.
             sup.trigger_session_sync(app.clone(), agent_id.to_string());
+            drain_pending_bin_respawn(sup, app, agent_id);
         }
     }
+}
+
+/// If a binary-path change was deferred for this agent because it was
+/// mid-turn (see `respawn_agent_for_bin`), now that it's Idle restart it onto
+/// the new binary. No-op unless the agent is flagged. We recover the managed
+/// `Arc<Supervisor>` from Tauri state because `transition_active` only holds
+/// `&Supervisor`, and the respawn needs an owned `Arc` for its spawned task.
+fn drain_pending_bin_respawn(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
+    if !sup.respawn_pending.lock().contains(agent_id) {
+        return;
+    }
+    let Some(sup_arc) = app.try_state::<Arc<Supervisor>>().map(|s| s.inner().clone()) else {
+        return;
+    };
+    let app = app.clone();
+    let agent_id = agent_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        sup_arc.respawn_agent_for_bin(&app, &agent_id).await;
+    });
 }
 
 fn apply_exit_if_current(
