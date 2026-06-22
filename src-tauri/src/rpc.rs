@@ -86,6 +86,18 @@ pub struct OpContext {
     pub base_branch: String,
 }
 
+/// A side-effect of a processed op that the supervisor-side watcher needs to
+/// observe. `rpc` itself stays free of any `Supervisor`/DB dependency (so it
+/// remains unit-testable in isolation) — it just reports what happened and lets
+/// the watcher persist it.
+#[derive(Debug, Clone)]
+pub enum RpcEffect {
+    /// `open_pr` created (or resolved an already-existing) PR with this number.
+    /// The watcher records it against the agent so later PR-state lookups go by
+    /// number, not by the recyclable branch name.
+    PrOpened { number: u32 },
+}
+
 impl Response {
     fn ok(id: &str, exit_code: i32, stdout: String, stderr: String) -> Self {
         Self {
@@ -144,16 +156,17 @@ pub fn ensure_mailbox(dir: &Path) -> Result<()> {
 /// delete the request. Driven on a fixed tick by the per-agent watcher. Errors
 /// on a single request are logged and isolated — one bad file can't stall the
 /// rest. Commands run in `cwd` (the agent's primary worktree).
-pub async fn process_pending(rpc_dir: &Path, ctx: &OpContext) {
+pub async fn process_pending(rpc_dir: &Path, ctx: &OpContext) -> Vec<RpcEffect> {
     let requests = rpc_dir.join("requests");
     let responses = rpc_dir.join("responses");
 
     let entries = match std::fs::read_dir(&requests) {
         Ok(e) => e,
         // No mailbox yet (or removed during teardown) — nothing to do.
-        Err(_) => return,
+        Err(_) => return Vec::new(),
     };
 
+    let mut effects = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         // Only consume finished `<uuid>.json` files. The agent writes
@@ -162,28 +175,35 @@ pub async fn process_pending(rpc_dir: &Path, ctx: &OpContext) {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        handle_request_file(&path, &responses, ctx).await;
+        if let Some(effect) = handle_request_file(&path, &responses, ctx).await {
+            effects.push(effect);
+        }
     }
+    effects
 }
 
 /// Handle one request file. The response filename is derived from the request's
 /// file stem (the `<uuid>` the agent polls), not the in-body `id`, so the agent
 /// always finds its reply where it expects. The stem must be a safe token —
 /// a defense-in-depth guard against a malformed id escaping the mailbox.
-async fn handle_request_file(path: &Path, responses: &Path, ctx: &OpContext) {
+async fn handle_request_file(
+    path: &Path,
+    responses: &Path,
+    ctx: &OpContext,
+) -> Option<RpcEffect> {
     let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-        return;
+        return None;
     };
     if !is_safe_key(stem) {
         tracing::warn!(file = %path.display(), "rpc: unsafe request filename, skipping");
-        return;
+        return None;
     }
 
     let raw = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(error = %e, file = %path.display(), "rpc: read request failed");
-            return;
+            return None;
         }
     };
 
@@ -205,30 +225,43 @@ async fn handle_request_file(path: &Path, responses: &Path, ctx: &OpContext) {
             } else {
                 tracing::debug!(error = %e, file = %path.display(), "rpc: unparseable request (will retry)");
             }
-            return;
+            return None;
         }
     };
 
-    let resp = dispatch(stem, &req.op, &req.args, ctx).await;
+    let (resp, effect) = dispatch(stem, &req.op, &req.args, ctx).await;
 
     if let Err(e) = write_response_atomic(responses, stem, &resp) {
         tracing::warn!(error = %e, id = %stem, "rpc: write response failed");
         // Leave the request so a later tick can retry rather than dropping it.
-        return;
+        // Don't surface the effect either — the op will re-run next tick.
+        return None;
     }
 
     // Answered — remove the request so it's processed exactly once.
     if let Err(e) = std::fs::remove_file(path) {
         tracing::warn!(error = %e, file = %path.display(), "rpc: remove request failed");
     }
+
+    effect
 }
 
 /// The op allowlist. Adding an op is one arm here plus a line in the instruction
 /// block (`instructions/rpc_protocol.md`). Anything unmatched is rejected, which
 /// is what keeps the sandbox meaningful — the agent can only invoke vetted,
 /// deterministic actions.
-async fn dispatch(id: &str, op: &str, args: &Value, ctx: &OpContext) -> Response {
-    match op {
+async fn dispatch(
+    id: &str,
+    op: &str,
+    args: &Value,
+    ctx: &OpContext,
+) -> (Response, Option<RpcEffect>) {
+    // `open_pr` is the only op that produces an effect the supervisor needs to
+    // observe (the new PR number); it returns its own (response, effect) pair.
+    if op == "open_pr" {
+        return open_pr(id, args, ctx).await;
+    }
+    let resp = match op {
         // Liveness probe — proves the round-trip with no side effects.
         "ping" => Response::ok(id, 0, "pong".to_string(), String::new()),
         // Read-only: run a deterministic command and report its result.
@@ -239,10 +272,6 @@ async fn dispatch(id: &str, op: &str, args: &Value, ctx: &OpContext) -> Response
         // (the worktree's git index/objects live outside the writable root), so
         // it's an app action. `args.message` is the commit message.
         "git_commit" => git_commit(id, args, ctx).await,
-        // Push the current branch and open a PR against the agent's base branch.
-        // `args.title`/`args.body` set the PR title and description (empty title
-        // → gh auto-fills from the commits).
-        "open_pr" => open_pr(id, args, ctx).await,
         // Push the current branch to origin. Blocked in the sandbox for the
         // same reason as commit — used to update an existing PR branch after
         // the agent fixes checks or resolves conflicts.
@@ -253,7 +282,8 @@ async fn dispatch(id: &str, op: &str, args: &Value, ctx: &OpContext) -> Response
         // the agent can resolve and finish with `git_commit` + `git_push`.
         "git_update_branch" => git_update_branch(id, ctx).await,
         other => Response::err(id, format!("unknown op: {other}")),
-    }
+    };
+    (resp, None)
 }
 
 /// `git_commit` — `args.message` (required, non-empty) is the commit message.
@@ -273,20 +303,28 @@ async fn git_commit(id: &str, args: &Value, ctx: &OpContext) -> Response {
 /// `open_pr` — push the current branch, then `gh pr create` against the agent's
 /// base branch. `args.title`/`args.body` are optional (empty title → `--fill`).
 /// Returns the PR URL in `stdout` on success.
-async fn open_pr(id: &str, args: &Value, ctx: &OpContext) -> Response {
+async fn open_pr(id: &str, args: &Value, ctx: &OpContext) -> (Response, Option<RpcEffect>) {
     let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
     let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
     let branch = match crate::git::current_branch(&ctx.cwd).await {
         Ok(Some(b)) => b,
-        Ok(None) => return Response::err(id, "open_pr: HEAD is detached — no branch to push"),
-        Err(e) => return Response::err(id, format!("open_pr: {e}")),
+        Ok(None) => {
+            return (
+                Response::err(id, "open_pr: HEAD is detached — no branch to push"),
+                None,
+            )
+        }
+        Err(e) => return (Response::err(id, format!("open_pr: {e}")), None),
     };
     if let Err(e) = crate::git::push(&ctx.cwd, &branch).await {
-        return Response::err(id, format!("open_pr push failed: {e}"));
+        return (Response::err(id, format!("open_pr push failed: {e}")), None);
     }
     match crate::gh::pr_create(&ctx.cwd, title, body, &ctx.base_branch).await {
-        Ok(pr) => Response::ok(id, 0, pr.url, String::new()),
-        Err(e) => Response::err(id, format!("open_pr: {e}")),
+        Ok(pr) => (
+            Response::ok(id, 0, pr.url, String::new()),
+            Some(RpcEffect::PrOpened { number: pr.number }),
+        ),
+        Err(e) => (Response::err(id, format!("open_pr: {e}")), None),
     }
 }
 

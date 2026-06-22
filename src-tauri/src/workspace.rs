@@ -66,6 +66,13 @@ pub struct TrackedRepo {
     /// for PR/merge bases.
     #[serde(default)]
     pub base_sha: Option<String>,
+    /// The GitHub PR number this worktree's branch was opened as, once known.
+    /// Set when a PR is created through the app or adopted from an OPEN
+    /// out-of-band PR. PR state is fetched by this number, not by branch name,
+    /// so a recycled workspace name can't resolve to a prior agent's PR.
+    /// `None` until a PR exists.
+    #[serde(default)]
+    pub pr_number: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -464,6 +471,24 @@ impl WorkspaceManager {
         conn.execute(
             "UPDATE worktrees SET base_sha = ?1 WHERE workspace_id = ?2 AND subdir = ?3",
             rusqlite::params![base_sha, agent_id, subdir],
+        )?;
+        Ok(())
+    }
+
+    /// Record the GitHub PR number for a tracked repo, identified by subdir.
+    /// Written when a PR is created through the app or adopted from an OPEN
+    /// out-of-band PR. Overwrites unconditionally — the latest PR opened for
+    /// the branch is the one we track.
+    pub fn set_repo_pr_number(
+        &self,
+        agent_id: &str,
+        subdir: &str,
+        pr_number: i64,
+    ) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "UPDATE worktrees SET pr_number = ?1 WHERE workspace_id = ?2 AND subdir = ?3",
+            rusqlite::params![pr_number, agent_id, subdir],
         )?;
         Ok(())
     }
@@ -1095,7 +1120,7 @@ impl WorkspaceManager {
 
     fn query_tracked_repos(conn: &Connection, agent_id: &str) -> Vec<TrackedRepo> {
         let mut stmt = match conn.prepare(
-            "SELECT r.path, w.subdir, w.branch, w.parent_branch, w.base_sha
+            "SELECT r.path, w.subdir, w.branch, w.parent_branch, w.base_sha, w.pr_number
              FROM worktrees w
              JOIN repos r ON r.id = w.repo_id
              WHERE w.workspace_id = ?1
@@ -1111,12 +1136,14 @@ impl WorkspaceManager {
             let branch: Option<String> = row.get(2)?;
             let parent_branch: Option<String> = row.get(3)?;
             let base_sha: Option<String> = row.get(4)?;
+            let pr_number: Option<i64> = row.get(5)?;
             Ok(TrackedRepo {
                 repo_path: PathBuf::from(path),
                 subdir,
                 branch,
                 parent_branch,
                 base_sha,
+                pr_number,
             })
         })
         .ok()
@@ -1480,6 +1507,7 @@ mod tests {
             branch: None,
             parent_branch: None,
             base_sha: None,
+            pr_number: None,
         }
     }
 
@@ -1643,6 +1671,48 @@ mod tests {
     }
 
     #[test]
+    fn pr_number_persists_and_resets_on_name_reuse() {
+        let db = test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        seed_repo(&db, "/r");
+
+        // Spawn an agent named "denali" and record a PR number for it.
+        let mut rec = new_agent_record(
+            "denali".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        let id = rec.id.clone();
+        wm.add_agent(&mut rec).unwrap();
+        let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+
+        // No PR until one is recorded.
+        assert_eq!(wm.agent(&id).unwrap().repos[0].pr_number, None);
+        wm.set_repo_pr_number(&id, &subdir, 42).unwrap();
+        assert_eq!(wm.agent(&id).unwrap().repos[0].pr_number, Some(42));
+
+        // Deleting the agent drops its worktree row. A future agent that reuses
+        // the same name (and therefore the same branch) starts with no PR — so
+        // it can't resolve to the deleted agent's now-merged PR. This is the
+        // crux of binding PR identity to the worktree row, not the branch name.
+        wm.remove_agent(&id).unwrap();
+        let mut reused = new_agent_record(
+            "denali".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        let reused_id = reused.id.clone();
+        wm.add_agent(&mut reused).unwrap();
+        assert_eq!(wm.agent(&reused_id).unwrap().repos[0].pr_number, None);
+    }
+
+    #[test]
     fn agent_status_transitions() {
         let db = test_db();
         let td = tempfile::tempdir().unwrap();
@@ -1750,6 +1820,7 @@ mod tests {
             branch: Some("quorum/do-the-thing".into()),
             parent_branch: Some("main".into()),
             base_sha: None,
+            pr_number: None,
         }];
         wm.restore_agent(&id, restored).unwrap();
         let a = wm.agent(&id).unwrap();
@@ -1814,6 +1885,7 @@ mod tests {
                 branch: None,
                 parent_branch: None,
                 base_sha: None,
+                pr_number: None,
             },
             "task".into(),
             AgentView::Custom,

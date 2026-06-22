@@ -67,6 +67,7 @@ fn get_migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/0007_account_oauth.sql")),
         M::up(include_str!("../migrations/0008_worktree_base_sha.sql")),
         M::up(include_str!("../migrations/0009_session_model.sql")),
+        M::up(include_str!("../migrations/0010_worktree_pr_number.sql")),
     ])
 }
 

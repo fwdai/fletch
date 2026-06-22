@@ -498,7 +498,23 @@ pub async fn create_pr(
         .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
     let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
-    gh::pr_create(&worktree, &title, &body, base).await
+    let pr = gh::pr_create(&worktree, &title, &body, base).await?;
+    // Bind the PR to this agent by number so later lookups don't rely on the
+    // (recyclable) branch name. A failure here isn't fatal — the next idle/push
+    // poll re-binds it via guarded discovery once the PR shows OPEN — but log it
+    // so the gap is observable rather than silent.
+    if let Err(e) = supervisor
+        .workspace
+        .set_repo_pr_number(&agent_id, &repo.subdir, pr.number as i64)
+    {
+        tracing::warn!(
+            error = %e,
+            agent_id = %agent_id,
+            pr = pr.number,
+            "create_pr: failed to persist PR number"
+        );
+    }
+    Ok(pr)
 }
 
 /// Merge the open PR for the agent's current branch.
