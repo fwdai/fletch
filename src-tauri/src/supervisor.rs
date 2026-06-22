@@ -467,6 +467,7 @@ impl Supervisor {
             branch: None, // created later from first user message
             parent_branch,
             base_sha: None, // captured by the fork task once HEAD is known
+            pr_number: None, // set when a PR is opened for this branch
         };
 
         let mut record = new_agent_record(
@@ -577,6 +578,7 @@ impl Supervisor {
             branch: None,
             parent_branch,
             base_sha,
+            pr_number: None,
         };
         self.workspace
             .append_tracked_repo(agent_id, repo.clone())?;
@@ -778,7 +780,7 @@ impl Supervisor {
             self.set_status(&app, &agent_id_str, AgentStatus::Idle, None);
         }
 
-        spawn_turn_watchdog(self.clone(), app, agent_id_str.clone(), my_gen);
+        spawn_turn_watchdog(self.clone(), app.clone(), agent_id_str.clone(), my_gen);
 
         // Watch this agent's RPC mailbox for the life of this generation,
         // executing allowlisted ops and writing responses back.
@@ -786,7 +788,7 @@ impl Supervisor {
             cwd: watcher_cwd,
             base_branch,
         };
-        spawn_rpc_watcher(self.clone(), agent_id_str, op_ctx, rpc_dir, my_gen);
+        spawn_rpc_watcher(self.clone(), app, agent_id_str, op_ctx, rpc_dir, my_gen);
 
         Ok(())
     }
@@ -1199,6 +1201,9 @@ impl Supervisor {
                 // this literal value is never written back — None is a
                 // placeholder to satisfy the struct.
                 base_sha: None,
+                // Likewise preserved in the worktrees row across restore;
+                // placeholder to satisfy the struct.
+                pr_number: None,
             });
         }
 
@@ -1293,11 +1298,33 @@ impl Supervisor {
             if repo.branch.is_none() {
                 return;
             }
-            let worktree = match crate::workspace::repo_worktree_path(&agent_id, &repo.subdir) {
+            let subdir = repo.subdir.clone();
+            let worktree = match crate::workspace::repo_worktree_path(&agent_id, &subdir) {
                 Ok(p) => p,
                 Err(_) => return,
             };
-            let state = crate::gh::pr_view(&worktree).await.unwrap_or(None);
+            let state = if let Some(number) = repo.pr_number {
+                // Known PR: fetch by number, never by branch. This is what keeps
+                // PR identity bound to the agent rather than the recyclable
+                // branch name.
+                crate::gh::pr_view_number(&worktree, number as u32)
+                    .await
+                    .unwrap_or(None)
+            } else {
+                // No PR recorded yet. Discover one created out-of-band (agent ran
+                // `gh pr create`, or it was opened on github.com), but only adopt
+                // it if it's OPEN — a stale merged/closed PR sitting on a recycled
+                // branch must not be claimed as this agent's. Once adopted we
+                // persist the number so all later lookups go by number.
+                match crate::gh::pr_view(&worktree).await.unwrap_or(None) {
+                    Some(pr) if matches!(pr.state, crate::gh::PrStatus::Open) => {
+                        let _ =
+                            workspace.set_repo_pr_number(&agent_id, &subdir, pr.number as i64);
+                        Some(pr)
+                    }
+                    _ => None,
+                }
+            };
             let _ = app.emit(
                 "pr:state_changed",
                 PrStateChangedPayload { agent_id, state },
@@ -2110,6 +2137,7 @@ fn spawn_turn_watchdog(
 /// the transcript-sync style already used elsewhere.
 fn spawn_rpc_watcher(
     sup: Arc<Supervisor>,
+    app: AppHandle,
     agent_id: String,
     ctx: rpc::OpContext,
     rpc_dir: PathBuf,
@@ -2129,7 +2157,27 @@ fn spawn_rpc_watcher(
                 return;
             }
 
-            rpc::process_pending(&rpc_dir, &ctx).await;
+            let effects = rpc::process_pending(&rpc_dir, &ctx).await;
+            for effect in effects {
+                match effect {
+                    // The agent opened a PR via the `open_pr` op. Bind it to the
+                    // agent by number so PR-state lookups stop depending on the
+                    // (recyclable) branch name, then refresh the panel. The PR
+                    // belongs to the primary repo — the worktree `open_pr` runs in.
+                    rpc::RpcEffect::PrOpened { number } => {
+                        if let Ok(record) = sup.workspace.agent(&agent_id) {
+                            if let Some(repo) = record.repos.first() {
+                                let _ = sup.workspace.set_repo_pr_number(
+                                    &agent_id,
+                                    &repo.subdir,
+                                    number as i64,
+                                );
+                            }
+                        }
+                        sup.fetch_and_emit_pr_state(app.clone(), agent_id.clone());
+                    }
+                }
+            }
         }
     });
 }
@@ -2525,6 +2573,7 @@ mod tests {
                 branch: None,
                 parent_branch: None,
                 base_sha: None,
+                pr_number: None,
             },
             String::new(),
             AgentView::Custom,

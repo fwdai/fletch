@@ -197,6 +197,35 @@ pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
     Ok(Some(raw.into()))
 }
 
+/// Fetch PR state by explicit PR number, regardless of the branch currently
+/// checked out in `worktree`. This is the lookup that doesn't rely on branch
+/// identity: once we've recorded a PR number for an agent we fetch by it, so a
+/// recycled workspace/branch name can't resolve to a different (e.g. a prior
+/// agent's merged) PR.
+///
+/// Returns `Ok(None)` when the PR can't be found (e.g. it was deleted) so the
+/// caller can treat it the same as "no PR".
+pub async fn pr_view_number(worktree: &Path, number: u32) -> Result<Option<PrState>> {
+    let num = number.to_string();
+    let out = gh_command()
+        .current_dir(worktree)
+        .args(["pr", "view", &num, "--json", "number,url,state,title,mergeable"])
+        .output()
+        .await?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let low = stderr.to_lowercase();
+        if low.contains("no pull requests found") || low.contains("could not resolve") {
+            return Ok(None);
+        }
+        return Err(Error::Gh(stderr.trim().to_string()));
+    }
+
+    let raw: GhPrRaw = serde_json::from_slice(&out.stdout)?;
+    Ok(Some(raw.into()))
+}
+
 /// List open PRs for the repo at `worktree` (most-recent first), for the
 /// composer's "#" mention autocomplete.
 pub async fn pr_list(worktree: &Path, limit: u32) -> Result<Vec<PrSummary>> {

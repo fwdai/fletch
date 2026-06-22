@@ -475,7 +475,13 @@ pub async fn create_pr(
         .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
     let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
-    gh::pr_create(&worktree, &title, &body, base).await
+    let pr = gh::pr_create(&worktree, &title, &body, base).await?;
+    // Bind the PR to this agent by number so later lookups don't rely on the
+    // (recyclable) branch name.
+    let _ = supervisor
+        .workspace
+        .set_repo_pr_number(&agent_id, &repo.subdir, pr.number as i64);
+    Ok(pr)
 }
 
 /// Merge the open PR for the agent's current branch.
