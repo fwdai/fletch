@@ -211,21 +211,31 @@ async fn db_query(
 async fn set_agent_bin_override(
     id: String,
     path: Option<String>,
+    app: tauri::AppHandle,
     state: tauri::State<'_, DbState>,
+    supervisor: tauri::State<'_, Arc<Supervisor>>,
 ) -> Result<(), String> {
-    let conn = state.lock();
-    let key = format!("{}{}", database::AGENT_BIN_PREFIX, id);
-    match path.as_deref().map(str::trim) {
-        Some(p) if !p.is_empty() => {
-            database::db_upsert(&conn, "settings", json!({ "key": key, "value": p }), "key")
-                .map_err(|e| e.to_string())?;
+    // Scope the DB guard so it drops before the async respawn below — parking_lot
+    // guards aren't Send across await, and the respawn re-locks the DB internally.
+    {
+        let conn = state.lock();
+        let key = format!("{}{}", database::AGENT_BIN_PREFIX, id);
+        match path.as_deref().map(str::trim) {
+            Some(p) if !p.is_empty() => {
+                database::db_upsert(&conn, "settings", json!({ "key": key, "value": p }), "key")
+                    .map_err(|e| e.to_string())?;
+            }
+            _ => {
+                database::db_delete(&conn, "settings", json!({ "where": { "key": key } }))
+                    .map_err(|e| e.to_string())?;
+            }
         }
-        _ => {
-            database::db_delete(&conn, "settings", json!({ "where": { "key": key } }))
-                .map_err(|e| e.to_string())?;
-        }
+        bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&conn));
     }
-    bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&conn));
+    // Restart any live agents on this provider so they exec the new binary.
+    // Resolution happens only at spawn time, so without this an already-running
+    // agent keeps the old binary (and thus the old account) on its next turn.
+    supervisor.respawn_provider(&app, &id).await;
     Ok(())
 }
 
