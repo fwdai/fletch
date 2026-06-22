@@ -3515,7 +3515,6 @@ button { cursor: default; }
 .fp-meta-lang { color: var(--fg-1); }
 .fp-meta-dot { color: var(--fg-3); }
 .fp-meta-grow { flex: 1; }
-.fp-meta-unsaved { color: var(--warn); font-weight: 500; }
 .fp-meta-saved { color: var(--success); font-weight: 500; }
 .fp-meta-edited { color: var(--fg-2); }
 .fp-meta-failed { color: var(--danger); font-weight: 500; }
@@ -3551,26 +3550,6 @@ button { cursor: default; }
 .fp-theme-select:hover { color: var(--fg-0); border-color: var(--bd); }
 .fp-theme-select:focus-visible { outline: 1px solid var(--accent-line); }
 
-/* save button (primary when dirty) */
-.fp-save {
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 20px; padding: 0 8px;
-  border: 1px solid transparent; border-radius: var(--r-xs);
-  background: var(--accent); color: oklch(0.16 0.02 60);
-  font-family: var(--font-sans); font-size: 10.5px; font-weight: 600;
-  cursor: pointer;
-}
-.theme-light .fp-save { color: oklch(0.98 0.005 60); }
-.fp-save:hover:not(.disabled) { background: oklch(from var(--accent) calc(l + 0.04) c h); }
-.fp-save .fp-save-kbd {
-  font-family: var(--font-mono); font-size: 9px; opacity: .65;
-  padding-left: 1px;
-}
-.fp-save.disabled {
-  background: transparent; color: var(--fg-3);
-  border-color: var(--bd-soft); cursor: default;
-}
-
 /* ── viewer banners (added / deleted file) ── */
 .fp-banner {
   flex-shrink: 0;
@@ -3595,11 +3574,6 @@ button { cursor: default; }
   display: flex;
   overflow: hidden;
   position: relative;
-}
-/* a thin amber rail down the left edge while there are unsaved changes */
-.fp-wrap.is-dirty .fp-editor::before {
-  content: ""; position: absolute; inset: 0 auto 0 0;
-  width: 2px; background: var(--warn); z-index: 3;
 }
 
 .fp-gutter {
@@ -3872,7 +3846,6 @@ button { cursor: default; }
   font-size: 13.5px; color: var(--fg-0); font-weight: 500;
   letter-spacing: -0.005em;
 }
-.set-row-t.set-inline { white-space: nowrap; }
 .set-row-s {
   font-size: 12px; color: var(--fg-2); line-height: 1.5;
   margin-top: 3px; max-width: 52ch;
@@ -4082,27 +4055,6 @@ button { cursor: default; }
 }
 .set-prov-name > * { flex-shrink: 0; }
 .set-prov-ver { font-size: 11px; color: var(--fg-3); font-weight: 400; white-space: nowrap; }
-.set-badge {
-  font-size: 9.5px; font-weight: 600;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-  padding: 2px 6px; border-radius: 5px;
-  text-transform: none;
-}
-.set-badge.ea {
-  background: color-mix(in oklch, var(--warn), transparent 82%);
-  color: var(--warn);
-}
-.set-badge.soon {
-  background: color-mix(in oklch, var(--fg-3), transparent 84%);
-  color: var(--fg-2);
-}
-.set-prov-update {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 17px; height: 17px; border-radius: 50%;
-  background: color-mix(in oklch, var(--accent), transparent 82%);
-  color: var(--accent);
-}
 .set-prov-sub {
   display: flex; align-items: center; gap: 6px;
   font-size: 12px; color: var(--fg-2);
@@ -4110,8 +4062,6 @@ button { cursor: default; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .set-prov-sub.muted { color: var(--fg-3); }
-.set-prov-acct { color: var(--fg-1); font-size: 11.5px; }
-.set-dot { color: var(--fg-3); }
 
 .set-prov-chev {
   width: 28px; height: 28px; flex-shrink: 0;
