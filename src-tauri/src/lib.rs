@@ -70,10 +70,17 @@ mod tests {
     }
 }
 
+/// Number of daily log files to keep. The rolling appender deletes the oldest
+/// beyond this on each rotation, so `logs/` stays bounded instead of growing a
+/// file per day forever. Daily rotation → roughly this many days of history.
+/// (A user-configurable retention is a plausible future settings option.)
+const LOG_RETENTION_FILES: usize = 14;
+
 /// Send tracing output to both stdout (as before) and a daily-rolling file
 /// under `logs_dir()`, so a notarized build that crashes in the field leaves a
 /// log the user can attach to a bug report. The file writer is synchronous
-/// (not buffered) so the last lines before a crash actually reach disk.
+/// (not buffered) so the last lines before a crash actually reach disk, and is
+/// capped at `LOG_RETENTION_FILES` so it self-prunes.
 fn init_logging() {
     use tracing_subscriber::prelude::*;
 
@@ -81,17 +88,25 @@ fn init_logging() {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,quorum_lib=debug"));
 
     let dir = logs_dir();
-    let file_layer = match std::fs::create_dir_all(&dir) {
-        Ok(()) => {
-            let appender = tracing_appender::rolling::daily(&dir, "quorum.log");
-            Some(
-                tracing_subscriber::fmt::layer()
-                    .with_ansi(false)
-                    .with_writer(appender),
-            )
-        }
+    let appender = std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create log dir: {e}"))
+        .and_then(|()| {
+            tracing_appender::rolling::Builder::new()
+                .rotation(tracing_appender::rolling::Rotation::DAILY)
+                .filename_prefix("quorum")
+                .filename_suffix("log")
+                .max_log_files(LOG_RETENTION_FILES)
+                .build(&dir)
+                .map_err(|e| format!("open log file: {e}"))
+        });
+    let file_layer = match appender {
+        Ok(appender) => Some(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(appender),
+        ),
         Err(e) => {
-            eprintln!("could not create log dir {}: {e}", dir.display());
+            eprintln!("file logging disabled ({}): {e}", dir.display());
             None
         }
     };
