@@ -1,11 +1,5 @@
-import { useAppStore, type FeatureFlags } from "../../store";
-import { SetHead, SetGroup, SetRow, SetToggle } from "./primitives";
-
-interface FeatureItem {
-  key: keyof FeatureFlags;
-  title: string;
-  sub: string;
-}
+import { useAppStore } from "../../store";
+import { SetHead, SetGroup, SetRow, SetToggle, type FeatureItem } from "./primitives";
 
 const EXPERIMENTS: FeatureItem[] = [
   {

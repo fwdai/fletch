@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { type AgentRecord, type AgentStatus, type DiffStats } from "../../api";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
@@ -33,10 +33,20 @@ export function WorkspaceHeader({ agent }: Props) {
   const branch = agent.repos[0]?.branch ?? "—";
   const age = formatAge(agent.created_at, now);
 
+  // Guard against an unbounded retry loop: switchInFlight is a dep, so a failed
+  // switch (view stays "native", switchInFlight falls back to false) would
+  // otherwise re-fire the effect forever. Attempt the forced switch at most
+  // once per agent; reset the guard once it's no longer stranded (the switch
+  // landed, or native got re-enabled) so a later off-flip can try again.
+  const forcedCustomFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!nativeView && agent.view === "native" && !switchInFlight) {
-      void switchView(agent.id, "custom");
+    if (nativeView || agent.view !== "native") {
+      forcedCustomFor.current = null;
+      return;
     }
+    if (switchInFlight || forcedCustomFor.current === agent.id) return;
+    forcedCustomFor.current = agent.id;
+    void switchView(agent.id, "custom");
   }, [nativeView, agent.view, agent.id, switchInFlight, switchView]);
 
   return (
