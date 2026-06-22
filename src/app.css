@@ -144,11 +144,17 @@ button { cursor: default; }
   font-family: var(--font-geist);
 }
 .tb-qmark {
-  width: 0.92em; height: 0.92em;
-  align-self: center;
+  /* sized so the ring reads at the x-height of the lowercase "uorum"
+   * rather than towering at cap height */
+  width: 0.7em; height: 0.7em;
+  /* anchor to the text baseline (not the line-box center): "uorum" is all
+   * x-height letters, so its optical middle sits low in the line box and
+   * centering rides too high. Baseline + a small drop lands the ring's
+   * optical center on the x-height midline. */
+  align-self: baseline;
   /* small gap so the mark reads as the leading glyph of "uorum" */
   margin-right: 1px;
-  position: relative; top: 0.01em;
+  position: relative; top: 0.1em;
 }
 .tb-badge {
   display: inline-flex; align-items: center;
