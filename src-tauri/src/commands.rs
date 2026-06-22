@@ -25,13 +25,23 @@ pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace
     supervisor.current_workspace()
 }
 
-/// Reveal Quorum's log folder in Finder so a user can attach logs to a bug
-/// report. Creates the folder if no session has written to it yet.
+/// Reveal Quorum's log folder in the OS file manager so a user can attach
+/// logs to a bug report. Creates the folder if no session has written to it
+/// yet. Quorum ships macOS-only (sandbox-exec), but the CI build runs on
+/// Linux, so the opener binary is chosen per-platform rather than hard-coding
+/// `open`.
 #[tauri::command]
 pub fn reveal_logs() -> Result<()> {
     let dir = crate::logs_dir();
     std::fs::create_dir_all(&dir).map_err(|e| Error::Other(format!("create log dir: {e}")))?;
-    std::process::Command::new("open")
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
         .arg(&dir)
         .spawn()
         .map_err(|e| Error::Other(format!("open log dir: {e}")))?;
