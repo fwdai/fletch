@@ -5,6 +5,8 @@
 import type { CSSProperties } from "react";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { Icon } from "../Icon";
+import { useAppStore } from "../../store";
+import { ProviderReadiness } from "../ProviderReadiness";
 import type { BeatDef } from "./beats";
 
 const TERMS_URL = "https://quorum.fwdai.org/terms";
@@ -157,22 +159,37 @@ export function Beat({ beat }: { beat: BeatDef }) {
   );
 }
 
-// ── Step · finale / handoff ─────────────────────────────────────────
+// ── Step · finale / handoff + readiness ─────────────────────────────
+// The closer doubles as the real setup screen: signing in only connected the
+// user's Quorum identity — agents are their own CLIs, so this is where we show
+// what's actually installed. Non-blocking: "Enter Quorum" is always enabled.
 export function IgniteStep({ onEnter }: { onEnter: () => void }) {
+  const providerPaths = useAppStore((s) => s.providerPaths);
+  const providersProbed = useAppStore((s) => s.providersProbed);
+  const hasAgent = Object.keys(providerPaths).length > 0;
   return (
     <div className="ob-step">
-      <div className="ob-ignite">
+      <div className="ob-ignite ob-ignite-setup">
         <div className="seal ob-reveal" style={{ "--d": ".05s" } as CSSProperties}>
           <PeaksMark />
         </div>
-        <h2 className="ob-display ob-reveal" style={{ "--d": ".2s" } as CSSProperties}>
-          You're <em>all set.</em>
+        <h2 className="ob-display ob-reveal" style={{ "--d": ".16s" } as CSSProperties}>
+          {!providersProbed ? (
+            <>Almost <em>there.</em></>
+          ) : hasAgent ? (
+            <>You're <em>all set.</em></>
+          ) : (
+            <>One <em>last step.</em></>
+          )}
         </h2>
-        <p className="ob-lede ob-reveal" style={{ "--d": ".34s" } as CSSProperties}>
-          Add your first repository from the sidebar and Quorum spins up an isolated
-          worktree for every agent you direct.
+        <p className="ob-lede ob-reveal" style={{ "--d": ".28s" } as CSSProperties}>
+          Signing in connected your Quorum identity. To run agents you bring your
+          own CLIs — here's what's on your machine.
         </p>
-        <button className="ob-cta ob-reveal" style={{ "--d": ".58s" } as CSSProperties} onClick={onEnter}>
+        <div className="ob-readiness ob-reveal" style={{ "--d": ".4s" } as CSSProperties}>
+          <ProviderReadiness />
+        </div>
+        <button className="ob-cta ob-reveal" style={{ "--d": ".56s" } as CSSProperties} onClick={onEnter}>
           Enter Quorum
           <Icon name="arrowR" />
         </button>

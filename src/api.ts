@@ -313,6 +313,13 @@ export interface ProviderProbe {
   path: string | null;
 }
 
+/** Presence of a required non-agent CLI (e.g. `git`) for the readiness check. */
+export interface ToolStatus {
+  installed: boolean;
+  version: string | null;
+  path: string | null;
+}
+
 /** Result of pre-flighting a custom agent binary path before saving it as an
  *  override. `executable` is whether the path is a runnable file; `version` is
  *  what `<path> --version` reported (null if it didn't run or didn't parse). */
@@ -501,6 +508,8 @@ export const api = {
     invoke<void>("copy_worktree_file", { agentId, from, to }),
   probeProviderVersions: () =>
     invoke<ProviderProbe[]>("probe_provider_versions"),
+  /** Resolve a required non-agent CLI (e.g. "git") and probe its version. */
+  checkCli: (name: string) => invoke<ToolStatus>("check_cli", { name }),
   /** Check a candidate custom binary path before saving it as an override. */
   validateAgentBin: (path: string) =>
     invoke<BinValidation>("validate_agent_bin", { path }),
