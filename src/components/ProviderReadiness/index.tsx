@@ -93,7 +93,9 @@ export function ProviderReadiness() {
 
   const [git, setGit] = useState<ToolStatus | null>(null);
   const [gh, setGh] = useState<GhStatus | null>(null);
-  const [checking, setChecking] = useState(false);
+  // Start in the checking state — we always probe on mount, so this avoids a
+  // flash of "couldn't detect" before the effect runs.
+  const [checking, setChecking] = useState(true);
 
   const recheck = useCallback(() => {
     setChecking(true);
@@ -113,15 +115,21 @@ export function ProviderReadiness() {
   const agents = PROVIDERS.filter((p) => hasAdapter(p.id) && providerFlags[p.id] !== false);
   const detected = agents.filter((p) => !!providerPaths[p.id]).length;
 
-  const gitState: RowState = git ? (git.installed ? "ok" : "bad") : "checking";
-  const ghState: RowState = gh ? (gh.installed && gh.authenticated ? "ok" : "warn") : "checking";
-  const ghFix = !gh
-    ? undefined
-    : !gh.installed
-      ? "brew install gh"
-      : !gh.authenticated
-        ? "gh auth login"
-        : undefined;
+  // git/gh come from local state (null until their probe resolves); agents come
+  // from the store's `providersProbed` (= a probe succeeded). In all three, a
+  // probe that finished without a result is "couldn't detect" (warn), never a
+  // false "not installed".
+  const gitState: RowState = git ? (git.installed ? "ok" : "bad") : checking ? "checking" : "warn";
+  const ghState: RowState = gh
+    ? gh.installed && gh.authenticated
+      ? "ok"
+      : "warn"
+    : checking
+      ? "checking"
+      : "warn";
+  // gh sign-in is universal; install is not — rely on the cross-platform docs
+  // link rather than a Homebrew-only `brew install gh`.
+  const ghFix = gh && gh.installed && !gh.authenticated ? "gh auth login" : undefined;
 
   return (
     <div className="readiness">
@@ -130,20 +138,28 @@ export function ProviderReadiness() {
         name="Git"
         state={gitState}
         statusText={
-          gitState === "checking"
-            ? "Checking…"
-            : git?.installed
+          git
+            ? git.installed
               ? git.version ?? "Installed"
               : "Not found — required to run any agent"
+            : checking
+              ? "Checking…"
+              : "Couldn't check"
         }
-        fix="xcode-select --install"
+        fix={gitState === "bad" ? "xcode-select --install" : undefined}
         docs="https://git-scm.com/downloads"
       />
 
       {agents.map((p) => {
         const d = PROVIDER_DETAIL[p.id];
         const path = providerPaths[p.id];
-        const state: RowState = !providersProbed ? "checking" : path ? "ok" : "bad";
+        const state: RowState = checking
+          ? "checking"
+          : providersProbed
+            ? path
+              ? "ok"
+              : "bad"
+            : "warn";
         return (
           <Row
             key={p.id}
@@ -153,11 +169,15 @@ export function ProviderReadiness() {
             statusText={
               state === "checking"
                 ? "Checking…"
-                : path
-                  ? providerVersions[p.id] ?? "Installed"
-                  : "Not installed"
+                : state === "warn"
+                  ? "Couldn't detect"
+                  : path
+                    ? providerVersions[p.id] ?? "Installed"
+                    : "Not installed"
             }
-            fix={d.install}
+            // Only offer the install command when we know it's missing, not
+            // when detection itself failed.
+            fix={state === "bad" ? d.install : undefined}
             docs={d.docs}
             hint={d.signIn}
           />
@@ -169,21 +189,27 @@ export function ProviderReadiness() {
         name="GitHub CLI · optional"
         state={ghState}
         statusText={
-          !gh
-            ? "Checking…"
-            : !gh.installed
+          gh
+            ? !gh.installed
               ? "Not found — needed for clone & PRs"
               : !gh.authenticated
                 ? "Installed — not signed in"
                 : `Signed in${gh.login ? ` as ${gh.login}` : ""}`
+            : checking
+              ? "Checking…"
+              : "Couldn't check"
         }
         fix={ghFix}
-        docs={gh && !gh.installed ? "https://cli.github.com" : undefined}
+        docs={!gh?.installed ? "https://cli.github.com" : undefined}
       />
 
       <div className="rdy-foot">
         <span className="rdy-count">
-          {detected} of {agents.length} agents detected
+          {checking
+            ? "Checking…"
+            : providersProbed
+              ? `${detected} of ${agents.length} agents detected`
+              : "Couldn't detect agents"}
         </span>
         <button type="button" className="btn-t outline" onClick={recheck} disabled={checking}>
           <Icon name="refresh" size={12} />

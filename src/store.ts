@@ -385,9 +385,10 @@ interface AppState {
   providerVersions: Record<string, string>;
   /** Resolved binary paths keyed by provider id, from the version probe. */
   providerPaths: Record<string, string>;
-  /** True once the first provider probe has completed. Lets install-aware UI
-   *  (the model picker, readiness check) distinguish "not probed yet" from
-   *  "probed and not installed" so it doesn't flash agents as missing on boot. */
+  /** True once a provider probe has *succeeded*. Stays false while probing and
+   *  after a failed probe, so install-aware UI (model picker, readiness check)
+   *  fails open — treating install state as unknown rather than "all missing" —
+   *  instead of disabling every agent on a transient IPC error or on boot. */
   providersProbed: boolean;
   /** User-set custom binary paths keyed by provider id (the raw value entered,
    *  before resolution). Absent = auto-detect. This is the source of truth for
@@ -1914,10 +1915,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       set({ providerVersions: versions, providerPaths: paths, providersProbed: true });
     } catch {
-      // Non-fatal — UI falls back to hardcoded versions. Still mark probed so
-      // install-aware UI stops waiting (it treats a failed probe as "unknown",
-      // not "all missing", by reading providerPaths defensively).
-      set({ providersProbed: true });
+      // Non-fatal. Deliberately do NOT flip `providersProbed`: it means "we have
+      // a successful probe result", so a failed probe (IPC error, panic) leaves
+      // it false and install-aware UI fails OPEN (treats install state as
+      // unknown — agents stay selectable) instead of disabling every agent. A
+      // prior success's results are kept as last-known-good.
     }
   },
   setProviderPathOverride: async (id, path) => {

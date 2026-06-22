@@ -92,8 +92,10 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
               <div className="model-agent-list">
                 {enabled.map((p) => {
                   const wired = hasAdapter(p.id);
-                  // Treat "not probed yet" as installed so agents don't flash
-                  // as missing on boot; only gate once the probe has resolved.
+                  // Fail open: only gate on the path once a probe has actually
+                  // succeeded (`providersProbed`). While probing, or if the
+                  // probe failed, treat as installed so a transient detection
+                  // error never disables an agent the user really has.
                   const installed = !providersProbed || !!providerPaths[p.id];
                   const usable = wired && installed;
                   const missing = wired && providersProbed && !installed;
