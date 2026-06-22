@@ -1004,6 +1004,62 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Respawn every live agent using `provider_id` so it picks up a freshly
+    /// changed binary path. The binary is resolved only inside `start_process`
+    /// (spawn / resume / view-switch), so a live agent keeps the old binary —
+    /// baked into its running process (claude, persistent) or frozen spawn args
+    /// (per-turn) — until torn down and restarted. We resume the existing
+    /// session (`fresh = false`), so transcripts/conversation are preserved.
+    ///
+    /// Agents mid-turn (Spawning/Running) are left alone: tearing them down
+    /// would drop in-flight work. They pick up the new binary on their next
+    /// respawn (next resume / view switch). Callers must refresh the
+    /// `bin_resolve` override registry *before* calling this so the restarted
+    /// processes resolve the new path.
+    pub async fn respawn_provider(self: &Arc<Self>, app: &AppHandle, provider_id: &str) {
+        // Snapshot ids under a short-lived lock; never hold a guard across the
+        // `start_process` await below (parking_lot guards aren't Send, and
+        // `start_process` re-locks these maps internally → deadlock).
+        let ids: Vec<String> = self.agents.lock().keys().cloned().collect();
+        for id in ids {
+            let record = match self.workspace.agent(&id) {
+                Ok(r) => r,
+                Err(_) => continue, // agent removed out from under us
+            };
+            if record.provider != provider_id {
+                continue;
+            }
+            if matches!(
+                self.effective_status(&id, &record),
+                AgentStatus::Spawning | AgentStatus::Running
+            ) {
+                tracing::info!(agent_id = %id, provider = %provider_id,
+                    "skipping binary-swap respawn: agent busy");
+                continue;
+            }
+
+            if let Some(agent) = self.agents.lock().remove(&id) {
+                let _ = agent.shutdown();
+            }
+            self.activities.lock().remove(&id);
+            self.native_input_lines.lock().remove(&id);
+
+            self.set_status(app, &id, AgentStatus::Spawning, None);
+            arm_spawn_timeout(self.clone(), app.clone(), id.clone());
+
+            // Let the old process fully release its session before resuming it
+            // (mirrors `switch_view`).
+            tokio::time::sleep(Duration::from_millis(150)).await;
+
+            if let Err(e) = self.start_process(app, &id, false).await {
+                let err = e.to_string();
+                tracing::warn!(agent_id = %id, error = %err,
+                    "binary-swap respawn failed");
+                self.set_status(app, &id, AgentStatus::Error, Some(err));
+            }
+        }
+    }
+
     pub async fn stop_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
         // Interrupt the current turn. How it returns to Idle depends on
         // the runner: claude (managed) emits a `result` event and, if it
