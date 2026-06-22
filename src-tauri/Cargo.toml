@@ -45,6 +45,10 @@ rusqlite_migration = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 base64 = "0.22"
 
+# Window state (size/position/maximized) persistence — desktop only.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-window-state = "2"
+
 [dev-dependencies]
 tempfile = "3"
 
