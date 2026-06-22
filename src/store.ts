@@ -221,6 +221,24 @@ function parseProviderFlags(raw: string | undefined): Record<string, boolean> {
   }
 }
 
+/** Default pane widths (px); also the fallback when a stored value is missing
+ *  or corrupt. Mirrored in the initial store state below. */
+const DEFAULT_LEFT_WIDTH = 312;
+const DEFAULT_RIGHT_WIDTH = 520;
+/** Lower bound matches the splitter's MIN_WIDTH; the right pane's true upper
+ *  bound is dynamic (capped at render via CSS `min()`), so we only guard
+ *  against absurd/NaN persisted values here. */
+const MIN_PANE_WIDTH = 220;
+const MAX_PANE_WIDTH = 4000;
+
+/** Restore a persisted pane width, clamping to a sane range and falling back
+ *  to the default on a missing or non-numeric value. */
+function parsePaneWidth(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(MAX_PANE_WIDTH, Math.max(MIN_PANE_WIDTH, n));
+}
+
 /** Settings-key prefix for per-agent custom binary paths. Must match the
  *  backend's `database::AGENT_BIN_PREFIX` so both read/write the same rows. */
 const AGENT_BIN_PREFIX = "agent_bin_path_";
@@ -497,8 +515,12 @@ interface AppState {
   selectHistoryAgent: (id: string | null) => void;
   toggleLeft: () => void;
   toggleRight: () => void;
+  /** Live (in-memory) width update during a splitter drag. */
   setLeftWidth: (w: number) => void;
   setRightWidth: (w: number) => void;
+  /** Persist the final width once a splitter drag ends. */
+  commitLeftWidth: (w: number) => void;
+  commitRightWidth: (w: number) => void;
 
   // appearance
   setTheme: (t: ThemeMode) => void;
@@ -797,8 +819,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedHistoryAgentId: null,
   leftCollapsed: false,
   rightCollapsed: false,
-  leftWidth: 312,
-  rightWidth: 520,
+  leftWidth: DEFAULT_LEFT_WIDTH,
+  rightWidth: DEFAULT_RIGHT_WIDTH,
 
   theme: "dark" as ThemeMode,
   codeTheme: "quorum",
@@ -836,6 +858,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         onboardingComplete: s.onboardingComplete === "true",
         // Auto-open the welcome tour for new users (no completion flag yet).
         onboardingOpen: s.onboardingComplete !== "true",
+        // Panel layout — restore the user's last splitter widths and collapse state.
+        leftCollapsed: s.leftCollapsed === "true",
+        rightCollapsed: s.rightCollapsed === "true",
+        leftWidth: parsePaneWidth(s.leftWidth, DEFAULT_LEFT_WIDTH),
+        rightWidth: parsePaneWidth(s.rightWidth, DEFAULT_RIGHT_WIDTH),
       });
     } catch {
       // First launch or DB not ready — defaults are fine.
@@ -1866,10 +1893,24 @@ export const useAppStore = create<AppState>((set, get) => ({
         : { historyOpen: false, selectedHistoryAgentId: null };
     }),
   selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
-  toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
-  toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
+  toggleLeft: () =>
+    set((s) => {
+      const leftCollapsed = !s.leftCollapsed;
+      setSetting("leftCollapsed", String(leftCollapsed));
+      return { leftCollapsed };
+    }),
+  toggleRight: () =>
+    set((s) => {
+      const rightCollapsed = !s.rightCollapsed;
+      setSetting("rightCollapsed", String(rightCollapsed));
+      return { rightCollapsed };
+    }),
+  // Width changes fire on every drag frame, so these only update in-memory
+  // state. Persistence is deferred to commit*Width on drag end (see splitter).
   setLeftWidth: (w) => set({ leftWidth: w }),
   setRightWidth: (w) => set({ rightWidth: w }),
+  commitLeftWidth: (w) => setSetting("leftWidth", String(w)),
+  commitRightWidth: (w) => setSetting("rightWidth", String(w)),
 
   // ── appearance ──────────────────────────────────────────────────────────────
   setTheme: (t) => {

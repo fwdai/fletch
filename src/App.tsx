@@ -28,6 +28,8 @@ export function App() {
   const rightWidth = useAppStore((s) => s.rightWidth);
   const setLeftWidth = useAppStore((s) => s.setLeftWidth);
   const setRightWidth = useAppStore((s) => s.setRightWidth);
+  const commitLeftWidth = useAppStore((s) => s.commitLeftWidth);
+  const commitRightWidth = useAppStore((s) => s.commitRightWidth);
   const lastError = useAppStore((s) => s.lastError);
   const clearError = useAppStore((s) => s.clearError);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
@@ -58,8 +60,8 @@ export function App() {
   }, [accent]);
 
   useGlobalShortcuts();
-  const onLeftDrag = useSplitter(leftWidth, setLeftWidth, "left");
-  const onRightDrag = useSplitter(rightWidth, setRightWidth, "right");
+  const onLeftDrag = useSplitter(leftWidth, setLeftWidth, "left", commitLeftWidth);
+  const onRightDrag = useSplitter(rightWidth, setRightWidth, "right", commitRightWidth);
 
   const selectedAgent = workspace?.agents.find((a) => a.id === selectedAgentId);
   const rightPaneVisible = !rightCollapsed && !activeDraftId && selectedAgent;
