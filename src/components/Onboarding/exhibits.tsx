@@ -130,9 +130,7 @@ export function ExhibitProviders() {
         <div className="ex-providers">
           {list.map((p, i) => (
             <div key={p.id} className={`ex-prov ${i < lit ? "on" : ""}`}>
-              <span className="badge" style={{ background: `oklch(0.55 0.13 ${p.hue})` }}>
-                {p.short}
-              </span>
+              <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={30} />
               <span className="meta">
                 <span className="pl">{p.label}</span>
                 <span className="ps">{p.sub}</span>
