@@ -2896,6 +2896,33 @@ button { cursor: default; }
   color: var(--fg-0);
 }
 
+/* Inline per-agent crash notice under the workspace header (status === error).
+   Same danger tint as .error-banner, but inline (not a floating toast). */
+.crash-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 12px 0;
+  padding: 8px 10px 8px 12px;
+  background: color-mix(in srgb, var(--danger), var(--bg-0) 86%);
+  border: 1px solid color-mix(in srgb, var(--danger), var(--bg-0) 70%);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+}
+.crash-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.crash-title { color: var(--danger); font-weight: 600; }
+.crash-detail {
+  color: var(--fg-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Crash reasons can be long; clamp so the banner doesn't dominate. */
+  max-height: 4.5em;
+  overflow: auto;
+}
+.crash-banner .btn-t { flex-shrink: 0; }
+
 /* update-ready toast — bottom-right, offers restart now / skip */
 .update-toast {
   position: fixed;

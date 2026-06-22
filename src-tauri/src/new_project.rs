@@ -82,7 +82,16 @@ fn resolve_target(dest_parent: &Path, name: &str) -> Result<PathBuf> {
 pub async fn clone(spec: &str, dest_parent: &Path) -> Result<PathBuf> {
     let name = repo_name_from_spec(spec)?;
     let target = resolve_target(dest_parent, &name)?;
-    gh::repo_clone(spec, &target).await?;
+    // `gh` creates `target` and clones into it; if the clone fails partway
+    // (e.g. a dropped connection) the partial dir would otherwise make
+    // `resolve_target` reject every retry with "a folder already exists".
+    // Remove it on failure — same self-heal as `create`.
+    if let Err(e) = gh::repo_clone(spec, &target).await {
+        // Async remove: a large partial clone could otherwise block the
+        // executor thread while tearing down hundreds of files.
+        let _ = tokio::fs::remove_dir_all(&target).await;
+        return Err(e);
+    }
     Ok(target)
 }
 

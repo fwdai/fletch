@@ -17,6 +17,35 @@ use crate::error::{Error, Result};
 /// inside the spawn budget; on timeout we fall back to local HEAD.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// Hard cap on quick network-bound ops (push/pull and the gh PR actions) so a
+/// dropped connection surfaces as a finite error the UI can show, instead of
+/// hanging a spinner for the OS keep-alive window. Deliberately generous —
+/// these transfer little data, so 60s only ever trips on a stalled connection,
+/// not on slow-but-progressing work. NOT used for `clone` (a large repo can
+/// legitimately take minutes); clone's retry wedge is handled by self-heal in
+/// `new_project::clone` instead.
+const NET_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Run a network-bound command under `NET_TIMEOUT`, killing the process (and
+/// its SSH/HTTP child) on expiry via `kill_on_drop` rather than orphaning it.
+/// `what` names the op for the timeout message. Mirrors `fetch_fork_point`'s
+/// inline pattern; shared so push/pull and the gh PR ops stay consistent.
+pub(crate) async fn output_timed(cmd: &mut Command, what: &str) -> Result<std::process::Output> {
+    cmd.kill_on_drop(true);
+    tokio::time::timeout(NET_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| {
+            // `Error::Other` (not `Error::Git`) — `what` already names the op
+            // (e.g. "gh pr create"), so the "git command failed:" prefix would
+            // mislabel non-git callers.
+            Error::Other(format!(
+                "{what} timed out after {}s — check your network connection",
+                NET_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(Error::from)
+}
+
 /// Create a worktree on detached HEAD (no branch yet). Used by the
 /// instant-spawn flow so we don't pollute `git branch` for agents
 /// that may never receive a user message. The branch is created
@@ -495,11 +524,9 @@ pub async fn worktree_add_branch(
 /// push), otherwise `"pushed"`. Lets the UI confirm the outcome instead of
 /// silently doing nothing when there was nothing to send.
 pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["push", "-u", "origin", branch])
-        .output()
-        .await?;
+    let mut cmd = Command::new("git");
+    cmd.current_dir(worktree).args(["push", "-u", "origin", branch]);
+    let out = output_timed(&mut cmd, "git push").await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "push failed: {}",
@@ -522,11 +549,9 @@ pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
 /// Pull latest from the tracking remote branch.
 /// Requires `push -u` to have been called first to establish an upstream.
 pub async fn pull(worktree: &Path) -> Result<()> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["pull"])
-        .output()
-        .await?;
+    let mut cmd = Command::new("git");
+    cmd.current_dir(worktree).args(["pull"]);
+    let out = output_timed(&mut cmd, "git pull").await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "pull failed: {}",

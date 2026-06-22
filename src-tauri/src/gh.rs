@@ -509,11 +509,9 @@ pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> 
         args.extend_from_slice(&["--title", title, "--body", body]);
     }
 
-    let out = gh_command()
-        .current_dir(worktree)
-        .args(&args)
-        .output()
-        .await?;
+    let mut cmd = gh_command();
+    cmd.current_dir(worktree).args(&args);
+    let out = crate::git::output_timed(&mut cmd, "gh pr create").await?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -540,11 +538,9 @@ pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> 
 /// Merge the open PR for the branch checked out in `worktree` using a merge
 /// commit and the `--auto` flag (merges as soon as all checks pass).
 pub async fn pr_merge(worktree: &Path) -> Result<()> {
-    let out = gh_command()
-        .current_dir(worktree)
-        .args(["pr", "merge", "--merge", "--auto"])
-        .output()
-        .await?;
+    let mut cmd = gh_command();
+    cmd.current_dir(worktree).args(["pr", "merge", "--merge", "--auto"]);
+    let out = crate::git::output_timed(&mut cmd, "gh pr merge").await?;
 
     if !out.status.success() {
         return Err(Error::Gh(
