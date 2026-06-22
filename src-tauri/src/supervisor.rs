@@ -136,6 +136,36 @@ impl Supervisor {
         }
     }
 
+    /// Kill and reap every live child process the supervisor is tracking:
+    /// agent sessions (claude/codex/sandbox-exec), interactive shells, and
+    /// run-panel dev servers (which hold ports). Called from the app's
+    /// `ExitRequested` handler on quit.
+    ///
+    /// We can't rely on the per-session `Drop` impls firing here: the
+    /// supervisor lives in tauri-managed state, which isn't reliably dropped
+    /// when the macOS app terminates, so without this the children outlive
+    /// the app. We take each map by value (releasing the lock immediately)
+    /// and let the owned sessions drop, which runs their kill+reap and, for
+    /// PTYs, closes the master fd (SIGHUP to the foreground group).
+    pub fn shutdown(&self) {
+        // Dev servers first — stopping them releases the ports they hold.
+        let runs = std::mem::take(&mut *self.runs.lock());
+        for run in runs.values() {
+            run.stop();
+        }
+        drop(runs);
+
+        // Interactive shells: PtySession::drop kills the child.
+        drop(std::mem::take(&mut *self.shells.lock()));
+
+        // Agent sessions: Agent::shutdown consumes and drops, killing the
+        // managed/pty/per-turn child.
+        let agents = std::mem::take(&mut *self.agents.lock());
+        for (_, agent) in agents {
+            let _ = agent.shutdown();
+        }
+    }
+
     /// Record + broadcast a runtime status transition. The in-memory map is
     /// the source of truth for live status (Spawning/Running/Idle); the DB
     /// only persists durable dispositions (last_error via update_agent_status).
@@ -2505,6 +2535,140 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::database::init(dir.path()).unwrap();
         Supervisor::new(Arc::new(WorkspaceManager::new(db)))
+    }
+
+    /// Manual/local check (macOS-only, `#[ignore]`d so it's off the Linux CI
+    /// path). Reproduces the real spawn topology — PTY child is `sandbox-exec`,
+    /// which runs a process that itself spawns a child — and proves
+    /// `shutdown()` takes down the *whole* tree, not just the leader, so
+    /// quitting can't orphan a grandchild (e.g. a bash/MCP process claude
+    /// spawned). Run with:
+    ///   cargo test --lib shutdown_kills_sandbox_exec_grandchild -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn shutdown_kills_sandbox_exec_grandchild() {
+        use std::time::Instant;
+
+        fn alive(pid: i32) -> bool {
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+        }
+
+        let sup = test_supervisor();
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pids");
+
+        // sandbox-exec execs the shell in-place (so $$ is the PTY's direct
+        // child), and the shell backgrounds a `sleep` in the same process
+        // group — the stand-in for a child claude spawns. We record both pids.
+        let script = format!(
+            "echo leader=$$ > '{pf}'; sleep 1000 & echo child=$! >> '{pf}'; wait",
+            pf = pidfile.display()
+        );
+        let pty = PtySession::spawn(
+            PtySpawn {
+                program: Path::new("/usr/bin/sandbox-exec"),
+                args: &[
+                    "-p".to_string(),
+                    "(version 1)(allow default)".to_string(),
+                    "/bin/sh".to_string(),
+                    "-c".to_string(),
+                    script,
+                ],
+                cwd: dir.path(),
+                env: &[],
+                cols: 80,
+                rows: 24,
+            },
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        sup.shells.lock().insert("agent".to_string(), pty);
+
+        // Wait for both pids to be recorded by the spawned tree.
+        let (mut leader, mut child) = (0i32, 0i32);
+        let start = Instant::now();
+        while (leader == 0 || child == 0) && start.elapsed() < Duration::from_secs(5) {
+            if let Ok(s) = std::fs::read_to_string(&pidfile) {
+                for line in s.lines() {
+                    if let Some(p) = line.strip_prefix("leader=") {
+                        leader = p.trim().parse().unwrap_or(0);
+                    }
+                    if let Some(p) = line.strip_prefix("child=") {
+                        child = p.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(leader != 0 && child != 0, "failed to capture pids");
+        assert!(
+            alive(leader) && alive(child),
+            "both processes should be running before shutdown"
+        );
+        eprintln!("before shutdown: leader={leader} alive, child={child} alive");
+
+        sup.shutdown();
+
+        let start = Instant::now();
+        while (alive(leader) || alive(child)) && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        eprintln!(
+            "after shutdown:  leader={leader} {}, child={child} {}",
+            if alive(leader) { "ALIVE" } else { "dead" },
+            if alive(child) { "ALIVE" } else { "dead" },
+        );
+        assert!(
+            !alive(leader),
+            "sandbox-exec leader survived shutdown (pid {leader})"
+        );
+        assert!(
+            !alive(child),
+            "grandchild survived shutdown (pid {child}) — orphaned!"
+        );
+    }
+
+    #[test]
+    fn shutdown_kills_live_children_and_drains_maps() {
+        use std::sync::mpsc;
+
+        let sup = test_supervisor();
+        let dir = tempfile::tempdir().unwrap();
+        let (exit_tx, exit_rx) = mpsc::channel();
+
+        // A long-lived child parked in the shells map. Its on_exit callback
+        // fires only when the process actually dies (the waiter thread's
+        // child.wait() returns), so receiving on exit_rx proves shutdown
+        // killed it rather than leaving it orphaned.
+        let pty = PtySession::spawn(
+            PtySpawn {
+                program: Path::new("/bin/sh"),
+                args: &["-c".to_string(), "while :; do sleep 0.1; done".to_string()],
+                cwd: dir.path(),
+                env: &[],
+                cols: 80,
+                rows: 24,
+            },
+            |_| {},
+            move |_exit| {
+                let _ = exit_tx.send(());
+            },
+        )
+        .unwrap();
+        sup.shells.lock().insert("agent".to_string(), pty);
+
+        sup.shutdown();
+
+        // The child must have been killed (its waiter reports the exit)...
+        exit_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("shutdown should kill the live shell child");
+        // ...and every live-process map must be drained.
+        assert!(sup.shells.lock().is_empty());
+        assert!(sup.agents.lock().is_empty());
+        assert!(sup.runs.lock().is_empty());
     }
 
     fn record_with_status(id: &str, status: AgentStatus) -> AgentRecord {

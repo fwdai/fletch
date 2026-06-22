@@ -137,7 +137,34 @@ pub fn run() {
 
             let workspace = Arc::new(WorkspaceManager::new(db));
             let supervisor = Arc::new(Supervisor::new(workspace));
-            app.manage(supervisor);
+            app.manage(supervisor.clone());
+
+            // Quitting normally goes through `RunEvent::ExitRequested` (below),
+            // but a SIGINT (Ctrl-C under `tauri dev`) or SIGTERM (sent by the
+            // OS on logout/restart/shutdown) bypasses it. Catch both via an
+            // async listener — safe to do real work here, unlike a raw signal
+            // handler — kill the children, then exit cleanly. SIGKILL/crash
+            // can't be caught; for those the kernel closes our PTY masters on
+            // death, which SIGHUPs each agent's process group as a backstop.
+            #[cfg(unix)]
+            {
+                let supervisor = supervisor.clone();
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let mut sigint = signal(SignalKind::interrupt())
+                        .expect("install SIGINT handler");
+                    let mut sigterm = signal(SignalKind::terminate())
+                        .expect("install SIGTERM handler");
+                    tokio::select! {
+                        _ = sigint.recv() => {}
+                        _ = sigterm.recv() => {}
+                    }
+                    tracing::info!("termination signal received; killing child processes");
+                    supervisor.shutdown();
+                    handle.exit(0);
+                });
+            }
 
             // Agents rest at Idle on boot — no process is spawned. The
             // supervisor brings one up lazily on the user's next interaction
@@ -216,6 +243,17 @@ pub fn run() {
             commands::probe_provider_versions,
             commands::discover_supported_models,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running quorum");
+        .build(tauri::generate_context!())
+        .expect("error while building quorum")
+        .run(|app, event| {
+            // On quit, explicitly kill every live agent/shell/run child.
+            // tauri-managed state isn't reliably dropped on macOS app
+            // termination, so the per-session Drop impls can't be trusted to
+            // fire — without this, quitting mid-run orphans the processes.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(supervisor) = app.try_state::<Arc<Supervisor>>() {
+                    supervisor.shutdown();
+                }
+            }
+        });
 }
