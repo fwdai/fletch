@@ -1,5 +1,6 @@
 import { useAppStore, type FeatureFlags, type ThemeMode, type Density } from "../../store";
 import { ACCENTS } from "../../data/providers";
+import { api } from "../../api";
 import { Icon } from "../Icon";
 import { SetHead, SetGroup, SetRow, SetToggle, SetSeg } from "./primitives";
 
@@ -100,10 +101,26 @@ export function GeneralPane() {
         ))}
       </SetGroup>
 
-      <SetGroup label="Composer" last>
+      <SetGroup label="Composer">
         {COMPOSER.map((it) => (
           <FeatureRow key={it.key} item={it} />
         ))}
+      </SetGroup>
+
+      <SetGroup label="Diagnostics" last>
+        <SetRow
+          title="Logs"
+          sub="Quorum writes a local log file. Reveal it to attach to a bug report."
+        >
+          <button
+            type="button"
+            className="btn-t outline"
+            onClick={() => void api.revealLogs()}
+          >
+            <Icon name="folder" size={12} />
+            Reveal logs
+          </button>
+        </SetRow>
       </SetGroup>
     </div>
   );

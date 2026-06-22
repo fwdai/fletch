@@ -25,6 +25,19 @@ pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace
     supervisor.current_workspace()
 }
 
+/// Reveal Quorum's log folder in Finder so a user can attach logs to a bug
+/// report. Creates the folder if no session has written to it yet.
+#[tauri::command]
+pub fn reveal_logs() -> Result<()> {
+    let dir = crate::logs_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| Error::Other(format!("create log dir: {e}")))?;
+    std::process::Command::new("open")
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| Error::Other(format!("open log dir: {e}")))?;
+    Ok(())
+}
+
 /// The ref a worktree's *committed* changes are diffed against: the immutable
 /// fork-point SHA captured at spawn when known, else the parent branch name
 /// (pre-migration agents), which may have drifted from the actual fork point.

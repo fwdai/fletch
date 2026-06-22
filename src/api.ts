@@ -338,6 +338,7 @@ export interface GhRepoSummary {
 
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
+  revealLogs: () => invoke<void>("reveal_logs"),
   getAgentDiffStats: (agentId: string) =>
     invoke<DiffStats>("get_agent_diff_stats", { agentId }),
   addWorkspaceRepo: (repoPath: string) =>
