@@ -385,6 +385,11 @@ interface AppState {
   providerVersions: Record<string, string>;
   /** Resolved binary paths keyed by provider id, from the version probe. */
   providerPaths: Record<string, string>;
+  /** True once a provider probe has *succeeded*. Stays false while probing and
+   *  after a failed probe, so install-aware UI (model picker, readiness check)
+   *  fails open — treating install state as unknown rather than "all missing" —
+   *  instead of disabling every agent on a transient IPC error or on boot. */
+  providersProbed: boolean;
   /** User-set custom binary paths keyed by provider id (the raw value entered,
    *  before resolution). Absent = auto-detect. This is the source of truth for
    *  the "Custom" tag in the providers settings, independent of the probe. */
@@ -807,6 +812,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   providerFlags: {},
   providerVersions: {},
   providerPaths: {},
+  providersProbed: false,
   providerPathOverrides: {},
   modelCatalog: cachedCatalog.byId,
   modelsByAgent: cachedCatalog.byAgent,
@@ -1911,9 +1917,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (probe.version) versions[probe.id] = probe.version;
         if (probe.path) paths[probe.id] = probe.path;
       }
-      set({ providerVersions: versions, providerPaths: paths });
+      set({ providerVersions: versions, providerPaths: paths, providersProbed: true });
     } catch {
-      // Non-fatal — UI falls back to hardcoded versions.
+      // Non-fatal. Deliberately do NOT flip `providersProbed`: it means "we have
+      // a successful probe result", so a failed probe (IPC error, panic) leaves
+      // it false and install-aware UI fails OPEN (treats install state as
+      // unknown — agents stay selectable) instead of disabling every agent. A
+      // prior success's results are kept as last-known-good.
     }
   },
   setProviderPathOverride: async (id, path) => {
