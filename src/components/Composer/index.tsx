@@ -4,7 +4,6 @@ import { useAppStore } from "../../store";
 import { DEFAULT_PROVIDER_ID } from "../../data/providers";
 import { PROVIDER_DETAIL } from "../../data/providerDetail";
 import { lookupModel } from "../../data/modelCatalog";
-import { prettyModelLabel } from "../../data/modelLabel";
 import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
 import { ModelPicker } from "./ModelPicker";
@@ -81,10 +80,10 @@ interface Props {
    *  Shown as a read-only chip for effortAtSpawn providers (e.g. claude). */
   initialThinking?: string;
   /** The model the agent actually used on its most recent turn, read from the
-   *  transcript (Claude, pi, Codex, OpenCode report it). Shown as a read-only
-   *  chip next to the provider so the user can see the real model in use.
-   *  Undefined for Cursor / Antigravity (no model in their transcript) or
-   *  before the first agent turn. */
+   *  transcript (Claude, pi, Codex, OpenCode report it). Used as a fallback
+   *  when the transcript has not yielded a model yet, so the picker can still
+   *  reflect the real spawn-time choice. Undefined for Cursor / Antigravity
+   *  (no model in their transcript) or before the first agent turn. */
   activeModel?: string;
   /** Per-agent token usage for the context gauge in the foot. Omit for new
    *  sessions (no agent yet) or agents that report no usage (cursor,
@@ -134,7 +133,10 @@ export function Composer({
   const [text, setText] = useState("");
   const [provider, setProvider] = useState(defaultProvider);
   const [model, setModel] = useState<string | undefined>(defaultModel);
-  const activeMeta = lookupModel(modelCatalog, existingSession ? activeModel : model);
+  const activeMeta = lookupModel(
+    modelCatalog,
+    existingSession ? activeModel ?? model : model,
+  );
   const modelSupportsThinking = activeMeta ? activeMeta.reasoning : true;
 
   const [attachments, setAttachments] = useState<string[]>([]);
@@ -306,13 +308,6 @@ export function Composer({
             onChangeSelection?.(nextProvider, nextModel);
           }}
         />
-        {existingSession && activeModel && (
-          <Chip tip={`Model in use · ${activeModel}`}>
-            <span style={{ color: "var(--fg-2)" }}>
-              {prettyModelLabel(activeModel)}
-            </span>
-          </Chip>
-        )}
         {features.thinkingBudget && thinkingLevels.length > 0 && modelSupportsThinking && (
           existingSession && detail?.effortAtSpawn ? (
             initialThinking && (
