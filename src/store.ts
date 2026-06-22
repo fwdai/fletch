@@ -152,7 +152,12 @@ export interface DraftAgent {
 export type ThemeMode = "dark" | "light";
 export type Density = "comfortable" | "compact";
 export type WorkspaceView = "custom" | "native";
-export type SettingsSection = "general" | "account" | "providers" | "developer";
+export type SettingsSection =
+  | "general"
+  | "account"
+  | "providers"
+  | "experimental"
+  | "developer";
 
 export interface FeatureFlags {
   git: boolean;
@@ -164,6 +169,10 @@ export interface FeatureFlags {
   autoEdit: boolean;
   /** Show the context-window usage meter in the composer foot. */
   tokenUsage: boolean;
+  /** Experimental: expose the Custom/Native view switcher so agents can be
+   *  driven through the provider's own terminal UI. Off by default — native
+   *  mode isn't equally solid across providers yet. */
+  nativeView: boolean;
 }
 
 const DEFAULT_FEATURES: FeatureFlags = {
@@ -174,6 +183,7 @@ const DEFAULT_FEATURES: FeatureFlags = {
   thinkingBudget: true,
   autoEdit: false,
   tokenUsage: true,
+  nativeView: false,
 };
 
 function parseFeatures(raw: string | undefined): FeatureFlags {

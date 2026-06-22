@@ -1,13 +1,7 @@
-import { useAppStore, type FeatureFlags, type ThemeMode, type Density } from "../../store";
+import { useAppStore, type ThemeMode, type Density } from "../../store";
 import { ACCENTS } from "../../data/providers";
 import { Icon } from "../Icon";
-import { SetHead, SetGroup, SetRow, SetToggle, SetSeg } from "./primitives";
-
-interface FeatureItem {
-  key: keyof FeatureFlags;
-  title: string;
-  sub: string;
-}
+import { SetHead, SetGroup, SetRow, SetToggle, SetSeg, type FeatureItem } from "./primitives";
 
 const SIDE_PANELS: FeatureItem[] = [
   { key: "git",      title: "Git",      sub: "Branch, file changes, and smart commit / push / PR actions." },

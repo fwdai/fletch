@@ -5,6 +5,7 @@ import pkg from "../../../package.json";
 import { GeneralPane } from "./GeneralPane";
 import { AccountPane } from "./AccountPane";
 import { ProvidersPane } from "./ProvidersPane";
+import { ExperimentalPane } from "./ExperimentalPane";
 
 // Lazily loaded behind `import.meta.env.DEV`. In production the ternary's dead
 // branch — including the dynamic import() — is dropped by Rollup, so the
@@ -19,6 +20,7 @@ const NAV: { id: SettingsSection; label: string; icon: IconName }[] = [
   { id: "account", label: "Account", icon: "user" },
   { id: "general", label: "General", icon: "settings" },
   { id: "providers", label: "Providers", icon: "cube" },
+  { id: "experimental", label: "Experimental", icon: "flask" },
   // Dev-only: omitted entirely from production builds.
   ...(DeveloperPane
     ? [{ id: "developer" as const, label: "Developer", icon: "wrench" as const }]
@@ -62,6 +64,7 @@ export function SettingsScreen() {
         <div className="set-content">
           {section === "account" && <AccountPane />}
           {section === "providers" && <ProvidersPane />}
+          {section === "experimental" && <ExperimentalPane />}
           {section === "developer" && DeveloperPane && (
             <Suspense fallback={null}>
               <DeveloperPane />

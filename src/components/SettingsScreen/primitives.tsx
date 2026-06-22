@@ -1,7 +1,16 @@
 import type { ReactNode } from "react";
+import type { FeatureFlags } from "../../store";
 
 /** Shared building blocks for the full-screen settings panes. These use the
  *  `.set-*` styling (distinct from the quick popover's `.sp-*`). */
+
+/** A single feature-flag row: which flag it toggles plus its display copy.
+ *  Shared by the panes that render lists of `SetToggle` rows. */
+export interface FeatureItem {
+  key: keyof FeatureFlags;
+  title: string;
+  sub: string;
+}
 
 export function SetHead({
   eyebrow,

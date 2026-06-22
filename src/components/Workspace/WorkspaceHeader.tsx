@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { type AgentRecord, type AgentStatus, type DiffStats } from "../../api";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
@@ -15,6 +16,10 @@ interface Props {
 export function WorkspaceHeader({ agent }: Props) {
   const switchView = useAppStore((s) => s.switchView);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id]);
+  // Native view is gated behind an experimental flag. While it's off, hide the
+  // switcher entirely; and if an agent was left in native mode when the flag
+  // flipped off, pull it back to the custom view so it can't get stranded.
+  const nativeView = useAppStore((s) => s.features.nativeView);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
@@ -27,6 +32,22 @@ export function WorkspaceHeader({ agent }: Props) {
 
   const branch = agent.repos[0]?.branch ?? "—";
   const age = formatAge(agent.created_at, now);
+
+  // Guard against an unbounded retry loop: switchInFlight is a dep, so a failed
+  // switch (view stays "native", switchInFlight falls back to false) would
+  // otherwise re-fire the effect forever. Attempt the forced switch at most
+  // once per agent; reset the guard once it's no longer stranded (the switch
+  // landed, or native got re-enabled) so a later off-flip can try again.
+  const forcedCustomFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (nativeView || agent.view !== "native") {
+      forcedCustomFor.current = null;
+      return;
+    }
+    if (switchInFlight || forcedCustomFor.current === agent.id) return;
+    forcedCustomFor.current = agent.id;
+    void switchView(agent.id, "custom");
+  }, [nativeView, agent.view, agent.id, switchInFlight, switchView]);
 
   return (
     <div className="center-h">
@@ -48,16 +69,18 @@ export function WorkspaceHeader({ agent }: Props) {
         </div>
       </div>
 
-      <ViewToggle
-        value={agent.view}
-        onChange={(v) => switchView(agent.id, v)}
-        disabled={switchInFlight}
-        // The native TUI resumes the agent's session, which only exists once
-        // the first turn lands (claude gets one up front, so it's never
-        // gated). Matches the backend switch_view guard.
-        nativeDisabled={!agent.session_id}
-        nativeReason="Available after the agent's first turn"
-      />
+      {nativeView && (
+        <ViewToggle
+          value={agent.view}
+          onChange={(v) => switchView(agent.id, v)}
+          disabled={switchInFlight}
+          // The native TUI resumes the agent's session, which only exists once
+          // the first turn lands (claude gets one up front, so it's never
+          // gated). Matches the backend switch_view guard.
+          nativeDisabled={!agent.session_id}
+          nativeReason="Available after the agent's first turn"
+        />
+      )}
 
       <IconButton
         active={!rightCollapsed}
