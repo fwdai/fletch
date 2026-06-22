@@ -6,7 +6,7 @@ import type { CSSProperties } from "react";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { Icon } from "../Icon";
 import { useAppStore } from "../../store";
-import { ProviderReadiness } from "../ProviderReadiness";
+import { OnboardingReadiness } from "./OnboardingReadiness";
 import type { BeatDef } from "./beats";
 
 const TERMS_URL = "https://quorum.fwdai.org/terms";
@@ -187,7 +187,7 @@ export function IgniteStep({ onEnter }: { onEnter: () => void }) {
           own CLIs — here's what's on your machine.
         </p>
         <div className="ob-readiness ob-reveal" style={{ "--d": ".4s" } as CSSProperties}>
-          <ProviderReadiness />
+          <OnboardingReadiness />
         </div>
         <button className="ob-cta ob-reveal" style={{ "--d": ".56s" } as CSSProperties} onClick={onEnter}>
           Enter Quorum

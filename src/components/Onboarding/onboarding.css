@@ -715,13 +715,60 @@
 
 /* Finale doubles as the setup/readiness screen — tighten the hero so the
    readiness list fits without the step scrolling on common heights. */
-.ob-ignite-setup { max-width: 600px; }
+.ob-ignite-setup { max-width: 560px; }
 .ob-ignite-setup .seal { width: 64px; height: 64px; margin-bottom: 18px; }
 .ob-ignite-setup .seal svg { width: 34px; height: 34px; }
 .ob-ignite-setup .ob-display { font-size: 38px; }
 .ob-ignite-setup .ob-lede { margin-top: 14px; max-width: 460px; }
 .ob-ignite-setup .ob-cta { margin-top: 24px; }
-/* Sub-components now carry their own card styling; wrapper is layout-only. */
 .ob-readiness {
-  width: 100%; max-width: 560px; margin: 24px auto 0; text-align: left;
+  width: 100%; max-width: 480px; margin: 24px auto 0; text-align: left;
 }
+
+/* ── OnboardingReadiness — compact finale widget ────────────────── */
+.ob-rdy { display: flex; flex-direction: column; gap: 8px; }
+
+/* Prereq rows: git + gh */
+.ob-rdy-prereqs {
+  background: var(--bg-1); border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md); overflow: hidden;
+}
+.ob-rdy-check {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.ob-rdy-check:last-child { border-bottom: 0; }
+.ob-rdy-check-icon { color: var(--fg-3); display: flex; align-items: center; flex-shrink: 0; }
+.ob-rdy-check-name { font-weight: 600; font-size: 12px; color: var(--fg-0); flex-shrink: 0; }
+.ob-rdy-check-status { color: var(--fg-2); font-size: 11.5px; flex: 1; min-width: 0; }
+.ob-rdy-check-fix { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
+
+/* Agent tile grid — compact, like the Step 3 exhibit */
+.ob-rdy-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+}
+.ob-rdy-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 12px 8px 10px;
+  background: var(--bg-1); border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md); text-align: center;
+  transition: border-color .15s;
+}
+.ob-rdy-tile.ok  { border-color: color-mix(in oklch, var(--success) 40%, var(--bd-soft)); }
+.ob-rdy-tile.bad { border-color: color-mix(in oklch, var(--danger)  30%, var(--bd-soft)); }
+.ob-rdy-tile.warn { border-color: color-mix(in oklch, var(--warn)   30%, var(--bd-soft)); }
+.ob-rdy-tile-icon { display: flex; align-items: center; justify-content: center; }
+.ob-rdy-tile-name { font-size: 11px; font-weight: 600; color: var(--fg-0); line-height: 1.2; }
+.ob-rdy-tile-foot { display: flex; align-items: center; gap: 4px; }
+.ob-rdy-tile-status { font-size: 10.5px; color: var(--fg-3); white-space: nowrap; }
+.ob-rdy-tile-fix { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; margin-top: 2px; }
+
+/* Shared dot + footer */
+.ob-rdy-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+.ob-rdy-dot.ok       { background: var(--success); }
+.ob-rdy-dot.warn     { background: var(--warn); }
+.ob-rdy-dot.bad      { background: var(--danger); }
+.ob-rdy-dot.checking { background: var(--fg-3); }
+.ob-rdy-foot { display: flex; align-items: center; justify-content: space-between; padding-top: 2px; }
+.ob-rdy-count { color: var(--fg-2); font-size: 11.5px; }

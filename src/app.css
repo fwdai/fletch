@@ -4210,53 +4210,19 @@ button { cursor: default; }
 }
 
 /* Provider readiness check — onboarding finale + Settings → Providers. */
-.readiness { display: flex; flex-direction: column; gap: 10px; }
-
-/* Prerequisite checks (git + gh) — compact horizontal rows */
-.rdy-prereqs {
-  display: flex; flex-direction: column;
-  background: var(--bg-1); border: 1px solid var(--bg-2); border-radius: var(--r-md);
-  overflow: hidden;
-}
-.rdy-check-row {
-  display: flex; align-items: center; gap: 9px;
-  padding: 9px 14px;
-  border-bottom: 1px solid var(--bg-2);
-}
-.rdy-check-row:last-child { border-bottom: 0; }
-.rdy-check-icon { color: var(--fg-2); display: flex; align-items: center; flex-shrink: 0; }
-.rdy-check-name { font-weight: 600; font-size: 12.5px; color: var(--fg-0); flex-shrink: 0; }
-.rdy-check-status { color: var(--fg-2); font-size: 12px; flex: 1; min-width: 0; }
-.rdy-check-fix { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-
-/* Agent grid */
-.rdy-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-.rdy-agent-card {
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  padding: 16px 10px 14px;
-  background: var(--bg-1); border: 1px solid var(--bg-2); border-radius: var(--r-md);
-  text-align: center; transition: border-color .15s;
-}
-.rdy-agent-card.ok { border-color: color-mix(in oklch, var(--success) 35%, var(--bg-2)); }
-.rdy-agent-card.bad { border-color: color-mix(in oklch, var(--danger) 25%, var(--bg-2)); }
-.rdy-agent-card.warn { border-color: color-mix(in oklch, var(--warn) 30%, var(--bg-2)); }
-.rdy-agent-icon { display: flex; align-items: center; justify-content: center; }
-.rdy-agent-name { font-weight: 600; font-size: 12px; color: var(--fg-0); line-height: 1.2; }
-.rdy-agent-foot { display: flex; align-items: center; gap: 5px; }
-.rdy-agent-status { font-size: 11px; color: var(--fg-3); white-space: nowrap; }
-.rdy-agent-fix { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 5px; margin-top: 2px; }
-.rdy-agent-hint { margin-top: 2px; }
-
-/* Shared */
-.rdy-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.readiness { display: flex; flex-direction: column; }
+.rdy-row { display: flex; gap: 10px; padding: 8px 2px; align-items: flex-start; }
+.rdy-icon { width: 20px; display: flex; justify-content: center; padding-top: 1px; color: var(--fg-2); flex-shrink: 0; }
+.rdy-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.rdy-line { display: flex; align-items: center; gap: 8px; }
+.rdy-name { font-weight: 600; font-size: 12.5px; color: var(--fg-0); }
+.rdy-status { color: var(--fg-2); font-size: 12px; }
+.rdy-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .rdy-dot.ok { background: var(--success); }
 .rdy-dot.warn { background: var(--warn); }
 .rdy-dot.bad { background: var(--danger); }
 .rdy-dot.checking { background: var(--fg-3); }
+.rdy-fix { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .rdy-cmd {
   display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%;
   padding: 4px 8px; border-radius: var(--r-sm);
@@ -4266,5 +4232,5 @@ button { cursor: default; }
 .rdy-cmd:hover { border-color: var(--fg-3); }
 .rdy-docs { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: 11.5px; }
 .rdy-hint { color: var(--fg-3); font-size: 11.5px; }
-.rdy-foot { display: flex; align-items: center; justify-content: space-between; padding-top: 4px; }
+.rdy-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--bg-2); }
 .rdy-count { color: var(--fg-2); font-size: 12px; }
