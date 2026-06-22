@@ -110,7 +110,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
       className={`agent ${active ? "active" : ""}`}
       role="button"
       tabIndex={0}
-      aria-current={active ? "true" : undefined}
+      aria-current={active ? "page" : undefined}
       onClick={onClick}
       onKeyDown={(e) => activateOnKey(e, onClick)}
     >
@@ -195,7 +195,7 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
       className={`agent ${active ? "active" : ""}`}
       role="button"
       tabIndex={0}
-      aria-current={active ? "true" : undefined}
+      aria-current={active ? "page" : undefined}
       onClick={onClick}
       onKeyDown={(e) => activateOnKey(e, onClick)}
     >
