@@ -405,7 +405,6 @@ interface AppState {
   codeTheme: string;
   accent: string;
   density: Density;
-  showLandmarks: boolean;
   features: FeatureFlags;
   providerFlags: Record<string, boolean>;
   /** Live-probed version strings keyed by provider id. Populated async on
@@ -540,7 +539,6 @@ interface AppState {
   setCodeTheme: (id: string) => void;
   setAccent: (a: string) => void;
   setDensity: (d: Density) => void;
-  setShowLandmarks: (v: boolean) => void;
   setFeature: <K extends keyof FeatureFlags>(k: K, v: FeatureFlags[K]) => void;
   setProviderEnabled: (id: string, enabled: boolean) => void;
   /** Re-probe installed provider CLIs for versions + binary paths. Runs once
@@ -839,7 +837,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   codeTheme: "quorum",
   accent: "copper",
   density: "comfortable" as Density,
-  showLandmarks: true,
   features: DEFAULT_FEATURES,
   providerFlags: {},
   providerVersions: {},
@@ -862,7 +859,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         codeTheme: s.codeTheme || "quorum",
         accent: s.accent || "copper",
         density: (s.density as Density) || "comfortable",
-        showLandmarks: s.showLandmarks !== "false",
         features: parseFeatures(s.features),
         providerFlags: parseProviderFlags(s.providers),
         providerPathOverrides: parseProviderPathOverrides(s),
@@ -1942,10 +1938,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDensity: (d) => {
     set({ density: d });
     setSetting("density", d);
-  },
-  setShowLandmarks: (v) => {
-    set({ showLandmarks: v });
-    setSetting("showLandmarks", String(v));
   },
   setFeature: (k, v) =>
     set((s) => {

@@ -9,7 +9,6 @@ import { basename } from "../../util/format";
  *  First message in the composer spawns the real agent and dispatches
  *  the message in one go. */
 export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
-  const showLandmarks = useAppStore((s) => s.showLandmarks);
   const rerollDraftName = useAppStore((s) => s.rerollDraftName);
   const spawnFromDraft = useAppStore((s) => s.spawnFromDraft);
   const removeDraft = useAppStore((s) => s.removeDraft);
@@ -57,14 +56,12 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             onClick={() => rerollDraftName(draft.id)}
             title="Reroll name"
           >
-            {showLandmarks && (
-              <LandmarkGlyph
-                name={draft.name}
-                size={36}
-                strokeWidth={1.1}
-                style={{ display: "inline-block", verticalAlign: "-6px", marginRight: 6 }}
-              />
-            )}
+            <LandmarkGlyph
+              name={draft.name}
+              size={36}
+              strokeWidth={1.1}
+              style={{ display: "inline-block", verticalAlign: "-6px", marginRight: 6 }}
+            />
             {draft.name}
           </div>
         </div>
