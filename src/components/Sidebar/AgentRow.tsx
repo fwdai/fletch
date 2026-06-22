@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { MouseEvent } from "react";
+import type { MouseEvent, KeyboardEvent } from "react";
 import type { AgentRecord, AgentStatus, PrState, ShortStats } from "../../api";
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
@@ -9,6 +9,16 @@ import { ProviderIcon } from "../ProviderIcon";
 import { formatAge } from "../../util/format";
 import { useMinuteClock } from "../../util/hooks";
 import { AgentStatsPopover, type AgentStats } from "./AgentStatsPopover";
+
+/** The agent rows carry nested buttons (stop/archive/discard), so they can't be
+ *  a `<button>`; they use `role="button"` + this handler to stay keyboard
+ *  operable (Enter/Space activates the row like a click). */
+function activateOnKey(e: KeyboardEvent, fn: () => void) {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    fn();
+  }
+}
 
 interface RealRowProps {
   kind: "real";
@@ -92,7 +102,14 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   };
 
   return (
-    <div className={`agent ${active ? "active" : ""}`} onClick={onClick}>
+    <div
+      className={`agent ${active ? "active" : ""}`}
+      role="button"
+      tabIndex={0}
+      aria-current={active ? "true" : undefined}
+      onClick={onClick}
+      onKeyDown={(e) => activateOnKey(e, onClick)}
+    >
       <span className={`ag-rail ${railClass}`} />
       <div className="agent-row">
         <span className={`ag-name ${working ? "shimmer" : ""}`}>{agent.name}</span>
@@ -170,7 +187,14 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
   }
 
   return (
-    <div className={`agent ${active ? "active" : ""}`} onClick={onClick}>
+    <div
+      className={`agent ${active ? "active" : ""}`}
+      role="button"
+      tabIndex={0}
+      aria-current={active ? "true" : undefined}
+      onClick={onClick}
+      onKeyDown={(e) => activateOnKey(e, onClick)}
+    >
       <span className="ag-rail idle" />
       <div className="agent-row">
         <span className="ag-name ag-name-draft">{draft.name}</span>
