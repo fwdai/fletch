@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { EMPTY_AGENTS, useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
@@ -68,6 +69,12 @@ export function Workspace() {
  *  stays visible. */
 function CrashBanner({ agent }: { agent: AgentRecord }) {
   const resume = useAppStore((s) => s.resume);
+  // Guard against a double-click firing two concurrent resumes: status stays
+  // "error" until the backend's status event lands, so the banner (and button)
+  // linger through that window. `resume` catches internally, so on success the
+  // banner unmounts and on failure we re-enable. (Harmless no-op if it unmounts
+  // before `finally` runs.)
+  const [resuming, setResuming] = useState(false);
   return (
     <div className="crash-banner" role="alert">
       <div className="crash-text">
@@ -77,10 +84,14 @@ function CrashBanner({ agent }: { agent: AgentRecord }) {
       <button
         type="button"
         className="btn-t outline"
-        onClick={() => void resume(agent.id)}
+        disabled={resuming}
+        onClick={() => {
+          setResuming(true);
+          void resume(agent.id).finally(() => setResuming(false));
+        }}
       >
         <Icon name="play" size={12} />
-        Resume
+        {resuming ? "Resuming…" : "Resume"}
       </button>
     </div>
   );

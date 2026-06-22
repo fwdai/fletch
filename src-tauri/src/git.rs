@@ -35,7 +35,10 @@ pub(crate) async fn output_timed(cmd: &mut Command, what: &str) -> Result<std::p
     tokio::time::timeout(NET_TIMEOUT, cmd.output())
         .await
         .map_err(|_| {
-            Error::Git(format!(
+            // `Error::Other` (not `Error::Git`) — `what` already names the op
+            // (e.g. "gh pr create"), so the "git command failed:" prefix would
+            // mislabel non-git callers.
+            Error::Other(format!(
                 "{what} timed out after {}s — check your network connection",
                 NET_TIMEOUT.as_secs()
             ))

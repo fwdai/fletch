@@ -87,7 +87,9 @@ pub async fn clone(spec: &str, dest_parent: &Path) -> Result<PathBuf> {
     // `resolve_target` reject every retry with "a folder already exists".
     // Remove it on failure — same self-heal as `create`.
     if let Err(e) = gh::repo_clone(spec, &target).await {
-        let _ = std::fs::remove_dir_all(&target);
+        // Async remove: a large partial clone could otherwise block the
+        // executor thread while tearing down hundreds of files.
+        let _ = tokio::fs::remove_dir_all(&target).await;
         return Err(e);
     }
     Ok(target)
