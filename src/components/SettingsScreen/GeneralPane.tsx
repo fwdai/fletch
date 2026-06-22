@@ -29,8 +29,6 @@ export function GeneralPane() {
   const setAccent = useAppStore((s) => s.setAccent);
   const density = useAppStore((s) => s.density);
   const setDensity = useAppStore((s) => s.setDensity);
-  const showLandmarks = useAppStore((s) => s.showLandmarks);
-  const setShowLandmarks = useAppStore((s) => s.setShowLandmarks);
   const features = useAppStore((s) => s.features);
   const setFeature = useAppStore((s) => s.setFeature);
   const revealLogs = useAppStore((s) => s.revealLogs);
@@ -89,9 +87,6 @@ export function GeneralPane() {
             ]}
             onChange={setDensity}
           />
-        </SetRow>
-        <SetRow title="Landmark glyphs" sub="Tiny location marks beside each agent name.">
-          <SetToggle on={showLandmarks} onClick={() => setShowLandmarks(!showLandmarks)} />
         </SetRow>
       </SetGroup>
 

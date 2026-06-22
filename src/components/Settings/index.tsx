@@ -56,8 +56,6 @@ function Popover({ onClose }: { onClose: () => void }) {
   const setAccent = useAppStore((s) => s.setAccent);
   const density = useAppStore((s) => s.density);
   const setDensity = useAppStore((s) => s.setDensity);
-  const showLandmarks = useAppStore((s) => s.showLandmarks);
-  const setShowLandmarks = useAppStore((s) => s.setShowLandmarks);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
 
   return (
@@ -104,12 +102,6 @@ function Popover({ onClose }: { onClose: () => void }) {
             ]}
             onChange={setDensity}
           />
-        </SettingsRow>
-        <SettingsRow
-          label="Landmark glyphs"
-          description="Tiny location marks beside agent names"
-        >
-          <Toggle value={showLandmarks} onChange={setShowLandmarks} />
         </SettingsRow>
       </SettingsSection>
 
