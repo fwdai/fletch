@@ -1,6 +1,5 @@
 import { useAppStore, type FeatureFlags, type ThemeMode, type Density } from "../../store";
 import { ACCENTS } from "../../data/providers";
-import { api } from "../../api";
 import { Icon } from "../Icon";
 import { SetHead, SetGroup, SetRow, SetToggle, SetSeg } from "./primitives";
 
@@ -34,6 +33,7 @@ export function GeneralPane() {
   const setShowLandmarks = useAppStore((s) => s.setShowLandmarks);
   const features = useAppStore((s) => s.features);
   const setFeature = useAppStore((s) => s.setFeature);
+  const revealLogs = useAppStore((s) => s.revealLogs);
 
   const FeatureRow = ({ item }: { item: FeatureItem }) => (
     <SetRow title={item.title} sub={item.sub}>
@@ -115,7 +115,7 @@ export function GeneralPane() {
           <button
             type="button"
             className="btn-t outline"
-            onClick={() => void api.revealLogs()}
+            onClick={() => void revealLogs()}
           >
             <Icon name="folder" size={12} />
             Reveal logs
