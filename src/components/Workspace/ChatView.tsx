@@ -180,6 +180,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           activeModel={activeModel}
           usage={usage}
           defaultProvider={agent.provider}
+          defaultModel={agent.model ?? undefined}
           initialThinking={agent.effort ?? undefined}
           disabled={!canSend}
           placeholder={
