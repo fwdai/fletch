@@ -54,6 +54,9 @@ jobs:
           QUORUM_GITHUB_CLIENT_ID: ${{ secrets.QUORUM_GITHUB_CLIENT_ID }}
           QUORUM_GOOGLE_CLIENT_ID: ${{ secrets.QUORUM_GOOGLE_CLIENT_ID }}
           QUORUM_GOOGLE_CLIENT_SECRET: ${{ secrets.QUORUM_GOOGLE_CLIENT_SECRET }}
+          # Sentry DSN, baked in at compile time (see src-tauri/src/lib.rs).
+          # Unset → error reporting is a no-op. Add as a repository secret.
+          QUORUM_SENTRY_DSN: ${{ secrets.QUORUM_SENTRY_DSN }}
         with:
           tagName: v__VERSION__
           releaseName: Quorum v__VERSION__

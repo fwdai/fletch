@@ -26,6 +26,7 @@ mod workspace;
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -33,6 +34,100 @@ use crate::supervisor::Supervisor;
 use crate::workspace::WorkspaceManager;
 
 type DbState = Arc<Mutex<Connection>>;
+
+/// Quorum's on-disk data directory — `~/Library/Application Support/
+/// com.quorum.desktop` (with a `dev` subfolder under debug builds), matching
+/// what `app.path().app_data_dir()` resolves to in `setup`. Computed without
+/// an `AppHandle` so logging can be initialized before the Tauri app is built,
+/// and reused by the `reveal_logs` command.
+pub(crate) fn data_dir() -> PathBuf {
+    let base = dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("com.quorum.desktop");
+    if cfg!(debug_assertions) {
+        base.join("dev")
+    } else {
+        base
+    }
+}
+
+pub(crate) fn logs_dir() -> PathBuf {
+    data_dir().join("logs")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_dir_is_under_the_bundle_id_and_logs_nest_within() {
+        let dir = data_dir();
+        assert!(dir.to_string_lossy().contains("com.quorum.desktop"));
+        // Tests build in debug, so the dev sandbox subfolder is used.
+        assert_eq!(dir.file_name().unwrap(), "dev");
+        assert!(logs_dir().starts_with(&dir));
+        assert_eq!(logs_dir().file_name().unwrap(), "logs");
+    }
+}
+
+/// Number of daily log files to keep. The rolling appender deletes the oldest
+/// beyond this on each rotation, so `logs/` stays bounded instead of growing a
+/// file per day forever. Daily rotation → roughly this many days of history.
+/// (A user-configurable retention is a plausible future settings option.)
+const LOG_RETENTION_FILES: usize = 14;
+
+/// Send tracing output to both stdout (as before) and a daily-rolling file
+/// under `logs_dir()`, so a notarized build that crashes in the field leaves a
+/// log the user can attach to a bug report. The file writer is synchronous
+/// (not buffered) so the last lines before a crash actually reach disk, and is
+/// capped at `LOG_RETENTION_FILES` so it self-prunes.
+fn init_logging() {
+    use tracing_subscriber::prelude::*;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,quorum_lib=debug"));
+
+    let dir = logs_dir();
+    let appender = std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create log dir: {e}"))
+        .and_then(|()| {
+            tracing_appender::rolling::Builder::new()
+                .rotation(tracing_appender::rolling::Rotation::DAILY)
+                .filename_prefix("quorum")
+                .filename_suffix("log")
+                .max_log_files(LOG_RETENTION_FILES)
+                .build(&dir)
+                .map_err(|e| format!("open log file: {e}"))
+        });
+    let file_layer = match appender {
+        Ok(appender) => Some(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(appender),
+        ),
+        Err(e) => {
+            eprintln!("file logging disabled ({}): {e}", dir.display());
+            None
+        }
+    };
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(file_layer)
+        .init();
+}
+
+/// Chain a panic hook that logs the panic (so it lands in the log file) onto
+/// whatever hook is already installed — notably Sentry's, set by
+/// `sentry::init`, which we must not clobber. Call after `sentry::init`.
+fn install_panic_logging() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(panic = %info, "panic");
+        prev(info);
+    }));
+}
 
 #[tauri::command]
 async fn db_insert(
@@ -136,14 +231,39 @@ async fn set_agent_bin_override(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,quorum_lib=debug")),
-        )
-        .init();
+    // Error/crash reporting. The DSN is baked in at build time via
+    // `QUORUM_SENTRY_DSN` (empty/unset → a disabled, no-op client, so dev and
+    // unconfigured builds send nothing). This captures app health — Rust
+    // panics and unhandled frontend errors — not user telemetry, so it is on
+    // regardless of any future data-sharing toggle. `_sentry` must stay bound
+    // for the whole process so the client flushes on exit; `run()` blocks
+    // below, so this scope lives until quit.
+    let _sentry = sentry::init((
+        option_env!("QUORUM_SENTRY_DSN").filter(|s| !s.is_empty()),
+        sentry::ClientOptions {
+            release: sentry::release_name!(),
+            ..Default::default()
+        },
+    ));
+
+    // Native hard-crash capture (segfault, abort, stack overflow) — things the
+    // panic hook can't see. Spawns a lightweight handler child that re-execs
+    // this binary, watches the parent, and uploads a minidump via the sentry
+    // client on a crash. Only when a DSN is configured: with no DSN there's
+    // nothing to upload, so we skip spawning the child entirely (dev stays
+    // clean). Bound for the process lifetime so the handler keeps running.
+    // Placed before `init_logging` so the handler child is detected and exits
+    // before touching the log file or building the app.
+    #[cfg(not(target_os = "ios"))]
+    let _minidump = _sentry
+        .is_enabled()
+        .then(|| tauri_plugin_sentry::minidump::init(&_sentry));
+
+    init_logging();
+    install_panic_logging();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_sentry::init(&_sentry))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -276,6 +396,7 @@ pub fn run() {
             commands::probe_provider_versions,
             commands::validate_agent_bin,
             commands::discover_supported_models,
+            commands::reveal_logs,
         ])
         .build(tauri::generate_context!())
         .expect("error while building quorum")

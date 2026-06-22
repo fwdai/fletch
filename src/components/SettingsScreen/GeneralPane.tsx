@@ -33,6 +33,7 @@ export function GeneralPane() {
   const setShowLandmarks = useAppStore((s) => s.setShowLandmarks);
   const features = useAppStore((s) => s.features);
   const setFeature = useAppStore((s) => s.setFeature);
+  const revealLogs = useAppStore((s) => s.revealLogs);
 
   const FeatureRow = ({ item }: { item: FeatureItem }) => (
     <SetRow title={item.title} sub={item.sub}>
@@ -100,10 +101,26 @@ export function GeneralPane() {
         ))}
       </SetGroup>
 
-      <SetGroup label="Composer" last>
+      <SetGroup label="Composer">
         {COMPOSER.map((it) => (
           <FeatureRow key={it.key} item={it} />
         ))}
+      </SetGroup>
+
+      <SetGroup label="Diagnostics" last>
+        <SetRow
+          title="Logs"
+          sub="Quorum writes a local log file. Reveal it to attach to a bug report."
+        >
+          <button
+            type="button"
+            className="btn-t outline"
+            onClick={() => void revealLogs()}
+          >
+            <Icon name="folder" size={12} />
+            Reveal logs
+          </button>
+        </SetRow>
       </SetGroup>
     </div>
   );

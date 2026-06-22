@@ -406,6 +406,9 @@ interface AppState {
   selectAgent: (id: string | null) => void;
   addWorkspaceRepo: (path: string) => Promise<void>;
   removeWorkspaceRepo: (path: string) => Promise<void>;
+  /** Open the log folder in the OS file manager; surfaces failures via
+   *  `lastError` rather than swallowing them. */
+  revealLogs: () => Promise<void>;
   // Clone/create resolve on success and throw on failure, so the New Project
   // modal can show the error inline rather than in the global banner.
   cloneRepo: (spec: string, destParent: string) => Promise<void>;
@@ -1130,6 +1133,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const ws = await api.removeWorkspaceRepo(path);
       set({ workspace: ws });
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  revealLogs: async () => {
+    try {
+      await api.revealLogs();
     } catch (e) {
       set({ lastError: String(e) });
     }
