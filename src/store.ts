@@ -385,6 +385,10 @@ interface AppState {
   providerVersions: Record<string, string>;
   /** Resolved binary paths keyed by provider id, from the version probe. */
   providerPaths: Record<string, string>;
+  /** True once the first provider probe has completed. Lets install-aware UI
+   *  (the model picker, readiness check) distinguish "not probed yet" from
+   *  "probed and not installed" so it doesn't flash agents as missing on boot. */
+  providersProbed: boolean;
   /** User-set custom binary paths keyed by provider id (the raw value entered,
    *  before resolution). Absent = auto-detect. This is the source of truth for
    *  the "Custom" tag in the providers settings, independent of the probe. */
@@ -804,6 +808,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   providerFlags: {},
   providerVersions: {},
   providerPaths: {},
+  providersProbed: false,
   providerPathOverrides: {},
   modelCatalog: cachedCatalog.byId,
   modelsByAgent: cachedCatalog.byAgent,
@@ -1907,9 +1912,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (probe.version) versions[probe.id] = probe.version;
         if (probe.path) paths[probe.id] = probe.path;
       }
-      set({ providerVersions: versions, providerPaths: paths });
+      set({ providerVersions: versions, providerPaths: paths, providersProbed: true });
     } catch {
-      // Non-fatal — UI falls back to hardcoded versions.
+      // Non-fatal — UI falls back to hardcoded versions. Still mark probed so
+      // install-aware UI stops waiting (it treats a failed probe as "unknown",
+      // not "all missing", by reading providerPaths defensively).
+      set({ providersProbed: true });
     }
   },
   setProviderPathOverride: async (id, path) => {

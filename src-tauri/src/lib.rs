@@ -394,6 +394,7 @@ pub fn run() {
             commands::create_worktree_dir,
             commands::copy_worktree_file,
             commands::probe_provider_versions,
+            commands::check_cli,
             commands::validate_agent_bin,
             commands::discover_supported_models,
             commands::reveal_logs,

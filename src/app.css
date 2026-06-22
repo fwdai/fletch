@@ -4195,3 +4195,29 @@ button { cursor: default; }
   transition: background .12s;
 }
 .side-foot .side-user:hover { background: var(--hover); }
+
+/* Provider readiness check — onboarding finale + Settings → Providers. */
+.readiness { display: flex; flex-direction: column; }
+.rdy-row { display: flex; gap: 10px; padding: 8px 2px; align-items: flex-start; }
+.rdy-icon { width: 20px; display: flex; justify-content: center; padding-top: 1px; color: var(--fg-2); flex-shrink: 0; }
+.rdy-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.rdy-line { display: flex; align-items: center; gap: 8px; }
+.rdy-name { font-weight: 600; font-size: 12.5px; color: var(--fg-0); }
+.rdy-status { color: var(--fg-2); font-size: 12px; }
+.rdy-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.rdy-dot.ok { background: var(--success); }
+.rdy-dot.warn { background: var(--warn); }
+.rdy-dot.bad { background: var(--danger); }
+.rdy-dot.checking { background: var(--fg-3); }
+.rdy-fix { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rdy-cmd {
+  display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%;
+  padding: 4px 8px; border-radius: var(--r-sm);
+  background: var(--bg-1); border: 1px solid var(--bg-2); color: var(--fg-1);
+}
+.rdy-cmd code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rdy-cmd:hover { border-color: var(--fg-3); }
+.rdy-docs { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: 11.5px; }
+.rdy-hint { color: var(--fg-3); font-size: 11.5px; }
+.rdy-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--bg-2); }
+.rdy-count { color: var(--fg-2); font-size: 12px; }

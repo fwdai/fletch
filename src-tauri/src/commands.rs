@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
-use crate::agent::{BinValidation, ProviderProbe};
+use crate::agent::{BinValidation, ProviderProbe, ToolStatus};
 use crate::error::{Error, Result};
 use crate::gh::{self, GhRepoSummary, GhStatus, PrState};
 use crate::git;
@@ -1134,6 +1134,19 @@ pub async fn copy_worktree_file(
 #[tauri::command]
 pub async fn probe_provider_versions() -> Vec<ProviderProbe> {
     crate::agent::probe_all_providers().await
+}
+
+/// Resolve a plain required CLI (e.g. `git`) and probe its `--version`. Drives
+/// the first-run readiness check. Binary presence only — no auth check.
+#[tauri::command]
+pub async fn check_cli(name: String) -> ToolStatus {
+    tokio::task::spawn_blocking(move || crate::agent::check_cli(&name))
+        .await
+        .unwrap_or(ToolStatus {
+            installed: false,
+            version: None,
+            path: None,
+        })
 }
 
 /// Validate a candidate custom agent binary path: is it an executable file,

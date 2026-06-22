@@ -712,3 +712,17 @@
   padding: 6px 10px;
 }
 .ob-cancel:hover { opacity: .9; }
+
+/* Finale doubles as the setup/readiness screen — tighten the hero so the
+   readiness list fits without the step scrolling on common heights. */
+.ob-ignite-setup { max-width: 560px; }
+.ob-ignite-setup .seal { width: 64px; height: 64px; margin-bottom: 18px; }
+.ob-ignite-setup .seal svg { width: 34px; height: 34px; }
+.ob-ignite-setup .ob-display { font-size: 38px; }
+.ob-ignite-setup .ob-lede { margin-top: 14px; max-width: 460px; }
+.ob-ignite-setup .ob-cta { margin-top: 24px; }
+.ob-readiness {
+  width: 100%; max-width: 480px; margin: 24px auto 0; text-align: left;
+  background: var(--bg-1); border: 1px solid var(--bg-2);
+  border-radius: var(--r-md); padding: 8px 14px 14px;
+}

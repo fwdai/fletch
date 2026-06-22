@@ -4,6 +4,7 @@ import { PROVIDERS, type Provider } from "../../data/providers";
 import { PROVIDER_DETAIL } from "../../data/providerDetail";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
+import { ProviderReadiness } from "../ProviderReadiness";
 import { SetHead, SetGroup, SetToggle } from "./primitives";
 import { BinaryPathRow } from "./BinaryPathRow";
 
@@ -62,6 +63,10 @@ export function ProvidersPane() {
         }
       />
 
+      <SetGroup label="Readiness">
+        <ProviderReadiness />
+      </SetGroup>
+
       <SetGroup label="Installed on this system" last>
         <div className="set-prov-list">
           {installed.map((p) => (
@@ -112,7 +117,10 @@ function ProviderRow({
   return (
     <div className={`set-prov ${enabled ? "" : "off"} ${open ? "open" : ""}`}>
       <div className="set-prov-main">
-        <span className="set-prov-status" title="Authenticated" />
+        <span
+          className={`set-prov-status ${livePath ? "" : "none"}`}
+          title={livePath ? "Detected on this system" : "Not found"}
+        />
         <ProviderIcon slug={provider.id} short={provider.short} hue={provider.hue} />
         <div className="set-prov-id">
           <div className="set-prov-name">

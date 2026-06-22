@@ -34,6 +34,8 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
   const [focusProvider, setFocusProvider] = useState(provider);
   const providerFlags = useAppStore((s) => s.providerFlags);
   const providerVersions = useAppStore((s) => s.providerVersions);
+  const providerPaths = useAppStore((s) => s.providerPaths);
+  const providersProbed = useAppStore((s) => s.providersProbed);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
 
   const selected = PROVIDERS.find((p) => p.id === provider) ?? PROVIDERS[0];
@@ -90,18 +92,24 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
               <div className="model-agent-list">
                 {enabled.map((p) => {
                   const wired = hasAdapter(p.id);
+                  // Treat "not probed yet" as installed so agents don't flash
+                  // as missing on boot; only gate once the probe has resolved.
+                  const installed = !providersProbed || !!providerPaths[p.id];
+                  const usable = wired && installed;
+                  const missing = wired && providersProbed && !installed;
                   return (
                     <button
                       key={p.id}
                       type="button"
                       className={`model-agent ${p.id === focusProvider ? "active" : ""}`}
-                      disabled={!wired}
-                      onClick={() => wired && setFocusProvider(p.id)}
+                      disabled={!usable}
+                      title={missing ? "Not installed — see Settings › Providers" : undefined}
+                      onClick={() => usable && setFocusProvider(p.id)}
                     >
                       <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={18} />
                       <span className="model-agent-text">
                         <span>{p.label}</span>
-                        <span>{providerVersions[p.id] ?? p.version}</span>
+                        <span>{missing ? "Not installed" : providerVersions[p.id] ?? p.version}</span>
                       </span>
                       {p.id === provider && <Icon name="check" size={12} />}
                     </button>

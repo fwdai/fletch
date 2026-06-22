@@ -1477,6 +1477,27 @@ pub fn validate_bin(path: &str) -> BinValidation {
     BinValidation { executable, version }
 }
 
+#[derive(serde::Serialize)]
+pub struct ToolStatus {
+    pub installed: bool,
+    pub version: Option<String>,
+    pub path: Option<String>,
+}
+
+/// Resolve a plain CLI on PATH (e.g. `git`) and probe its `--version`. Used by
+/// the first-run readiness check for required tools that aren't agent
+/// providers. Binary presence only — no auth/config check.
+pub fn check_cli(name: &str) -> ToolStatus {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let path = crate::bin_resolve::resolve_bin(name, &home);
+    let version = path.as_deref().and_then(probe_version);
+    ToolStatus {
+        installed: path.is_some(),
+        version,
+        path,
+    }
+}
+
 /// Probe every known provider in parallel and return their resolved path +
 /// version string. Missing/uninstalled providers return `None` for both fields;
 /// the frontend falls back to the hardcoded defaults in that case.
