@@ -379,12 +379,52 @@
   white-space: nowrap;
 }
 
-/* ── exhibit: parallel agents (the real sidebar agent list) ───────
-   The rows render the live `.agent` markup styled in app.css, so the
-   preview matches the sidebar exactly. This only frames that list inside
-   the faux window and clears the caption bar pinned to the bottom. */
-.ex-side { padding: 8px 8px 46px; }
-.ex-side .proj { margin-bottom: 0; }
+/* ── exhibit: parallel agents (mini sidebar) ──────────────────── */
+.ex-side { padding: 12px 10px 44px; display: flex; flex-direction: column; gap: 2px; }
+.ex-proj {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: var(--r-sm);
+  font-size: 12.5px; color: var(--fg-0); font-weight: 500;
+  white-space: nowrap;
+}
+.ex-proj .sw { width: 8px; height: 8px; border-radius: 2px; }
+.ex-proj .cnt { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3); }
+.ex-agents { margin-left: 12px; border-left: 1px solid var(--bd-soft); padding-left: 4px; }
+.ex-agent {
+  display: flex; align-items: center; gap: 9px;
+  margin: 1px 0 1px 4px;
+  padding: 8px 10px; border-radius: var(--r-sm);
+  position: relative;
+}
+.ex-agent.active { background: var(--selected); }
+.ex-agent.active::before {
+  content: ""; position: absolute; left: -5px; top: 9px; bottom: 9px;
+  width: 2px; border-radius: 0 2px 2px 0; background: var(--accent);
+}
+.ex-agent .gly { color: var(--fg-2); display: inline-flex; }
+.ex-agent.active .gly { color: var(--accent); }
+.ex-agent .nm { font-family: var(--font-mono); font-size: 12px; color: var(--fg-1); white-space: nowrap; }
+.ex-agent.active .nm { color: var(--fg-0); }
+.ex-agent .br { font-size: 11px; color: var(--fg-3); margin-left: auto; font-family: var(--font-mono); white-space: nowrap; }
+.ex-stat {
+  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; position: relative;
+}
+.ex-stat.running {
+  background: radial-gradient(circle at 35% 30%,
+    color-mix(in oklch, var(--success), white 25%) 0%,
+    color-mix(in oklch, var(--success), transparent 35%) 70%);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--success), transparent 78%);
+}
+.ex-stat.running::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: linear-gradient(115deg, transparent 38%, color-mix(in oklch, white, transparent 30%) 50%, transparent 62%);
+  background-size: 240% 100%; background-position: 100% 0;
+  animation: ex-shimmer 2.2s cubic-bezier(.4,0,.2,1) infinite;
+  mix-blend-mode: screen;
+}
+@keyframes ex-shimmer { 0%{background-position:130% 0;} 60%,100%{background-position:-30% 0;} }
+.ex-stat.waiting { background: transparent; box-shadow: inset 0 0 0 1.5px var(--warn); }
+.ex-stat.idle { background: var(--fg-3); opacity: .4; }
 
 /* ── exhibit: providers ───────────────────────────────────────── */
 .ex-providers {
@@ -401,6 +441,13 @@
   transition: border-color .25s var(--ease), background .25s var(--ease);
 }
 .ex-prov.on { border-color: var(--accent-line); background: color-mix(in oklch, var(--accent), var(--bg-2) 90%); }
+.ex-prov .badge {
+  width: 30px; height: 30px; flex-shrink: 0;
+  border-radius: var(--r-sm);
+  display: grid; place-items: center;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  color: #fff;
+}
 .ex-prov .meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .ex-prov .pl { display: block; font-size: 12.5px; color: var(--fg-0); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ex-prov .ps { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -668,14 +715,13 @@
 
 /* Finale doubles as the setup/readiness screen — tighten the hero so the
    readiness list fits without the step scrolling on common heights. */
-.ob-ignite-setup { max-width: 560px; }
+.ob-ignite-setup { max-width: 600px; }
 .ob-ignite-setup .seal { width: 64px; height: 64px; margin-bottom: 18px; }
 .ob-ignite-setup .seal svg { width: 34px; height: 34px; }
 .ob-ignite-setup .ob-display { font-size: 38px; }
 .ob-ignite-setup .ob-lede { margin-top: 14px; max-width: 460px; }
 .ob-ignite-setup .ob-cta { margin-top: 24px; }
+/* Sub-components now carry their own card styling; wrapper is layout-only. */
 .ob-readiness {
-  width: 100%; max-width: 480px; margin: 24px auto 0; text-align: left;
-  background: var(--bg-1); border: 1px solid var(--bg-2);
-  border-radius: var(--r-md); padding: 8px 14px 14px;
+  width: 100%; max-width: 560px; margin: 24px auto 0; text-align: left;
 }

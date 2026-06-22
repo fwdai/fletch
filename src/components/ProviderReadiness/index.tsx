@@ -38,7 +38,44 @@ function CopyCmd({ cmd }: { cmd: string }) {
   );
 }
 
-function Row({
+function CheckRow({
+  icon,
+  name,
+  state,
+  statusText,
+  fix,
+  docs,
+}: {
+  icon: ReactNode;
+  name: string;
+  state: RowState;
+  statusText: string;
+  fix?: string;
+  docs?: string;
+}) {
+  const needsFix = state === "bad" || state === "warn";
+  return (
+    <div className="rdy-check-row">
+      <span className="rdy-check-icon">{icon}</span>
+      <span className="rdy-check-name">{name}</span>
+      <span className={`rdy-dot ${state}`} />
+      <span className="rdy-check-status">{statusText}</span>
+      {needsFix && (fix || docs) && (
+        <div className="rdy-check-fix">
+          {fix && <CopyCmd cmd={fix} />}
+          {docs && (
+            <button type="button" className="rdy-docs" onClick={() => void openExternal(docs)}>
+              Setup guide
+              <Icon name="external" size={10} />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentCard({
   icon,
   name,
   state,
@@ -51,35 +88,31 @@ function Row({
   name: string;
   state: RowState;
   statusText: string;
-  /** Copy-paste command that resolves the issue (install or sign-in). */
   fix?: string;
   docs?: string;
-  /** Shown when installed — e.g. a sign-in nudge we can't verify. */
   hint?: string;
 }) {
   const needsFix = state === "bad" || state === "warn";
   return (
-    <div className="rdy-row">
-      <span className="rdy-icon">{icon}</span>
-      <div className="rdy-main">
-        <div className="rdy-line">
-          <span className="rdy-name">{name}</span>
-          <span className={`rdy-dot ${state}`} />
-          <span className="rdy-status">{statusText}</span>
-        </div>
-        {needsFix && (fix || docs) && (
-          <div className="rdy-fix">
-            {fix && <CopyCmd cmd={fix} />}
-            {docs && (
-              <button type="button" className="rdy-docs" onClick={() => void openExternal(docs)}>
-                Setup guide
-                <Icon name="external" size={10} />
-              </button>
-            )}
-          </div>
-        )}
-        {state === "ok" && hint && <div className="rdy-hint">{hint}</div>}
+    <div className={`rdy-agent-card ${state}`}>
+      <div className="rdy-agent-icon">{icon}</div>
+      <div className="rdy-agent-name">{name}</div>
+      <div className="rdy-agent-foot">
+        <span className={`rdy-dot ${state}`} />
+        <span className="rdy-agent-status">{statusText}</span>
       </div>
+      {needsFix && (fix || docs) && (
+        <div className="rdy-agent-fix">
+          {fix && <CopyCmd cmd={fix} />}
+          {docs && (
+            <button type="button" className="rdy-docs" onClick={() => void openExternal(docs)}>
+              Install
+              <Icon name="external" size={10} />
+            </button>
+          )}
+        </div>
+      )}
+      {state === "ok" && hint && <div className="rdy-hint rdy-agent-hint">{hint}</div>}
     </div>
   );
 }
@@ -133,75 +166,78 @@ export function ProviderReadiness() {
 
   return (
     <div className="readiness">
-      <Row
-        icon={<Icon name="branch" size={15} />}
-        name="Git"
-        state={gitState}
-        statusText={
-          git
-            ? git.installed
-              ? git.version ?? "Installed"
-              : "Not found — required to run any agent"
-            : checking
-              ? "Checking…"
-              : "Couldn't check"
-        }
-        fix={gitState === "bad" ? "xcode-select --install" : undefined}
-        docs="https://git-scm.com/downloads"
-      />
-
-      {agents.map((p) => {
-        const d = PROVIDER_DETAIL[p.id];
-        const path = providerPaths[p.id];
-        const state: RowState = checking
-          ? "checking"
-          : providersProbed
-            ? path
-              ? "ok"
-              : "bad"
-            : "warn";
-        return (
-          <Row
-            key={p.id}
-            icon={<ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={18} />}
-            name={p.label}
-            state={state}
-            statusText={
-              state === "checking"
+      <div className="rdy-prereqs">
+        <CheckRow
+          icon={<Icon name="branch" size={14} />}
+          name="Git"
+          state={gitState}
+          statusText={
+            git
+              ? git.installed
+                ? git.version ?? "Installed"
+                : "Not found — required to run any agent"
+              : checking
                 ? "Checking…"
-                : state === "warn"
-                  ? "Couldn't detect"
-                  : path
-                    ? providerVersions[p.id] ?? "Installed"
-                    : "Not installed"
-            }
-            // Only offer the install command when we know it's missing, not
-            // when detection itself failed.
-            fix={state === "bad" ? d.install : undefined}
-            docs={d.docs}
-            hint={d.signIn}
-          />
-        );
-      })}
+                : "Couldn't check"
+          }
+          fix={gitState === "bad" ? "xcode-select --install" : undefined}
+          docs="https://git-scm.com/downloads"
+        />
+        <CheckRow
+          icon={<Icon name="github" size={14} />}
+          name="GitHub CLI"
+          state={ghState}
+          statusText={
+            gh
+              ? !gh.installed
+                ? "Not found — needed for clone & PRs"
+                : !gh.authenticated
+                  ? "Installed · not signed in"
+                  : `Signed in${gh.login ? ` as ${gh.login}` : ""}`
+              : checking
+                ? "Checking…"
+                : "Couldn't check"
+          }
+          fix={ghFix}
+          docs={!gh?.installed ? "https://cli.github.com" : undefined}
+        />
+      </div>
 
-      <Row
-        icon={<Icon name="github" size={15} />}
-        name="GitHub CLI · optional"
-        state={ghState}
-        statusText={
-          gh
-            ? !gh.installed
-              ? "Not found — needed for clone & PRs"
-              : !gh.authenticated
-                ? "Installed — not signed in"
-                : `Signed in${gh.login ? ` as ${gh.login}` : ""}`
-            : checking
-              ? "Checking…"
-              : "Couldn't check"
-        }
-        fix={ghFix}
-        docs={!gh?.installed ? "https://cli.github.com" : undefined}
-      />
+      <div className="rdy-grid">
+        {agents.map((p) => {
+          const d = PROVIDER_DETAIL[p.id];
+          const path = providerPaths[p.id];
+          const state: RowState = checking
+            ? "checking"
+            : providersProbed
+              ? path
+                ? "ok"
+                : "bad"
+              : "warn";
+          return (
+            <AgentCard
+              key={p.id}
+              icon={<ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={32} />}
+              name={p.label}
+              state={state}
+              statusText={
+                state === "checking"
+                  ? "Checking…"
+                  : state === "warn"
+                    ? "Couldn't detect"
+                    : path
+                      ? providerVersions[p.id] ?? "Installed"
+                      : "Not installed"
+              }
+              // Only offer the install command when we know it's missing, not
+              // when detection itself failed.
+              fix={state === "bad" ? d.install : undefined}
+              docs={d.docs}
+              hint={d.signIn}
+            />
+          );
+        })}
+      </div>
 
       <div className="rdy-foot">
         <span className="rdy-count">
