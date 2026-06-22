@@ -140,15 +140,21 @@ button { cursor: default; }
   pointer-events: none;
 }
 .tb-wordmark {
-  display: inline-flex; align-items: baseline;
+  /* plain inline context so the Q mark aligns via vertical-align (see
+   * .tb-qmark) — avoids the flex replaced-element baseline quirks that
+   * differ across WebKit/Gecko (this ships in WKWebView under Tauri) */
   font-family: var(--font-geist);
 }
 .tb-qmark {
-  width: 0.92em; height: 0.92em;
-  align-self: center;
+  /* sized so the ring reads at the x-height of the lowercase "uorum"
+   * rather than towering at cap height */
+  width: 0.7em; height: 0.7em;
+  /* vertical-align: middle == baseline + half the parent x-height, i.e.
+   * the optical center of the lowercase "uorum". Deterministic across
+   * engines, unlike replaced-element baseline alignment. */
+  vertical-align: middle;
   /* small gap so the mark reads as the leading glyph of "uorum" */
   margin-right: 1px;
-  position: relative; top: 0.01em;
 }
 .tb-badge {
   display: inline-flex; align-items: center;
