@@ -137,7 +137,7 @@ function ProviderRow({
             providerLabel={provider.label}
             effectivePath={effectivePath}
             override={override}
-            versionDetected={!!liveVersion}
+            resolved={!!livePath}
             onSave={onSavePath}
           />
           <ProvDetailRow k="Models" v={d.models} />

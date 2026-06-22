@@ -14,7 +14,7 @@ export function BinaryPathRow({
   providerLabel,
   effectivePath,
   override,
-  versionDetected,
+  resolved,
   onSave,
 }: {
   providerLabel: string;
@@ -22,9 +22,10 @@ export function BinaryPathRow({
   effectivePath: string;
   /** The raw custom path, if one is set. Drives the "Custom" tag. */
   override?: string;
-  /** Whether the probe found a version for the effective binary. When an
-   *  override is set but this is false, the path is flagged as not-runnable. */
-  versionDetected: boolean;
+  /** Whether the probe resolved the binary to an executable file (the probe's
+   *  `path`, not its parsed version — a working CLI may report no version). An
+   *  override that fails this is flagged as not-runnable. */
+  resolved: boolean;
   /** Persist (path) or clear (null) the override. Resolves once the store and
    *  backend have updated; rejects to keep the editor open on failure. */
   onSave: (path: string | null) => Promise<void>;
@@ -35,7 +36,7 @@ export function BinaryPathRow({
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const broken = !!override && !versionDetected;
+  const broken = !!override && !resolved;
 
   const beginEdit = () => {
     setDraft(override ?? "");
