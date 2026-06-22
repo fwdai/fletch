@@ -4135,6 +4135,45 @@ button { cursor: default; }
 }
 .set-prov-dk { color: var(--fg-3); }
 .set-prov-dv { color: var(--fg-1); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.set-prov-dv.broken { color: var(--warn); }
+
+/* Binary path row: read-only by default, edit-in-place on the pencil. */
+.set-prov-bin-view { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.set-prov-bin-view .grow { flex: 1; }
+.set-badge.custom {
+  background: color-mix(in oklch, var(--accent), transparent 84%);
+  color: var(--accent);
+}
+.set-prov-bin-warn {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--warn); white-space: nowrap;
+}
+.btn-i.sm-i {
+  width: 24px; height: 24px; flex-shrink: 0;
+  border-radius: var(--r-sm);
+  color: var(--fg-3);
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .12s, color .12s;
+}
+.btn-i.sm-i:hover:not(:disabled) { background: var(--hover); color: var(--fg-0); }
+.btn-i.sm-i:disabled { opacity: 0.5; }
+
+.set-prov-bin-edit { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.set-prov-bin-input-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.set-prov-bin-input {
+  flex: 1; min-width: 0;
+  height: 26px; padding: 0 8px;
+  font-size: 12px;
+  color: var(--fg-0);
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: border-color .12s;
+}
+.set-prov-bin-input:focus { border-color: var(--accent); }
+.set-prov-bin-hint { font-size: 11px; color: var(--fg-3); }
+.set-prov-bin-err { font-size: 11px; color: var(--danger); }
 .set-prov-detail-actions {
   display: flex; align-items: center; gap: 6px;
   margin-top: 12px;

@@ -213,6 +213,24 @@ function parseProviderFlags(raw: string | undefined): Record<string, boolean> {
   }
 }
 
+/** Settings-key prefix for per-agent custom binary paths. Must match the
+ *  backend's `database::AGENT_BIN_PREFIX` so both read/write the same rows. */
+const AGENT_BIN_PREFIX = "agent_bin_path_";
+
+/** Pull the `agent_bin_path_<id>` rows out of the flat settings map into an
+ *  id → path override map (blank values dropped, matching the backend). */
+export function parseProviderPathOverrides(
+  s: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(s)) {
+    if (key.startsWith(AGENT_BIN_PREFIX) && value.trim()) {
+      out[key.slice(AGENT_BIN_PREFIX.length)] = value;
+    }
+  }
+  return out;
+}
+
 interface AppState {
   workspace: Workspace | null;
   selectedAgentId: string | null;
@@ -359,6 +377,10 @@ interface AppState {
   providerVersions: Record<string, string>;
   /** Resolved binary paths keyed by provider id, from the version probe. */
   providerPaths: Record<string, string>;
+  /** User-set custom binary paths keyed by provider id (the raw value entered,
+   *  before resolution). Absent = auto-detect. This is the source of truth for
+   *  the "Custom" tag in the providers settings, independent of the probe. */
+  providerPathOverrides: Record<string, string>;
   /** Per-model metadata (context window, reasoning) keyed by bare model id —
    *  the `byId` view of the hybrid catalog. Seeded from the localStorage cache
    *  on init, rebuilt from agent discovery + models.dev when stale (24h). */
@@ -473,6 +495,9 @@ interface AppState {
   /** Re-probe installed provider CLIs for versions + binary paths. Runs once
    *  on init and again when the user re-scans from the Providers settings. */
   refreshProviderVersions: () => Promise<void>;
+  /** Set (path) or clear (null) a provider's custom binary path. Persists the
+   *  override, updates local state, and re-probes so the version/path refresh. */
+  setProviderPathOverride: (id: string, path: string | null) => Promise<void>;
   /** Rebuild the model catalog (agent discovery + models.dev) when the cache is
    *  stale (24h). Runs once on init; non-fatal on failure (keeps cached data). */
   refreshModelCatalog: () => Promise<void>;
@@ -768,6 +793,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   providerFlags: {},
   providerVersions: {},
   providerPaths: {},
+  providerPathOverrides: {},
   modelCatalog: cachedCatalog.byId,
   modelsByAgent: cachedCatalog.byAgent,
   viewMode: "custom" as WorkspaceView,
@@ -787,6 +813,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         showLandmarks: s.showLandmarks !== "false",
         features: parseFeatures(s.features),
         providerFlags: parseProviderFlags(s.providers),
+        providerPathOverrides: parseProviderPathOverrides(s),
         viewMode: (s.viewMode as WorkspaceView) || "custom",
         gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
         onboardingComplete: s.onboardingComplete === "true",
@@ -1865,6 +1892,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch {
       // Non-fatal — UI falls back to hardcoded versions.
     }
+  },
+  setProviderPathOverride: async (id, path) => {
+    const trimmed = path?.trim() || null;
+    // The backend command persists the setting and refreshes its resolution
+    // registry in one call; we mirror the change into local state so the UI
+    // updates immediately, then re-probe to pick up the new version/path.
+    await api.setAgentBinOverride(id, trimmed);
+    set((s) => {
+      const next = { ...s.providerPathOverrides };
+      if (trimmed) next[id] = trimmed;
+      else delete next[id];
+      return { providerPathOverrides: next };
+    });
+    await get().refreshProviderVersions();
   },
   refreshModelCatalog: async () => {
     // Cache holds for 24h; the init seed already reflects it when fresh.

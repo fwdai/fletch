@@ -5,12 +5,15 @@ import { PROVIDER_DETAIL } from "../../data/providerDetail";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
 import { SetHead, SetGroup, SetToggle } from "./primitives";
+import { BinaryPathRow } from "./BinaryPathRow";
 
 export function ProvidersPane() {
   const providerFlags = useAppStore((s) => s.providerFlags);
   const setProviderEnabled = useAppStore((s) => s.setProviderEnabled);
   const providerVersions = useAppStore((s) => s.providerVersions);
   const providerPaths = useAppStore((s) => s.providerPaths);
+  const providerPathOverrides = useAppStore((s) => s.providerPathOverrides);
+  const setProviderPathOverride = useAppStore((s) => s.setProviderPathOverride);
   const refreshProviderVersions = useAppStore((s) => s.refreshProviderVersions);
   const [scanning, setScanning] = useState(false);
 
@@ -69,6 +72,8 @@ export function ProvidersPane() {
               onToggle={() => setProviderEnabled(p.id, providerFlags[p.id] === false)}
               liveVersion={providerVersions[p.id]}
               livePath={providerPaths[p.id]}
+              override={providerPathOverrides[p.id]}
+              onSavePath={(path) => setProviderPathOverride(p.id, path)}
             />
           ))}
         </div>
@@ -84,16 +89,25 @@ function ProviderRow({
   onToggle,
   liveVersion,
   livePath,
+  override,
+  onSavePath,
 }: {
   provider: Provider;
   enabled: boolean;
   onToggle: () => void;
   liveVersion?: string;
   livePath?: string;
+  override?: string;
+  onSavePath: (path: string | null) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const d = PROVIDER_DETAIL[provider.id];
   if (!d) return null;
+
+  // What the binary row shows: an explicit override wins, then the live probe,
+  // then the hardcoded default. The override leads even when not yet resolved
+  // so a custom (and possibly broken) path stays visible to the user.
+  const effectivePath = override ?? livePath ?? d.path;
 
   return (
     <div className={`set-prov ${enabled ? "" : "off"} ${open ? "open" : ""}`}>
@@ -105,7 +119,7 @@ function ProviderRow({
             {provider.label}
             <span className="set-prov-ver mono">{liveVersion ?? provider.version}</span>
           </div>
-          <div className="set-prov-sub mono">{livePath ?? d.path}</div>
+          <div className="set-prov-sub mono">{effectivePath}</div>
         </div>
         <button
           className={`set-prov-chev ${open ? "open" : ""}`}
@@ -119,7 +133,13 @@ function ProviderRow({
 
       {open && (
         <div className="set-prov-detail">
-          <ProvDetailRow k="Binary" v={livePath ?? d.path} mono />
+          <BinaryPathRow
+            providerLabel={provider.label}
+            effectivePath={effectivePath}
+            override={override}
+            versionDetected={!!liveVersion}
+            onSave={onSavePath}
+          />
           <ProvDetailRow k="Models" v={d.models} />
           <div className="set-prov-detail-actions">
             <button className="btn-t ghost sm-t">View logs</button>

@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
-use crate::agent::ProviderProbe;
+use crate::agent::{BinValidation, ProviderProbe};
 use crate::error::{Error, Result};
 use crate::gh::{self, GhRepoSummary, GhStatus, PrState};
 use crate::git;
@@ -1111,6 +1111,20 @@ pub async fn copy_worktree_file(
 #[tauri::command]
 pub async fn probe_provider_versions() -> Vec<ProviderProbe> {
     crate::agent::probe_all_providers().await
+}
+
+/// Validate a candidate custom agent binary path: is it an executable file,
+/// and what `--version` does it report? The providers settings UI calls this
+/// before saving a path override so it can show immediate inline feedback
+/// (green version on success, error on failure) and block a broken save.
+#[tauri::command]
+pub async fn validate_agent_bin(path: String) -> BinValidation {
+    tokio::task::spawn_blocking(move || crate::agent::validate_bin(&path))
+        .await
+        .unwrap_or(BinValidation {
+            executable: false,
+            version: None,
+        })
 }
 
 /// Discover the models each agent CLI reports it supports (raw ids + any cheap
