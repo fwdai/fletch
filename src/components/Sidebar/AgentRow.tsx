@@ -14,6 +14,10 @@ import { AgentStatsPopover, type AgentStats } from "./AgentStatsPopover";
  *  a `<button>`; they use `role="button"` + this handler to stay keyboard
  *  operable (Enter/Space activates the row like a click). */
 function activateOnKey(e: KeyboardEvent, fn: () => void) {
+  // Ignore key events that bubbled up from a nested control (stop/archive/
+  // discard) — otherwise pressing Space/Enter on those buttons would also
+  // select the row (and Discard would select a draft as it's removed).
+  if (e.target !== e.currentTarget) return;
   if (e.key === "Enter" || e.key === " ") {
     e.preventDefault();
     fn();
