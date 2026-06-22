@@ -162,7 +162,7 @@ export interface FeatureFlags {
   terminal: boolean;
   thinkingBudget: boolean;
   autoEdit: boolean;
-  statusBar: boolean;
+  /** Show the context-window usage meter in the composer foot. */
   tokenUsage: boolean;
 }
 
@@ -173,8 +173,7 @@ const DEFAULT_FEATURES: FeatureFlags = {
   terminal: false,
   thinkingBudget: true,
   autoEdit: false,
-  statusBar: false,
-  tokenUsage: false,
+  tokenUsage: true,
 };
 
 function parseFeatures(raw: string | undefined): FeatureFlags {
@@ -184,6 +183,8 @@ function parseFeatures(raw: string | undefined): FeatureFlags {
       // legacy flags folded into `code`
       files?: boolean;
       diff?: boolean;
+      // removed in this version; its presence marks a pre-migration blob
+      statusBar?: boolean;
     };
     // The old "Files" and "Diff" tabs were merged into the Code panel; honor a
     // saved preference for either when migrating an existing settings blob.
@@ -191,9 +192,16 @@ function parseFeatures(raw: string | undefined): FeatureFlags {
       saved.code ?? (saved.files !== undefined || saved.diff !== undefined
         ? !!(saved.files || saved.diff)
         : undefined);
-    const { files: _files, diff: _diff, ...rest } = saved;
+    // A blob still carrying the removed `statusBar` flag predates `tokenUsage`
+    // gating the composer meter — back then it was a no-op that defaulted off.
+    // Drop its stored `tokenUsage` so the new default (meter on, matching the
+    // old always-visible behavior) applies; honor the value for newer blobs.
+    const preMigration = saved.statusBar !== undefined;
+    const { files: _files, diff: _diff, statusBar: _statusBar, ...rest } = saved;
     void _files;
     void _diff;
+    void _statusBar;
+    if (preMigration) delete rest.tokenUsage;
     return {
       ...DEFAULT_FEATURES,
       ...rest,

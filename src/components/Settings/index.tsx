@@ -28,13 +28,7 @@ const FEATURE_GROUPS: { label: string; items: FeatureItem[] }[] = [
     items: [
       { key: "thinkingBudget", title: "Thinking budget", sub: "Low / medium / high cap" },
       { key: "autoEdit",       title: "Auto-edit",       sub: "Skip approval for write tools" },
-    ],
-  },
-  {
-    label: "Status",
-    items: [
-      { key: "statusBar",  title: "Status bar",  sub: "Persistent bar with branch, server, tokens" },
-      { key: "tokenUsage", title: "Token usage", sub: "Context window % in status bar" },
+      { key: "tokenUsage",     title: "Token usage",     sub: "Context window % meter in the composer" },
     ],
   },
 ];
