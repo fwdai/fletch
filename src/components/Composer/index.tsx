@@ -362,7 +362,9 @@ export function Composer({
           <Icon name="attach" size={11} />
         </Chip>
         <span style={{ flex: 1 }} />
-        {usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
+        {features.tokenUsage && usage && usage.contextTokens > 0 && (
+          <UsageMeter usage={usage} />
+        )}
         <button
           type="button"
           className={`send ${stopping ? "is-stop" : ""}`}

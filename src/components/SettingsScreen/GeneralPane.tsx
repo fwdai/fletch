@@ -19,11 +19,7 @@ const SIDE_PANELS: FeatureItem[] = [
 const COMPOSER: FeatureItem[] = [
   { key: "thinkingBudget", title: "Thinking budget", sub: "Show a low / medium / high reasoning cap in the composer." },
   { key: "autoEdit",       title: "Auto-edit",       sub: "Let agents apply write tools without per-tool approval." },
-];
-
-const STATUS: FeatureItem[] = [
-  { key: "statusBar",  title: "Status bar",  sub: "Persistent footer with branch, server, and token usage." },
-  { key: "tokenUsage", title: "Token usage", sub: "Context window % in the status bar." },
+  { key: "tokenUsage",     title: "Token usage",     sub: "Show the context-window % meter in the composer." },
 ];
 
 export function GeneralPane() {
@@ -104,14 +100,8 @@ export function GeneralPane() {
         ))}
       </SetGroup>
 
-      <SetGroup label="Composer">
+      <SetGroup label="Composer" last>
         {COMPOSER.map((it) => (
-          <FeatureRow key={it.key} item={it} />
-        ))}
-      </SetGroup>
-
-      <SetGroup label="Status" last>
-        {STATUS.map((it) => (
           <FeatureRow key={it.key} item={it} />
         ))}
       </SetGroup>
