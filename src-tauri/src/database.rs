@@ -12,6 +12,34 @@ const ALLOWED_TABLES: &[&str] = &[
     "sessions", "settings", "workspaces", "worktrees",
 ];
 
+/// `settings` key prefix for per-agent custom binary path overrides. The agent
+/// id follows the prefix (e.g. `agent_bin_path_claude`); the value is the raw
+/// absolute path the user entered. Shared by the startup loader and the
+/// `set_agent_bin_override` command so both agree on the key format.
+pub const AGENT_BIN_PREFIX: &str = "agent_bin_path_";
+
+/// Read every `agent_bin_path_*` setting into an id → path map. Called once at
+/// startup to seed `bin_resolve`'s in-memory override registry so binary
+/// resolution never needs a DB handle. Blank values are skipped (a cleared
+/// override).
+pub fn load_agent_bin_overrides(conn: &Connection) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let rows = match db_select(conn, "settings", json!({})) {
+        Ok(rows) => rows,
+        Err(_) => return map,
+    };
+    for row in rows {
+        let key = row.get("key").and_then(Value::as_str).unwrap_or("");
+        let value = row.get("value").and_then(Value::as_str).unwrap_or("");
+        if let Some(id) = key.strip_prefix(AGENT_BIN_PREFIX) {
+            if !value.trim().is_empty() {
+                map.insert(id.to_string(), value.to_string());
+            }
+        }
+    }
+    map
+}
+
 fn validate_table(table: &str) -> Result<()> {
     if ALLOWED_TABLES.contains(&table) {
         Ok(())
@@ -617,6 +645,27 @@ mod tests {
         let rows = db_select(&conn, "settings", json!({ "where": { "key": "theme" } })).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["value"], "light");
+    }
+
+    #[test]
+    fn load_agent_bin_overrides_picks_prefixed_keys_and_skips_blanks() {
+        let db = test_db();
+        let conn = db.lock();
+
+        let set = |k: &str, v: &str| {
+            db_upsert(&conn, "settings", json!({ "key": k, "value": v }), "key").unwrap();
+        };
+        set("theme", "dark"); // unrelated setting, must be ignored
+        set("agent_bin_path_claude", "/opt/homebrew/bin/claude");
+        set("agent_bin_path_cursor", "~/bin/cursor-agent");
+        set("agent_bin_path_codex", "   "); // blank → cleared, must be skipped
+
+        let map = load_agent_bin_overrides(&conn);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["claude"], "/opt/homebrew/bin/claude");
+        assert_eq!(map["cursor"], "~/bin/cursor-agent");
+        assert!(!map.contains_key("codex"));
+        assert!(!map.contains_key("theme"));
     }
 
     #[test]

@@ -25,7 +25,7 @@ mod workspace;
 
 use parking_lot::Mutex;
 use rusqlite::Connection;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -108,6 +108,32 @@ async fn db_query(
     serde_json::to_value(rows).map_err(|e| e.to_string())
 }
 
+/// Set or clear a per-agent custom binary path override. Writes (or deletes,
+/// for an empty path) the `agent_bin_path_<id>` setting, then refreshes the
+/// in-memory registry binary resolution reads — keeping the DB and the
+/// registry in sync through a single call so the frontend doesn't have to.
+#[tauri::command]
+async fn set_agent_bin_override(
+    id: String,
+    path: Option<String>,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state.lock();
+    let key = format!("{}{}", database::AGENT_BIN_PREFIX, id);
+    match path.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => {
+            database::db_upsert(&conn, "settings", json!({ "key": key, "value": p }), "key")
+                .map_err(|e| e.to_string())?;
+        }
+        _ => {
+            database::db_delete(&conn, "settings", json!({ "where": { "key": key } }))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&conn));
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -133,6 +159,12 @@ pub fn run() {
 
             let db = database::init(&data_dir)
                 .expect("failed to initialize database");
+
+            // Seed the in-memory agent binary override registry so binary
+            // resolution (deep in spawn/probe paths, with no DB handle) can
+            // honor user-set custom paths without touching the DB each time.
+            bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&db.lock()));
+
             app.manage(db.clone());
 
             let workspace = Arc::new(WorkspaceManager::new(db));
@@ -152,6 +184,7 @@ pub fn run() {
             db_upsert,
             db_count,
             db_query,
+            set_agent_bin_override,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::get_agent_diff_stats,
@@ -214,6 +247,7 @@ pub fn run() {
             commands::create_worktree_dir,
             commands::copy_worktree_file,
             commands::probe_provider_versions,
+            commands::validate_agent_bin,
             commands::discover_supported_models,
         ])
         .run(tauri::generate_context!())

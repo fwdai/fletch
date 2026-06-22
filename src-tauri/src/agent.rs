@@ -711,7 +711,7 @@ pub fn cached_provider_version(provider: &str) -> Option<String> {
     }
     let version = provider_bin_label(provider).and_then(|(bin, label)| {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        resolve_agent_bin(bin, label, &home)
+        resolve_agent_bin(provider, bin, label, &home)
             .ok()
             .and_then(|p| probe_version(&p))
     });
@@ -815,7 +815,7 @@ impl Agent {
             .ok_or_else(|| Error::Other(format!("no per-turn descriptor for `{provider}`")))?;
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let bin = resolve_agent_bin(desc.bin, desc.label, &home)?;
+        let bin = resolve_agent_bin(desc.id, desc.bin, desc.label, &home)?;
         let session = if spec.fresh {
             None
         } else {
@@ -924,7 +924,7 @@ impl Agent {
     {
         let home = dirs::home_dir()
             .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let program = PathBuf::from(resolve_agent_bin(desc.bin, desc.label, &home)?);
+        let program = PathBuf::from(resolve_agent_bin(desc.id, desc.bin, desc.label, &home)?);
         Self::spawn_exec(
             program,
             spec,
@@ -1207,7 +1207,7 @@ fn prepare_managed_args(
 }
 
 fn resolve_claude(home: &Path) -> Result<String> {
-    resolve_agent_bin("claude", "Claude Code", home)
+    resolve_agent_bin("claude", "claude", "Claude Code", home)
 }
 
 // ── per-turn provider configs ─────────────────────────────────────────────
@@ -1427,7 +1427,17 @@ fn pi_pty_args(session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
 /// (catches nvm / fnm / volta / homebrew setups the GUI process's bare
 /// PATH misses), then the usual install dirs. `label` is the
 /// human-facing product name used only in the not-found error.
-fn resolve_agent_bin(name: &str, label: &str, home: &Path) -> Result<String> {
+fn resolve_agent_bin(agent_id: &str, name: &str, label: &str, home: &Path) -> Result<String> {
+    // A user-set custom path wins over PATH discovery. If it no longer points
+    // at an executable we surface a clear error rather than silently falling
+    // back to a different binary off PATH — the user chose this one explicitly.
+    if let Some(result) = crate::bin_resolve::resolve_agent_override(agent_id, home) {
+        return result.map_err(|path| {
+            Error::Other(format!(
+                "The custom binary path for {label} is not executable: {path}"
+            ))
+        });
+    }
     crate::bin_resolve::resolve_bin(name, home).ok_or_else(|| {
         Error::Other(format!(
             "Could not find the `{name}` executable. Install {label} or make it available on PATH."
@@ -1442,6 +1452,29 @@ pub struct ProviderProbe {
     pub id: String,
     pub version: Option<String>,
     pub path: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct BinValidation {
+    /// The path is an executable regular file (after `~` expansion).
+    pub executable: bool,
+    /// The version `<path> --version` reported, if it ran and parsed.
+    pub version: Option<String>,
+}
+
+/// Pre-flight a user-entered custom binary path before it's saved as an
+/// override: expand a leading `~`, confirm it's an executable file, and probe
+/// `--version` when it is. Powers the providers settings UI's inline feedback.
+pub fn validate_bin(path: &str) -> BinValidation {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let expanded = crate::bin_resolve::expand_tilde(path, &home);
+    let executable = crate::bin_resolve::is_executable_path(&expanded);
+    let version = if executable {
+        probe_version(&expanded.to_string_lossy())
+    } else {
+        None
+    };
+    BinValidation { executable, version }
 }
 
 /// Probe every known provider in parallel and return their resolved path +
@@ -1463,7 +1496,7 @@ pub async fn probe_all_providers() -> Vec<ProviderProbe> {
         let bin = bin.to_string();
         let label = label.to_string();
         handles.push(tokio::task::spawn_blocking(move || {
-            let path = resolve_agent_bin(&bin, &label, &home).ok();
+            let path = resolve_agent_bin(&id, &bin, &label, &home).ok();
             let version = path.as_deref().and_then(probe_version);
             ProviderProbe { id, version, path }
         }));

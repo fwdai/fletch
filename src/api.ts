@@ -313,6 +313,14 @@ export interface ProviderProbe {
   path: string | null;
 }
 
+/** Result of pre-flighting a custom agent binary path before saving it as an
+ *  override. `executable` is whether the path is a runnable file; `version` is
+ *  what `<path> --version` reported (null if it didn't run or didn't parse). */
+export interface BinValidation {
+  executable: boolean;
+  version: string | null;
+}
+
 /** Whether the `gh` CLI is installed and authenticated (New Project flow). */
 export interface GhStatus {
   installed: boolean;
@@ -492,6 +500,13 @@ export const api = {
     invoke<void>("copy_worktree_file", { agentId, from, to }),
   probeProviderVersions: () =>
     invoke<ProviderProbe[]>("probe_provider_versions"),
+  /** Check a candidate custom binary path before saving it as an override. */
+  validateAgentBin: (path: string) =>
+    invoke<BinValidation>("validate_agent_bin", { path }),
+  /** Set (or clear, with a null/blank path) a per-agent custom binary path.
+   *  Persists the setting and refreshes the backend's resolution registry. */
+  setAgentBinOverride: (id: string, path: string | null) =>
+    invoke<void>("set_agent_bin_override", { id, path }),
   /** Per-agent supported-model discovery (raw ids + any cheap CLI metadata).
    *  The frontend enriches these against models.dev. */
   discoverSupportedModels: () =>
