@@ -77,9 +77,14 @@ export function BinaryPathRow({
   const reset = async () => {
     if (busy) return;
     setBusy(true);
+    setError(null);
     try {
       await onSave(null);
       setEditing(false);
+    } catch {
+      // Mirror commit()'s failure feedback — reset runs from the display view,
+      // so the error renders below the row there (see the !editing branch).
+      setError("Couldn't reset this path. Try again.");
     } finally {
       setBusy(false);
     }
@@ -140,27 +145,34 @@ export function BinaryPathRow({
           )}
         </div>
       ) : (
-        <div className="set-prov-bin-view">
-          <span className={`set-prov-dv mono ${broken ? "broken" : ""}`}>
-            {effectivePath}
-          </span>
-          {override && <span className="set-badge custom">Custom</span>}
-          {broken && <span className="set-prov-bin-warn">not found</span>}
-          <span className="grow" />
-          {override && (
-            <button className="btn-t ghost sm-t" onClick={() => void reset()}>
-              Reset to auto
+        <div className="set-prov-bin-edit">
+          <div className="set-prov-bin-view">
+            <span className={`set-prov-dv mono ${broken ? "broken" : ""}`}>
+              {effectivePath}
+            </span>
+            {override && <span className="set-badge custom">Custom</span>}
+            {broken && <span className="set-prov-bin-warn">not found</span>}
+            <span className="grow" />
+            {override && (
+              <button
+                className="btn-t ghost sm-t"
+                disabled={busy}
+                onClick={() => void reset()}
+              >
+                Reset to auto
+              </button>
+            )}
+            <button
+              className="btn-i sm-i tip"
+              data-tip-down
+              data-tip="Edit path"
+              aria-label="Edit binary path"
+              onClick={beginEdit}
+            >
+              <Icon name="edit" size={13} />
             </button>
-          )}
-          <button
-            className="btn-i sm-i tip"
-            data-tip-down
-            data-tip="Edit path"
-            aria-label="Edit binary path"
-            onClick={beginEdit}
-          >
-            <Icon name="edit" size={13} />
-          </button>
+          </div>
+          {error && <div className="set-prov-bin-err">{error}</div>}
         </div>
       )}
     </div>
