@@ -216,7 +216,12 @@ pub async fn pr_view_number(worktree: &Path, number: u32) -> Result<Option<PrSta
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let low = stderr.to_lowercase();
-        if low.contains("no pull requests found") || low.contains("could not resolve") {
+        // gh's "missing PR" wording varies by lookup and version: branch lookups
+        // say "no pull requests found", a bad number says "pull request not
+        // found" or "could not resolve to a PullRequest". `contains("not found")`
+        // covers the first two; keep the resolve case explicit. All map to the
+        // documented `Ok(None)` so callers treat it as "no PR".
+        if low.contains("not found") || low.contains("could not resolve") {
             return Ok(None);
         }
         return Err(Error::Gh(stderr.trim().to_string()));

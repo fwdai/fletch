@@ -1318,8 +1318,16 @@ impl Supervisor {
                 // persist the number so all later lookups go by number.
                 match crate::gh::pr_view(&worktree).await.unwrap_or(None) {
                     Some(pr) if matches!(pr.state, crate::gh::PrStatus::Open) => {
-                        let _ =
-                            workspace.set_repo_pr_number(&agent_id, &subdir, pr.number as i64);
+                        if let Err(e) =
+                            workspace.set_repo_pr_number(&agent_id, &subdir, pr.number as i64)
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                agent_id = %agent_id,
+                                pr = pr.number,
+                                "pr discovery: failed to persist PR number"
+                            );
+                        }
                         Some(pr)
                     }
                     _ => None,
@@ -2167,11 +2175,18 @@ fn spawn_rpc_watcher(
                     rpc::RpcEffect::PrOpened { number } => {
                         if let Ok(record) = sup.workspace.agent(&agent_id) {
                             if let Some(repo) = record.repos.first() {
-                                let _ = sup.workspace.set_repo_pr_number(
+                                if let Err(e) = sup.workspace.set_repo_pr_number(
                                     &agent_id,
                                     &repo.subdir,
                                     number as i64,
-                                );
+                                ) {
+                                    tracing::warn!(
+                                        error = %e,
+                                        agent_id = %agent_id,
+                                        pr = number,
+                                        "open_pr: failed to persist PR number"
+                                    );
+                                }
                             }
                         }
                         sup.fetch_and_emit_pr_state(app.clone(), agent_id.clone());
