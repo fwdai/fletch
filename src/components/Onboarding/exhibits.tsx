@@ -5,7 +5,9 @@
 
 import { useEffect, useState } from "react";
 import { Icon, LandmarkGlyph } from "../Icon";
-import { PROVIDERS } from "../../data/providers";
+import { ProviderIcon } from "../ProviderIcon";
+import { PROVIDERS, providerChip } from "../../data/providers";
+import type { ProviderId } from "../../data/providers";
 
 // ── tiny faux window chrome for an exhibit ──────────────────────────
 function ExBar({ title }: { title: string }) {
@@ -22,20 +24,65 @@ function ExBar({ title }: { title: string }) {
 }
 
 // ── Exhibit 1 · parallel agents in isolated worktrees ───────────────
+// Renders the real sidebar agent row (the `.agent` markup + classes from
+// app.css) against mock data, so the preview matches the product exactly.
 interface ParallelAgent {
   name: string;
-  landmark: string;
-  branch: string;
-  status: "running" | "waiting";
+  provider: ProviderId;
+  task: string;
+  status: "running" | "idle" | "error";
+  add: number;
+  rem: number;
+  age: string;
+  /** Idle agent with results the user hasn't reviewed — the "needs you" cue. */
+  unseen?: boolean;
   active?: boolean;
 }
 
 const PARALLEL_AGENTS: ParallelAgent[] = [
-  { name: "dolomites", landmark: "dolomites", branch: "feat/agent-runtime", status: "running", active: true },
-  { name: "andes", landmark: "andes", branch: "feat/zero-copy", status: "running" },
-  { name: "caspian", landmark: "caspian", branch: "fix/diff-jitter", status: "waiting" },
-  { name: "sierra", landmark: "sierra", branch: "docs/migration", status: "running" },
+  { name: "dolomites", provider: "claude",   task: "Stripe portal sync",  status: "running", add: 187, rem: 64,  age: "4m",  active: true },
+  { name: "andes",     provider: "codex",    task: "Zero-copy decoder",   status: "running", add: 624, rem: 312, age: "12m" },
+  { name: "caspian",   provider: "cursor",   task: "Diff repaint jitter", status: "idle",    add: 14,  rem: 22,  age: "1h",  unseen: true },
+  { name: "sierra",    provider: "opencode", task: "v3 migration guide",  status: "running", add: 240, rem: 12,  age: "26m" },
 ];
+
+// Mirrors AgentRow's RealRow markup (static, no store/interactivity).
+function ExhibitAgentRow({ a }: { a: ParallelAgent }) {
+  const working = a.status === "running";
+  const rail = working ? "run" : a.status === "error" ? "err" : "idle";
+  return (
+    <div className={`agent ${a.active ? "active" : ""}`}>
+      <span className={`ag-rail ${rail}`} />
+      <div className="agent-row">
+        <span className={`ag-name ${working ? "shimmer" : ""}`}>{a.name}</span>
+        <span className="ag-prov-chip">
+          <ProviderIcon slug={a.provider} {...providerChip(a.provider)} size={14} />
+        </span>
+        <span className="ag-slot">
+          <span className="ag-meta">
+            {working && <span className="ag-loader" aria-label="Working" />}
+            {!working && a.unseen && (
+              <span className="ag-unseen" aria-label="New results to review" />
+            )}
+            {a.status === "error" && <span className="ag-badge err">error</span>}
+          </span>
+          <span className="ag-actions">
+            <span className="ag-act">
+              <Icon name={working ? "stop" : "archive"} size={11} />
+            </span>
+          </span>
+        </span>
+      </div>
+      <div className="agent-sub">
+        <span className="a-task">{a.task}</span>
+        <span className="a-diff">
+          <span className="add">+{a.add}</span> <span className="del">−{a.rem}</span>
+        </span>
+        <span className="a-time">{a.age}</span>
+      </div>
+    </div>
+  );
+}
 
 export function ExhibitParallel() {
   return (
@@ -43,22 +90,17 @@ export function ExhibitParallel() {
       <div className="ob-exhibit">
         <ExBar title="quorum — worktrees" />
         <div className="ex-side">
-          <div className="ex-proj">
-            <span className="sw" style={{ background: "oklch(0.6 0.08 28)" }} />
-            <span>quorum-core</span>
-            <span className="cnt">4</span>
-          </div>
-          <div className="ex-agents">
-            {PARALLEL_AGENTS.map((a) => (
-              <div key={a.name} className={`ex-agent ${a.active ? "active" : ""}`}>
-                <span className={`ex-stat ${a.status}`} />
-                <span className="gly">
-                  <LandmarkGlyph name={a.landmark} size={14} strokeWidth={1.3} />
-                </span>
-                <span className="nm">{a.name}</span>
-                <span className="br">{a.branch}</span>
-              </div>
-            ))}
+          <div className="proj">
+            <div className="proj-h open">
+              <Icon name="chevR" size={10} className="chev" />
+              <span className="pname">quorum-core</span>
+              <span className="pcount">4</span>
+            </div>
+            <div className="agents">
+              {PARALLEL_AGENTS.map((a) => (
+                <ExhibitAgentRow key={a.name} a={a} />
+              ))}
+            </div>
           </div>
         </div>
         <div className="ob-exhibit-cap">
@@ -88,9 +130,7 @@ export function ExhibitProviders() {
         <div className="ex-providers">
           {list.map((p, i) => (
             <div key={p.id} className={`ex-prov ${i < lit ? "on" : ""}`}>
-              <span className="badge" style={{ background: `oklch(0.55 0.13 ${p.hue})` }}>
-                {p.short}
-              </span>
+              <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={30} />
               <span className="meta">
                 <span className="pl">{p.label}</span>
                 <span className="ps">{p.sub}</span>
