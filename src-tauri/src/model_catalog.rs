@@ -99,10 +99,14 @@ async fn discover_one(agent: &str, home: &Path) -> AgentModels {
 /// child is reaped rather than leaked.
 async fn run_cli(bin: &str, args: &[&str], home: &Path) -> Option<String> {
     let path = crate::bin_resolve::resolve_bin(bin, home)?;
-    let run = tokio::process::Command::new(&path)
-        .args(args)
-        .kill_on_drop(true)
-        .output();
+    let mut cmd = tokio::process::Command::new(&path);
+    cmd.args(args).kill_on_drop(true);
+    if let Some(env) = crate::bin_resolve::login_shell_env() {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+    let run = cmd.output();
     // Outer `?` = timed out; inner `?` = spawn/IO error.
     let out = tokio::time::timeout(CLI_TIMEOUT, run).await.ok()?.ok()?;
     // A non-zero exit means the listing failed (not logged in, bad flag, …);

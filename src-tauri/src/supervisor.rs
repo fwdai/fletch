@@ -2008,7 +2008,7 @@ fn spawn_per_turn_agent(
             tracing::warn!(error = %e, agent_id = %id_for_sid, "persist session id failed");
         }
     };
-    let on_turn_exit = move |_success: bool| {
+    let on_turn_exit = move |exit: crate::exec_session::ExecExit| {
         // The turn's process exited. Ignore if a respawn/teardown has since
         // bumped the generation (e.g. the session was dropped).
         let current = sup_for_exit
@@ -2020,13 +2020,23 @@ fn spawn_per_turn_agent(
         if current != gen {
             return;
         }
-        // End the turn. Idempotent with the in-band turn-end watchdog path;
-        // the win is the interrupt/crash case where no such event arrives.
-        // We don't surface non-success as Error: a user-initiated Stop
-        // (SIGINT) is also non-success, and real agent errors are reported
-        // in-band as events.
-        // Turn-end ingest fires from transition_active's Idle transition.
-        transition_active(&sup_for_exit, &app_for_exit, &id_for_exit, AgentStatus::Idle);
+        // End the turn. Idempotent with the in-band turn-end watchdog path.
+        // User Stop is an expected non-zero exit; a non-interrupted failure
+        // before the CLI emits JSON is a real crash and must be surfaced.
+        if exit.success || exit.interrupted {
+            transition_active(&sup_for_exit, &app_for_exit, &id_for_exit, AgentStatus::Idle);
+        } else {
+            sup_for_exit.agents.lock().remove(&id_for_exit);
+            sup_for_exit.activities.lock().remove(&id_for_exit);
+            sup_for_exit.native_input_lines.lock().remove(&id_for_exit);
+            sup_for_exit.trigger_session_sync(app_for_exit.clone(), id_for_exit.clone());
+            sup_for_exit.set_status(
+                &app_for_exit,
+                &id_for_exit,
+                AgentStatus::Error,
+                Some(format!("Agent process exited: {}", exit.message)),
+            );
+        }
     };
 
     let desc = per_turn_descriptor(provider).ok_or_else(|| {

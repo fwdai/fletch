@@ -19,8 +19,8 @@ use parking_lot::Mutex;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
@@ -30,7 +30,7 @@ use crate::error::{Error, Result};
 
 type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
 type SessionIdCb = Arc<dyn Fn(String) + Send + Sync>;
-type ExitCb = Arc<dyn Fn(bool) + Send + Sync>;
+type ExitCb = Arc<dyn Fn(ExecExit) + Send + Sync>;
 type ArgsBuilder = Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
 type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 
@@ -71,6 +71,7 @@ pub struct ExecSession {
     session_id: Arc<Mutex<Option<String>>>,
     model: Option<String>,
     child: Arc<Mutex<Option<Child>>>,
+    interrupted: Arc<AtomicBool>,
     /// Monotonic turn counter. A reap thread only reports its exit if its
     /// turn is still the latest — so a superseded turn's late exit can't
     /// flip the status of the turn that replaced it.
@@ -80,6 +81,13 @@ pub struct ExecSession {
     on_event: EventCb,
     on_session_id: SessionIdCb,
     on_exit: ExitCb,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecExit {
+    pub success: bool,
+    pub interrupted: bool,
+    pub message: String,
 }
 
 pub struct ExecCallbacks<F, G, H> {
@@ -102,7 +110,7 @@ impl ExecSession {
         I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
-        H: Fn(bool) + Send + Sync + 'static,
+        H: Fn(ExecExit) + Send + Sync + 'static,
     {
         Self {
             program: spec.program,
@@ -114,6 +122,7 @@ impl ExecSession {
             session_id: Arc::new(Mutex::new(spec.session_id)),
             model: spec.model,
             child: Arc::new(Mutex::new(None)),
+            interrupted: Arc::new(AtomicBool::new(false)),
             turn_seq: Arc::new(AtomicU64::new(0)),
             build_args: Arc::new(build_args),
             extract_session_id: Arc::new(extract_session_id),
@@ -127,6 +136,7 @@ impl ExecSession {
         // Claim this turn's sequence number first, so a superseded turn's
         // reap thread sees it's no longer current and stays quiet.
         let seq = self.turn_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        self.interrupted.store(false, Ordering::SeqCst);
 
         // A new turn supersedes any still-running one (e.g. the user
         // sent again before the prior turn finished). Kill + reap it.
@@ -154,6 +164,7 @@ impl ExecSession {
         cmd.args(&self.prefix_args);
         cmd.args(&args);
         cmd.current_dir(&self.cwd);
+        crate::bin_resolve::apply_login_shell_env(&mut cmd);
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
@@ -219,11 +230,14 @@ impl ExecSession {
             tracing::debug!("agent: turn stdout closed");
         });
 
+        let (stderr_tx, stderr_rx) = mpsc::channel::<Option<String>>();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(std::result::Result::ok) {
                 tracing::warn!(stderr = %line, "agent: stderr");
+                let _ = stderr_tx.send(Some(line));
             }
+            let _ = stderr_tx.send(None);
         });
 
         // Reap the per-turn child when it exits, and report the exit so the
@@ -232,8 +246,9 @@ impl ExecSession {
         let child_for_wait = self.child.clone();
         let turn_seq = self.turn_seq.clone();
         let on_exit = self.on_exit.clone();
+        let interrupted = self.interrupted.clone();
         thread::spawn(move || loop {
-            let exited = {
+            let exited_status = {
                 let mut guard = child_for_wait.lock();
                 let Some(c) = guard.as_mut() else {
                     // Slot emptied by a newer turn (kill+take) — that turn
@@ -244,19 +259,38 @@ impl ExecSession {
                     Ok(Some(status)) => {
                         let _ = guard.take();
                         tracing::debug!(status = %status, "agent: turn exited");
-                        Some(status.success())
+                        Some(Ok(status))
                     }
                     Ok(None) => None,
                     Err(e) => {
                         let _ = guard.take();
                         tracing::warn!(error = %e, "agent: wait failed");
-                        Some(false)
+                        Some(Err(format!("wait failed: {e}")))
                     }
                 }
             };
-            if let Some(success) = exited {
+            if let Some(exited_status) = exited_status {
+                let exit = match exited_status {
+                    Ok(status) => {
+                        let stderr = drain_stderr(&stderr_rx).join("\n");
+                        ExecExit {
+                            success: status.success(),
+                            interrupted: interrupted.load(Ordering::SeqCst),
+                            message: if stderr.is_empty() {
+                                status.to_string()
+                            } else {
+                                format!("{status}: {stderr}")
+                            },
+                        }
+                    }
+                    Err(message) => ExecExit {
+                        success: false,
+                        interrupted: interrupted.load(Ordering::SeqCst),
+                        message,
+                    },
+                };
                 if turn_seq.load(Ordering::SeqCst) == seq {
-                    on_exit(success);
+                    on_exit(exit);
                 }
                 return;
             }
@@ -274,6 +308,7 @@ impl ExecSession {
             use nix::sys::signal::{kill, Signal};
             use nix::unistd::Pid;
             if let Some(child) = self.child.lock().as_ref() {
+                self.interrupted.store(true, Ordering::SeqCst);
                 let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGINT);
             }
         }
@@ -286,6 +321,19 @@ impl ExecSession {
         }
         Ok(())
     }
+}
+
+fn drain_stderr(rx: &mpsc::Receiver<Option<String>>) -> Vec<String> {
+    let mut lines = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Some(line)) => lines.push(line),
+            Ok(None)
+            | Err(mpsc::RecvTimeoutError::Timeout)
+            | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    lines
 }
 
 /// Capture the agent-assigned session id the first time it appears, and
@@ -386,8 +434,8 @@ mod tests {
                 on_session_id: move |sid| {
                     let _ = stx.send(sid);
                 },
-                on_exit: move |success| {
-                    let _ = xtx.send(success);
+                on_exit: move |exit| {
+                    let _ = xtx.send(exit);
                 },
             },
         );
@@ -409,7 +457,7 @@ mod tests {
         assert_eq!(srx.recv_timeout(Duration::from_secs(1)).unwrap(), "abc-123");
         assert_eq!(session.session_id.lock().as_deref(), Some("abc-123"));
         assert_eq!(events.len(), 3);
-        assert_eq!(xrx.recv_timeout(Duration::from_secs(2)).unwrap(), true);
+        assert!(xrx.recv_timeout(Duration::from_secs(2)).unwrap().success);
     }
 
     #[test]
@@ -442,7 +490,7 @@ mod tests {
                     let _ = etx.send(ev);
                 },
                 on_session_id: |_sid| {},
-                on_exit: |_success| {},
+                on_exit: |_exit| {},
             },
         );
 
@@ -452,5 +500,43 @@ mod tests {
         assert!(args.contains("exec resume prev-thread"), "argv was: {args}");
         assert!(args.contains("--model gpt-5.2-codex"), "argv was: {args}");
         assert!(args.contains("--json"));
+    }
+
+    #[test]
+    fn failed_turn_reports_exit_message_with_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("failagent.sh");
+        std::fs::write(&script, "#!/bin/sh\necho 'node missing' >&2\nexit 127\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (xtx, xrx) = mpsc::channel();
+        let session = ExecSession::new(
+            ExecSpawn {
+                program: script,
+                prefix_args: vec![],
+                profile: None,
+                cwd: dir.path().to_path_buf(),
+                session_id: None,
+                model: None,
+                stdout_is_json: true,
+                env: vec![],
+            },
+            codex_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: |_ev| {},
+                on_session_id: |_sid| {},
+                on_exit: move |exit| {
+                    let _ = xtx.send(exit);
+                },
+            },
+        );
+
+        session.send_user_message("hello", &[], None).unwrap();
+        let exit = xrx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!exit.success);
+        assert!(!exit.interrupted);
+        assert!(exit.message.contains("exit status: 127"), "{}", exit.message);
+        assert!(exit.message.contains("node missing"), "{}", exit.message);
     }
 }

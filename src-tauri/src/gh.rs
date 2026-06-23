@@ -25,7 +25,13 @@ fn gh_command() -> Command {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         crate::bin_resolve::resolve_bin("gh", &home).unwrap_or_else(|| "gh".to_string())
     });
-    Command::new(path)
+    let mut cmd = Command::new(path);
+    if let Some(env) = crate::bin_resolve::login_shell_env() {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+    cmd
 }
 
 // ---------------------------------------------------------------------------

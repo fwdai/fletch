@@ -65,6 +65,11 @@ impl PtySession {
         for (k, v) in std::env::vars() {
             cmd.env(k, v);
         }
+        if let Some(env) = crate::bin_resolve::login_shell_env() {
+            for (k, v) in env {
+                cmd.env(k, v);
+            }
+        }
         // Explicit terminal type — claude code uses ink which checks TERM
         // for capability lookups. Without this, input handling falls back
         // to a line-buffered mode that doesn't match what the user expects.

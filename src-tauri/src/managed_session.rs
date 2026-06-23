@@ -79,6 +79,7 @@ impl ManagedSession {
         let mut cmd = Command::new(spec.program);
         cmd.args(spec.args);
         cmd.current_dir(spec.cwd);
+        crate::bin_resolve::apply_login_shell_env(&mut cmd);
         for (k, v) in spec.env {
             cmd.env(k, v);
         }
