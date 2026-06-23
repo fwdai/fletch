@@ -221,6 +221,41 @@ export function usedNames(
   return used;
 }
 
+/** Strip an agent's entries from every ephemeral per-agent map, returning just
+ *  the pruned maps as a state patch (the caller layers on workspace /
+ *  selectedAgentId). Shared by discard and archive — dropping these is safe
+ *  because History re-loads an archived agent's transcript fresh from disk. */
+export function dropAgentEntries(state: AppState, id: string): Partial<AppState> {
+  const { [id]: _log, ...managedLogs } = state.managedLogs;
+  const { [id]: _loading, ...transcriptLoading } = state.transcriptLoading;
+  const { [id]: _loaded, ...transcriptLoaded } = state.transcriptLoaded;
+  const { [id]: _busy, ...managedBusy } = state.managedBusy;
+  const { [id]: _usage, ...usage } = state.usage;
+  const { [id]: _git, ...gitStates } = state.gitStates;
+  const { [id]: _short, ...gitShortstats } = state.gitShortstats;
+  const { [id]: _pr, ...prStates } = state.prStates;
+  const { [id]: _checks, ...prChecks } = state.prChecks;
+  const { [id]: _comments, ...prComments } = state.prComments;
+  const { [id]: _seed, ...composerSeeds } = state.composerSeeds;
+  const { [id]: _draft, ...composerDrafts } = state.composerDrafts;
+  const { [id]: _delegation, ...gitDelegations } = state.gitDelegations;
+  return {
+    managedLogs,
+    transcriptLoading,
+    transcriptLoaded,
+    managedBusy,
+    usage,
+    gitStates,
+    gitShortstats,
+    prStates,
+    prChecks,
+    prComments,
+    composerSeeds,
+    composerDrafts,
+    gitDelegations,
+  };
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function sendWhenAgentReady(send: () => Promise<void>) {
