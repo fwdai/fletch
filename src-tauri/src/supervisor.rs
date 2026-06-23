@@ -10,7 +10,6 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
 use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnSpec};
-use crate::branding;
 use crate::error::{Error, Result};
 use crate::git;
 use crate::managed_session::ToolUseBehavior;
@@ -500,7 +499,7 @@ impl Supervisor {
         let primary = TrackedRepo {
             repo_path: repo_path.clone(),
             subdir: subdir.clone(),
-            branch: None, // created later from first user message
+            branch: None, // materialized at first push, named by the agent
             parent_branch,
             base_sha: None, // captured by the fork task once HEAD is known
             pr_number: None, // set when a PR is opened for this branch
@@ -581,9 +580,8 @@ impl Supervisor {
 
     /// Bring a second (or third…) repo into a live agent. Creates a
     /// detached worktree at `~/.quorum/worktrees/<agent-id>/<subdir>/`
-    /// and appends a TrackedRepo entry. If the agent already has a
-    /// task set, a branch is created in the new repo immediately;
-    /// otherwise we defer (consistent with the primary).
+    /// and appends a TrackedRepo entry. The worktree stays detached until
+    /// its first push, consistent with the primary repo.
     pub async fn add_repo_to_agent(
         self: Arc<Self>,
         app: AppHandle,
@@ -634,17 +632,9 @@ impl Supervisor {
             },
         );
 
-        // If the agent has already started (its first message set the
-        // task), create the branch in the freshly-added repo right away;
-        // otherwise defer, consistent with the primary repo.
-        if !record.task.trim().is_empty() {
-            create_branches_for_branchless_repos(
-                self.clone(),
-                app.clone(),
-                agent_id.to_string(),
-            );
-        }
-
+        // No branch is created here — the new repo's worktree stays detached
+        // until its first push, when the agent names its branch (same as the
+        // primary repo).
         Ok(repo)
     }
 
@@ -1163,11 +1153,12 @@ impl Supervisor {
 
         for repo in &record.repos {
             // Resolve SHAs first so we capture state before any
-            // destructive step.
-            let branch_tip_sha = if let Some(b) = &repo.branch {
-                git::rev_parse(&repo.repo_path, b).await.ok()
-            } else {
-                None
+            // destructive step. The tip is the worktree's HEAD — works whether
+            // it's on a branch or still detached (a branchless agent that never
+            // pushed), so both restore from the exact committed tip.
+            let branch_tip_sha = match repo_worktree_path(agent_id, &repo.subdir) {
+                Ok(wt) => git::rev_parse(&wt, "HEAD").await.ok(),
+                Err(_) => None,
             };
             // Prefer the immutable fork point; only fall back to resolving the
             // parent branch name (which may have drifted) for pre-migration
@@ -1297,40 +1288,48 @@ impl Supervisor {
         let mut restored: Vec<TrackedRepo> = Vec::with_capacity(archive.repos.len());
         for snap in &archive.repos {
             let tip_sha = snap.branch_tip_sha.as_deref().expect("checked above");
-            let desired_name = snap
-                .branch_name
-                .clone()
-                .unwrap_or_else(|| format!("quorum/{}-restored", agent_id));
-
-            // Resolve branch name collisions by appending -restored / -restored-N.
-            let mut chosen = desired_name.clone();
-            let mut bumps = 0;
-            loop {
-                let exists = git::branch_exists(&snap.repo_path, &chosen).await.unwrap_or(false);
-                if !exists {
-                    break;
-                }
-                bumps += 1;
-                chosen = if bumps == 1 {
-                    format!("{desired_name}-restored")
-                } else {
-                    format!("{desired_name}-restored-{bumps}")
-                };
-            }
-
-            git::branch_create_at(&snap.repo_path, &chosen, tip_sha).await?;
 
             let worktree = repo_worktree_path(agent_id, &snap.subdir)?;
             if let Some(parent) = worktree.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| Error::Other(format!("create worktree parent: {e}")))?;
             }
-            git::worktree_add_branch(&snap.repo_path, &worktree, &chosen).await?;
+
+            let branch = match &snap.branch_name {
+                // The agent had pushed a branch → recreate it at the tip,
+                // resolving name collisions with a -restored suffix.
+                Some(desired_name) => {
+                    let mut chosen = desired_name.clone();
+                    let mut bumps = 0;
+                    loop {
+                        let exists =
+                            git::branch_exists(&snap.repo_path, &chosen).await.unwrap_or(false);
+                        if !exists {
+                            break;
+                        }
+                        bumps += 1;
+                        chosen = if bumps == 1 {
+                            format!("{desired_name}-restored")
+                        } else {
+                            format!("{desired_name}-restored-{bumps}")
+                        };
+                    }
+                    git::branch_create_at(&snap.repo_path, &chosen, tip_sha).await?;
+                    git::worktree_add_branch(&snap.repo_path, &worktree, &chosen).await?;
+                    Some(chosen)
+                }
+                // Branchless agent (never pushed) → restore detached at the
+                // tip, ready to name its branch at the next push.
+                None => {
+                    git::worktree_add_detached(&snap.repo_path, &worktree, Some(tip_sha)).await?;
+                    None
+                }
+            };
 
             restored.push(TrackedRepo {
                 repo_path: snap.repo_path.clone(),
                 subdir: snap.subdir.clone(),
-                branch: Some(chosen),
+                branch,
                 parent_branch: snap.parent_branch.clone(),
                 // The fork point persists in the worktrees row across
                 // archive/restore (restore_agent doesn't clear base_sha), so
@@ -2129,8 +2128,9 @@ fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
 }
 
 /// Fire-and-forget handler for the user's first message: persists it
-/// as the agent's `task` and kicks branch creation for every
-/// branchless tracked repo.
+/// as the agent's `task`. No branch is created here — the worktree stays
+/// detached until the first push, when the agent names its branch (see
+/// `open_pr`/`git_push`).
 fn on_first_user_message(
     sup: Arc<Supervisor>,
     app: AppHandle,
@@ -2160,131 +2160,6 @@ fn on_first_user_message(
             tracing::warn!(error = %e, agent_id = %agent_id, "set_agent_task_if_empty failed");
         }
     }
-
-    create_branches_for_branchless_repos(sup, app, agent_id);
-}
-
-/// Most stale same-named branches we'll step over before giving up. A
-/// modest cap so a pathological pile-up (e.g. bulk-deleted agents that
-/// all kept their branch) surfaces as a logged error instead of an
-/// unbounded probe loop.
-const MAX_BRANCH_SUFFIX: u32 = 1000;
-
-/// Find a single branch name that's free across *every* given repo,
-/// starting from `base` and stepping through `base-2`, `base-3`, … —
-/// so all of an agent's repos land on one canonical branch rather than
-/// diverging when a stale branch exists in some repos but not others.
-/// Returns `None` if no free name is found within `MAX_BRANCH_SUFFIX`.
-async fn free_branch_name_across(repos: &[PathBuf], base: &str) -> Option<String> {
-    for n in 1..=MAX_BRANCH_SUFFIX {
-        let candidate = if n == 1 {
-            base.to_string()
-        } else {
-            format!("{base}-{n}")
-        };
-        let mut taken = false;
-        for repo in repos {
-            if git::branch_exists(repo, &candidate).await.unwrap_or(false) {
-                taken = true;
-                break;
-            }
-        }
-        if !taken {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-/// For every tracked repo on the agent that doesn't have a branch yet,
-/// create `quorum/<workspace-name>` inside that repo's worktree — the
-/// branch mirrors the workspace (place) name so worktree, sandbox, and
-/// branch all share one identifier. Every repo on the agent lands on the
-/// same branch name. Runs in a background task. Idempotent —
-/// `set_repo_branch_if_empty` guards each write.
-fn create_branches_for_branchless_repos(
-    sup: Arc<Supervisor>,
-    app: AppHandle,
-    agent_id: String,
-) {
-    tauri::async_runtime::spawn(async move {
-        let record = match sup.workspace.agent(&agent_id) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, agent_id = %agent_id, "branch creation: agent lookup failed");
-                return;
-            }
-        };
-
-        let pending: Vec<&TrackedRepo> =
-            record.repos.iter().filter(|r| r.branch.is_none()).collect();
-        if pending.is_empty() {
-            return;
-        }
-
-        // One canonical branch per agent: reuse the name already
-        // established on another repo if there is one (e.g. a repo added
-        // after the agent started), otherwise pick a name that's free
-        // across all the repos we're about to branch — so a stale branch
-        // in one repo can't make them diverge.
-        let branch = match record.repos.iter().find_map(|r| r.branch.clone()) {
-            Some(existing) => existing,
-            None => {
-                let base = branding::branch_for(&agent_id);
-                let paths: Vec<PathBuf> = pending.iter().map(|r| r.repo_path.clone()).collect();
-                match free_branch_name_across(&paths, &base).await {
-                    Some(name) => name,
-                    None => {
-                        tracing::warn!(
-                            agent_id = %agent_id,
-                            base = %base,
-                            "branch creation: no free branch name within cap; leaving repos branchless"
-                        );
-                        return;
-                    }
-                }
-            }
-        };
-
-        for repo in pending {
-            let worktree = match repo_worktree_path(&agent_id, &repo.subdir) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(error = %e, subdir = %repo.subdir, "branch creation: worktree_path failed");
-                    continue;
-                }
-            };
-            if let Err(e) = git::checkout_new_branch(&worktree, &branch).await {
-                tracing::warn!(
-                    error = %e,
-                    agent_id = %agent_id,
-                    subdir = %repo.subdir,
-                    branch = %branch,
-                    "checkout_new_branch failed"
-                );
-                continue;
-            }
-            match sup
-                .workspace
-                .set_repo_branch_if_empty(&agent_id, &repo.subdir, &branch)
-            {
-                Ok(true) => {
-                    let _ = app.emit(
-                        "agent:branch",
-                        AgentBranchPayload {
-                            agent_id: agent_id.clone(),
-                            subdir: repo.subdir.clone(),
-                            branch: branch.clone(),
-                        },
-                    );
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "set_repo_branch_if_empty failed");
-                }
-            }
-        }
-    });
 }
 
 fn mark_user_turn_started(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
@@ -2358,6 +2233,38 @@ fn spawn_rpc_watcher(
             let effects = rpc::process_pending(&rpc_dir, &ctx).await;
             for effect in effects {
                 match effect {
+                    // The agent's branch was materialized at first push (the
+                    // worktree had been detached). Persist the name against the
+                    // primary repo — the worktree the push ops run in — and tell
+                    // the panel a branch now exists. Unconditional write: a
+                    // second PR cuts a fresh branch, so the name can change.
+                    rpc::RpcEffect::BranchCreated { branch } => {
+                        if let Ok(record) = sup.workspace.agent(&agent_id) {
+                            if let Some(repo) = record.repos.first() {
+                                if let Err(e) = sup.workspace.set_repo_branch(
+                                    &agent_id,
+                                    &repo.subdir,
+                                    &branch,
+                                ) {
+                                    tracing::warn!(
+                                        error = %e,
+                                        agent_id = %agent_id,
+                                        branch = %branch,
+                                        "git_push/open_pr: failed to persist branch name"
+                                    );
+                                } else {
+                                    let _ = app.emit(
+                                        "agent:branch",
+                                        AgentBranchPayload {
+                                            agent_id: agent_id.clone(),
+                                            subdir: repo.subdir.clone(),
+                                            branch: branch.clone(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
                     // The agent opened a PR via the `open_pr` op. Bind it to the
                     // agent by number so PR-state lookups stop depending on the
                     // (recyclable) branch name, then refresh the panel. The PR

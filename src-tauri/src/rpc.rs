@@ -92,6 +92,11 @@ pub struct OpContext {
 /// the watcher persist it.
 #[derive(Debug, Clone)]
 pub enum RpcEffect {
+    /// `open_pr`/`git_push` materialized the agent's branch at first push
+    /// (the worktree was detached, or `open_pr` cut a fresh branch for a
+    /// second PR). The watcher persists the name against the agent and emits
+    /// `agent:branch` so the panel learns a branch now exists.
+    BranchCreated { branch: String },
     /// `open_pr` created (or resolved an already-existing) PR with this number.
     /// The watcher records it against the agent so later PR-state lookups go by
     /// number, not by the recyclable branch name.
@@ -175,9 +180,7 @@ pub async fn process_pending(rpc_dir: &Path, ctx: &OpContext) -> Vec<RpcEffect> 
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        if let Some(effect) = handle_request_file(&path, &responses, ctx).await {
-            effects.push(effect);
-        }
+        effects.extend(handle_request_file(&path, &responses, ctx).await);
     }
     effects
 }
@@ -190,20 +193,20 @@ async fn handle_request_file(
     path: &Path,
     responses: &Path,
     ctx: &OpContext,
-) -> Option<RpcEffect> {
+) -> Vec<RpcEffect> {
     let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-        return None;
+        return Vec::new();
     };
     if !is_safe_key(stem) {
         tracing::warn!(file = %path.display(), "rpc: unsafe request filename, skipping");
-        return None;
+        return Vec::new();
     }
 
     let raw = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(error = %e, file = %path.display(), "rpc: read request failed");
-            return None;
+            return Vec::new();
         }
     };
 
@@ -225,17 +228,17 @@ async fn handle_request_file(
             } else {
                 tracing::debug!(error = %e, file = %path.display(), "rpc: unparseable request (will retry)");
             }
-            return None;
+            return Vec::new();
         }
     };
 
-    let (resp, effect) = dispatch(stem, &req.op, &req.args, ctx).await;
+    let (resp, effects) = dispatch(stem, &req.op, &req.args, ctx).await;
 
     if let Err(e) = write_response_atomic(responses, stem, &resp) {
         tracing::warn!(error = %e, id = %stem, "rpc: write response failed");
         // Leave the request so a later tick can retry rather than dropping it.
-        // Don't surface the effect either — the op will re-run next tick.
-        return None;
+        // Don't surface the effects either — the op will re-run next tick.
+        return Vec::new();
     }
 
     // Answered — remove the request so it's processed exactly once.
@@ -243,7 +246,7 @@ async fn handle_request_file(
         tracing::warn!(error = %e, file = %path.display(), "rpc: remove request failed");
     }
 
-    effect
+    effects
 }
 
 /// The op allowlist. Adding an op is one arm here plus a line in the instruction
@@ -255,11 +258,14 @@ async fn dispatch(
     op: &str,
     args: &Value,
     ctx: &OpContext,
-) -> (Response, Option<RpcEffect>) {
-    // `open_pr` is the only op that produces an effect the supervisor needs to
-    // observe (the new PR number); it returns its own (response, effect) pair.
-    if op == "open_pr" {
-        return open_pr(id, args, ctx).await;
+) -> (Response, Vec<RpcEffect>) {
+    // The push ops can materialize a branch and/or open a PR — effects the
+    // supervisor needs to observe — so they return their own (response,
+    // effects) pair. Everything else is side-effect-free for the watcher.
+    match op {
+        "open_pr" => return open_pr(id, args, ctx).await,
+        "git_push" => return git_push(id, args, ctx).await,
+        _ => {}
     }
     let resp = match op {
         // Liveness probe — proves the round-trip with no side effects.
@@ -272,10 +278,6 @@ async fn dispatch(
         // (the worktree's git index/objects live outside the writable root), so
         // it's an app action. `args.message` is the commit message.
         "git_commit" => git_commit(id, args, ctx).await,
-        // Push the current branch to origin. Blocked in the sandbox for the
-        // same reason as commit — used to update an existing PR branch after
-        // the agent fixes checks or resolves conflicts.
-        "git_push" => git_push(id, ctx).await,
         // Merge the latest base branch into the worktree branch (fetch +
         // merge origin/<base>). Conflicts are reported faithfully (non-zero
         // exit, stdout lists the files) and the merge is left in progress so
@@ -283,7 +285,7 @@ async fn dispatch(
         "git_update_branch" => git_update_branch(id, ctx).await,
         other => Response::err(id, format!("unknown op: {other}")),
     };
-    (resp, None)
+    (resp, Vec::new())
 }
 
 /// `git_commit` — `args.message` (required, non-empty) is the commit message.
@@ -300,48 +302,147 @@ async fn git_commit(id: &str, args: &Value, ctx: &OpContext) -> Response {
     }
 }
 
-/// `open_pr` — push the current branch, then `gh pr create` against the agent's
-/// base branch. `args.title`/`args.body` are optional (empty title → `--fill`).
-/// Returns the PR URL in `stdout` on success.
-async fn open_pr(id: &str, args: &Value, ctx: &OpContext) -> (Response, Option<RpcEffect>) {
+/// `open_pr` — ensure the work is on a branch, push it, then `gh pr create`
+/// against the agent's base branch.
+///
+/// The worktree is detached until its first push, so the agent supplies a
+/// conventional branch name in `args.branch` (`fix/…`, `feat/…`, `chore/…`).
+/// Branch resolution:
+/// - detached → materialize `args.branch` (or a `chore/<slug-of-title>`
+///   fallback) at HEAD;
+/// - already on a branch and `args.branch` names a *different* branch → cut a
+///   fresh branch at HEAD (a second PR from the same worktree);
+/// - otherwise → stay on the current branch (updates its PR / fills it in).
+///
+/// `args.title`/`args.body` are optional (empty title → `--fill`). Returns the
+/// PR URL in `stdout` on success, plus a `BranchCreated` effect whenever a
+/// branch was freshly materialized.
+async fn open_pr(id: &str, args: &Value, ctx: &OpContext) -> (Response, Vec<RpcEffect>) {
     let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
     let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
-    let branch = match crate::git::current_branch(&ctx.cwd).await {
-        Ok(Some(b)) => b,
-        Ok(None) => {
-            return (
-                Response::err(id, "open_pr: HEAD is detached — no branch to push"),
-                None,
-            )
-        }
-        Err(e) => return (Response::err(id, format!("open_pr: {e}")), None),
+    let requested = arg_branch(args);
+
+    let current = match crate::git::current_branch(&ctx.cwd).await {
+        Ok(b) => b,
+        Err(e) => return (Response::err(id, format!("open_pr: {e}")), Vec::new()),
     };
+
+    // Resolve which branch this PR lands on, materializing one if needed.
+    let mut effects = Vec::new();
+    let branch = match (current, requested) {
+        // On a branch already, and either no explicit name or the same name →
+        // stay put (push updates the existing PR / fills a new one).
+        (Some(cur), None) => cur,
+        (Some(cur), Some(req)) if req == cur => cur,
+        // Explicit, different name while on a branch → second PR: cut fresh.
+        (Some(_), Some(req)) => match materialize_branch(&ctx.cwd, &req).await {
+            Ok(name) => {
+                effects.push(RpcEffect::BranchCreated { branch: name.clone() });
+                name
+            }
+            Err(e) => return (Response::err(id, format!("open_pr: {e}")), effects),
+        },
+        // Detached → name from the agent's choice, else a slug of the title.
+        (None, req) => {
+            let desired = req.unwrap_or_else(|| fallback_branch(title));
+            match materialize_branch(&ctx.cwd, &desired).await {
+                Ok(name) => {
+                    effects.push(RpcEffect::BranchCreated { branch: name.clone() });
+                    name
+                }
+                Err(e) => return (Response::err(id, format!("open_pr: {e}")), effects),
+            }
+        }
+    };
+
     if let Err(e) = crate::git::push(&ctx.cwd, &branch).await {
-        return (Response::err(id, format!("open_pr push failed: {e}")), None);
+        return (Response::err(id, format!("open_pr push failed: {e}")), effects);
     }
     match crate::gh::pr_create(&ctx.cwd, title, body, &ctx.base_branch).await {
         Ok(pr) => {
             crate::telemetry::track("pr_opened", serde_json::json!({ "source": "agent_rpc" }));
-            (
-                Response::ok(id, 0, pr.url, String::new()),
-                Some(RpcEffect::PrOpened { number: pr.number }),
-            )
+            effects.push(RpcEffect::PrOpened { number: pr.number });
+            (Response::ok(id, 0, pr.url, String::new()), effects)
         }
-        Err(e) => (Response::err(id, format!("open_pr: {e}")), None),
+        Err(e) => (Response::err(id, format!("open_pr: {e}")), effects),
     }
 }
 
-/// `git_push` — push the current branch to origin (sets upstream on first
-/// push). No args. Reuses `git::push` so behavior matches the panel's Push.
-async fn git_push(id: &str, ctx: &OpContext) -> Response {
-    let branch = match crate::git::current_branch(&ctx.cwd).await {
-        Ok(Some(b)) => b,
-        Ok(None) => return Response::err(id, "git_push: HEAD is detached — no branch to push"),
-        Err(e) => return Response::err(id, format!("git_push: {e}")),
+/// `git_push` — push the worktree's branch to origin (sets upstream on first
+/// push). When already on a branch, pushes it (the common "update the open PR"
+/// case) and ignores `args.branch`. When detached — the worktree hasn't been
+/// branched yet — it materializes the agent-supplied `args.branch` at HEAD
+/// first; without a name there's nothing to push to, so it errors.
+async fn git_push(id: &str, args: &Value, ctx: &OpContext) -> (Response, Vec<RpcEffect>) {
+    let current = match crate::git::current_branch(&ctx.cwd).await {
+        Ok(b) => b,
+        Err(e) => return (Response::err(id, format!("git_push: {e}")), Vec::new()),
     };
+
+    let mut effects = Vec::new();
+    let branch = match current {
+        Some(cur) => cur,
+        None => match arg_branch(args) {
+            Some(req) => match materialize_branch(&ctx.cwd, &req).await {
+                Ok(name) => {
+                    effects.push(RpcEffect::BranchCreated { branch: name.clone() });
+                    name
+                }
+                Err(e) => return (Response::err(id, format!("git_push: {e}")), effects),
+            },
+            None => {
+                return (
+                    Response::err(
+                        id,
+                        "git_push: HEAD is detached — pass `args.branch` (e.g. \"fix/…\") to create the branch",
+                    ),
+                    effects,
+                )
+            }
+        },
+    };
+
     match crate::git::push(&ctx.cwd, &branch).await {
-        Ok(summary) => Response::ok(id, 0, summary, String::new()),
-        Err(e) => Response::err(id, e.to_string()),
+        Ok(summary) => (Response::ok(id, 0, summary, String::new()), effects),
+        Err(e) => (Response::err(id, e.to_string()), effects),
+    }
+}
+
+/// Read and clean an `args.branch` value — trimmed, empty treated as absent.
+fn arg_branch(args: &Value) -> Option<String> {
+    args.get("branch")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Create the agent's branch at the worktree's current HEAD, resolving name
+/// collisions by suffixing. Thin wrapper so both push ops share one policy.
+async fn materialize_branch(worktree: &Path, desired: &str) -> Result<String> {
+    crate::git::checkout_new_unique_branch(worktree, desired).await
+}
+
+/// Derive a fallback branch name from a PR title when the agent didn't supply
+/// one: a `chore/`-prefixed slug. Lowercase, non-alphanumeric runs collapse to
+/// a single `-`, trimmed; an empty result becomes `chore/update`.
+fn fallback_branch(title: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_dash = false;
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "chore/update".to_string()
+    } else {
+        format!("chore/{slug}")
     }
 }
 
@@ -623,6 +724,83 @@ mod tests {
         let err = v["error"].as_str().unwrap();
         assert!(!err.contains("unknown op"), "got: {err}");
         assert!(err.contains("push failed"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn git_push_detached_without_branch_arg_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+        // Detach HEAD so there's no branch — the deferred-branch steady state.
+        run_git(&repo, &["checkout", "-q", "--detach"]);
+
+        let rpc_dir = td.path().join("rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(&rpc_dir.join("requests"), "p1.json", r#"{"id":"p1","op":"git_push"}"#);
+
+        let cx = OpContext { cwd: repo.clone(), base_branch: "main".to_string() };
+        process_pending(&rpc_dir, &cx).await;
+
+        let body = std::fs::read_to_string(rpc_dir.join("responses/p1.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        // Detached and no name supplied → actionable error telling the agent to
+        // pass `args.branch`, not a silent failure.
+        assert_eq!(v["ok"], false);
+        assert!(v["error"].as_str().unwrap().contains("args.branch"), "got: {body}");
+    }
+
+    #[tokio::test]
+    async fn git_push_detached_materializes_named_branch() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+        run_git(&repo, &["checkout", "-q", "--detach"]);
+
+        let rpc_dir = td.path().join("rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "p1.json",
+            r#"{"id":"p1","op":"git_push","args":{"branch":"fix/thing"}}"#,
+        );
+
+        let cx = OpContext { cwd: repo.clone(), base_branch: "main".to_string() };
+        let effects = process_pending(&rpc_dir, &cx).await;
+
+        // The branch was created at HEAD and checked out, even though the push
+        // itself fails (no origin) — branch materialization is the point here.
+        let head = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "fix/thing");
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, RpcEffect::BranchCreated { branch } if branch == "fix/thing")),
+            "expected a BranchCreated effect, got: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn fallback_branch_slugifies_title() {
+        assert_eq!(fallback_branch("Fix the Login Crash!"), "chore/fix-the-login-crash");
+        assert_eq!(fallback_branch("  Add   CSV export  "), "chore/add-csv-export");
+        assert_eq!(fallback_branch(""), "chore/update");
+        assert_eq!(fallback_branch("!!!"), "chore/update");
     }
 
     /// origin (bare) + a clone on branch `feat`, with `main` advanced on

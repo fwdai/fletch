@@ -479,18 +479,17 @@ impl WorkspaceManager {
     /// Set the branch on a specific tracked repo within an agent — but
     /// only if it isn't set yet. Identified by subdir (unique per
     /// agent). Returns true iff it actually wrote.
-    pub fn set_repo_branch_if_empty(
-        &self,
-        agent_id: &str,
-        subdir: &str,
-        branch: &str,
-    ) -> Result<bool> {
+    /// Record the branch a tracked repo's worktree is on, identified by subdir.
+    /// Written when the agent materializes its branch at first push (see
+    /// `open_pr`/`git_push`). Overwrites unconditionally — a second PR cuts a
+    /// fresh branch in the same worktree, so the recorded name can change.
+    pub fn set_repo_branch(&self, agent_id: &str, subdir: &str, branch: &str) -> Result<()> {
         let conn = self.db.lock();
-        let changed = conn.execute(
-            "UPDATE worktrees SET branch = ?1 WHERE workspace_id = ?2 AND subdir = ?3 AND branch IS NULL",
+        conn.execute(
+            "UPDATE worktrees SET branch = ?1 WHERE workspace_id = ?2 AND subdir = ?3",
             rusqlite::params![branch, agent_id, subdir],
         )?;
-        Ok(changed > 0)
+        Ok(())
     }
 
     /// Record the fork-point SHA for a tracked repo, identified by subdir.

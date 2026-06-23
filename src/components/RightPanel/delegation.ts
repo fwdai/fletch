@@ -9,6 +9,7 @@ export type GitDelegationKind =
   | "commit-push"
   | "commit-pr"
   | "open-pr"
+  | "push"
   | "resolve"
   | "update-branch"
   | "fix-checks";
@@ -84,6 +85,7 @@ export function delegationLabel(kind: GitDelegationKind): string {
     case "commit-push":   return "Agent is committing & pushing…";
     case "commit-pr":     return "Agent is committing & opening a PR…";
     case "open-pr":       return "Agent is writing the PR description…";
+    case "push":          return "Agent is naming the branch & pushing…";
     case "resolve":       return "Agent is resolving the conflicts…";
     case "update-branch": return "Agent is updating the branch…";
     case "fix-checks":    return "Agent is fixing the failing checks…";
@@ -97,6 +99,7 @@ export function delegationDone(kind: GitDelegationKind): string {
     case "commit-push":   return "Committed & pushed";
     case "commit-pr":     return "Committed — PR is open";
     case "open-pr":       return "PR is open";
+    case "push":          return "Pushed to origin";
     case "resolve":       return "Conflicts resolved";
     case "update-branch": return "Branch updated";
     case "fix-checks":    return "Agent finished — checks are re-running";
@@ -121,6 +124,9 @@ export function delegationResolved(
     case "commit-pr":
     case "open-pr":
       return pr?.state === "open";
+    case "push":
+      // Branch materialized and everything's on origin.
+      return git != null && git.unpushed === 0;
     case "resolve":
       return git != null && !git.files.some((f) => f.kind === "conflicted");
     case "update-branch":
