@@ -968,7 +968,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         // flag once and gate both the chime and the unseen-results marker on
         // a genuine completion (a manual stop is neither).
         if (!interruptedAgents.delete(e.agent_id)) {
-          playAgentDone();
+          // The chime exists to notify you when you're NOT watching this
+          // agent — so skip it when you already are. "Watching" means the
+          // window holds focus AND this is the chat on screen; if either is
+          // false (other app focused, window minimized, or a different chat
+          // selected) the sound still fires.
+          const watchingThisChat =
+            document.hasFocus() && get().selectedAgentId === e.agent_id;
+          if (!watchingThisChat) {
+            playAgentDone();
+          }
           // Flag results for review on any agent the user isn't currently
           // looking at — this is the only signal for research-only turns that
           // leave no diff behind. Cleared when the agent is selected.
