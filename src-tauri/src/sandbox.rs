@@ -22,7 +22,7 @@
 //! `danger-full-access`) so the two don't fight, leaving `sandbox-exec` as the
 //! sole boundary.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
@@ -49,9 +49,12 @@ pub fn build_profile(
     let claude_state = sbpl_string(&format!("{home_s}/.claude"));
     let claude_json = sbpl_string(&format!("{home_s}/.claude.json"));
     // A non-default `CLAUDE_CONFIG_DIR` is where claude actually writes its
-    // config/transcripts/auth, so grant it too. Skip when it's the default
-    // `~/.claude` already allowed above, to avoid a redundant entry.
+    // config/transcripts/auth, so grant it too. Resolve symlinks first so the
+    // SBPL path matches what the sandbox sees at write time (every other entry
+    // is canonical); then skip it when it's the default `~/.claude` already
+    // allowed above, to avoid a redundant entry.
     let claude_config_extra = claude_config_dir
+        .map(resolve_existing_prefix)
         .map(|p| p.to_string_lossy().into_owned())
         .filter(|p| *p != format!("{home_s}/.claude"))
         .map(|p| format!("\n  (subpath {})", sbpl_string(&p)))
@@ -116,9 +119,35 @@ fn sbpl_string(s: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-fn canonical(p: &Path) -> Result<std::path::PathBuf> {
+fn canonical(p: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(p)
         .map_err(|e| Error::Other(format!("canonicalize {}: {e}", p.display())))
+}
+
+/// Resolve symlinks in the longest existing prefix of `p`, then re-append the
+/// not-yet-existing tail. `fs::canonicalize` alone can't be used because it
+/// requires the whole path to exist, but `CLAUDE_CONFIG_DIR` may point at a dir
+/// claude hasn't created yet. Resolving the existing prefix still collapses the
+/// well-known macOS symlinks (`/tmp` → `/private/tmp`, `/var` → `/private/var`),
+/// so the emitted SBPL path matches the sandbox's resolved write path. Falls
+/// back to `p` unchanged if nothing resolves (e.g. a bogus path).
+fn resolve_existing_prefix(p: &Path) -> PathBuf {
+    let mut cur = p.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&cur) {
+            let mut out = real;
+            out.extend(tail.iter().rev());
+            return out;
+        }
+        match cur.file_name() {
+            Some(name) => tail.push(name.to_os_string()),
+            None => return p.to_path_buf(),
+        }
+        if !cur.pop() {
+            return p.to_path_buf();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,9 +196,41 @@ mod tests {
         // ~/.claude was on the allow-list.
         let (_td, root, rpc, home) = sandbox_dirs();
         let cfg = home.join(".claude-eve");
+        std::fs::create_dir_all(&cfg).unwrap();
 
         let profile = build_profile(&root, &rpc, &home, Some(cfg.as_path())).unwrap();
-        assert!(profile.contains(&format!("(subpath \"{}\")", cfg.display())));
+        // The emitted path must be canonical (symlink-resolved) so it matches
+        // what the sandbox resolves at write time — e.g. on macOS the tempdir
+        // lives under /var → /private/var.
+        let canonical_cfg = std::fs::canonicalize(&cfg).unwrap();
+        assert!(profile.contains(&format!("(subpath \"{}\")", canonical_cfg.display())));
+    }
+
+    #[test]
+    fn resolve_existing_prefix_resolves_symlinks_through_missing_leaf() {
+        // CLAUDE_CONFIG_DIR may point at a dir claude hasn't created yet, under
+        // a symlinked prefix (the /tmp → /private/tmp case). The existing prefix
+        // must be symlink-resolved and the missing leaf re-appended verbatim.
+        let td = tempfile::tempdir().unwrap();
+        let real = td.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = td.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let resolved = resolve_existing_prefix(&link.join("not-created-yet"));
+        let expected = std::fs::canonicalize(&real).unwrap().join("not-created-yet");
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn resolve_existing_prefix_canonicalizes_an_existing_dir() {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path().join("cfg");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            resolve_existing_prefix(&dir),
+            std::fs::canonicalize(&dir).unwrap()
+        );
     }
 
     #[test]
