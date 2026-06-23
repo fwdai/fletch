@@ -4,7 +4,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
 import { open } from "@tauri-apps/plugin-shell";
 import { api, type AgentRecord } from "../../api";
-import { getShellBuffer, registerShellSink } from "../../store";
+import { getShellBuffer, registerShellSink } from "../../pty/buffers";
 import { useXterm } from "../../util/useXterm";
 import { Icon } from "../Icon";
 

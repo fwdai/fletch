@@ -1,5 +1,5 @@
 import { api, type AgentRecord } from "../../api";
-import { getOutputBuffer, registerOutputSink } from "../../store";
+import { getOutputBuffer, registerOutputSink } from "../../pty/buffers";
 import { useXterm } from "../../util/useXterm";
 
 /** Fixed dark background for the native TUI view — used by both the xterm
