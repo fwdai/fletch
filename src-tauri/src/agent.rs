@@ -432,8 +432,9 @@ fn pi_read(paths: &[PathBuf]) -> Vec<RawRecord> {
 // ── Claude ──
 // Claude is the lone persistent-runner agent (not in PER_TURN_AGENTS), launched
 // `--session-id <uuid>` / `--resume <uuid>`, so it writes
-// `~/.claude/projects/<slug>/<uuid>.jsonl`. find_session_jsonl already locates
-// it. Content lines carry a top-level
+// `<config-dir>/projects/<slug>/<uuid>.jsonl` (config-dir = CLAUDE_CONFIG_DIR or
+// `~/.claude`). find_session_jsonl already locates it. Content lines carry a
+// top-level
 // `uuid`; metadata lines (mode/permission-mode/…) don't → positional fallback.
 
 fn claude_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
@@ -1079,7 +1080,11 @@ fn prepare_sandbox(
     rpc_dir: &Path,
     home: &Path,
 ) -> Result<tempfile::NamedTempFile> {
-    let profile_text = sandbox::build_profile(writable_root, rpc_dir, home)?;
+    // The agent inherits the app's env, so the CLAUDE_CONFIG_DIR it'll write to
+    // is whatever this process sees (quorum doesn't override it). Grant it.
+    let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
+    let profile_text =
+        sandbox::build_profile(writable_root, rpc_dir, home, claude_config_dir.as_deref())?;
     let mut profile_file = tempfile::Builder::new()
         .prefix("quorum-sandbox-")
         .suffix(".sb")

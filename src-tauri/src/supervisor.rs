@@ -1612,10 +1612,10 @@ impl SyncPoll {
     }
 }
 
-/// Locate the claude session JSONL by scanning `~/.claude/projects/*/`
-/// for `<session-id>.jsonl`. Claude's path-encoding scheme isn't part
-/// of its public API, so we glob instead of recomputing the encoded
-/// directory name from the worktree path.
+/// Locate the claude session JSONL by scanning the candidate `projects/*/`
+/// dirs (see [`claude_projects_dirs`]) for `<session-id>.jsonl`. Claude's
+/// path-encoding scheme isn't part of its public API, so we glob instead of
+/// recomputing the encoded directory name from the worktree path.
 /// Ingest the agent's on-disk transcript into `session_records`, idempotent per
 /// `native_id`. `None` = no transcript reader for this provider (skip, don't
 /// retry); `Some(n)` = reader ran, `n` new records inserted (`0` = nothing yet:
@@ -1717,14 +1717,58 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
 }
 
 pub(crate) fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    let projects = home.join(".claude").join("projects");
-    let entries = std::fs::read_dir(&projects).ok()?;
+    find_session_jsonl_in(&claude_projects_dirs(), session_id)
+}
+
+/// Candidate `projects` directories Claude may have written transcripts to.
+/// Honors `CLAUDE_CONFIG_DIR` (Claude CLI's own config-dir override) and always
+/// also includes the default `~/.claude`, so a transcript is located regardless
+/// of which config dir was active when the agent was spawned. Mirrors the way
+/// `find_codex_rollouts` honors `CODEX_HOME` — without this, an agent spawned
+/// with `CLAUDE_CONFIG_DIR` set wrote its transcript somewhere we never scanned,
+/// so it was never ingested into `session_records` and was lost when that dir
+/// moved.
+fn claude_projects_dirs() -> Vec<PathBuf> {
+    projects_dirs_from(
+        std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+        dirs::home_dir(),
+    )
+}
+
+/// Pure core of [`claude_projects_dirs`]: configured dir first (if any), then
+/// the default `~/.claude`, deduped so an explicit `CLAUDE_CONFIG_DIR=~/.claude`
+/// doesn't double-scan.
+fn projects_dirs_from(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut push = |base: PathBuf| {
+        let p = base.join("projects");
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    };
+    if let Some(cfg) = config_dir {
+        push(cfg);
+    }
+    if let Some(home) = home {
+        push(home.join(".claude"));
+    }
+    out
+}
+
+/// Scan the given `projects` dirs for `<session-id>.jsonl`, returning the first
+/// match. A missing/unreadable candidate dir is skipped, not fatal, so a later
+/// candidate is still searched.
+fn find_session_jsonl_in(projects_dirs: &[PathBuf], session_id: &str) -> Option<PathBuf> {
     let filename = format!("{session_id}.jsonl");
-    for entry in entries.flatten() {
-        let path = entry.path().join(&filename);
-        if path.exists() {
-            return Some(path);
+    for projects in projects_dirs {
+        let Ok(entries) = std::fs::read_dir(projects) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path().join(&filename);
+            if path.exists() {
+                return Some(path);
+            }
         }
     }
     None
@@ -2725,6 +2769,75 @@ mod tests {
         assert_eq!(plan.first_phase, RunPhase::Running);
         assert_eq!(plan.first_cmd, "cargo run");
         assert_eq!(plan.chained_run_cmd, None);
+    }
+
+    // ── claude transcript location (CLAUDE_CONFIG_DIR) ────────────────────────
+
+    #[test]
+    fn projects_dirs_prefers_config_dir_then_default_home() {
+        let dirs = projects_dirs_from(
+            Some(PathBuf::from("/home/u/.claude-eve")),
+            Some(PathBuf::from("/home/u")),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/home/u/.claude-eve/projects"),
+                PathBuf::from("/home/u/.claude/projects"),
+            ],
+        );
+    }
+
+    #[test]
+    fn projects_dirs_dedups_when_config_is_default() {
+        // CLAUDE_CONFIG_DIR explicitly set to ~/.claude must not double-scan.
+        let dirs = projects_dirs_from(
+            Some(PathBuf::from("/home/u/.claude")),
+            Some(PathBuf::from("/home/u")),
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/home/u/.claude/projects")]);
+    }
+
+    #[test]
+    fn projects_dirs_falls_back_to_home_when_config_unset() {
+        let dirs = projects_dirs_from(None, Some(PathBuf::from("/home/u")));
+        assert_eq!(dirs, vec![PathBuf::from("/home/u/.claude/projects")]);
+    }
+
+    #[test]
+    fn find_session_jsonl_locates_transcript_in_relocated_config_dir() {
+        // Regression: the locator used to hardcode `~/.claude/projects`, so an
+        // agent spawned with CLAUDE_CONFIG_DIR pointing elsewhere wrote its
+        // transcript to a dir we never scanned — it was never ingested and was
+        // lost when that dir moved. The transcript must be found wherever the
+        // configured projects dir is.
+        let cfg = tempfile::tempdir().unwrap();
+        let projects = cfg.path().join("projects");
+        let slug = projects.join("-Users-alex--quorum-worktrees-transylvania-quorum");
+        std::fs::create_dir_all(&slug).unwrap();
+        let sid = "f90f9c57-6dd1-45a0-9b69-5b5963979d5b";
+        let jsonl = slug.join(format!("{sid}.jsonl"));
+        std::fs::write(&jsonl, b"{}\n").unwrap();
+
+        let found = find_session_jsonl_in(&[projects], sid);
+        assert_eq!(found.as_deref(), Some(jsonl.as_path()));
+    }
+
+    #[test]
+    fn find_session_jsonl_skips_missing_dir_and_scans_the_next() {
+        // A non-existent candidate dir (e.g. the default ~/.claude when only the
+        // relocated config dir has the file) must not short-circuit the scan.
+        let cfg = tempfile::tempdir().unwrap();
+        let projects = cfg.path().join("projects");
+        let slug = projects.join("slug");
+        std::fs::create_dir_all(&slug).unwrap();
+        let sid = "abc";
+        let jsonl = slug.join(format!("{sid}.jsonl"));
+        std::fs::write(&jsonl, b"{}\n").unwrap();
+
+        let missing = cfg.path().join("does-not-exist");
+        let found = find_session_jsonl_in(&[missing, projects], sid);
+        assert_eq!(found.as_deref(), Some(jsonl.as_path()));
     }
 
     fn test_supervisor() -> Supervisor {
