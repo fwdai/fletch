@@ -248,7 +248,7 @@ impl ExecSession {
         let on_exit = self.on_exit.clone();
         let interrupted = self.interrupted.clone();
         thread::spawn(move || loop {
-            let exited = {
+            let exited_status = {
                 let mut guard = child_for_wait.lock();
                 let Some(c) = guard.as_mut() else {
                     // Slot emptied by a newer turn (kill+take) — that turn
@@ -259,8 +259,21 @@ impl ExecSession {
                     Ok(Some(status)) => {
                         let _ = guard.take();
                         tracing::debug!(status = %status, "agent: turn exited");
+                        Some(Ok(status))
+                    }
+                    Ok(None) => None,
+                    Err(e) => {
+                        let _ = guard.take();
+                        tracing::warn!(error = %e, "agent: wait failed");
+                        Some(Err(format!("wait failed: {e}")))
+                    }
+                }
+            };
+            if let Some(exited_status) = exited_status {
+                let exit = match exited_status {
+                    Ok(status) => {
                         let stderr = drain_stderr(&stderr_rx).join("\n");
-                        Some(ExecExit {
+                        ExecExit {
                             success: status.success(),
                             interrupted: interrupted.load(Ordering::SeqCst),
                             message: if stderr.is_empty() {
@@ -268,21 +281,14 @@ impl ExecSession {
                             } else {
                                 format!("{status}: {stderr}")
                             },
-                        })
+                        }
                     }
-                    Ok(None) => None,
-                    Err(e) => {
-                        let _ = guard.take();
-                        tracing::warn!(error = %e, "agent: wait failed");
-                        Some(ExecExit {
-                            success: false,
-                            interrupted: interrupted.load(Ordering::SeqCst),
-                            message: format!("wait failed: {e}"),
-                        })
-                    }
-                }
-            };
-            if let Some(exit) = exited {
+                    Err(message) => ExecExit {
+                        success: false,
+                        interrupted: interrupted.load(Ordering::SeqCst),
+                        message,
+                    },
+                };
                 if turn_seq.load(Ordering::SeqCst) == seq {
                     on_exit(exit);
                 }

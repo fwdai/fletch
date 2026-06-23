@@ -142,25 +142,38 @@ fn find_in_path<P: AsRef<OsStr>>(name: &str, path: P) -> Option<String> {
 
 /// The PATH as seen by the user's login shell, which sources `.zprofile` /
 /// `.zshrc` and thus picks up version-manager and Homebrew dirs the GUI's
-/// inherited PATH lacks. We ask the shell *only* for its `$PATH` and walk it
-/// ourselves — no binary name is ever interpolated into a shell command, so
-/// this cannot be used for command injection.
+/// inherited PATH lacks. We ask the shell for its exported environment and walk
+/// PATH ourselves — no binary name is ever interpolated into a shell command,
+/// so this cannot be used for command injection.
 fn login_shell_path() -> Option<String> {
     login_shell_env().and_then(|env| env.get("PATH").cloned())
 }
 
 fn load_login_shell_env() -> Option<HashMap<String, String>> {
     let out = Command::new("/bin/zsh")
-        .args(["-lc", "env"])
+        .args(["-lc", "env -0"])
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
 
+    let env = parse_env_output(&out.stdout, b'\0');
+    if env.is_empty() {
+        None
+    } else {
+        Some(env)
+    }
+}
+
+fn parse_env_output(bytes: &[u8], delimiter: u8) -> HashMap<String, String> {
     let mut env = HashMap::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some((k, v)) = line.split_once('=') else {
+    for entry in bytes.split(|b| *b == delimiter) {
+        if entry.is_empty() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(entry);
+        let Some((k, v)) = text.split_once('=') else {
             continue;
         };
         if k.is_empty() || matches!(k, "PWD" | "OLDPWD" | "SHLVL" | "_") {
@@ -168,12 +181,7 @@ fn load_login_shell_env() -> Option<HashMap<String, String>> {
         }
         env.insert(k.to_string(), v.to_string());
     }
-
-    if env.is_empty() {
-        None
-    } else {
-        Some(env)
-    }
+    env
 }
 
 /// An executable regular file the current process may run. `is_file()` alone
@@ -256,6 +264,24 @@ mod tests {
             PathBuf::from("/opt/homebrew/bin/claude"),
         );
         assert_eq!(expand_tilde("~bob/x", home), PathBuf::from("~bob/x"));
+    }
+
+    #[test]
+    fn parse_env_output_preserves_multiline_values() {
+        let env = parse_env_output(
+            b"PATH=/opt/homebrew/bin:/usr/bin\0MULTI=line1\nline2=a\0PWD=/tmp\0",
+            b'\0',
+        );
+
+        assert_eq!(
+            env.get("PATH").map(String::as_str),
+            Some("/opt/homebrew/bin:/usr/bin"),
+        );
+        assert_eq!(
+            env.get("MULTI").map(String::as_str),
+            Some("line1\nline2=a"),
+        );
+        assert!(!env.contains_key("PWD"));
     }
 
     /// The override registry is process-global, so this is the ONLY test that
