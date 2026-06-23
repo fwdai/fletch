@@ -73,17 +73,6 @@ import { playAgentDone } from "./util/sound";
 
 export const EMPTY_AGENTS: readonly AgentRecord[] = Object.freeze([]);
 
-// Re-export the preference types: they're part of the store's public state
-// shape (theme, density, features, …), so consumers that read those fields
-// import the types from here.
-export type {
-  ThemeMode,
-  Density,
-  WorkspaceView,
-  SettingsSection,
-  FeatureFlags,
-} from "./storage/preferences";
-
 // Agents the user just stopped. A killed turn may still flush a final `result`
 // event (→ turn_end) as it dies; this set suppresses the completion chime for
 // that one turn_end so a manual stop doesn't sound like a successful finish.

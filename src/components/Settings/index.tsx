@@ -1,4 +1,5 @@
-import { useAppStore, type FeatureFlags, type ThemeMode, type Density } from "../../store";
+import { useAppStore } from "../../store";
+import type { FeatureFlags, ThemeMode, Density } from "../../storage/preferences";
 import { ACCENTS, PROVIDERS } from "../../data/providers";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
