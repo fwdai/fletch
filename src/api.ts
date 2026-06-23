@@ -346,6 +346,10 @@ export interface GhRepoSummary {
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
   revealLogs: () => invoke<void>("reveal_logs"),
+  // Anonymous usage telemetry. Persists the opt-out flag and toggles the live
+  // pipeline (events themselves are emitted from the backend).
+  setTelemetryEnabled: (enabled: boolean) =>
+    invoke<void>("set_telemetry_enabled", { enabled }),
   getAgentDiffStats: (agentId: string) =>
     invoke<DiffStats>("get_agent_diff_stats", { agentId }),
   addWorkspaceRepo: (repoPath: string) =>

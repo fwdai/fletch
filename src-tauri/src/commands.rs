@@ -499,6 +499,7 @@ pub async fn create_pr(
     let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
     let pr = gh::pr_create(&worktree, &title, &body, base).await?;
+    crate::telemetry::track("pr_opened", serde_json::json!({ "source": "manual" }));
     // Bind the PR to this agent by number so later lookups don't rely on the
     // (recyclable) branch name. A failure here isn't fatal — the next idle/push
     // poll re-binds it via guarded discovery once the PR shows OPEN — but log it

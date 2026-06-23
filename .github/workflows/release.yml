@@ -57,6 +57,11 @@ jobs:
           # Sentry DSN, baked in at compile time (see src-tauri/src/lib.rs).
           # Unset → error reporting is a no-op. Add as a repository secret.
           QUORUM_SENTRY_DSN: ${{ secrets.QUORUM_SENTRY_DSN }}
+          # PostHog project key, baked in at compile time (see
+          # src-tauri/src/telemetry.rs). Unset → telemetry is a no-op. Add as a
+          # repository secret. QUORUM_POSTHOG_HOST is only needed for a
+          # self-hosted instance (defaults to PostHog US cloud).
+          QUORUM_POSTHOG_KEY: ${{ secrets.QUORUM_POSTHOG_KEY }}
         with:
           tagName: v__VERSION__
           releaseName: Quorum v__VERSION__

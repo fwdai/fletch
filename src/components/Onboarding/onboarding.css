@@ -600,6 +600,13 @@
 .ob-cta:active { transform: translateY(0); }
 .ob-cta svg { width: 14px; height: 14px; }
 .ob-cta:disabled { background: var(--bg-3); color: var(--fg-3); box-shadow: none; cursor: default; transform: none; }
+.ob-fineprint {
+  margin: 14px 0 0;
+  max-width: 40ch;
+  font-size: 12px; line-height: 1.5;
+  color: var(--fg-3);
+  text-wrap: pretty;
+}
 
 /* ── footer nav + progress rail ───────────────────────────────── */
 .ob-foot {

@@ -320,10 +320,13 @@ async fn open_pr(id: &str, args: &Value, ctx: &OpContext) -> (Response, Option<R
         return (Response::err(id, format!("open_pr push failed: {e}")), None);
     }
     match crate::gh::pr_create(&ctx.cwd, title, body, &ctx.base_branch).await {
-        Ok(pr) => (
-            Response::ok(id, 0, pr.url, String::new()),
-            Some(RpcEffect::PrOpened { number: pr.number }),
-        ),
+        Ok(pr) => {
+            crate::telemetry::track("pr_opened", serde_json::json!({ "source": "agent_rpc" }));
+            (
+                Response::ok(id, 0, pr.url, String::new()),
+                Some(RpcEffect::PrOpened { number: pr.number }),
+            )
+        }
         Err(e) => (Response::err(id, format!("open_pr: {e}")), None),
     }
 }

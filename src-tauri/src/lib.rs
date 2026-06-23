@@ -21,6 +21,7 @@ mod run_detect;
 mod run_session;
 mod sandbox;
 mod supervisor;
+mod telemetry;
 mod workspace;
 
 use parking_lot::Mutex;
@@ -239,6 +240,23 @@ async fn set_agent_bin_override(
     Ok(())
 }
 
+/// Flip the anonymous-telemetry consent flag. Persists it to `settings` (so the
+/// renderer's `getAllSettings` sees it) and toggles the live pipeline, like
+/// `set_agent_bin_override` keeps the DB and in-memory state in sync.
+#[tauri::command]
+async fn set_telemetry_enabled(
+    enabled: bool,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(&conn, "telemetry_enabled", if enabled { "true" } else { "false" })
+            .map_err(|e| e.to_string())?;
+    }
+    telemetry::set_enabled(enabled);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Error/crash reporting. The DSN is baked in at build time via
@@ -303,6 +321,40 @@ pub fn run() {
             // honor user-set custom paths without touching the DB each time.
             bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&db.lock()));
 
+            // Anonymous product telemetry. Mint (or read) the install's random
+            // distinct id, read the opt-out consent flag, and detect a version
+            // change since the last launch — all from `settings`, before any
+            // event fires. No-op in unconfigured builds (no PostHog key baked
+            // in), so dev sends nothing.
+            let version = app.package_info().version.to_string();
+            let (distinct_id, telemetry_enabled, prev_version) = {
+                let conn = db.lock();
+                let distinct_id = match database::get_setting(&conn, "telemetry_distinct_id") {
+                    Some(id) if !id.trim().is_empty() => id,
+                    _ => {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        let _ = database::set_setting(&conn, "telemetry_distinct_id", &id);
+                        id
+                    }
+                };
+                // Opt-out: anything but an explicit "false" means enabled.
+                let enabled =
+                    database::get_setting(&conn, "telemetry_enabled").as_deref() != Some("false");
+                let prev = database::get_setting(&conn, "last_seen_version");
+                let _ = database::set_setting(&conn, "last_seen_version", &version);
+                (distinct_id, enabled, prev)
+            };
+            telemetry::init(distinct_id, telemetry_enabled, version.clone());
+            telemetry::track("app_opened", json!({}));
+            if let Some(prev) = prev_version {
+                if !prev.is_empty() && prev != version {
+                    telemetry::track(
+                        "app_updated",
+                        json!({ "from_version": prev, "to_version": version }),
+                    );
+                }
+            }
+
             app.manage(db.clone());
 
             let workspace = Arc::new(WorkspaceManager::new(db));
@@ -350,6 +402,7 @@ pub fn run() {
             db_count,
             db_query,
             set_agent_bin_override,
+            set_telemetry_enabled,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::get_agent_diff_stats,
