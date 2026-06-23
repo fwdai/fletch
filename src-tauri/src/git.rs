@@ -72,13 +72,86 @@ pub async fn worktree_add_detached(
         .args(&args)
         .output()
         .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "worktree add --detach failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+    if out.status.success() {
+        return Ok(());
     }
-    Ok(())
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+
+    // Recoverable case: the target path already exists but git doesn't track it
+    // as a worktree — an orphan left by a crashed spawn or another instance
+    // that shares this worktrees root. Prune stale registrations, and if the
+    // path still isn't a live worktree, clear the orphan and retry once. We
+    // never delete a *registered* worktree: that would be someone else's live
+    // checkout, so in that case we fall through to the original error.
+    //
+    // We gate on `worktree_path.exists()` rather than on the git error text:
+    // the stderr phrasing ("already exists") varies by git version and is
+    // translated under non-C locales, so matching it would silently skip the
+    // recovery on, say, a French or Japanese machine. The on-disk check is the
+    // actual condition this branch handles and is locale-independent.
+    if worktree_path.exists() && !is_registered_worktree(repo, worktree_path).await {
+        let _ = worktree_prune(repo).await;
+        if !is_registered_worktree(repo, worktree_path).await && worktree_path.exists() {
+            if let Err(e) = tokio::fs::remove_dir_all(worktree_path).await {
+                tracing::warn!(path = %worktree_path.display(), error = %e, "orphan worktree dir cleanup failed");
+            }
+        }
+        if !worktree_path.exists() {
+            let retry = Command::new("git")
+                .current_dir(repo)
+                .args(&args)
+                .output()
+                .await?;
+            if retry.status.success() {
+                tracing::info!(path = %worktree_path.display(), "recovered orphan worktree path on spawn");
+                return Ok(());
+            }
+            return Err(Error::Git(format!(
+                "worktree add --detach failed: {}",
+                String::from_utf8_lossy(&retry.stderr).trim()
+            )));
+        }
+    }
+
+    Err(Error::Git(format!("worktree add --detach failed: {stderr}")))
+}
+
+/// Is `path` currently registered as a worktree of `repo`? Used by spawn to
+/// tell an orphan directory (safe to clear) from a live checkout (must not
+/// touch). A `false` here authorizes the caller to `remove_dir_all` the path,
+/// so when the listing itself fails (transient lock contention, a process-limit
+/// spike) we return `true`: "can't confirm it's an orphan, so don't touch it."
+/// The caller then falls through to the original error rather than risking the
+/// deletion of a live checkout.
+async fn is_registered_worktree(repo: &Path, path: &Path) -> bool {
+    let out = match Command::new("git")
+        .current_dir(repo)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .await
+    {
+        Ok(out) if out.status.success() => out,
+        _ => return true,
+    };
+    // `tokio::fs::canonicalize` keeps these path-resolution syscalls off the
+    // executor thread — `std::fs` would block it if the filesystem is slow
+    // (network mount, loaded disk).
+    let canonical = tokio::fs::canonicalize(path).await.ok();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for listed in stdout.lines().filter_map(|l| l.strip_prefix("worktree ")) {
+        let listed = Path::new(listed);
+        if listed == path {
+            return true;
+        }
+        if let Some(a) = &canonical {
+            if let Ok(b) = tokio::fs::canonicalize(listed).await {
+                if a == &b {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Best-effort fetch of `branch` from `origin` so a freshly-spawned worktree
@@ -451,6 +524,54 @@ mod tests {
         let wt2 = td.path().join("wt2");
         worktree_add_detached(repo, &wt2, None).await.unwrap();
         assert_eq!(rev_parse(&wt2, "HEAD").await.unwrap(), head);
+    }
+
+    #[tokio::test]
+    async fn worktree_add_detached_recovers_orphan_dir() {
+        // An orphan directory at the target path (left by a crashed spawn or a
+        // foreign instance) is not a registered worktree, so add should clear
+        // it and succeed rather than failing with "already exists".
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo).await.unwrap();
+        config(&repo, "user.email", "t@example.com").await;
+        config(&repo, "user.name", "Tester").await;
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        commit_all(&repo, "first").await.unwrap();
+
+        // Pre-create the target as a plain, untracked directory with a file.
+        let wt = td.path().join("orphan");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("leftover.txt"), b"stale").unwrap();
+
+        worktree_add_detached(&repo, &wt, None).await.unwrap();
+        assert!(is_registered_worktree(&repo, &wt).await);
+        // The stale contents were cleared and replaced by the checkout.
+        assert!(!wt.join("leftover.txt").exists());
+        assert!(wt.join("a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn worktree_add_detached_refuses_to_clobber_live_worktree() {
+        // If the path is a *registered* worktree (someone's live checkout), add
+        // must fail rather than delete it.
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo).await.unwrap();
+        config(&repo, "user.email", "t@example.com").await;
+        config(&repo, "user.name", "Tester").await;
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        commit_all(&repo, "first").await.unwrap();
+
+        let wt = td.path().join("live");
+        worktree_add_detached(&repo, &wt, None).await.unwrap();
+        std::fs::write(wt.join("precious.txt"), b"keep me").unwrap();
+
+        // A second add at the same live path must error and leave it untouched.
+        assert!(worktree_add_detached(&repo, &wt, None).await.is_err());
+        assert!(wt.join("precious.txt").exists());
     }
 }
 

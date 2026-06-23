@@ -97,7 +97,11 @@ pub async fn get_agent_diff_stats(
 /// the picker avoids collisions.
 #[tauri::command]
 pub fn allocate_draft_name(used: Vec<String>) -> String {
-    names::allocate(&used.into_iter().collect())
+    // Fold in the names already on disk (other instances, stale worktrees) so a
+    // draft never previews a name that `git worktree add` would later reject.
+    let mut reserved: std::collections::HashSet<String> = used.into_iter().collect();
+    reserved.extend(crate::workspace::occupied_worktree_dirs());
+    names::allocate(&reserved)
 }
 
 #[tauri::command]
