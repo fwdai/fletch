@@ -111,10 +111,24 @@ fn init_logging() {
         }
     };
 
+    // Forward tracing events to Sentry: ERROR and WARN become captured events,
+    // so handled failures on users' machines (not just panics) surface in
+    // Sentry alongside the local log file. Lower levels become breadcrumbs that
+    // give those events context. Capture is a no-op when no DSN is baked in, so
+    // this stays inert in dev and unconfigured builds.
+    let sentry_layer = sentry::integrations::tracing::layer().event_filter(|md| {
+        use sentry::integrations::tracing::EventFilter;
+        match *md.level() {
+            tracing::Level::ERROR | tracing::Level::WARN => EventFilter::Event,
+            _ => EventFilter::Breadcrumb,
+        }
+    });
+
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer())
         .with(file_layer)
+        .with(sentry_layer)
         .init();
 }
 
