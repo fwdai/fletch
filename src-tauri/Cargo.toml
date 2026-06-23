@@ -33,7 +33,7 @@ tracing-appender = "0.2"
 # dependency on the Linux CI build. The Tauri plugin uses the Rust SDK as a
 # single transport and auto-injects @sentry/browser, so frontend + backend
 # errors land in one project. Disabled (no-op) when no DSN is baked in.
-sentry = { version = "0.42", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
+sentry = { version = "0.42", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tracing"] }
 tauri-plugin-sentry = "0.5"
 portable-pty = "0.8"
 parking_lot = "0.12"
