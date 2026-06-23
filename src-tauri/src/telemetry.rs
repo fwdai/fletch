@@ -13,11 +13,12 @@
 //! email); event properties carry only categorical values, never paths, repo
 //! names, branches, or prompts.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
+use tokio::sync::Notify;
 
 static TELEMETRY: OnceLock<Telemetry> = OnceLock::new();
 
@@ -29,6 +30,11 @@ struct Telemetry {
     super_props: Map<String, Value>,
     enabled: AtomicBool,
     client: reqwest::Client,
+    /// Count of send tasks still in flight, so `flush` can wait for them on
+    /// shutdown instead of letting the runtime cancel them mid-request.
+    inflight: AtomicUsize,
+    /// Notified whenever `inflight` drops back to zero.
+    idle: Notify,
 }
 
 /// PostHog project (capture) key, baked in at build time. Empty/unset disables
@@ -67,6 +73,8 @@ pub fn init(distinct_id: String, enabled: bool, version: String) {
         super_props,
         enabled: AtomicBool::new(enabled),
         client: reqwest::Client::new(),
+        inflight: AtomicUsize::new(0),
+        idle: Notify::new(),
     });
 }
 
@@ -95,6 +103,9 @@ pub fn track(event: &str, props: Value) {
     // `Client` is internally ref-counted, so cloning just shares the pool.
     let client = tel.client.clone();
     let url = tel.capture_url.clone();
+    // Register the task before spawning so a `flush` racing this call always
+    // sees it. `tel` is a `&'static`, so the task can decrement on completion.
+    tel.inflight.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn(async move {
         if let Err(e) = client
             .post(&url)
@@ -105,7 +116,30 @@ pub fn track(event: &str, props: Value) {
         {
             tracing::debug!(error = %e, "telemetry: send failed");
         }
+        if tel.inflight.fetch_sub(1, Ordering::SeqCst) == 1 {
+            tel.idle.notify_waiters();
+        }
     });
+}
+
+/// Wait up to `timeout` for in-flight sends to drain. Called on app exit so the
+/// last few events (e.g. one fired right before quit) aren't cancelled when the
+/// async runtime tears down — the same shutdown courtesy PostHog's own SDKs
+/// extend. Best-effort: anything still outstanding past the deadline is dropped.
+pub async fn flush(timeout: Duration) {
+    let Some(tel) = TELEMETRY.get() else { return };
+    let _ = tokio::time::timeout(timeout, async {
+        loop {
+            // Arm the wakeup *before* reading the counter so a task that finishes
+            // between the check and the await can't be missed.
+            let idle = tel.idle.notified();
+            if tel.inflight.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            idle.await;
+        }
+    })
+    .await;
 }
 
 /// Flip consent live (from the settings toggle). Takes effect on the next
