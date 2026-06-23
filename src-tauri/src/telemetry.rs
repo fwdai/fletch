@@ -117,7 +117,12 @@ pub fn track(event: &str, props: Value) {
             tracing::debug!(error = %e, "telemetry: send failed");
         }
         if tel.inflight.fetch_sub(1, Ordering::SeqCst) == 1 {
-            tel.idle.notify_waiters();
+            // `notify_one`, not `notify_waiters`: it stores a permit when no
+            // waiter is registered yet, so a `flush` that completes its counter
+            // check just before this fires still wakes on its next `.await`
+            // instead of stalling until the timeout. Safe because there is at
+            // most one flush caller (app exit).
+            tel.idle.notify_one();
         }
     });
 }
@@ -130,13 +135,13 @@ pub async fn flush(timeout: Duration) {
     let Some(tel) = TELEMETRY.get() else { return };
     let _ = tokio::time::timeout(timeout, async {
         loop {
-            // Arm the wakeup *before* reading the counter so a task that finishes
-            // between the check and the await can't be missed.
-            let idle = tel.idle.notified();
             if tel.inflight.load(Ordering::SeqCst) == 0 {
                 break;
             }
-            idle.await;
+            // A task draining to zero between this check and the await isn't
+            // lost: `notify_one` leaves a permit, so this returns immediately
+            // and the next iteration sees the counter at zero.
+            tel.idle.notified().await;
         }
     })
     .await;
