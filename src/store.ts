@@ -69,6 +69,7 @@ import {
   needsSessionIdRefresh,
   usedNames,
   sendWhenAgentReady,
+  dropAgentEntries,
 } from "./helpers";
 import {
   getAccount,
@@ -976,40 +977,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       await api.discardAgent(id);
       clearOutputBuffer(id);
       const fresh = await api.getWorkspace();
-      set((s) => {
-        const { [id]: _droppedLog, ...restLogs } = s.managedLogs;
-        const { [id]: _droppedTranscriptLoading, ...restTranscriptLoading } =
-          s.transcriptLoading;
-        const { [id]: _droppedTranscriptLoaded, ...restTranscriptLoaded } =
-          s.transcriptLoaded;
-        const { [id]: _droppedBusy, ...restBusy } = s.managedBusy;
-        const { [id]: _droppedUsage, ...restUsage } = s.usage;
-        const { [id]: _droppedGitState, ...restGitStates } = s.gitStates;
-        const { [id]: _droppedShortstats, ...restShortstats } = s.gitShortstats;
-        const { [id]: _droppedPrState, ...restPrStates } = s.prStates;
-        const { [id]: _droppedChecks, ...restPrChecks } = s.prChecks;
-        const { [id]: _droppedComments, ...restPrComments } = s.prComments;
-        const { [id]: _droppedSeed, ...restComposerSeeds } = s.composerSeeds;
-        const { [id]: _droppedDraft, ...restComposerDrafts } = s.composerDrafts;
-        const { [id]: _droppedDelegation, ...restDelegations } = s.gitDelegations;
-        return {
-          workspace: fresh,
-          selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
-          managedLogs: restLogs,
-          transcriptLoading: restTranscriptLoading,
-          transcriptLoaded: restTranscriptLoaded,
-          managedBusy: restBusy,
-          usage: restUsage,
-          gitStates: restGitStates,
-          gitShortstats: restShortstats,
-          prStates: restPrStates,
-          prChecks: restPrChecks,
-          prComments: restPrComments,
-          composerSeeds: restComposerSeeds,
-          composerDrafts: restComposerDrafts,
-          gitDelegations: restDelegations,
-        };
-      });
+      set((s) => ({
+        ...dropAgentEntries(s, id),
+        workspace: fresh,
+        selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
+      }));
     } catch (e) {
       set({ lastError: String(e) });
     }
@@ -1020,40 +992,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       await api.archiveAgent(id);
       clearOutputBuffer(id);
       const fresh = await api.getWorkspace();
-      set((s) => {
-        // Drop ephemeral state for the agent — the user can re-open
-        // the transcript through History, which loads it fresh from disk.
-        const { [id]: _l, ...restLogs } = s.managedLogs;
-        const { [id]: _tl, ...restTranscriptLoading } = s.transcriptLoading;
-        const { [id]: _td, ...restTranscriptLoaded } = s.transcriptLoaded;
-        const { [id]: _b, ...restBusy } = s.managedBusy;
-        const { [id]: _t, ...restUsage } = s.usage;
-        const { [id]: _g, ...restGitStates } = s.gitStates;
-        const { [id]: _s, ...restShortstats } = s.gitShortstats;
-        const { [id]: _p, ...restPrStates } = s.prStates;
-        const { [id]: _c, ...restPrChecks } = s.prChecks;
-        const { [id]: _pc, ...restPrComments } = s.prComments;
-        const { [id]: _cs, ...restComposerSeeds } = s.composerSeeds;
-        const { [id]: _cd, ...restComposerDrafts } = s.composerDrafts;
-        const { [id]: _d, ...restDelegations } = s.gitDelegations;
-        return {
-          workspace: fresh ?? s.workspace,
-          selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
-          managedLogs: restLogs,
-          transcriptLoading: restTranscriptLoading,
-          transcriptLoaded: restTranscriptLoaded,
-          managedBusy: restBusy,
-          usage: restUsage,
-          gitStates: restGitStates,
-          gitShortstats: restShortstats,
-          prStates: restPrStates,
-          prChecks: restPrChecks,
-          prComments: restPrComments,
-          composerSeeds: restComposerSeeds,
-          composerDrafts: restComposerDrafts,
-          gitDelegations: restDelegations,
-        };
-      });
+      set((s) => ({
+        ...dropAgentEntries(s, id),
+        workspace: fresh ?? s.workspace,
+        selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
+      }));
     } catch (e) {
       set({ lastError: String(e) });
     }
