@@ -354,16 +354,43 @@ impl WorkspaceManager {
 
     pub fn allocate_agent_id(&self) -> Result<String> {
         let conn = self.db.lock();
-        let mut stmt = conn.prepare("SELECT id FROM workspaces")?;
-        let used: HashSet<String> = stmt
+        // Only *live* (non-archived) agents reserve their name. Once an agent
+        // is archived its worktree is torn down, so the name is free to reuse —
+        // unless a directory still lingers on disk (cleanup failed, or it
+        // belongs to another running instance such as a dev build, which shares
+        // this same worktrees root). The on-disk listing closes that gap: it's
+        // the only namespace shared across every Quorum process on the machine,
+        // so a collision there is what actually breaks `git worktree add`.
+        let mut stmt =
+            conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
+        let mut used: HashSet<String> = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
             .collect();
+        used.extend(occupied_worktree_dirs());
         Ok(names::allocate(&used))
     }
 
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {
         let conn = self.db.lock();
+
+        // Recycling a freed name: the allocator only hands back ids held by
+        // *archived* agents (live ones and on-disk worktrees are excluded), but
+        // the archived row still owns this primary key. Evict it so the INSERT
+        // below doesn't trip the PK constraint. Cascades clear its sessions,
+        // worktrees, and session records. A *live* row with this id would be a
+        // genuine bug, so we deliberately don't touch those — the INSERT will
+        // surface the conflict instead of silently clobbering a running agent.
+        let recycled = conn.execute(
+            "DELETE FROM workspaces WHERE id = ?1 AND archived_at IS NOT NULL",
+            rusqlite::params![record.id],
+        )?;
+        if recycled > 0 {
+            tracing::info!(
+                agent_id = %record.id,
+                "reusing archived agent name; evicted its archived record",
+            );
+        }
 
         // Look up project_id from the primary repo path.
         let project_id = if let Some(primary) = record.repos.first() {
@@ -1470,12 +1497,42 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
     }
 }
 
+/// Absolute path to the root holding every agent's worktrees:
+/// `~/.quorum/worktrees/`. Shared by *all* Quorum processes on the machine
+/// (release and dev builds alike — only the database is namespaced per build),
+/// which is why name allocation has to consult it directly.
+pub fn worktrees_root() -> Result<PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+    Ok(home.join(".quorum").join("worktrees"))
+}
+
+/// The set of agent-id directories that physically exist under the worktrees
+/// root. These are off-limits as new agent ids regardless of what any single
+/// database knows: the directory is the resource `git worktree add` collides
+/// on. Best-effort — a missing or unreadable root just yields an empty set.
+pub fn occupied_worktree_dirs() -> HashSet<String> {
+    match worktrees_root() {
+        Ok(root) => occupied_worktree_dirs_in(&root),
+        Err(_) => HashSet::new(),
+    }
+}
+
+fn occupied_worktree_dirs_in(root: &Path) -> HashSet<String> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return HashSet::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect()
+}
+
 /// Absolute path to the dir holding all of one agent's worktrees:
 /// `~/.quorum/worktrees/<agent-id>/`.
 pub fn agent_parent_dir(agent_id: &str) -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    Ok(home.join(".quorum").join("worktrees").join(agent_id))
+    Ok(worktrees_root()?.join(agent_id))
 }
 
 /// Absolute path to one tracked repo's worktree:
@@ -2206,6 +2263,156 @@ mod tests {
         assert_eq!(
             allocate_repo_subdir(Path::new("/foo/fresh"), &used),
             "fresh"
+        );
+    }
+
+    #[test]
+    fn occupied_worktree_dirs_lists_only_subdirs() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("kilimanjaro")).unwrap();
+        std::fs::create_dir_all(root.path().join("seychelles")).unwrap();
+        // A stray file (not a dir) must not be reported as an occupied name.
+        std::fs::write(root.path().join("notes.txt"), b"x").unwrap();
+
+        let found = occupied_worktree_dirs_in(root.path());
+        assert_eq!(found.len(), 2);
+        assert!(found.contains("kilimanjaro"));
+        assert!(found.contains("seychelles"));
+        assert!(!found.contains("notes.txt"));
+    }
+
+    #[test]
+    fn occupied_worktree_dirs_empty_when_root_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("does-not-exist");
+        assert!(occupied_worktree_dirs_in(&missing).is_empty());
+    }
+
+    /// Mark a workspace archived directly (tests don't go through the full
+    /// archive flow, which needs live worktrees on disk).
+    fn mark_archived(db: &Arc<Mutex<Connection>>, id: &str) {
+        let conn = db.lock();
+        conn.execute(
+            "UPDATE workspaces SET archived_at = ?1 WHERE id = ?2",
+            rusqlite::params![now_millis(), id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn add_agent_reuses_archived_name() {
+        let db = test_db();
+        seed_repo(&db, "/r");
+        let wm = WorkspaceManager::new(db.clone());
+
+        let mut first = new_agent_record(
+            "kilimanjaro".into(),
+            "first".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            String::new(),
+            AgentView::Custom,
+        );
+        wm.add_agent(&mut first).unwrap();
+        mark_archived(&db, "kilimanjaro");
+
+        // Recycling the freed name must succeed — the archived row is evicted
+        // rather than tripping the primary-key constraint.
+        let mut second = new_agent_record(
+            "kilimanjaro".into(),
+            "second".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            String::new(),
+            AgentView::Custom,
+        );
+        wm.add_agent(&mut second).unwrap();
+
+        let conn = db.lock();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workspaces WHERE id = 'kilimanjaro'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "exactly one row should remain");
+        let (name, archived): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT name, archived_at FROM workspaces WHERE id = 'kilimanjaro'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "second", "the live agent should have replaced it");
+        assert!(archived.is_none(), "the recycled agent must be live");
+    }
+
+    #[test]
+    fn add_agent_does_not_evict_a_live_name_clash() {
+        let db = test_db();
+        seed_repo(&db, "/r");
+        let wm = WorkspaceManager::new(db.clone());
+
+        let mut first = new_agent_record(
+            "kilimanjaro".into(),
+            "first".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            String::new(),
+            AgentView::Custom,
+        );
+        wm.add_agent(&mut first).unwrap();
+
+        // A *live* id clash is a real bug: the INSERT must fail loudly rather
+        // than clobber the running agent.
+        let mut clash = new_agent_record(
+            "kilimanjaro".into(),
+            "second".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            String::new(),
+            AgentView::Custom,
+        );
+        assert!(wm.add_agent(&mut clash).is_err());
+
+        let conn = db.lock();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM workspaces WHERE id = 'kilimanjaro'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "first", "the original live agent must survive");
+    }
+
+    #[test]
+    fn allocate_agent_id_excludes_archived_from_reservation() {
+        let db = test_db();
+        seed_repo(&db, "/r");
+        let wm = WorkspaceManager::new(db.clone());
+
+        // Fill the whole pool with archived agents, then one live agent.
+        for place in names::PLACES {
+            let mut rec = new_agent_record(
+                (*place).into(),
+                (*place).into(),
+                "claude".into(),
+                mk_repo("/r"),
+                String::new(),
+                AgentView::Custom,
+            );
+            wm.add_agent(&mut rec).unwrap();
+            mark_archived(&db, place);
+        }
+
+        // Every pool name is archived (so all are reusable) — the allocator
+        // should hand back a bare pool name, never a "-N" exhaustion suffix.
+        let id = wm.allocate_agent_id().unwrap();
+        assert!(
+            names::PLACES.contains(&id.as_str()),
+            "expected a reusable pool name, got {id}"
         );
     }
 }
