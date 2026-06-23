@@ -350,6 +350,9 @@ export const api = {
   // pipeline (events themselves are emitted from the backend).
   setTelemetryEnabled: (enabled: boolean) =>
     invoke<void>("set_telemetry_enabled", { enabled }),
+  // Emit the deferred first `app_opened` once onboarding completes — i.e. after
+  // the data-sharing disclosure has been shown. See `track_app_opened` (Rust).
+  trackAppOpened: () => invoke<void>("track_app_opened"),
   getAgentDiffStats: (agentId: string) =>
     invoke<DiffStats>("get_agent_diff_stats", { agentId }),
   addWorkspaceRepo: (repoPath: string) =>

@@ -869,7 +869,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         viewMode: (s.viewMode as WorkspaceView) || "custom",
         gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
         onboardingComplete: s.onboardingComplete === "true",
-        // Telemetry is opt-out: only an explicit "false" disables it.
+        // Telemetry is opt-out: only an explicit "false" disables it. The key is
+        // snake_case (not camelCase like its peers) on purpose: it's backend-
+        // owned — written by the `set_telemetry_enabled` Rust command, never by a
+        // frontend `setSetting` — so we read it as `s.telemetry_enabled`. Don't
+        // switch a caller to `setSetting("telemetryEnabled", …)`: that's a
+        // different key and the toggle would silently stop working.
         telemetryEnabled: s.telemetry_enabled !== "false",
         // Auto-open the welcome tour for new users (no completion flag yet).
         onboardingOpen: s.onboardingComplete !== "true",
@@ -1887,8 +1892,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSettingsSection: (section) => set({ settingsSection: section }),
   openOnboarding: () => set({ onboardingOpen: true }),
   closeOnboarding: () => {
+    const firstCompletion = !get().onboardingComplete;
     set({ onboardingOpen: false, onboardingComplete: true });
     setSetting("onboardingComplete", "true");
+    // On a fresh install the backend defers the first `app_opened` until now, so
+    // the event lands only after the data-sharing disclosure shown during
+    // onboarding has been seen. Fire it once, on the first completion.
+    if (firstCompletion) void api.trackAppOpened();
   },
   saveAccount: async (patch) => {
     const current = get().account;
