@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { applyUserTurns } from "./store";
+import { applyUserTurns } from "./helpers";
 import type { ChatItem } from "./adapters";
 import type { UserTurn } from "./api";
 
