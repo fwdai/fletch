@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { reduceRecords } from "./store";
+import { reduceRecords } from "./helpers";
 import type { SessionRecord } from "./api";
 
 // Canonical session_records hold verbatim per-provider transcript bodies.
