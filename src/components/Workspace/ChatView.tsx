@@ -202,6 +202,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           listPrs={() => api.listPrs(agent.id)}
           seed={composerSeed}
           onSeedConsumed={onSeedConsumed}
+          draftKey={agent.id}
           onSend={({ text, thinking, attachments }) => {
             // Sending is an explicit action: re-pin so the user follows their
             // own new message even if they'd scrolled up to read history.
