@@ -374,24 +374,6 @@ impl WorkspaceManager {
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {
         let conn = self.db.lock();
 
-        // Recycling a freed name: the allocator only hands back ids held by
-        // *archived* agents (live ones and on-disk worktrees are excluded), but
-        // the archived row still owns this primary key. Evict it so the INSERT
-        // below doesn't trip the PK constraint. Cascades clear its sessions,
-        // worktrees, and session records. A *live* row with this id would be a
-        // genuine bug, so we deliberately don't touch those — the INSERT will
-        // surface the conflict instead of silently clobbering a running agent.
-        let recycled = conn.execute(
-            "DELETE FROM workspaces WHERE id = ?1 AND archived_at IS NOT NULL",
-            rusqlite::params![record.id],
-        )?;
-        if recycled > 0 {
-            tracing::info!(
-                agent_id = %record.id,
-                "reusing archived agent name; evicted its archived record",
-            );
-        }
-
         // Look up project_id from the primary repo path.
         let project_id = if let Some(primary) = record.repos.first() {
             let path_str = primary.repo_path.to_string_lossy().to_string();
@@ -406,8 +388,34 @@ impl WorkspaceManager {
             .map(|dt| dt.timestamp_millis())
             .unwrap_or_else(|_| now_millis());
 
+        // Evicting the recycled archived row and writing its replacement must be
+        // atomic. Without a transaction the DELETE auto-commits immediately, so
+        // any later failure (a failed INSERT, disk-full, UUID collision) would
+        // leave the archived agent — and its cascaded sessions/worktrees —
+        // permanently gone with nothing in its place. The transaction rolls the
+        // DELETE back on any error before `commit`.
+        let tx = conn.unchecked_transaction()?;
+
+        // Recycling a freed name: the allocator only hands back ids held by
+        // *archived* agents (live ones and on-disk worktrees are excluded), but
+        // the archived row still owns this primary key. Evict it so the INSERT
+        // below doesn't trip the PK constraint. Cascades clear its sessions,
+        // worktrees, and session records. A *live* row with this id would be a
+        // genuine bug, so we deliberately don't touch those — the INSERT will
+        // surface the conflict instead of silently clobbering a running agent.
+        let recycled = tx.execute(
+            "DELETE FROM workspaces WHERE id = ?1 AND archived_at IS NOT NULL",
+            rusqlite::params![record.id],
+        )?;
+        if recycled > 0 {
+            tracing::info!(
+                agent_id = %record.id,
+                "reusing archived agent name; evicted its archived record",
+            );
+        }
+
         // The workspace is the durable work-area (identity + task metadata).
-        conn.execute(
+        tx.execute(
             "INSERT INTO workspaces (id, project_id, name, task, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
@@ -422,7 +430,7 @@ impl WorkspaceManager {
         // Exactly one provider run per workspace today. The runtime status is
         // not persisted — it derives from the workspace/session dispositions.
         let session_id = uuid::Uuid::new_v4().to_string();
-        conn.execute(
+        tx.execute(
             "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
@@ -440,9 +448,10 @@ impl WorkspaceManager {
 
         // Insert worktree records for each TrackedRepo.
         for repo in &record.repos {
-            Self::insert_worktree(&conn, &record.id, repo)?;
+            Self::insert_worktree(&tx, &record.id, repo)?;
         }
 
+        tx.commit()?;
         Ok(())
     }
 

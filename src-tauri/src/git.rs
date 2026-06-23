@@ -83,7 +83,13 @@ pub async fn worktree_add_detached(
     // path still isn't a live worktree, clear the orphan and retry once. We
     // never delete a *registered* worktree: that would be someone else's live
     // checkout, so in that case we fall through to the original error.
-    if stderr.contains("already exists") && !is_registered_worktree(repo, worktree_path).await {
+    //
+    // We gate on `worktree_path.exists()` rather than on the git error text:
+    // the stderr phrasing ("already exists") varies by git version and is
+    // translated under non-C locales, so matching it would silently skip the
+    // recovery on, say, a French or Japanese machine. The on-disk check is the
+    // actual condition this branch handles and is locale-independent.
+    if worktree_path.exists() && !is_registered_worktree(repo, worktree_path).await {
         let _ = worktree_prune(repo).await;
         if !is_registered_worktree(repo, worktree_path).await && worktree_path.exists() {
             if let Err(e) = tokio::fs::remove_dir_all(worktree_path).await {
@@ -124,18 +130,25 @@ async fn is_registered_worktree(repo: &Path, path: &Path) -> bool {
         Ok(out) if out.status.success() => out,
         _ => return false,
     };
-    let canonical = std::fs::canonicalize(path);
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.strip_prefix("worktree "))
-        .any(|p| {
-            let listed = Path::new(p);
-            listed == path
-                || match (&canonical, std::fs::canonicalize(listed)) {
-                    (Ok(a), Ok(b)) => a == &b,
-                    _ => false,
+    // `tokio::fs::canonicalize` keeps these path-resolution syscalls off the
+    // executor thread — `std::fs` would block it if the filesystem is slow
+    // (network mount, loaded disk).
+    let canonical = tokio::fs::canonicalize(path).await.ok();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for listed in stdout.lines().filter_map(|l| l.strip_prefix("worktree ")) {
+        let listed = Path::new(listed);
+        if listed == path {
+            return true;
+        }
+        if let Some(a) = &canonical {
+            if let Ok(b) = tokio::fs::canonicalize(listed).await {
+                if a == &b {
+                    return true;
                 }
-        })
+            }
+        }
+    }
+    false
 }
 
 /// Best-effort fetch of `branch` from `origin` so a freshly-spawned worktree
