@@ -1613,6 +1613,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [key]: _dropped, ...rest } = s.composerDrafts;
         return { composerDrafts: rest };
       }
+      if (s.composerDrafts[key] === text) return s;
       return { composerDrafts: { ...s.composerDrafts, [key]: text } };
     });
   },
