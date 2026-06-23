@@ -383,6 +383,8 @@ interface AppState {
    *  re-openable any time from Settings › General. */
   onboardingOpen: boolean;
   onboardingComplete: boolean;
+  /** Anonymous usage telemetry consent. Opt-out: defaults on. */
+  telemetryEnabled: boolean;
   /** Local account profile, loaded on init. `null` until the row is read. */
   account: AccountProfile | null;
   /** When true the workspace pane shows archived-session history instead
@@ -539,6 +541,7 @@ interface AppState {
   setCodeTheme: (id: string) => void;
   setAccent: (a: string) => void;
   setDensity: (d: Density) => void;
+  setTelemetryEnabled: (enabled: boolean) => void;
   setFeature: <K extends keyof FeatureFlags>(k: K, v: FeatureFlags[K]) => void;
   setProviderEnabled: (id: string, enabled: boolean) => void;
   /** Re-probe installed provider CLIs for versions + binary paths. Runs once
@@ -825,6 +828,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   settingsSection: "general" as SettingsSection,
   onboardingOpen: false,
   onboardingComplete: false,
+  telemetryEnabled: true,
   account: null,
   historyOpen: false,
   selectedHistoryAgentId: null,
@@ -865,6 +869,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         viewMode: (s.viewMode as WorkspaceView) || "custom",
         gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
         onboardingComplete: s.onboardingComplete === "true",
+        // Telemetry is opt-out: only an explicit "false" disables it. The key is
+        // snake_case (not camelCase like its peers) on purpose: it's backend-
+        // owned — written by the `set_telemetry_enabled` Rust command, never by a
+        // frontend `setSetting` — so we read it as `s.telemetry_enabled`. Don't
+        // switch a caller to `setSetting("telemetryEnabled", …)`: that's a
+        // different key and the toggle would silently stop working.
+        telemetryEnabled: s.telemetry_enabled !== "false",
         // Auto-open the welcome tour for new users (no completion flag yet).
         onboardingOpen: s.onboardingComplete !== "true",
         // Panel layout — restore the user's last splitter widths and collapse state.
@@ -1881,8 +1892,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSettingsSection: (section) => set({ settingsSection: section }),
   openOnboarding: () => set({ onboardingOpen: true }),
   closeOnboarding: () => {
+    const firstCompletion = !get().onboardingComplete;
     set({ onboardingOpen: false, onboardingComplete: true });
     setSetting("onboardingComplete", "true");
+    // On a fresh install the backend defers the first `app_opened` until now, so
+    // the event lands only after the data-sharing disclosure shown during
+    // onboarding has been seen. Fire it once, on the first completion.
+    if (firstCompletion) void api.trackAppOpened();
   },
   saveAccount: async (patch) => {
     const current = get().account;
@@ -1947,6 +1963,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDensity: (d) => {
     set({ density: d });
     setSetting("density", d);
+  },
+  setTelemetryEnabled: (enabled) => {
+    set({ telemetryEnabled: enabled });
+    // The backend command persists the `telemetry_enabled` setting AND toggles
+    // the live pipeline, so we don't also call setSetting here.
+    void api.setTelemetryEnabled(enabled);
   },
   setFeature: (k, v) =>
     set((s) => {

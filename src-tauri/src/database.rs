@@ -40,6 +40,22 @@ pub fn load_agent_bin_overrides(conn: &Connection) -> std::collections::HashMap<
     map
 }
 
+/// Read a single value from the key-value `settings` table. Returns `None` for
+/// a missing key (or any read error), so callers can fall back to a default.
+pub fn get_setting(conn: &Connection, key: &str) -> Option<String> {
+    db_select(conn, "settings", json!({ "where": { "key": key } }))
+        .ok()
+        .and_then(|rows| rows.into_iter().next())
+        .and_then(|row| row.get("value").and_then(Value::as_str).map(str::to_string))
+}
+
+/// Upsert a single `settings` value. Mirrors the frontend `setSetting`, so a
+/// value written here is readable by the renderer's `getAllSettings`.
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    db_upsert(conn, "settings", json!({ "key": key, "value": value }), "key")?;
+    Ok(())
+}
+
 fn validate_table(table: &str) -> Result<()> {
     if ALLOWED_TABLES.contains(&table) {
         Ok(())

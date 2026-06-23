@@ -21,6 +21,7 @@ mod run_detect;
 mod run_session;
 mod sandbox;
 mod supervisor;
+mod telemetry;
 mod workspace;
 
 use parking_lot::Mutex;
@@ -253,6 +254,38 @@ async fn set_agent_bin_override(
     Ok(())
 }
 
+/// Flip the anonymous-telemetry consent flag. Persists it to `settings` (so the
+/// renderer's `getAllSettings` sees it) and toggles the live pipeline, like
+/// `set_agent_bin_override` keeps the DB and in-memory state in sync.
+///
+/// Note the snake_case key: `telemetry_enabled` is backend-owned (written here,
+/// never via a frontend `setSetting`), so it intentionally breaks the camelCase
+/// convention of frontend-set settings. The renderer reads it as
+/// `s.telemetry_enabled`; do not introduce a `setSetting("telemetryEnabled", …)`
+/// caller — that would write a different key and silently break the toggle.
+#[tauri::command]
+async fn set_telemetry_enabled(
+    enabled: bool,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(&conn, "telemetry_enabled", if enabled { "true" } else { "false" })
+            .map_err(|e| e.to_string())?;
+    }
+    telemetry::set_enabled(enabled);
+    Ok(())
+}
+
+/// Emit the deferred first `app_opened`. The frontend calls this once, when the
+/// user finishes onboarding (after the data-sharing disclosure on the final
+/// step). On a fresh install `setup` skips the launch-time `app_opened`, so this
+/// is the first such event — sent only once consent has been disclosed.
+#[tauri::command]
+fn track_app_opened() {
+    telemetry::track("app_opened", json!({}));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Error/crash reporting. The DSN is baked in at build time via
@@ -317,6 +350,51 @@ pub fn run() {
             // honor user-set custom paths without touching the DB each time.
             bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&db.lock()));
 
+            // Anonymous product telemetry. Mint (or read) the install's random
+            // distinct id, read the opt-out consent flag, and detect a version
+            // change since the last launch — all from `settings`, before any
+            // event fires. No-op in unconfigured builds (no PostHog key baked
+            // in), so dev sends nothing.
+            let version = app.package_info().version.to_string();
+            let (distinct_id, telemetry_enabled, onboarding_complete, prev_version) = {
+                let conn = db.lock();
+                let distinct_id = match database::get_setting(&conn, "telemetry_distinct_id") {
+                    Some(id) if !id.trim().is_empty() => id,
+                    _ => {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        let _ = database::set_setting(&conn, "telemetry_distinct_id", &id);
+                        id
+                    }
+                };
+                // Opt-out: anything but an explicit "false" means enabled.
+                let enabled =
+                    database::get_setting(&conn, "telemetry_enabled").as_deref() != Some("false");
+                // Frontend-owned flag (camelCase), written when the user finishes
+                // the first-run onboarding — the flow that carries the data-sharing
+                // disclosure. Absent on a brand-new install.
+                let onboarded =
+                    database::get_setting(&conn, "onboardingComplete").as_deref() == Some("true");
+                let prev = database::get_setting(&conn, "last_seen_version");
+                let _ = database::set_setting(&conn, "last_seen_version", &version);
+                (distinct_id, enabled, onboarded, prev)
+            };
+            telemetry::init(distinct_id, telemetry_enabled, version.clone());
+            // On a fresh install the first `app_opened` is deferred until
+            // onboarding completes (see the `track_app_opened` command), so no
+            // event is sent before the user has seen the data-sharing disclosure.
+            // Once onboarded, every launch reports `app_opened` here as usual.
+            if onboarding_complete {
+                telemetry::track("app_opened", json!({}));
+            }
+            if let Some(prev) = prev_version {
+                if !prev.is_empty() && prev != version {
+                    telemetry::track(
+                        "app_updated",
+                        json!({ "from_version": prev, "to_version": version }),
+                    );
+                }
+            }
+
             app.manage(db.clone());
 
             let workspace = Arc::new(WorkspaceManager::new(db));
@@ -364,6 +442,8 @@ pub fn run() {
             db_count,
             db_query,
             set_agent_bin_override,
+            set_telemetry_enabled,
+            track_app_opened,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::get_agent_diff_stats,
@@ -442,6 +522,12 @@ pub fn run() {
                 if let Some(supervisor) = app.try_state::<Arc<Supervisor>>() {
                     supervisor.shutdown();
                 }
+                // Give in-flight telemetry sends a brief, bounded chance to
+                // finish before the runtime tears down, rather than dropping
+                // events that fired just before quit (e.g. `pr_opened`).
+                tauri::async_runtime::block_on(telemetry::flush(
+                    std::time::Duration::from_secs(3),
+                ));
             }
         });
 }

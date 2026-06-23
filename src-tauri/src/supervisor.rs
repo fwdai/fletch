@@ -524,6 +524,14 @@ impl Supervisor {
         let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
 
         self.workspace.add_agent(&mut record)?;
+        crate::telemetry::track(
+            "agent_spawned",
+            serde_json::json!({
+                "provider": record.provider,
+                "model": record.model,
+                "effort": record.effort,
+            }),
+        );
         self.set_status(&app, &agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.clone());
 

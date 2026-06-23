@@ -193,6 +193,10 @@ export function IgniteStep({ onEnter }: { onEnter: () => void }) {
           Enter Quorum
           <Icon name="arrowR" />
         </button>
+        <p className="ob-fineprint ob-reveal" style={{ "--d": ".64s" } as CSSProperties}>
+          Quorum shares anonymous usage data to improve the app. Turn it off
+          anytime in Settings › General.
+        </p>
       </div>
     </div>
   );

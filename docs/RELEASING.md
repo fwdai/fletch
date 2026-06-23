@@ -51,6 +51,7 @@ Set these under **Settings → Secrets and variables → Actions**:
 | `APPLE_TEAM_ID` | `UFBL3F444A`. |
 | `TAURI_SIGNING_PRIVATE_KEY` | Contents of `~/.tauri/quorum.key`. |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that key (empty if generated without one). |
+| `QUORUM_POSTHOG_KEY` | PostHog **project** key (write-only, safe to ship), baked in at compile time for anonymous usage telemetry. Optional — unset → telemetry is a no-op. Self-hosting only: also set `QUORUM_POSTHOG_HOST` (defaults to PostHog US cloud). |
 
 ### 3. Update endpoint — Cloudflare Worker
 

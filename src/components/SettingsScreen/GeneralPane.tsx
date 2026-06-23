@@ -25,6 +25,8 @@ export function GeneralPane() {
   const setDensity = useAppStore((s) => s.setDensity);
   const features = useAppStore((s) => s.features);
   const setFeature = useAppStore((s) => s.setFeature);
+  const telemetryEnabled = useAppStore((s) => s.telemetryEnabled);
+  const setTelemetryEnabled = useAppStore((s) => s.setTelemetryEnabled);
   const revealLogs = useAppStore((s) => s.revealLogs);
 
   const FeatureRow = ({ item }: { item: FeatureItem }) => (
@@ -97,6 +99,15 @@ export function GeneralPane() {
       </SetGroup>
 
       <SetGroup label="Diagnostics" last>
+        <SetRow
+          title="Usage analytics"
+          sub="Share anonymous usage events (app opens, agents spawned, PRs opened) to help improve Quorum. No code, file paths, repo names, or prompts are ever sent."
+        >
+          <SetToggle
+            on={telemetryEnabled}
+            onClick={() => setTelemetryEnabled(!telemetryEnabled)}
+          />
+        </SetRow>
         <SetRow
           title="Logs"
           sub="Quorum writes a local log file. Reveal it to attach to a bug report."
