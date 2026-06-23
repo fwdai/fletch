@@ -118,8 +118,11 @@ pub async fn worktree_add_detached(
 
 /// Is `path` currently registered as a worktree of `repo`? Used by spawn to
 /// tell an orphan directory (safe to clear) from a live checkout (must not
-/// touch). Any error listing worktrees is treated as "not registered" — the
-/// caller's follow-up `path.exists()` guard keeps that conservative.
+/// touch). A `false` here authorizes the caller to `remove_dir_all` the path,
+/// so when the listing itself fails (transient lock contention, a process-limit
+/// spike) we return `true`: "can't confirm it's an orphan, so don't touch it."
+/// The caller then falls through to the original error rather than risking the
+/// deletion of a live checkout.
 async fn is_registered_worktree(repo: &Path, path: &Path) -> bool {
     let out = match Command::new("git")
         .current_dir(repo)
@@ -128,7 +131,7 @@ async fn is_registered_worktree(repo: &Path, path: &Path) -> bool {
         .await
     {
         Ok(out) if out.status.success() => out,
-        _ => return false,
+        _ => return true,
     };
     // `tokio::fs::canonicalize` keeps these path-resolution syscalls off the
     // executor thread — `std::fs` would block it if the filesystem is slow
