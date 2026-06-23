@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::activity::{Activity, ManagedActivity};
 use crate::error::{Error, Result};
-use crate::exec_session::{ExecCallbacks, ExecSession, ExecSpawn};
+use crate::exec_session::{ExecCallbacks, ExecExit, ExecSession, ExecSpawn};
 use crate::instructions;
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
@@ -921,7 +921,7 @@ impl Agent {
     where
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
-        H: Fn(bool) + Send + Sync + 'static,
+        H: Fn(ExecExit) + Send + Sync + 'static,
     {
         let home = dirs::home_dir()
             .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
@@ -941,7 +941,7 @@ impl Agent {
     }
 
     /// Shared per-turn exec lifecycle. Spawns no process yet — the first
-    /// turn is launched when the first user message arrives. `on_exit(success)`
+    /// turn is launched when the first user message arrives. `on_exit`
     /// fires when a turn's process exits (and that turn is still current)
     /// — the per-turn analogue of a turn-end signal, so an interrupted or
     /// failed turn that never emits an in-band turn-end still leaves the
@@ -959,7 +959,7 @@ impl Agent {
         I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
-        H: Fn(bool) + Send + Sync + 'static,
+        H: Fn(ExecExit) + Send + Sync + 'static,
     {
         // Unified sandbox: wrap each turn's process in sandbox-exec with
         // Quorum's profile. The agent binary moves into `prefix_args`
@@ -1541,7 +1541,10 @@ pub async fn probe_all_providers() -> Vec<ProviderProbe> {
 /// (or stderr as fallback). Returns `None` if the binary errors or emits no
 /// recognisable version.
 fn probe_version(bin: &str) -> Option<String> {
-    let out = Command::new(bin).arg("--version").output().ok()?;
+    let mut cmd = Command::new(bin);
+    cmd.arg("--version");
+    crate::bin_resolve::apply_login_shell_env(&mut cmd);
+    let out = cmd.output().ok()?;
     let text = if !out.stdout.is_empty() {
         String::from_utf8_lossy(&out.stdout).into_owned()
     } else {

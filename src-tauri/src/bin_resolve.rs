@@ -101,6 +101,25 @@ pub fn resolve_bin(name: &str, home: &Path) -> Option<String> {
         .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
+/// Exported environment as seen by the user's login shell, cached once per app
+/// process. Finder/Dock-launched GUI apps inherit launchd's sparse environment;
+/// agent CLIs usually expect the richer shell environment where version
+/// managers, API keys, and Homebrew paths are configured.
+pub fn login_shell_env() -> Option<&'static HashMap<String, String>> {
+    static ENV: OnceLock<Option<HashMap<String, String>>> = OnceLock::new();
+    ENV.get_or_init(load_login_shell_env).as_ref()
+}
+
+/// Apply the cached login-shell environment to a std process command. Caller
+/// supplied env should be layered afterwards when it must win on collision.
+pub fn apply_login_shell_env(cmd: &mut Command) {
+    if let Some(env) = login_shell_env() {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+}
+
 fn common_bin_paths(name: &str, home: &Path) -> Vec<PathBuf> {
     vec![
         home.join(format!(".local/bin/{name}")),
@@ -127,18 +146,33 @@ fn find_in_path<P: AsRef<OsStr>>(name: &str, path: P) -> Option<String> {
 /// ourselves — no binary name is ever interpolated into a shell command, so
 /// this cannot be used for command injection.
 fn login_shell_path() -> Option<String> {
+    login_shell_env().and_then(|env| env.get("PATH").cloned())
+}
+
+fn load_login_shell_env() -> Option<HashMap<String, String>> {
     let out = Command::new("/bin/zsh")
-        .args(["-lc", "print -rn -- $PATH"])
+        .args(["-lc", "env"])
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if path.is_empty() {
+
+    let mut env = HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if k.is_empty() || matches!(k, "PWD" | "OLDPWD" | "SHLVL" | "_") {
+            continue;
+        }
+        env.insert(k.to_string(), v.to_string());
+    }
+
+    if env.is_empty() {
         None
     } else {
-        Some(path)
+        Some(env)
     }
 }
 
