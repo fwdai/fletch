@@ -1,5 +1,6 @@
 import { Suspense, lazy } from "react";
-import { useAppStore, type SettingsSection } from "../../store";
+import { useAppStore } from "../../store";
+import type { SettingsSection } from "../../storage/preferences";
 import { Icon, type IconName } from "../Icon";
 import pkg from "../../../package.json";
 import { GeneralPane } from "./GeneralPane";

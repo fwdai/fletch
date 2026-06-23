@@ -1,4 +1,5 @@
-import { useAppStore, type ThemeMode, type Density } from "../../store";
+import { useAppStore } from "../../store";
+import type { ThemeMode, Density } from "../../storage/preferences";
 import { ACCENTS } from "../../data/providers";
 import { Icon } from "../Icon";
 import { SetHead, SetGroup, SetRow, SetToggle, SetSeg, type FeatureItem } from "./primitives";

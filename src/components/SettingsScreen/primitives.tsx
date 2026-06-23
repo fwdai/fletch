@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { FeatureFlags } from "../../store";
+import type { FeatureFlags } from "../../storage/preferences";
 
 /** Shared building blocks for the full-screen settings panes. These use the
  *  `.set-*` styling (distinct from the quick popover's `.sp-*`). */
