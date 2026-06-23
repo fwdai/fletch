@@ -338,6 +338,12 @@ interface AppState {
   composerSeeds: Record<string, string>;
   seedComposer: (agentId: string, text: string) => void;
   consumeComposerSeed: (agentId: string) => void;
+  /** Unsent composer text, keyed by agent id (existing chats) or draft id
+   *  (the new-agent composer). Switching views remounts the Composer and would
+   *  otherwise drop what the user typed; this preserves it until sent. Set to
+   *  "" to clear an entry. */
+  composerDrafts: Record<string, string>;
+  setComposerDraft: (key: string, text: string) => void;
   /** Active agent-delegated git action per agent (absent = none). Set when a
    *  panel action hands control to the agent; cleared by the panel when the
    *  watched git/PR transition lands or the agent gives up. */
@@ -818,6 +824,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   prChecks: {},
   prComments: {},
   composerSeeds: {},
+  composerDrafts: {},
   gitDelegations: {},
   gitCommitAction: "agent-commit-pr" as GitCommitAction,
 
@@ -1384,6 +1391,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _droppedChecks, ...restPrChecks } = s.prChecks;
         const { [id]: _droppedComments, ...restPrComments } = s.prComments;
         const { [id]: _droppedSeed, ...restComposerSeeds } = s.composerSeeds;
+        const { [id]: _droppedDraft, ...restComposerDrafts } = s.composerDrafts;
         const { [id]: _droppedDelegation, ...restDelegations } = s.gitDelegations;
         return {
           workspace: fresh,
@@ -1399,6 +1407,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           prChecks: restPrChecks,
           prComments: restPrComments,
           composerSeeds: restComposerSeeds,
+          composerDrafts: restComposerDrafts,
           gitDelegations: restDelegations,
         };
       });
@@ -1426,6 +1435,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [id]: _c, ...restPrChecks } = s.prChecks;
         const { [id]: _pc, ...restPrComments } = s.prComments;
         const { [id]: _cs, ...restComposerSeeds } = s.composerSeeds;
+        const { [id]: _cd, ...restComposerDrafts } = s.composerDrafts;
         const { [id]: _d, ...restDelegations } = s.gitDelegations;
         return {
           workspace: fresh ?? s.workspace,
@@ -1441,6 +1451,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           prChecks: restPrChecks,
           prComments: restPrComments,
           composerSeeds: restComposerSeeds,
+          composerDrafts: restComposerDrafts,
           gitDelegations: restDelegations,
         };
       });
@@ -1592,6 +1603,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!(agentId in s.composerSeeds)) return s;
       const { [agentId]: _dropped, ...rest } = s.composerSeeds;
       return { composerSeeds: rest };
+    });
+  },
+
+  setComposerDraft: (key, text) => {
+    set((s) => {
+      if (!text) {
+        if (!(key in s.composerDrafts)) return s;
+        const { [key]: _dropped, ...rest } = s.composerDrafts;
+        return { composerDrafts: rest };
+      }
+      return { composerDrafts: { ...s.composerDrafts, [key]: text } };
     });
   },
 
@@ -1796,10 +1818,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
 
   removeDraft: (id) =>
-    set((s) => ({
-      drafts: s.drafts.filter((d) => d.id !== id),
-      activeDraftId: s.activeDraftId === id ? null : s.activeDraftId,
-    })),
+    set((s) => {
+      const { [id]: _droppedDraft, ...restComposerDrafts } = s.composerDrafts;
+      return {
+        drafts: s.drafts.filter((d) => d.id !== id),
+        activeDraftId: s.activeDraftId === id ? null : s.activeDraftId,
+        composerDrafts: restComposerDrafts,
+      };
+    }),
 
   selectDraft: (id) =>
     set({
@@ -1837,11 +1863,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       );
       const fresh = await api.getWorkspace();
       set((state) => {
+        const { [id]: _droppedDraft, ...restComposerDrafts } = state.composerDrafts;
         const patches: Partial<AppState> = {
           workspace: fresh,
           selectedAgentId: rec.id,
           drafts: state.drafts.filter((d) => d.id !== id),
           activeDraftId: null,
+          composerDrafts: restComposerDrafts,
         };
         if (view === "custom") {
           patches.managedLogs = {

@@ -77,6 +77,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
         <div className="empty-composer">
           <Composer
             autoFocus
+            draftKey={draft.id}
             defaultProvider={draft.provider}
             defaultModel={draft.model}
             baseBranch={draft.base}

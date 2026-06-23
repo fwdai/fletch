@@ -21,7 +21,7 @@ export function Workspace() {
   const toggleLeft = useAppStore((s) => s.toggleLeft);
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
-  if (draft) return <EmptyWorkspace draft={draft} />;
+  if (draft) return <EmptyWorkspace draft={draft} key={draft.id} />;
 
   const agent = agents.find((a) => a.id === selectedId);
   if (!workspace || !agent) {

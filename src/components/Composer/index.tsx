@@ -71,6 +71,11 @@ interface Props {
    *  then `onSeedConsumed` fires so the parent can clear it. */
   seed?: string;
   onSeedConsumed?: () => void;
+  /** Persists unsent text across view switches (which remount this component).
+   *  Use the agent id for existing chats, the draft id for the new-agent
+   *  composer. The initial value is restored from the store on mount and kept
+   *  in sync on every edit; omit it to disable draft persistence. */
+  draftKey?: string;
   /** True when rendered for an existing agent (ChatView) rather than a new
    *  session (EmptyWorkspace). A provider whose effort is set at spawn
    *  (`effortAtSpawn`, e.g. claude) shows a read-only badge here instead of
@@ -118,6 +123,7 @@ export function Composer({
   listPrs,
   seed,
   onSeedConsumed,
+  draftKey,
   existingSession = false,
   initialThinking,
   activeModel,
@@ -125,12 +131,18 @@ export function Composer({
 }: Props) {
   const features = useAppStore((s) => s.features);
   const modelCatalog = useAppStore((s) => s.modelCatalog);
+  const setComposerDraft = useAppStore((s) => s.setComposerDraft);
 
   // Hide the thinking-effort picker for a model the catalog knows can't reason.
   // When the model is unknown (a new session before the first turn, or one the
   // catalog doesn't list) we keep the picker — better to show a no-op control
   // than to wrongly hide a real one.
-  const [text, setText] = useState("");
+  // Restore any unsent text for this target. Read once at mount via getState
+  // (not a subscription) so persisting on each keystroke doesn't re-render us;
+  // switching targets remounts the Composer, which re-runs this initializer.
+  const [text, setText] = useState(() =>
+    draftKey ? useAppStore.getState().composerDrafts[draftKey] ?? "" : "",
+  );
   const [provider, setProvider] = useState(defaultProvider);
   const [model, setModel] = useState<string | undefined>(defaultModel);
   const activeMeta = lookupModel(
@@ -203,6 +215,12 @@ export function Composer({
   useEffect(() => {
     if (autoFocus) ta.current?.focus();
   }, [autoFocus]);
+
+  // Mirror the draft into the store on every edit so it survives the remount
+  // that view switches cause. Sending clears `text`, which clears the entry.
+  useEffect(() => {
+    if (draftKey) setComposerDraft(draftKey, text);
+  }, [draftKey, text, setComposerDraft]);
 
   // Apply an externally-supplied seed: append to the current draft (with a
   // blank-line separator), focus, resize, and notify the parent to clear it.
