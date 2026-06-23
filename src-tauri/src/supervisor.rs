@@ -2026,6 +2026,10 @@ fn spawn_per_turn_agent(
         if exit.success || exit.interrupted {
             transition_active(&sup_for_exit, &app_for_exit, &id_for_exit, AgentStatus::Idle);
         } else {
+            sup_for_exit.agents.lock().remove(&id_for_exit);
+            sup_for_exit.activities.lock().remove(&id_for_exit);
+            sup_for_exit.native_input_lines.lock().remove(&id_for_exit);
+            sup_for_exit.trigger_session_sync(app_for_exit.clone(), id_for_exit.clone());
             sup_for_exit.set_status(
                 &app_for_exit,
                 &id_for_exit,

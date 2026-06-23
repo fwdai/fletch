@@ -20,7 +20,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
@@ -230,14 +230,14 @@ impl ExecSession {
             tracing::debug!("agent: turn stdout closed");
         });
 
-        let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
-        let stderr_for_reader = stderr_lines.clone();
+        let (stderr_tx, stderr_rx) = mpsc::channel::<Option<String>>();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(std::result::Result::ok) {
                 tracing::warn!(stderr = %line, "agent: stderr");
-                stderr_for_reader.lock().push(line);
+                let _ = stderr_tx.send(Some(line));
             }
+            let _ = stderr_tx.send(None);
         });
 
         // Reap the per-turn child when it exits, and report the exit so the
@@ -259,7 +259,7 @@ impl ExecSession {
                     Ok(Some(status)) => {
                         let _ = guard.take();
                         tracing::debug!(status = %status, "agent: turn exited");
-                        let stderr = stderr_lines.lock().join("\n");
+                        let stderr = drain_stderr(&stderr_rx).join("\n");
                         Some(ExecExit {
                             success: status.success(),
                             interrupted: interrupted.load(Ordering::SeqCst),
@@ -315,6 +315,19 @@ impl ExecSession {
         }
         Ok(())
     }
+}
+
+fn drain_stderr(rx: &mpsc::Receiver<Option<String>>) -> Vec<String> {
+    let mut lines = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Some(line)) => lines.push(line),
+            Ok(None)
+            | Err(mpsc::RecvTimeoutError::Timeout)
+            | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    lines
 }
 
 /// Capture the agent-assigned session id the first time it appears, and
