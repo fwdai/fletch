@@ -44,6 +44,25 @@ import {
 } from "./data/modelCatalog";
 import { getAllSettings, setSetting } from "./storage/settings";
 import {
+  DEFAULT_FEATURES,
+  parseFeatures,
+  parseProviderFlags,
+  parsePaneWidth,
+  parseProviderPathOverrides,
+  DEFAULT_LEFT_WIDTH,
+  DEFAULT_RIGHT_WIDTH,
+  type ThemeMode,
+  type Density,
+  type WorkspaceView,
+  type SettingsSection,
+  type FeatureFlags,
+} from "./storage/preferences";
+import {
+  pushAgentOutput,
+  pushShellOutput,
+  clearOutputBuffer,
+} from "./pty/buffers";
+import {
   getAccount,
   getOrCreateAccount,
   saveAccountProfile,
@@ -52,75 +71,23 @@ import {
 } from "./storage/accounts";
 import { playAgentDone } from "./util/sound";
 
-type OutputHandler = (bytes: Uint8Array) => void;
-
 export const EMPTY_AGENTS: readonly AgentRecord[] = Object.freeze([]);
 
-const outputSinks = new Map<string, OutputHandler>();
-
-// ---- Per-agent PTY output buffer ----------------------------------------
-// Used by native view to repaint after tab switch / view switch.
-const outputBuffers = new Map<string, Uint8Array>();
-const MAX_BUFFER_BYTES = 256 * 1024;
-
-function appendToBuffer(agentId: string, chunk: Uint8Array) {
-  const existing = outputBuffers.get(agentId);
-  let next: Uint8Array;
-  if (!existing) {
-    next = chunk;
-  } else {
-    next = new Uint8Array(existing.length + chunk.length);
-    next.set(existing, 0);
-    next.set(chunk, existing.length);
-  }
-  if (next.length > MAX_BUFFER_BYTES) {
-    next = next.slice(next.length - MAX_BUFFER_BYTES);
-  }
-  outputBuffers.set(agentId, next);
-}
-
-export function getOutputBuffer(agentId: string): Uint8Array | undefined {
-  return outputBuffers.get(agentId);
-}
-
-export function clearOutputBuffer(agentId: string) {
-  outputBuffers.delete(agentId);
-}
-
-export function registerOutputSink(
-  agentId: string,
-  handler: OutputHandler,
-): () => void {
-  outputSinks.set(agentId, handler);
-  return () => {
-    if (outputSinks.get(agentId) === handler) outputSinks.delete(agentId);
-  };
-}
-
-// ---- Per-agent shell PTY output buffer ----------------------------------
-// Mirrors the agent output buffer. Used by TermPanel to repaint after
-// tab switch.
-const shellSinks = new Map<string, OutputHandler>();
-const shellBuffers = new Map<string, Uint8Array>();
+// Re-export the preference types: they're part of the store's public state
+// shape (theme, density, features, …), so consumers that read those fields
+// import the types from here.
+export type {
+  ThemeMode,
+  Density,
+  WorkspaceView,
+  SettingsSection,
+  FeatureFlags,
+} from "./storage/preferences";
 
 // Agents the user just stopped. A killed turn may still flush a final `result`
 // event (→ turn_end) as it dies; this set suppresses the completion chime for
 // that one turn_end so a manual stop doesn't sound like a successful finish.
 const interruptedAgents = new Set<string>();
-
-export function getShellBuffer(agentId: string): Uint8Array | undefined {
-  return shellBuffers.get(agentId);
-}
-
-export function registerShellSink(
-  agentId: string,
-  handler: OutputHandler,
-): () => void {
-  shellSinks.set(agentId, handler);
-  return () => {
-    if (shellSinks.get(agentId) === handler) shellSinks.delete(agentId);
-  };
-}
 
 // ---- Re-export the normalized ChatItem so component files don't need to
 //      import from "./adapters" directly; managedLogs is typed in terms
@@ -145,126 +112,6 @@ export interface DraftAgent {
   model?: string;
   /** Base branch to fork from. */
   base: string;
-}
-
-// ---- Feature flags & appearance --------------------------------------------
-
-export type ThemeMode = "dark" | "light";
-export type Density = "comfortable" | "compact";
-export type WorkspaceView = "custom" | "native";
-export type SettingsSection =
-  | "general"
-  | "account"
-  | "providers"
-  | "experimental"
-  | "developer";
-
-export interface FeatureFlags {
-  git: boolean;
-  /** The unified Code panel: file explorer/editor + the Live diff feed. */
-  code: boolean;
-  run: boolean;
-  terminal: boolean;
-  thinkingBudget: boolean;
-  autoEdit: boolean;
-  /** Show the context-window usage meter in the composer foot. */
-  tokenUsage: boolean;
-  /** Experimental: expose the Custom/Native view switcher so agents can be
-   *  driven through the provider's own terminal UI. Off by default — native
-   *  mode isn't equally solid across providers yet. */
-  nativeView: boolean;
-}
-
-const DEFAULT_FEATURES: FeatureFlags = {
-  git: true,
-  code: true,
-  run: false,
-  terminal: false,
-  thinkingBudget: true,
-  autoEdit: false,
-  tokenUsage: true,
-  nativeView: false,
-};
-
-function parseFeatures(raw: string | undefined): FeatureFlags {
-  if (!raw) return DEFAULT_FEATURES;
-  try {
-    const saved = JSON.parse(raw) as Partial<FeatureFlags> & {
-      // legacy flags folded into `code`
-      files?: boolean;
-      diff?: boolean;
-      // removed in this version; its presence marks a pre-migration blob
-      statusBar?: boolean;
-    };
-    // The old "Files" and "Diff" tabs were merged into the Code panel; honor a
-    // saved preference for either when migrating an existing settings blob.
-    const legacyCode =
-      saved.code ?? (saved.files !== undefined || saved.diff !== undefined
-        ? !!(saved.files || saved.diff)
-        : undefined);
-    // A blob still carrying the removed `statusBar` flag predates `tokenUsage`
-    // gating the composer meter — back then it was a no-op that defaulted off.
-    // Drop its stored `tokenUsage` so the new default (meter on, matching the
-    // old always-visible behavior) applies; honor the value for newer blobs.
-    const preMigration = saved.statusBar !== undefined;
-    const { files: _files, diff: _diff, statusBar: _statusBar, ...rest } = saved;
-    void _files;
-    void _diff;
-    void _statusBar;
-    if (preMigration) delete rest.tokenUsage;
-    return {
-      ...DEFAULT_FEATURES,
-      ...rest,
-      ...(legacyCode !== undefined ? { code: legacyCode } : {}),
-    };
-  } catch {
-    return DEFAULT_FEATURES;
-  }
-}
-
-function parseProviderFlags(raw: string | undefined): Record<string, boolean> {
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw) as Record<string, boolean>;
-  } catch {
-    return {};
-  }
-}
-
-/** Default pane widths (px); also the fallback when a stored value is missing
- *  or corrupt. Mirrored in the initial store state below. */
-const DEFAULT_LEFT_WIDTH = 312;
-const DEFAULT_RIGHT_WIDTH = 520;
-/** Lower bound matches the splitter's MIN_WIDTH; the right pane's true upper
- *  bound is dynamic (capped at render via CSS `min()`), so we only guard
- *  against absurd/NaN persisted values here. */
-const MIN_PANE_WIDTH = 220;
-const MAX_PANE_WIDTH = 4000;
-
-/** Restore a persisted pane width, clamping to a sane range and falling back
- *  to the default on a missing or non-numeric value. */
-function parsePaneWidth(raw: string | undefined, fallback: number): number {
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(MAX_PANE_WIDTH, Math.max(MIN_PANE_WIDTH, n));
-}
-
-/** Settings-key prefix for per-agent custom binary paths. Must match the
- *  backend's `database::AGENT_BIN_PREFIX` so both read/write the same rows. */
-const AGENT_BIN_PREFIX = "agent_bin_path_";
-
-/** Pull the `agent_bin_path_<id>` rows out of the flat settings map into an
- *  id → path override map (blank values dropped, matching the backend). */
-export function parseProviderPathOverrides(
-  s: Record<string, string>,
-): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(s)) {
-    if (key.startsWith(AGENT_BIN_PREFIX) && value.trim()) {
-      out[key.slice(AGENT_BIN_PREFIX.length)] = value;
-    }
-  }
-  return out;
 }
 
 interface AppState {
@@ -912,29 +759,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     void get().refreshModelCatalog();
 
     await onAgentOutput((e) => {
-      const chunk = new Uint8Array(e.bytes);
-      appendToBuffer(e.agent_id, chunk);
-      const sink = outputSinks.get(e.agent_id);
-      if (sink) sink(chunk);
+      pushAgentOutput(e.agent_id, new Uint8Array(e.bytes));
     });
 
     await onShellOutput((e) => {
-      const chunk = new Uint8Array(e.bytes);
-      const existing = shellBuffers.get(e.agent_id);
-      let next: Uint8Array;
-      if (!existing) {
-        next = chunk;
-      } else {
-        next = new Uint8Array(existing.length + chunk.length);
-        next.set(existing, 0);
-        next.set(chunk, existing.length);
-      }
-      if (next.length > MAX_BUFFER_BYTES) {
-        next = next.slice(next.length - MAX_BUFFER_BYTES);
-      }
-      shellBuffers.set(e.agent_id, next);
-      const sink = shellSinks.get(e.agent_id);
-      if (sink) sink(chunk);
+      pushShellOutput(e.agent_id, new Uint8Array(e.bytes));
     });
 
     await onAgentEvent((e) => {

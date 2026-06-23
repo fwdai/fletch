@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseProviderPathOverrides } from "./store";
+import { parseProviderPathOverrides } from "./storage/preferences";
 
 describe("parseProviderPathOverrides", () => {
   it("extracts agent_bin_path_<id> rows and strips the prefix", () => {
