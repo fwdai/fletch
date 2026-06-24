@@ -720,6 +720,11 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 
   const branch = gitState?.branch || agent.repos[0]?.branch || "(no branch yet)";
   const base   = gitState?.parent_branch || agent.repos[0]?.parent_branch || "main";
+  // The worktree is detached until its first push; a branch is only born from
+  // an agent that names it. So a direct (agent-bypassed) action that needs a
+  // branch — push, open PR — can't run yet: it routes through the agent
+  // instead, which picks a conventional name and creates the branch.
+  const hasBranch = Boolean(gitState?.branch || agent.repos[0]?.branch);
 
   // Hand control to the coding agent: it writes the judgment part (message /
   // description / conflict edits) and executes the mutation through the
@@ -787,12 +792,27 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
         break;
       case "commit-pr-direct":
         if (!customActive) { openOverride(); return; }
+        // No branch yet: commit the user's message directly (works on detached
+        // HEAD), then let the agent name the branch and write the PR.
+        if (!hasBranch) {
+          void runBusy("Committing…", async () => {
+            const ok = await commitChanges(agent.id, msg.trim());
+            if (ok) { revertOverride(); delegate("open-pr", appActionMessage("open-pr", { base })); }
+          });
+          break;
+        }
         void runBusy("Committing & opening PR…", async () => {
           const ok = await commitAndOpenPr(agent.id, msg.trim());
           if (ok) revertOverride();
         });
         break;
       case "open-pr":
+        // Needs a branch — hand to the agent to name + create one if there
+        // isn't one yet; otherwise the direct gh --fill PR.
+        if (!hasBranch) {
+          delegate("open-pr", appActionMessage("open-pr", { base }));
+          break;
+        }
         void runBusy("Opening PR…", async () => {
           const pr = await createPr(agent.id, "", "");
           // If creation failed (e.g. a PR already exists), the local prState
@@ -804,6 +824,12 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
       case "merge":        void runBusy("Merging…", () => mergePr(agent.id)); break;
       case "archive":      void runBusy("Archiving…", () => archive(agent.id)); break;
       case "push":
+        // Direct git push needs a branch; with none yet, the agent names and
+        // creates one, then pushes.
+        if (!hasBranch) {
+          delegate("push", appActionMessage("push"));
+          break;
+        }
         void runBusy("Pushing…", async () => {
           const r = await pushAgent(agent.id);
           if (r) showNotice(r === "up-to-date" ? "Already up to date with origin" : "Pushed to origin");

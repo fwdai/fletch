@@ -30,7 +30,10 @@ export function WorkspaceHeader({ agent }: Props) {
   // open — and `gitStates` only refreshes while the Git tab is mounted.
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id] ?? null);
 
-  const branch = agent.repos[0]?.branch ?? "—";
+  // No branch until the first push (deferred branching) — drop the branch
+  // segment entirely rather than showing a placeholder, leaving just the
+  // diffstat and age (`+0 -0 · now`).
+  const branch = agent.repos[0]?.branch ?? null;
   const age = formatAge(agent.created_at, now);
 
   // Guard against an unbounded retry loop: switchInFlight is a dep, so a failed
@@ -64,7 +67,8 @@ export function WorkspaceHeader({ agent }: Props) {
           <span>{agent.name}</span>
         </div>
         <div className="t-meta">
-          {branch} · <DiffLabel stats={shortstats} />
+          {branch && <>{branch} · </>}
+          <DiffLabel stats={shortstats} />
           {age && <> · <span>{age}</span></>}
         </div>
       </div>

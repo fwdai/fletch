@@ -46,11 +46,12 @@ pub(crate) async fn output_timed(cmd: &mut Command, what: &str) -> Result<std::p
         .map_err(Error::from)
 }
 
-/// Create a worktree on detached HEAD (no branch yet). Used by the
-/// instant-spawn flow so we don't pollute `git branch` for agents
-/// that may never receive a user message. The branch is created
-/// later via `checkout_new_branch` when we have a slug from the
-/// first user message.
+/// Create a worktree on detached HEAD (no branch yet). The worktree
+/// stays detached for its whole working life; a branch is materialized
+/// only at the first push (via `checkout_new_unique_branch`), named by
+/// the agent. This keeps `git branch` clean for agents that never push
+/// and lets the branch carry a meaningful, conventional name chosen with
+/// full task context rather than a placeholder allocated up front.
 ///
 /// `base` is the commit-ish the worktree starts from (e.g. `origin/main`
 /// after a fresh fetch). When `None`, it starts from the repo's current
@@ -204,6 +205,67 @@ pub async fn checkout_new_branch(worktree: &Path, branch: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Most same-named branches we'll step over before giving up when
+/// materializing an agent's branch. A modest cap so a pathological
+/// pile-up surfaces as an error rather than an unbounded probe loop.
+const MAX_BRANCH_SUFFIX: u32 = 1000;
+
+/// Whether `branch` is already claimed — either a local head or a known
+/// remote-tracking ref (`origin/<branch>`). Used to pick a collision-free
+/// name when materializing an agent's branch at push time.
+///
+/// The remote check reads `refs/remotes/origin/<branch>`, which reflects the
+/// last fetch rather than a live `ls-remote` — a branch created on the remote
+/// since then isn't seen, and `git push` would update it. That race is rare
+/// and acceptable; avoiding a network round-trip on every push isn't.
+pub async fn branch_name_taken(worktree: &Path, branch: &str) -> Result<bool> {
+    if branch_exists(worktree, branch).await? {
+        return Ok(true);
+    }
+    let out = Command::new("git")
+        .current_dir(worktree)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{branch}"),
+        ])
+        .output()
+        .await?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Ok(false),
+    }
+}
+
+/// Materialize a branch on a (typically detached) worktree at its current
+/// HEAD, picking the first collision-free name from `desired`, `desired-2`,
+/// `desired-3`, … and checking it out. Returns the name actually used.
+///
+/// This is the single point where an agent's branch is born — at the first
+/// push, named from the agent's conventional choice (`fix/…`, `feat/…`,
+/// `chore/…`) rather than a placeholder allocated at spawn.
+pub async fn checkout_new_unique_branch(worktree: &Path, desired: &str) -> Result<String> {
+    for n in 1..=MAX_BRANCH_SUFFIX {
+        let candidate = if n == 1 {
+            desired.to_string()
+        } else {
+            format!("{desired}-{n}")
+        };
+        // Propagate a probe error rather than masking it as "free": treating a
+        // transient show-ref failure as an open name would attempt a checkout
+        // that fails confusingly. Surfacing it lets the caller report honestly.
+        if !branch_name_taken(worktree, &candidate).await? {
+            checkout_new_branch(worktree, &candidate).await?;
+            return Ok(candidate);
+        }
+    }
+    Err(Error::Git(format!(
+        "no free branch name for `{desired}` within {MAX_BRANCH_SUFFIX} tries"
+    )))
 }
 
 /// `git init` a fresh repository at `path` (created if absent). Used by the
