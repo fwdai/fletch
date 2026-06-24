@@ -22,7 +22,8 @@
         "transparent": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "visible": false
+        "visible": false,
+        "backgroundColor": "#0e1011"
       }
     ],
     "security": { "csp": null }
