@@ -255,7 +255,10 @@ pub async fn checkout_new_unique_branch(worktree: &Path, desired: &str) -> Resul
         } else {
             format!("{desired}-{n}")
         };
-        if !branch_name_taken(worktree, &candidate).await.unwrap_or(false) {
+        // Propagate a probe error rather than masking it as "free": treating a
+        // transient show-ref failure as an open name would attempt a checkout
+        // that fails confusingly. Surfacing it lets the caller report honestly.
+        if !branch_name_taken(worktree, &candidate).await? {
             checkout_new_branch(worktree, &candidate).await?;
             return Ok(candidate);
         }
