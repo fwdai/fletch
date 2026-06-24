@@ -327,10 +327,20 @@ pub fn run() {
         .plugin(tauri_plugin_process::init());
 
     // Persist window size/position/maximized state across restarts. Desktop
-    // only — the plugin isn't available on mobile targets.
+    // only — the plugin isn't available on mobile targets. VISIBLE is excluded
+    // from the tracked flags so the plugin doesn't reveal the window during
+    // restore (which happens early, before the webview has painted, and is the
+    // source of the white launch flash). The frontend shows it after first
+    // paint instead — see `revealAppWindow` / `src/main.tsx`.
     #[cfg(desktop)]
-    let builder =
-        builder.plugin(tauri_plugin_window_state::Builder::default().build());
+    let builder = builder.plugin(
+        tauri_plugin_window_state::Builder::default()
+            .with_state_flags(
+                tauri_plugin_window_state::StateFlags::all()
+                    & !tauri_plugin_window_state::StateFlags::VISIBLE,
+            )
+            .build(),
+    );
 
     builder
         .setup(|app| {
