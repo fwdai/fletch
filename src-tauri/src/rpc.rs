@@ -236,9 +236,16 @@ async fn handle_request_file(
 
     if let Err(e) = write_response_atomic(responses, stem, &resp) {
         tracing::warn!(error = %e, id = %stem, "rpc: write response failed");
-        // Leave the request so a later tick can retry rather than dropping it.
-        // Don't surface the effects either — the op will re-run next tick.
-        return Vec::new();
+        // The op's side effects already landed in the world (a branch was
+        // checked out, a PR was opened), so surface them for persistence even
+        // though the agent's reply didn't write — otherwise a freshly
+        // materialized branch is created in git but never recorded in the DB,
+        // and the retry can't re-derive it (`current_branch` now returns the
+        // branch, so the op takes the no-effect path). The request is left for
+        // a retry to re-write the response; the effect-producing ops are
+        // idempotent (the re-run finds the branch already present and emits no
+        // new effect), so returning effects here can't double-apply.
+        return effects;
     }
 
     // Answered — remove the request so it's processed exactly once.
