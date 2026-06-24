@@ -92,3 +92,14 @@ The two are loaded identically; the only difference is where the source lives:
   public clone / CI doesn't have it, so it never reaches the public build. Why a
   given extension is private — unreleased, in development, separately
   licensed — is an implementation detail the core does not model.
+
+## Trust model
+
+Extensions are **trusted, first-class code — not sandboxed.** A backend runs
+in-process with full app privileges (the database, plus filesystem/OS access via
+`ctx.app`), and every registered command is reachable from the WebView through
+the shared `ext_invoke` command. There is no per-command permission gating —
+this is the same posture as the core's own `db_*` and native commands, which any
+WebView script can already call. Only build in extensions you trust; treat a
+private extension as part of your trusted codebase, and put any
+authorization/validation an extension needs inside the extension itself.

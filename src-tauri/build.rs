@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,9 +47,24 @@ fn generate_extension_glue() {
             .collect();
         dirs.sort();
 
+        // Map each module ident back to the folder that produced it, so two
+        // folder names that sanitize to the same ident (e.g. `my-ext` and
+        // `my.ext` -> `my_ext`) fail with a clear message here instead of a
+        // cryptic "module ext_my_ext is already defined" later.
+        let mut seen_idents: HashMap<String, String> = HashMap::new();
+
         for dir in dirs {
             let name = dir.file_name().unwrap().to_string_lossy().to_string();
             let ident = sanitize_ident(&name);
+
+            if let Some(prev) = seen_idents.insert(ident.clone(), name.clone()) {
+                println!(
+                    "cargo::error=extension folders '{prev}' and '{name}' both map to module \
+                     identifier 'ext_{ident}' after sanitization; rename one so they differ by \
+                     more than non-alphanumeric characters."
+                );
+                continue;
+            }
 
             // Watch the extension dir so adding a backend/ or migrations/ subdir
             // (a new file directly under it) retriggers codegen; the per-file
