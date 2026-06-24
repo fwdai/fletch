@@ -8,6 +8,10 @@ import { AccountPane } from "./AccountPane";
 import { ProvidersPane } from "./ProvidersPane";
 import { CustomAgentsPane } from "./CustomAgents";
 import { ExperimentalPane } from "./ExperimentalPane";
+// Extension seam: settings panes contributed by whichever extensions are
+// present in this build (see src/extensions/registry.ts). Empty in a stock
+// public build that has no extensions on disk.
+import { settingsPanes as extSettingsPanes } from "../../extensions/registry";
 
 // Lazily loaded behind `import.meta.env.DEV`. In production the ternary's dead
 // branch — including the dynamic import() — is dropped by Rollup, so the
@@ -28,6 +32,8 @@ const NAV: { id: SettingsSection; label: string; icon: IconName }[] = [
   ...(DeveloperPane
     ? [{ id: "developer" as const, label: "Developer", icon: "wrench" as const }]
     : []),
+  // Extension-contributed panes (empty when no extensions are present).
+  ...extSettingsPanes.map((p) => ({ id: p.id, label: p.label, icon: p.icon })),
 ];
 
 /** Dedicated full-screen settings surface. Rendered in place of the workspace
@@ -69,6 +75,9 @@ export function SettingsScreen() {
           {section === "providers" && <ProvidersPane />}
           {section === "agents" && <CustomAgentsPane />}
           {section === "experimental" && <ExperimentalPane />}
+          {extSettingsPanes.map(
+            (p) => section === p.id && <p.Component key={p.id} />,
+          )}
           {section === "developer" && DeveloperPane && (
             <Suspense fallback={null}>
               <DeveloperPane />

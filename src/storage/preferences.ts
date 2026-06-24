@@ -16,7 +16,12 @@ export type SettingsSection =
   | "providers"
   | "agents"
   | "experimental"
-  | "developer";
+  | "developer"
+  // Extension seam: extensions contribute settings panes under namespaced
+  // `ext:*` section ids (see src/extensions). The core knows the shape, never
+  // the specific extension; in a build with no extensions this branch is
+  // simply never reachable.
+  | `ext:${string}`;
 
 export interface FeatureFlags {
   git: boolean;
