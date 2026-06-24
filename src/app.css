@@ -1379,7 +1379,10 @@ button { cursor: default; }
   top: 0;
   bottom: 0;
   left: calc(100% - 16px);
-  width: 252px;
+  /* Cap against the viewport so the panel can't run off-screen on a narrow
+   *  window. 280px = the main card's 296px width minus the 16px tuck-under;
+   *  44px leaves a small right margin. */
+  width: min(252px, calc(100vw - 280px - 44px));
   z-index: 1;
   animation: modelSideFly .28s cubic-bezier(.22, 1, .36, 1);
 }

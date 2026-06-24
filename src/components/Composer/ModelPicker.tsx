@@ -192,7 +192,11 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                     type="button"
                     disabled={!usable}
                     className={`model-agent-row ${isSelected ? "active" : ""} ${isOpen ? "hot" : ""}`}
-                    title={missing ? "Not installed — see Settings › Providers" : undefined}
+                    title={
+                      missing
+                        ? "Not installed — see Settings › Providers"
+                        : "Click to use the default model · hover to choose a model"
+                    }
                     onMouseEnter={() => usable && setHovered(p.id)}
                     onClick={() => usable && pickModel(p.id, undefined)}
                   >
