@@ -331,12 +331,15 @@ export interface ProvidersSlice {
 export interface DraftsSlice {
   drafts: DraftAgent[];
   activeDraftId: string | null;
+  newDraftProvider: string;
+  newDraftModel?: string;
 
   // drafts
   createDraft: (repoPath: string) => Promise<void>;
   updateDraft: (id: string, patch: Partial<DraftAgent>) => void;
   removeDraft: (id: string) => void;
   selectDraft: (id: string | null) => void;
+  setNewDraftSelection: (provider: string, model?: string) => void;
   rerollDraftName: (id: string) => Promise<void>;
   /** Spawn the real agent for a draft and dispatch the first message. */
   spawnFromDraft: (

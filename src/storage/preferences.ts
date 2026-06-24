@@ -1,3 +1,5 @@
+import { DEFAULT_PROVIDER_ID } from "../data/providers";
+
 // Typed app-preference parsers: turn the flat string→string settings blob read
 // by ./settings.ts into the structured values the store holds. Kept out of the
 // store so the migration/clamping logic lives next to the persistence layer it
@@ -86,6 +88,35 @@ export function parseProviderFlags(
     return JSON.parse(raw) as Record<string, boolean>;
   } catch {
     return {};
+  }
+}
+
+export interface NewDraftSelection {
+  provider: string;
+  model?: string;
+}
+
+export const DEFAULT_NEW_DRAFT_SELECTION: NewDraftSelection = {
+  provider: DEFAULT_PROVIDER_ID,
+};
+
+export function parseNewDraftSelection(
+  raw: string | undefined,
+): NewDraftSelection {
+  if (!raw) return DEFAULT_NEW_DRAFT_SELECTION;
+  try {
+    const saved = JSON.parse(raw) as Partial<NewDraftSelection>;
+    const provider =
+      typeof saved.provider === "string" && saved.provider.trim()
+        ? saved.provider
+        : DEFAULT_PROVIDER_ID;
+    const model =
+      typeof saved.model === "string" && saved.model.trim()
+        ? saved.model
+        : undefined;
+    return model ? { provider, model } : { provider };
+  } catch {
+    return DEFAULT_NEW_DRAFT_SELECTION;
   }
 }
 

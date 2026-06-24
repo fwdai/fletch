@@ -1,6 +1,7 @@
 import { api } from "../api";
-import { DEFAULT_PROVIDER_ID } from "../data/providers";
+import { DEFAULT_PROVIDER_ID, PROVIDERS } from "../data/providers";
 import { usedNames, sendWhenAgentReady } from "../helpers";
+import { setSetting } from "../storage/settings";
 import type { AppState, SliceCreator, DraftsSlice } from "./types";
 
 // ---- Drafts ----------------------------------------------------------------
@@ -22,20 +23,46 @@ export interface DraftAgent {
   base: string;
 }
 
+const NEW_DRAFT_SELECTION_SETTING = "newDraftSelection";
+
+function normalizeDraftSelection(
+  provider: string,
+  model: string | undefined,
+  modelsByAgent: Record<string, { id: string }[]>,
+): { provider: string; model?: string } {
+  const selectedProvider = PROVIDERS.some((p) => p.id === provider)
+    ? provider
+    : DEFAULT_PROVIDER_ID;
+  const selectedProviderMeta = PROVIDERS.find((p) => p.id === selectedProvider);
+  if (selectedProviderMeta?.fixedModel) {
+    return { provider: selectedProvider };
+  }
+  const models = modelsByAgent[selectedProvider] ?? [];
+  if (!model) return { provider: selectedProvider };
+  if (models.length > 0 && !models.some((m) => m.id === model)) {
+    return { provider: selectedProvider };
+  }
+  return { provider: selectedProvider, model };
+}
+
 export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   drafts: [],
   activeDraftId: null,
+  newDraftProvider: DEFAULT_PROVIDER_ID,
+  newDraftModel: undefined,
 
   // ── drafts ─────────────────────────────────────────────────────────────────
   createDraft: async (repoPath) => {
-    const { workspace, drafts } = get();
+    const { workspace, drafts, newDraftProvider, newDraftModel, modelsByAgent } = get();
     const used = [...usedNames(workspace, drafts)];
     const name = await api.allocateDraftName(used);
+    const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
     const draft: DraftAgent = {
       id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       repoPath,
       name,
-      provider: DEFAULT_PROVIDER_ID,
+      provider: selection.provider,
+      model: selection.model,
       base: "main",
     };
     set((s) => ({
@@ -65,6 +92,15 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       activeDraftId: id,
       selectedAgentId: null,
     }),
+
+  setNewDraftSelection: (provider, model) => {
+    const selection = normalizeDraftSelection(provider, model, get().modelsByAgent);
+    set({
+      newDraftProvider: selection.provider,
+      newDraftModel: selection.model,
+    });
+    void setSetting(NEW_DRAFT_SELECTION_SETTING, selection);
+  },
 
   rerollDraftName: async (id) => {
     const { workspace, drafts } = get();
