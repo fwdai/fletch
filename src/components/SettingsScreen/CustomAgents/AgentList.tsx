@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { PROVIDERS } from "../../../data/providers";
 import { useAppStore } from "../../../store";
 import type { CustomAgent } from "../../../storage/customAgents";
@@ -19,6 +20,15 @@ export function AgentList({
   onDelete: (a: CustomAgent) => void;
 }) {
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
+  // Two-click delete confirm (matches the FileContextMenu "Confirm Delete?"
+  // idiom): the first trash click arms the row, the second deletes. Auto-disarms
+  // after a few seconds so a stray click never leaves a row stuck in danger.
+  const [armedDeleteId, setArmedDeleteId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!armedDeleteId) return;
+    const t = setTimeout(() => setArmedDeleteId(null), 3000);
+    return () => clearTimeout(t);
+  }, [armedDeleteId]);
 
   const modelLabel = (a: CustomAgent): string => {
     if (!a.model) return "Default model";
@@ -100,13 +110,20 @@ export function AgentList({
                     <Icon name="edit" />
                   </button>
                   <button
-                    className="btn-i sm tip"
+                    className={`btn-i sm tip ${armedDeleteId === a.id ? "danger" : ""}`}
                     data-tip-down
-                    data-tip="Delete"
-                    aria-label="Delete"
-                    onClick={() => onDelete(a)}
+                    data-tip={armedDeleteId === a.id ? "Click again to delete" : "Delete"}
+                    aria-label={armedDeleteId === a.id ? "Confirm delete" : "Delete"}
+                    onClick={() => {
+                      if (armedDeleteId === a.id) {
+                        onDelete(a);
+                        setArmedDeleteId(null);
+                      } else {
+                        setArmedDeleteId(a.id);
+                      }
+                    }}
                   >
-                    <Icon name="trash" />
+                    <Icon name={armedDeleteId === a.id ? "check" : "trash"} />
                   </button>
                 </div>
               </div>

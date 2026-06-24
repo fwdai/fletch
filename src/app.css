@@ -4164,6 +4164,8 @@ button { cursor: default; }
 .set-prov-detail-actions .grow { flex: 1; }
 .btn-t.sm-t { height: 26px; padding: 0 10px; font-size: 11.5px; white-space: nowrap; }
 .btn-t.danger { color: var(--danger); }
+.btn-i.danger { color: var(--danger); }
+.btn-i.danger:hover { background: color-mix(in oklch, var(--danger), transparent 88%); }
 .btn-t.outline.danger:hover {
   border-color: color-mix(in oklch, var(--danger), transparent 55%);
   background: color-mix(in oklch, var(--danger), transparent 92%);
@@ -4409,5 +4411,15 @@ button { cursor: default; }
   width: 100%; min-width: 0;
   max-height: min(300px, 40vh); overflow-y: auto;
 }
+/* Options are <button>s for keyboard operability — reset UA chrome and make
+   them full-width so they read like the div-based .dd-item rows elsewhere. */
+.ui-select-dd .dd-item {
+  width: 100%; background: none; border: 0; cursor: pointer;
+  font: inherit; text-align: left;
+}
 .ui-select-dd .dd-item .di-l { font-size: 13px; }
 .ui-select-dd .dd-item > svg { margin-left: auto; color: var(--accent); flex-shrink: 0; }
+.ui-select-dd .dd-item:focus-visible {
+  outline: none; background: var(--hover);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}

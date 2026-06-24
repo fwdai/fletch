@@ -170,16 +170,23 @@ export function Composer({
     () => resolveThinking(defaultProvider),
   );
 
+  // Latest custom agents, read via a ref inside the effect below so that
+  // editing an agent elsewhere doesn't re-fire it (which would clobber a
+  // manually-adjusted thinking level). Kept current on every render.
+  const customAgentsRef = useRef(customAgents);
+  customAgentsRef.current = customAgents;
+
   // When switching providers, restore the last-used level for that provider —
   // unless a custom agent is selected with its own reasoning budget, which
   // takes precedence (runs after the provider change a custom pick triggers,
-  // so it wins).
+  // so it wins). Fires only on genuine provider/custom-agent *selection*
+  // changes, not when the agent list mutates.
   useEffect(() => {
     const custom = customAgentId
-      ? customAgents.find((a) => a.id === customAgentId)
+      ? customAgentsRef.current.find((a) => a.id === customAgentId)
       : undefined;
     setThinkingValue(custom?.effort || resolveThinking(provider));
-  }, [provider, customAgentId, customAgents]);
+  }, [provider, customAgentId]);
   // Caret offset, tracked so triggers can be detected at the cursor (not just
   // at the start of the text).
   const [caret, setCaret] = useState(0);
