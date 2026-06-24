@@ -13,6 +13,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const spawnFromDraft = useAppStore((s) => s.spawnFromDraft);
   const removeDraft = useAppStore((s) => s.removeDraft);
   const updateDraft = useAppStore((s) => s.updateDraft);
+  const setNewDraftSelection = useAppStore((s) => s.setNewDraftSelection);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
 
@@ -83,9 +84,10 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             baseBranch={draft.base}
             repoPath={draft.repoPath}
             onChangeBase={(branch) => updateDraft(draft.id, { base: branch })}
-            onChangeSelection={(provider, model) =>
-              updateDraft(draft.id, { provider, model })
-            }
+            onChangeSelection={(provider, model) => {
+              updateDraft(draft.id, { provider, model });
+              setNewDraftSelection(provider, model);
+            }}
             placeholder="Describe the task for the agent. ↵ to spawn."
             onSend={({ text, provider, model, attachments, thinking }) =>
               spawnFromDraft(draft.id, text, provider, model, attachments, thinking)
