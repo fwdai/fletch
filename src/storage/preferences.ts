@@ -14,6 +14,7 @@ export type SettingsSection =
   | "general"
   | "account"
   | "providers"
+  | "agents"
   | "experimental"
   | "developer";
 
@@ -94,6 +95,9 @@ export function parseProviderFlags(
 export interface NewDraftSelection {
   provider: string;
   model?: string;
+  /** The custom agent the new-draft picker last selected, if any. Resolved
+   *  against the live `custom_agents` list on use — a stale id is ignored. */
+  customAgentId?: string;
 }
 
 export const DEFAULT_NEW_DRAFT_SELECTION: NewDraftSelection = {
@@ -114,7 +118,15 @@ export function parseNewDraftSelection(
       typeof saved.model === "string" && saved.model.trim()
         ? saved.model
         : undefined;
-    return model ? { provider, model } : { provider };
+    const customAgentId =
+      typeof saved.customAgentId === "string" && saved.customAgentId.trim()
+        ? saved.customAgentId
+        : undefined;
+    return {
+      provider,
+      ...(model ? { model } : {}),
+      ...(customAgentId ? { customAgentId } : {}),
+    };
   } catch {
     return DEFAULT_NEW_DRAFT_SELECTION;
   }

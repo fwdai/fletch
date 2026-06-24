@@ -20,4 +20,18 @@ describe("parseNewDraftSelection", () => {
       parseNewDraftSelection(JSON.stringify({ provider: "cursor", model: "   " })),
     ).toEqual({ provider: "cursor" });
   });
+
+  it("reads a persisted custom agent id", () => {
+    expect(
+      parseNewDraftSelection(
+        JSON.stringify({ provider: "claude", model: "opus", customAgentId: "ca-1" }),
+      ),
+    ).toEqual({ provider: "claude", model: "opus", customAgentId: "ca-1" });
+  });
+
+  it("drops a blank custom agent id", () => {
+    expect(
+      parseNewDraftSelection(JSON.stringify({ provider: "claude", customAgentId: "  " })),
+    ).toEqual({ provider: "claude" });
+  });
 });

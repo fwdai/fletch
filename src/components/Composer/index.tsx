@@ -25,6 +25,8 @@ interface Props {
   defaultProvider?: string;
   /** Initial model id for new-agent drafts. Undefined means provider default. */
   defaultModel?: string;
+  /** Initial custom-agent id for new-agent drafts, if one was selected. */
+  defaultCustomAgentId?: string;
   /** When set, render a branch picker chip showing the current base branch. */
   baseBranch?: string;
   /** Repo path used to fetch available branches for the picker. */
@@ -44,6 +46,8 @@ interface Props {
     /** Raw effort value for the selected provider, or undefined when the
      *  provider has no thinking levels (e.g. Cursor). */
     thinking: string | undefined;
+    /** The selected custom agent's id, or undefined for a built-in spawn. */
+    customAgentId: string | undefined;
     attachments: string[];
   }) => void;
   /** Fired when the composer is showing an active stop control. */
@@ -52,8 +56,9 @@ interface Props {
    *  `action` identifier comes from the `SlashCommand` entry. The text
    *  is NOT sent to the agent; the parent decides what to do. */
   onLocalCommand?: (action: string) => void;
-  /** Fired when a new-agent draft changes its provider/model selection. */
-  onChangeSelection?: (provider: string, model?: string) => void;
+  /** Fired when a new-agent draft changes its provider/model/custom-agent
+   *  selection. `customAgentId` is set when a custom agent is picked. */
+  onChangeSelection?: (provider: string, model?: string, customAgentId?: string) => void;
   /** Supplies candidate worktree-relative file paths for the "@" mention
    *  autocomplete. Called each time a mention opens, so the list stays fresh
    *  as the agent edits files. Omit it (e.g. new sessions with no worktree
@@ -107,6 +112,7 @@ function resolveThinking(providerId: string): string | undefined {
 export function Composer({
   defaultProvider = DEFAULT_PROVIDER_ID,
   defaultModel,
+  defaultCustomAgentId,
   baseBranch,
   repoPath,
   onChangeBase,
@@ -132,6 +138,7 @@ export function Composer({
   const features = useAppStore((s) => s.features);
   const modelCatalog = useAppStore((s) => s.modelCatalog);
   const setComposerDraft = useAppStore((s) => s.setComposerDraft);
+  const customAgents = useAppStore((s) => s.customAgents);
 
   // Hide the thinking-effort picker for a model the catalog knows can't reason.
   // When the model is unknown (a new session before the first turn, or one the
@@ -145,6 +152,9 @@ export function Composer({
   );
   const [provider, setProvider] = useState(defaultProvider);
   const [model, setModel] = useState<string | undefined>(defaultModel);
+  const [customAgentId, setCustomAgentId] = useState<string | undefined>(
+    defaultCustomAgentId,
+  );
   const activeMeta = lookupModel(
     modelCatalog,
     existingSession ? activeModel ?? model : model,
@@ -160,10 +170,16 @@ export function Composer({
     () => resolveThinking(defaultProvider),
   );
 
-  // When switching providers, restore the last-used level for that provider.
+  // When switching providers, restore the last-used level for that provider —
+  // unless a custom agent is selected with its own reasoning budget, which
+  // takes precedence (runs after the provider change a custom pick triggers,
+  // so it wins).
   useEffect(() => {
-    setThinkingValue(resolveThinking(provider));
-  }, [provider]);
+    const custom = customAgentId
+      ? customAgents.find((a) => a.id === customAgentId)
+      : undefined;
+    setThinkingValue(custom?.effort || resolveThinking(provider));
+  }, [provider, customAgentId, customAgents]);
   // Caret offset, tracked so triggers can be detected at the cursor (not just
   // at the start of the text).
   const [caret, setCaret] = useState(0);
@@ -254,7 +270,7 @@ export function Composer({
       return;
     }
     if ((!trimmed && attachments.length === 0) || disabled) return;
-    onSend({ text: trimmed, provider, model, thinking: thinkingValue, attachments });
+    onSend({ text: trimmed, provider, model, thinking: thinkingValue, customAgentId, attachments });
     setText("");
     setAttachments([]);
     if (ta.current) ta.current.style.height = "auto";
@@ -319,11 +335,15 @@ export function Composer({
         <ModelPicker
           provider={provider}
           model={model}
+          customAgentId={customAgentId}
           locked={existingSession}
-          onChange={(nextProvider, nextModel) => {
+          onChange={(nextProvider, nextModel, nextCustomAgentId) => {
+            // Effort follows from the selection via the effect above (a custom
+            // agent's reasoning budget, else the per-provider default).
             setProvider(nextProvider);
             setModel(nextModel);
-            onChangeSelection?.(nextProvider, nextModel);
+            setCustomAgentId(nextCustomAgentId);
+            onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
           }}
         />
         {features.thinkingBudget && thinkingLevels.length > 0 && modelSupportsThinking && (

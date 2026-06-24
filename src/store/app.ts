@@ -58,8 +58,11 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     // Load persisted settings from DB.
     try {
       const s = await getAllSettings();
-      const { provider: newDraftProvider, model: newDraftModel } =
-        parseNewDraftSelection(s.newDraftSelection);
+      const {
+        provider: newDraftProvider,
+        model: newDraftModel,
+        customAgentId: newDraftCustomAgentId,
+      } = parseNewDraftSelection(s.newDraftSelection);
       set({
         theme: (s.theme as ThemeMode) || "dark",
         codeTheme: s.codeTheme || "quorum",
@@ -70,6 +73,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
         providerPathOverrides: parseProviderPathOverrides(s),
         newDraftProvider,
         newDraftModel,
+        newDraftCustomAgentId,
         viewMode: (s.viewMode as WorkspaceView) || "custom",
         gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
         onboardingComplete: s.onboardingComplete === "true",
@@ -107,6 +111,10 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     // Rebuild the model catalog if stale (async, non-blocking). State is seeded
     // from the localStorage cache, so lookups work immediately regardless.
     void get().refreshModelCatalog();
+
+    // Load custom agent presets (async, non-blocking). Empty until loaded — the
+    // composer picker and settings pane just show the built-ins meanwhile.
+    void get().loadCustomAgents();
 
     await onAgentOutput((e) => {
       pushAgentOutput(e.agent_id, new Uint8Array(e.bytes));

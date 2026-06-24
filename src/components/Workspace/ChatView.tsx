@@ -28,6 +28,13 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const stop = useAppStore((s) => s.stop);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
   const usage = useAppStore((s) => s.usage[agent.id]);
+  // The custom agent this session was spawned from (if any, and still present),
+  // so the chat surfaces the agent's name rather than its base provider.
+  const customAgent = useAppStore((s) =>
+    agent.custom_agent_id
+      ? s.customAgents.find((a) => a.id === agent.custom_agent_id)
+      : undefined,
+  );
   const composerSeed = useAppStore((s) => s.composerSeeds[agent.id]);
   const consumeComposerSeed = useAppStore((s) => s.consumeComposerSeed);
   // Stable identity: the Composer's seed effect lists this in its deps, so an
@@ -168,7 +175,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                 <i /><i /><i />
               </span>
               <span>
-                {busyLabel ?? `${providerLabel(agent.provider)} is thinking`}
+                {busyLabel ?? `${customAgent?.name ?? providerLabel(agent.provider)} is thinking`}
               </span>
             </div>
           )}
@@ -181,6 +188,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           usage={usage}
           defaultProvider={agent.provider}
           defaultModel={agent.model ?? undefined}
+          defaultCustomAgentId={agent.custom_agent_id ?? undefined}
           initialThinking={agent.effort ?? undefined}
           disabled={!canSend}
           placeholder={

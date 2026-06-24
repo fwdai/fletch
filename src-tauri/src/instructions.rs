@@ -52,24 +52,39 @@ pub fn text() -> String {
     combined
 }
 
-/// Args for agents that expose `--append-system-prompt` (Claude, Pi).
-/// Empty when there's nothing to inject.
-pub fn append_system_prompt_args() -> Vec<String> {
-    let text = text();
+/// The global instruction text plus an optional per-session suffix (a custom
+/// agent's standing brief). The suffix is appended *after* the global block so
+/// project/global guidance composes with the agent's role rather than replacing
+/// it. Empty (a no-op for every helper) only when both layers are blank.
+fn combined(extra: Option<&str>) -> String {
+    let base = text();
+    match extra.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(custom) if base.is_empty() => custom.to_string(),
+        Some(custom) => format!("{base}\n\n{custom}"),
+        None => base,
+    }
+}
+
+/// Args for agents that expose `--append-system-prompt` (Claude, Pi). `extra`
+/// carries a custom agent's per-session instructions. Empty when there's
+/// nothing to inject.
+pub fn append_system_prompt_args(extra: Option<&str>) -> Vec<String> {
+    let text = combined(extra);
     if text.is_empty() {
         return Vec::new();
     }
-    vec!["--append-system-prompt".into(), text.to_string()]
+    vec!["--append-system-prompt".into(), text]
 }
 
 /// Args for Codex's developer-instructions config override
-/// (`-c developer_instructions="…"`). Empty when there's nothing to inject.
+/// (`-c developer_instructions="…"`). `extra` carries a custom agent's
+/// per-session instructions. Empty when there's nothing to inject.
 ///
 /// The value is a TOML basic string passed as a single argv element (no shell
 /// is involved — `Command`/`portable-pty` pass argv directly), so only TOML
 /// string escaping matters, not shell quoting.
-pub fn codex_config_args() -> Vec<String> {
-    let text = text();
+pub fn codex_config_args(extra: Option<&str>) -> Vec<String> {
+    let text = combined(extra);
     if text.is_empty() {
         return Vec::new();
     }
@@ -82,9 +97,10 @@ pub fn codex_config_args() -> Vec<String> {
 /// For agents with no system-prompt slot (Cursor, OpenCode, Antigravity), fold
 /// the instructions into the prompt — but only on the first turn of a session
 /// (`session_id` is `None`). On later turns the text is already in the resumed
-/// history, so the original prompt is returned unchanged.
-pub fn prepend_to_prompt(prompt: &str, session_id: Option<&str>) -> String {
-    let text = text();
+/// history, so the original prompt is returned unchanged. `extra` carries a
+/// custom agent's per-session instructions.
+pub fn prepend_to_prompt(prompt: &str, session_id: Option<&str>, extra: Option<&str>) -> String {
+    let text = combined(extra);
     if text.is_empty() || session_id.is_some() {
         return prompt.to_string();
     }
@@ -136,14 +152,14 @@ mod tests {
 
     #[test]
     fn append_args_carry_the_text() {
-        let args = append_system_prompt_args();
+        let args = append_system_prompt_args(None);
         assert_eq!(args[0], "--append-system-prompt");
         assert_eq!(args[1], text());
     }
 
     #[test]
     fn codex_args_are_a_toml_developer_instructions_override() {
-        let args = codex_config_args();
+        let args = codex_config_args(None);
         assert_eq!(args[0], "-c");
         assert!(args[1].starts_with("developer_instructions=\""));
         assert!(args[1].ends_with('"'));
@@ -151,14 +167,41 @@ mod tests {
 
     #[test]
     fn prepend_only_on_first_turn() {
-        let first = prepend_to_prompt("do the thing", None);
+        let first = prepend_to_prompt("do the thing", None, None);
         assert!(first.starts_with("<quorum-system>"));
         assert!(first.contains(text().as_str()));
         assert!(first.contains("</quorum-system>"));
         assert!(first.ends_with("do the thing"));
 
         // Resumed turn: untouched (the text is already in history).
-        assert_eq!(prepend_to_prompt("do the thing", Some("sess-1")), "do the thing");
+        assert_eq!(prepend_to_prompt("do the thing", Some("sess-1"), None), "do the thing");
+    }
+
+    #[test]
+    fn custom_instructions_append_after_global_block() {
+        let custom = "You are the Reviewer. Be terse.";
+
+        // Append-style: the global text and the custom brief both ride in the
+        // single --append-system-prompt arg, global first.
+        let args = append_system_prompt_args(Some(custom));
+        let base = text();
+        assert_eq!(args[1], format!("{base}\n\n{custom}"));
+
+        // Codex developer_instructions carries the combined text too.
+        let codex = codex_config_args(Some(custom));
+        assert!(codex[1].contains(custom));
+
+        // Prepend-style: custom brief lands in the first-turn block.
+        let first = prepend_to_prompt("do it", None, Some(custom));
+        assert!(first.contains(custom));
+        assert!(first.contains(base.as_str()));
+        // Still suppressed on resume (the text is already in history).
+        assert_eq!(prepend_to_prompt("do it", Some("s"), Some(custom)), "do it");
+    }
+
+    #[test]
+    fn blank_custom_instructions_are_a_noop() {
+        assert_eq!(append_system_prompt_args(Some("   ")), append_system_prompt_args(None));
     }
 
     #[test]
