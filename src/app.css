@@ -1274,182 +1274,254 @@ button { cursor: default; }
   color: var(--fg-3);
 }
 
-.model-dd {
-  width: min(680px, calc(100vw - 48px));
-  padding: 0;
-  overflow: hidden;
+/* Transparent positioning wrapper. Holds the main card (above) and the model
+ *  side panel (below it) so the panel slides out from underneath the dropdown. */
+.model-dd-wrap {
+  position: absolute;
+  z-index: 200;
+  /* The side panel is absolute, so it must not be clipped by the wrapper. */
+  overflow: visible;
 }
-.model-dd-head {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-  gap: 0;
-  padding: 9px 10px 8px;
-  border-bottom: 1px solid var(--bd-soft);
+.model-dd-main {
+  position: relative;
+  z-index: 2;
+  width: min(296px, calc(100vw - 28px));
+  padding: 5px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: 13px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.04) inset,
+    0 18px 48px -12px rgba(0,0,0,.55),
+    0 4px 12px rgba(0,0,0,.3);
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  transform-origin: bottom left;
+  animation: modelDdIn .17s var(--ease);
+}
+@keyframes modelDdIn {
+  from { opacity: 0; transform: translateY(7px) scale(.975); }
+  to   { opacity: 1; transform: none; }
+}
+/* Section header with trailing rule, mirroring the prototype's dividers. */
+.model-sect {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 10px 5px;
   color: var(--fg-3);
   font-size: 10px;
-  font-weight: 650;
-  letter-spacing: .08em;
+  font-weight: 600;
+  letter-spacing: .07em;
   text-transform: uppercase;
 }
-.model-dd-grid {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-  height: min(390px, calc(100vh - 180px));
-  min-height: 270px;
+.model-sect-line {
+  flex: 1;
+  height: 1px;
+  background: var(--bd-soft);
+}
+/* Coding agent row: name, version, chevron. Hovering opens the side panel. */
+.model-agent-row {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  color: var(--fg-1);
+  text-align: left;
+  transition: background .12s var(--ease);
+}
+.model-agent-row:not(:disabled):hover,
+.model-agent-row.hot {
+  background: var(--hover);
+}
+.model-agent-row.active {
+  background: var(--selected);
+}
+.model-agent-row:disabled {
+  opacity: .42;
+}
+.model-agent-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-0);
 }
-.model-agent-list {
+.model-agent-ver {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.model-agent-row > svg:last-child {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  opacity: .65;
+  transition: transform .16s var(--ease), color .16s, opacity .16s;
+}
+.model-agent-row:not(:disabled):hover > svg:last-child,
+.model-agent-row.hot > svg:last-child {
+  color: var(--accent);
+  opacity: 1;
+  transform: translateX(2px);
+}
+/* Model side panel — full height of the main card, tucked ~16px under its right
+ *  edge (z-index below the main, no left border/radius) so it reads as sliding
+ *  out from underneath rather than floating beside it. */
+.model-side-fly {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(100% - 16px);
+  /* Cap against the viewport so the panel can't run off-screen on a narrow
+   *  window. 280px = the main card's 296px width minus the 16px tuck-under;
+   *  44px leaves a small right margin. */
+  width: min(252px, calc(100vw - 280px - 44px));
+  z-index: 1;
+  animation: modelSideFly .28s cubic-bezier(.22, 1, .36, 1);
+}
+@keyframes modelSideFly {
+  from { transform: translateX(-30px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+.model-side-fly-card {
+  height: 100%;
+  /* Left padding clears the tucked-under strip so content starts at the
+   *  main card's visible right edge. */
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-left: 0;
+  border-radius: 0 13px 13px 0;
+  box-shadow:
+    5px 0 16px -7px rgba(0,0,0,.55),
+    0 18px 48px -12px rgba(0,0,0,.55);
+}
+.model-side-fly-inner {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  padding: 6px;
-  border-right: 1px solid var(--bd-soft);
-  overflow: auto;
+  height: 100%;
+  animation: modelFadeSwap .2s var(--ease);
 }
-.model-agent {
+@keyframes modelFadeSwap {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.model-side-fly-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.model-side-fly-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--fg-0);
+}
+.model-side-fly-tag {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--fg-3);
+}
+.model-side-fly-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+}
+.model-list {
+  min-height: 0;
+}
+.model-option {
   width: 100%;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 8px;
-  border-radius: var(--r-sm);
+  padding: 6px 9px;
+  border-radius: 8px;
   color: var(--fg-1);
   text-align: left;
+  transition: background .1s var(--ease);
 }
-.model-agent:hover:not(:disabled),
-.model-agent.active {
+.model-option:hover {
   background: var(--hover);
-  color: var(--fg-0);
 }
-.model-agent:disabled {
-  opacity: .42;
+.model-option.active {
+  background: var(--selected);
 }
-.model-agent-text {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.model-agent-text span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12.5px;
-  font-weight: 540;
-}
-.model-agent-text span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg-3);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-}
-.model-agent > svg,
-.model-mark svg {
+.model-option > svg {
+  flex-shrink: 0;
   color: var(--accent);
 }
-.model-list {
-  min-height: 0;
-  padding: 6px;
-  overflow: auto;
-  overscroll-behavior: contain;
-}
-.model-option {
-  width: 100%;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-radius: var(--r-sm);
-  color: var(--fg-1);
-  text-align: left;
-}
-.model-option:hover,
-.model-option.active {
-  background: var(--hover);
-  color: var(--fg-0);
-}
-.model-mark {
-  width: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
 .model-option-main {
+  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
-.model-option-main span:first-child {
+.model-option-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12.5px;
-  font-weight: 560;
+  font-weight: 450;
+  color: var(--fg-0);
 }
-.model-option-main span:last-child {
+.model-option-name.def {
+  font-weight: 550;
+}
+.model-option-desc {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-3);
-  font-family: var(--font-mono);
   font-size: 10.5px;
 }
-.model-option-meta {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  max-width: 190px;
-}
-.model-option-meta span {
+.model-ctx {
+  flex-shrink: 0;
   padding: 2px 5px;
-  border-radius: 4px;
-  background: var(--bg-3);
+  border: 1px solid var(--bd-soft);
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
   color: var(--fg-2);
-  font-size: 10.5px;
   white-space: nowrap;
+}
+.model-option.active .model-ctx {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .model-empty {
-  margin: 12px;
-  padding: 18px 14px;
+  margin: 8px;
+  padding: 16px 14px;
   border: 1px dashed var(--bd);
-  border-radius: var(--r-sm);
+  border-radius: 9px;
   color: var(--fg-3);
-  font-size: 12px;
+  font-size: 11.5px;
   text-align: center;
 }
-.model-dd-foot {
-  padding: 8px 10px;
-  border-top: 1px solid var(--bd-soft);
-  color: var(--fg-3);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 @media (max-width: 760px) {
-  .model-dd {
-    width: calc(100vw - 28px);
-  }
-  .model-dd-head,
-  .model-dd-grid {
-    grid-template-columns: 150px minmax(0, 1fr);
-  }
-  .model-option {
-    grid-template-columns: 18px minmax(0, 1fr);
-  }
-  .model-option-meta {
-    grid-column: 2;
-    justify-content: flex-start;
-    max-width: none;
-  }
   .model-chip-agent {
     display: none;
   }
@@ -4357,31 +4429,44 @@ button { cursor: default; }
 }
 .ca-grow { flex: 1; }
 
-/* Custom agents section at the top of the model picker dropdown. */
-.model-custom { padding: 6px; border-bottom: 1px solid var(--bd-soft); }
-.model-custom-head {
-  padding: 4px 6px 6px;
-  color: var(--fg-3); font-size: 10px; font-weight: 650;
-  letter-spacing: .08em; text-transform: uppercase;
-}
+/* Custom agents section of the model picker dropdown — mirrors .model-agent-row. */
 .model-custom-row {
-  width: 100%; display: flex; align-items: center; gap: 9px;
-  padding: 7px 8px; border-radius: var(--r-sm);
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  padding: 7px 9px; border-radius: 9px;
   color: var(--fg-1); text-align: left;
-  transition: background .12s;
+  transition: background .12s var(--ease);
 }
 .model-custom-row:hover { background: var(--hover); }
 .model-custom-row.active { background: var(--selected); }
 .model-custom-row > svg { margin-left: auto; color: var(--accent); flex-shrink: 0; }
-.model-custom-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.model-custom-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; line-height: 1.2; }
 .model-custom-text > span:first-child {
-  font-size: 12.5px; color: var(--fg-0); font-weight: 500;
+  font-size: 13px; color: var(--fg-0); font-weight: 500;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .model-custom-text > span:last-child {
-  font-size: 11px; color: var(--fg-3);
+  font-size: 11px; color: var(--fg-2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* Empty-state call to action — opens the new-custom-agent editor. */
+.model-custom-cta {
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  padding: 7px 9px; border-radius: 9px;
+  color: var(--fg-2); text-align: left;
+  transition: background .12s var(--ease), color .12s var(--ease);
+}
+.model-custom-cta:hover { background: var(--hover); color: var(--fg-1); }
+.model-custom-cta .model-custom-text > span:first-child { color: var(--fg-1); font-weight: 500; }
+.model-custom-cta:hover .model-custom-text > span:first-child { color: var(--fg-0); }
+.model-custom-cta-icon {
+  width: 26px; height: 26px; flex-shrink: 0;
+  display: grid; place-items: center;
+  border: 1px dashed var(--bd); border-radius: 7px;
+  color: var(--fg-3);
+  transition: border-color .12s var(--ease), color .12s var(--ease);
+}
+.model-custom-cta:hover .model-custom-cta-icon { border-color: var(--accent); color: var(--accent); }
 
 /* ── UI SELECT (custom dropdown replacing native <select>) ───────────────── */
 .ui-select { position: relative; }

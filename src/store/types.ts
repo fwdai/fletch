@@ -22,6 +22,7 @@ import type {
   Density,
   WorkspaceView,
   SettingsSection,
+  SettingsIntent,
   FeatureFlags,
 } from "../storage/preferences";
 import type { AccountProfile } from "../storage/accounts";
@@ -217,6 +218,10 @@ export interface UiSlice {
    *  Replaces the workspace panes while open. */
   settingsScreenOpen: boolean;
   settingsSection: SettingsSection;
+  /** One-shot deep-link intent for the settings screen, consumed and cleared
+   *  by the target pane on mount (e.g. open the new-custom-agent editor
+   *  straight from the composer's agent picker). */
+  settingsIntent: SettingsIntent | null;
   /** First-run onboarding overlay. `onboardingComplete` is persisted (DB
    *  settings); the overlay auto-opens for new users on init and is
    *  re-openable any time from Settings › General. */
@@ -235,9 +240,11 @@ export interface UiSlice {
   rightWidth: number;
 
   toggleSettings: (open?: boolean) => void;
-  openSettingsScreen: (section?: SettingsSection) => void;
+  openSettingsScreen: (section?: SettingsSection, intent?: SettingsIntent) => void;
   closeSettingsScreen: () => void;
   setSettingsSection: (section: SettingsSection) => void;
+  /** Clear a consumed `settingsIntent` so it fires only once. */
+  clearSettingsIntent: () => void;
   /** Open the onboarding overlay (e.g. "Replay tour" from Settings). */
   openOnboarding: () => void;
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
