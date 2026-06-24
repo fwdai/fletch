@@ -18,6 +18,9 @@ export type SettingsSection =
   | "experimental"
   | "developer";
 
+/** One-shot deep-link intent handed to a settings pane when it opens. */
+export type SettingsIntent = "new-custom-agent";
+
 export interface FeatureFlags {
   git: boolean;
   /** The unified Code panel: file explorer/editor + the Live diff feed. */

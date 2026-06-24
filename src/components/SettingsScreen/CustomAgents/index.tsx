@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DEFAULT_PROVIDER_ID } from "../../../data/providers";
 import { useAppStore } from "../../../store";
 import type { CustomAgent, NewCustomAgent } from "../../../storage/customAgents";
@@ -35,10 +35,22 @@ export function CustomAgentsPane() {
   const deleteCustomAgent = useAppStore((s) => s.deleteCustomAgent);
   const duplicateCustomAgent = useAppStore((s) => s.duplicateCustomAgent);
   const setLastError = useAppStore((s) => s.setLastError);
+  const settingsIntent = useAppStore((s) => s.settingsIntent);
+  const clearSettingsIntent = useAppStore((s) => s.clearSettingsIntent);
 
   const [editing, setEditing] = useState<EditTarget | null>(null);
 
   const startNew = () => setEditing({ mode: "new", initial: blankAgent(agents.length) });
+
+  // A deep-link (e.g. the composer's "Set up a custom agent" CTA) opens this
+  // pane straight in the new-agent editor. Consume the one-shot intent once.
+  useEffect(() => {
+    if (settingsIntent === "new-custom-agent") {
+      startNew();
+      clearSettingsIntent();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsIntent]);
   const startEdit = (a: CustomAgent) =>
     setEditing({ mode: "edit", id: a.id, initial: a });
 

@@ -11,6 +11,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   settingsOpen: false,
   settingsScreenOpen: false,
   settingsSection: "general" as SettingsSection,
+  settingsIntent: null,
   onboardingOpen: false,
   onboardingComplete: false,
   historyOpen: false,
@@ -23,15 +24,17 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   // ── UI ──────────────────────────────────────────────────────────────────────
   toggleSettings: (open) =>
     set((s) => ({ settingsOpen: open ?? !s.settingsOpen })),
-  openSettingsScreen: (section) =>
+  openSettingsScreen: (section, intent) =>
     set((s) => ({
       settingsScreenOpen: true,
       settingsSection: section ?? s.settingsSection,
+      settingsIntent: intent ?? null,
       // The full screen takes over — dismiss the quick popover behind it.
       settingsOpen: false,
     })),
   closeSettingsScreen: () => set({ settingsScreenOpen: false }),
   setSettingsSection: (section) => set({ settingsSection: section }),
+  clearSettingsIntent: () => set({ settingsIntent: null }),
   openOnboarding: () => set({ onboardingOpen: true }),
   closeOnboarding: () => {
     const firstCompletion = !get().onboardingComplete;
