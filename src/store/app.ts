@@ -58,6 +58,8 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     // Load persisted settings from DB.
     try {
       const s = await getAllSettings();
+      const { provider: newDraftProvider, model: newDraftModel } =
+        parseNewDraftSelection(s.newDraftSelection);
       set({
         theme: (s.theme as ThemeMode) || "dark",
         codeTheme: s.codeTheme || "quorum",
@@ -66,7 +68,8 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
         features: parseFeatures(s.features),
         providerFlags: parseProviderFlags(s.providers),
         providerPathOverrides: parseProviderPathOverrides(s),
-        ...parseNewDraftSelection(s.newDraftSelection),
+        newDraftProvider,
+        newDraftModel,
         viewMode: (s.viewMode as WorkspaceView) || "custom",
         gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
         onboardingComplete: s.onboardingComplete === "true",
