@@ -6,6 +6,7 @@ import pkg from "../../../package.json";
 import { GeneralPane } from "./GeneralPane";
 import { AccountPane } from "./AccountPane";
 import { ProvidersPane } from "./ProvidersPane";
+import { CustomAgentsPane } from "./CustomAgents";
 import { ExperimentalPane } from "./ExperimentalPane";
 
 // Lazily loaded behind `import.meta.env.DEV`. In production the ternary's dead
@@ -21,6 +22,7 @@ const NAV: { id: SettingsSection; label: string; icon: IconName }[] = [
   { id: "account", label: "Account", icon: "user" },
   { id: "general", label: "General", icon: "settings" },
   { id: "providers", label: "Providers", icon: "cube" },
+  { id: "agents", label: "Custom agents", icon: "bot" },
   { id: "experimental", label: "Experimental", icon: "flask" },
   // Dev-only: omitted entirely from production builds.
   ...(DeveloperPane
@@ -65,6 +67,7 @@ export function SettingsScreen() {
         <div className="set-content">
           {section === "account" && <AccountPane />}
           {section === "providers" && <ProvidersPane />}
+          {section === "agents" && <CustomAgentsPane />}
           {section === "experimental" && <ExperimentalPane />}
           {section === "developer" && DeveloperPane && (
             <Suspense fallback={null}>

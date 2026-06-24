@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
-import { PROVIDERS } from "../../data/providers";
+import { PROVIDERS, providerLabel } from "../../data/providers";
 import { hasAdapter } from "../../adapters";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
+import { Mono } from "../SettingsScreen/CustomAgents/Mono";
 import { Chip } from "../ui/Chip";
 import { Scrim } from "../ui/Scrim";
 
 interface Props {
   provider: string;
   model?: string;
-  onChange: (provider: string, model?: string) => void;
+  /** Selected custom agent id, if the user picked one rather than a built-in
+   *  provider. Drives the chip's identity and the dropdown's active row. */
+  customAgentId?: string;
+  onChange: (provider: string, model?: string, customAgentId?: string) => void;
   locked?: boolean;
 }
 
@@ -29,7 +33,7 @@ function modelFamily(name: string): string {
 /** Agent + model picker. The left rail previews each runner's models; selecting
  *  a row in the right pane commits the runner/model choice. Leaving model unset
  *  preserves the provider CLI's default. */
-export function ModelPicker({ provider, model, onChange, locked = false }: Props) {
+export function ModelPicker({ provider, model, customAgentId, onChange, locked = false }: Props) {
   const [open, setOpen] = useState(false);
   const [focusProvider, setFocusProvider] = useState(provider);
   const providerFlags = useAppStore((s) => s.providerFlags);
@@ -37,6 +41,7 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
   const providerPaths = useAppStore((s) => s.providerPaths);
   const providersProbed = useAppStore((s) => s.providersProbed);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
+  const customAgents = useAppStore((s) => s.customAgents);
 
   const selected = PROVIDERS.find((p) => p.id === provider) ?? PROVIDERS[0];
   const enabled = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
@@ -47,12 +52,23 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
     return list.find((m) => m.id === model);
   }, [model, modelsByAgent, provider]);
 
+  // The active custom agent (chip identity + dropdown highlight). Only custom
+  // agents whose base provider is enabled are offered.
+  const activeCustom = customAgents.find((a) => a.id === customAgentId);
+  const selectableCustom = customAgents.filter((a) => providerFlags[a.base] !== false);
+
   useEffect(() => {
     if (open) setFocusProvider(provider);
   }, [open, provider]);
 
   function pickModel(id: string | undefined) {
-    onChange(focused.id, id);
+    // Selecting a built-in model clears any custom-agent selection.
+    onChange(focused.id, id, undefined);
+    setOpen(false);
+  }
+
+  function pickCustom(agentId: string, base: string, agentModel: string | null) {
+    onChange(base, agentModel ?? undefined, agentId);
     setOpen(false);
   }
 
@@ -64,19 +80,29 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
         onClick={() => {
           if (!locked) setOpen((v) => !v);
         }}
-        tip={locked ? selected.label : "Agent and model"}
+        tip={locked ? (activeCustom?.name ?? selected.label) : "Agent and model"}
         className="model-chip"
       >
-        <ProviderIcon
-          slug={selected.id}
-          short={selected.short}
-          hue={selected.hue}
-          size={15}
-        />
-        <span className="model-chip-agent">{selected.label}</span>
-        <span className="model-chip-model">
-          {currentModel?.name ?? "Default model"}
-        </span>
+        {activeCustom ? (
+          <>
+            <Mono name={activeCustom.name} hue={activeCustom.color} size={15} />
+            <span className="model-chip-agent">{activeCustom.name}</span>
+            <span className="model-chip-model">{providerLabel(activeCustom.base)}</span>
+          </>
+        ) : (
+          <>
+            <ProviderIcon
+              slug={selected.id}
+              short={selected.short}
+              hue={selected.hue}
+              size={15}
+            />
+            <span className="model-chip-agent">{selected.label}</span>
+            <span className="model-chip-model">
+              {currentModel?.name ?? "Default model"}
+            </span>
+          </>
+        )}
         {!locked && <Icon name="chevD" size={9} />}
       </Chip>
 
@@ -84,6 +110,29 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
         <>
           <Scrim onClose={() => setOpen(false)} />
           <div className="dd model-dd" style={{ bottom: "calc(100% + 6px)", left: 0 }}>
+            {selectableCustom.length > 0 && (
+              <div className="model-custom">
+                <div className="model-custom-head">Custom agents</div>
+                {selectableCustom.map((a) => {
+                  const active = a.id === customAgentId;
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      className={`model-custom-row ${active ? "active" : ""}`}
+                      onClick={() => pickCustom(a.id, a.base, a.model)}
+                    >
+                      <Mono name={a.name} hue={a.color} size={20} />
+                      <span className="model-custom-text">
+                        <span>{a.name}</span>
+                        <span>{a.description || providerLabel(a.base)}</span>
+                      </span>
+                      {active && <Icon name="check" size={12} />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <div className="model-dd-head">
               <span>Agent</span>
               <span>Model</span>
@@ -113,7 +162,7 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
                         <span>{p.label}</span>
                         <span>{missing ? "Not installed" : providerVersions[p.id] ?? p.version}</span>
                       </span>
-                      {p.id === provider && <Icon name="check" size={12} />}
+                      {p.id === provider && !customAgentId && <Icon name="check" size={12} />}
                     </button>
                   );
                 })}
@@ -122,7 +171,7 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
               <div className="model-list">
                 <button
                   type="button"
-                  className={`model-option ${focused.id === provider && !model ? "active" : ""}`}
+                  className={`model-option ${focused.id === provider && !model && !customAgentId ? "active" : ""}`}
                   onClick={() => pickModel(undefined)}
                 >
                   <span className="model-mark">
@@ -142,7 +191,7 @@ export function ModelPicker({ provider, model, onChange, locked = false }: Props
                   </div>
                 ) : (
                   focusedModels.map((m) => {
-                    const active = focused.id === provider && m.id === model;
+                    const active = focused.id === provider && m.id === model && !customAgentId;
                     return (
                       <button
                         key={m.id}

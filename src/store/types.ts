@@ -25,6 +25,7 @@ import type {
   FeatureFlags,
 } from "../storage/preferences";
 import type { AccountProfile } from "../storage/accounts";
+import type { CustomAgent, NewCustomAgent } from "../storage/customAgents";
 import type { DraftAgent } from "./drafts";
 
 export interface AppSlice {
@@ -333,13 +334,19 @@ export interface DraftsSlice {
   activeDraftId: string | null;
   newDraftProvider: string;
   newDraftModel?: string;
+  /** Sticky custom-agent selection for the next new draft (persisted). */
+  newDraftCustomAgentId?: string;
 
   // drafts
   createDraft: (repoPath: string) => Promise<void>;
   updateDraft: (id: string, patch: Partial<DraftAgent>) => void;
   removeDraft: (id: string) => void;
   selectDraft: (id: string | null) => void;
-  setNewDraftSelection: (provider: string, model?: string) => void;
+  setNewDraftSelection: (
+    provider: string,
+    model?: string,
+    customAgentId?: string,
+  ) => void;
   rerollDraftName: (id: string) => Promise<void>;
   /** Spawn the real agent for a draft and dispatch the first message. */
   spawnFromDraft: (
@@ -349,7 +356,27 @@ export interface DraftsSlice {
     model?: string,
     attachments?: string[],
     thinking?: string,
+    customAgentId?: string,
   ) => Promise<void>;
+}
+
+export interface CustomAgentsSlice {
+  /** User-defined agent presets, mirrored from the `custom_agents` table and
+   *  ordered newest-edited first. Loaded once on init. */
+  customAgents: CustomAgent[];
+
+  loadCustomAgents: () => Promise<void>;
+  createCustomAgent: (agent: NewCustomAgent) => Promise<CustomAgent>;
+  /** Patch an existing custom agent; resolves to the merged row, or null if the
+   *  id is unknown. */
+  updateCustomAgent: (
+    id: string,
+    patch: Partial<NewCustomAgent>,
+  ) => Promise<CustomAgent | null>;
+  deleteCustomAgent: (id: string) => Promise<void>;
+  /** Clone a custom agent ("… copy"); resolves to the new row, or null if the
+   *  source id is unknown. */
+  duplicateCustomAgent: (id: string) => Promise<CustomAgent | null>;
 }
 
 export type AppState = AppSlice &
@@ -361,6 +388,7 @@ export type AppState = AppSlice &
   UiSlice &
   AccountSlice &
   AppearanceSlice &
-  ProvidersSlice;
+  ProvidersSlice &
+  CustomAgentsSlice;
 
 export type SliceCreator<T> = StateCreator<AppState, [], [], T>;

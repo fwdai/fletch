@@ -10,6 +10,7 @@ import { createUiSlice } from "./ui";
 import { createAccountSlice } from "./account";
 import { createAppearanceSlice } from "./appearance";
 import { createProvidersSlice } from "./providers";
+import { createCustomAgentsSlice } from "./customAgents";
 import type { AgentRecord } from "../api"; // for EMPTY_AGENTS
 
 export const EMPTY_AGENTS: readonly AgentRecord[] = Object.freeze([]);
@@ -25,6 +26,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createAccountSlice(...a),
   ...createAppearanceSlice(...a),
   ...createProvidersSlice(...a),
+  ...createCustomAgentsSlice(...a),
 }));
 
 export type { AppState } from "./types";

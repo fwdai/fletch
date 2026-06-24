@@ -461,6 +461,8 @@ impl Supervisor {
         name: Option<String>,
         effort: Option<String>,
         model: Option<String>,
+        instructions: Option<String>,
+        custom_agent_id: Option<String>,
     ) -> Result<AgentRecord> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -519,6 +521,10 @@ impl Supervisor {
         // Session-level model selection. `None` preserves the provider CLI
         // default; selected values are reapplied on resume and view switches.
         record.model = model;
+        // Custom agent identity + snapshotted brief. Both `None` for a plain
+        // built-in spawn. The brief is re-injected on every spawn/resume.
+        record.instructions = instructions;
+        record.custom_agent_id = custom_agent_id;
         let parent_dir = agent_parent_dir(&agent_id)?;
         let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
 
@@ -736,6 +742,7 @@ impl Supervisor {
                         // not at spawn.
                         effort: None,
                         model: record.model.as_deref(),
+                        instructions: record.instructions.as_deref(),
                         rpc_dir: rpc_dir.clone(),
                         cols: 120,
                         rows: 32,
@@ -759,6 +766,7 @@ impl Supervisor {
                         sandbox_root: sandbox_root.clone(),
                         session_id: session_id.clone(),
                         model: record.model.clone(),
+                        instructions: record.instructions.clone(),
                         rpc_dir: rpc_dir.clone(),
                     },
                     app.clone(),
@@ -781,6 +789,7 @@ impl Supervisor {
                 // re-applies on every spawn (fresh, view-switch, resume).
                 effort: record.effort.as_deref(),
                 model: record.model.as_deref(),
+                instructions: record.instructions.as_deref(),
                 rpc_dir: rpc_dir.clone(),
                 cols: 120,
                 rows: 32,

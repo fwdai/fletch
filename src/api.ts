@@ -64,6 +64,9 @@ export interface AgentRecord {
   effort?: string | null;
   /** Model chosen at spawn. Null/undefined means the provider CLI default. */
   model?: string | null;
+  /** The custom agent this session was spawned from (null for a built-in
+   *  spawn). Used to show the custom agent's name/color in the sidebar. */
+  custom_agent_id?: string | null;
 }
 
 export interface Workspace {
@@ -382,6 +385,8 @@ export const api = {
     name?: string,
     effort?: string,
     model?: string,
+    instructions?: string,
+    customAgentId?: string,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
       view,
@@ -390,6 +395,8 @@ export const api = {
       name,
       effort: effort ?? null,
       model: model ?? null,
+      instructions: instructions ?? null,
+      customAgentId: customAgentId ?? null,
     }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),

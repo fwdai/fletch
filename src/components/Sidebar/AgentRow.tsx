@@ -6,6 +6,7 @@ import { useAppStore } from "../../store";
 import { providerChip, providerLabel } from "../../data/providers";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
+import { Mono } from "../SettingsScreen/CustomAgents/Mono";
 import { formatAge } from "../../util/format";
 import { useMinuteClock } from "../../util/hooks";
 import { AgentStatsPopover, type AgentStats } from "./AgentStatsPopover";
@@ -53,6 +54,14 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
+  // The custom agent this session was spawned from, if any (and still present).
+  // Drives the row's identity chip; falls back to the base provider when the
+  // custom agent has since been deleted.
+  const customAgent = useAppStore((s) =>
+    agent.custom_agent_id
+      ? s.customAgents.find((a) => a.id === agent.custom_agent_id)
+      : undefined,
+  );
   const now = useMinuteClock();
   const [statsOpen, setStatsOpen] = useState(false);
 
@@ -119,10 +128,18 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
         <span className={`ag-name ${working ? "shimmer" : ""}`}>{agent.name}</span>
         <span
           className="ag-prov-chip tip"
-          data-tip={providerLabel(agent.provider)}
+          data-tip={
+            customAgent
+              ? `${customAgent.name} · ${providerLabel(agent.provider)}`
+              : providerLabel(agent.provider)
+          }
           data-tip-down=""
         >
-          <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={14} />
+          {customAgent ? (
+            <Mono name={customAgent.name} hue={customAgent.color} size={14} />
+          ) : (
+            <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={14} />
+          )}
         </span>
         <span className="ag-slot">
           <span className="ag-meta">

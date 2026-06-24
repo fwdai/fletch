@@ -81,16 +81,17 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             draftKey={draft.id}
             defaultProvider={draft.provider}
             defaultModel={draft.model}
+            defaultCustomAgentId={draft.customAgentId}
             baseBranch={draft.base}
             repoPath={draft.repoPath}
             onChangeBase={(branch) => updateDraft(draft.id, { base: branch })}
-            onChangeSelection={(provider, model) => {
-              updateDraft(draft.id, { provider, model });
-              setNewDraftSelection(provider, model);
+            onChangeSelection={(provider, model, customAgentId) => {
+              updateDraft(draft.id, { provider, model, customAgentId });
+              setNewDraftSelection(provider, model, customAgentId);
             }}
             placeholder="Describe the task for the agent. ↵ to spawn."
-            onSend={({ text, provider, model, attachments, thinking }) =>
-              spawnFromDraft(draft.id, text, provider, model, attachments, thinking)
+            onSend={({ text, provider, model, attachments, thinking, customAgentId }) =>
+              spawnFromDraft(draft.id, text, provider, model, attachments, thinking, customAgentId)
             }
           />
           <div className="empty-meta">

@@ -154,6 +154,17 @@ pub struct AgentRecord {
     /// use its configured/default model.
     #[serde(default)]
     pub model: Option<String>,
+    /// A custom agent's standing instructions, snapshotted at spawn and
+    /// re-injected on every process spawn/resume (after Quorum's global system
+    /// prompt). `None` for a plain built-in spawn. Snapshotting (rather than
+    /// re-resolving from `custom_agents`) keeps a running agent's brief stable
+    /// even if the custom agent is later edited or deleted.
+    #[serde(default)]
+    pub instructions: Option<String>,
+    /// The custom agent this session was spawned from, used to show its
+    /// name/color in the sidebar. `None` for a plain built-in spawn.
+    #[serde(default)]
+    pub custom_agent_id: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -431,8 +442,8 @@ impl WorkspaceManager {
         // not persisted — it derives from the workspace/session dispositions.
         let session_id = uuid::Uuid::new_v4().to_string();
         tx.execute(
-            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, instructions, custom_agent_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 session_id,
                 record.id,
@@ -442,6 +453,8 @@ impl WorkspaceManager {
                 record.last_error,
                 record.effort,
                 record.model,
+                record.instructions,
+                record.custom_agent_id,
                 created_millis,
             ],
         )?;
@@ -1049,7 +1062,7 @@ impl WorkspaceManager {
             "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
                     w.stopped_at, w.archived_at,
                     s.provider, s.view, s.provider_session_id, s.last_error,
-                    s.effort, s.model
+                    s.effort, s.model, s.instructions, s.custom_agent_id
              FROM workspaces w
              LEFT JOIN sessions s ON s.workspace_id = w.id
              ORDER BY w.created_at",
@@ -1073,6 +1086,8 @@ impl WorkspaceManager {
                 let last_error: Option<String> = row.get(10)?;
                 let effort: Option<String> = row.get(11)?;
                 let model: Option<String> = row.get(12)?;
+                let instructions: Option<String> = row.get(13)?;
+                let custom_agent_id: Option<String> = row.get(14)?;
 
                 Ok((
                     id,
@@ -1088,6 +1103,8 @@ impl WorkspaceManager {
                     last_error,
                     effort,
                     model,
+                    instructions,
+                    custom_agent_id,
                 ))
             })
             .ok()
@@ -1109,6 +1126,8 @@ impl WorkspaceManager {
                     last_error,
                     effort,
                     model,
+                    instructions,
+                    custom_agent_id,
                 )| {
                     let is_archived = archived_millis.is_some();
 
@@ -1142,6 +1161,8 @@ impl WorkspaceManager {
                         session_id,
                         effort,
                         model,
+                        instructions,
+                        custom_agent_id,
                         created_at: millis_to_iso(created_millis),
                         last_error,
                         archive,
@@ -1359,7 +1380,7 @@ impl WorkspaceManager {
                 "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
                         w.stopped_at, w.archived_at,
                         s.provider, s.view, s.provider_session_id, s.last_error,
-                        s.effort, s.model
+                        s.effort, s.model, s.instructions, s.custom_agent_id
                  FROM workspaces w
                  LEFT JOIN sessions s ON s.workspace_id = w.id
                  WHERE w.id = ?1",
@@ -1379,6 +1400,8 @@ impl WorkspaceManager {
                         row.get::<_, Option<String>>(10)?,
                         row.get::<_, Option<String>>(11)?,
                         row.get::<_, Option<String>>(12)?,
+                        row.get::<_, Option<String>>(13)?,
+                        row.get::<_, Option<String>>(14)?,
                     ))
                 },
             )
@@ -1398,6 +1421,8 @@ impl WorkspaceManager {
             last_error,
             effort,
             model,
+            instructions,
+            custom_agent_id,
         ) = row;
 
         let is_archived = archived_millis.is_some();
@@ -1430,6 +1455,8 @@ impl WorkspaceManager {
             session_id,
             effort,
             model,
+            instructions,
+            custom_agent_id,
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,
@@ -1477,6 +1504,8 @@ pub fn new_agent_record(
         session_id,
         effort: None,
         model: None,
+        instructions: None,
+        custom_agent_id: None,
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         archive: None,
@@ -1733,6 +1762,56 @@ mod tests {
         // may reference a now-deleted repo — that's fine, the sidebar
         // union logic handles it).
         assert_eq!(cur.agents.len(), 1);
+    }
+
+    #[test]
+    fn custom_agent_instructions_and_id_round_trip() {
+        let db = test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        seed_repo(&db, "/r");
+
+        let mut rec = new_agent_record(
+            "shasta".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        let id = rec.id.clone();
+        rec.instructions = Some("You are the Reviewer. Be terse.".into());
+        rec.custom_agent_id = Some("ca-reviewer".into());
+        wm.add_agent(&mut rec).unwrap();
+
+        // Read back via load_agent (single-row path)…
+        let loaded = wm.agent(&id).unwrap();
+        assert_eq!(loaded.instructions.as_deref(), Some("You are the Reviewer. Be terse."));
+        assert_eq!(loaded.custom_agent_id.as_deref(), Some("ca-reviewer"));
+
+        // …and via the full list (query_all_agents path).
+        let listed = wm
+            .current()
+            .unwrap()
+            .agents
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap();
+        assert_eq!(listed.custom_agent_id.as_deref(), Some("ca-reviewer"));
+
+        // A plain built-in spawn leaves both columns null.
+        let mut plain = new_agent_record(
+            "tahoe".into(),
+            "b".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        let plain_id = plain.id.clone();
+        wm.add_agent(&mut plain).unwrap();
+        let plain_loaded = wm.agent(&plain_id).unwrap();
+        assert_eq!(plain_loaded.instructions, None);
+        assert_eq!(plain_loaded.custom_agent_id, None);
     }
 
     #[test]
