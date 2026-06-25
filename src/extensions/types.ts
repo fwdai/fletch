@@ -28,6 +28,9 @@ export interface ExtensionSettingsPane {
    *  Experimental (50). Omit to append after the built-ins (defaults to 100).
    *  Ties keep contribution order. */
   order?: number;
+  /** Render in a wider content column. The default settings column is narrow
+   *  (tuned for forms); a builder/table/canvas pane can request more room. */
+  wide?: boolean;
 }
 
 /** What a single extension exports (as `export const extension: Extension`)
