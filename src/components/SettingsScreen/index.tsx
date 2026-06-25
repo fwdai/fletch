@@ -22,19 +22,29 @@ const DeveloperPane = import.meta.env.DEV
     )
   : null;
 
-const NAV: { id: SettingsSection; label: string; icon: IconName }[] = [
-  { id: "account", label: "Account", icon: "user" },
-  { id: "general", label: "General", icon: "settings" },
-  { id: "providers", label: "Providers", icon: "cube" },
-  { id: "agents", label: "Custom agents", icon: "bot" },
-  { id: "experimental", label: "Experimental", icon: "flask" },
+// Built-in sections carry explicit order weights (spaced by 10) so extension
+// panes can slot *between* them via their own `order`, not just append.
+type NavItem = { id: SettingsSection; label: string; icon: IconName; order: number };
+
+const NAV: NavItem[] = [
+  { id: "account", label: "Account", icon: "user", order: 10 },
+  { id: "general", label: "General", icon: "settings", order: 20 },
+  { id: "providers", label: "Providers", icon: "cube", order: 30 },
+  { id: "agents", label: "Custom agents", icon: "bot", order: 40 },
+  { id: "experimental", label: "Experimental", icon: "flask", order: 50 },
   // Dev-only: omitted entirely from production builds.
   ...(DeveloperPane
-    ? [{ id: "developer" as const, label: "Developer", icon: "wrench" as const }]
+    ? [{ id: "developer" as const, label: "Developer", icon: "wrench" as const, order: 60 }]
     : []),
-  // Extension-contributed panes (empty when no extensions are present).
-  ...extSettingsPanes.map((p) => ({ id: p.id, label: p.label, icon: p.icon })),
+  // Extension-contributed panes (empty when no extensions are present). An
+  // extension positions itself via `order`; unset defaults to 100 (after the
+  // built-ins).
+  ...extSettingsPanes.map(
+    (p): NavItem => ({ id: p.id, label: p.label, icon: p.icon, order: p.order ?? 100 }),
+  ),
 ];
+// Stable sort by weight keeps contribution order on ties.
+NAV.sort((a, b) => a.order - b.order);
 
 /** Dedicated full-screen settings surface. Rendered in place of the workspace
  *  panes while `settingsScreenOpen` is true. The quick-settings popover stays

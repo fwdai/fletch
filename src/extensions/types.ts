@@ -22,6 +22,12 @@ export interface ExtensionSettingsPane {
   label: string;
   icon: IconName;
   Component: ComponentType;
+  /** Position in the settings nav. The built-in sections occupy 10, 20, 30, …
+   *  (Account, General, Providers, Custom agents, Experimental, Developer); a
+   *  pane slots in by weight — e.g. `45` lands between Custom agents (40) and
+   *  Experimental (50). Omit to append after the built-ins (defaults to 100).
+   *  Ties keep contribution order. */
+  order?: number;
 }
 
 /** What a single extension exports (as `export const extension: Extension`)
