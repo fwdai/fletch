@@ -3855,7 +3855,7 @@ button { cursor: default; }
   position: relative;
   transition: background .12s, color .12s;
 }
-.set-nav-item svg { color: var(--fg-3); transition: color .12s; }
+.set-nav-item svg { color: var(--fg-2); transition: color .12s; }
 .set-nav-item:hover { background: var(--hover); color: var(--fg-0); }
 .set-nav-item:hover svg { color: var(--fg-1); }
 .set-nav-item.active {
