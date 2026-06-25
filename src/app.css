@@ -3892,6 +3892,11 @@ button { cursor: default; }
   margin: 0 auto;
   padding: 52px 56px 96px;
 }
+/* Wider column for panes that opt in (extension `wide` flag) — e.g. a builder
+   that needs room. Centers within the main area like the default column. */
+.set-content.is-wide {
+  max-width: 1080px;
+}
 @media (max-width: 1080px) {
   .set-content { padding: 40px 36px 80px; }
 }

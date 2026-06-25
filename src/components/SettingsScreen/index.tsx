@@ -54,6 +54,9 @@ export function SettingsScreen() {
   const setSection = useAppStore((s) => s.setSettingsSection);
   const close = useAppStore((s) => s.closeSettingsScreen);
 
+  // An extension pane can opt into a wider content column (e.g. a builder).
+  const wide = extSettingsPanes.some((p) => p.id === section && p.wide);
+
   return (
     <div className="set-screen">
       <nav className="set-nav">
@@ -80,7 +83,7 @@ export function SettingsScreen() {
       </nav>
 
       <div className="set-main">
-        <div className="set-content">
+        <div className={`set-content ${wide ? "is-wide" : ""}`}>
           {section === "account" && <AccountPane />}
           {section === "providers" && <ProvidersPane />}
           {section === "agents" && <CustomAgentsPane />}
