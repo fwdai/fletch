@@ -58,6 +58,22 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
 
   // ── drafts ─────────────────────────────────────────────────────────────────
   createDraft: async (repoPath) => {
+    // Single draft at a time: if one already exists, refocus it (preserving its
+    // name, provider/model, and unsent composer text) and point it at the
+    // latest requested project rather than stacking a second draft.
+    const existing = get().drafts[0];
+    if (existing) {
+      set((s) => ({
+        drafts: s.drafts.map((d) =>
+          d.id === existing.id
+            ? { ...d, repoPath, base: d.repoPath === repoPath ? d.base : "main" }
+            : d,
+        ),
+        activeDraftId: existing.id,
+        selectedAgentId: null,
+      }));
+      return;
+    }
     const { workspace, drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
     const used = [...usedNames(workspace, drafts)];
     const name = await api.allocateDraftName(used);

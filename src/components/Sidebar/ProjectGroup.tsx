@@ -1,6 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { AgentRecord } from "../../api";
-import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { AgentRow } from "./AgentRow";
@@ -11,7 +10,6 @@ interface Props {
   /** Full repo path — used as the group's stable id. */
   repoPath: string;
   agents: AgentRecord[];
-  drafts: DraftAgent[];
   /** Whether the user has expanded this group. */
   open: boolean;
   /** Show the remove (×) button — only true when this is a pinned-but-empty group. */
@@ -20,16 +18,14 @@ interface Props {
 }
 
 export function ProjectGroup({
-  label, repoPath, agents, drafts, open, removable, onToggle,
+  label, repoPath, agents, open, removable, onToggle,
 }: Props) {
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
-  const activeDraftId = useAppStore((s) => s.activeDraftId);
   const selectAgent = useAppStore((s) => s.selectAgent);
-  const selectDraft = useAppStore((s) => s.selectDraft);
   const createDraft = useAppStore((s) => s.createDraft);
   const removeWorkspaceRepo = useAppStore((s) => s.removeWorkspaceRepo);
 
-  const count = agents.length + drafts.length;
+  const count = agents.length;
 
   async function onRemove(e: React.MouseEvent) {
     e.stopPropagation();
@@ -81,15 +77,6 @@ export function ProjectGroup({
           <Icon name="plus" size={11} />
           <span>New agent</span>
         </button>
-        {drafts.map((d) => (
-          <AgentRow
-            key={d.id}
-            kind="draft"
-            draft={d}
-            active={d.id === activeDraftId}
-            onClick={() => selectDraft(d.id)}
-          />
-        ))}
         {agents.map((a) => (
           <AgentRow
             key={a.id}

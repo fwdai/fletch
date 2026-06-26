@@ -2,8 +2,8 @@ import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
 import { Icon, LandmarkGlyph } from "../Icon";
 import { Composer } from "../Composer";
+import { ProjectPicker } from "../Composer/ProjectPicker";
 import { IconButton } from "../ui/IconButton";
-import { basename } from "../../util/format";
 
 /** Empty-state pane shown when the user has started a draft agent.
  *  First message in the composer spawns the real agent and dispatches
@@ -16,8 +16,6 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const setNewDraftSelection = useAppStore((s) => s.setNewDraftSelection);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
-
-  const projectName = basename(draft.repoPath);
 
   return (
     <div className="pane center">
@@ -95,10 +93,13 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             }
           />
           <div className="empty-meta">
-            <span className="pill">
-              <Icon name="folder" />
-              <span className="v">{projectName}</span>
-            </span>
+            <ProjectPicker
+              value={draft.repoPath}
+              onChange={(repoPath) => {
+                if (repoPath !== draft.repoPath)
+                  updateDraft(draft.id, { repoPath, base: "main" });
+              }}
+            />
             <span className="pill">
               <Icon name="branch" />
               <span style={{ color: "var(--fg-2)" }}>from</span>
