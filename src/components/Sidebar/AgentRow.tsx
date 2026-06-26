@@ -3,6 +3,7 @@ import type { MouseEvent, KeyboardEvent } from "react";
 import type { AgentRecord, AgentStatus, PrState, ShortStats } from "../../api";
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
+import { lookupModel } from "../../data/modelCatalog";
 import { providerChip, providerLabel } from "../../data/providers";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
@@ -71,8 +72,16 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // spawning is the start of a run — show it as "working" too, not a dead row
   const working = agent.status === "running" || agent.status === "spawning";
 
+  const catalog = useAppStore((s) => s.modelCatalog);
   const hasUsage = !!usage && usage.contextTokens > 0;
-  const contextWindow = usage?.contextWindow || DEFAULT_CONTEXT_WINDOW;
+  // Prefer the window the agent reports (codex does); otherwise look the model
+  // up in the catalog (claude/opencode/pi don't report one) so the 1M-context
+  // models read true; fall back to a default only when the model is unknown.
+  // Mirrors the composer's UsageMeter so both gauges agree.
+  const contextWindow =
+    usage?.contextWindow ||
+    lookupModel(catalog, usage?.model)?.contextWindow ||
+    DEFAULT_CONTEXT_WINDOW;
   const stats: AgentStats = {
     launched: age || "just now",
     runtime: liveRuntime(agent.created_at, now, agent.status),
