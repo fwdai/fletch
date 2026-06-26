@@ -1,6 +1,6 @@
 [package]
 name = "quorum"
-version = "0.6.1"
+version = "0.6.2"
 description = "Spawn coding agents in isolated sandboxes"
 authors = ["Alex Chaplinsky", "fwdai.org"]
 license = "AGPL-3.0-only"
