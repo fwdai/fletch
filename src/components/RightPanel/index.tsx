@@ -1,13 +1,12 @@
 import { useState } from "react";
 import type { AgentRecord } from "../../api";
 import { useAppStore } from "../../store";
+import type { RightPanelTab as TabId } from "../../store/types";
 import { Icon, type IconName } from "../Icon";
 import { CodePanel } from "./Code";
 import { GitPanel } from "./GitPanel";
 import { RunPanel } from "./RunPanel";
 import { TermPanel } from "./TermPanel";
-
-type TabId = "code" | "git" | "run" | "term";
 
 interface Tab {
   id: TabId;
@@ -39,7 +38,20 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
     features.terminal && { id: "term", label: "Terminal", icon: "terminal" },
   ].filter(Boolean) as Tab[];
 
-  const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "git");
+  // Restore the tab this agent was last viewing (the panel remounts per agent),
+  // falling back to the first enabled tab. Guard against a saved tab whose
+  // feature has since been disabled.
+  const savedTab = useAppStore((s) => s.rightPanelTabs[agent.id]);
+  const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
+  const [tab, setTab] = useState<TabId>(
+    savedTab && tabs.some((t) => t.id === savedTab)
+      ? savedTab
+      : (tabs[0]?.id ?? "git"),
+  );
+  const selectTab = (id: TabId) => {
+    setTab(id);
+    setRightPanelTab(agent.id, id);
+  };
 
   if (tabs.length === 0) {
     return (
@@ -61,7 +73,7 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
             <button
               key={t.id}
               className={`r-tab ${tab === t.id ? "active" : ""}`}
-              onClick={() => setTab(t.id)}
+              onClick={() => selectTab(t.id)}
             >
               <Icon name={t.icon} />
               {t.label}

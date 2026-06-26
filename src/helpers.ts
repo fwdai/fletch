@@ -243,6 +243,9 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   // that finished while unviewed leaves an orphaned key behind with no row to
   // select, which would keep the app-icon badge count nonzero forever.
   const { [id]: _seen, ...unseenResults } = state.unseenResults;
+  // Drop the remembered right-rail tab so an archived/discarded agent's UI
+  // state doesn't outlive it as a stale key for the rest of the session.
+  const { [id]: _tab, ...rightPanelTabs } = state.rightPanelTabs;
   return {
     managedLogs,
     transcriptLoading,
@@ -258,6 +261,7 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     composerDrafts,
     gitDelegations,
     unseenResults,
+    rightPanelTabs,
   };
 }
 

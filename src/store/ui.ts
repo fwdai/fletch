@@ -20,6 +20,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   rightCollapsed: false,
   leftWidth: DEFAULT_LEFT_WIDTH,
   rightWidth: DEFAULT_RIGHT_WIDTH,
+  rightPanelTabs: {},
 
   // ── UI ──────────────────────────────────────────────────────────────────────
   toggleSettings: (open) =>
@@ -73,4 +74,6 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   setRightWidth: (w) => set({ rightWidth: w }),
   commitLeftWidth: (w) => setSetting("leftWidth", String(w)),
   commitRightWidth: (w) => setSetting("rightWidth", String(w)),
+  setRightPanelTab: (agentId, tab) =>
+    set((s) => ({ rightPanelTabs: { ...s.rightPanelTabs, [agentId]: tab } })),
 });
