@@ -14,6 +14,7 @@ import { UpdateToast } from "./components/UpdateToast";
 import { useSplitter } from "./util/splitter";
 import { useGlobalShortcuts } from "./util/shortcuts";
 import { usePoll } from "./util/hooks";
+import { setAppBadgeCount } from "./util/window";
 
 export function App() {
   const init = useAppStore((s) => s.init);
@@ -39,8 +40,16 @@ export function App() {
   const historyOpen = useAppStore((s) => s.historyOpen);
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
   const onboardingOpen = useAppStore((s) => s.onboardingOpen);
+  // Count of agents that finished a turn while the user wasn't looking at them
+  // (set on completion, cleared when the agent is opened). This is the same
+  // signal behind the sidebar "new" dots — mirror it onto the app icon badge.
+  const unseenCount = useAppStore((s) => Object.keys(s.unseenResults).length);
 
   useEffect(() => { init(); }, [init]);
+
+  // Reflect the unseen-completion count on the macOS dock / taskbar icon so
+  // finished agents are visible even when the window is in the background.
+  useEffect(() => { setAppBadgeCount(unseenCount); }, [unseenCount]);
 
   // App-wide poll: refresh compact shortstats for every live agent so the
   // sidebar / right-rail badges stay current without waiting for a focused
