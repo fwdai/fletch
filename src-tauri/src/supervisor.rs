@@ -674,12 +674,16 @@ impl Supervisor {
         let rpc_dir = rpc::mailbox_dir(agent_id)?;
         rpc::ensure_mailbox(&rpc_dir)?;
         let watcher_cwd = cwd.clone();
-        // Base branch for the `open_pr` op — the branch the agent was forked
-        // from, same default the manual PR action uses.
+        // Base branch for the git dispatcher — the branch the agent was
+        // forked from, same default the manual PR action uses.
         let base_branch = primary
             .parent_branch
             .clone()
             .unwrap_or_else(|| "main".to_string());
+        let rpc_dispatcher = Arc::new(rpc::git::GitDispatcher::new(
+            watcher_cwd.clone(),
+            base_branch.clone(),
+        ));
 
         // Claude only writes a session file once the first turn lands.
         // If task is still empty (no first user message has ever been
@@ -827,11 +831,14 @@ impl Supervisor {
 
         // Watch this agent's RPC mailbox for the life of this generation,
         // executing allowlisted ops and writing responses back.
-        let op_ctx = rpc::OpContext {
-            cwd: watcher_cwd,
-            base_branch,
-        };
-        spawn_rpc_watcher(self.clone(), app, agent_id_str, op_ctx, rpc_dir, my_gen);
+        spawn_rpc_watcher(
+            self.clone(),
+            app,
+            agent_id_str,
+            rpc_dispatcher,
+            rpc_dir,
+            my_gen,
+        );
 
         Ok(())
     }
@@ -2221,7 +2228,7 @@ fn spawn_rpc_watcher(
     sup: Arc<Supervisor>,
     app: AppHandle,
     agent_id: String,
-    ctx: rpc::OpContext,
+    dispatcher: Arc<dyn rpc::RpcDispatcher>,
     rpc_dir: PathBuf,
     gen: u64,
 ) {
@@ -2239,21 +2246,26 @@ fn spawn_rpc_watcher(
                 return;
             }
 
-            let effects = rpc::process_pending(&rpc_dir, &ctx).await;
-            for effect in effects {
-                match effect {
-                    // The agent's branch was materialized at first push (the
-                    // worktree had been detached). Persist the name against the
-                    // primary repo — the worktree the push ops run in — and tell
-                    // the panel a branch now exists. Unconditional write: a
-                    // second PR cuts a fresh branch, so the name can change.
-                    rpc::RpcEffect::BranchCreated { branch } => {
+            let events = rpc::process_pending(&rpc_dir, dispatcher.as_ref()).await;
+            for event in events {
+                match event {
+                    rpc::RpcEvent::Named { name, payload }
+                        if name == rpc::git::EVENT_BRANCH_CREATED =>
+                    {
+                        let Some(branch) = payload.get("branch").and_then(|v| v.as_str()) else {
+                            tracing::warn!(
+                                event = %name,
+                                payload = %payload,
+                                "git dispatcher emitted branch event without branch"
+                            );
+                            continue;
+                        };
                         if let Ok(record) = sup.workspace.agent(&agent_id) {
                             if let Some(repo) = record.repos.first() {
                                 if let Err(e) = sup.workspace.set_repo_branch(
                                     &agent_id,
                                     &repo.subdir,
-                                    &branch,
+                                    branch,
                                 ) {
                                     tracing::warn!(
                                         error = %e,
@@ -2267,18 +2279,24 @@ fn spawn_rpc_watcher(
                                         AgentBranchPayload {
                                             agent_id: agent_id.clone(),
                                             subdir: repo.subdir.clone(),
-                                            branch: branch.clone(),
+                                            branch: branch.to_string(),
                                         },
                                     );
                                 }
                             }
                         }
                     }
-                    // The agent opened a PR via the `open_pr` op. Bind it to the
-                    // agent by number so PR-state lookups stop depending on the
-                    // (recyclable) branch name, then refresh the panel. The PR
-                    // belongs to the primary repo — the worktree `open_pr` runs in.
-                    rpc::RpcEffect::PrOpened { number } => {
+                    rpc::RpcEvent::Named { name, payload }
+                        if name == rpc::git::EVENT_PR_OPENED =>
+                    {
+                        let Some(number) = payload.get("number").and_then(|v| v.as_u64()) else {
+                            tracing::warn!(
+                                event = %name,
+                                payload = %payload,
+                                "git dispatcher emitted PR event without number"
+                            );
+                            continue;
+                        };
                         if let Ok(record) = sup.workspace.agent(&agent_id) {
                             if let Some(repo) = record.repos.first() {
                                 if let Err(e) = sup.workspace.set_repo_pr_number(
@@ -2296,6 +2314,9 @@ fn spawn_rpc_watcher(
                             }
                         }
                         sup.fetch_and_emit_pr_state(app.clone(), agent_id.clone());
+                    }
+                    rpc::RpcEvent::Named { name, payload } => {
+                        tracing::debug!(event = %name, payload = %payload, "rpc: unhandled event");
                     }
                 }
             }

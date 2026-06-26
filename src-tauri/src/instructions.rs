@@ -19,9 +19,9 @@
 //!
 //! The injected text has three layers: editable general guidance
 //! (`instructions/system_prompt.md`), a Quorum-managed protocol block
-//! (`instructions/rpc_protocol.md`) that documents the file-RPC the app
-//! exposes (see `rpc.rs`), and the Quorum-managed git-action playbooks
-//! (`instructions/git_actions.md`) behind the panel's `[app-action]`
+//! (`instructions/rpc_protocol.md`) that documents the file-RPC transport the
+//! app exposes (see `rpc.rs`), and Quorum-managed feature playbooks (for
+//! example `instructions/git_actions.md`) behind the panel's `[app-action]`
 //! triggers. The managed blocks are code-managed because they must stay in
 //! sync with the op allowlist / trigger names; the general layer is yours to
 //! edit. Blank all files to disable injection entirely — every helper below
