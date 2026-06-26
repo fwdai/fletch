@@ -44,7 +44,8 @@ cat "$QUORUM_RPC_DIR/responses/$ID.json"
 ```
 
 For free-text args, build the JSON with `jq -n --arg` so quotes and newlines
-are escaped correctly:
+are escaped correctly. The current dispatcher exposes a harmless `echo` op for
+round-trip testing:
 
 ```sh
 ID=$(uuidgen)
@@ -58,5 +59,6 @@ mv "$QUORUM_RPC_DIR/requests/$ID.json.tmp" "$QUORUM_RPC_DIR/requests/$ID.json"
 ```
 
 The exact op names are feature-specific. Quorum currently uses this same
-transport for Git actions, but future app features can define their own ops on
-top of the same mailbox.
+transport for Git actions, and the Git dispatcher also exposes `echo` as a
+simple round-trip check. Future app features can define their own ops on top of
+the same mailbox.

@@ -48,6 +48,7 @@ impl GitDispatcher {
             _ => {}
         }
         let resp = match op {
+            "echo" => self.echo(id, args).await,
             "ping" => Response::ok(id, 0, "pong".to_string(), String::new()),
             "git_status" => {
                 run_command(
@@ -63,6 +64,14 @@ impl GitDispatcher {
             other => Response::err(id, format!("unknown op: {other}")),
         };
         (resp, Vec::new())
+    }
+
+    async fn echo(&self, id: &str, args: &Value) -> Response {
+        let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
+        if message.is_empty() {
+            return Response::err(id, "echo requires a non-empty `message` arg");
+        }
+        Response::ok(id, 0, message.to_string(), String::new())
     }
 
     async fn git_commit(&self, id: &str, args: &Value) -> Response {
@@ -293,6 +302,27 @@ mod tests {
         assert_eq!(v["id"], "req-4");
         assert_eq!(v["ok"], true);
         assert!(v["exit_code"].is_number());
+    }
+
+    #[tokio::test]
+    async fn echo_round_trips_free_text() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".quorum-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "req-echo.json",
+            r#"{"id":"req-echo","op":"echo","args":{"message":"hello from the agent"}}"#,
+        );
+
+        let dispatcher = dispatcher(td.path());
+        process_pending(&rpc_dir, &dispatcher).await;
+
+        let body = std::fs::read_to_string(rpc_dir.join("responses/req-echo.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["id"], "req-echo");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["stdout"], "hello from the agent");
     }
 
     #[tokio::test]
