@@ -74,6 +74,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
         newDraftProvider,
         newDraftModel,
         newDraftCustomAgentId,
+        lastRepoPath: s.lastRepoPath || undefined,
         viewMode: (s.viewMode as WorkspaceView) || "custom",
         gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
         onboardingComplete: s.onboardingComplete === "true",
