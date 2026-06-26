@@ -47,6 +47,17 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
+  refreshAllPrStates: async () => {
+    try {
+      // Fire-and-forget on the backend: it dispatches a refresh per agent with
+      // a known PR and emits `pr:state_changed` for each, which the store's
+      // event listener folds into `prStates`. Nothing to merge here.
+      await api.refreshAllPrStates();
+    } catch {
+      // non-fatal — next poll tick will retry
+    }
+  },
+
   fetchPrChecks: async (agentId) => {
     try {
       const checks = await api.getPrChecks(agentId);

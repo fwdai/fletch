@@ -774,6 +774,39 @@ pub async fn get_all_shortstats(
     Ok(out)
 }
 
+/// App-wide background poll that refreshes PR state for every agent with a
+/// recorded PR, emitting `pr:state_changed` per agent so the sidebar badge
+/// (and any open Git panel) reflects merges / closes / mergeability changes
+/// that happen on GitHub — without the user having to open the panel.
+///
+/// Only agents with a known PR *number* are polled: discovery of a brand-new
+/// PR still rides the existing turn-end / push / git-action triggers, so this
+/// poll never fans a `gh` call out to an agent that has no PR. Each refresh is
+/// dispatched as a background task (`fetch_and_emit_pr_state` spawns), so the
+/// command returns immediately and the network calls run in parallel.
+#[tauri::command]
+pub async fn refresh_all_pr_states(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+) -> Result<()> {
+    let Some(workspace) = supervisor.workspace.current() else {
+        return Ok(());
+    };
+    for agent in workspace.agents {
+        if agent.archive.is_some() {
+            continue;
+        }
+        let Some(repo) = agent.repos.first() else { continue };
+        if repo.branch.is_none() || repo.pr_number.is_none() {
+            continue;
+        }
+        supervisor
+            .inner()
+            .fetch_and_emit_pr_state(app.clone(), agent.id.clone());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // File panel — browse the worktree, view & edit file contents.
 // ---------------------------------------------------------------------------

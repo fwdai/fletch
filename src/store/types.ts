@@ -167,6 +167,10 @@ export interface GitSlice {
    *  (used by the app-wide background poll). */
   fetchAllShortstats: () => Promise<void>;
   fetchPrState: (agentId: string) => Promise<void>;
+  /** Refresh PR state for every agent with a known PR in one round-trip
+   *  (used by the app-wide background poll). Backend emits `pr:state_changed`
+   *  per agent, so the sidebar badge updates without opening the Git panel. */
+  refreshAllPrStates: () => Promise<void>;
   fetchPrChecks: (agentId: string) => Promise<void>;
   fetchPrComments: (agentId: string) => Promise<void>;
   delegateGitAction: (agentId: string, kind: GitDelegationKind, prompt: string) => void;

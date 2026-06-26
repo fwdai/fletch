@@ -590,11 +590,17 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
   );
   usePoll(pollGitState, 1000, [pollGitState]);
 
-  useEffect(() => {
-    void fetchPrState(agent.id);
-  }, [agent.id, fetchPrState]);
+  // Poll PR state while the panel is mounted (not just once on mount), so an
+  // open PR that gets merged / closed / becomes mergeable on GitHub is
+  // reflected here promptly instead of staying stale until the panel remounts.
+  // usePoll fires immediately, so the initial fetch still lands on open.
+  const pollPrState = useCallback(
+    () => fetchPrState(agent.id),
+    [agent.id, fetchPrState],
+  );
+  usePoll(pollPrState, 5000, [pollPrState]);
 
-  // Poll the heavier checks read at 7s, only while a PR is open. An absent
+  // Poll the heavier checks read at 5s, only while a PR is open. An absent
   // entry (undefined) means the first fetch hasn't landed → the panel renders
   // the "checking…" sub-state; null means confirmed unavailable → fall back
   // to mergeable-only behavior.
@@ -605,7 +611,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
     // reads that only matter while a PR is open.
     await Promise.all([fetchPrChecks(agent.id), fetchPrComments(agent.id)]);
   }, [agent.id, prOpen, fetchPrChecks, fetchPrComments]);
-  usePoll(pollChecks, 7000, [pollChecks]);
+  usePoll(pollChecks, 5000, [pollChecks]);
 
   const checks = prChecksEntry ?? null;
   const comments = prCommentsEntry ?? null;
