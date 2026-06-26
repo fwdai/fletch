@@ -181,9 +181,16 @@ impl Supervisor {
         status: AgentStatus,
         last_error: Option<String>,
     ) {
-        self.statuses
+        let prev = self
+            .statuses
             .lock()
             .insert(agent_id.to_string(), status.clone());
+        tracing::debug!(
+            agent_id = %agent_id,
+            from = ?prev,
+            to = ?status,
+            "agent status transition"
+        );
         // Persist durable side-effects: Error stores last_error; Spawning/Running
         // clear stale stopped/error; Idle persists nothing.
         match status {
