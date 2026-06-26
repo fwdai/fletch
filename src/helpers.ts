@@ -239,6 +239,10 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   const { [id]: _seed, ...composerSeeds } = state.composerSeeds;
   const { [id]: _draft, ...composerDrafts } = state.composerDrafts;
   const { [id]: _delegation, ...gitDelegations } = state.gitDelegations;
+  // Drop the unseen-results flag too: otherwise archiving/discarding an agent
+  // that finished while unviewed leaves an orphaned key behind with no row to
+  // select, which would keep the app-icon badge count nonzero forever.
+  const { [id]: _seen, ...unseenResults } = state.unseenResults;
   return {
     managedLogs,
     transcriptLoading,
@@ -253,6 +257,7 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     composerSeeds,
     composerDrafts,
     gitDelegations,
+    unseenResults,
   };
 }
 

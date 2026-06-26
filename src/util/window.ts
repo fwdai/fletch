@@ -25,3 +25,17 @@ export function revealAppWindow(): void {
       .catch(() => {});
   }, 0);
 }
+
+/**
+ * Reflect the number of agents with unseen completed results on the app icon
+ * (macOS dock badge / Windows taskbar overlay). Driven from the store's
+ * `unseenResults` map, so the badge tracks the same "needs your attention"
+ * signal as the sidebar dots and self-clears as you open each agent. Passing
+ * `0`/`undefined` removes the badge. Failures are swallowed: there's no Tauri
+ * window in a plain browser dev context.
+ */
+export function setAppBadgeCount(count: number): void {
+  void getCurrentWindow()
+    .setBadgeCount(count > 0 ? count : undefined)
+    .catch(() => {});
+}
