@@ -15,6 +15,7 @@ export function useGlobalShortcuts() {
   const createDraft = useAppStore((s) => s.createDraft);
   const workspace = useAppStore((s) => s.workspace);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
+  const lastRepoPath = useAppStore((s) => s.lastRepoPath);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -50,10 +51,13 @@ export function useGlobalShortcuts() {
         setTheme(theme === "dark" ? "light" : "dark");
       } else if (mod && e.key === "n" && !inField) {
         e.preventDefault();
-        // Pick the active project; fall back to the first one.
+        // Default to the last project an agent was started in (if it still
+        // exists); fall back to the selected agent's project, then the first.
         const repos = workspace?.repos ?? [];
         const agents = workspace?.agents ?? [];
+        const recent = lastRepoPath && repos.includes(lastRepoPath) ? lastRepoPath : undefined;
         const active =
+          recent ??
           agents.find((a) => a.id === selectedAgentId)?.repos[0]?.repo_path ??
           repos[0];
         if (active) createDraft(active);
@@ -64,5 +68,5 @@ export function useGlobalShortcuts() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleLeft, leftCollapsed, toggleRight, toggleSettings, closeSettingsScreen, setTheme, theme, createDraft, workspace, selectedAgentId]);
+  }, [toggleLeft, leftCollapsed, toggleRight, toggleSettings, closeSettingsScreen, setTheme, theme, createDraft, workspace, selectedAgentId, lastRepoPath]);
 }

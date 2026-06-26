@@ -2,8 +2,9 @@ import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
 import { Icon, LandmarkGlyph } from "../Icon";
 import { Composer } from "../Composer";
+import { ProjectPicker } from "../Composer/ProjectPicker";
+import { BranchPicker } from "../Composer/BranchPicker";
 import { IconButton } from "../ui/IconButton";
-import { basename } from "../../util/format";
 
 /** Empty-state pane shown when the user has started a draft agent.
  *  First message in the composer spawns the real agent and dispatches
@@ -14,10 +15,10 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const removeDraft = useAppStore((s) => s.removeDraft);
   const updateDraft = useAppStore((s) => s.updateDraft);
   const setNewDraftSelection = useAppStore((s) => s.setNewDraftSelection);
+  const setLastRepoPath = useAppStore((s) => s.setLastRepoPath);
+  const repos = useAppStore((s) => s.workspace?.repos ?? []);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
-
-  const projectName = basename(draft.repoPath);
 
   return (
     <div className="pane center">
@@ -82,9 +83,6 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             defaultProvider={draft.provider}
             defaultModel={draft.model}
             defaultCustomAgentId={draft.customAgentId}
-            baseBranch={draft.base}
-            repoPath={draft.repoPath}
-            onChangeBase={(branch) => updateDraft(draft.id, { base: branch })}
             onChangeSelection={(provider, model, customAgentId) => {
               updateDraft(draft.id, { provider, model, customAgentId });
               setNewDraftSelection(provider, model, customAgentId);
@@ -95,15 +93,21 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             }
           />
           <div className="empty-meta">
-            <span className="pill">
-              <Icon name="folder" />
-              <span className="v">{projectName}</span>
-            </span>
-            <span className="pill">
-              <Icon name="branch" />
-              <span style={{ color: "var(--fg-2)" }}>from</span>
-              <span className="v">{draft.base}</span>
-            </span>
+            <ProjectPicker
+              value={draft.repoPath}
+              repos={repos}
+              onChange={(repoPath) => {
+                // Switching projects: the previously chosen base branch may not
+                // exist in the new repo, so reset to main.
+                updateDraft(draft.id, { repoPath, base: "main" });
+                setLastRepoPath(repoPath);
+              }}
+            />
+            <BranchPicker
+              repoPath={draft.repoPath}
+              value={draft.base}
+              onChange={(branch) => updateDraft(draft.id, { base: branch })}
+            />
             <span className="pill is-action" onClick={() => rerollDraftName(draft.id)}>
               <Icon name="refresh" />
               <span>reroll name</span>

@@ -28,6 +28,7 @@ export interface DraftAgent {
 }
 
 const NEW_DRAFT_SELECTION_SETTING = "newDraftSelection";
+const LAST_REPO_PATH_SETTING = "lastRepoPath";
 
 function normalizeDraftSelection(
   provider: string,
@@ -55,6 +56,13 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   newDraftProvider: DEFAULT_PROVIDER_ID,
   newDraftModel: undefined,
   newDraftCustomAgentId: undefined,
+  lastRepoPath: undefined,
+
+  setLastRepoPath: (repoPath) => {
+    if (get().lastRepoPath === repoPath) return;
+    set({ lastRepoPath: repoPath });
+    void setSetting(LAST_REPO_PATH_SETTING, repoPath);
+  },
 
   // ── drafts ─────────────────────────────────────────────────────────────────
   createDraft: async (repoPath) => {
@@ -81,6 +89,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       activeDraftId: draft.id,
       selectedAgentId: null,
     }));
+    get().setLastRepoPath(repoPath);
   },
 
   updateDraft: (id, patch) =>
@@ -134,6 +143,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   spawnFromDraft: async (id, text, provider, model, attachments = [], thinking?, customAgentId?) => {
     const draft = get().drafts.find((d) => d.id === id);
     if (!draft) return;
+    get().setLastRepoPath(draft.repoPath);
     set({ busy: true, lastError: null });
     const turnId = crypto.randomUUID();
     try {

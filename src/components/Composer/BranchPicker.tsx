@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { Icon } from "../Icon";
-import { Chip } from "../ui/Chip";
 import { Scrim } from "../ui/Scrim";
 
 const ITEM_HEIGHT = 34; // approximate px per dd-item row
@@ -43,19 +42,18 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
   }
 
   return (
-    <div style={{ position: "relative", minWidth: 0 }}>
-      <Chip tip={value} onClick={() => setOpen((v) => !v)}>
-        <Icon name="branch" size={11} />
+    <span style={{ position: "relative", minWidth: 0 }}>
+      <span className="pill is-action" title={value} onClick={() => setOpen((v) => !v)}>
+        <Icon name="branch" />
         <span style={{ color: "var(--fg-2)" }}>from</span>
-        <span style={{
-          fontFamily: "var(--font-mono)",
+        <span className="v" style={{
           maxWidth: 140,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
         }}>{value}</span>
         <Icon name="chevD" size={9} />
-      </Chip>
+      </span>
 
       {open && (
         <>
@@ -110,6 +108,6 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
           </div>
         </>
       )}
-    </div>
+    </span>
   );
 }

@@ -7,7 +7,6 @@ import { lookupModel } from "../../data/modelCatalog";
 import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
 import { ModelPicker } from "./ModelPicker";
-import { BranchPicker } from "./BranchPicker";
 import { UsageMeter } from "./UsageMeter";
 import type { AgentUsage } from "../../store";
 import { AttachmentList } from "./AttachmentList";
@@ -27,11 +26,6 @@ interface Props {
   defaultModel?: string;
   /** Initial custom-agent id for new-agent drafts, if one was selected. */
   defaultCustomAgentId?: string;
-  /** When set, render a branch picker chip showing the current base branch. */
-  baseBranch?: string;
-  /** Repo path used to fetch available branches for the picker. */
-  repoPath?: string;
-  onChangeBase?: (branch: string) => void;
   placeholder?: string;
   autoFocus?: boolean;
   disabled?: boolean;
@@ -113,9 +107,6 @@ export function Composer({
   defaultProvider = DEFAULT_PROVIDER_ID,
   defaultModel,
   defaultCustomAgentId,
-  baseBranch,
-  repoPath,
-  onChangeBase,
   placeholder,
   autoFocus,
   disabled,
@@ -382,20 +373,6 @@ export function Composer({
           <Chip tip="Auto-approve writes">
             <Icon name="check" size={11} />
             <span>Auto-edit</span>
-          </Chip>
-        )}
-        {baseBranch && repoPath && onChangeBase && (
-          <BranchPicker
-            repoPath={repoPath}
-            value={baseBranch}
-            onChange={onChangeBase}
-          />
-        )}
-        {baseBranch && (!repoPath || !onChangeBase) && (
-          <Chip tip="Base branch">
-            <Icon name="branch" size={11} />
-            <span style={{ color: "var(--fg-2)" }}>from</span>
-            <span style={{ fontFamily: "var(--font-mono)" }}>{baseBranch}</span>
           </Chip>
         )}
         <Chip tip="Attach" onClick={browse}>

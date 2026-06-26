@@ -357,9 +357,14 @@ export interface DraftsSlice {
   newDraftModel?: string;
   /** Sticky custom-agent selection for the next new draft (persisted). */
   newDraftCustomAgentId?: string;
+  /** The project a new agent was last started in (persisted). Seeds ⌘N's
+   *  default project; validated against the live repo list on use. */
+  lastRepoPath?: string;
 
   // drafts
   createDraft: (repoPath: string) => Promise<void>;
+  /** Remember the last project an agent was started in and persist it. */
+  setLastRepoPath: (repoPath: string) => void;
   updateDraft: (id: string, patch: Partial<DraftAgent>) => void;
   removeDraft: (id: string) => void;
   selectDraft: (id: string | null) => void;
