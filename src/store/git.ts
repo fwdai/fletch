@@ -47,6 +47,20 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
+  refreshAllPrStates: async () => {
+    try {
+      // Set state directly from the reply (rather than via `pr:state_changed`
+      // events) so the very first poll — which usePoll fires immediately on
+      // mount — can't race the store's event listener finishing its async
+      // attach during init(). Merge so agents without a known PR keep whatever
+      // state the focused-panel / per-trigger paths recorded.
+      const map = await api.refreshAllPrStates();
+      set((s) => ({ prStates: { ...s.prStates, ...map } }));
+    } catch {
+      // non-fatal — next poll tick will retry
+    }
+  },
+
   fetchPrChecks: async (agentId) => {
     try {
       const checks = await api.getPrChecks(agentId);

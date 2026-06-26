@@ -19,6 +19,7 @@ import { setAppBadgeCount } from "./util/window";
 export function App() {
   const init = useAppStore((s) => s.init);
   const fetchAllShortstats = useAppStore((s) => s.fetchAllShortstats);
+  const refreshAllPrStates = useAppStore((s) => s.refreshAllPrStates);
 
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
@@ -56,6 +57,14 @@ export function App() {
   // panel to mount. Queries run in parallel on the backend; the reply is a
   // flat number-only map so payload stays small as agent count grows.
   usePoll(fetchAllShortstats, 5000, [fetchAllShortstats]);
+
+  // App-wide poll for remote PR state (open → merged / closed, mergeability)
+  // so the sidebar PR badge tracks changes made on GitHub — a merge by a
+  // teammate, CI, or the web UI — without the user opening the Git panel. Each
+  // refresh is a `gh` network call, so this runs at a far gentler cadence than
+  // the local shortstats poll, and the backend only touches agents that
+  // actually have a PR.
+  usePoll(refreshAllPrStates, 45000, [refreshAllPrStates]);
 
   // Apply theme + density via html classes; accent via CSS vars.
   useEffect(() => {

@@ -505,6 +505,7 @@ pub fn run() {
             commands::create_pr,
             commands::merge_pr,
             commands::get_pr_state,
+            commands::refresh_all_pr_states,
             commands::get_pr_checks,
             commands::get_pr_comments,
             commands::open_agent_shell,

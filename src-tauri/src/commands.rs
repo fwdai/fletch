@@ -774,6 +774,61 @@ pub async fn get_all_shortstats(
     Ok(out)
 }
 
+/// App-wide background poll that refreshes PR state for every agent with a
+/// recorded PR, so the sidebar badge (and any open Git panel) reflects merges /
+/// closes / mergeability changes that happen on GitHub — without the user
+/// having to open the panel. Returns an `agent_id -> PrState | null` map.
+///
+/// Unlike the per-trigger `fetch_and_emit_pr_state` path (which emits an event),
+/// this returns the states directly so the caller folds them into the store
+/// synchronously. That avoids a startup race: `usePoll` fires immediately, and
+/// routing through `pr:state_changed` would drop results emitted before the
+/// store's listener finishes attaching during `init()`.
+///
+/// Only agents with a known PR *number* are polled: discovery of a brand-new PR
+/// still rides the existing turn-end / push / git-action triggers, so this poll
+/// never fans a `gh` call out to an agent that has no PR. Lookup is by number
+/// (not branch), keeping PR identity bound to the agent. Like
+/// `get_all_shortstats`, queries run in parallel via a `JoinSet`.
+///
+/// Each agent's *first* repo is used, matching the rest of the PR subsystem
+/// (`get_pr_state`, `fetch_and_emit_pr_state`) and the one-PR-per-agent shape of
+/// the store's `prStates` map; multi-repo PR tracking is out of scope here.
+#[tauri::command]
+pub async fn refresh_all_pr_states(
+    supervisor: State<'_, Arc<Supervisor>>,
+) -> Result<std::collections::HashMap<String, Option<PrState>>> {
+    let Some(workspace) = supervisor.workspace.current() else {
+        return Ok(Default::default());
+    };
+    let mut set = tokio::task::JoinSet::new();
+    for agent in workspace.agents {
+        if agent.archive.is_some() {
+            continue;
+        }
+        let Some(repo) = agent.repos.first() else { continue };
+        if repo.branch.is_none() {
+            continue;
+        }
+        let Some(number) = repo.pr_number else { continue };
+        let Ok(worktree) = repo_worktree_path(&agent.id, &repo.subdir) else { continue };
+        let agent_id = agent.id.clone();
+        set.spawn(async move {
+            let state = gh::pr_view_number(&worktree, number as u32)
+                .await
+                .unwrap_or(None);
+            (agent_id, state)
+        });
+    }
+    let mut out = std::collections::HashMap::new();
+    while let Some(res) = set.join_next().await {
+        if let Ok((id, state)) = res {
+            out.insert(id, state);
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // File panel — browse the worktree, view & edit file contents.
 // ---------------------------------------------------------------------------
