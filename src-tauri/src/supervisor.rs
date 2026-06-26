@@ -181,9 +181,16 @@ impl Supervisor {
         status: AgentStatus,
         last_error: Option<String>,
     ) {
-        self.statuses
+        let prev = self
+            .statuses
             .lock()
             .insert(agent_id.to_string(), status.clone());
+        tracing::debug!(
+            agent_id = %agent_id,
+            from = ?prev,
+            to = ?status,
+            "agent status transition"
+        );
         // Persist durable side-effects: Error stores last_error; Spawning/Running
         // clear stale stopped/error; Idle persists nothing.
         match status {
@@ -1946,12 +1953,19 @@ fn spawn_managed_agent(
     Agent::spawn_managed(
         spec,
         move |event| {
+            let mut still_active = false;
             if let Some(activity) = sup_for_event
                 .activities
                 .lock()
                 .get_mut(&id_for_event)
             {
                 activity.observe_event(&event);
+                still_active = !activity.turn_ended();
+            }
+            // An event that isn't the turn-end means the agent is working;
+            // recover it if a premature backstop wrongly parked it at Idle.
+            if still_active {
+                note_stream_activity(&sup_for_event, &app_for_event, &id_for_event);
             }
 
             if let Err(e) = app_for_event.emit(
@@ -1998,8 +2012,15 @@ fn spawn_per_turn_agent(
     let sup_for_exit = sup;
 
     let on_event = move |event: Value| {
+        let mut still_active = false;
         if let Some(activity) = sup_for_event.activities.lock().get_mut(&id_for_event) {
             activity.observe_event(&event);
+            still_active = !activity.turn_ended();
+        }
+        // An event that isn't the turn-end means the agent is working; recover
+        // it if a premature backstop wrongly parked it at Idle.
+        if still_active {
+            note_stream_activity(&sup_for_event, &app_for_event, &id_for_event);
         }
         if let Err(e) = app_for_event.emit(
             "agent:event",
@@ -2352,6 +2373,20 @@ fn transition_active(
             sup.trigger_session_sync(app.clone(), agent_id.to_string());
             drain_pending_bin_respawn(sup, app, agent_id);
         }
+    }
+}
+
+/// An agent that's still streaming events is, by definition, still working —
+/// so recover it if a premature turn-end (the silence backstop firing during a
+/// long quiet tool call) wrongly parked it at `Idle`. Only acts on a live
+/// `Idle`: a fresh user turn already sets `Running`, the turn-end event itself
+/// is excluded by the caller, and no events arrive once a turn truly ends — so
+/// this never fights a legitimate idle. The tool-aware backstop
+/// (`ManagedActivity`) prevents most false idles for Claude; this is the
+/// provider-agnostic safety net for the rest.
+fn note_stream_activity(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
+    if matches!(sup.live_status(agent_id), Some(AgentStatus::Idle)) {
+        sup.set_status(app, agent_id, AgentStatus::Running, None);
     }
 }
 

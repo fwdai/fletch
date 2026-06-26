@@ -350,6 +350,49 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
       set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
     });
 
+    // Reconcile against the backend's authoritative status when the window
+    // comes back to the foreground. Live `agent:status` events are the steady-
+    // state path, but a single event missed while the OS had the webview
+    // backgrounded would otherwise strand a row's status (e.g. a sidebar agent
+    // stuck "idle" while it's actually running) until its next transition. The
+    // refetch is cheap and `get_workspace` overlays live in-memory status, so
+    // it's authoritative. `managedBusy` is reconciled from that same status the
+    // way an `agent:status` event would (see `onAgentStatus` above), so the
+    // composer/spinner can't be left out of sync either.
+    let resyncInFlight = false;
+    const resyncWorkspace = async () => {
+      if (resyncInFlight) return;
+      resyncInFlight = true;
+      try {
+        const fresh = await api.getWorkspace();
+        if (!fresh) return;
+        set((state) => {
+          const managedBusy = { ...state.managedBusy };
+          for (const a of fresh.agents) {
+            if (a.status === "running" || a.status === "spawning") {
+              managedBusy[a.id] = true;
+            } else if (
+              a.status === "idle" ||
+              a.status === "stopped" ||
+              a.status === "error"
+            ) {
+              managedBusy[a.id] = false;
+            }
+          }
+          return { workspace: fresh, managedBusy };
+        });
+      } catch {
+        // Best-effort; the next event or resync recovers.
+      } finally {
+        resyncInFlight = false;
+      }
+    };
+    const onVisible = () => {
+      if (!document.hidden) void resyncWorkspace();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", () => void resyncWorkspace());
+
     const workspace = await api.getWorkspace();
     set({ workspace });
   },
