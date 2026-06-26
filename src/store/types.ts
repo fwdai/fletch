@@ -215,6 +215,10 @@ export interface ComposerSlice {
   setComposerDraft: (key: string, text: string) => void;
 }
 
+/** Right-rail panel tabs. Mirrors the `Tab` ids in RightPanel; kept here so the
+ *  store can remember the last-open tab per agent without importing a component. */
+export type RightPanelTab = "code" | "git" | "run" | "term";
+
 export interface UiSlice {
   /** Quick-settings popover (gear / ⌘,). */
   settingsOpen: boolean;
@@ -242,6 +246,10 @@ export interface UiSlice {
   rightCollapsed: boolean;
   leftWidth: number;
   rightWidth: number;
+  /** Last-open right-rail tab per agent, keyed by agent id. Lets the panel
+   *  restore the tab the user was on (e.g. Git) when they switch back to an
+   *  agent, instead of always resetting to the first tab. In-memory only. */
+  rightPanelTabs: Record<string, RightPanelTab>;
 
   toggleSettings: (open?: boolean) => void;
   openSettingsScreen: (section?: SettingsSection, intent?: SettingsIntent) => void;
@@ -263,6 +271,8 @@ export interface UiSlice {
   /** Persist the final width once a splitter drag ends. */
   commitLeftWidth: (w: number) => void;
   commitRightWidth: (w: number) => void;
+  /** Remember the right-rail tab an agent was last viewing. */
+  setRightPanelTab: (agentId: string, tab: RightPanelTab) => void;
 }
 
 export interface AccountSlice {
