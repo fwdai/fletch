@@ -118,7 +118,11 @@ export function QuestionCard({
 
       <div className="q-opts">
         {opts.map((o, i) => {
-          const checked = picks.has(o.id);
+          // multiSelect tracks picks locally; single-select reflects the
+          // chosen answer passed down so a selection shows before commit.
+          const checked = question.multiSelect
+            ? picks.has(o.id)
+            : !!answer?.optionIds?.includes(o.id);
           return (
             <button
               key={o.id}

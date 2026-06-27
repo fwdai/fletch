@@ -1527,6 +1527,12 @@ button {
 .q-opt:hover .q-radio.plus {
   color: var(--accent);
 }
+.q-opt.is-checked .q-radio {
+  border-color: var(--accent);
+}
+.q-opt.is-checked .q-radio::after {
+  transform: scale(1);
+}
 
 .q-opt-body {
   flex: 1;
