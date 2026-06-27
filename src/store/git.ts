@@ -146,6 +146,19 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // commit/PR fires), so kind-matching is what keeps a turn we're queued
       // behind from setting this off an unrelated mutation. Paired with
       // `resolved` in delegationStep, that keeps the success notice honest.
+      //
+      // KNOWN LIMITATION: kind-matching filters *different* ops, not *which
+      // turn* ran them. The `agent:git-action` event carries no turn identity,
+      // and the delegated turn (our `[app-action]` message) can't be told apart
+      // from a turn we're queued behind on the client — Claude queues our
+      // message and the turn boundary isn't observable. So if you trigger an
+      // action while the agent is already running AND the in-flight turn does
+      // the *same* op and reaches the target, the notice can fire before our
+      // delegated turn runs. The notice is still outcome-accurate (the work did
+      // happen) and the idle-click path is unaffected. Fully fixing it needs the
+      // backend to tag the event with the executing turn's `turn_id` (delivery
+      // != execution, so it must track which queued turn is actually running) —
+      // deferred until/unless this concurrency case bites in practice.
       if (!d || d.sawGitOp || !gitActionProvesKind(d.kind, op)) return s;
       return {
         gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawGitOp: true } },
