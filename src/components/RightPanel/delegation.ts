@@ -20,14 +20,15 @@ export interface GitDelegation {
    *  reset on dequeue. The give-up grace window counts from here. */
   startedAt: number;
   /** OUR turn has been observed `running` since `startedAt`. Until then a
-   *  settled status is pre-send state, not a finished delegation turn. */
+   *  settled status is pre-send state, not a finished delegation turn. Used
+   *  only to arm the give-up clock — never to confirm success. */
   sawRunning: boolean;
-  /** Was the target already satisfied at the instant our turn started running?
-   *  If so, a current match is stale (a manual stash/discard while queued, or
-   *  pre-existing clean/open state) — not something this turn performed. Only a
-   *  match that was FALSE at run-start and later turned true is genuinely ours.
-   *  Captured once, when `sawRunning` flips. */
-  resolvedAtRunStart: boolean;
+  /** The agent ran a successful mutating git op (commit/push/PR/update) during
+   *  OUR turn — the backend's ground-truth `agent:git-action` signal. This is
+   *  the causal link a snapshot can't provide: it distinguishes a target the
+   *  agent reached from one already satisfied by a manual action or pre-existing
+   *  state. Only set once we're no longer queued behind a foreign turn. */
+  sawGitOp: boolean;
   /** The agent was mid-turn when the trigger was sent, so it's queued behind
    *  that turn. The foreign turn's running/settling must not arm or clear
    *  this delegation — it's waited out first, then `queued` drops. */
@@ -44,7 +45,7 @@ export const DELEGATION_GIVE_UP_GRACE_MS = 15_000;
  *  - "resolve": the watched git/PR transition landed → clear + success notice
  *  - "wait": nothing to do this pass
  *  - "dequeue": the pre-existing turn settled → drop `queued`, reset the clock
- *  - "mark-running": our turn started → set `sawRunning` + baseline `resolved`
+ *  - "mark-running": our turn started → set `sawRunning` (arms the give-up clock)
  *  - "give-up": agent settled without the transition → clear + honest notice */
 export type DelegationStep = "resolve" | "wait" | "dequeue" | "mark-running" | "give-up";
 
@@ -54,14 +55,12 @@ export function delegationStep(
   resolved: boolean,
   now: number,
 ): DelegationStep {
-  // A snapshot match is OUR result only if our own turn ran AND the target
-  // wasn't already satisfied when that turn started — i.e. we observed the
-  // transition happen during the turn. `sawRunning` alone is not enough: a
-  // target that matched before the turn (PR already open, tree cleaned by a
-  // manual stash/discard while queued) would flip `sawRunning` on the first
-  // `running` tick and resolve instantly without the agent doing the action.
-  // `resolvedAtRunStart` is the baseline captured at that instant.
-  if (resolved && delegation.sawRunning && !delegation.resolvedAtRunStart) return "resolve";
+  // Resolve only when the world reached the target (`resolved`) AND the agent
+  // actually ran a git mutation this turn (`sawGitOp`, the backend's
+  // ground-truth signal). Snapshot state alone can't attribute causality: a
+  // target already satisfied by a manual stash/discard or a pre-existing
+  // clean/open PR would otherwise read as success the agent never produced.
+  if (resolved && delegation.sawGitOp) return "resolve";
   const active = status === "running" || status === "spawning";
   // Queued behind a foreign turn: its activity is not ours to interpret.
   if (delegation.queued) return active ? "wait" : "dequeue";

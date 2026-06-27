@@ -16,7 +16,7 @@ function d(over: Partial<GitDelegation> = {}): GitDelegation {
     kind: "commit",
     startedAt: 1_000,
     sawRunning: false,
-    resolvedAtRunStart: false,
+    sawGitOp: false,
     queued: false,
     ...over,
   };
@@ -117,32 +117,30 @@ describe("delegationStep", () => {
   const soon = 2_000; // within the grace window of startedAt=1_000
   const late = 1_000 + DELEGATION_GIVE_UP_GRACE_MS + 1;
 
-  it("resolution only counts once OUR turn has run (sawRunning)", () => {
-    // sawRunning set → a matching snapshot is genuinely our result.
-    expect(delegationStep(d({ sawRunning: true }), "idle", true, late)).toBe("resolve");
-    expect(delegationStep(d({ sawRunning: true }), "running", true, soon)).toBe("resolve");
+  it("resolution requires the agent's own git op (sawGitOp), not just a match", () => {
+    // The agent ran a mutating git op this turn AND the target is reached →
+    // genuinely our result, whether the turn is still running or already idle.
+    expect(delegationStep(d({ sawGitOp: true }), "idle", true, late)).toBe("resolve");
+    expect(delegationStep(d({ sawGitOp: true }), "running", true, soon)).toBe("resolve");
   });
 
-  it("a stale snapshot match before our turn never resolves (the reported bug)", () => {
-    // Queued behind a foreign turn: its activity (or a target that already
-    // matched at trigger time) must not read as our finished delegation.
+  it("a matching snapshot WITHOUT our git op never resolves (the reported bugs)", () => {
+    // Target already satisfied but the agent did no git work — a manual
+    // stash/discard, a pre-existing clean/open PR, or a foreign queued turn.
+    // sawRunning alone (turn started) must NOT resolve; only sawGitOp does.
+    expect(delegationStep(d({ sawRunning: true }), "running", true, soon)).toBe("wait");
+    expect(delegationStep(d({ sawRunning: true }), "idle", true, late)).toBe("give-up");
+    // Queued behind a foreign turn: its activity is never ours.
     expect(delegationStep(d({ queued: true }), "running", true, soon)).toBe("wait");
-    // Not queued, but our turn hasn't started yet (e.g. PR already open at
-    // click time): wait within grace, give up after — never a false resolve.
+    // Our turn hasn't even started: wait within grace, give up after.
     expect(delegationStep(d(), "idle", true, soon)).toBe("wait");
     expect(delegationStep(d(), "idle", true, late)).toBe("give-up");
   });
 
-  it("a target already satisfied when our turn started is not our result", () => {
-    // The baseline captured at run-start was already resolved (manual
-    // stash/discard while queued, or pre-existing clean/open state). Even with
-    // sawRunning + a matching snapshot, this must NOT resolve — the agent never
-    // performed the action. It falls through to wait (active) / give-up (idle).
-    const stale = { sawRunning: true, resolvedAtRunStart: true };
-    expect(delegationStep(d(stale), "running", true, soon)).toBe("wait");
-    expect(delegationStep(d(stale), "idle", true, late)).toBe("give-up");
-    // Contrast: baseline FALSE at run-start, snapshot now true → genuinely ours.
-    expect(delegationStep(d({ sawRunning: true }), "idle", true, soon)).toBe("resolve");
+  it("a fast turn whose git op landed before resolve still succeeds (no false give-up)", () => {
+    // sawGitOp arrives from the backend even if the snapshot/status timing is
+    // tight — once set, a reached target resolves rather than giving up.
+    expect(delegationStep(d({ sawGitOp: true }), "idle", true, soon)).toBe("resolve");
   });
 
   it("queued behind an in-flight turn: waits it out, then dequeues — never gives up", () => {

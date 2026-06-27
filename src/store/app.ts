@@ -5,6 +5,7 @@ import {
   api,
   onAgentBranch,
   onAgentEvent,
+  onAgentGitAction,
   onAgentOutput,
   onAgentRepoAdded,
   onAgentStatus,
@@ -242,6 +243,13 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
 
   await onAgentRepoAdded((e) => {
     patchAgent(get, set, e.agent_id, (a) => ({ repos: [...a.repos, e.repo] }));
+  });
+
+  // Ground-truth that the agent ran a git mutation this turn — the delegation
+  // lifecycle resolves on this (paired with the target snapshot) instead of
+  // inferring success from polled state, which can't attribute causality.
+  await onAgentGitAction((e) => {
+    get().markGitDelegationActed(e.agent_id);
   });
 
   await onAgentTask((e) => {

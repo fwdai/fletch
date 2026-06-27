@@ -46,7 +46,7 @@ export function useDelegationLifecycle({
         markGitDelegationDequeued(agentId);
         break;
       case "mark-running":
-        markGitDelegationRunning(agentId, resolved);
+        markGitDelegationRunning(agentId);
         break;
       case "give-up":
         clearGitDelegation(agentId);

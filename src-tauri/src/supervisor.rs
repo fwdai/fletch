@@ -73,6 +73,14 @@ pub struct AgentRepoAddedPayload {
     pub repo: TrackedRepo,
 }
 
+/// A successful, mutating git RPC op (`op`) the agent ran this turn — the
+/// causal signal the delegation panel uses to confirm the agent did the work.
+#[derive(Clone, serde::Serialize)]
+pub struct AgentGitActionPayload {
+    pub agent_id: String,
+    pub op: String,
+}
+
 
 #[derive(Clone, serde::Serialize)]
 pub struct ShellOutputPayload {
@@ -2428,6 +2436,28 @@ fn spawn_rpc_watcher(
                             }
                         }
                         sup.fetch_and_emit_pr_state(app.clone(), agent_id.clone());
+                    }
+                    rpc::RpcEvent::Named { name, payload }
+                        if name == rpc::git::EVENT_ACTION_DONE =>
+                    {
+                        // Authoritative "the agent performed a git mutation this
+                        // turn" signal. Forward it so the panel can attribute a
+                        // git/PR transition to the turn rather than guessing from
+                        // a polled snapshot.
+                        let op = payload
+                            .get("op")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if let Err(e) = app.emit(
+                            "agent:git-action",
+                            AgentGitActionPayload {
+                                agent_id: agent_id.clone(),
+                                op,
+                            },
+                        ) {
+                            tracing::warn!(error = %e, agent_id = %agent_id, "emit agent:git-action failed");
+                        }
                     }
                     rpc::RpcEvent::Named { name, payload } => {
                         tracing::debug!(event = %name, payload = %payload, "rpc: unhandled event");

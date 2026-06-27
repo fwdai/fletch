@@ -118,7 +118,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
           kind,
           startedAt: Date.now(),
           sawRunning: false,
-          resolvedAtRunStart: false,
+          sawGitOp: false,
           queued,
         },
       },
@@ -126,18 +126,24 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     void get().sendUserMessage(agentId, prompt);
   },
 
-  markGitDelegationRunning: (agentId, resolved) => {
+  markGitDelegationRunning: (agentId) => {
     set((s) => {
       const d = s.gitDelegations[agentId];
       if (!d || d.sawRunning) return s;
-      // Snapshot whether the target was already satisfied as our turn starts.
-      // A match that was already true here is stale (manual action / pre-existing
-      // state), not work this turn will perform.
       return {
-        gitDelegations: {
-          ...s.gitDelegations,
-          [agentId]: { ...d, sawRunning: true, resolvedAtRunStart: resolved },
-        },
+        gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawRunning: true } },
+      };
+    });
+  },
+
+  markGitDelegationActed: (agentId) => {
+    set((s) => {
+      const d = s.gitDelegations[agentId];
+      // Ignore git ops fired by a foreign turn we're still queued behind — only
+      // OUR turn's mutations count. (`queued` drops once that turn settles.)
+      if (!d || d.queued || d.sawGitOp) return s;
+      return {
+        gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawGitOp: true } },
       };
     });
   },
