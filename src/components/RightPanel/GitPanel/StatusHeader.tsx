@@ -1,4 +1,5 @@
 import type { GitState, MergeState, PrState } from "../../../api";
+import { describeMergeGate, type MergeGateTone } from "../mergeGate";
 import type { GitPanelState } from "../primaryActions";
 import { ViewOnGitHub } from "./shared";
 
@@ -7,6 +8,31 @@ import { ViewOnGitHub } from "./shared";
 // state before any word is read. clean=green · uncommitted=amber · pushed/PR=
 // blue · fixable (can't merge / conflicts)=orange · ready=green · merged=purple.
 type HeaderKind = "clean" | "changes" | "info" | "att" | "ready" | "merged" | "neutral";
+
+/** Render the shared merge-gate tone as a header kind. */
+const HEADER_KIND_BY_TONE: Record<MergeGateTone, HeaderKind> = {
+  ready: "ready",
+  warn: "changes",
+  attention: "att",
+  info: "info",
+};
+
+/** Terse merge-gate phrasing for the at-a-glance header. */
+const HEADER_TEXT_BY_SITUATION: Record<
+  ReturnType<typeof describeMergeGate>["situation"],
+  (base: string) => string
+> = {
+  ready: () => "ready to merge",
+  "mergeable-soft": () => "optional checks failing",
+  "checks-failing": () => "checks failing",
+  "review-required": () => "review required",
+  behind: (base) => `behind ${base}`,
+  conflicts: (base) => `conflicts with ${base}`,
+  draft: () => "draft",
+  computing: () => "checking…",
+  "no-conflicts": () => "no conflicts",
+  "cant-merge": () => "can’t merge yet",
+};
 
 interface HeaderInfo {
   kind: HeaderKind;
@@ -50,36 +76,19 @@ export function describeHeader(
     case "conflicts":
       return { kind: "att", pill: "Conflicts", text: branch, sub: `← ${base}` };
     case "pr-open": {
-      // GitHub's combined merge gate (spec §7): the legitimate green "ready"
-      // appears only on `clean`. Without checks data, fall back to
-      // `mergeable` — which only means "no conflicts", never an all-clear.
+      // Gate classification + tone live in describeMergeGate; the header only
+      // picks its terse phrasing and renders the shared tone.
       const pill = n != null ? `PR #${n}` : "PR";
-      switch (mergeState) {
-        case "clean":
-          return { kind: "ready", pill, text: "ready to merge", ext: true };
-        case "unstable":
-          return { kind: "changes", pill, text: "optional checks failing", ext: true };
-        case "blocked":
-          return {
-            kind: "att",
-            pill,
-            text: checksFailed > 0 ? "checks failing" : "review required",
-            ext: true,
-          };
-        case "behind":
-          return { kind: "att", pill, text: `behind ${base}`, ext: true };
-        case "dirty":
-          return { kind: "att", pill, text: `conflicts with ${base}`, ext: true };
-        case "draft":
-          return { kind: "info", pill, text: "draft", ext: true };
-        case "unknown":
-        case "has_hooks":
-          return { kind: "info", pill, text: "checking…", ext: true };
-        default:
-          return pr?.mergeable
-            ? { kind: "info", pill, text: "no conflicts", ext: true }
-            : { kind: "att", pill, text: "can’t merge yet", ext: true };
-      }
+      const gate = describeMergeGate(mergeState, {
+        checksFailed,
+        mergeable: !!pr?.mergeable,
+      });
+      return {
+        kind: HEADER_KIND_BY_TONE[gate.tone],
+        pill,
+        text: HEADER_TEXT_BY_SITUATION[gate.situation](base),
+        ext: true,
+      };
     }
     case "pr-closed":
       return { kind: "neutral", pill: "Closed", text: n != null ? `#${n}` : "—", ext: true };
