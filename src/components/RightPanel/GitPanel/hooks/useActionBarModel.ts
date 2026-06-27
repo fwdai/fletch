@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { GitState, MergeState, PrChecks, PrState } from "../../../../api";
 import { useAppStore } from "../../../../store";
+import { describeMergeGate } from "../../mergeGate";
 import {
   type ActionTone,
   type GitPanelState,
@@ -90,8 +91,11 @@ export function useActionBarModel(input: {
 
   // The CTA's main button is disabled while loading git state, while the agent
   // holds a delegation, and when Merge is selected but the merge gate isn't
-  // open (clean/unstable per spec §7; `mergeable` fallback without checks data).
-  const mergeAllowed = checks ? mergeState === "clean" || mergeState === "unstable" : mergeable;
+  // open. Gate semantics live in describeMergeGate (spec §6).
+  const { mergeAllowed } = describeMergeGate(checks ? mergeState : null, {
+    checksFailed: checks?.failed ?? 0,
+    mergeable,
+  });
   const mainDisabled =
     effectiveKey === "loading" || delegationActive || (effectiveKey === "merge" && !mergeAllowed);
   // Tone applies only when the selected action is the state's primary; picking

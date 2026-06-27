@@ -1,5 +1,6 @@
 import type { GitState, MergeState, PrState } from "../../api";
 import type { IconName } from "../Icon";
+import { describeMergeGate } from "./mergeGate";
 
 /** Derived git panel state — computed from live GitState, not stored. */
 export type GitPanelState =
@@ -161,62 +162,56 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
           ahead === 1 ? "1 commit pushed, no PR yet" : `${ahead} commits pushed, no PR yet`,
         statusKind: "info",
       };
-    case "pr-open":
-      // GitHub's combined merge gate (`merge_state`, spec §7) drives the
-      // sub-states. Without checks data (null → gh missing / API failure)
-      // fall back to the `mergeable`-only behavior.
-      switch (mergeState) {
-        case "clean":
-          return {
-            key: "merge",
-            label: "Merge PR",
-            icon: "merge",
-            tone: "success",
-            statusLabel: `${prLabel} · ready to merge`,
-            statusKind: "ready",
-          };
-        case "unstable":
+    case "pr-open": {
+      // Gate semantics (which MergeState means what, in which tone) live in
+      // describeMergeGate; here we only pick the action + status phrasing.
+      const gate = describeMergeGate(mergeState, { checksFailed, mergeable });
+      const status = (text: string): Pick<PrimaryAction, "statusLabel" | "statusKind"> => ({
+        statusLabel: `${prLabel} · ${text}`,
+        statusKind: gate.tone,
+      });
+      const merge = (text: string, tone?: ActionTone): PrimaryAction => ({
+        key: "merge",
+        label: "Merge PR",
+        icon: "merge",
+        ...(tone ? { tone } : {}),
+        ...status(text),
+      });
+      switch (gate.situation) {
+        case "ready":
+          return merge("ready to merge", "success");
+        case "mergeable-soft":
           // Only NON-required checks failing — merging is allowed, but say so.
+          return merge("optional checks failing");
+        case "checks-failing":
+          // Failing required checks are agent-fixable.
           return {
-            key: "merge",
-            label: "Merge PR",
-            icon: "merge",
-            statusLabel: `${prLabel} · optional checks failing`,
-            statusKind: "warn",
+            key: "agent-fix",
+            label: "Fix checks with agent",
+            icon: "wrench",
+            ...status(`${checksFailed} ${checksFailed === 1 ? "check" : "checks"} failing`),
           };
-        case "blocked":
-          // Failing required checks are agent-fixable; a pure review gate
-          // (nothing failing) is not — send the user to GitHub instead.
-          return checksFailed > 0
-            ? {
-                key: "agent-fix",
-                label: "Fix checks with agent",
-                icon: "wrench",
-                statusLabel: `${prLabel} · ${checksFailed} ${checksFailed === 1 ? "check" : "checks"} failing`,
-                statusKind: "attention",
-              }
-            : {
-                key: "view-pr",
-                label: "View on GitHub",
-                icon: "github",
-                statusLabel: `${prLabel} · review required`,
-                statusKind: "attention",
-              };
+        case "review-required":
+          // A pure review gate is not agent-fixable — send the user to GitHub.
+          return {
+            key: "view-pr",
+            label: "View on GitHub",
+            icon: "github",
+            ...status("review required"),
+          };
         case "behind":
           return {
             key: "agent-update-branch",
             label: "Update branch",
             icon: "branch",
-            statusLabel: `${prLabel} · behind ${base}`,
-            statusKind: "attention",
+            ...status(`behind ${base}`),
           };
-        case "dirty":
+        case "conflicts":
           return {
             key: "agent-update-branch",
             label: "Update branch",
             icon: "branch",
-            statusLabel: `${prLabel} · conflicts with ${base}`,
-            statusKind: "attention",
+            ...status(`conflicts with ${base}`),
           };
         case "draft":
           return {
@@ -224,37 +219,18 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
             label: "View draft on GitHub",
             icon: "github",
             tone: "ghost",
-            statusLabel: `${prLabel} · draft`,
-            statusKind: "info",
+            ...status("draft"),
           };
-        case "unknown":
-        case "has_hooks":
-          return {
-            key: "merge",
-            label: "Merge PR",
-            icon: "merge",
-            statusLabel: `${prLabel} · checking…`,
-            statusKind: "info",
-          };
-        default:
+        case "computing":
+          return merge("checking…");
+        case "no-conflicts":
           // No checks data — `mergeable` only reports the absence of merge
           // conflicts, NOT CI status, so claim no more than that.
-          return mergeable
-            ? {
-                key: "merge",
-                label: "Merge PR",
-                icon: "merge",
-                statusLabel: `${prLabel} · no conflicts`,
-                statusKind: "info",
-              }
-            : {
-                key: "merge",
-                label: "Merge PR",
-                icon: "merge",
-                statusLabel: `${prLabel} · can’t merge yet`,
-                statusKind: "attention",
-              };
+          return merge("no conflicts");
+        default: // cant-merge
+          return merge("can’t merge yet");
       }
+    }
     case "conflicts":
       // Fixable, not fatal — the agent can reconcile the conflict for you.
       return {
@@ -360,8 +336,7 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
       // from the local-merge "Resolve with agent" used in the conflicts state.
       // "View on GitHub" is deliberately absent: it's a convenience link,
       // rendered as a chip next to the status text, not an action.
-      const needsUpdate =
-        mergeState === "behind" || mergeState === "dirty" || (mergeState == null && !mergeable);
+      const { needsUpdate } = describeMergeGate(mergeState, { checksFailed, mergeable });
       return [
         { key: "merge", label: "Merge PR", icon: "merge" },
         ...(needsUpdate
