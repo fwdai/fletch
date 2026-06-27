@@ -249,32 +249,38 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         workspace: fresh ?? s.workspace,
       }));
     } catch (e) {
-      // Roll back only our own optimistic edits, applied to the *current*
-      // state: clear the placeholder by reference (a newer fetch will have
-      // already replaced it, in which case there's nothing to undo) and
-      // restore the selection only if nothing else claimed it meanwhile.
-      //
-      // Our optimistic clear set selectedAgentId to null and left
-      // activeDraftId alone (it was already null, since an agent was
-      // selected). A later user action lands in a distinguishable state:
-      // selectAgent sets selectedAgentId non-null, selectDraft sets
-      // activeDraftId non-null. So only re-select when BOTH are still null —
-      // otherwise we'd yank the UI away from a draft the user just opened.
-      set((s) => ({
-        workspace: s.workspace
-          ? {
-              ...s.workspace,
-              agents: s.workspace.agents.map((a) =>
-                a.id === id && a.archive === placeholder ? { ...a, archive: null } : a,
-              ),
-            }
-          : s.workspace,
-        selectedAgentId:
-          wasSelected && s.selectedAgentId === null && s.activeDraftId === null
-            ? id
-            : s.selectedAgentId,
-        lastError: String(e),
-      }));
+      set((s) => {
+        // The placeholder object reference is the single source of truth for
+        // "our optimistic edit is still in effect and unsuperseded". Any
+        // authoritative refresh (getWorkspace, or an event-driven rebuild of
+        // agents) replaces that object, so if it's gone the store already
+        // reflects reality — whether the agent ended up archived or still
+        // live — and we must not undo anything, including the selection.
+        // Tying BOTH the placeholder revert and the selection restore to this
+        // one fact keeps them from diverging (e.g. resurrecting a selection
+        // for an agent a refresh has since shown as archived).
+        const ws = s.workspace;
+        const stillOptimistic = ws?.agents.some((a) => a.id === id && a.archive === placeholder);
+        if (!ws || !stillOptimistic) return { lastError: String(e) };
+
+        // Undo the optimistic hide (the agent reappears, live, in the sidebar)
+        // and restore the selection — but only if nothing else claimed it.
+        // Our clear set selectedAgentId to null and left activeDraftId null
+        // (an agent was selected); a later selectAgent sets selectedAgentId
+        // non-null and selectDraft sets activeDraftId non-null, so requiring
+        // both still-null avoids yanking the UI off a draft the user opened.
+        return {
+          workspace: {
+            ...ws,
+            agents: ws.agents.map((a) => (a.id === id ? { ...a, archive: null } : a)),
+          },
+          selectedAgentId:
+            wasSelected && s.selectedAgentId === null && s.activeDraftId === null
+              ? id
+              : s.selectedAgentId,
+          lastError: String(e),
+        };
+      });
     }
   },
 
