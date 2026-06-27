@@ -21,10 +21,14 @@ export function MessageItem({
   item,
   provider,
   agentId,
+  turnId,
 }: {
   item: ViewItem;
   provider?: string;
   agentId?: string;
+  /** Ordinal of this user turn, used by ChatNav to locate the bubble in the
+   *  DOM. Set only for top-level navigable user prompts. */
+  turnId?: number;
 }) {
   switch (item.kind) {
     case "user_message":
@@ -40,7 +44,7 @@ export function MessageItem({
         );
       }
       return (
-        <div className="m-user">
+        <div className="m-user" data-chat-turn={turnId}>
           {stripInjectedInstructions(item.text)}
           {item.attachments && item.attachments.length > 0 && (
             <AttachmentList paths={item.attachments} className="message-attachments" />
