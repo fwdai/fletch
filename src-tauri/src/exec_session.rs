@@ -179,9 +179,22 @@ impl ExecSession {
             "spawning per-turn agent process"
         );
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| Error::Other(format!("agent spawn: {e}")))?;
+        // Retry on ETXTBSY ("Text file busy"): when another thread/process forks
+        // (posix_spawn) it can transiently inherit an open write fd to the binary
+        // we're about to exec, making the kernel reject the exec. The window is
+        // tiny, so a few short backoffs reliably clear it.
+        let mut spawn_attempts = 0;
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(child) => break child,
+                // 26 == ETXTBSY on Linux and macOS.
+                Err(e) if e.raw_os_error() == Some(26) && spawn_attempts < 10 => {
+                    spawn_attempts += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => return Err(Error::Other(format!("agent spawn: {e}"))),
+            }
+        };
         let stdout = child
             .stdout
             .take()
