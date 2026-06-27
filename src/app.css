@@ -883,6 +883,8 @@ button { cursor: default; }
 }
 .q-opt:hover .q-radio { border-color: var(--accent); }
 .q-opt:hover .q-radio::after { transform: scale(1); }
+.q-opt.is-checked .q-radio { border-color: var(--accent); }
+.q-opt.is-checked .q-radio::after { transform: scale(1); }
 .q-radio.plus { border-style: dashed; }
 .q-radio.plus::after, .q-radio.check::after { display: none; }
 .q-radio.check { border-radius: 5px; }
