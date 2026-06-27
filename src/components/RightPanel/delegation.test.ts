@@ -12,7 +12,14 @@ import {
 } from "./delegation";
 
 function d(over: Partial<GitDelegation> = {}): GitDelegation {
-  return { kind: "commit", startedAt: 1_000, sawRunning: false, queued: false, ...over };
+  return {
+    kind: "commit",
+    startedAt: 1_000,
+    sawRunning: false,
+    resolvedAtRunStart: false,
+    queued: false,
+    ...over,
+  };
 }
 
 function git(over: Partial<GitState> = {}): GitState {
@@ -124,6 +131,18 @@ describe("delegationStep", () => {
     // click time): wait within grace, give up after — never a false resolve.
     expect(delegationStep(d(), "idle", true, soon)).toBe("wait");
     expect(delegationStep(d(), "idle", true, late)).toBe("give-up");
+  });
+
+  it("a target already satisfied when our turn started is not our result", () => {
+    // The baseline captured at run-start was already resolved (manual
+    // stash/discard while queued, or pre-existing clean/open state). Even with
+    // sawRunning + a matching snapshot, this must NOT resolve — the agent never
+    // performed the action. It falls through to wait (active) / give-up (idle).
+    const stale = { sawRunning: true, resolvedAtRunStart: true };
+    expect(delegationStep(d(stale), "running", true, soon)).toBe("wait");
+    expect(delegationStep(d(stale), "idle", true, late)).toBe("give-up");
+    // Contrast: baseline FALSE at run-start, snapshot now true → genuinely ours.
+    expect(delegationStep(d({ sawRunning: true }), "idle", true, soon)).toBe("resolve");
   });
 
   it("queued behind an in-flight turn: waits it out, then dequeues — never gives up", () => {

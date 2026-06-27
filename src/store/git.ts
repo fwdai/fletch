@@ -114,18 +114,30 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     set((s) => ({
       gitDelegations: {
         ...s.gitDelegations,
-        [agentId]: { kind, startedAt: Date.now(), sawRunning: false, queued },
+        [agentId]: {
+          kind,
+          startedAt: Date.now(),
+          sawRunning: false,
+          resolvedAtRunStart: false,
+          queued,
+        },
       },
     }));
     void get().sendUserMessage(agentId, prompt);
   },
 
-  markGitDelegationRunning: (agentId) => {
+  markGitDelegationRunning: (agentId, resolved) => {
     set((s) => {
       const d = s.gitDelegations[agentId];
       if (!d || d.sawRunning) return s;
+      // Snapshot whether the target was already satisfied as our turn starts.
+      // A match that was already true here is stale (manual action / pre-existing
+      // state), not work this turn will perform.
       return {
-        gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawRunning: true } },
+        gitDelegations: {
+          ...s.gitDelegations,
+          [agentId]: { ...d, sawRunning: true, resolvedAtRunStart: resolved },
+        },
       };
     });
   },

@@ -171,7 +171,7 @@ export interface GitSlice {
   fetchPrChecks: (agentId: string) => Promise<void>;
   fetchPrComments: (agentId: string) => Promise<void>;
   delegateGitAction: (agentId: string, kind: GitDelegationKind, prompt: string) => void;
-  markGitDelegationRunning: (agentId: string) => void;
+  markGitDelegationRunning: (agentId: string, resolved: boolean) => void;
   /** The pre-existing turn the delegation was queued behind has settled —
    *  drop `queued` and restart the give-up clock for our own turn. */
   markGitDelegationDequeued: (agentId: string) => void;
