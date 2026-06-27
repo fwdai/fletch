@@ -16,6 +16,19 @@ const OP_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub const EVENT_BRANCH_CREATED: &str = "git.branch_created";
 pub const EVENT_PR_OPENED: &str = "git.pr_opened";
+/// Emitted whenever a *mutating* git op completes successfully. This is the
+/// authoritative "the agent actually performed a git action this turn" signal:
+/// the UI's delegation tracking uses it to attribute a git/PR state change to
+/// the agent's turn instead of inferring causality from a polled snapshot
+/// (which can't tell agent work from a manual action or a pre-existing match).
+pub const EVENT_ACTION_DONE: &str = "git.action_done";
+
+/// Ops that change repo/PR state — the ones whose success means the agent did
+/// the delegated work. Read-only ops (status) and the test ops (echo/ping) are
+/// excluded so they never read as a completed delegation.
+fn is_mutating_op(op: &str) -> bool {
+    matches!(op, "git_commit" | "git_push" | "open_pr" | "git_update_branch")
+}
 
 #[derive(Clone)]
 pub struct GitDispatcher {
@@ -42,28 +55,35 @@ impl RpcDispatcher for GitDispatcher {
 
 impl GitDispatcher {
     async fn dispatch_inner(&self, id: &str, op: &str, args: &Value) -> (Response, Vec<RpcEvent>) {
-        match op {
-            "open_pr" => return self.open_pr(id, args).await,
-            "git_push" => return self.git_push(id, args).await,
-            _ => {}
-        }
-        let resp = match op {
-            "echo" => self.echo(id, args).await,
-            "ping" => Response::ok(id, 0, "pong".to_string(), String::new()),
-            "git_status" => {
+        let (resp, mut effects) = match op {
+            "open_pr" => self.open_pr(id, args).await,
+            "git_push" => self.git_push(id, args).await,
+            "echo" => (self.echo(id, args).await, Vec::new()),
+            "ping" => (Response::ok(id, 0, "pong".to_string(), String::new()), Vec::new()),
+            "git_status" => (
                 run_command(
                     id,
                     &self.cwd,
                     "git",
                     &["status", "--porcelain=v1", "--branch"],
                 )
-                .await
-            }
-            "git_commit" => self.git_commit(id, args).await,
-            "git_update_branch" => self.git_update_branch(id).await,
-            other => Response::err(id, format!("unknown op: {other}")),
+                .await,
+                Vec::new(),
+            ),
+            "git_commit" => (self.git_commit(id, args).await, Vec::new()),
+            "git_update_branch" => (self.git_update_branch(id).await, Vec::new()),
+            other => (Response::err(id, format!("unknown op: {other}")), Vec::new()),
         };
-        (resp, Vec::new())
+        // A successful mutating op is ground truth that the agent performed the
+        // git action this turn — surface it so the UI doesn't have to guess from
+        // a snapshot. Emitted alongside the op-specific branch/PR events.
+        if resp.ok && is_mutating_op(op) {
+            effects.push(RpcEvent::named(
+                EVENT_ACTION_DONE,
+                serde_json::json!({ "op": op }),
+            ));
+        }
+        (resp, effects)
     }
 
     async fn echo(&self, id: &str, args: &Value) -> Response {
@@ -596,5 +616,59 @@ mod tests {
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["ok"], false);
         assert!(v["error"].as_str().unwrap().contains("message"));
+    }
+
+    fn has_action_done(effects: &[RpcEvent], expect_op: &str) -> bool {
+        effects.iter().any(|e| {
+            let RpcEvent::Named { name, payload } = e;
+            name == EVENT_ACTION_DONE && payload["op"] == expect_op
+        })
+    }
+
+    #[tokio::test]
+    async fn successful_mutating_op_emits_action_done() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("new.txt"), b"hello").unwrap();
+
+        let disp = dispatcher(&repo);
+        let (resp, effects) = disp
+            .dispatch_inner("c1", "git_commit", &json!({"message": "add new.txt"}))
+            .await;
+        assert!(resp.ok, "commit should succeed");
+        assert!(
+            has_action_done(&effects, "git_commit"),
+            "a successful git_commit must emit the action-done signal"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_and_failed_ops_emit_no_action_done() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+        let disp = dispatcher(&repo);
+
+        // Read-only op: never an action-done signal.
+        let (_r, status_fx) = disp.dispatch_inner("s", "git_status", &Value::Null).await;
+        assert!(
+            !has_action_done(&status_fx, "git_status"),
+            "git_status is read-only and must not signal an action"
+        );
+
+        // A failed mutating op (empty message) must NOT signal success.
+        let (resp, commit_fx) = disp
+            .dispatch_inner("c", "git_commit", &json!({"message": "   "}))
+            .await;
+        assert!(!resp.ok);
+        assert!(
+            !has_action_done(&commit_fx, "git_commit"),
+            "a failed git_commit must not signal an action"
+        );
     }
 }

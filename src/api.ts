@@ -109,6 +109,13 @@ export interface AgentRepoAddedEvent {
   repo: TrackedRepo;
 }
 
+/** A successful mutating git op (`commit`/`push`/`PR`/`update`) the agent ran
+ *  this turn — the ground-truth signal that a delegated git action happened. */
+export interface AgentGitActionEvent {
+  agent_id: string;
+  op: string;
+}
+
 export type StatusKind = "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted";
 
 export interface FileStatus {
@@ -566,6 +573,10 @@ export function onAgentBranch(cb: (e: AgentBranchEvent) => void): Promise<Unlist
 
 export function onAgentRepoAdded(cb: (e: AgentRepoAddedEvent) => void): Promise<UnlistenFn> {
   return listen<AgentRepoAddedEvent>("agent:repo_added", (event) => cb(event.payload));
+}
+
+export function onAgentGitAction(cb: (e: AgentGitActionEvent) => void): Promise<UnlistenFn> {
+  return listen<AgentGitActionEvent>("agent:git-action", (event) => cb(event.payload));
 }
 
 export function onWorkspaceChanged(cb: () => void): Promise<UnlistenFn> {

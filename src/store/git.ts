@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { gitActionProvesKind } from "../components/RightPanel/delegation";
 import type { GitCommitAction } from "../components/RightPanel/primaryActions";
 import { setSetting } from "../storage/settings";
 import type { GitSlice, SliceCreator } from "./types";
@@ -107,17 +108,28 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   fetchPrComments: (agentId) => fetchPrAux(set, agentId, "prComments", api.getPrComments),
 
   delegateGitAction: (agentId, kind, prompt) => {
-    // Sent mid-turn? Then our trigger is queued behind the in-flight turn,
-    // and that turn's running/settling must not be read as ours.
+    // If the agent is already running, DON'T inject the trigger mid-turn: Claude
+    // coalesces a stdin message into the current turn (it wouldn't run as its
+    // own turn), and the turn boundary isn't observable, so we couldn't tell our
+    // turn's git ops from the in-flight turn's. Instead hold the trigger and
+    // deliver it once the agent goes idle (markGitDelegationDequeued) — then the
+    // delegated turn runs in isolation and its git-action is unambiguously ours.
     const status = get().workspace?.agents.find((a) => a.id === agentId)?.status;
     const queued = status === "running";
     set((s) => ({
       gitDelegations: {
         ...s.gitDelegations,
-        [agentId]: { kind, startedAt: Date.now(), sawRunning: false, queued },
+        [agentId]: {
+          kind,
+          prompt,
+          startedAt: Date.now(),
+          sawRunning: false,
+          sawGitOp: false,
+          queued,
+        },
       },
     }));
-    void get().sendUserMessage(agentId, prompt);
+    if (!queued) void get().sendUserMessage(agentId, prompt);
   },
 
   markGitDelegationRunning: (agentId) => {
@@ -130,10 +142,33 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     });
   },
 
+  markGitDelegationActed: (agentId, op) => {
+    set((s) => {
+      const d = s.gitDelegations[agentId];
+      // Ignore ops while `queued`: our trigger hasn't been delivered yet, so any
+      // git-action belongs to the turn we're waiting behind. (`delegateGitAction`
+      // defers delivery until idle, so this is reliable — by the time we drop
+      // `queued` the prior turn has ended.) Then require an op from this
+      // delegation's own playbook (kind-match), so even within our turn an
+      // unrelated mutation can't stand in. Paired with `resolved` in
+      // delegationStep, that ties success to the agent doing the requested work.
+      if (!d || d.queued || d.sawGitOp || !gitActionProvesKind(d.kind, op)) return s;
+      return {
+        gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawGitOp: true } },
+      };
+    });
+  },
+
   markGitDelegationDequeued: (agentId) => {
+    // The turn we were queued behind has ended — NOW deliver the held trigger so
+    // our delegated turn runs in isolation, and start the give-up clock from
+    // here. Capture the prompt inside the atomic flip so only the call that
+    // actually dequeues sends (no double-delivery from repeated effect ticks).
+    let toSend: string | null = null;
     set((s) => {
       const d = s.gitDelegations[agentId];
       if (!d?.queued) return s;
+      toSend = d.prompt;
       return {
         gitDelegations: {
           ...s.gitDelegations,
@@ -141,6 +176,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
         },
       };
     });
+    if (toSend !== null) void get().sendUserMessage(agentId, toSend);
   },
 
   clearGitDelegation: (agentId) => {

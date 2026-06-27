@@ -9,10 +9,19 @@ import {
   delegationResolved,
   delegationStep,
   type GitDelegation,
+  gitActionProvesKind,
 } from "./delegation";
 
 function d(over: Partial<GitDelegation> = {}): GitDelegation {
-  return { kind: "commit", startedAt: 1_000, sawRunning: false, queued: false, ...over };
+  return {
+    kind: "commit",
+    prompt: "[app-action] commit",
+    startedAt: 1_000,
+    sawRunning: false,
+    sawGitOp: false,
+    queued: false,
+    ...over,
+  };
 }
 
 function git(over: Partial<GitState> = {}): GitState {
@@ -68,9 +77,17 @@ describe("delegationResolved", () => {
     expect(delegationResolved("commit-push", git(), null, null)).toBe(true);
   });
 
-  it("commit-pr and open-pr resolve when a PR is open", () => {
+  it("commit-pr needs BOTH a clean tree and an open PR (existing PR isn't enough)", () => {
     expect(delegationResolved("commit-pr", git(), null, null)).toBe(false);
+    // Reported bug: a PR is already open but new changes are still uncommitted —
+    // must NOT resolve off the pre-existing PR.
+    expect(delegationResolved("commit-pr", git({ files: [file("modified")] }), pr(), null)).toBe(
+      false,
+    );
     expect(delegationResolved("commit-pr", git(), pr(), null)).toBe(true);
+  });
+
+  it("open-pr resolves when a PR is open", () => {
     expect(delegationResolved("open-pr", git(), pr({ state: "closed" }), null)).toBe(false);
     expect(delegationResolved("open-pr", git(), pr(), null)).toBe(true);
   });
@@ -102,9 +119,39 @@ describe("delegationStep", () => {
   const soon = 2_000; // within the grace window of startedAt=1_000
   const late = 1_000 + DELEGATION_GIVE_UP_GRACE_MS + 1;
 
-  it("resolution wins over everything, even while queued", () => {
-    expect(delegationStep(d({ queued: true }), "running", true, soon)).toBe("resolve");
-    expect(delegationStep(d({ sawRunning: true }), "idle", true, late)).toBe("resolve");
+  it("resolution requires the agent's own git op (sawGitOp), not just a match", () => {
+    // The agent ran a mutating git op this turn AND the target is reached →
+    // genuinely our result, whether the turn is still running or already idle.
+    expect(delegationStep(d({ sawGitOp: true }), "idle", true, late)).toBe("resolve");
+    expect(delegationStep(d({ sawGitOp: true }), "running", true, soon)).toBe("resolve");
+  });
+
+  it("a matching snapshot WITHOUT our git op never resolves (the reported bugs)", () => {
+    // Target already satisfied but the agent did no git work — a manual
+    // stash/discard, a pre-existing clean/open PR, or a foreign queued turn.
+    // sawRunning alone (turn started) must NOT resolve; only sawGitOp does.
+    expect(delegationStep(d({ sawRunning: true }), "running", true, soon)).toBe("wait");
+    expect(delegationStep(d({ sawRunning: true }), "idle", true, late)).toBe("give-up");
+    // Queued, target matches, but no agent git op recorded yet → not success.
+    expect(delegationStep(d({ queued: true }), "running", true, soon)).toBe("wait");
+    // Our turn hasn't even started: wait within grace, give up after.
+    expect(delegationStep(d(), "idle", true, soon)).toBe("wait");
+    expect(delegationStep(d(), "idle", true, late)).toBe("give-up");
+  });
+
+  it("a fast turn whose git op landed before resolve still succeeds (no false give-up)", () => {
+    // sawGitOp arrives from the backend even if the snapshot/status timing is
+    // tight — once set, a reached target resolves rather than giving up.
+    expect(delegationStep(d({ sawGitOp: true }), "idle", true, soon)).toBe("resolve");
+  });
+
+  it("a still-queued delegation never resolves, even if a git op was recorded", () => {
+    // Our trigger isn't delivered until the agent goes idle, so while `queued`
+    // any git op belongs to the turn we're waiting behind. The store won't set
+    // sawGitOp while queued; delegationStep also refuses to resolve a queued
+    // delegation as belt-and-suspenders. It waits the turn out, then dequeues.
+    expect(delegationStep(d({ queued: true, sawGitOp: true }), "running", true, soon)).toBe("wait");
+    expect(delegationStep(d({ queued: true, sawGitOp: true }), "idle", true, late)).toBe("dequeue");
   });
 
   it("queued behind an in-flight turn: waits it out, then dequeues — never gives up", () => {
@@ -130,6 +177,31 @@ describe("delegationStep", () => {
   it("spawning counts as active, not settled", () => {
     expect(delegationStep(d({ queued: true }), "spawning", false, late)).toBe("wait");
     expect(delegationStep(d({ sawRunning: true }), "spawning", false, late)).toBe("wait");
+  });
+});
+
+describe("gitActionProvesKind", () => {
+  it("accepts only ops that belong to the kind's own playbook", () => {
+    expect(gitActionProvesKind("commit", "git_commit")).toBe(true);
+    expect(gitActionProvesKind("push", "git_push")).toBe(true);
+    expect(gitActionProvesKind("open-pr", "open_pr")).toBe(true);
+    expect(gitActionProvesKind("update-branch", "git_update_branch")).toBe(true);
+    expect(gitActionProvesKind("resolve", "git_commit")).toBe(true);
+    // Multi-op kinds accept any op they touch (resolved gates real completion).
+    expect(gitActionProvesKind("commit-push", "git_commit")).toBe(true);
+    expect(gitActionProvesKind("commit-push", "git_push")).toBe(true);
+    expect(gitActionProvesKind("commit-pr", "git_commit")).toBe(true);
+    expect(gitActionProvesKind("commit-pr", "open_pr")).toBe(true);
+  });
+
+  it("rejects an unrelated op so a foreign queued turn can't prove the action", () => {
+    // The reported bug: a `commit` delegation queued behind a turn that pushes
+    // or opens a PR must NOT treat those as proof its commit ran.
+    expect(gitActionProvesKind("commit", "git_push")).toBe(false);
+    expect(gitActionProvesKind("commit", "open_pr")).toBe(false);
+    expect(gitActionProvesKind("push", "git_commit")).toBe(false);
+    expect(gitActionProvesKind("open-pr", "git_commit")).toBe(false);
+    expect(gitActionProvesKind("update-branch", "git_push")).toBe(false);
   });
 });
 

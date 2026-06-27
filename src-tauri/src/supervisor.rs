@@ -73,6 +73,14 @@ pub struct AgentRepoAddedPayload {
     pub repo: TrackedRepo,
 }
 
+/// A successful, mutating git RPC op (`op`) the agent ran this turn — the
+/// causal signal the delegation panel uses to confirm the agent did the work.
+#[derive(Clone, serde::Serialize)]
+pub struct AgentGitActionPayload {
+    pub agent_id: String,
+    pub op: String,
+}
+
 
 #[derive(Clone, serde::Serialize)]
 pub struct ShellOutputPayload {
@@ -176,6 +184,20 @@ impl Supervisor {
             runs: Mutex::new(HashMap::new()),
             respawn_pending: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Invalidate this agent's current spawn generation. Any gen-guarded
+    /// background task (turn watchdog, RPC watcher) and any late process-exit
+    /// handler captured the old number, so after this bump they see
+    /// `current_gen != gen` and exit / no-op cleanly.
+    ///
+    /// `start_process` bumps on its own when it restarts the process; teardown
+    /// paths that DON'T restart (archive, discard, spawn-timeout kill, spawn
+    /// abort) must call this, or their loops spin for the app's lifetime and a
+    /// late clean exit re-emits `Idle` for an already-gone agent (ghost entry).
+    fn bump_generation(&self, agent_id: &str) {
+        let mut g = self.generations.lock();
+        *g.entry(agent_id.to_string()).or_insert(0) += 1;
     }
 
     /// Kill and reap every live child process the supervisor is tracking:
@@ -812,6 +834,7 @@ impl Supervisor {
         if !self.claim_spawn_outcome(app, &agent_id_str, AgentStatus::Idle, None)
             && matches!(self.live_status(&agent_id_str), Some(AgentStatus::Error))
         {
+            self.bump_generation(&agent_id_str);
             if let Some(agent) = self.agents.lock().remove(&agent_id_str) {
                 let _ = agent.shutdown();
             }
@@ -1531,6 +1554,10 @@ impl Supervisor {
     /// in-memory state (activity detector, status, native input buffer, shell,
     /// and run-panel session). Shared by archive and discard.
     fn detach_runtime(&self, agent_id: &str) {
+        // Bump first: invalidates the watchdog/RPC-watcher loops and the
+        // process-exit handler before `shutdown()` triggers the latter, so the
+        // exit can't re-emit `Idle` for the agent we're tearing down.
+        self.bump_generation(agent_id);
         if let Some(agent) = self.agents.lock().remove(agent_id) {
             let _ = agent.shutdown();
         }
@@ -2410,6 +2437,28 @@ fn spawn_rpc_watcher(
                         }
                         sup.fetch_and_emit_pr_state(app.clone(), agent_id.clone());
                     }
+                    rpc::RpcEvent::Named { name, payload }
+                        if name == rpc::git::EVENT_ACTION_DONE =>
+                    {
+                        // Authoritative "the agent performed a git mutation this
+                        // turn" signal. Forward it so the panel can attribute a
+                        // git/PR transition to the turn rather than guessing from
+                        // a polled snapshot.
+                        let op = payload
+                            .get("op")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if let Err(e) = app.emit(
+                            "agent:git-action",
+                            AgentGitActionPayload {
+                                agent_id: agent_id.clone(),
+                                op,
+                            },
+                        ) {
+                            tracing::warn!(error = %e, agent_id = %agent_id, "emit agent:git-action failed");
+                        }
+                    }
                     rpc::RpcEvent::Named { name, payload } => {
                         tracing::debug!(event = %name, payload = %payload, "rpc: unhandled event");
                     }
@@ -2432,6 +2481,9 @@ fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: String) {
         if !sup.claim_spawn_outcome(&app, &agent_id, AgentStatus::Error, Some(err)) {
             return;
         }
+        // Invalidate any gen-guarded loop / exit handler from this spawn before
+        // killing the process (same reason as `detach_runtime`).
+        sup.bump_generation(&agent_id);
         if let Some(agent) = sup.agents.lock().remove(&agent_id) {
             let _ = agent.shutdown();
         }
