@@ -253,6 +253,13 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // state: clear the placeholder by reference (a newer fetch will have
       // already replaced it, in which case there's nothing to undo) and
       // restore the selection only if nothing else claimed it meanwhile.
+      //
+      // Our optimistic clear set selectedAgentId to null and left
+      // activeDraftId alone (it was already null, since an agent was
+      // selected). A later user action lands in a distinguishable state:
+      // selectAgent sets selectedAgentId non-null, selectDraft sets
+      // activeDraftId non-null. So only re-select when BOTH are still null —
+      // otherwise we'd yank the UI away from a draft the user just opened.
       set((s) => ({
         workspace: s.workspace
           ? {
@@ -262,7 +269,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
               ),
             }
           : s.workspace,
-        selectedAgentId: wasSelected && s.selectedAgentId === null ? id : s.selectedAgentId,
+        selectedAgentId:
+          wasSelected && s.selectedAgentId === null && s.activeDraftId === null
+            ? id
+            : s.selectedAgentId,
         lastError: String(e),
       }));
     }
