@@ -262,8 +262,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
               ),
             }
           : s.workspace,
-        selectedAgentId:
-          wasSelected && s.selectedAgentId === null ? id : s.selectedAgentId,
+        selectedAgentId: wasSelected && s.selectedAgentId === null ? id : s.selectedAgentId,
         lastError: String(e),
       }));
     }
