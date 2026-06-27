@@ -126,6 +126,43 @@ pub struct Supervisor {
     pub respawn_pending: Mutex<HashSet<String>>,
 }
 
+/// Resolved, per-spawn inputs for `spawn_agent_process` — everything that
+/// isn't already carried on the `AgentRecord` (paths, session id, and this
+/// spawn's generation number).
+struct ProcessLaunch {
+    cwd: PathBuf,
+    sandbox_root: PathBuf,
+    rpc_dir: PathBuf,
+    session_id: Option<String>,
+    per_turn: bool,
+    effective_fresh: bool,
+    my_gen: u64,
+}
+
+/// Pick the turn-end detector for an agent by provider class and view, and
+/// reset it when this spawn begins a fresh turn.
+///
+/// Per-turn agents carry their detector in the descriptor table — but only for
+/// the Custom (exec/JSON) view. In the native view they run their interactive
+/// TUI in a PTY with no JSON stream, so turn-end is detected by silence, the
+/// same as claude's native view. Claude (no descriptor) picks by view too.
+fn build_activity(record: &AgentRecord, effective_fresh: bool) -> Box<dyn Activity> {
+    let mut activity: Box<dyn Activity> = match per_turn_descriptor(&record.provider) {
+        Some(desc) => match record.view {
+            AgentView::Native => Box::new(ClaudeNativeActivity::new()),
+            AgentView::Custom => (desc.activity)(),
+        },
+        None => match record.view {
+            AgentView::Native => Box::new(ClaudeNativeActivity::new()),
+            AgentView::Custom => Box::new(ManagedActivity::claude()),
+        },
+    };
+    if effective_fresh {
+        activity.reset_for_new_turn();
+    }
+    activity
+}
+
 impl Supervisor {
     pub fn new(workspace: Arc<WorkspaceManager>) -> Self {
         Self {
@@ -696,8 +733,7 @@ impl Supervisor {
         fresh: bool,
     ) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
-        let provider = record.provider.clone();
-        let per_turn = is_per_turn_provider(&provider);
+        let per_turn = is_per_turn_provider(&record.provider);
         // Claude carries a session id we generated at create time; per-turn
         // agents (codex, cursor) are assigned one by the CLI on their first
         // turn, so it may be None until then.
@@ -718,17 +754,13 @@ impl Supervisor {
         // (and the agent's `QUORUM_RPC_DIR`) have a target from turn one.
         let rpc_dir = rpc::mailbox_dir(agent_id)?;
         rpc::ensure_mailbox(&rpc_dir)?;
-        let watcher_cwd = cwd.clone();
         // Base branch for the git dispatcher — the branch the agent was
         // forked from, same default the manual PR action uses.
         let base_branch = primary
             .parent_branch
             .clone()
             .unwrap_or_else(|| "main".to_string());
-        let rpc_dispatcher = Arc::new(rpc::git::GitDispatcher::new(
-            watcher_cwd.clone(),
-            base_branch.clone(),
-        ));
+        let rpc_dispatcher = Arc::new(rpc::git::GitDispatcher::new(cwd.clone(), base_branch));
 
         // Claude only writes a session file once the first turn lands.
         // If task is still empty (no first user message has ever been
@@ -739,7 +771,6 @@ impl Supervisor {
         let no_messages_yet = record.task.trim().is_empty();
         let effective_fresh = fresh || no_messages_yet;
 
-        let app = app.clone();
         let agent_id_str = agent_id.to_string();
 
         let my_gen = {
@@ -749,117 +780,24 @@ impl Supervisor {
             *entry
         };
 
-        // Per-turn agents carry their turn-end detector in the descriptor
-        // table — but only for the Custom (exec/JSON) view. In the native
-        // view they run their interactive TUI in a PTY with no JSON stream,
-        // so turn-end is detected by silence, the same as claude's native
-        // view. Claude (no descriptor) picks its detector by view too.
-        let mut activity: Box<dyn Activity> = match per_turn_descriptor(&provider) {
-            Some(desc) => match record.view {
-                AgentView::Native => Box::new(ClaudeNativeActivity::new()),
-                AgentView::Custom => (desc.activity)(),
-            },
-            None => match record.view {
-                AgentView::Native => Box::new(ClaudeNativeActivity::new()),
-                AgentView::Custom => Box::new(ManagedActivity::claude()),
-            },
-        };
-        if effective_fresh {
-            activity.reset_for_new_turn();
-        }
-        self.activities.lock().insert(agent_id_str.clone(), activity);
+        self.activities
+            .lock()
+            .insert(agent_id_str.clone(), build_activity(&record, effective_fresh));
 
-        let agent = if per_turn {
-            match record.view {
-                // Native view: launch the agent's interactive TUI in a PTY,
-                // resuming the session the Custom view established. The
-                // switch_view guard guarantees a session id is present before
-                // we ever route a per-turn agent here.
-                AgentView::Native => {
-                    let session_id = session_id.as_deref().ok_or_else(|| {
-                        Error::Other("native view requires an established session id".into())
-                    })?;
-                    let spec = SpawnSpec {
-                        agent_id: &agent_id_str,
-                        cwd,
-                        sandbox_root: sandbox_root.clone(),
-                        session_id,
-                        // Per-turn native always resumes (the agent built its
-                        // session in the Custom view first).
-                        fresh: false,
-                        // Per-turn agents take effort per-turn (build-args),
-                        // not at spawn.
-                        effort: None,
-                        model: record.model.as_deref(),
-                        instructions: record.instructions.as_deref(),
-                        rpc_dir: rpc_dir.clone(),
-                        cols: 120,
-                        rows: 32,
-                    };
-                    spawn_pty_per_turn_agent(
-                        spec,
-                        provider.clone(),
-                        app.clone(),
-                        agent_id_str.clone(),
-                        self.clone(),
-                        my_gen,
-                    )?
-                }
-                // Custom view: per-turn runner — no process spawns until the
-                // first user message. No sandbox profile: the agent sandboxes
-                // itself rather than running under sandbox-exec.
-                AgentView::Custom => spawn_per_turn_agent(
-                    &provider,
-                    PerTurnSpec {
-                        cwd,
-                        sandbox_root: sandbox_root.clone(),
-                        session_id: session_id.clone(),
-                        model: record.model.clone(),
-                        instructions: record.instructions.clone(),
-                        rpc_dir: rpc_dir.clone(),
-                    },
-                    app.clone(),
-                    agent_id_str.clone(),
-                    self.clone(),
-                    my_gen,
-                )?,
-            }
-        } else {
-            let session_id = session_id
-                .as_deref()
-                .expect("non-codex agents always have a session id");
-            let spec = SpawnSpec {
-                agent_id: &agent_id_str,
+        let agent = self.spawn_agent_process(
+            app,
+            &agent_id_str,
+            &record,
+            ProcessLaunch {
                 cwd,
-                sandbox_root: sandbox_root.clone(),
-                session_id,
-                fresh: effective_fresh,
-                // Claude's session-level effort, persisted on the record so it
-                // re-applies on every spawn (fresh, view-switch, resume).
-                effort: record.effort.as_deref(),
-                model: record.model.as_deref(),
-                instructions: record.instructions.as_deref(),
+                sandbox_root,
                 rpc_dir: rpc_dir.clone(),
-                cols: 120,
-                rows: 32,
-            };
-            match record.view {
-                AgentView::Native => spawn_pty_agent(
-                    spec,
-                    app.clone(),
-                    agent_id_str.clone(),
-                    self.clone(),
-                    my_gen,
-                )?,
-                AgentView::Custom => spawn_managed_agent(
-                    spec,
-                    app.clone(),
-                    agent_id_str.clone(),
-                    self.clone(),
-                    my_gen,
-                )?,
-            }
-        };
+                session_id,
+                per_turn,
+                effective_fresh,
+                my_gen,
+            },
+        )?;
 
         self.agents.lock().insert(agent_id_str.clone(), agent);
 
@@ -871,7 +809,7 @@ impl Supervisor {
         // timed out (status Error), the timeout fired before we inserted the
         // process above — so its shutdown was a no-op and we'd leak a live
         // process shown as failed. Tear down what we just started instead.
-        if !self.claim_spawn_outcome(&app, &agent_id_str, AgentStatus::Idle, None)
+        if !self.claim_spawn_outcome(app, &agent_id_str, AgentStatus::Idle, None)
             && matches!(self.live_status(&agent_id_str), Some(AgentStatus::Error))
         {
             if let Some(agent) = self.agents.lock().remove(&agent_id_str) {
@@ -889,7 +827,7 @@ impl Supervisor {
         // executing allowlisted ops and writing responses back.
         spawn_rpc_watcher(
             self.clone(),
-            app,
+            app.clone(),
             agent_id_str,
             rpc_dispatcher,
             rpc_dir,
@@ -897,6 +835,120 @@ impl Supervisor {
         );
 
         Ok(())
+    }
+
+    /// Spawn the agent's child process, dispatching on provider class
+    /// (per-turn vs. claude) and view (Native PTY vs. Custom managed/exec).
+    /// Returns the live `Agent` handle for the supervisor to track.
+    fn spawn_agent_process(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        agent_id: &str,
+        record: &AgentRecord,
+        launch: ProcessLaunch,
+    ) -> Result<Agent> {
+        let ProcessLaunch {
+            cwd,
+            sandbox_root,
+            rpc_dir,
+            session_id,
+            per_turn,
+            effective_fresh,
+            my_gen,
+        } = launch;
+        let agent_id_str = agent_id.to_string();
+
+        if per_turn {
+            match record.view {
+                // Native view: launch the agent's interactive TUI in a PTY,
+                // resuming the session the Custom view established. The
+                // switch_view guard guarantees a session id is present before
+                // we ever route a per-turn agent here.
+                AgentView::Native => {
+                    let session_id = session_id.as_deref().ok_or_else(|| {
+                        Error::Other("native view requires an established session id".into())
+                    })?;
+                    let spec = SpawnSpec {
+                        agent_id: &agent_id_str,
+                        cwd,
+                        sandbox_root,
+                        session_id,
+                        // Per-turn native always resumes (the agent built its
+                        // session in the Custom view first).
+                        fresh: false,
+                        // Per-turn agents take effort per-turn (build-args),
+                        // not at spawn.
+                        effort: None,
+                        model: record.model.as_deref(),
+                        instructions: record.instructions.as_deref(),
+                        rpc_dir,
+                        cols: 120,
+                        rows: 32,
+                    };
+                    spawn_pty_per_turn_agent(
+                        spec,
+                        record.provider.clone(),
+                        app.clone(),
+                        agent_id_str.clone(),
+                        self.clone(),
+                        my_gen,
+                    )
+                }
+                // Custom view: per-turn runner — no process spawns until the
+                // first user message. No sandbox profile: the agent sandboxes
+                // itself rather than running under sandbox-exec.
+                AgentView::Custom => spawn_per_turn_agent(
+                    &record.provider,
+                    PerTurnSpec {
+                        cwd,
+                        sandbox_root,
+                        session_id,
+                        model: record.model.clone(),
+                        instructions: record.instructions.clone(),
+                        rpc_dir,
+                    },
+                    app.clone(),
+                    agent_id_str.clone(),
+                    self.clone(),
+                    my_gen,
+                ),
+            }
+        } else {
+            let session_id = session_id
+                .as_deref()
+                .expect("non-codex agents always have a session id");
+            let spec = SpawnSpec {
+                agent_id: &agent_id_str,
+                cwd,
+                sandbox_root,
+                session_id,
+                fresh: effective_fresh,
+                // Claude's session-level effort, persisted on the record so it
+                // re-applies on every spawn (fresh, view-switch, resume).
+                effort: record.effort.as_deref(),
+                model: record.model.as_deref(),
+                instructions: record.instructions.as_deref(),
+                rpc_dir,
+                cols: 120,
+                rows: 32,
+            };
+            match record.view {
+                AgentView::Native => spawn_pty_agent(
+                    spec,
+                    app.clone(),
+                    agent_id_str.clone(),
+                    self.clone(),
+                    my_gen,
+                ),
+                AgentView::Custom => spawn_managed_agent(
+                    spec,
+                    app.clone(),
+                    agent_id_str.clone(),
+                    self.clone(),
+                    my_gen,
+                ),
+            }
+        }
     }
 
     pub async fn resume_agent(
@@ -1208,104 +1260,19 @@ impl Supervisor {
             ));
         }
 
-        if let Some(agent) = self.agents.lock().remove(agent_id) {
-            let _ = agent.shutdown();
-        }
-        self.activities.lock().remove(agent_id);
-        self.statuses.lock().remove(agent_id);
-        self.native_input_lines.lock().remove(agent_id);
-        self.shells.lock().remove(agent_id);
-        if let Some(run) = self.runs.lock().remove(agent_id) {
-            run.stop();
-        }
+        self.detach_runtime(agent_id);
 
-        let mut snapshots: Vec<ArchivedRepoSnapshot> = Vec::with_capacity(record.repos.len());
-        let mut total_adds: u32 = 0;
-        let mut total_dels: u32 = 0;
-
-        for repo in &record.repos {
-            // Resolve SHAs first so we capture state before any
-            // destructive step. The tip is the worktree's HEAD — works whether
-            // it's on a branch or still detached (a branchless agent that never
-            // pushed), so both restore from the exact committed tip.
-            let branch_tip_sha = match repo_worktree_path(agent_id, &repo.subdir) {
-                Ok(wt) => git::rev_parse(&wt, "HEAD").await.ok(),
-                Err(_) => None,
-            };
-            // Prefer the immutable fork point; only fall back to resolving the
-            // parent branch name (which may have drifted) for pre-migration
-            // agents that never captured a base_sha.
-            let parent_branch_sha = match &repo.base_sha {
-                Some(sha) => Some(sha.clone()),
-                None => match &repo.parent_branch {
-                    Some(b) => git::rev_parse(&repo.repo_path, b).await.ok(),
-                    None => None,
-                },
-            };
-
-            let mut adds = 0u32;
-            let mut dels = 0u32;
-            if let (Some(from), Some(to)) = (&parent_branch_sha, &branch_tip_sha) {
-                if from != to {
-                    if let Ok((a, d)) = git::diff_shortstat(&repo.repo_path, from, to).await {
-                        adds = a;
-                        dels = d;
-                    }
-                }
-            }
-            total_adds = total_adds.saturating_add(adds);
-            total_dels = total_dels.saturating_add(dels);
-
-            snapshots.push(ArchivedRepoSnapshot {
-                repo_path: repo.repo_path.clone(),
-                subdir: repo.subdir.clone(),
-                branch_name: repo.branch.clone(),
-                branch_tip_sha,
-                parent_branch: repo.parent_branch.clone(),
-                parent_branch_sha,
-                diff_stats: DiffStats {
-                    additions: adds,
-                    deletions: dels,
-                },
-            });
-        }
-
-        // Tear down worktrees + branches (best-effort: a single failure
-        // shouldn't block archive, since the user's intent is "get rid
-        // of this", but we surface git errors via tracing).
-        for repo in &record.repos {
-            let worktree = match repo_worktree_path(agent_id, &repo.subdir) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(error = %e, subdir = %repo.subdir, "archive: worktree_path failed");
-                    continue;
-                }
-            };
-            let _ = git::worktree_prune(&repo.repo_path).await;
-            if let Err(e) = git::worktree_remove(&repo.repo_path, &worktree, true).await {
-                tracing::warn!(error = %e, subdir = %repo.subdir, "archive: worktree remove failed");
-            }
-            if let Some(branch) = &repo.branch {
-                if let Err(e) = git::branch_delete(&repo.repo_path, branch).await {
-                    tracing::warn!(%branch, error = %e, "archive: branch delete failed");
-                }
-            }
-        }
-
-        // Best-effort parent dir cleanup.
-        if let Ok(parent) = agent_parent_dir(agent_id) {
-            if parent.exists() {
-                let _ = tokio::fs::remove_dir_all(&parent).await;
-            }
-        }
+        // Snapshot SHAs + diff stats before any destructive step, then tear
+        // down the worktrees/branches (best-effort — a single git failure
+        // shouldn't block archive, since the user's intent is "get rid of
+        // this").
+        let (snapshots, diff_stats) = capture_repo_snapshots(agent_id, &record.repos).await;
+        teardown_agent_worktrees(agent_id, &record.repos, "archive").await;
 
         let archive = ArchiveMetadata {
             archived_at: chrono::Utc::now().to_rfc3339(),
             repos: snapshots,
-            diff_stats: DiffStats {
-                additions: total_adds,
-                deletions: total_dels,
-            },
+            diff_stats,
         };
 
         self.workspace.archive_agent(agent_id, archive)?;
@@ -1552,8 +1519,18 @@ impl Supervisor {
     pub async fn discard_agent(self: Arc<Self>, agent_id: &str) -> Result<()> {
         let record = self.workspace.agent(agent_id).ok();
         let repos = record.as_ref().map(|r| r.repos.clone()).unwrap_or_default();
-        let parent_dir = agent_parent_dir(agent_id).ok();
 
+        self.detach_runtime(agent_id);
+        teardown_agent_worktrees(agent_id, &repos, "discard").await;
+
+        self.workspace.remove_agent(agent_id)?;
+        Ok(())
+    }
+
+    /// Detach an agent's live runtime: shut down its process and drop its
+    /// in-memory state (activity detector, status, native input buffer, shell,
+    /// and run-panel session). Shared by archive and discard.
+    fn detach_runtime(&self, agent_id: &str) {
         if let Some(agent) = self.agents.lock().remove(agent_id) {
             let _ = agent.shutdown();
         }
@@ -1564,37 +1541,106 @@ impl Supervisor {
         if let Some(run) = self.runs.lock().remove(agent_id) {
             run.stop();
         }
+    }
+}
 
-        // Tear down each tracked repo's worktree + branch.
-        for repo in &repos {
-            let worktree = match repo_worktree_path(agent_id, &repo.subdir) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(error = %e, subdir = %repo.subdir, "discard: worktree_path failed");
-                    continue;
-                }
-            };
-            let _ = git::worktree_prune(&repo.repo_path).await;
-            if let Err(e) = git::worktree_remove(&repo.repo_path, &worktree, true).await {
-                tracing::warn!(error = %e, subdir = %repo.subdir, "discard: worktree remove failed");
-            }
-            if let Some(branch) = &repo.branch {
-                if let Err(e) = git::branch_delete(&repo.repo_path, branch).await {
-                    tracing::warn!(%branch, error = %e, "discard: branch delete failed");
+/// Snapshot each tracked repo's tip SHA + diff stats against its fork point,
+/// returning the per-repo snapshots plus the aggregate add/delete totals.
+///
+/// Resolves SHAs without mutating anything, so callers can capture state before
+/// any destructive teardown. The tip is the worktree's HEAD — works whether the
+/// agent is on a branch or still detached (never pushed), so both restore from
+/// the exact committed tip.
+async fn capture_repo_snapshots(
+    agent_id: &str,
+    repos: &[TrackedRepo],
+) -> (Vec<ArchivedRepoSnapshot>, DiffStats) {
+    let mut snapshots: Vec<ArchivedRepoSnapshot> = Vec::with_capacity(repos.len());
+    let mut total_adds: u32 = 0;
+    let mut total_dels: u32 = 0;
+
+    for repo in repos {
+        let branch_tip_sha = match repo_worktree_path(agent_id, &repo.subdir) {
+            Ok(wt) => git::rev_parse(&wt, "HEAD").await.ok(),
+            Err(_) => None,
+        };
+        // Prefer the immutable fork point; only fall back to resolving the
+        // parent branch name (which may have drifted) for pre-migration
+        // agents that never captured a base_sha.
+        let parent_branch_sha = match &repo.base_sha {
+            Some(sha) => Some(sha.clone()),
+            None => match &repo.parent_branch {
+                Some(b) => git::rev_parse(&repo.repo_path, b).await.ok(),
+                None => None,
+            },
+        };
+
+        let mut adds = 0u32;
+        let mut dels = 0u32;
+        if let (Some(from), Some(to)) = (&parent_branch_sha, &branch_tip_sha) {
+            if from != to {
+                if let Ok((a, d)) = git::diff_shortstat(&repo.repo_path, from, to).await {
+                    adds = a;
+                    dels = d;
                 }
             }
         }
+        total_adds = total_adds.saturating_add(adds);
+        total_dels = total_dels.saturating_add(dels);
 
-        // Remove the parent dir (may contain orphan files if any
-        // worktree removal failed). Best-effort.
-        if let Some(parent) = parent_dir {
-            if parent.exists() {
-                let _ = tokio::fs::remove_dir_all(&parent).await;
+        snapshots.push(ArchivedRepoSnapshot {
+            repo_path: repo.repo_path.clone(),
+            subdir: repo.subdir.clone(),
+            branch_name: repo.branch.clone(),
+            branch_tip_sha,
+            parent_branch: repo.parent_branch.clone(),
+            parent_branch_sha,
+            diff_stats: DiffStats {
+                additions: adds,
+                deletions: dels,
+            },
+        });
+    }
+
+    (
+        snapshots,
+        DiffStats {
+            additions: total_adds,
+            deletions: total_dels,
+        },
+    )
+}
+
+/// Best-effort teardown of every tracked repo's worktree + branch, plus the
+/// agent's parent dir. Failures are logged (tagged with `op` for context) but
+/// never abort the sweep — the caller's intent is to get rid of the agent.
+/// Shared by archive and discard.
+async fn teardown_agent_worktrees(agent_id: &str, repos: &[TrackedRepo], op: &str) {
+    for repo in repos {
+        let worktree = match repo_worktree_path(agent_id, &repo.subdir) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, subdir = %repo.subdir, op, "worktree_path failed");
+                continue;
+            }
+        };
+        let _ = git::worktree_prune(&repo.repo_path).await;
+        if let Err(e) = git::worktree_remove(&repo.repo_path, &worktree, true).await {
+            tracing::warn!(error = %e, subdir = %repo.subdir, op, "worktree remove failed");
+        }
+        if let Some(branch) = &repo.branch {
+            if let Err(e) = git::branch_delete(&repo.repo_path, branch).await {
+                tracing::warn!(%branch, error = %e, op, "branch delete failed");
             }
         }
+    }
 
-        self.workspace.remove_agent(agent_id)?;
-        Ok(())
+    // Remove the parent dir (may still hold orphan files if any worktree
+    // removal failed). Best-effort.
+    if let Ok(parent) = agent_parent_dir(agent_id) {
+        if parent.exists() {
+            let _ = tokio::fs::remove_dir_all(&parent).await;
+        }
     }
 }
 
