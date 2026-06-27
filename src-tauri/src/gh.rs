@@ -34,6 +34,40 @@ fn gh_command() -> Command {
     cmd
 }
 
+/// Run `gh <args>` in `worktree` and deserialize stdout as JSON `T`, mapping
+/// gh's "missing PR" failures to `Ok(None)`.
+///
+/// gh's wording for a missing PR varies by lookup and version: a branch lookup
+/// says "no pull requests found", a bad number says "...not found" or "could
+/// not resolve to a PullRequest". All three mean "no PR" and map to `Ok(None)`
+/// so callers degrade gracefully; any other non-zero exit surfaces as
+/// `Error::Gh(stderr)`. This is the shared shape behind `pr_view`,
+/// `pr_view_number`, `pr_checks`, and the PR-resolution call in `pr_comments`.
+async fn run_gh_json<T: serde::de::DeserializeOwned>(
+    worktree: &Path,
+    args: &[&str],
+) -> Result<Option<T>> {
+    let out = gh_command()
+        .current_dir(worktree)
+        .args(args)
+        .output()
+        .await?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let low = stderr.to_lowercase();
+        if low.contains("no pull requests found")
+            || low.contains("not found")
+            || low.contains("could not resolve")
+        {
+            return Ok(None);
+        }
+        return Err(Error::Gh(stderr.trim().to_string()));
+    }
+
+    Ok(Some(serde_json::from_slice(&out.stdout)?))
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -185,22 +219,12 @@ impl From<GhPrRaw> for PrState {
 /// Returns `Ok(None)` when `gh` exits non-zero with "no pull requests found"
 /// in stderr (i.e. the branch simply has no open PR yet).
 pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
-    let out = gh_command()
-        .current_dir(worktree)
-        .args(["pr", "view", "--json", "number,url,state,title,mergeable"])
-        .output()
-        .await?;
-
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if stderr.to_lowercase().contains("no pull requests found") {
-            return Ok(None);
-        }
-        return Err(Error::Gh(stderr.trim().to_string()));
-    }
-
-    let raw: GhPrRaw = serde_json::from_slice(&out.stdout)?;
-    Ok(Some(raw.into()))
+    let raw: Option<GhPrRaw> = run_gh_json(
+        worktree,
+        &["pr", "view", "--json", "number,url,state,title,mergeable"],
+    )
+    .await?;
+    Ok(raw.map(Into::into))
 }
 
 /// Fetch PR state by explicit PR number, regardless of the branch currently
@@ -213,28 +237,12 @@ pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
 /// caller can treat it the same as "no PR".
 pub async fn pr_view_number(worktree: &Path, number: u32) -> Result<Option<PrState>> {
     let num = number.to_string();
-    let out = gh_command()
-        .current_dir(worktree)
-        .args(["pr", "view", &num, "--json", "number,url,state,title,mergeable"])
-        .output()
-        .await?;
-
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let low = stderr.to_lowercase();
-        // gh's "missing PR" wording varies by lookup and version: branch lookups
-        // say "no pull requests found", a bad number says "pull request not
-        // found" or "could not resolve to a PullRequest". `contains("not found")`
-        // covers the first two; keep the resolve case explicit. All map to the
-        // documented `Ok(None)` so callers treat it as "no PR".
-        if low.contains("not found") || low.contains("could not resolve") {
-            return Ok(None);
-        }
-        return Err(Error::Gh(stderr.trim().to_string()));
-    }
-
-    let raw: GhPrRaw = serde_json::from_slice(&out.stdout)?;
-    Ok(Some(raw.into()))
+    let raw: Option<GhPrRaw> = run_gh_json(
+        worktree,
+        &["pr", "view", &num, "--json", "number,url,state,title,mergeable"],
+    )
+    .await?;
+    Ok(raw.map(Into::into))
 }
 
 /// List open PRs for the repo at `worktree` (most-recent first), for the
@@ -287,21 +295,14 @@ pub async fn pr_list(worktree: &Path, limit: u32) -> Result<Vec<PrSummary>> {
 /// failures surface as `Err` — the command layer treats both as "checks
 /// unavailable" and the panel degrades to `mergeable`-only behavior.
 pub async fn pr_checks(worktree: &Path) -> Result<Option<PrChecks>> {
-    let out = gh_command()
-        .current_dir(worktree)
-        .args(["pr", "view", "--json", "mergeStateStatus,statusCheckRollup"])
-        .output()
-        .await?;
-
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if stderr.to_lowercase().contains("no pull requests found") {
-            return Ok(None);
-        }
-        return Err(Error::Gh(stderr.trim().to_string()));
-    }
-
-    let raw: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let raw: Option<serde_json::Value> = run_gh_json(
+        worktree,
+        &["pr", "view", "--json", "mergeStateStatus,statusCheckRollup"],
+    )
+    .await?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
     let merge_state = raw["mergeStateStatus"].as_str().unwrap_or("UNKNOWN").to_string();
     let rollup: Vec<serde_json::Value> = raw["statusCheckRollup"]
         .as_array()
@@ -448,20 +449,11 @@ fn parse_repo_from_url(url: &str) -> Option<(String, String)> {
 /// layer maps both to "comments unavailable" and the panel simply omits the
 /// section.
 pub async fn pr_comments(worktree: &Path) -> Result<Option<PrComments>> {
-    let out = gh_command()
-        .current_dir(worktree)
-        .args(["pr", "view", "--json", "url,number"])
-        .output()
-        .await?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if stderr.to_lowercase().contains("no pull requests found") {
-            return Ok(None);
-        }
-        return Err(Error::Gh(stderr.trim().to_string()));
-    }
-
-    let raw: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let raw: Option<serde_json::Value> =
+        run_gh_json(worktree, &["pr", "view", "--json", "url,number"]).await?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
     let url = raw["url"].as_str().unwrap_or_default();
     let number = raw["number"].as_u64().unwrap_or_default();
     let Some((owner, repo)) = parse_repo_from_url(url) else {

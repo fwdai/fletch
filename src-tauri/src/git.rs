@@ -46,6 +46,51 @@ pub(crate) async fn output_timed(cmd: &mut Command, what: &str) -> Result<std::p
         .map_err(Error::from)
 }
 
+/// Hard cap on *local* git operations (commit, rebase, diff, branch, …). Local
+/// git is fast, so this only ever trips on a genuine hang — a blocking hook, an
+/// `index.lock` held by another process, a wedged filesystem — bounding the UI
+/// spinner instead of letting it spin indefinitely. These run during panel
+/// actions, outside the spawn watchdog, so without a bound here a hung commit
+/// or rebase has nothing to stop it. Network ops use `NET_TIMEOUT` via
+/// `output_timed` instead, which carries a network-specific hint.
+const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Spawn `git <args>` in `dir` under `LOCAL_TIMEOUT`, killing a hung process
+/// (via `kill_on_drop`) on expiry rather than orphaning it. Returns the raw
+/// `Output`; callers that inspect exit codes themselves (e.g. `show-ref`'s
+/// 0/1) use this and check `status`, while `run_git` layers the
+/// success-or-`Error::Git` check on top.
+async fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir).args(args).kill_on_drop(true);
+    tokio::time::timeout(LOCAL_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| {
+            Error::Git(format!(
+                "git {} timed out after {}s",
+                args.first().copied().unwrap_or(""),
+                LOCAL_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(Error::from)
+}
+
+/// Run `git <args>` in `dir` and require a zero exit, returning the `Output` so
+/// callers can read stdout. On a non-zero exit returns
+/// `Error::Git("<label> failed: <stderr>")` — `label` names the op for the
+/// message. Collapses the "spawn, check status, format stderr" trio repeated
+/// across this module into one call.
+async fn run_git(dir: &Path, args: &[&str], label: &str) -> Result<std::process::Output> {
+    let out = git_output(dir, args).await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "{label} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out)
+}
+
 /// Create a worktree on detached HEAD (no branch yet). The worktree
 /// stays detached for its whole working life; a branch is materialized
 /// only at the first push (via `checkout_new_unique_branch`), named by
@@ -68,11 +113,7 @@ pub async fn worktree_add_detached(
     if let Some(base) = base {
         args.push(base);
     }
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args(&args)
-        .output()
-        .await?;
+    let out = git_output(repo, &args).await?;
     if out.status.success() {
         return Ok(());
     }
@@ -98,11 +139,7 @@ pub async fn worktree_add_detached(
             }
         }
         if !worktree_path.exists() {
-            let retry = Command::new("git")
-                .current_dir(repo)
-                .args(&args)
-                .output()
-                .await?;
+            let retry = git_output(repo, &args).await?;
             if retry.status.success() {
                 tracing::info!(path = %worktree_path.display(), "recovered orphan worktree path on spawn");
                 return Ok(());
@@ -125,12 +162,7 @@ pub async fn worktree_add_detached(
 /// The caller then falls through to the original error rather than risking the
 /// deletion of a live checkout.
 async fn is_registered_worktree(repo: &Path, path: &Path) -> bool {
-    let out = match Command::new("git")
-        .current_dir(repo)
-        .args(["worktree", "list", "--porcelain"])
-        .output()
-        .await
-    {
+    let out = match git_output(repo, &["worktree", "list", "--porcelain"]).await {
         Ok(out) if out.status.success() => out,
         _ => return true,
     };
@@ -193,17 +225,7 @@ pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
 /// promote a detached-HEAD worktree onto a named branch once the
 /// first user message gives us a slug.
 pub async fn checkout_new_branch(worktree: &Path, branch: &str) -> Result<()> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["checkout", "-b", branch])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "checkout -b {branch} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    run_git(worktree, &["checkout", "-b", branch], &format!("checkout -b {branch}")).await?;
     Ok(())
 }
 
@@ -224,16 +246,8 @@ pub async fn branch_name_taken(worktree: &Path, branch: &str) -> Result<bool> {
     if branch_exists(worktree, branch).await? {
         return Ok(true);
     }
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args([
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/origin/{branch}"),
-        ])
-        .output()
-        .await?;
+    let refname = format!("refs/remotes/origin/{branch}");
+    let out = git_output(worktree, &["show-ref", "--verify", "--quiet", &refname]).await?;
     match out.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -293,23 +307,9 @@ pub async fn init_repo(path: &Path) -> Result<()> {
 /// global git identity (`user.name` / `user.email`); a missing identity
 /// surfaces as a `git commit` error.
 pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
-    let add = Command::new("git")
-        .current_dir(repo)
-        .args(["add", "-A"])
-        .output()
-        .await?;
-    if !add.status.success() {
-        return Err(Error::Git(format!(
-            "add -A failed: {}",
-            String::from_utf8_lossy(&add.stderr).trim()
-        )));
-    }
+    run_git(repo, &["add", "-A"], "add -A").await?;
 
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args(["commit", "-m", message])
-        .output()
-        .await?;
+    let out = git_output(repo, &["commit", "-m", message]).await?;
     if !out.status.success() {
         // `git commit` writes the common "nothing to commit, working tree
         // clean" diagnostic to *stdout*, not stderr — so report both, else a
@@ -333,17 +333,7 @@ pub async fn worktree_remove(repo: &Path, worktree_path: &Path, force: bool) -> 
         .to_str()
         .ok_or_else(|| Error::InvalidPath(worktree_path.display().to_string()))?;
     args.push(path_str);
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args(&args)
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "worktree remove failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    run_git(repo, &args, "worktree remove").await?;
     Ok(())
 }
 
@@ -351,17 +341,7 @@ pub async fn worktree_remove(repo: &Path, worktree_path: &Path, force: bool) -> 
 /// no longer exists. Safe to run unconditionally — git just no-ops when
 /// there's nothing to prune.
 pub async fn worktree_prune(repo: &Path) -> Result<()> {
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args(["worktree", "prune"])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "worktree prune failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    run_git(repo, &["worktree", "prune"], "worktree prune").await?;
     Ok(())
 }
 
@@ -369,11 +349,7 @@ pub async fn worktree_prune(repo: &Path) -> Result<()> {
 /// or `None` if HEAD is detached. Used by the supervisor to record
 /// the parent branch when spawning an agent worktree.
 pub async fn current_branch(repo: &Path) -> Result<Option<String>> {
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args(["symbolic-ref", "--short", "-q", "HEAD"])
-        .output()
-        .await?;
+    let out = git_output(repo, &["symbolic-ref", "--short", "-q", "HEAD"]).await?;
     match out.status.code() {
         Some(0) => {
             let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -398,16 +374,8 @@ pub async fn current_branch(repo: &Path) -> Result<Option<String>> {
 /// spawning a worktree — on collision it falls back to a name that
 /// includes the agent's place id.
 pub async fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args([
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ])
-        .output()
-        .await?;
+    let refname = format!("refs/heads/{branch}");
+    let out = git_output(repo, &["show-ref", "--verify", "--quiet", &refname]).await?;
     // Exit 0 = ref exists, exit 1 = not found, anything else = real error.
     match out.status.code() {
         Some(0) => Ok(true),
@@ -422,17 +390,7 @@ pub async fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
 /// Resolve a ref to its full SHA. Returns the bare 40-char hex string.
 /// Errors if the ref is unknown or git is unhappy.
 pub async fn rev_parse(repo: &Path, refname: &str) -> Result<String> {
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args(["rev-parse", "--verify", refname])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "rev-parse {refname} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    let out = run_git(repo, &["rev-parse", "--verify", refname], &format!("rev-parse {refname}")).await?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -444,21 +402,8 @@ pub async fn diff_shortstat(
     from_sha: &str,
     to_sha: &str,
 ) -> Result<(u32, u32)> {
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args([
-            "diff",
-            "--shortstat",
-            &format!("{from_sha}..{to_sha}"),
-        ])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "diff --shortstat failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    let range = format!("{from_sha}..{to_sha}");
+    let out = run_git(repo, &["diff", "--shortstat", &range], "diff --shortstat").await?;
     let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok(parse_shortstat(&line))
 }
@@ -469,17 +414,7 @@ pub async fn worktree_diff_shortstat(
     worktree: &Path,
     base_ref: &str,
 ) -> Result<(u32, u32)> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["diff", "--shortstat", base_ref])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "diff --shortstat {base_ref} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    let out = run_git(worktree, &["diff", "--shortstat", base_ref], &format!("diff --shortstat {base_ref}")).await?;
     let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok(parse_shortstat(&line))
 }
@@ -659,17 +594,7 @@ fn parse_shortstat(s: &str) -> (u32, u32) {
 /// Create a branch at a specific commit. Errors if the branch already
 /// exists or the SHA isn't reachable.
 pub async fn branch_create_at(repo: &Path, name: &str, sha: &str) -> Result<()> {
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args(["branch", name, sha])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "branch {name} {sha} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    run_git(repo, &["branch", name, sha], &format!("branch {name} {sha}")).await?;
     Ok(())
 }
 
@@ -680,24 +605,10 @@ pub async fn worktree_add_branch(
     worktree_path: &Path,
     branch: &str,
 ) -> Result<()> {
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args([
-            "worktree",
-            "add",
-            worktree_path.to_str().ok_or_else(|| {
-                Error::InvalidPath(worktree_path.display().to_string())
-            })?,
-            branch,
-        ])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "worktree add {branch} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    let path = worktree_path
+        .to_str()
+        .ok_or_else(|| Error::InvalidPath(worktree_path.display().to_string()))?;
+    run_git(repo, &["worktree", "add", path, branch], &format!("worktree add {branch}")).await?;
     Ok(())
 }
 
@@ -749,22 +660,23 @@ pub async fn pull(worktree: &Path) -> Result<()> {
 /// base has moved ahead. Aborts the rebase on conflict so the worktree is never
 /// left mid-rebase — the caller surfaces the error.
 pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["rebase", base])
-        .output()
-        .await?;
+    let out = git_output(worktree, &["rebase", base]).await?;
     if !out.status.success() {
-        // Don't leave the worktree in a detached mid-rebase state.
-        let _ = Command::new("git")
-            .current_dir(worktree)
-            .args(["rebase", "--abort"])
-            .output()
-            .await;
-        return Err(Error::Git(format!(
-            "rebase onto {base} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+        let conflict = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // Don't leave the worktree mid-rebase. If the abort *itself* fails or
+        // times out, the worktree is stuck mid-rebase and needs manual
+        // recovery — surface that alongside the original conflict rather than
+        // silently swallowing it and reporting only the conflict.
+        if let Err(abort_err) =
+            run_git(worktree, &["rebase", "--abort"], "rebase --abort").await
+        {
+            return Err(Error::Git(format!(
+                "rebase onto {base} failed: {conflict}; the worktree is left \
+                 mid-rebase because cleanup also failed ({abort_err}) — run \
+                 `git rebase --abort` manually"
+            )));
+        }
+        return Err(Error::Git(format!("rebase onto {base} failed: {conflict}")));
     }
     Ok(())
 }
@@ -772,28 +684,8 @@ pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
 /// Stage all working-tree changes (including untracked) and create a commit.
 /// Errors if there is nothing to commit or if git is unhappy.
 pub async fn commit(worktree: &Path, message: &str) -> Result<()> {
-    let add = Command::new("git")
-        .current_dir(worktree)
-        .args(["add", "-A"])
-        .output()
-        .await?;
-    if !add.status.success() {
-        return Err(Error::Git(format!(
-            "add -A failed: {}",
-            String::from_utf8_lossy(&add.stderr).trim()
-        )));
-    }
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["commit", "-m", message])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "commit failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    run_git(worktree, &["add", "-A"], "add -A").await?;
+    run_git(worktree, &["commit", "-m", message], "commit").await?;
     Ok(())
 }
 
@@ -801,61 +693,21 @@ pub async fn commit(worktree: &Path, message: &str) -> Result<()> {
 /// untracked files and directories. Equivalent to a hard reset plus a
 /// `clean -fd`. Destructive — caller is responsible for confirming.
 pub async fn discard_all(worktree: &Path) -> Result<()> {
-    let reset = Command::new("git")
-        .current_dir(worktree)
-        .args(["reset", "--hard", "HEAD"])
-        .output()
-        .await?;
-    if !reset.status.success() {
-        return Err(Error::Git(format!(
-            "reset --hard failed: {}",
-            String::from_utf8_lossy(&reset.stderr).trim()
-        )));
-    }
-    let clean = Command::new("git")
-        .current_dir(worktree)
-        .args(["clean", "-fd"])
-        .output()
-        .await?;
-    if !clean.status.success() {
-        return Err(Error::Git(format!(
-            "clean -fd failed: {}",
-            String::from_utf8_lossy(&clean.stderr).trim()
-        )));
-    }
+    run_git(worktree, &["reset", "--hard", "HEAD"], "reset --hard").await?;
+    run_git(worktree, &["clean", "-fd"], "clean -fd").await?;
     Ok(())
 }
 
 /// Stash all working-tree changes including untracked files. No message —
 /// git generates the default "WIP on <branch>" label.
 pub async fn stash_push(worktree: &Path) -> Result<()> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["stash", "push", "--include-untracked"])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "stash push failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    run_git(worktree, &["stash", "push", "--include-untracked"], "stash push").await?;
     Ok(())
 }
 
 /// Abort an in-progress merge, restoring the pre-merge working tree.
 pub async fn merge_abort(worktree: &Path) -> Result<()> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["merge", "--abort"])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "merge --abort failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    run_git(worktree, &["merge", "--abort"], "merge --abort").await?;
     Ok(())
 }
 
@@ -864,11 +716,7 @@ pub async fn merge_abort(worktree: &Path) -> Result<()> {
 /// usually wants to converge on. Errors only for genuine git failures
 /// (e.g. branch checked out in another live worktree).
 pub async fn branch_delete(repo: &Path, branch: &str) -> Result<()> {
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args(["branch", "-D", branch])
-        .output()
-        .await?;
+    let out = git_output(repo, &["branch", "-D", branch]).await?;
     if out.status.success() {
         return Ok(());
     }
@@ -886,17 +734,12 @@ pub async fn branch_delete(repo: &Path, branch: &str) -> Result<()> {
 
 /// List all local branches in the repo, sorted alphabetically.
 pub async fn list_local_branches(repo: &Path) -> Result<Vec<String>> {
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args(["for-each-ref", "refs/heads", "--format=%(refname:short)", "--sort=refname"])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "for-each-ref failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    let out = run_git(
+        repo,
+        &["for-each-ref", "refs/heads", "--format=%(refname:short)", "--sort=refname"],
+        "for-each-ref",
+    )
+    .await?;
     let branches = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| !l.is_empty())
@@ -910,17 +753,12 @@ pub async fn list_local_branches(repo: &Path) -> Result<Vec<String>> {
 /// slashes (git's native form). This is what the File panel browses — it
 /// naturally excludes `node_modules`, build output, etc.
 pub async fn list_files(worktree: &Path) -> Result<Vec<String>> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "ls-files failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    let out = run_git(
+        worktree,
+        &["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        "ls-files",
+    )
+    .await?;
     Ok(String::from_utf8_lossy(&out.stdout)
         .split('\0')
         .filter(|s| !s.is_empty())
@@ -931,17 +769,8 @@ pub async fn list_files(worktree: &Path) -> Result<Vec<String>> {
 /// Read a single file's contents at a given ref (e.g. the parent branch),
 /// used to show the prior contents of a file the agent deleted.
 pub async fn show_file(worktree: &Path, base_ref: &str, path: &str) -> Result<String> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["show", &format!("{base_ref}:{path}")])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "show {base_ref}:{path} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    let spec = format!("{base_ref}:{path}");
+    let out = run_git(worktree, &["show", &spec], &format!("show {base_ref}:{path}")).await?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -953,34 +782,24 @@ pub async fn file_changed_lines(
     base_ref: &str,
     path: &str,
 ) -> Result<(Vec<u32>, Vec<u32>)> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["diff", "--no-color", "-U0", base_ref, "--", path])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "diff -U0 {base_ref} -- {path} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    let out = run_git(
+        worktree,
+        &["diff", "--no-color", "-U0", base_ref, "--", path],
+        &format!("diff -U0 {base_ref} -- {path}"),
+    )
+    .await?;
     Ok(parse_changed_lines(&String::from_utf8_lossy(&out.stdout)))
 }
 
 /// Return the full unified diff of `path` versus `base_ref`, for the Code
 /// panel's live view. `-U3` gives three lines of surrounding context per hunk.
 pub async fn file_diff(worktree: &Path, base_ref: &str, path: &str) -> Result<String> {
-    let out = Command::new("git")
-        .current_dir(worktree)
-        .args(["diff", "--no-color", "-U3", base_ref, "--", path])
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "diff -U3 {base_ref} -- {path} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    let out = run_git(
+        worktree,
+        &["diff", "--no-color", "-U3", base_ref, "--", path],
+        &format!("diff -U3 {base_ref} -- {path}"),
+    )
+    .await?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
