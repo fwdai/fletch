@@ -16,6 +16,7 @@
 // resolves that from the catalog via `model`.
 
 import { asNumber, asRecord } from "../shared/json";
+import { buildTurnUsage } from "../shared/usage";
 import type { RawEvent, TurnUsage } from "../types";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
@@ -28,21 +29,12 @@ export function extractUsage(body: RawEvent): TurnUsage | undefined {
   const tokens = asRecord(src.tokens);
   const cache = asRecord(tokens.cache);
 
-  const inputTokens = asNumber(tokens.input);
-  const outputTokens = asNumber(tokens.output) + asNumber(tokens.reasoning);
-  const cacheReadTokens = asNumber(cache.read);
-  const cacheWriteTokens = asNumber(cache.write);
-  if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) {
-    return undefined;
-  }
-
-  return {
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
+  return buildTurnUsage({
+    inputTokens: asNumber(tokens.input),
+    outputTokens: asNumber(tokens.output) + asNumber(tokens.reasoning),
+    cacheReadTokens: asNumber(cache.read),
+    cacheWriteTokens: asNumber(cache.write),
     costUsd: asNumber(src.cost),
-    context: { input: inputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheWriteTokens },
-    ...(typeof src.modelID === "string" ? { model: src.modelID } : {}),
-  };
+    model: typeof src.modelID === "string" ? src.modelID : undefined,
+  });
 }

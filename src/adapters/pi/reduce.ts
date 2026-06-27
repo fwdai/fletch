@@ -23,6 +23,7 @@ import { asBlockList, asRecord } from "../shared/json";
 import {
   aliasToolInput,
   dedupAgainstLast,
+  endTurn,
   finalizeStreamingItems,
   upsertToolCall,
 } from "../shared/reducer-helpers";
@@ -113,8 +114,7 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
 
     // The whole turn is done (fires once; `turn_end` fires per step).
     case "agent_end": {
-      const items = finalizeStreamingItems(prev);
-      return [...items, { kind: "notice", subtype: "turn_end", text: "success" }];
+      return endTurn(finalizeStreamingItems(prev));
     }
 
     default:

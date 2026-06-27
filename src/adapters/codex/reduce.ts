@@ -18,6 +18,7 @@
 import { asRecord } from "../shared/json";
 import {
   dedupAgainstLast,
+  endTurn,
   finalizeStreamingItems,
   upsertToolCall,
 } from "../shared/reducer-helpers";
@@ -146,8 +147,7 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
     }
 
     case "turn.completed": {
-      const items = finalizeStreamingItems(prev);
-      return [...items, { kind: "notice", subtype: "turn_end", text: "success" }];
+      return endTurn(finalizeStreamingItems(prev));
     }
 
     // `turn.failed` / `error` surface as a visible error notice.

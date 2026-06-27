@@ -10,6 +10,7 @@
 // context-window size.
 
 import { asNumber, asRecord } from "../shared/json";
+import { buildTurnUsage } from "../shared/usage";
 import type { RawEvent, TurnUsage } from "../types";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
@@ -18,21 +19,12 @@ export function extractUsage(body: RawEvent): TurnUsage | undefined {
   if (message.role !== "assistant") return undefined;
 
   const usage = asRecord(message.usage);
-  const inputTokens = asNumber(usage.input);
-  const outputTokens = asNumber(usage.output);
-  const cacheReadTokens = asNumber(usage.cacheRead);
-  const cacheWriteTokens = asNumber(usage.cacheWrite);
-  if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) {
-    return undefined;
-  }
-
-  return {
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
+  return buildTurnUsage({
+    inputTokens: asNumber(usage.input),
+    outputTokens: asNumber(usage.output),
+    cacheReadTokens: asNumber(usage.cacheRead),
+    cacheWriteTokens: asNumber(usage.cacheWrite),
     costUsd: asNumber(asRecord(usage.cost).total),
-    context: { input: inputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheWriteTokens },
     model: typeof message.model === "string" ? message.model : undefined,
-  };
+  });
 }

@@ -12,23 +12,16 @@
 // restart-safe. `inputTokens` is fresh (excludes cache), Anthropic-style.
 
 import { asNumber, asRecord } from "../shared/json";
+import { buildTurnUsage } from "../shared/usage";
 import type { RawEvent, TurnUsage } from "../types";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
   if (body.type !== "result") return undefined;
   const usage = asRecord(body.usage);
-  const inputTokens = asNumber(usage.inputTokens);
-  const outputTokens = asNumber(usage.outputTokens);
-  const cacheReadTokens = asNumber(usage.cacheReadTokens);
-  const cacheWriteTokens = asNumber(usage.cacheWriteTokens);
-  if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) {
-    return undefined;
-  }
-  return {
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    context: { input: inputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheWriteTokens },
-  };
+  return buildTurnUsage({
+    inputTokens: asNumber(usage.inputTokens),
+    outputTokens: asNumber(usage.outputTokens),
+    cacheReadTokens: asNumber(usage.cacheReadTokens),
+    cacheWriteTokens: asNumber(usage.cacheWriteTokens),
+  });
 }

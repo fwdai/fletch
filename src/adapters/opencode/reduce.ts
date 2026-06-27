@@ -23,6 +23,7 @@ import { asRecord } from "../shared/json";
 import {
   aliasToolInput,
   dedupAgainstLast,
+  endTurn,
   finalizeStreamingItems,
   upsertToolCall,
 } from "../shared/reducer-helpers";
@@ -141,7 +142,7 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       // Only the turn's final step stops; intermediate `tool-calls` steps just
       // settle any still-streaming items.
       if (reason === "stop") {
-        return [...items, { kind: "notice", subtype: "turn_end", text: "success" }];
+        return endTurn(items);
       }
       return items;
     }
