@@ -62,7 +62,12 @@ export function describeMergeGate(
     case "blocked":
       // Failing required checks are agent-fixable; a pure review gate is not.
       return checksFailed > 0
-        ? { situation: "checks-failing", tone: "attention", mergeAllowed: false, needsUpdate: false }
+        ? {
+            situation: "checks-failing",
+            tone: "attention",
+            mergeAllowed: false,
+            needsUpdate: false,
+          }
         : {
             situation: "review-required",
             tone: "attention",
