@@ -10,8 +10,8 @@
 // stable id per tool_use so multiple calls don't collapse in upsertToolCall;
 // tool calls therefore render without results, which is expected for Cursor.
 
-import type { RawEvent } from "../types";
 import { asBlockList, asRecord } from "../shared/json";
+import type { RawEvent } from "../types";
 
 export function normalizeTranscript(lines: unknown[]): RawEvent[] {
   const out: RawEvent[] = [];
@@ -22,9 +22,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
     if (role !== "user" && role !== "assistant") continue; // drop unknown roles
     const msg = asRecord(rec.message);
     const content = asBlockList(msg.content).map((b) =>
-      b.type === "tool_use" && b.id == null
-        ? { ...b, id: `cursor-tool-${toolSeq++}` }
-        : b,
+      b.type === "tool_use" && b.id == null ? { ...b, id: `cursor-tool-${toolSeq++}` } : b,
     );
     out.push({ type: role, message: { ...msg, content } });
   }

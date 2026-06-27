@@ -41,8 +41,7 @@ export function reconcileOverrides(
   for (const id of ids) {
     const row = rows.find((r) => r.id === id);
     const nextVal = next[id];
-    const isOverride =
-      row !== undefined && nextVal !== undefined && nextVal !== row.value;
+    const isOverride = row !== undefined && nextVal !== undefined && nextVal !== row.value;
 
     if (isOverride) {
       cleaned[id] = nextVal;

@@ -1,4 +1,4 @@
-import type { SliceCreator, ComposerSlice } from "./types";
+import type { ComposerSlice, SliceCreator } from "./types";
 
 export const createComposerSlice: SliceCreator<ComposerSlice> = (set) => ({
   composerSeeds: {},

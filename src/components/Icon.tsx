@@ -1,5 +1,3 @@
-import type { ComponentType, CSSProperties, ReactNode, SVGProps } from "react";
-import { createElement } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -60,6 +58,8 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import type { ComponentType, CSSProperties, ReactNode, SVGProps } from "react";
+import { createElement } from "react";
 import { LANDMARK_GLYPHS } from "../data/landmarks";
 
 // Lucide v1 removed brand icons, so we keep the GitHub mark inline.
@@ -150,13 +150,7 @@ const ICON_COMPONENTS = {
 
 // Originally rendered with fill="currentColor". Setting fill on the root SVG
 // is enough — inner shapes inherit it.
-const FILLED: ReadonlySet<IconName> = new Set([
-  "play",
-  "pause",
-  "stop",
-  "github",
-  "dot",
-]);
+const FILLED: ReadonlySet<IconName> = new Set(["play", "pause", "stop", "github", "dot"]);
 
 export type IconName = keyof typeof ICON_COMPONENTS;
 

@@ -14,8 +14,8 @@
 // `last_token_usage.input_tokens` (the live window size), against
 // `model_context_window`.
 
-import type { RawEvent, TurnUsage } from "../types";
 import { asNumber, asRecord } from "../shared/json";
+import type { RawEvent, TurnUsage } from "../types";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
   if (body.type !== "event_msg") return undefined;
@@ -28,8 +28,7 @@ export function extractUsage(body: RawEvent): TurnUsage | undefined {
 
   const totalInput = asNumber(total.input_tokens);
   const cacheReadTokens = asNumber(total.cached_input_tokens);
-  const outputTokens =
-    asNumber(total.output_tokens) + asNumber(total.reasoning_output_tokens);
+  const outputTokens = asNumber(total.output_tokens) + asNumber(total.reasoning_output_tokens);
   if (totalInput + outputTokens === 0) return undefined;
 
   // Context fill is the latest turn's window: last_token_usage.input_tokens

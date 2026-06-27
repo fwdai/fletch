@@ -4,10 +4,10 @@
 // prototype (onboarding/exhibits.jsx).
 
 import { useEffect, useState } from "react";
+import type { ProviderId } from "../../data/providers";
+import { PROVIDERS, providerChip } from "../../data/providers";
 import { Icon, LandmarkGlyph } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
-import { PROVIDERS, providerChip } from "../../data/providers";
-import type { ProviderId } from "../../data/providers";
 
 // ── tiny faux window chrome for an exhibit ──────────────────────────
 function ExBar({ title }: { title: string }) {
@@ -40,10 +40,44 @@ interface ParallelAgent {
 }
 
 const PARALLEL_AGENTS: ParallelAgent[] = [
-  { name: "dolomites", provider: "claude",   task: "Stripe portal sync",  status: "running", add: 187, rem: 64,  age: "4m",  active: true },
-  { name: "andes",     provider: "codex",    task: "Zero-copy decoder",   status: "running", add: 624, rem: 312, age: "12m" },
-  { name: "caspian",   provider: "cursor",   task: "Diff repaint jitter", status: "idle",    add: 14,  rem: 22,  age: "1h",  unseen: true },
-  { name: "sierra",    provider: "opencode", task: "v3 migration guide",  status: "running", add: 240, rem: 12,  age: "26m" },
+  {
+    name: "dolomites",
+    provider: "claude",
+    task: "Stripe portal sync",
+    status: "running",
+    add: 187,
+    rem: 64,
+    age: "4m",
+    active: true,
+  },
+  {
+    name: "andes",
+    provider: "codex",
+    task: "Zero-copy decoder",
+    status: "running",
+    add: 624,
+    rem: 312,
+    age: "12m",
+  },
+  {
+    name: "caspian",
+    provider: "cursor",
+    task: "Diff repaint jitter",
+    status: "idle",
+    add: 14,
+    rem: 22,
+    age: "1h",
+    unseen: true,
+  },
+  {
+    name: "sierra",
+    provider: "opencode",
+    task: "v3 migration guide",
+    status: "running",
+    add: 240,
+    rem: 12,
+    age: "26m",
+  },
 ];
 
 // Mirrors AgentRow's RealRow markup (static, no store/interactivity).
@@ -142,7 +176,8 @@ export function ExhibitProviders() {
           ))}
         </div>
         <div className="ob-exhibit-cap">
-          <span className="lvdot" />connected · switch per task, no lock-in
+          <span className="lvdot" />
+          connected · switch per task, no lock-in
         </div>
       </div>
     </div>
@@ -162,11 +197,51 @@ interface RoomRow {
 }
 
 const ROOM_ROWS: RoomRow[] = [
-  { name: "patagonia", landmark: "patagonia", task: "Stripe portal sync", status: "running", add: 187, rem: 64, meta: "writing" },
-  { name: "andes", landmark: "andes", task: "Zero-copy decoder", status: "running", add: 624, rem: 312, meta: "writing" },
-  { name: "caspian", landmark: "caspian", task: "Diff repaint jitter", status: "waiting", add: 14, rem: 22, meta: "needs you" },
-  { name: "sierra", landmark: "sierra", task: "v3 migration guide", status: "waiting", add: 240, rem: 12, meta: "needs you" },
-  { name: "hokkaido", landmark: "hokkaido", task: "List virtualization", status: "error", add: 96, rem: 41, meta: "error" },
+  {
+    name: "patagonia",
+    landmark: "patagonia",
+    task: "Stripe portal sync",
+    status: "running",
+    add: 187,
+    rem: 64,
+    meta: "writing",
+  },
+  {
+    name: "andes",
+    landmark: "andes",
+    task: "Zero-copy decoder",
+    status: "running",
+    add: 624,
+    rem: 312,
+    meta: "writing",
+  },
+  {
+    name: "caspian",
+    landmark: "caspian",
+    task: "Diff repaint jitter",
+    status: "waiting",
+    add: 14,
+    rem: 22,
+    meta: "needs you",
+  },
+  {
+    name: "sierra",
+    landmark: "sierra",
+    task: "v3 migration guide",
+    status: "waiting",
+    add: 240,
+    rem: 12,
+    meta: "needs you",
+  },
+  {
+    name: "hokkaido",
+    landmark: "hokkaido",
+    task: "List virtualization",
+    status: "error",
+    add: 96,
+    rem: 41,
+    meta: "error",
+  },
 ];
 
 export function ExhibitRoom() {
@@ -177,7 +252,8 @@ export function ExhibitRoom() {
         <div className="ex-room">
           <div className="ex-room-head">
             <div className="ex-room-mark">
-              <span className="d" />QUORUM
+              <span className="d" />
+              QUORUM
             </div>
             <div className="ex-room-when">
               Thu, Jun 4<span className="sep">·</span>9:24 AM
@@ -206,7 +282,8 @@ export function ExhibitRoom() {
           </div>
         </div>
         <div className="ob-exhibit-cap">
-          <span className="lvdot" />one room · every project, every agent
+          <span className="lvdot" />
+          one room · every project, every agent
         </div>
       </div>
     </div>
@@ -258,7 +335,8 @@ export function ExhibitCode() {
         <div className="ex-code">
           <div className="ex-code-tabs">
             <span className="ex-ctab active">
-              checkout.ts<span className="live" />
+              checkout.ts
+              <span className="live" />
             </span>
             <span className="ex-ctab">portal.ts</span>
             <span className="ex-ctab">checkout.test.ts</span>
@@ -266,8 +344,8 @@ export function ExhibitCode() {
           <div className="ex-note">
             <Icon name="thinking" size={12} />
             <span>
-              Branch on subscription state — route existing subscribers through the billing
-              portal instead of a fresh checkout.
+              Branch on subscription state — route existing subscribers through the billing portal
+              instead of a fresh checkout.
             </span>
           </div>
           <div className="ex-diff">
@@ -291,7 +369,8 @@ export function ExhibitCode() {
           </div>
         </div>
         <div className="ob-exhibit-cap">
-          <span className="lvdot" />live diff · +34 −8 · follow along
+          <span className="lvdot" />
+          live diff · +34 −8 · follow along
         </div>
       </div>
     </div>

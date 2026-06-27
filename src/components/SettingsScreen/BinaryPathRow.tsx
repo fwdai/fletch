@@ -139,26 +139,19 @@ export function BinaryPathRow({
             <div className="set-prov-bin-err">{error}</div>
           ) : (
             <div className="set-prov-bin-hint">
-              Absolute path to the {providerLabel} binary. Leave blank to
-              auto-detect.
+              Absolute path to the {providerLabel} binary. Leave blank to auto-detect.
             </div>
           )}
         </div>
       ) : (
         <div className="set-prov-bin-edit">
           <div className="set-prov-bin-view">
-            <span className={`set-prov-dv mono ${broken ? "broken" : ""}`}>
-              {effectivePath}
-            </span>
+            <span className={`set-prov-dv mono ${broken ? "broken" : ""}`}>{effectivePath}</span>
             {override && <span className="set-badge custom">Custom</span>}
             {broken && <span className="set-prov-bin-warn">not found</span>}
             <span className="grow" />
             {override && (
-              <button
-                className="btn-t ghost sm-t"
-                disabled={busy}
-                onClick={() => void reset()}
-              >
+              <button className="btn-t ghost sm-t" disabled={busy} onClick={() => void reset()}>
                 Reset to auto
               </button>
             )}

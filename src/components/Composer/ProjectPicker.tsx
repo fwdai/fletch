@@ -1,7 +1,7 @@
 import { useState } from "react";
+import { basename } from "../../util/format";
 import { Icon } from "../Icon";
 import { Scrim } from "../ui/Scrim";
-import { basename } from "../../util/format";
 
 interface Props {
   /** Currently selected repo path. */
@@ -28,8 +28,13 @@ export function ProjectPicker({ value, repos, onChange }: Props) {
       {open && (
         <>
           <Scrim onClose={() => setOpen(false)} />
-          <div className="dd" style={{ bottom: "calc(100% + 6px)", left: 0, padding: 0, overflow: "hidden" }}>
-            <div className="dd-sect" style={{ padding: "7px 9px 4px" }}>Projects</div>
+          <div
+            className="dd"
+            style={{ bottom: "calc(100% + 6px)", left: 0, padding: 0, overflow: "hidden" }}
+          >
+            <div className="dd-sect" style={{ padding: "7px 9px 4px" }}>
+              Projects
+            </div>
             <div style={{ maxHeight: 272, overflowY: "auto" }}>
               {repos.map((r) => (
                 <div

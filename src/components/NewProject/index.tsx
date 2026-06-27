@@ -1,5 +1,5 @@
-import { Scrim } from "../ui/Scrim";
 import { Icon } from "../Icon";
+import { Scrim } from "../ui/Scrim";
 import { CloneView } from "./CloneView";
 import { CreateView } from "./CreateView";
 import { useNewProject } from "./useNewProject";
@@ -8,13 +8,7 @@ export type NewProjectMode = "clone" | "create";
 
 /** Centered modal for adding a project by cloning from GitHub or creating a
  *  fresh repo. Launched from the sidebar's "+" popover. */
-export function NewProject({
-  mode,
-  onClose,
-}: {
-  mode: NewProjectMode;
-  onClose: () => void;
-}) {
+export function NewProject({ mode, onClose }: { mode: NewProjectMode; onClose: () => void }) {
   const shared = useNewProject();
 
   return (

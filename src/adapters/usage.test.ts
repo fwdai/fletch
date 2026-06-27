@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
-
+import type { SessionRecord } from "../api";
+import { antigravityAdapter } from "./antigravity";
 import { claudeAdapter } from "./claude";
 import { codexAdapter } from "./codex";
+import { cursorAdapter } from "./cursor";
 import { opencodeAdapter } from "./opencode";
 import { piAdapter } from "./pi";
-import { cursorAdapter } from "./cursor";
-import { antigravityAdapter } from "./antigravity";
-import { usageFromRecords, addTurnUsage, EMPTY_USAGE } from "./usage";
-import type { SessionRecord } from "../api";
 import type { RawEvent } from "./types";
+import { addTurnUsage, EMPTY_USAGE, usageFromRecords } from "./usage";
 
 // Bodies below are the agents' real ON-DISK transcript shapes (captured from
 // live sessions), which is what session_records persists and what the usage
@@ -83,7 +82,10 @@ describe("codex extractUsage", () => {
 
   it("ignores non token_count event_msgs", () => {
     expect(
-      codexAdapter.extractUsage!({ type: "event_msg", payload: { type: "agent_message" } } as RawEvent),
+      codexAdapter.extractUsage!({
+        type: "event_msg",
+        payload: { type: "agent_message" },
+      } as RawEvent),
     ).toBeUndefined();
   });
 });
@@ -239,14 +241,36 @@ it("antigravity exposes no usage extractor", () => {
 describe("usageFromRecords fold", () => {
   it("sums per-message deltas (claude) and tracks latest context fill", () => {
     const recs = [
-      record("claude", {
-        type: "assistant",
-        message: { usage: { input_tokens: 5, output_tokens: 100, cache_creation_input_tokens: 2000, cache_read_input_tokens: 0 } },
-      } as RawEvent, 0),
-      record("claude", {
-        type: "assistant",
-        message: { usage: { input_tokens: 3, output_tokens: 50, cache_creation_input_tokens: 80, cache_read_input_tokens: 2000 } },
-      } as RawEvent, 1),
+      record(
+        "claude",
+        {
+          type: "assistant",
+          message: {
+            usage: {
+              input_tokens: 5,
+              output_tokens: 100,
+              cache_creation_input_tokens: 2000,
+              cache_read_input_tokens: 0,
+            },
+          },
+        } as RawEvent,
+        0,
+      ),
+      record(
+        "claude",
+        {
+          type: "assistant",
+          message: {
+            usage: {
+              input_tokens: 3,
+              output_tokens: 50,
+              cache_creation_input_tokens: 80,
+              cache_read_input_tokens: 2000,
+            },
+          },
+        } as RawEvent,
+        1,
+      ),
     ];
     const u = usageFromRecords("claude", recs);
     expect(u.inputTokens).toBe(8);
@@ -263,17 +287,26 @@ describe("usageFromRecords fold", () => {
 
   it("takes the latest cumulative snapshot (codex), not the sum", () => {
     const mk = (total: number, last: number, seq: number) =>
-      record("codex", {
-        type: "event_msg",
-        payload: {
-          type: "token_count",
-          info: {
-            total_token_usage: { input_tokens: total, cached_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0 },
-            last_token_usage: { input_tokens: last },
-            model_context_window: 258400,
+      record(
+        "codex",
+        {
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: total,
+                cached_input_tokens: 0,
+                output_tokens: 10,
+                reasoning_output_tokens: 0,
+              },
+              last_token_usage: { input_tokens: last },
+              model_context_window: 258400,
+            },
           },
-        },
-      } as RawEvent, seq);
+        } as RawEvent,
+        seq,
+      );
     // duplicate first event (codex re-emits) must not double-count
     const u = usageFromRecords("codex", [mk(100, 100, 0), mk(100, 100, 1), mk(250, 150, 2)]);
     expect(u.inputTokens).toBe(250);
@@ -283,14 +316,32 @@ describe("usageFromRecords fold", () => {
 
   it("accumulates native cost (pi/opencode)", () => {
     const recs = [
-      record("opencode", { type: "step-finish", tokens: { input: 10, output: 5, cache: {} }, cost: 0.01 } as RawEvent, 0),
-      record("opencode", { type: "step-finish", tokens: { input: 20, output: 5, cache: {} }, cost: 0.02 } as RawEvent, 1),
+      record(
+        "opencode",
+        {
+          type: "step-finish",
+          tokens: { input: 10, output: 5, cache: {} },
+          cost: 0.01,
+        } as RawEvent,
+        0,
+      ),
+      record(
+        "opencode",
+        {
+          type: "step-finish",
+          tokens: { input: 20, output: 5, cache: {} },
+          cost: 0.02,
+        } as RawEvent,
+        1,
+      ),
     ];
     expect(usageFromRecords("opencode", recs).costUsd).toBeCloseTo(0.03);
   });
 
   it("returns EMPTY_USAGE for providers without an extractor or with no usage", () => {
-    expect(usageFromRecords("cursor", [record("cursor", { type: "assistant" } as RawEvent)])).toBe(EMPTY_USAGE);
+    expect(usageFromRecords("cursor", [record("cursor", { type: "assistant" } as RawEvent)])).toBe(
+      EMPTY_USAGE,
+    );
     expect(usageFromRecords("claude", [])).toBe(EMPTY_USAGE);
   });
 });
@@ -299,8 +350,14 @@ describe("addTurnUsage (fold primitive)", () => {
   it("sums deltas across turns and tracks the latest context fill", () => {
     let acc = { ...EMPTY_USAGE };
     for (const body of [
-      { type: "result", usage: { inputTokens: 2, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 5000 } },
-      { type: "result", usage: { inputTokens: 3, outputTokens: 50, cacheReadTokens: 5000, cacheWriteTokens: 80 } },
+      {
+        type: "result",
+        usage: { inputTokens: 2, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 5000 },
+      },
+      {
+        type: "result",
+        usage: { inputTokens: 3, outputTokens: 50, cacheReadTokens: 5000, cacheWriteTokens: 80 },
+      },
     ] as RawEvent[]) {
       acc = addTurnUsage(acc, cursorAdapter.extractUsage!(body)!);
     }

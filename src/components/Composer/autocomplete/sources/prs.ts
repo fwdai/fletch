@@ -36,10 +36,7 @@ export function usePrSource({ query, listPrs }: Args): AcSource {
 
   const active = listPrs && query !== null && /^\d*$/.test(query) ? query : null;
 
-  const matched = useMemo(
-    () => (active === null ? [] : filterPrs(prs, active)),
-    [active, prs],
-  );
+  const matched = useMemo(() => (active === null ? [] : filterPrs(prs, active)), [active, prs]);
 
   // Fetch when the menu opens, but cache for a short window so rapid
   // open/close cycles (type `#`, delete, retype) don't queue a burst of

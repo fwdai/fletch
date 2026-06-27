@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
-import { Icon } from "../../../Icon";
 import { useAppStore } from "../../../../store";
+import { Icon } from "../../../Icon";
 import type { ToolCall, ToolResult } from "../presenters/types";
-import { QuestionCard } from "./QuestionCard";
 import {
   answersFromResultText,
   buildAnswers,
@@ -11,6 +10,7 @@ import {
   type UIAnswer,
   type UserInputTool,
 } from "./parse";
+import { QuestionCard } from "./QuestionCard";
 
 /** Rich widget for the agent's "needs your input" tools (Claude's
  *  `AskUserQuestion` / `ExitPlanMode`). Renders one card per question; once
@@ -177,9 +177,7 @@ function resultText(content: unknown): string {
   if (Array.isArray(content)) {
     return content
       .map((b) =>
-        b && typeof b === "object" && "text" in b
-          ? String((b as { text: unknown }).text)
-          : "",
+        b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : "",
       )
       .join("")
       .trim();

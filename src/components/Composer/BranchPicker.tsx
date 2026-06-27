@@ -23,11 +23,14 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    api.listRepoBranches(repoPath).then((bs) => {
-      setBranches(bs);
-      // after render, check if the selected branch needs scroll and update indicators
-      requestAnimationFrame(() => updateScrollState());
-    }).catch(() => setBranches([]));
+    api
+      .listRepoBranches(repoPath)
+      .then((bs) => {
+        setBranches(bs);
+        // after render, check if the selected branch needs scroll and update indicators
+        requestAnimationFrame(() => updateScrollState());
+      })
+      .catch(() => setBranches([]));
   }, [open, repoPath]);
 
   function updateScrollState() {
@@ -46,20 +49,30 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
       <span className="pill is-action" title={value} onClick={() => setOpen((v) => !v)}>
         <Icon name="branch" />
         <span style={{ color: "var(--fg-2)" }}>from</span>
-        <span className="v" style={{
-          maxWidth: 140,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}>{value}</span>
+        <span
+          className="v"
+          style={{
+            maxWidth: 140,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {value}
+        </span>
         <Icon name="chevD" size={9} />
       </span>
 
       {open && (
         <>
           <Scrim onClose={() => setOpen(false)} />
-          <div className="dd" style={{ bottom: "calc(100% + 6px)", left: 0, padding: 0, overflow: "hidden" }}>
-            <div className="dd-sect" style={{ padding: "7px 9px 4px" }}>Local branches</div>
+          <div
+            className="dd"
+            style={{ bottom: "calc(100% + 6px)", left: 0, padding: 0, overflow: "hidden" }}
+          >
+            <div className="dd-sect" style={{ padding: "7px 9px 4px" }}>
+              Local branches
+            </div>
 
             {canScrollUp && (
               <button
@@ -77,7 +90,9 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
               onScroll={updateScrollState}
             >
               {branches.length === 0 ? (
-                <div className="dd-item is-disabled" style={{ padding: "7px 9px" }}>Loading…</div>
+                <div className="dd-item is-disabled" style={{ padding: "7px 9px" }}>
+                  Loading…
+                </div>
               ) : (
                 branches.map((b) => (
                   <div
@@ -90,18 +105,16 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
                     }}
                   >
                     <Icon name="branch" size={14} />
-                    <span className="di-l" style={{ fontFamily: "var(--font-mono)" }}>{b}</span>
+                    <span className="di-l" style={{ fontFamily: "var(--font-mono)" }}>
+                      {b}
+                    </span>
                   </div>
                 ))
               )}
             </div>
 
             {canScrollDown && (
-              <button
-                type="button"
-                className="bp-scroll-btn"
-                onClick={() => scrollBy(SCROLL_STEP)}
-              >
+              <button type="button" className="bp-scroll-btn" onClick={() => scrollBy(SCROLL_STEP)}>
                 <Icon name="chevD" size={11} />
               </button>
             )}

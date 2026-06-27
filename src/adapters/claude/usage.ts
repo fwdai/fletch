@@ -9,8 +9,8 @@
 // reads/writes from it — so context fill is the sum of all three input fields.
 // Claude does not report a context-window size or cost on disk.
 
-import type { RawEvent, TurnUsage } from "../types";
 import { asNumber, asRecord } from "../shared/json";
+import type { RawEvent, TurnUsage } from "../types";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
   if (body.type !== "assistant") return undefined;

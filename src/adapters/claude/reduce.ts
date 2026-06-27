@@ -5,7 +5,6 @@
 // addition of the sanitizer pass on user-message text and the resulting
 // slash_command / hook_output notices.
 
-import type { ChatItem, RawEvent } from "../types";
 import { asBlockList, asRecord } from "../shared/json";
 import {
   appendToolInputDelta,
@@ -14,6 +13,7 @@ import {
   finalizeStreamingItems,
   upsertToolCall,
 } from "../shared/reducer-helpers";
+import type { ChatItem, RawEvent } from "../types";
 import { contentText } from "./content";
 import { sanitizeUserText } from "./sanitize";
 
@@ -50,11 +50,7 @@ function parentToolUseId(ev: RawEvent): string | null {
  *  tool_calls so a subagent that itself spawns a subagent threads correctly.
  *  If the parent tool_call isn't present yet (ordering race), returns `items`
  *  unchanged — the event is dropped rather than leaked into the main log. */
-function routeToChild(
-  items: ChatItem[],
-  parentId: string,
-  ev: RawEvent,
-): ChatItem[] {
+function routeToChild(items: ChatItem[], parentId: string, ev: RawEvent): ChatItem[] {
   for (let i = items.length - 1; i >= 0; i -= 1) {
     const it = items[i];
     if (it.kind !== "tool_call") continue;
@@ -137,12 +133,7 @@ function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       if (!text) continue;
       const exists = items
         .slice(turnStart)
-        .some(
-          (it) =>
-            it.kind === "notice" &&
-            it.subtype === "reasoning" &&
-            it.text === text,
-        );
+        .some((it) => it.kind === "notice" && it.subtype === "reasoning" && it.text === text);
       if (exists) continue;
       items = [...items, { kind: "notice", subtype: "reasoning", text }];
     } else if (block.type === "text" && typeof block.text === "string") {
@@ -161,10 +152,7 @@ function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
         }
         continue;
       }
-      items = [
-        ...items,
-        { kind: "agent_message", text: block.text, streaming: false, model },
-      ];
+      items = [...items, { kind: "agent_message", text: block.text, streaming: false, model }];
     } else if (block.type === "tool_use") {
       items = upsertToolCall(items, {
         kind: "tool_call",
@@ -232,10 +220,7 @@ function handleResult(prev: ChatItem[], ev: RawEvent): ChatItem[] {
     // (success)". When the agent already spoke (the detail is on screen), keep
     // the notice to a clean label instead of repeating it.
     const text = hasAssistantText ? "Turn failed" : resultText.trim() || "Turn failed";
-    items = [
-      ...items,
-      { kind: "notice", subtype: "error", text, is_error: true },
-    ];
+    items = [...items, { kind: "notice", subtype: "error", text, is_error: true }];
   } else if (!hasAssistantText && resultText.trim()) {
     items = [...items, { kind: "agent_message", text: resultText }];
   }

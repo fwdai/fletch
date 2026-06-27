@@ -20,7 +20,7 @@ export function CloneView({ shared, onDone }: { shared: NewProjectShared; onDone
   if (gh && (!gh.installed || !gh.authenticated)) return <GhGate gh={gh} />;
 
   // The active spec is the pasted URL (when in paste mode) or the selected repo.
-  const spec = pasteMode ? url.trim() : selected ?? "";
+  const spec = pasteMode ? url.trim() : (selected ?? "");
   const parsed = parseRepoSpec(spec);
   const canClone = !!parent && parsed.valid && !busy;
 

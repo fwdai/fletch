@@ -1,10 +1,9 @@
-import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { claudeAdapter } from "./index";
+import { describe, expect, it } from "vitest";
 import type { ChatItem, RawEvent } from "../types";
+import { claudeAdapter } from "./index";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 
@@ -17,10 +16,7 @@ function readJsonl(name: string): unknown[] {
 }
 
 function reduceAll(events: RawEvent[]): ChatItem[] {
-  return events.reduce<ChatItem[]>(
-    (acc, ev) => claudeAdapter.reduce(acc, ev),
-    [],
-  );
+  return events.reduce<ChatItem[]>((acc, ev) => claudeAdapter.reduce(acc, ev), []);
 }
 
 describe("claudeAdapter.reduce — live events", () => {
@@ -102,9 +98,7 @@ describe("claudeAdapter.reduce — error result", () => {
       },
     ] as RawEvent[]);
     // Last two items: error notice, then turn_end notice.
-    const errorNotice = items.find(
-      (it) => it.kind === "notice" && it.subtype === "error",
-    );
+    const errorNotice = items.find((it) => it.kind === "notice" && it.subtype === "error");
     expect(errorNotice).toMatchObject({
       kind: "notice",
       subtype: "error",
@@ -217,9 +211,7 @@ describe("claudeAdapter.reduce — model", () => {
         message: { role: "assistant", content: [{ type: "text", text: "Hi" }] },
       },
     ] as RawEvent[]);
-    expect(items).toEqual([
-      { kind: "agent_message", text: "Hi", streaming: false },
-    ]);
+    expect(items).toEqual([{ kind: "agent_message", text: "Hi", streaming: false }]);
   });
 });
 
@@ -339,9 +331,7 @@ describe("claudeAdapter.reduce — subagent sidechain routing", () => {
         parent_tool_use_id: "toolu_task",
         message: {
           role: "assistant",
-          content: [
-            { type: "tool_use", id: "toolu_inner", name: "Agent", input: {} },
-          ],
+          content: [{ type: "tool_use", id: "toolu_inner", name: "Agent", input: {} }],
         },
       },
       // The inner subagent's turn references the inner tool_use id.
@@ -358,9 +348,7 @@ describe("claudeAdapter.reduce — subagent sidechain routing", () => {
       const inner = outer.children?.[0];
       expect(inner?.kind).toBe("tool_call");
       if (inner?.kind === "tool_call") {
-        expect(inner.children).toEqual([
-          { kind: "agent_message", text: "deep", streaming: false },
-        ]);
+        expect(inner.children).toEqual([{ kind: "agent_message", text: "deep", streaming: false }]);
       }
     }
   });

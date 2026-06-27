@@ -1,4 +1,4 @@
-import { api, type AgentRecord } from "../../api";
+import { type AgentRecord, api } from "../../api";
 import { getOutputBuffer, registerOutputSink } from "../../pty/buffers";
 import { useXterm } from "../../util/useXterm";
 

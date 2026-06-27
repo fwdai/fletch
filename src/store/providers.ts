@@ -1,11 +1,7 @@
 import { api } from "../api";
-import {
-  loadCachedCatalog,
-  isCatalogStale,
-  rebuildCatalog,
-} from "../data/modelCatalog";
+import { isCatalogStale, loadCachedCatalog, rebuildCatalog } from "../data/modelCatalog";
 import { setSetting } from "../storage/settings";
-import type { SliceCreator, ProvidersSlice } from "./types";
+import type { ProvidersSlice, SliceCreator } from "./types";
 
 // Seed the catalog from the localStorage cache once (read + parse), then split
 // into the two views; init() rebuilds it in the background when stale.

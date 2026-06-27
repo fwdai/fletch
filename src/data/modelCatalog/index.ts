@@ -7,12 +7,12 @@
 // newly-released model shows up automatically without an app release.
 
 import { api } from "../../api";
-import type { UnifiedCatalog } from "./types";
-import { fetchModelsDevIndex } from "./modelsDev";
 import { buildCatalog } from "./build";
+import { fetchModelsDevIndex } from "./modelsDev";
+import type { UnifiedCatalog } from "./types";
 
-export type { ModelMeta, SlimCatalog } from "./types";
 export { lookupModel } from "./normalize";
+export type { ModelMeta, SlimCatalog } from "./types";
 
 const CACHE_KEY = "modelCatalog.cache.v12";
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h

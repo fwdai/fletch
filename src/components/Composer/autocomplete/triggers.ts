@@ -6,7 +6,7 @@
 
 const TOKEN_CHARS = /[^\s@#]/;
 
-function escape(ch: string): string {
+function escapeRegex(ch: string): string {
   return ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
@@ -22,7 +22,7 @@ export function triggerQueryAt(
 ): { query: string; start: number } | null {
   const upto = text.slice(0, caret);
   const anchor = lineStart ? "(?:^|\\n)" : "(?:^|\\s)";
-  const re = new RegExp(`${anchor}${escape(trigger)}([^\\s@#]*)$`);
+  const re = new RegExp(`${anchor}${escapeRegex(trigger)}([^\\s@#]*)$`);
   const m = re.exec(upto);
   if (!m) return null;
   return { query: m[1], start: caret - m[1].length - trigger.length };

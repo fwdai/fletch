@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { PROVIDERS } from "../../../data/providers";
-import { useAppStore } from "../../../store";
 import type { CustomAgent } from "../../../storage/customAgents";
+import { useAppStore } from "../../../store";
 import { Icon } from "../../Icon";
 import { SetHead } from "../primitives";
 import { Mono } from "./Mono";

@@ -1,20 +1,36 @@
-import { useAppStore } from "../../store";
-import type { ThemeMode, Density } from "../../storage/preferences";
 import { ACCENTS } from "../../data/providers";
+import type { Density, ThemeMode } from "../../storage/preferences";
+import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
-import { SetHead, SetGroup, SetRow, SetToggle, SetSeg, type FeatureItem } from "./primitives";
+import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 const SIDE_PANELS: FeatureItem[] = [
-  { key: "git",      title: "Git",      sub: "Branch, file changes, and smart commit / push / PR actions." },
-  { key: "code",     title: "Code",     sub: "Browse & edit worktree files, plus a Live feed of the agent's diffs." },
-  { key: "run",      title: "Run",      sub: "Dev server with an auto-detected, overrideable config." },
+  { key: "git", title: "Git", sub: "Branch, file changes, and smart commit / push / PR actions." },
+  {
+    key: "code",
+    title: "Code",
+    sub: "Browse & edit worktree files, plus a Live feed of the agent's diffs.",
+  },
+  { key: "run", title: "Run", sub: "Dev server with an auto-detected, overrideable config." },
   { key: "terminal", title: "Terminal", sub: "Interactive shell scoped to the worktree." },
 ];
 
 const COMPOSER: FeatureItem[] = [
-  { key: "thinkingBudget", title: "Thinking budget", sub: "Show a low / medium / high reasoning cap in the composer." },
-  { key: "autoEdit",       title: "Auto-edit",       sub: "Let agents apply write tools without per-tool approval." },
-  { key: "tokenUsage",     title: "Token usage",     sub: "Show the context-window % meter in the composer." },
+  {
+    key: "thinkingBudget",
+    title: "Thinking budget",
+    sub: "Show a low / medium / high reasoning cap in the composer.",
+  },
+  {
+    key: "autoEdit",
+    title: "Auto-edit",
+    sub: "Let agents apply write tools without per-tool approval.",
+  },
+  {
+    key: "tokenUsage",
+    title: "Token usage",
+    sub: "Show the context-window % meter in the composer.",
+  },
 ];
 
 export function GeneralPane() {
@@ -104,20 +120,13 @@ export function GeneralPane() {
           title="Usage analytics"
           sub="Share anonymous usage events (app opens, agents spawned, PRs opened) to help improve Quorum. No code, file paths, repo names, or prompts are ever sent."
         >
-          <SetToggle
-            on={telemetryEnabled}
-            onClick={() => setTelemetryEnabled(!telemetryEnabled)}
-          />
+          <SetToggle on={telemetryEnabled} onClick={() => setTelemetryEnabled(!telemetryEnabled)} />
         </SetRow>
         <SetRow
           title="Logs"
           sub="Quorum writes a local log file. Reveal it to attach to a bug report."
         >
-          <button
-            type="button"
-            className="btn-t outline"
-            onClick={() => void revealLogs()}
-          >
+          <button type="button" className="btn-t outline" onClick={() => void revealLogs()}>
             <Icon name="folder" size={12} />
             Reveal logs
           </button>

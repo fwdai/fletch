@@ -33,7 +33,10 @@ function fileBasename(name: string): string {
     // try the longest dotted suffix first: "a.test.ts" → "test.ts", then "ts"
     for (let i = 1; i < parts.length; i++) {
       const ext = parts.slice(i).join(".");
-      if (m.fileExtensions[ext]) { id = m.fileExtensions[ext]; break; }
+      if (m.fileExtensions[ext]) {
+        id = m.fileExtensions[ext];
+        break;
+      }
     }
   }
   return basenameForId(id || m.file);

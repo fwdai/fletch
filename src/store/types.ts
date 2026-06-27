@@ -1,4 +1,6 @@
 import type { StateCreator } from "zustand";
+import type { ChatItem } from "../adapters";
+import type { AgentUsage } from "../adapters/usage";
 import type {
   AgentRecord,
   AgentView,
@@ -9,24 +11,19 @@ import type {
   ShortStats,
   Workspace,
 } from "../api";
-import type {
-  GitDelegation,
-  GitDelegationKind,
-} from "../components/RightPanel/delegation";
+import type { GitDelegation, GitDelegationKind } from "../components/RightPanel/delegation";
 import type { GitCommitAction } from "../components/RightPanel/primaryActions";
-import type { ChatItem } from "../adapters";
-import type { AgentUsage } from "../adapters/usage";
-import type { SlimCatalog, ModelMeta } from "../data/modelCatalog";
-import type {
-  ThemeMode,
-  Density,
-  WorkspaceView,
-  SettingsSection,
-  SettingsIntent,
-  FeatureFlags,
-} from "../storage/preferences";
+import type { ModelMeta, SlimCatalog } from "../data/modelCatalog";
 import type { AccountProfile } from "../storage/accounts";
 import type { CustomAgent, NewCustomAgent } from "../storage/customAgents";
+import type {
+  Density,
+  FeatureFlags,
+  SettingsIntent,
+  SettingsSection,
+  ThemeMode,
+  WorkspaceView,
+} from "../storage/preferences";
 import type { DraftAgent } from "./drafts";
 
 export interface AppSlice {
@@ -281,9 +278,7 @@ export interface AccountSlice {
   /** Anonymous usage telemetry consent. Opt-out: defaults on. */
   telemetryEnabled: boolean;
 
-  saveAccount: (
-    patch: Pick<AccountProfile, "firstName" | "lastName" | "email">,
-  ) => Promise<void>;
+  saveAccount: (patch: Pick<AccountProfile, "firstName" | "lastName" | "email">) => Promise<void>;
   /** Re-read the local account row into the store — e.g. after an OAuth
    *  sign-in writes the provider profile to SQLite. */
   refreshAccount: () => Promise<void>;
@@ -368,11 +363,7 @@ export interface DraftsSlice {
   updateDraft: (id: string, patch: Partial<DraftAgent>) => void;
   removeDraft: (id: string) => void;
   selectDraft: (id: string | null) => void;
-  setNewDraftSelection: (
-    provider: string,
-    model?: string,
-    customAgentId?: string,
-  ) => void;
+  setNewDraftSelection: (provider: string, model?: string, customAgentId?: string) => void;
   rerollDraftName: (id: string) => Promise<void>;
   /** Spawn the real agent for a draft and dispatch the first message. */
   spawnFromDraft: (
@@ -395,10 +386,7 @@ export interface CustomAgentsSlice {
   createCustomAgent: (agent: NewCustomAgent) => Promise<CustomAgent>;
   /** Patch an existing custom agent; resolves to the merged row, or null if the
    *  id is unknown. */
-  updateCustomAgent: (
-    id: string,
-    patch: Partial<NewCustomAgent>,
-  ) => Promise<CustomAgent | null>;
+  updateCustomAgent: (id: string, patch: Partial<NewCustomAgent>) => Promise<CustomAgent | null>;
   deleteCustomAgent: (id: string) => Promise<void>;
   /** Clone a custom agent ("… copy"); resolves to the new row, or null if the
    *  source id is unknown. */

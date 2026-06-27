@@ -14,10 +14,9 @@ import type { Extension, ExtensionSettingsPane } from "./types";
 
 // Eager so contributions are available synchronously at module load. The glob
 // pattern is repo-root-relative to this file: <root>/extensions/<name>/index.ts.
-const modules = import.meta.glob<{ extension: Extension }>(
-  "../../extensions/*/index.ts",
-  { eager: true },
-);
+const modules = import.meta.glob<{ extension: Extension }>("../../extensions/*/index.ts", {
+  eager: true,
+});
 
 /** Every discovered extension, in arbitrary (path) order. */
 export const extensions: Extension[] = Object.values(modules)

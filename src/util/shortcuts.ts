@@ -57,9 +57,7 @@ export function useGlobalShortcuts() {
         const agents = workspace?.agents ?? [];
         const recent = lastRepoPath && repos.includes(lastRepoPath) ? lastRepoPath : undefined;
         const active =
-          recent ??
-          agents.find((a) => a.id === selectedAgentId)?.repos[0]?.repo_path ??
-          repos[0];
+          recent ?? agents.find((a) => a.id === selectedAgentId)?.repos[0]?.repo_path ?? repos[0];
         if (active) createDraft(active);
       } else if (e.key === "Escape" && !inField) {
         toggleSettings(false);
@@ -68,5 +66,17 @@ export function useGlobalShortcuts() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleLeft, leftCollapsed, toggleRight, toggleSettings, closeSettingsScreen, setTheme, theme, createDraft, workspace, selectedAgentId, lastRepoPath]);
+  }, [
+    toggleLeft,
+    leftCollapsed,
+    toggleRight,
+    toggleSettings,
+    closeSettingsScreen,
+    setTheme,
+    theme,
+    createDraft,
+    workspace,
+    selectedAgentId,
+    lastRepoPath,
+  ]);
 }

@@ -37,7 +37,11 @@ export function ViewToggle({ value, onChange, disabled, nativeDisabled, nativeRe
 }
 
 function Btn({
-  active, disabled, onClick, children, title,
+  active,
+  disabled,
+  onClick,
+  children,
+  title,
 }: {
   active: boolean;
   disabled?: boolean;

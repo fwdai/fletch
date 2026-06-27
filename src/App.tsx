@@ -1,19 +1,19 @@
 import { useEffect } from "react";
-import { useAppStore } from "./store";
-import { ACCENT_VALUES } from "./data/providers";
-import { TitleBar } from "./components/TitleBar";
-import { Sidebar } from "./components/Sidebar";
-import { Workspace } from "./components/Workspace";
-import { RightPanel } from "./components/RightPanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { History } from "./components/History";
+import { Onboarding } from "./components/Onboarding";
+import { RightPanel } from "./components/RightPanel";
 import { Settings } from "./components/Settings";
 import { SettingsScreen } from "./components/SettingsScreen";
-import { Onboarding } from "./components/Onboarding";
-import { History } from "./components/History";
+import { Sidebar } from "./components/Sidebar";
+import { TitleBar } from "./components/TitleBar";
 import { UpdateToast } from "./components/UpdateToast";
-import { useSplitter } from "./util/splitter";
-import { useGlobalShortcuts } from "./util/shortcuts";
+import { Workspace } from "./components/Workspace";
+import { ACCENT_VALUES } from "./data/providers";
+import { useAppStore } from "./store";
 import { usePoll } from "./util/hooks";
+import { useGlobalShortcuts } from "./util/shortcuts";
+import { useSplitter } from "./util/splitter";
 import { setAppBadgeCount } from "./util/window";
 
 export function App() {
@@ -46,11 +46,15 @@ export function App() {
   // signal behind the sidebar "new" dots — mirror it onto the app icon badge.
   const unseenCount = useAppStore((s) => Object.keys(s.unseenResults).length);
 
-  useEffect(() => { init(); }, [init]);
+  useEffect(() => {
+    init();
+  }, [init]);
 
   // Reflect the unseen-completion count on the macOS dock / taskbar icon so
   // finished agents are visible even when the window is in the background.
-  useEffect(() => { setAppBadgeCount(unseenCount); }, [unseenCount]);
+  useEffect(() => {
+    setAppBadgeCount(unseenCount);
+  }, [unseenCount]);
 
   // App-wide poll: refresh compact shortstats for every live agent so the
   // sidebar / right-rail badges stay current without waiting for a focused
@@ -118,9 +122,7 @@ export function App() {
                   // recompute it automatically (no measurement needed).
                   width: rightCollapsed
                     ? 0
-                    : `min(${rightWidth}px, calc((100% - ${
-                        leftCollapsed ? 0 : leftWidth
-                      }px) / 2))`,
+                    : `min(${rightWidth}px, calc((100% - ${leftCollapsed ? 0 : leftWidth}px) / 2))`,
                 }}
               >
                 {!rightCollapsed && selectedAgent && (

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { api, type AgentRecord } from "../../api";
-import { useAppStore } from "../../store";
 import { applyPolicy, getAdapter } from "../../adapters";
+import { type AgentRecord, api } from "../../api";
 import { providerLabel } from "../../data/providers";
+import { useAppStore } from "../../store";
 import { Composer } from "../Composer";
 import { MessageItem } from "./messages/MessageItem";
 import { pairToolItems, rowKey } from "./messages/pair";
@@ -13,17 +13,11 @@ import { isUserInputTool } from "./messages/UserInput/parse";
  *  doesn't care about provider routing yet. */
 export function ChatView({ agent }: { agent: AgentRecord }) {
   const log = useAppStore((s) => s.managedLogs[agent.id]);
-  const transcriptLoading = useAppStore(
-    (s) => s.transcriptLoading[agent.id] ?? false,
-  );
-  const transcriptLoaded = useAppStore(
-    (s) => s.transcriptLoaded[agent.id] ?? false,
-  );
+  const transcriptLoading = useAppStore((s) => s.transcriptLoading[agent.id] ?? false);
+  const transcriptLoaded = useAppStore((s) => s.transcriptLoaded[agent.id] ?? false);
   const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
   const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
-  const switchInFlight = useAppStore(
-    (s) => s.switchInFlight[agent.id] ?? false,
-  );
+  const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   const send = useAppStore((s) => s.sendUserMessage);
   const stop = useAppStore((s) => s.stop);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
@@ -31,9 +25,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   // The custom agent this session was spawned from (if any, and still present),
   // so the chat surfaces the agent's name rather than its base provider.
   const customAgent = useAppStore((s) =>
-    agent.custom_agent_id
-      ? s.customAgents.find((a) => a.id === agent.custom_agent_id)
-      : undefined,
+    agent.custom_agent_id ? s.customAgents.find((a) => a.id === agent.custom_agent_id) : undefined,
   );
   const composerSeed = useAppStore((s) => s.composerSeeds[agent.id]);
   const consumeComposerSeed = useAppStore((s) => s.consumeComposerSeed);
@@ -54,12 +46,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const hasPriorConversation = agent.task.trim().length > 0;
 
   useEffect(() => {
-    if (
-      !hasSession ||
-      transcriptLoaded ||
-      transcriptLoading ||
-      switchInFlight
-    ) {
+    if (!hasSession || transcriptLoaded || transcriptLoading || switchInFlight) {
       return;
     }
     if (log !== undefined || !hasPriorConversation) {
@@ -124,10 +111,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const awaitingInput = useMemo(() => {
     const last = items[items.length - 1];
     return Boolean(
-      last &&
-        last.kind === "tool_pair" &&
-        isUserInputTool(last.call.name) &&
-        !last.result,
+      last && last.kind === "tool_pair" && isUserInputTool(last.call.name) && !last.result,
     );
   }, [items]);
 
@@ -144,19 +128,17 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           {transcriptLoading && items.length === 0 ? (
             <div className="writing">
               <span className="dots">
-                <i /><i /><i />
+                <i />
+                <i />
+                <i />
               </span>
               <span>Loading transcript…</span>
             </div>
           ) : items.length === 0 && hasPriorConversation && !busy ? (
-            <div
-              className="empty-msg"
-              style={{ margin: "40px auto", maxWidth: 360 }}
-            >
+            <div className="empty-msg" style={{ margin: "40px auto", maxWidth: 360 }}>
               <div className="et">No transcript available</div>
               <div>
-                {providerLabel(agent.provider)}'s session file is not on disk
-                for this agent.
+                {providerLabel(agent.provider)}'s session file is not on disk for this agent.
               </div>
             </div>
           ) : (
@@ -172,7 +154,9 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           {busy && !awaitingInput && (
             <div className="writing">
               <span className="dots">
-                <i /><i /><i />
+                <i />
+                <i />
+                <i />
               </span>
               <span>
                 {busyLabel ?? `${customAgent?.name ?? providerLabel(agent.provider)} is thinking`}
@@ -198,9 +182,9 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                 ? "Loading transcript…"
                 : switchInFlight
                   ? "Switching view…"
-                : busy
-                  ? "Waiting…"
-                  : "Agent is not ready"
+                  : busy
+                    ? "Waiting…"
+                    : "Agent is not ready"
           }
           stopping={busy}
           mentionSource={() =>

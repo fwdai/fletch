@@ -3,7 +3,7 @@
 
 import type { ReactNode } from "react";
 import type { IconName } from "../Icon";
-import { ExhibitParallel, ExhibitProviders, ExhibitRoom, ExhibitCode } from "./exhibits";
+import { ExhibitCode, ExhibitParallel, ExhibitProviders, ExhibitRoom } from "./exhibits";
 
 export interface BeatPoint {
   icon: IconName;
@@ -60,9 +60,17 @@ const BEAT_PROVIDERS: BeatDef = {
     </>
   ),
   points: [
-    { icon: "cube", head: "Six providers, day one.", body: "Claude Code, Codex, Cursor, Gemini & more." },
+    {
+      icon: "cube",
+      head: "Six providers, day one.",
+      body: "Claude Code, Codex, Cursor, Gemini & more.",
+    },
     { icon: "refresh", head: "Swap per task.", body: "Pick the right model for the job." },
-    { icon: "settings", head: "Your keys, your limits.", body: "Connects to your existing subscriptions." },
+    {
+      icon: "settings",
+      head: "Your keys, your limits.",
+      body: "Connects to your existing subscriptions.",
+    },
   ],
   Exhibit: () => <ExhibitProviders />,
 };

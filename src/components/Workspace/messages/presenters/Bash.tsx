@@ -1,11 +1,5 @@
 import type { ToolPresenter } from "./types";
-import {
-  ToolBlock,
-  firstLineOf,
-  getCommandField,
-  getStringField,
-  renderToolResult,
-} from "./util";
+import { firstLineOf, getCommandField, getStringField, renderToolResult, ToolBlock } from "./util";
 
 export const bashPresenter: ToolPresenter = {
   icon: "terminal",
@@ -18,9 +12,7 @@ export const bashPresenter: ToolPresenter = {
     const description = getStringField(call.input, "description");
     return (
       <>
-        {description && (
-          <ToolBlock label="·">{description}</ToolBlock>
-        )}
+        {description && <ToolBlock label="·">{description}</ToolBlock>}
         <ToolBlock label="$">{cmd}</ToolBlock>
         {result && (
           <ToolBlock label="↳" isError={result.is_error}>

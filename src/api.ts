@@ -2,12 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentModels } from "./data/modelCatalog/types";
 
-export type AgentStatus =
-  | "spawning"
-  | "running"
-  | "idle"
-  | "stopped"
-  | "error";
+export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
 export type AgentView = "custom" | "native";
 
@@ -114,13 +109,7 @@ export interface AgentRepoAddedEvent {
   repo: TrackedRepo;
 }
 
-export type StatusKind =
-  | "modified"
-  | "added"
-  | "deleted"
-  | "renamed"
-  | "untracked"
-  | "conflicted";
+export type StatusKind = "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted";
 
 export interface FileStatus {
   path: string;
@@ -351,27 +340,19 @@ export const api = {
   revealLogs: () => invoke<void>("reveal_logs"),
   // Anonymous usage telemetry. Persists the opt-out flag and toggles the live
   // pipeline (events themselves are emitted from the backend).
-  setTelemetryEnabled: (enabled: boolean) =>
-    invoke<void>("set_telemetry_enabled", { enabled }),
+  setTelemetryEnabled: (enabled: boolean) => invoke<void>("set_telemetry_enabled", { enabled }),
   // Emit the deferred first `app_opened` once onboarding completes — i.e. after
   // the data-sharing disclosure has been shown. See `track_app_opened` (Rust).
   trackAppOpened: () => invoke<void>("track_app_opened"),
-  getAgentDiffStats: (agentId: string) =>
-    invoke<DiffStats>("get_agent_diff_stats", { agentId }),
-  addWorkspaceRepo: (repoPath: string) =>
-    invoke<Workspace>("add_workspace_repo", { repoPath }),
+  getAgentDiffStats: (agentId: string) => invoke<DiffStats>("get_agent_diff_stats", { agentId }),
+  addWorkspaceRepo: (repoPath: string) => invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>
     invoke<Workspace>("remove_workspace_repo", { repoPath }),
   ghStatus: () => invoke<GhStatus>("gh_status"),
   ghRepoList: () => invoke<GhRepoSummary[]>("gh_repo_list"),
   cloneRepo: (spec: string, destParent: string) =>
     invoke<Workspace>("clone_repo", { spec, destParent }),
-  createRepo: (
-    name: string,
-    destParent: string,
-    isPrivate: boolean,
-    description?: string,
-  ) =>
+  createRepo: (name: string, destParent: string, isPrivate: boolean, description?: string) =>
     invoke<Workspace>("create_repo", {
       name,
       destParent,
@@ -430,23 +411,16 @@ export const api = {
     }),
   resizeAgent: (agentId: string, cols: number, rows: number) =>
     invoke<void>("resize_agent", { agentId, cols, rows }),
-  switchView: (agentId: string, view: AgentView) =>
-    invoke<void>("switch_view", { agentId, view }),
-  resumeAgent: (agentId: string) =>
-    invoke<void>("resume_agent", { agentId }),
+  switchView: (agentId: string, view: AgentView) => invoke<void>("switch_view", { agentId, view }),
+  resumeAgent: (agentId: string) => invoke<void>("resume_agent", { agentId }),
   stopAgent: (agentId: string) => invoke<void>("stop_agent", { agentId }),
-  discardAgent: (agentId: string) =>
-    invoke<void>("discard_agent", { agentId }),
-  archiveAgent: (agentId: string) =>
-    invoke<void>("archive_agent", { agentId }),
-  restoreAgent: (agentId: string) =>
-    invoke<void>("restore_agent", { agentId }),
+  discardAgent: (agentId: string) => invoke<void>("discard_agent", { agentId }),
+  archiveAgent: (agentId: string) => invoke<void>("archive_agent", { agentId }),
+  restoreAgent: (agentId: string) => invoke<void>("restore_agent", { agentId }),
   readSessionRecords: (agentId: string) =>
     invoke<SessionRecord[]>("read_session_records", { agentId }),
-  readUserTurns: (agentId: string) =>
-    invoke<UserTurn[]>("read_user_turns", { agentId }),
-  syncSession: (agentId: string) =>
-    invoke<void>("sync_session", { agentId }),
+  readUserTurns: (agentId: string) => invoke<UserTurn[]>("read_user_turns", { agentId }),
+  syncSession: (agentId: string) => invoke<void>("sync_session", { agentId }),
   /** Persist a runtime-compiled record (e.g. cursor's per-turn usage from its
    *  live `result` event) into session_records. Idempotent on `nativeId`. */
   appendLiveRecord: (
@@ -457,53 +431,37 @@ export const api = {
   ) => invoke<boolean>("append_live_record", { agentId, provider, nativeId, body }),
   addRepoToAgent: (agentId: string, repoPath: string) =>
     invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
-  allocateDraftName: (used: string[]) =>
-    invoke<string>("allocate_draft_name", { used }),
-  getGitState: (agentId: string) =>
-    invoke<GitState | null>("get_git_state", { agentId }),
-  getAllShortstats: () =>
-    invoke<Record<string, ShortStats>>("get_all_shortstats"),
-  getPrState: (agentId: string) =>
-    invoke<PrState | null>("get_pr_state", { agentId }),
-  refreshAllPrStates: () =>
-    invoke<Record<string, PrState | null>>("refresh_all_pr_states"),
-  getPrChecks: (agentId: string) =>
-    invoke<PrChecks | null>("get_pr_checks", { agentId }),
-  getPrComments: (agentId: string) =>
-    invoke<PrComments | null>("get_pr_comments", { agentId }),
+  allocateDraftName: (used: string[]) => invoke<string>("allocate_draft_name", { used }),
+  getGitState: (agentId: string) => invoke<GitState | null>("get_git_state", { agentId }),
+  getAllShortstats: () => invoke<Record<string, ShortStats>>("get_all_shortstats"),
+  getPrState: (agentId: string) => invoke<PrState | null>("get_pr_state", { agentId }),
+  refreshAllPrStates: () => invoke<Record<string, PrState | null>>("refresh_all_pr_states"),
+  getPrChecks: (agentId: string) => invoke<PrChecks | null>("get_pr_checks", { agentId }),
+  getPrComments: (agentId: string) => invoke<PrComments | null>("get_pr_comments", { agentId }),
   pushAgent: (agentId: string) => invoke<string>("push_agent", { agentId }),
   pullAgent: (agentId: string) => invoke<void>("pull_agent", { agentId }),
   rebaseAgent: (agentId: string) => invoke<void>("rebase_agent", { agentId }),
   commitAgent: (agentId: string, message: string) =>
     invoke<void>("commit_agent", { agentId, message }),
-  discardAgentChanges: (agentId: string) =>
-    invoke<void>("discard_agent_changes", { agentId }),
+  discardAgentChanges: (agentId: string) => invoke<void>("discard_agent_changes", { agentId }),
   stashAgent: (agentId: string) => invoke<void>("stash_agent", { agentId }),
-  abortMergeAgent: (agentId: string) =>
-    invoke<void>("abort_merge_agent", { agentId }),
-  deleteBranchAgent: (agentId: string) =>
-    invoke<void>("delete_branch_agent", { agentId }),
-  listRepoBranches: (repoPath: string) =>
-    invoke<string[]>("list_repo_branches", { repoPath }),
+  abortMergeAgent: (agentId: string) => invoke<void>("abort_merge_agent", { agentId }),
+  deleteBranchAgent: (agentId: string) => invoke<void>("delete_branch_agent", { agentId }),
+  listRepoBranches: (repoPath: string) => invoke<string[]>("list_repo_branches", { repoPath }),
   createPr: (agentId: string, title: string, body: string) =>
     invoke<PrState>("create_pr", { agentId, title, body }),
   mergePr: (agentId: string) => invoke<void>("merge_pr", { agentId }),
-  openAgentShell: (agentId: string) =>
-    invoke<void>("open_agent_shell", { agentId }),
-  closeAgentShell: (agentId: string) =>
-    invoke<void>("close_agent_shell", { agentId }),
+  openAgentShell: (agentId: string) => invoke<void>("open_agent_shell", { agentId }),
+  closeAgentShell: (agentId: string) => invoke<void>("close_agent_shell", { agentId }),
   writeToShell: (agentId: string, data: string) =>
     invoke<void>("write_to_shell", { agentId, data }),
   resizeShell: (agentId: string, cols: number, rows: number) =>
     invoke<void>("resize_shell", { agentId, cols, rows }),
   runStart: (agentId: string) => invoke<void>("run_start", { agentId }),
   runStop: (agentId: string) => invoke<void>("run_stop", { agentId }),
-  runState: (agentId: string) =>
-    invoke<RunStateSnapshot>("run_state", { agentId }),
-  detectRunConfig: (agentId: string) =>
-    invoke<DetectedConfig[]>("detect_run_config", { agentId }),
-  listWorktreeTree: (agentId: string) =>
-    invoke<WorktreeFile[]>("list_worktree_tree", { agentId }),
+  runState: (agentId: string) => invoke<RunStateSnapshot>("run_state", { agentId }),
+  detectRunConfig: (agentId: string) => invoke<DetectedConfig[]>("detect_run_config", { agentId }),
+  listWorktreeTree: (agentId: string) => invoke<WorktreeFile[]>("list_worktree_tree", { agentId }),
   listDir: (path: string) => invoke<DirListing>("list_dir", { path }),
   listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),
   readWorktreeFile: (agentId: string, path: string) =>
@@ -522,26 +480,21 @@ export const api = {
     invoke<void>("create_worktree_dir", { agentId, path }),
   copyWorktreeFile: (agentId: string, from: string, to: string) =>
     invoke<void>("copy_worktree_file", { agentId, from, to }),
-  probeProviderVersions: () =>
-    invoke<ProviderProbe[]>("probe_provider_versions"),
+  probeProviderVersions: () => invoke<ProviderProbe[]>("probe_provider_versions"),
   /** Resolve a required non-agent CLI (e.g. "git") and probe its version. */
   checkCli: (name: string) => invoke<ToolStatus>("check_cli", { name }),
   /** Check a candidate custom binary path before saving it as an override. */
-  validateAgentBin: (path: string) =>
-    invoke<BinValidation>("validate_agent_bin", { path }),
+  validateAgentBin: (path: string) => invoke<BinValidation>("validate_agent_bin", { path }),
   /** Set (or clear, with a null/blank path) a per-agent custom binary path.
    *  Persists the setting and refreshes the backend's resolution registry. */
   setAgentBinOverride: (id: string, path: string | null) =>
     invoke<void>("set_agent_bin_override", { id, path }),
   /** Per-agent supported-model discovery (raw ids + any cheap CLI metadata).
    *  The frontend enriches these against models.dev. */
-  discoverSupportedModels: () =>
-    invoke<AgentModels[]>("discover_supported_models"),
+  discoverSupportedModels: () => invoke<AgentModels[]>("discover_supported_models"),
 };
 
-export function onAgentOutput(
-  cb: (e: AgentOutputEvent) => void,
-): Promise<UnlistenFn> {
+export function onAgentOutput(cb: (e: AgentOutputEvent) => void): Promise<UnlistenFn> {
   return listen<AgentOutputEvent>("agent:output", (event) => cb(event.payload));
 }
 
@@ -550,15 +503,11 @@ export interface ShellOutputEvent {
   bytes: number[];
 }
 
-export function onShellOutput(
-  cb: (e: ShellOutputEvent) => void,
-): Promise<UnlistenFn> {
+export function onShellOutput(cb: (e: ShellOutputEvent) => void): Promise<UnlistenFn> {
   return listen<ShellOutputEvent>("shell:output", (event) => cb(event.payload));
 }
 
-export function onAgentEvent(
-  cb: (e: AgentManagedEvent) => void,
-): Promise<UnlistenFn> {
+export function onAgentEvent(cb: (e: AgentManagedEvent) => void): Promise<UnlistenFn> {
   return listen<AgentManagedEvent>("agent:event", (event) => cb(event.payload));
 }
 
@@ -594,64 +543,43 @@ export interface SessionRecordsAppendedEvent {
 export function onSessionRecordsAppended(
   cb: (e: SessionRecordsAppendedEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<SessionRecordsAppendedEvent>(
-    "session:records-appended",
-    (event) => cb(event.payload),
+  return listen<SessionRecordsAppendedEvent>("session:records-appended", (event) =>
+    cb(event.payload),
   );
 }
 
-export function onAgentStatus(
-  cb: (e: AgentStatusEvent) => void,
-): Promise<UnlistenFn> {
+export function onAgentStatus(cb: (e: AgentStatusEvent) => void): Promise<UnlistenFn> {
   return listen<AgentStatusEvent>("agent:status", (event) => cb(event.payload));
 }
 
-export function onAgentView(
-  cb: (e: AgentViewEvent) => void,
-): Promise<UnlistenFn> {
+export function onAgentView(cb: (e: AgentViewEvent) => void): Promise<UnlistenFn> {
   return listen<AgentViewEvent>("agent:view", (event) => cb(event.payload));
 }
 
-export function onAgentTask(
-  cb: (e: AgentTaskEvent) => void,
-): Promise<UnlistenFn> {
+export function onAgentTask(cb: (e: AgentTaskEvent) => void): Promise<UnlistenFn> {
   return listen<AgentTaskEvent>("agent:task", (event) => cb(event.payload));
 }
 
-export function onAgentBranch(
-  cb: (e: AgentBranchEvent) => void,
-): Promise<UnlistenFn> {
-  return listen<AgentBranchEvent>("agent:branch", (event) =>
-    cb(event.payload),
-  );
+export function onAgentBranch(cb: (e: AgentBranchEvent) => void): Promise<UnlistenFn> {
+  return listen<AgentBranchEvent>("agent:branch", (event) => cb(event.payload));
 }
 
-export function onAgentRepoAdded(
-  cb: (e: AgentRepoAddedEvent) => void,
-): Promise<UnlistenFn> {
-  return listen<AgentRepoAddedEvent>("agent:repo_added", (event) =>
-    cb(event.payload),
-  );
+export function onAgentRepoAdded(cb: (e: AgentRepoAddedEvent) => void): Promise<UnlistenFn> {
+  return listen<AgentRepoAddedEvent>("agent:repo_added", (event) => cb(event.payload));
 }
 
 export function onWorkspaceChanged(cb: () => void): Promise<UnlistenFn> {
   return listen<unknown>("workspace:changed", () => cb());
 }
 
-export function onPrStateChanged(
-  cb: (e: PrStateChangedEvent) => void,
-): Promise<UnlistenFn> {
+export function onPrStateChanged(cb: (e: PrStateChangedEvent) => void): Promise<UnlistenFn> {
   return listen<PrStateChangedEvent>("pr:state_changed", (event) => cb(event.payload));
 }
 
-export function onRunOutput(
-  cb: (e: RunOutputEvent) => void,
-): Promise<UnlistenFn> {
+export function onRunOutput(cb: (e: RunOutputEvent) => void): Promise<UnlistenFn> {
   return listen<RunOutputEvent>("run:output", (event) => cb(event.payload));
 }
 
-export function onRunState(
-  cb: (e: RunStateEvent) => void,
-): Promise<UnlistenFn> {
+export function onRunState(cb: (e: RunStateEvent) => void): Promise<UnlistenFn> {
   return listen<RunStateEvent>("run:state", (event) => cb(event.payload));
 }

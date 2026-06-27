@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-
-import { PRESENTERS, getPresenter } from "./index";
-import { defaultPresenter } from "./default";
 import { bashPresenter } from "./Bash";
+import { defaultPresenter } from "./default";
+import { getPresenter, PRESENTERS } from "./index";
 import type { ToolCall } from "./types";
 
 const toolCall = (input: unknown): ToolCall =>
@@ -34,9 +33,7 @@ describe("bashPresenter.summary", () => {
   // the command as a bare value. All three must render the command, not the
   // "(no command)" fallback.
   it("renders Claude's { command } object shape", () => {
-    expect(bashPresenter.summary(toolCall({ command: "ls -la" }), null)).toBe(
-      "ls -la",
-    );
+    expect(bashPresenter.summary(toolCall({ command: "ls -la" }), null)).toBe("ls -la");
   });
 
   it("renders Codex/Cursor's bare command string", () => {
@@ -46,9 +43,9 @@ describe("bashPresenter.summary", () => {
   });
 
   it("renders a bare argv array", () => {
-    expect(
-      bashPresenter.summary(toolCall(["bash", "-lc", "echo hi"]), null),
-    ).toBe("bash -lc echo hi");
+    expect(bashPresenter.summary(toolCall(["bash", "-lc", "echo hi"]), null)).toBe(
+      "bash -lc echo hi",
+    );
   });
 
   it("falls back to (no command) when there is genuinely no command", () => {

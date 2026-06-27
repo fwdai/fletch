@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { useAppStore } from "../../store";
-import { PROVIDERS, type Provider } from "../../data/providers";
-import { PROVIDER_DETAIL } from "../../data/providerDetail";
 import { hasAdapter } from "../../adapters";
+import { PROVIDER_DETAIL } from "../../data/providerDetail";
+import { PROVIDERS, type Provider } from "../../data/providers";
+import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
-import { SetHead, SetGroup, SetToggle } from "./primitives";
 import { BinaryPathRow } from "./BinaryPathRow";
+import { SetGroup, SetHead, SetToggle } from "./primitives";
 
 export function ProvidersPane() {
   const providerFlags = useAppStore((s) => s.providerFlags);
@@ -79,7 +79,6 @@ export function ProvidersPane() {
           ))}
         </div>
       </SetGroup>
-
     </div>
   );
 }
@@ -162,4 +161,3 @@ function ProvDetailRow({ k, v, mono }: { k: string; v: string; mono?: boolean })
     </div>
   );
 }
-

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-
-import { cursorAdapter } from "./index";
 import type { ChatItem, RawEvent } from "../types";
+import { cursorAdapter } from "./index";
 
 function render(lines: unknown[]): ChatItem[] {
   return cursorAdapter

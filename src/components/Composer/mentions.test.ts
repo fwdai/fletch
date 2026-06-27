@@ -1,11 +1,5 @@
-import { describe, it, expect } from "vitest";
-import {
-  filterFiles,
-  isFsPath,
-  splitFsPath,
-  joinTypedDir,
-  filterDirEntries,
-} from "./mentions";
+import { describe, expect, it } from "vitest";
+import { filterDirEntries, filterFiles, isFsPath, joinTypedDir, splitFsPath } from "./mentions";
 
 describe("filterFiles", () => {
   const files = [
@@ -21,21 +15,15 @@ describe("filterFiles", () => {
   });
 
   it("ranks a basename prefix match first", () => {
-    expect(filterFiles(files, "index")[0]).toBe(
-      "src/components/Composer/index.tsx",
-    );
+    expect(filterFiles(files, "index")[0]).toBe("src/components/Composer/index.tsx");
   });
 
   it("matches anywhere in the path", () => {
-    expect(filterFiles(files, "composer")).toContain(
-      "src/components/Composer/SlashMenu.tsx",
-    );
+    expect(filterFiles(files, "composer")).toContain("src/components/Composer/SlashMenu.tsx");
   });
 
   it("falls back to a fuzzy subsequence match", () => {
-    expect(filterFiles(files, "slmnu")).toContain(
-      "src/components/Composer/SlashMenu.tsx",
-    );
+    expect(filterFiles(files, "slmnu")).toContain("src/components/Composer/SlashMenu.tsx");
   });
 
   it("excludes non-matches", () => {
@@ -48,14 +36,10 @@ describe("filterFiles", () => {
 });
 
 describe("isFsPath", () => {
-  it.each(["~", "~/Downloads", "/etc", "./src", "../x"])(
-    "treats %s as a filesystem path",
-    (q) => expect(isFsPath(q)).toBe(true),
-  );
-  it.each(["src", "Composer", "index.ts", ""])(
-    "treats %s as a worktree search",
-    (q) => expect(isFsPath(q)).toBe(false),
-  );
+  it.each(["~", "~/Downloads", "/etc", "./src", "../x"])("treats %s as a filesystem path", (q) =>
+    expect(isFsPath(q)).toBe(true));
+  it.each(["src", "Composer", "index.ts", ""])("treats %s as a worktree search", (q) =>
+    expect(isFsPath(q)).toBe(false));
 });
 
 describe("splitFsPath", () => {
@@ -104,17 +88,11 @@ describe("filterDirEntries", () => {
   });
 
   it("hides dotfiles unless the partial starts with a dot", () => {
-    expect(filterDirEntries(entries, "").some((e) => e.name === ".hidden")).toBe(
-      false,
-    );
-    expect(filterDirEntries(entries, ".").map((e) => e.name)).toContain(
-      ".hidden",
-    );
+    expect(filterDirEntries(entries, "").some((e) => e.name === ".hidden")).toBe(false);
+    expect(filterDirEntries(entries, ".").map((e) => e.name)).toContain(".hidden");
   });
 
   it("filters by case-insensitive substring", () => {
-    expect(filterDirEntries(entries, "png").map((e) => e.name)).toEqual([
-      "1.png",
-    ]);
+    expect(filterDirEntries(entries, "png").map((e) => e.name)).toEqual(["1.png"]);
   });
 });

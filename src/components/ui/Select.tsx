@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Icon } from "../Icon";
 import { Scrim } from "./Scrim";
 
@@ -101,12 +101,7 @@ export function Select<T extends string>({
       {open && (
         <>
           <Scrim onClose={() => setOpen(false)} />
-          <div
-            ref={listRef}
-            className="dd ui-select-dd"
-            role="listbox"
-            onKeyDown={onListKeyDown}
-          >
+          <div ref={listRef} className="dd ui-select-dd" role="listbox" onKeyDown={onListKeyDown}>
             {options.map((o) => (
               <button
                 key={o.value}

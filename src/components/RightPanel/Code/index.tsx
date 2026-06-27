@@ -25,7 +25,9 @@ export function CodePanel({ agent }: { agent: AgentRecord }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
   // The selected file is per-agent; drop it when the agent changes.
-  useEffect(() => { setSelectedPath(null); }, [agent.id]);
+  useEffect(() => {
+    setSelectedPath(null);
+  }, [agent.id]);
 
   const changeMode = (m: Mode) => {
     setMode(m);
@@ -37,17 +39,16 @@ export function CodePanel({ agent }: { agent: AgentRecord }) {
       <ModeSwitch agent={agent} mode={mode} onChange={changeMode} />
       <div className="code-panel-body">
         {mode === "files" ? (
-          <FilePanel
-            agent={agent}
-            openPath={selectedPath}
-            onOpenPath={setSelectedPath}
-          />
+          <FilePanel agent={agent} openPath={selectedPath} onOpenPath={setSelectedPath} />
         ) : (
           <CodeLivePanel
             agent={agent}
             selectedPath={selectedPath}
             onSelect={setSelectedPath}
-            onOpenInEditor={(p) => { setSelectedPath(p); changeMode("files"); }}
+            onOpenInEditor={(p) => {
+              setSelectedPath(p);
+              changeMode("files");
+            }}
           />
         )}
       </div>
@@ -59,12 +60,17 @@ export function CodePanel({ agent }: { agent: AgentRecord }) {
 // above it (filled "thumb" pill, not an underline tab) so it reads as a control
 // within the Code panel, not as panel switching. The two modes are the two
 // ways to look at code here: explore it yourself, or watch the agent change it.
-function ModeSwitch({ agent, mode, onChange }: { agent: AgentRecord; mode: Mode; onChange: (m: Mode) => void }) {
+function ModeSwitch({
+  agent,
+  mode,
+  onChange,
+}: {
+  agent: AgentRecord;
+  mode: Mode;
+  onChange: (m: Mode) => void;
+}) {
   const hasChanges = useAppStore(
-    (s) =>
-      (s.gitStates[agent.id]?.files.length ??
-        s.gitShortstats[agent.id]?.file_count ??
-        0) > 0,
+    (s) => (s.gitStates[agent.id]?.files.length ?? s.gitShortstats[agent.id]?.file_count ?? 0) > 0,
   );
   // Whether the agent is mid-turn — the dot is green & pulsing only then, and
   // goes grey when work stops so it never implies activity that isn't there.

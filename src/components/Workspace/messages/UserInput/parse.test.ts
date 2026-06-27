@@ -1,10 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
+  answersFromResultText,
+  buildAnswers,
+  formatAnswer,
   isUserInputTool,
   parseUserInput,
-  formatAnswer,
-  buildAnswers,
-  answersFromResultText,
   type UIAnswer,
 } from "./parse";
 
@@ -70,9 +70,7 @@ describe("parseUserInput — AskUserQuestion", () => {
 
   it("never throws on garbage input", () => {
     expect(parseUserInput("AskUserQuestion", null).questions).toEqual([]);
-    expect(parseUserInput("AskUserQuestion", { questions: "nope" }).questions).toEqual(
-      [],
-    );
+    expect(parseUserInput("AskUserQuestion", { questions: "nope" }).questions).toEqual([]);
   });
 });
 
@@ -103,9 +101,7 @@ describe("formatAnswer", () => {
     const model = parseUserInput("AskUserQuestion", {
       questions: [{ question: "Langs?", multiSelect: true, options: [] }],
     });
-    expect(
-      formatAnswer(model, [{ labels: ["TS", "Rust"], isOther: false }]),
-    ).toBe("TS, Rust");
+    expect(formatAnswer(model, [{ labels: ["TS", "Rust"], isOther: false }])).toBe("TS, Rust");
   });
 
   it("labels each line for multi-question calls", () => {
@@ -127,17 +123,13 @@ describe("formatAnswer", () => {
       ]),
     ).toBe("Approved. Proceed with the plan.");
     expect(
-      formatAnswer(model, [
-        { labels: ["Keep planning"], optionIds: ["reject"], isOther: false },
-      ]),
+      formatAnswer(model, [{ labels: ["Keep planning"], optionIds: ["reject"], isOther: false }]),
     ).toBe("Not yet — keep planning.");
   });
 
   it("includes free-text feedback when keeping planning", () => {
     const model = parseUserInput("ExitPlanMode", { plan: "x" });
-    const out = formatAnswer(model, [
-      { labels: ["Use a queue instead"], isOther: true },
-    ]);
+    const out = formatAnswer(model, [{ labels: ["Use a queue instead"], isOther: true }]);
     expect(out).toBe("Not yet — keep planning. Use a queue instead");
   });
 });
@@ -188,10 +180,7 @@ describe("buildAnswers", () => {
         { question: "License?", options: [] },
       ],
     });
-    const out = buildAnswers(model, [
-      { labels: ["TS", "Rust"], isOther: false },
-      opt("MIT"),
-    ]);
+    const out = buildAnswers(model, [{ labels: ["TS", "Rust"], isOther: false }, opt("MIT")]);
     expect(out).toEqual({ "Langs?": ["TS", "Rust"], "License?": "MIT" });
   });
 });

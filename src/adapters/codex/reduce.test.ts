@@ -1,11 +1,10 @@
-import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { codexAdapter } from "./index";
+import { describe, expect, it } from "vitest";
 import { applyPolicy } from "../policy";
 import type { ChatItem, RawEvent } from "../types";
+import { codexAdapter } from "./index";
 
 // Fixtures are real `codex exec --json` output captured from
 // codex-cli 0.135.0 (thread / turn / item event model).

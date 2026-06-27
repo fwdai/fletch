@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { AcSource } from "./types";
 import { triggerTokenEnd } from "./triggers";
+import type { AcSource } from "./types";
 
 interface Args {
   /** Candidate sources. At most one is active at a time (their triggers are
@@ -26,14 +26,10 @@ interface MenuProps {
  *  source, highlight index, Escape-to-dismiss, keyboard navigation, and
  *  applying a pick by splicing the trigger token out of the text. Sources
  *  supply only their rows and what a pick does. */
-export function useAutocomplete({
-  sources,
-  text,
-  caret,
-  setText,
-  setCaret,
-  focusAt,
-}: Args): { menu: MenuProps | null; onKeyDown: (e: React.KeyboardEvent) => boolean } {
+export function useAutocomplete({ sources, text, caret, setText, setCaret, focusAt }: Args): {
+  menu: MenuProps | null;
+  onKeyDown: (e: React.KeyboardEvent) => boolean;
+} {
   // The Escape-dismissed menu, keyed by "trigger:query" so editing the query
   // re-opens it; cleared when the token disappears (see the effect below).
   const [dismissed, setDismissed] = useState<string | null>(null);

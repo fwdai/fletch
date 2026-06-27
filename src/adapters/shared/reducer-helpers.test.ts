@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { aliasToolInput } from "./reducer-helpers";
 
 describe("aliasToolInput", () => {
@@ -17,9 +17,7 @@ describe("aliasToolInput", () => {
   });
 
   it("applies multiple aliases at once", () => {
-    expect(
-      aliasToolInput({ filePath: "/a", oldString: "x", newString: "y" }, OPENCODE),
-    ).toEqual({
+    expect(aliasToolInput({ filePath: "/a", oldString: "x", newString: "y" }, OPENCODE)).toEqual({
       filePath: "/a",
       oldString: "x",
       newString: "y",

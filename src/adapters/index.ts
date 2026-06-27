@@ -1,3 +1,4 @@
+import type { ProviderId } from "../data/providers";
 import { antigravityAdapter } from "./antigravity";
 import { claudeAdapter } from "./claude";
 import { codexAdapter } from "./codex";
@@ -5,10 +6,9 @@ import { cursorAdapter } from "./cursor";
 import { opencodeAdapter } from "./opencode";
 import { piAdapter } from "./pi";
 import type { ChatAdapter } from "./types";
-import type { ProviderId } from "../data/providers";
 
-export type { ChatAdapter, ChatItem, DisplayPolicy, NoticeSubtype, RawEvent } from "./types";
 export { applyPolicy, modeFor } from "./policy";
+export type { ChatAdapter, ChatItem, DisplayPolicy, NoticeSubtype, RawEvent } from "./types";
 
 // Partial: not every provider is wired. Agents listed in PROVIDERS without an
 // entry here are "coming soon" — the picker gates them via `hasAdapter` so they

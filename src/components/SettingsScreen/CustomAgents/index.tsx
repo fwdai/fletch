@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { DEFAULT_PROVIDER_ID } from "../../../data/providers";
-import { useAppStore } from "../../../store";
 import type { CustomAgent, NewCustomAgent } from "../../../storage/customAgents";
+import { useAppStore } from "../../../store";
 import { AgentEditor } from "./AgentEditor";
 import { AgentList } from "./AgentList";
 import { CA_HUES } from "./shared";
@@ -51,8 +51,7 @@ export function CustomAgentsPane() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsIntent]);
-  const startEdit = (a: CustomAgent) =>
-    setEditing({ mode: "edit", id: a.id, initial: a });
+  const startEdit = (a: CustomAgent) => setEditing({ mode: "edit", id: a.id, initial: a });
 
   const save = async (values: NewCustomAgent) => {
     try {

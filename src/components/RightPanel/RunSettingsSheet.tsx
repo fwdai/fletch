@@ -2,28 +2,28 @@ import { useEffect, useRef, useState } from "react";
 import { Icon } from "../Icon";
 
 export interface SetupRow {
-  id:     string;
-  group:  string;
-  key:    string;
-  value:  string;  // inferred / default
-  source: string;  // e.g. "scripts.dev", "vite.config.ts"
+  id: string;
+  group: string;
+  key: string;
+  value: string; // inferred / default
+  source: string; // e.g. "scripts.dev", "vite.config.ts"
 }
 
 interface Props {
-  rows:      SetupRow[];
+  rows: SetupRow[];
   overrides: Record<string, string>;
   /** Detected ecosystem ("node", "rust", …), or null if none recognized. */
   ecosystem: string | null;
-  onClose:   () => void;
-  onApply:   (overrides: Record<string, string>) => void;
+  onClose: () => void;
+  onApply: (overrides: Record<string, string>) => void;
 }
 
 const ECOSYSTEM_LABEL: Record<string, string> = {
-  node:   "Node",
+  node: "Node",
   python: "Python",
-  ruby:   "Ruby",
-  rust:   "Rust",
-  go:     "Go",
+  ruby: "Ruby",
+  rust: "Rust",
+  go: "Go",
 };
 
 export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply }: Props) {
@@ -51,7 +51,9 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
 
   // Close on Escape
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
@@ -69,7 +71,9 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
             <div className="rsh-title">Run configuration</div>
             <div className="rsh-sub">
               {ecosystem ? (
-                <>Detected · <code>{ECOSYSTEM_LABEL[ecosystem] ?? ecosystem}</code></>
+                <>
+                  Detected · <code>{ECOSYSTEM_LABEL[ecosystem] ?? ecosystem}</code>
+                </>
               ) : (
                 <>No ecosystem detected — edit values below</>
               )}
@@ -125,11 +129,7 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
               Reset all
             </button>
 
-            <button
-              className="btn-t primary"
-              onClick={() => onApply(draft)}
-              disabled={!dirty}
-            >
+            <button className="btn-t primary" onClick={() => onApply(draft)} disabled={!dirty}>
               <Icon name="refresh" size={11} />
               Apply &amp; restart
             </button>
@@ -143,7 +143,7 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
 // ── Config row ───────────────────────────────────────────────────────────────
 
 interface ConfigRowProps {
-  row:      SetupRow;
+  row: SetupRow;
   override: string | undefined;
   onChange: (v: string) => void;
   onRevert: () => void;
@@ -166,9 +166,14 @@ function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps) {
         <div className="rs-label">{row.key}</div>
         <div className="rs-source">
           {hasOverride ? (
-            <><span className="dot" />Manual override</>
+            <>
+              <span className="dot" />
+              Manual override
+            </>
           ) : (
-            <>Detected · <code>{row.source}</code></>
+            <>
+              Detected · <code>{row.source}</code>
+            </>
           )}
         </div>
       </div>

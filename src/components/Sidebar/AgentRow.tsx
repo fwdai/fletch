@@ -1,16 +1,16 @@
+import type { KeyboardEvent, MouseEvent } from "react";
 import { useState } from "react";
-import type { MouseEvent, KeyboardEvent } from "react";
 import type { AgentRecord, AgentStatus, PrState, ShortStats } from "../../api";
-import type { DraftAgent } from "../../store";
-import { useAppStore } from "../../store";
 import { lookupModel } from "../../data/modelCatalog";
 import { providerChip, providerLabel } from "../../data/providers";
+import type { DraftAgent } from "../../store";
+import { useAppStore } from "../../store";
+import { formatAge } from "../../util/format";
+import { useMinuteClock } from "../../util/hooks";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
 import { Mono } from "../SettingsScreen/CustomAgents/Mono";
-import { formatAge } from "../../util/format";
-import { useMinuteClock } from "../../util/hooks";
-import { AgentStatsPopover, type AgentStats } from "./AgentStatsPopover";
+import { type AgentStats, AgentStatsPopover } from "./AgentStatsPopover";
 
 /** The agent rows carry nested buttons (stop/archive/discard), so they can't be
  *  a `<button>`; they use `role="button"` + this handler to stay keyboard
@@ -59,9 +59,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // Drives the row's identity chip; falls back to the base provider when the
   // custom agent has since been deleted.
   const customAgent = useAppStore((s) =>
-    agent.custom_agent_id
-      ? s.customAgents.find((a) => a.id === agent.custom_agent_id)
-      : undefined,
+    agent.custom_agent_id ? s.customAgents.find((a) => a.id === agent.custom_agent_id) : undefined,
   );
   const now = useMinuteClock();
   const [statsOpen, setStatsOpen] = useState(false);
@@ -96,23 +94,21 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
     costUsd: usage ? usage.costUsd : null,
   };
 
-  const stoppable =
-    agent.status === "spawning" ||
-    agent.status === "running";
+  const stoppable = agent.status === "spawning" || agent.status === "running";
   const archivable =
-    agent.status === "idle" ||
-    agent.status === "stopped" ||
-    agent.status === "error";
+    agent.status === "idle" || agent.status === "stopped" || agent.status === "error";
 
   // The status rail doubles as the left spine: colored for live/terminal
   // states, a merged PR claims purple, everything else is a faint grey.
-  const railClass =
-    working ? "run" :
-    agent.status === "error" ? "err" :
-    prState?.state === "merged" ? "merged" : "idle";
+  const railClass = working
+    ? "run"
+    : agent.status === "error"
+      ? "err"
+      : prState?.state === "merged"
+        ? "merged"
+        : "idle";
 
-  const hasChanges =
-    !!shortstats && (shortstats.additions > 0 || shortstats.deletions > 0);
+  const hasChanges = !!shortstats && (shortstats.additions > 0 || shortstats.deletions > 0);
 
   const onStop = (e: MouseEvent) => {
     e.stopPropagation();
@@ -164,12 +160,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
           </span>
           <span className="ag-actions">
             {stoppable && (
-              <button
-                className="ag-act tip"
-                data-tip="Stop"
-                onClick={onStop}
-                aria-label="Stop"
-              >
+              <button className="ag-act tip" data-tip="Stop" onClick={onStop} aria-label="Stop">
                 <Icon name="stop" size={11} />
               </button>
             )}
@@ -188,11 +179,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
       </div>
       <div className="agent-sub">
         <span className="a-task">{taskOrBranch}</span>
-        {prState ? (
-          <PrBadge pr={prState} />
-        ) : hasChanges ? (
-          <DiffStat stats={shortstats} />
-        ) : null}
+        {prState ? <PrBadge pr={prState} /> : hasChanges ? <DiffStat stats={shortstats} /> : null}
         <span
           className="a-time"
           onMouseEnter={() => setStatsOpen(true)}
@@ -273,7 +260,8 @@ function PrBadge({ pr }: { pr: PrState }) {
   const cls = pr.state === "closed" ? "pr-closed" : "pr-open";
   return (
     <span className={`ag-badge ${cls} tip`} data-tip={`PR #${pr.number} · ${pr.state}`}>
-      <Icon name="pr" size={10} />PR
+      <Icon name="pr" size={10} />
+      PR
     </span>
   );
 }
@@ -294,7 +282,7 @@ function firstShort(s: string | null | undefined, max = 36): string {
   if (!s) return "";
   const nl = s.indexOf("\n");
   const head = nl === -1 ? s : s.slice(0, nl);
-  return head.length > max ? head.slice(0, max - 1) + "…" : head;
+  return head.length > max ? `${head.slice(0, max - 1)}…` : head;
 }
 
 function liveRuntime(iso: string, now: number, status: AgentStatus): string {

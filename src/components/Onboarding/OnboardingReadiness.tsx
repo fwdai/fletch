@@ -5,15 +5,15 @@
 // Intentionally separate from ProviderReadiness (Settings → Providers) so
 // that component's flat-list layout is unaffected.
 
-import { useCallback, useEffect, useState } from "react";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
-import { useAppStore } from "../../store";
-import { api, type GhStatus, type ToolStatus } from "../../api";
-import { PROVIDERS } from "../../data/providers";
-import { PROVIDER_DETAIL } from "../../data/providerDetail";
+import { useCallback, useEffect, useState } from "react";
 import { hasAdapter } from "../../adapters";
-import { ProviderIcon } from "../ProviderIcon";
+import { api, type GhStatus, type ToolStatus } from "../../api";
+import { PROVIDER_DETAIL } from "../../data/providerDetail";
+import { PROVIDERS } from "../../data/providers";
+import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
+import { ProviderIcon } from "../ProviderIcon";
 
 type S = "ok" | "warn" | "bad" | "checking";
 
@@ -37,15 +37,21 @@ export function OnboardingReadiness() {
     ]).finally(() => setChecking(false));
   }, [refresh]);
 
-  useEffect(() => { recheck(); }, [recheck]);
+  useEffect(() => {
+    recheck();
+  }, [recheck]);
 
   const agents = PROVIDERS.filter((p) => hasAdapter(p.id) && providerFlags[p.id] !== false);
   const detected = agents.filter((p) => !!providerPaths[p.id]).length;
 
   const gitState: S = git ? (git.installed ? "ok" : "bad") : checking ? "checking" : "warn";
   const ghState: S = gh
-    ? gh.installed && gh.authenticated ? "ok" : "warn"
-    : checking ? "checking" : "warn";
+    ? gh.installed && gh.authenticated
+      ? "ok"
+      : "warn"
+    : checking
+      ? "checking"
+      : "warn";
   const ghFix = gh?.installed && !gh.authenticated ? "gh auth login" : undefined;
 
   return (
@@ -57,7 +63,13 @@ export function OnboardingReadiness() {
           name="Git"
           state={gitState}
           status={
-            git ? (git.installed ? git.version ?? "installed" : "not found") : checking ? "checking…" : "couldn't check"
+            git
+              ? git.installed
+                ? (git.version ?? "installed")
+                : "not found"
+              : checking
+                ? "checking…"
+                : "couldn't check"
           }
           fix={gitState === "bad" ? "xcode-select --install" : undefined}
           docs="https://git-scm.com/downloads"
@@ -68,10 +80,14 @@ export function OnboardingReadiness() {
           state={ghState}
           status={
             gh
-              ? !gh.installed ? "not found"
-              : !gh.authenticated ? "not signed in"
-              : `signed in${gh.login ? ` · ${gh.login}` : ""}`
-              : checking ? "checking…" : "couldn't check"
+              ? !gh.installed
+                ? "not found"
+                : !gh.authenticated
+                  ? "not signed in"
+                  : `signed in${gh.login ? ` · ${gh.login}` : ""}`
+              : checking
+                ? "checking…"
+                : "couldn't check"
           }
           fix={ghFix}
           docs={!gh?.installed ? "https://cli.github.com" : undefined}
@@ -83,9 +99,7 @@ export function OnboardingReadiness() {
         {agents.map((p) => {
           const d = PROVIDER_DETAIL[p.id];
           const path = providerPaths[p.id];
-          const state: S = checking
-            ? "checking"
-            : providersProbed ? (path ? "ok" : "bad") : "warn";
+          const state: S = checking ? "checking" : providersProbed ? (path ? "ok" : "bad") : "warn";
           return (
             <AgentTile
               key={p.id}
@@ -93,10 +107,13 @@ export function OnboardingReadiness() {
               name={p.label}
               state={state}
               status={
-                state === "checking" ? "checking…"
-                : state === "warn" ? "couldn't detect"
-                : path ? providerVersions[p.id] ?? "installed"
-                : "not installed"
+                state === "checking"
+                  ? "checking…"
+                  : state === "warn"
+                    ? "couldn't detect"
+                    : path
+                      ? (providerVersions[p.id] ?? "installed")
+                      : "not installed"
               }
               fix={state === "bad" ? d.install : undefined}
               docs={d.docs}
@@ -107,9 +124,11 @@ export function OnboardingReadiness() {
 
       <div className="ob-rdy-foot">
         <span className="ob-rdy-count">
-          {checking ? "checking…" : providersProbed
-            ? `${detected} of ${agents.length} agents detected`
-            : "couldn't detect agents"}
+          {checking
+            ? "checking…"
+            : providersProbed
+              ? `${detected} of ${agents.length} agents detected`
+              : "couldn't detect agents"}
         </span>
         <button type="button" className="btn-t outline" onClick={recheck} disabled={checking}>
           <Icon name="refresh" size={11} />
@@ -120,7 +139,14 @@ export function OnboardingReadiness() {
   );
 }
 
-function CheckRow({ icon, name, state, status, fix, docs }: {
+function CheckRow({
+  icon,
+  name,
+  state,
+  status,
+  fix,
+  docs,
+}: {
   icon: React.ReactNode;
   name: string;
   state: S;
@@ -149,7 +175,14 @@ function CheckRow({ icon, name, state, status, fix, docs }: {
   );
 }
 
-function AgentTile({ icon, name, state, status, fix, docs }: {
+function AgentTile({
+  icon,
+  name,
+  state,
+  status,
+  fix,
+  docs,
+}: {
   icon: React.ReactNode;
   name: string;
   state: S;

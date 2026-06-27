@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { PROVIDERS, providerLabel } from "../../data/providers";
 import { hasAdapter } from "../../adapters";
+import { PROVIDERS, providerLabel } from "../../data/providers";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
@@ -144,16 +144,9 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
           </>
         ) : (
           <>
-            <ProviderIcon
-              slug={selected.id}
-              short={selected.short}
-              hue={selected.hue}
-              size={15}
-            />
+            <ProviderIcon slug={selected.id} short={selected.short} hue={selected.hue} size={15} />
             <span className="model-chip-agent">{selected.label}</span>
-            <span className="model-chip-model">
-              {currentModel?.name ?? "Default model"}
-            </span>
+            <span className="model-chip-model">{currentModel?.name ?? "Default model"}</span>
           </>
         )}
         {!locked && <Icon name="chevD" size={9} />}
@@ -203,7 +196,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                     <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={26} />
                     <span className="model-agent-name">{p.label}</span>
                     <span className="model-agent-ver">
-                      {missing ? "Not installed" : providerVersions[p.id] ?? p.version}
+                      {missing ? "Not installed" : (providerVersions[p.id] ?? p.version)}
                     </span>
                     {usable && <Icon name="chevR" size={12} />}
                   </button>

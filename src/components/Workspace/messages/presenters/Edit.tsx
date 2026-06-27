@@ -1,7 +1,7 @@
-import type { ToolPresenter } from "./types";
-import { ToolBlock, DiffCount, getStringField, renderToolResult } from "./util";
 import { basename } from "../../../../util/format";
 import { lineDiffCounts } from "../../../../util/lineDiff";
+import type { ToolPresenter } from "./types";
+import { DiffCount, getStringField, renderToolResult, ToolBlock } from "./util";
 
 export const editPresenter: ToolPresenter = {
   icon: "edit",

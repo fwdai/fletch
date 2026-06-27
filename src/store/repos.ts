@@ -1,5 +1,5 @@
 import { api } from "../api";
-import type { SliceCreator, ReposSlice } from "./types";
+import type { ReposSlice, SliceCreator } from "./types";
 
 export const createReposSlice: SliceCreator<ReposSlice> = (set) => ({
   addWorkspaceRepo: async (path) => {

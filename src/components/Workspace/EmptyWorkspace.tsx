@@ -1,9 +1,9 @@
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
-import { Icon, LandmarkGlyph } from "../Icon";
 import { Composer } from "../Composer";
-import { ProjectPicker } from "../Composer/ProjectPicker";
 import { BranchPicker } from "../Composer/BranchPicker";
+import { ProjectPicker } from "../Composer/ProjectPicker";
+import { Icon, LandmarkGlyph } from "../Icon";
 import { IconButton } from "../ui/IconButton";
 
 /** Empty-state pane shown when the user has started a draft agent.
@@ -32,8 +32,11 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
         <div className="task" style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <span
             style={{
-              fontSize: 11, color: "var(--fg-3)", fontFamily: "var(--font-mono)",
-              textTransform: "uppercase", letterSpacing: "0.08em",
+              fontSize: 11,
+              color: "var(--fg-3)",
+              fontFamily: "var(--font-mono)",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
             }}
           >
             Drafting
@@ -53,11 +56,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             <span className="d" />
             <span>NEW WORKSPACE</span>
           </div>
-          <div
-            className="empty-name"
-            onClick={() => rerollDraftName(draft.id)}
-            title="Reroll name"
-          >
+          <div className="empty-name" onClick={() => rerollDraftName(draft.id)} title="Reroll name">
             <LandmarkGlyph
               name={draft.name}
               size={36}

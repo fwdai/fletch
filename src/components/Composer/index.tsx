@@ -1,23 +1,23 @@
-import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useAppStore } from "../../store";
-import { DEFAULT_PROVIDER_ID } from "../../data/providers";
-import { PROVIDER_DETAIL } from "../../data/providerDetail";
+import { useEffect, useRef, useState } from "react";
+import type { DirListing, PrSummary } from "../../api";
 import { lookupModel } from "../../data/modelCatalog";
+import { PROVIDER_DETAIL } from "../../data/providerDetail";
+import { DEFAULT_PROVIDER_ID } from "../../data/providers";
+import type { AgentUsage } from "../../store";
+import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { Chip } from "../ui/Chip";
-import { ModelPicker } from "./ModelPicker";
-import { UsageMeter } from "./UsageMeter";
-import type { AgentUsage } from "../../store";
 import { AttachmentList } from "./AttachmentList";
-import { useFileDrop } from "./useFileDrop";
-import type { DirListing, PrSummary } from "../../api";
-import { triggerQueryAt } from "./autocomplete/triggers";
-import { useAutocomplete } from "./autocomplete/useAutocomplete";
 import { AutocompleteMenu } from "./autocomplete/AutocompleteMenu";
+import { useCommandSource } from "./autocomplete/sources/commands";
 import { useFileSource } from "./autocomplete/sources/files";
 import { usePrSource } from "./autocomplete/sources/prs";
-import { useCommandSource } from "./autocomplete/sources/commands";
+import { triggerQueryAt } from "./autocomplete/triggers";
+import { useAutocomplete } from "./autocomplete/useAutocomplete";
+import { ModelPicker } from "./ModelPicker";
+import { UsageMeter } from "./UsageMeter";
+import { useFileDrop } from "./useFileDrop";
 
 interface Props {
   /** Initial provider id — defaults to claude. */
@@ -139,17 +139,12 @@ export function Composer({
   // (not a subscription) so persisting on each keystroke doesn't re-render us;
   // switching targets remounts the Composer, which re-runs this initializer.
   const [text, setText] = useState(() =>
-    draftKey ? useAppStore.getState().composerDrafts[draftKey] ?? "" : "",
+    draftKey ? (useAppStore.getState().composerDrafts[draftKey] ?? "") : "",
   );
   const [provider, setProvider] = useState(defaultProvider);
   const [model, setModel] = useState<string | undefined>(defaultModel);
-  const [customAgentId, setCustomAgentId] = useState<string | undefined>(
-    defaultCustomAgentId,
-  );
-  const activeMeta = lookupModel(
-    modelCatalog,
-    existingSession ? activeModel ?? model : model,
-  );
+  const [customAgentId, setCustomAgentId] = useState<string | undefined>(defaultCustomAgentId);
+  const activeMeta = lookupModel(modelCatalog, existingSession ? (activeModel ?? model) : model);
   const modelSupportsThinking = activeMeta ? activeMeta.reasoning : true;
 
   const [attachments, setAttachments] = useState<string[]>([]);
@@ -157,8 +152,8 @@ export function Composer({
   const detail = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
   const thinkingLevels = detail?.thinkingLevels ?? [];
 
-  const [thinkingValue, setThinkingValue] = useState<string | undefined>(
-    () => resolveThinking(defaultProvider),
+  const [thinkingValue, setThinkingValue] = useState<string | undefined>(() =>
+    resolveThinking(defaultProvider),
   );
 
   // Latest custom agents, read via a ref inside the effect below so that
@@ -258,7 +253,7 @@ export function Composer({
 
   function grow(el: HTMLTextAreaElement) {
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 240) + "px";
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   }
 
   function send() {
@@ -289,9 +284,7 @@ export function Composer({
     });
   }
 
-  const sendDisabled = stopping
-    ? !onStop
-    : disabled || (!text.trim() && attachments.length === 0);
+  const sendDisabled = stopping ? !onStop : disabled || (!text.trim() && attachments.length === 0);
 
   return (
     <div className={`composer${isDropTarget ? " is-drop-target" : ""}`}>
@@ -344,13 +337,16 @@ export function Composer({
             onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
           }}
         />
-        {features.thinkingBudget && thinkingLevels.length > 0 && modelSupportsThinking && (
-          existingSession && detail?.effortAtSpawn ? (
+        {features.thinkingBudget &&
+          thinkingLevels.length > 0 &&
+          modelSupportsThinking &&
+          (existingSession && detail?.effortAtSpawn ? (
             initialThinking && (
               <Chip tip="Thinking effort — fixed at spawn" disabled>
                 <Icon name="sparkle" size={11} />
                 <span>
-                  {thinkingLevels.find((l) => l.value === initialThinking)?.label ?? initialThinking}
+                  {thinkingLevels.find((l) => l.value === initialThinking)?.label ??
+                    initialThinking}
                 </span>
               </Chip>
             )
@@ -367,8 +363,7 @@ export function Composer({
               <Icon name="sparkle" size={11} />
               <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
             </Chip>
-          )
-        )}
+          ))}
         {features.autoEdit && (
           <Chip tip="Auto-approve writes">
             <Icon name="check" size={11} />
@@ -379,9 +374,7 @@ export function Composer({
           <Icon name="attach" size={11} />
         </Chip>
         <span style={{ flex: 1 }} />
-        {features.tokenUsage && usage && usage.contextTokens > 0 && (
-          <UsageMeter usage={usage} />
-        )}
+        {features.tokenUsage && usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
         <button
           type="button"
           className={`send ${stopping ? "is-stop" : ""}`}

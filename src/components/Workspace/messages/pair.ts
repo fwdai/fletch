@@ -5,9 +5,7 @@
 import type { ChatItem } from "../../../store";
 import type { ToolCall, ToolResult } from "./presenters/types";
 
-export type ViewItem =
-  | ChatItem
-  | { kind: "tool_pair"; call: ToolCall; result: ToolResult | null };
+export type ViewItem = ChatItem | { kind: "tool_pair"; call: ToolCall; result: ToolResult | null };
 
 export function pairToolItems(items: ChatItem[]): ViewItem[] {
   const consumed = new Set<number>();
@@ -21,10 +19,7 @@ export function pairToolItems(items: ChatItem[]): ViewItem[] {
       let result: ToolResult | null = null;
       for (let j = i + 1; j < items.length; j += 1) {
         const candidate = items[j];
-        if (
-          candidate.kind === "tool_result" &&
-          candidate.tool_use_id === item.id
-        ) {
+        if (candidate.kind === "tool_result" && candidate.tool_use_id === item.id) {
           result = candidate;
           consumed.add(j);
           break;

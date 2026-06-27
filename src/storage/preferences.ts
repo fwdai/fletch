@@ -66,7 +66,8 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
     // The old "Files" and "Diff" tabs were merged into the Code panel; honor a
     // saved preference for either when migrating an existing settings blob.
     const legacyCode =
-      saved.code ?? (saved.files !== undefined || saved.diff !== undefined
+      saved.code ??
+      (saved.files !== undefined || saved.diff !== undefined
         ? !!(saved.files || saved.diff)
         : undefined);
     // A blob still carrying the removed `statusBar` flag predates `tokenUsage`
@@ -89,9 +90,7 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
   }
 }
 
-export function parseProviderFlags(
-  raw: string | undefined,
-): Record<string, boolean> {
+export function parseProviderFlags(raw: string | undefined): Record<string, boolean> {
   if (!raw) return {};
   try {
     return JSON.parse(raw) as Record<string, boolean>;
@@ -112,9 +111,7 @@ export const DEFAULT_NEW_DRAFT_SELECTION: NewDraftSelection = {
   provider: DEFAULT_PROVIDER_ID,
 };
 
-export function parseNewDraftSelection(
-  raw: string | undefined,
-): NewDraftSelection {
+export function parseNewDraftSelection(raw: string | undefined): NewDraftSelection {
   if (!raw) return DEFAULT_NEW_DRAFT_SELECTION;
   try {
     const saved = JSON.parse(raw) as Partial<NewDraftSelection>;
@@ -122,10 +119,7 @@ export function parseNewDraftSelection(
       typeof saved.provider === "string" && saved.provider.trim()
         ? saved.provider
         : DEFAULT_PROVIDER_ID;
-    const model =
-      typeof saved.model === "string" && saved.model.trim()
-        ? saved.model
-        : undefined;
+    const model = typeof saved.model === "string" && saved.model.trim() ? saved.model : undefined;
     const customAgentId =
       typeof saved.customAgentId === "string" && saved.customAgentId.trim()
         ? saved.customAgentId
@@ -168,9 +162,7 @@ const AGENT_BIN_PREFIX = "agent_bin_path_";
 
 /** Pull the `agent_bin_path_<id>` rows out of the flat settings map into an
  *  id → path override map (blank values dropped, matching the backend). */
-export function parseProviderPathOverrides(
-  s: Record<string, string>,
-): Record<string, string> {
+export function parseProviderPathOverrides(s: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(s)) {
     if (key.startsWith(AGENT_BIN_PREFIX) && value.trim()) {

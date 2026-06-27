@@ -8,10 +8,7 @@ import hljs from "highlight.js/lib/common";
 import { hljsLang } from "../data/languages";
 
 function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /** Return highlight.js HTML for `text`. The visible characters are identical

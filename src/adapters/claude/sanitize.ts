@@ -3,8 +3,8 @@
 // claude CLI before passing the prompt to the model — they aren't
 // user-authored content and shouldn't render as user bubbles.
 
-import type { ChatItem } from "../types";
 import { stripInjectedInstructions } from "../../util/instructions";
+import type { ChatItem } from "../types";
 
 type NoticeItem = Extract<ChatItem, { kind: "notice" }>;
 
@@ -25,8 +25,7 @@ const SYSTEM_REMINDER_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/g;
 // a /compact finishes. The body is the summary of the prior context;
 // surfacing it as a user bubble is misleading because the user didn't
 // type it. Convert to a compact_summary notice instead.
-const COMPACT_PREAMBLE_RE =
-  /^This session is being continued from a previous conversation/;
+const COMPACT_PREAMBLE_RE = /^This session is being continued from a previous conversation/;
 
 // Cursor (which reuses this sanitizer) wraps every user turn in its own
 // envelope: a `<timestamp>` line followed by the query inside `<user_query>`.
@@ -40,9 +39,7 @@ export function sanitizeUserText(raw: string): SanitizeResult {
   if (COMPACT_PREAMBLE_RE.test(raw.trimStart())) {
     return {
       text: "",
-      notices: [
-        { kind: "notice", subtype: "compact_summary", text: "Conversation compacted" },
-      ],
+      notices: [{ kind: "notice", subtype: "compact_summary", text: "Conversation compacted" }],
     };
   }
 

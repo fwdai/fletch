@@ -12,12 +12,19 @@ export const LANDMARK_GLYPHS: Record<string, ReactNode> = {
     Fragment,
     null,
     e("circle", { cx: 11, cy: 5.5, r: 2.5 }),
-    e("path", { d: "M1 11 Q 3 9.5 5 11 T 9 11 T 13 11 M 1 14 Q 3 12.5 5 14 T 9 14 T 13 14 T 15 14" }),
+    e("path", {
+      d: "M1 11 Q 3 9.5 5 11 T 9 11 T 13 11 M 1 14 Q 3 12.5 5 14 T 9 14 T 13 14 T 15 14",
+    }),
   ),
   yosemite: e(
     Fragment,
     null,
-    e("path", { d: "M2 13 Q 4 6 9 5 L 9 13 Z", fill: "currentColor", stroke: "none", opacity: 0.25 }),
+    e("path", {
+      d: "M2 13 Q 4 6 9 5 L 9 13 Z",
+      fill: "currentColor",
+      stroke: "none",
+      opacity: 0.25,
+    }),
     e("path", { d: "M2 13 Q 4 6 9 5 L 9 13 M 9 5 Q 11 8 12 13 L 9 13" }),
   ),
   patagonia: e("path", { d: "M1 13 L 3 10 L 5 11 L 6 4 L 8 9 L 10 3 L 12 8 L 14 11 L 15 13" }),

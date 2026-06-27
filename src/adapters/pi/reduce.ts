@@ -19,7 +19,6 @@
 // streaming is a follow-up. `agent_end` is the end-of-turn marker (NOT
 // `turn_end`, which fires once per assistant step).
 
-import type { ChatItem, RawEvent } from "../types";
 import { asBlockList, asRecord } from "../shared/json";
 import {
   aliasToolInput,
@@ -27,6 +26,7 @@ import {
   finalizeStreamingItems,
   upsertToolCall,
 } from "../shared/reducer-helpers";
+import type { ChatItem, RawEvent } from "../types";
 
 /** Pi names file tools' path argument `path`; the shared presenters read
  *  Claude's `file_path`. Alias it so Read/Write/Edit render the path. */

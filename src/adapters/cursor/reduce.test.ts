@@ -1,10 +1,9 @@
-import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { cursorAdapter } from "./index";
+import { describe, expect, it } from "vitest";
 import type { ChatItem, RawEvent } from "../types";
+import { cursorAdapter } from "./index";
 
 // Events captured from cursor-agent 2026.05.24
 // (`-p --output-format stream-json`).
@@ -193,9 +192,7 @@ describe("cursorAdapter", () => {
     // Cursor streams thinking as its own `thinking`/delta+completed events
     // (NOT a Claude content block), so it's handled in cursor's reducer.
     const items = run(readJsonl("reasoning.jsonl") as RawEvent[]);
-    const reasoning = items.find(
-      (i) => i.kind === "notice" && i.subtype === "reasoning",
-    );
+    const reasoning = items.find((i) => i.kind === "notice" && i.subtype === "reasoning");
     expect(reasoning).toBeDefined();
     expect((reasoning as { text: string }).text).toBe(
       " I'm breaking down the multiplication using the distributive property—splitting 23 into 20 and 3, multiplying each part by 17, then adding the results to get 391.",
@@ -214,8 +211,6 @@ describe("cursorAdapter", () => {
         message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
       },
     ] as RawEvent[]);
-    expect(items.some((i) => i.kind === "notice" && i.subtype === "reasoning")).toBe(
-      false,
-    );
+    expect(items.some((i) => i.kind === "notice" && i.subtype === "reasoning")).toBe(false);
   });
 });

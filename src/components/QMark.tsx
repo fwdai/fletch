@@ -23,7 +23,14 @@ export function QMark({ className }: { className?: string }) {
         fill="currentColor"
       />
       <defs>
-        <linearGradient id="qmark_tail" x1="485.517" y1="371.142" x2="485.517" y2="548.642" gradientUnits="userSpaceOnUse">
+        <linearGradient
+          id="qmark_tail"
+          x1="485.517"
+          y1="371.142"
+          x2="485.517"
+          y2="548.642"
+          gradientUnits="userSpaceOnUse"
+        >
           <stop stopColor="#FD9E64" />
           <stop offset="1" stopColor="#E58B55" />
         </linearGradient>

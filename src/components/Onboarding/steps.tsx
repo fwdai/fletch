@@ -2,12 +2,12 @@
 // project, and the ignition finale. Ported from the design prototype
 // (onboarding/steps.jsx).
 
-import type { CSSProperties } from "react";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
-import { Icon } from "../Icon";
+import type { CSSProperties } from "react";
 import { useAppStore } from "../../store";
-import { OnboardingReadiness } from "./OnboardingReadiness";
+import { Icon } from "../Icon";
 import type { BeatDef } from "./beats";
+import { OnboardingReadiness } from "./OnboardingReadiness";
 
 const TERMS_URL = "https://quorum.fwdai.org/terms";
 const PRIVACY_URL = "https://quorum.fwdai.org/privacy";
@@ -35,10 +35,22 @@ export function PeaksMark() {
 function GoogleG() {
   return (
     <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true">
-      <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.71-1.57 2.68-3.89 2.68-6.62z" />
-      <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.81.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z" />
-      <path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33z" />
-      <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z" />
+      <path
+        fill="#4285F4"
+        d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.71-1.57 2.68-3.89 2.68-6.62z"
+      />
+      <path
+        fill="#34A853"
+        d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.81.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33z"
+      />
+      <path
+        fill="#EA4335"
+        d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"
+      />
     </svg>
   );
 }
@@ -175,27 +187,37 @@ export function IgniteStep({ onEnter }: { onEnter: () => void }) {
         </div>
         <h2 className="ob-display ob-reveal" style={{ "--d": ".16s" } as CSSProperties}>
           {!providersProbed ? (
-            <>Almost <em>there.</em></>
+            <>
+              Almost <em>there.</em>
+            </>
           ) : hasAgent ? (
-            <>You're <em>all set.</em></>
+            <>
+              You're <em>all set.</em>
+            </>
           ) : (
-            <>One <em>last step.</em></>
+            <>
+              One <em>last step.</em>
+            </>
           )}
         </h2>
         <p className="ob-lede ob-reveal" style={{ "--d": ".28s" } as CSSProperties}>
-          Signing in connected your Quorum identity. To run agents you bring your
-          own CLIs — here's what's on your machine.
+          Signing in connected your Quorum identity. To run agents you bring your own CLIs — here's
+          what's on your machine.
         </p>
         <div className="ob-readiness ob-reveal" style={{ "--d": ".4s" } as CSSProperties}>
           <OnboardingReadiness />
         </div>
-        <button className="ob-cta ob-reveal" style={{ "--d": ".56s" } as CSSProperties} onClick={onEnter}>
+        <button
+          className="ob-cta ob-reveal"
+          style={{ "--d": ".56s" } as CSSProperties}
+          onClick={onEnter}
+        >
           Enter Quorum
           <Icon name="arrowR" />
         </button>
         <p className="ob-fineprint ob-reveal" style={{ "--d": ".64s" } as CSSProperties}>
-          Quorum shares anonymous usage data to improve the app. Turn it off
-          anytime in Settings › General.
+          Quorum shares anonymous usage data to improve the app. Turn it off anytime in Settings ›
+          General.
         </p>
       </div>
     </div>

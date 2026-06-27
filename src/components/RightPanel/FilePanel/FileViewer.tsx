@@ -2,10 +2,10 @@
 // preview" message for binary / too-large / unreadable files, a loading
 // state, or the editable FileEditor.
 import { useEffect, useState } from "react";
-import { api, type AgentRecord, type WorktreeFileContents } from "../../../api";
+import { type AgentRecord, api, type WorktreeFileContents } from "../../../api";
 import { basename, parentDir } from "../../../util/format";
-import { ViewerHeader } from "./ViewerHeader";
 import { FileEditor } from "./FileEditor";
+import { ViewerHeader } from "./ViewerHeader";
 
 interface FileViewerProps {
   agent: AgentRecord;
@@ -26,15 +26,27 @@ export function FileViewer({ agent, path, onBack }: FileViewerProps) {
     setError(false);
     api
       .readWorktreeFile(agent.id, path)
-      .then((c) => { if (!cancelled) setContents(c); })
-      .catch(() => { if (!cancelled) setError(true); });
-    return () => { cancelled = true; };
+      .then((c) => {
+        if (!cancelled) setContents(c);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [agent.id, path]);
 
   if (error || (contents && (contents.binary || contents.too_large))) {
     return (
       <div className="fp-wrap">
-        <ViewerHeader name={name} dir={dir} onBack={onBack} status={contents?.status ?? null} dirty={false} />
+        <ViewerHeader
+          name={name}
+          dir={dir}
+          onBack={onBack}
+          status={contents?.status ?? null}
+          dirty={false}
+        />
         <div className="empty-msg" style={{ margin: "auto" }}>
           <div className="et">No preview</div>
           <div>

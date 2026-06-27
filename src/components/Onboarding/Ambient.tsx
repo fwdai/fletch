@@ -2,8 +2,8 @@
 // parallax, an accent glow, vignette, and faint grain. Ported from the design
 // prototype (onboarding/app.jsx). Parallax follows the current step `phase`.
 
-import { useMemo } from "react";
 import type { CSSProperties } from "react";
+import { useMemo } from "react";
 
 interface Ridge {
   d: string;
@@ -57,34 +57,34 @@ export function Ambient({ phase }: { phase: number }) {
         className="ob-contours"
         style={{ transform: `translateY(${par * -1.3}%) translateX(${par * -0.6}%)` }}
       >
-      <svg
-        className="ob-contours-svg"
-        viewBox="0 0 100 100"
-        preserveAspectRatio="none"
-        aria-hidden="true"
-      >
-        <defs>
-          <linearGradient id="ob-fade" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#fff" stopOpacity="0" />
-            <stop offset="16%" stopColor="#fff" stopOpacity="1" />
-            <stop offset="84%" stopColor="#fff" stopOpacity="1" />
-            <stop offset="100%" stopColor="#fff" stopOpacity="0" />
-          </linearGradient>
-          <mask id="ob-mask">
-            <rect width="100" height="100" fill="url(#ob-fade)" />
-          </mask>
-        </defs>
-        <g mask="url(#ob-mask)">
-          {ridges.map((r, i) => (
-            <path
-              key={i}
-              className="cl drift"
-              d={r.d}
-              style={{ opacity: r.opacity, animationDuration: `${r.dur}s` } as CSSProperties}
-            />
-          ))}
-        </g>
-      </svg>
+        <svg
+          className="ob-contours-svg"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <defs>
+            <linearGradient id="ob-fade" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor="#fff" stopOpacity="0" />
+              <stop offset="16%" stopColor="#fff" stopOpacity="1" />
+              <stop offset="84%" stopColor="#fff" stopOpacity="1" />
+              <stop offset="100%" stopColor="#fff" stopOpacity="0" />
+            </linearGradient>
+            <mask id="ob-mask">
+              <rect width="100" height="100" fill="url(#ob-fade)" />
+            </mask>
+          </defs>
+          <g mask="url(#ob-mask)">
+            {ridges.map((r, i) => (
+              <path
+                key={i}
+                className="cl drift"
+                d={r.d}
+                style={{ opacity: r.opacity, animationDuration: `${r.dur}s` } as CSSProperties}
+              />
+            ))}
+          </g>
+        </svg>
       </div>
       <div className="ob-vignette" />
       <div className="ob-grain" />

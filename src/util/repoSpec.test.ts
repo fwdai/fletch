@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { parseRepoSpec, isValidRepoName } from "./repoSpec";
+import { describe, expect, it } from "vitest";
+import { isValidRepoName, parseRepoSpec } from "./repoSpec";
 
 describe("parseRepoSpec", () => {
   it("parses owner/repo", () => {

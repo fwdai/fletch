@@ -9,8 +9,8 @@
 // per-message deltas yields the session total. Pi does not persist a
 // context-window size.
 
-import type { RawEvent, TurnUsage } from "../types";
 import { asNumber, asRecord } from "../shared/json";
+import type { RawEvent, TurnUsage } from "../types";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
   if (body.type !== "message") return undefined;

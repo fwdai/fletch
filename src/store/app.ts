@@ -1,3 +1,5 @@
+import type { RawEvent } from "../adapters";
+import { hasUsage, usageFromRecords } from "../adapters/usage";
 import {
   api,
   onAgentBranch,
@@ -13,34 +15,29 @@ import {
   onWorkspaceChanged,
 } from "../api";
 import { isCommitAction } from "../components/RightPanel/primaryActions";
-import { type RawEvent } from "../adapters";
-import { usageFromRecords, hasUsage } from "../adapters/usage";
-import { getAllSettings } from "../storage/settings";
 import {
-  parseFeatures,
-  parseProviderFlags,
-  parsePaneWidth,
-  parseProviderPathOverrides,
-  parseNewDraftSelection,
-  DEFAULT_LEFT_WIDTH,
-  DEFAULT_RIGHT_WIDTH,
-  type ThemeMode,
-  type Density,
-  type WorkspaceView,
-} from "../storage/preferences";
-import {
-  pushAgentOutput,
-  pushShellOutput,
-} from "../pty/buffers";
-import {
+  applyEvent,
+  applyUserTurns,
+  needsSessionIdRefresh,
+  persistLiveUsage,
   providerFor,
   reduceRecords,
-  applyUserTurns,
-  applyEvent,
-  persistLiveUsage,
-  needsSessionIdRefresh,
 } from "../helpers";
+import { pushAgentOutput, pushShellOutput } from "../pty/buffers";
 import { getOrCreateAccount, toProfile } from "../storage/accounts";
+import {
+  DEFAULT_LEFT_WIDTH,
+  DEFAULT_RIGHT_WIDTH,
+  type Density,
+  parseFeatures,
+  parseNewDraftSelection,
+  parsePaneWidth,
+  parseProviderFlags,
+  parseProviderPathOverrides,
+  type ThemeMode,
+  type WorkspaceView,
+} from "../storage/preferences";
+import { getAllSettings } from "../storage/settings";
 import { playAgentDone } from "../util/sound";
 import { interruptedAgents } from "./interrupted";
 import type { AppSlice, SliceCreator } from "./types";
@@ -179,8 +176,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
           // window holds focus AND this is the chat on screen; if either is
           // false (other app focused, window minimized, or a different chat
           // selected) the sound still fires.
-          const watchingThisChat =
-            document.hasFocus() && get().selectedAgentId === e.agent_id;
+          const watchingThisChat = document.hasFocus() && get().selectedAgentId === e.agent_id;
           if (!watchingThisChat) {
             playAgentDone();
           }
@@ -269,9 +265,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
       set({
         workspace: {
           ...ws,
-          agents: ws.agents.map((a) =>
-            a.id === e.agent_id ? { ...a, task: e.task } : a,
-          ),
+          agents: ws.agents.map((a) => (a.id === e.agent_id ? { ...a, task: e.task } : a)),
         },
       });
     });
@@ -282,9 +276,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
       set({
         workspace: {
           ...ws,
-          agents: ws.agents.map((a) =>
-            a.id === e.agent_id ? { ...a, view: e.view } : a,
-          ),
+          agents: ws.agents.map((a) => (a.id === e.agent_id ? { ...a, view: e.view } : a)),
         },
       });
     });
@@ -331,9 +323,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
         managedBusy:
           e.status === "running"
             ? { ...state.managedBusy, [e.agent_id]: true }
-            : e.status === "error" ||
-                e.status === "stopped" ||
-                e.status === "idle"
+            : e.status === "error" || e.status === "stopped" || e.status === "idle"
               ? { ...state.managedBusy, [e.agent_id]: false }
               : state.managedBusy,
       }));
@@ -372,11 +362,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
           for (const a of fresh.agents) {
             if (a.status === "running" || a.status === "spawning") {
               managedBusy[a.id] = true;
-            } else if (
-              a.status === "idle" ||
-              a.status === "stopped" ||
-              a.status === "error"
-            ) {
+            } else if (a.status === "idle" || a.status === "stopped" || a.status === "error") {
               managedBusy[a.id] = false;
             }
           }

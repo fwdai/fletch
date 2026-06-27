@@ -2,15 +2,7 @@ import { shortFor } from "./shared";
 
 /** Colored monogram tile standing in for a custom agent's avatar. The hue is
  *  the agent's `color`; the glyph is its name's initials. */
-export function Mono({
-  name,
-  hue,
-  size = 38,
-}: {
-  name: string;
-  hue: number;
-  size?: number;
-}) {
+export function Mono({ name, hue, size = 38 }: { name: string; hue: number; size?: number }) {
   return (
     <span
       className="ca-mono"

@@ -20,11 +20,7 @@ const shellBuffers = new Map<string, Uint8Array>();
 
 /** Append a chunk to an agent's ring buffer, trimming the oldest bytes once it
  *  grows past the cap so a long-lived session can't grow without bound. */
-function appendToRing(
-  buffers: Map<string, Uint8Array>,
-  agentId: string,
-  chunk: Uint8Array,
-) {
+function appendToRing(buffers: Map<string, Uint8Array>, agentId: string, chunk: Uint8Array) {
   const existing = buffers.get(agentId);
   let next: Uint8Array;
   if (!existing) {
@@ -54,10 +50,7 @@ export function clearOutputBuffer(agentId: string) {
   outputBuffers.delete(agentId);
 }
 
-export function registerOutputSink(
-  agentId: string,
-  handler: OutputHandler,
-): () => void {
+export function registerOutputSink(agentId: string, handler: OutputHandler): () => void {
   outputSinks.set(agentId, handler);
   return () => {
     if (outputSinks.get(agentId) === handler) outputSinks.delete(agentId);
@@ -74,10 +67,7 @@ export function getShellBuffer(agentId: string): Uint8Array | undefined {
   return shellBuffers.get(agentId);
 }
 
-export function registerShellSink(
-  agentId: string,
-  handler: OutputHandler,
-): () => void {
+export function registerShellSink(agentId: string, handler: OutputHandler): () => void {
   shellSinks.set(agentId, handler);
   return () => {
     if (shellSinks.get(agentId) === handler) shellSinks.delete(agentId);

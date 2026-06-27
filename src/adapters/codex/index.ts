@@ -1,7 +1,7 @@
 import type { ChatAdapter } from "../types";
-import { reduce } from "./reduce";
 import { normalizeTranscript } from "./normalize";
 import { codexPolicy } from "./policy";
+import { reduce } from "./reduce";
 import { extractUsage } from "./usage";
 
 // Reduces Codex's `codex exec --json` thread/turn/item event stream

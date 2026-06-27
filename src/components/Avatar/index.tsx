@@ -22,12 +22,7 @@ export function Avatar({ avatarUrl, initials, className, alt = "" }: AvatarProps
   return (
     <div className={className}>
       {avatarUrl && !failed ? (
-        <img
-          src={avatarUrl}
-          alt={alt}
-          draggable={false}
-          onError={() => setFailed(true)}
-        />
+        <img src={avatarUrl} alt={alt} draggable={false} onError={() => setFailed(true)} />
       ) : (
         initials
       )}

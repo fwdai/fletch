@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { filterPrs } from "./prs";
+import { describe, expect, it } from "vitest";
 import type { PrSummary } from "../../../../api";
+import { filterPrs } from "./prs";
 
 const pr = (number: number, title = `PR ${number}`): PrSummary => ({
   number,
@@ -22,9 +22,7 @@ describe("filterPrs", () => {
   it("ranks prefix matches ahead of mid-number matches", () => {
     // "2" appears in 42, 120, 123 — those starting with "2" would rank first;
     // here none start with "2", so they fall back to recency order.
-    expect(filterPrs([pr(2), pr(120), pr(42)], "2").map((p) => p.number)).toEqual([
-      2, 120, 42,
-    ]);
+    expect(filterPrs([pr(2), pr(120), pr(42)], "2").map((p) => p.number)).toEqual([2, 120, 42]);
   });
 
   it("honors the limit", () => {

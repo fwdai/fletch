@@ -37,7 +37,7 @@ export function History() {
       const repo = a.archive?.repos[0]?.repo_path;
       if (repo && basename(repo).toLowerCase().includes(q)) return true;
       const branch = a.archive?.repos[0]?.branch_name;
-      if (branch && branch.toLowerCase().includes(q)) return true;
+      if (branch?.toLowerCase().includes(q)) return true;
       return false;
     });
   }, [archived, query]);
@@ -50,7 +50,9 @@ export function History() {
   restoringIdRef.current = restoringId;
 
   // Reset cursor when filter results change
-  useEffect(() => { setFocusedIndex(0); }, [filtered]);
+  useEffect(() => {
+    setFocusedIndex(0);
+  }, [filtered]);
 
   // Scroll focused row into view
   useEffect(() => {
@@ -116,90 +118,107 @@ export function History() {
         {/* Scrollable list */}
         <div className="history-list" ref={listRef}>
           {filtered.length === 0 ? (
-            <div className="h-empty">
-              {query ? "No matches" : "No archived sessions yet"}
-            </div>
-          ) : (() => {
-            let flatIdx = 0;
-            return groups.map(({ label, items }) => (
-              <div key={label}>
-                <div className="hg-h">
-                  <span className="hg-d">{label}</span>
-                  <span className="hg-n">{items.length}</span>
-                </div>
-                {items.map((a) => {
-                  const myIdx = flatIdx++;
-                  const archive = a.archive!;
-                  const primary = archive.repos[0];
-                  const repoLabel = primary ? basename(primary.repo_path) : a.name;
-                  const branchLabel = primary?.branch_name ?? null;
-                  const task = firstLine(a.task || "Untitled session", 96);
-                  const adds = archive.diff_stats.additions;
-                  const dels = archive.diff_stats.deletions;
-                  const showStats = adds > 0 || dels > 0;
-                  const when = formatHistoryTime(archive.archived_at);
-                  const isRestoring = restoringId === a.id;
-                  const isFocused = focusedIndex === myIdx;
+            <div className="h-empty">{query ? "No matches" : "No archived sessions yet"}</div>
+          ) : (
+            (() => {
+              let flatIdx = 0;
+              return groups.map(({ label, items }) => (
+                <div key={label}>
+                  <div className="hg-h">
+                    <span className="hg-d">{label}</span>
+                    <span className="hg-n">{items.length}</span>
+                  </div>
+                  {items.map((a) => {
+                    const myIdx = flatIdx++;
+                    const archive = a.archive!;
+                    const primary = archive.repos[0];
+                    const repoLabel = primary ? basename(primary.repo_path) : a.name;
+                    const branchLabel = primary?.branch_name ?? null;
+                    const task = firstLine(a.task || "Untitled session", 96);
+                    const adds = archive.diff_stats.additions;
+                    const dels = archive.diff_stats.deletions;
+                    const showStats = adds > 0 || dels > 0;
+                    const when = formatHistoryTime(archive.archived_at);
+                    const isRestoring = restoringId === a.id;
+                    const isFocused = focusedIndex === myIdx;
 
-                  return (
-                    <button
-                      key={a.id}
-                      className={`hrow archived${isFocused ? " focused" : ""}`}
-                      onClick={() => onRowClick(a.id)}
-                      onMouseEnter={() => setFocusedIndex(myIdx)}
-                      disabled={!!restoringId}
-                      // Dim the other rows during a restore, but keep the active
-                      // row at full opacity so its spinner stays visible (a
-                      // parent opacity would otherwise cap the child rule).
-                      style={{ opacity: !isRestoring && restoringId ? 0.5 : undefined }}
-                    >
-                      <span className="hr-status">
-                        <Icon name="dot" size={6} />
-                      </span>
-                      <span className="hr-project">{repoLabel}</span>
-                      <span className="hr-sep">/</span>
-                      <span className="hr-title">{task}</span>
-                      {branchLabel && (
-                        <>
-                          <span className="hr-dot">·</span>
-                          <span className="hr-branch">{branchLabel}</span>
-                        </>
-                      )}
-                      <span className="hr-spacer" />
-                      {showStats && (
-                        <span className="hr-diff">
-                          <span className="add">+{adds}</span>
-                          <span className="rem">-{dels}</span>
+                    return (
+                      <button
+                        key={a.id}
+                        className={`hrow archived${isFocused ? " focused" : ""}`}
+                        onClick={() => onRowClick(a.id)}
+                        onMouseEnter={() => setFocusedIndex(myIdx)}
+                        disabled={!!restoringId}
+                        // Dim the other rows during a restore, but keep the active
+                        // row at full opacity so its spinner stays visible (a
+                        // parent opacity would otherwise cap the child rule).
+                        style={{ opacity: !isRestoring && restoringId ? 0.5 : undefined }}
+                      >
+                        <span className="hr-status">
+                          <Icon name="dot" size={6} />
                         </span>
-                      )}
-                      <span className="hr-date">{when}</span>
-                      <span className={`hr-goto${isRestoring ? " restoring" : ""}`}>
-                        {isRestoring ? (
+                        <span className="hr-project">{repoLabel}</span>
+                        <span className="hr-sep">/</span>
+                        <span className="hr-title">{task}</span>
+                        {branchLabel && (
                           <>
-                            <span className="dots"><i /><i /><i /></span>
-                            Restoring…
-                          </>
-                        ) : (
-                          <>
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="9 18 15 12 9 6" />
-                            </svg>
-                            Restore
+                            <span className="hr-dot">·</span>
+                            <span className="hr-branch">{branchLabel}</span>
                           </>
                         )}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            ));
-          })()}
+                        <span className="hr-spacer" />
+                        {showStats && (
+                          <span className="hr-diff">
+                            <span className="add">+{adds}</span>
+                            <span className="rem">-{dels}</span>
+                          </span>
+                        )}
+                        <span className="hr-date">{when}</span>
+                        <span className={`hr-goto${isRestoring ? " restoring" : ""}`}>
+                          {isRestoring ? (
+                            <>
+                              <span className="dots">
+                                <i />
+                                <i />
+                                <i />
+                              </span>
+                              Restoring…
+                            </>
+                          ) : (
+                            <>
+                              <svg
+                                width="11"
+                                height="11"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <polyline points="9 18 15 12 9 6" />
+                              </svg>
+                              Restore
+                            </>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ));
+            })()
+          )}
         </div>
 
         {/* Footer */}
         <div className="history-foot">
-          <span><kbd className="kbd">Esc</kbd> <span className="dim">to close</span></span>
-          <span><kbd className="kbd">↵</kbd> <span className="dim">to restore</span></span>
+          <span>
+            <kbd className="kbd">Esc</kbd> <span className="dim">to close</span>
+          </span>
+          <span>
+            <kbd className="kbd">↵</kbd> <span className="dim">to restore</span>
+          </span>
         </div>
       </div>
     </div>

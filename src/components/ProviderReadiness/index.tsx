@@ -7,15 +7,15 @@
 // We detect *binary presence* (and gh auth, which we can read), not agent
 // auth (varies per CLI), so installed rows still nudge the user to sign in.
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
-import { useAppStore } from "../../store";
-import { api, type GhStatus, type ToolStatus } from "../../api";
-import { PROVIDERS } from "../../data/providers";
-import { PROVIDER_DETAIL } from "../../data/providerDetail";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { hasAdapter } from "../../adapters";
-import { ProviderIcon } from "../ProviderIcon";
+import { api, type GhStatus, type ToolStatus } from "../../api";
+import { PROVIDER_DETAIL } from "../../data/providerDetail";
+import { PROVIDERS } from "../../data/providers";
+import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
+import { ProviderIcon } from "../ProviderIcon";
 
 type RowState = "ok" | "warn" | "bad" | "checking";
 
@@ -129,7 +129,7 @@ export function ProviderReadiness() {
       : "warn";
   // gh sign-in is universal; install is not — rely on the cross-platform docs
   // link rather than a Homebrew-only `brew install gh`.
-  const ghFix = gh && gh.installed && !gh.authenticated ? "gh auth login" : undefined;
+  const ghFix = gh?.installed && !gh.authenticated ? "gh auth login" : undefined;
 
   return (
     <div className="readiness">
@@ -140,7 +140,7 @@ export function ProviderReadiness() {
         statusText={
           git
             ? git.installed
-              ? git.version ?? "Installed"
+              ? (git.version ?? "Installed")
               : "Not found — required to run any agent"
             : checking
               ? "Checking…"
@@ -172,7 +172,7 @@ export function ProviderReadiness() {
                 : state === "warn"
                   ? "Couldn't detect"
                   : path
-                    ? providerVersions[p.id] ?? "Installed"
+                    ? (providerVersions[p.id] ?? "Installed")
                     : "Not installed"
             }
             // Only offer the install command when we know it's missing, not

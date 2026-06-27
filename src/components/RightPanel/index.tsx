@@ -19,16 +19,13 @@ interface Tab {
  *  settings). The Code tab unifies the file explorer/editor with a Live diff
  *  feed of the agent's edits. */
 export function RightPanel({ agent }: { agent: AgentRecord }) {
-  const features  = useAppStore((s) => s.features);
+  const features = useAppStore((s) => s.features);
   // Tab badge: prefer the live file list from `gitStates` (refreshed at 1s
   // while the Git tab is open); fall back to `gitShortstats` (refreshed at
   // 5s app-wide) so the badge is still meaningful when the Git tab isn't
   // currently active.
-  const gitFiles  = useAppStore(
-    (s) =>
-      s.gitStates[agent.id]?.files.length ??
-      s.gitShortstats[agent.id]?.file_count ??
-      0,
+  const gitFiles = useAppStore(
+    (s) => s.gitStates[agent.id]?.files.length ?? s.gitShortstats[agent.id]?.file_count ?? 0,
   );
 
   const tabs: Tab[] = [
@@ -44,9 +41,7 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
   const savedTab = useAppStore((s) => s.rightPanelTabs[agent.id]);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const [tab, setTab] = useState<TabId>(
-    savedTab && tabs.some((t) => t.id === savedTab)
-      ? savedTab
-      : (tabs[0]?.id ?? "git"),
+    savedTab && tabs.some((t) => t.id === savedTab) ? savedTab : (tabs[0]?.id ?? "git"),
   );
   const selectTab = (id: TabId) => {
     setTab(id);

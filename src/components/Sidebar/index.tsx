@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import type { AgentRecord } from "../../api";
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
-import { Icon } from "../Icon";
 import { basename } from "../../util/format";
-import { SidebarHeader } from "./SidebarHeader";
-import { SidebarFooter } from "./SidebarFooter";
-import { ProjectGroup } from "./ProjectGroup";
-import { NewProjectPopover } from "./NewProjectPopover";
+import { Icon } from "../Icon";
 import { NewProject, type NewProjectMode } from "../NewProject";
+import { NewProjectPopover } from "./NewProjectPopover";
+import { ProjectGroup } from "./ProjectGroup";
+import { SidebarFooter } from "./SidebarFooter";
+import { SidebarHeader } from "./SidebarHeader";
 
 interface RepoGroup {
   repoPath: string;
@@ -110,11 +110,7 @@ export function Sidebar() {
       <SidebarHeader query={query} onChange={setQuery} />
       <div className="side-scroll">
         <div className="side-section">
-          <button
-            className="add-proj-cta"
-            onClick={() => setNpOpen(true)}
-            aria-label="Add project"
-          >
+          <button className="add-proj-cta" onClick={() => setNpOpen(true)} aria-label="Add project">
             <Icon name="plus" size={13} />
             <span>Add project</span>
           </button>
@@ -134,9 +130,7 @@ export function Sidebar() {
                 drafts={g.drafts}
                 open={openMap[g.repoPath] ?? false}
                 removable={g.pinned && g.agents.length === 0 && g.drafts.length === 0}
-                onToggle={() =>
-                  setOpenMap((m) => ({ ...m, [g.repoPath]: !m[g.repoPath] }))
-                }
+                onToggle={() => setOpenMap((m) => ({ ...m, [g.repoPath]: !m[g.repoPath] }))}
               />
             ))
           )}

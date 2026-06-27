@@ -6,22 +6,22 @@
 // background/padding on `.hljs` / `code.hljs` — which our editor's <pre>
 // deliberately does NOT carry — so only the standalone `.hljs-*` token colors
 // apply. The panel keeps its own background and exact layout.
-import { useEffect } from "react";
-import { useAppStore } from "../store";
-import { CODE_THEMES } from "../data/codeThemes";
 
-import githubDark from "highlight.js/styles/github-dark.css?url";
-import github from "highlight.js/styles/github.css?url";
-import atomOneDark from "highlight.js/styles/atom-one-dark.css?url";
-import atomOneLight from "highlight.js/styles/atom-one-light.css?url";
-import tokyoNightDark from "highlight.js/styles/tokyo-night-dark.css?url";
-import tokyoNightLight from "highlight.js/styles/tokyo-night-light.css?url";
-import solarizedDark from "highlight.js/styles/base16/solarized-dark.css?url";
-import solarizedLight from "highlight.js/styles/base16/solarized-light.css?url";
-import stackoverflowDark from "highlight.js/styles/stackoverflow-dark.css?url";
-import stackoverflowLight from "highlight.js/styles/stackoverflow-light.css?url";
 import a11yDark from "highlight.js/styles/a11y-dark.css?url";
 import a11yLight from "highlight.js/styles/a11y-light.css?url";
+import atomOneDark from "highlight.js/styles/atom-one-dark.css?url";
+import atomOneLight from "highlight.js/styles/atom-one-light.css?url";
+import solarizedDark from "highlight.js/styles/base16/solarized-dark.css?url";
+import solarizedLight from "highlight.js/styles/base16/solarized-light.css?url";
+import github from "highlight.js/styles/github.css?url";
+import githubDark from "highlight.js/styles/github-dark.css?url";
+import stackoverflowDark from "highlight.js/styles/stackoverflow-dark.css?url";
+import stackoverflowLight from "highlight.js/styles/stackoverflow-light.css?url";
+import tokyoNightDark from "highlight.js/styles/tokyo-night-dark.css?url";
+import tokyoNightLight from "highlight.js/styles/tokyo-night-light.css?url";
+import { useEffect } from "react";
+import { CODE_THEMES } from "../data/codeThemes";
+import { useAppStore } from "../store";
 
 const THEME_URLS: Record<string, string> = {
   "github-dark": githubDark,

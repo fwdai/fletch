@@ -3,8 +3,8 @@
 // state and file operations live in the FilePanel orchestrator (so they
 // survive opening/closing the editor) and arrive here as props.
 import { useEffect, useRef } from "react";
-import { FileIcon } from "../FileIcon";
 import { Icon } from "../../Icon";
+import { FileIcon } from "../FileIcon";
 import type { EditState, TreeNode } from "./tree";
 
 interface TreeBrowserProps {
@@ -80,7 +80,11 @@ export function TreeBrowser({
         <button className="btn-i xs" title="New file" onClick={() => onBeginCreate("newFile", "")}>
           <Icon name="file" />
         </button>
-        <button className="btn-i xs" title="New folder" onClick={() => onBeginCreate("newFolder", "")}>
+        <button
+          className="btn-i xs"
+          title="New folder"
+          onClick={() => onBeginCreate("newFolder", "")}
+        >
           <Icon name="folder" />
         </button>
         <button className="btn-i xs" title="Collapse all" onClick={onCollapseAll}>
@@ -108,9 +112,7 @@ export function TreeBrowser({
           <div className="empty-msg" style={{ margin: "auto" }}>
             <div className="et">{loaded ? "No matching files" : "Loading…"}</div>
             {loaded && (
-              <div>
-                {changedOnly ? "Clear the Changed filter or " : ""}adjust your search.
-              </div>
+              <div>{changedOnly ? "Clear the Changed filter or " : ""}adjust your search.</div>
             )}
           </div>
         ) : (
@@ -150,22 +152,33 @@ interface TreeRowProps {
 }
 
 function TreeRow({
-  node, depth, expanded, forceOpen, edit, onToggle, onOpen, onMenu, onCommit, onCancel,
+  node,
+  depth,
+  expanded,
+  forceOpen,
+  edit,
+  onToggle,
+  onOpen,
+  onMenu,
+  onCommit,
+  onCancel,
 }: TreeRowProps) {
   const pad = 10 + depth * 13;
   const renaming = edit?.mode === "rename" && edit.path === node.path;
 
   if (node.type === "dir") {
     const isOpen = forceOpen || expanded.has(node.path);
-    const creatingHere =
-      edit && edit.mode !== "rename" && edit.parentDir === node.path;
+    const creatingHere = edit && edit.mode !== "rename" && edit.parentDir === node.path;
     return (
       <>
         <button
           className="fp-row dir"
           style={{ paddingLeft: pad }}
           onClick={() => onToggle(node.path)}
-          onContextMenu={(e) => { e.preventDefault(); onMenu(node, e.clientX, e.clientY); }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            onMenu(node, e.clientX, e.clientY);
+          }}
         >
           <span className={`fp-twisty ${isOpen ? "open" : ""}`}>
             <Icon name="chevR" size={11} />
@@ -189,7 +202,12 @@ function TreeRow({
         {(isOpen || creatingHere) && (
           <>
             {creatingHere && edit && (
-              <CreateRow mode={edit.mode} depth={depth + 1} onCommit={onCommit} onCancel={onCancel} />
+              <CreateRow
+                mode={edit.mode}
+                depth={depth + 1}
+                onCommit={onCommit}
+                onCancel={onCancel}
+              />
             )}
             {isOpen &&
               node.children.map((c) => (
@@ -216,10 +234,13 @@ function TreeRow({
   const st = node.status ? node.status.toLowerCase() : "";
   return (
     <button
-      className={`fp-row file ${node.status ? "changed s-" + st : ""}`}
+      className={`fp-row file ${node.status ? `changed s-${st}` : ""}`}
       style={{ paddingLeft: pad + 13 }}
       onClick={() => onOpen(node.path)}
-      onContextMenu={(e) => { e.preventDefault(); onMenu(node, e.clientX, e.clientY); }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onMenu(node, e.clientX, e.clientY);
+      }}
       title={node.path}
     >
       <FileIcon name={node.name} />
@@ -256,8 +277,18 @@ function NameInput({ initial, onCommit, onCancel }: NameInputProps) {
     else el.select();
   }, [initial]);
 
-  const commit = (v: string) => { if (!doneRef.current) { doneRef.current = true; onCommit(v); } };
-  const cancel = () => { if (!doneRef.current) { doneRef.current = true; onCancel(); } };
+  const commit = (v: string) => {
+    if (!doneRef.current) {
+      doneRef.current = true;
+      onCommit(v);
+    }
+  };
+  const cancel = () => {
+    if (!doneRef.current) {
+      doneRef.current = true;
+      onCancel();
+    }
+  };
 
   return (
     <input
@@ -267,12 +298,21 @@ function NameInput({ initial, onCommit, onCancel }: NameInputProps) {
       spellCheck={false}
       autoCapitalize="off"
       autoCorrect="off"
-      onClick={(e) => { e.stopPropagation(); }}
-      onMouseDown={(e) => { e.stopPropagation(); }}
+      onClick={(e) => {
+        e.stopPropagation();
+      }}
+      onMouseDown={(e) => {
+        e.stopPropagation();
+      }}
       onKeyDown={(e) => {
         e.stopPropagation();
-        if (e.key === "Enter") { e.preventDefault(); commit(e.currentTarget.value); }
-        else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit(e.currentTarget.value);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancel();
+        }
       }}
       onBlur={(e) => commit(e.currentTarget.value)}
     />

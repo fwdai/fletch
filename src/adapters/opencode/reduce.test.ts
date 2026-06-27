@@ -1,10 +1,9 @@
-import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { opencodeAdapter } from "./index";
+import { describe, expect, it } from "vitest";
 import type { ChatItem, RawEvent } from "../types";
+import { opencodeAdapter } from "./index";
 
 // Fixtures are real `opencode run --format json` output captured from
 // opencode 1.15.12 (step / part event model — see ./reduce.ts).
@@ -19,10 +18,7 @@ function readJsonl(name: string): unknown[] {
 }
 
 function run(events: RawEvent[]): ChatItem[] {
-  return events.reduce<ChatItem[]>(
-    (acc, ev) => opencodeAdapter.reduce(acc, ev),
-    [],
-  );
+  return events.reduce<ChatItem[]>((acc, ev) => opencodeAdapter.reduce(acc, ev), []);
 }
 
 describe("opencodeAdapter", () => {
@@ -132,9 +128,7 @@ describe("opencodeAdapter", () => {
 
   it("surfaces a top-level error event", () => {
     const items = run([{ type: "error", message: "boom" }] as RawEvent[]);
-    expect(items).toEqual([
-      { kind: "notice", subtype: "error", text: "boom", is_error: true },
-    ]);
+    expect(items).toEqual([{ kind: "notice", subtype: "error", text: "boom", is_error: true }]);
   });
 
   it("leaves prevItems untouched for step_start and unknown events", () => {
@@ -150,9 +144,7 @@ describe("opencodeAdapter", () => {
 
   it("surfaces a reasoning part as a thinking notice (real --thinking output)", () => {
     const items = run(readJsonl("reasoning.jsonl") as RawEvent[]);
-    const reasoning = items.find(
-      (i) => i.kind === "notice" && i.subtype === "reasoning",
-    );
+    const reasoning = items.find((i) => i.kind === "notice" && i.subtype === "reasoning");
     expect(reasoning).toBeDefined();
     expect((reasoning as { text: string }).text).toContain("12 times 8 = 96");
     expect(opencodeAdapter.policy["notice:reasoning"]).toBe("show");

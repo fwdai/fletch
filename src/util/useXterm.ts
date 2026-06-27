@@ -1,7 +1,7 @@
-import { useEffect, useRef } from "react";
-import { Terminal, type ITerminalOptions } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { type ITerminalOptions, Terminal } from "@xterm/xterm";
+import { type DependencyList, useEffect, useRef } from "react";
 import "@xterm/xterm/css/xterm.css";
 
 /** Options shared by every terminal in the app; callers override per use. */
@@ -29,8 +29,7 @@ const XTERM_BASE_OPTIONS: ITerminalOptions = {
 export function useXterm(
   options: ITerminalOptions,
   onReady: (term: Terminal) => (() => void) | void,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  deps: any[],
+  deps: DependencyList,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -59,7 +58,11 @@ export function useXterm(
     const cleanup = onReady(term);
 
     const initialFit = requestAnimationFrame(() => {
-      try { fit.fit(); } catch { /* not measurable yet */ }
+      try {
+        fit.fit();
+      } catch {
+        /* not measurable yet */
+      }
     });
 
     // Debounce refits to when the panel stops resizing. Fitting on every
@@ -70,7 +73,11 @@ export function useXterm(
     const ro = new ResizeObserver(() => {
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
-        try { fit.fit(); } catch { /* container may be hidden */ }
+        try {
+          fit.fit();
+        } catch {
+          /* container may be hidden */
+        }
       }, 100);
     });
     ro.observe(el);
@@ -85,7 +92,11 @@ export function useXterm(
       // the core is gone dereferences a disposed _core._store and throws
       // (React StrictMode's dev mount→unmount cycle triggers this every time).
       // Guarded so the terminal's own addon disposal can't double-free it.
-      try { webgl?.dispose(); } catch { /* already disposed */ }
+      try {
+        webgl?.dispose();
+      } catch {
+        /* already disposed */
+      }
       term.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
