@@ -375,13 +375,8 @@ pub async fn push_agent(
     app: AppHandle,
     agent_id: String,
 ) -> Result<String> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
-    let branch = repo.branch.as_deref()
-        .ok_or_else(|| crate::error::Error::Other("agent has no branch yet".into()))?
-        .to_string();
+    let (repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
+    let branch = repo_branch(&repo)?.to_string();
     let summary = git::push(&worktree, &branch).await?;
     // After successful push, fetch PR state in background
     supervisor.inner().fetch_and_emit_pr_state(app, agent_id);
@@ -395,10 +390,7 @@ pub async fn commit_agent(
     agent_id: String,
     message: String,
 ) -> Result<()> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
     git::commit(&worktree, &message).await
 }
 
@@ -408,10 +400,7 @@ pub async fn discard_agent_changes(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
     git::discard_all(&worktree).await
 }
 
@@ -421,10 +410,7 @@ pub async fn stash_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
     git::stash_push(&worktree).await
 }
 
@@ -434,10 +420,7 @@ pub async fn abort_merge_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
     git::merge_abort(&worktree).await
 }
 
@@ -456,11 +439,8 @@ pub async fn delete_branch_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let branch = repo.branch.as_deref()
-        .ok_or_else(|| crate::error::Error::Other("agent has no branch yet".into()))?;
+    let repo = primary_repo(&supervisor, &agent_id)?;
+    let branch = repo_branch(&repo)?;
     git::branch_delete(&repo.repo_path, branch).await
 }
 
@@ -470,10 +450,7 @@ pub async fn pull_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
     git::pull(&worktree).await
 }
 
@@ -484,10 +461,7 @@ pub async fn rebase_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let (repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
     git::rebase_onto(&worktree, base).await
 }
@@ -501,10 +475,7 @@ pub async fn create_pr(
     title: String,
     body: String,
 ) -> Result<PrState> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let (repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
     let pr = gh::pr_create(&worktree, &title, &body, base).await?;
     crate::telemetry::track("pr_opened", serde_json::json!({ "source": "manual" }));
@@ -532,10 +503,7 @@ pub async fn merge_pr(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
     gh::pr_merge(&worktree).await
 }
 
@@ -545,14 +513,11 @@ pub async fn get_pr_state(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Option<PrState>> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record.repos.first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
+    let (repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
     // Only fetch if the agent has a branch
     if repo.branch.is_none() {
         return Ok(None);
     }
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
     gh::pr_view(&worktree).await
 }
 
@@ -563,12 +528,7 @@ pub async fn list_prs(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Vec<gh::PrSummary>> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = record
-        .repos
-        .first()
-        .ok_or_else(|| crate::error::Error::Other("agent has no repos".into()))?;
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
     gh::pr_list(&worktree, 50).await
 }
 
@@ -580,18 +540,12 @@ pub async fn get_pr_checks(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Option<gh::PrChecks>> {
-    let record = match supervisor.workspace.agent(&agent_id) {
-        Ok(r) => r,
-        Err(_) => return Ok(None),
-    };
-    let repo = match record.repos.first() {
-        Some(r) => r,
-        None => return Ok(None),
+    let Some((repo, worktree)) = primary_repo_worktree_opt(&supervisor, &agent_id)? else {
+        return Ok(None);
     };
     if repo.branch.is_none() {
         return Ok(None);
     }
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
     Ok(gh::pr_checks(&worktree).await.unwrap_or(None))
 }
 
@@ -603,18 +557,12 @@ pub async fn get_pr_comments(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Option<gh::PrComments>> {
-    let record = match supervisor.workspace.agent(&agent_id) {
-        Ok(r) => r,
-        Err(_) => return Ok(None),
-    };
-    let repo = match record.repos.first() {
-        Some(r) => r,
-        None => return Ok(None),
+    let Some((repo, worktree)) = primary_repo_worktree_opt(&supervisor, &agent_id)? else {
+        return Ok(None);
     };
     if repo.branch.is_none() {
         return Ok(None);
     }
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
     Ok(gh::pr_comments(&worktree).await.unwrap_or(None))
 }
 
@@ -711,15 +659,9 @@ pub async fn get_git_state(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Option<GitState>> {
-    let record = match supervisor.workspace.agent(&agent_id) {
-        Ok(r) => r,
-        Err(_) => return Ok(None),
+    let Some((repo, worktree)) = primary_repo_worktree_opt(&supervisor, &agent_id)? else {
+        return Ok(None);
     };
-    let repo = match record.repos.first() {
-        Some(r) => r,
-        None => return Ok(None),
-    };
-    let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
     let parent = repo.parent_branch.as_deref().unwrap_or("main");
     let state = git_state::query(&worktree, parent).await?;
     Ok(Some(state))
@@ -915,19 +857,62 @@ fn safe_join(worktree: &Path, rel: &str) -> Result<PathBuf> {
     Ok(worktree.join(p))
 }
 
-/// Resolve the agent's primary worktree and its parent ref.
-fn primary_worktree(
+// ── Agent → repo → worktree resolution ────────────────────────────
+// Nearly every git/PR command operates on the agent's *primary* (first) repo.
+// These helpers centralize that resolution — and its error strings — so the
+// command bodies stay focused on the git/gh call they actually make.
+
+/// The agent's primary (first) repo, or an error if the agent has no repos.
+fn primary_repo(supervisor: &Supervisor, agent_id: &str) -> Result<TrackedRepo> {
+    supervisor
+        .workspace
+        .agent(agent_id)?
+        .repos
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Other("agent has no repos".into()))
+}
+
+/// The agent's primary repo paired with its worktree path.
+fn primary_repo_worktree(
     supervisor: &Supervisor,
     agent_id: &str,
-) -> Result<(PathBuf, String)> {
-    let record = supervisor.workspace.agent(agent_id)?;
-    let repo = record
-        .repos
-        .first()
-        .ok_or_else(|| Error::Other("agent has no repos".into()))?;
+) -> Result<(TrackedRepo, PathBuf)> {
+    let repo = primary_repo(supervisor, agent_id)?;
     let worktree = repo_worktree_path(agent_id, &repo.subdir)?;
+    Ok((repo, worktree))
+}
+
+/// Best-effort variant for read-only lookups (git / PR state): returns `None`
+/// instead of an error when the agent or its repo can't be resolved, so callers
+/// can degrade gracefully rather than surfacing a failure.
+fn primary_repo_worktree_opt(
+    supervisor: &Supervisor,
+    agent_id: &str,
+) -> Result<Option<(TrackedRepo, PathBuf)>> {
+    let Ok(record) = supervisor.workspace.agent(agent_id) else {
+        return Ok(None);
+    };
+    let Some(repo) = record.repos.into_iter().next() else {
+        return Ok(None);
+    };
+    let worktree = repo_worktree_path(agent_id, &repo.subdir)?;
+    Ok(Some((repo, worktree)))
+}
+
+/// The agent's branch name, or an error if the worktree has no branch yet.
+fn repo_branch(repo: &TrackedRepo) -> Result<&str> {
+    repo.branch
+        .as_deref()
+        .ok_or_else(|| Error::Other("agent has no branch yet".into()))
+}
+
+/// Resolve the agent's primary worktree and its parent ref (the fork point
+/// used for file-tree / per-file diffs).
+fn primary_worktree(supervisor: &Supervisor, agent_id: &str) -> Result<(PathBuf, String)> {
+    let (repo, worktree) = primary_repo_worktree(supervisor, agent_id)?;
     // File tree / per-file diffs compare committed work against the fork point.
-    let parent = diff_base(repo).unwrap_or_else(|| "main".to_string());
+    let parent = diff_base(&repo).unwrap_or_else(|| "main".to_string());
     Ok((worktree, parent))
 }
 
