@@ -3,6 +3,47 @@ import type { GitCommitAction } from "../components/RightPanel/primaryActions";
 import { setSetting } from "../storage/settings";
 import type { GitSlice, SliceCreator } from "./types";
 
+type GitSet = Parameters<SliceCreator<GitSlice>>[0];
+type GitGet = Parameters<SliceCreator<GitSlice>>[1];
+
+// Shared shape for the simple git mutations: run the backend call, refresh git
+// state on success, otherwise record the error and report failure.
+const runGitMutation = async (
+  get: GitGet,
+  agentId: string,
+  fn: () => Promise<unknown>,
+): Promise<boolean> => {
+  try {
+    await fn();
+    await get().fetchGitState(agentId);
+    return true;
+  } catch (e) {
+    get().setLastError(String(e));
+    return false;
+  }
+};
+
+// fetchPrChecks/fetchPrComments are identical except for the slice key and the
+// backend call: write the value (including null = "confirmed unavailable") on
+// success; on a *first* failure degrade the absent key to null so the panel
+// drops the "checking…" placeholder, while a later transient error keeps the
+// last good value.
+const fetchPrAux = async <K extends "prChecks" | "prComments">(
+  set: GitSet,
+  agentId: string,
+  key: K,
+  fetch: (agentId: string) => Promise<GitSlice[K][string]>,
+): Promise<void> => {
+  try {
+    const value = await fetch(agentId);
+    set((s) => ({ [key]: { ...s[key], [agentId]: value } }) as Partial<GitSlice>);
+  } catch {
+    set((s) =>
+      agentId in s[key] ? {} : ({ [key]: { ...s[key], [agentId]: null } } as Partial<GitSlice>),
+    );
+  }
+};
+
 export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   gitStates: {},
   gitShortstats: {},
@@ -61,33 +102,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  fetchPrChecks: async (agentId) => {
-    try {
-      const checks = await api.getPrChecks(agentId);
-      // Write nulls too: null = "confirmed unavailable", distinct from the
-      // absent key ("not yet fetched") that renders as the checking… state.
-      set((s) => ({ prChecks: { ...s.prChecks, [agentId]: checks } }));
-    } catch {
-      // Non-fatal — the next poll tick retries. But a *first* fetch that
-      // throws would otherwise leave the key absent and pin the panel's
-      // "checking…" placeholder, so degrade it to null (mergeable-only
-      // fallback). A later transient error keeps the last good value.
-      set((s) => (agentId in s.prChecks ? {} : { prChecks: { ...s.prChecks, [agentId]: null } }));
-    }
-  },
+  fetchPrChecks: (agentId) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks),
 
-  fetchPrComments: async (agentId) => {
-    try {
-      const comments = await api.getPrComments(agentId);
-      set((s) => ({ prComments: { ...s.prComments, [agentId]: comments } }));
-    } catch {
-      // Non-fatal — the next poll tick retries. Degrade a first failure to
-      // null (section omitted) rather than leaving the key absent.
-      set((s) =>
-        agentId in s.prComments ? {} : { prComments: { ...s.prComments, [agentId]: null } },
-      );
-    }
-  },
+  fetchPrComments: (agentId) => fetchPrAux(set, agentId, "prComments", api.getPrComments),
 
   delegateGitAction: (agentId, kind, prompt) => {
     // Sent mid-turn? Then our trigger is queued behind the in-flight turn,
@@ -151,38 +168,12 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  pullAgent: async (agentId) => {
-    try {
-      await api.pullAgent(agentId);
-      await get().fetchGitState(agentId);
-      return true;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return false;
-    }
-  },
+  pullAgent: (agentId) => runGitMutation(get, agentId, () => api.pullAgent(agentId)),
 
-  rebaseAgent: async (agentId) => {
-    try {
-      await api.rebaseAgent(agentId);
-      await get().fetchGitState(agentId);
-      return true;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return false;
-    }
-  },
+  rebaseAgent: (agentId) => runGitMutation(get, agentId, () => api.rebaseAgent(agentId)),
 
-  commitChanges: async (agentId, message) => {
-    try {
-      await api.commitAgent(agentId, message);
-      await get().fetchGitState(agentId);
-      return true;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return false;
-    }
-  },
+  commitChanges: (agentId, message) =>
+    runGitMutation(get, agentId, () => api.commitAgent(agentId, message)),
 
   commitAndOpenPr: async (agentId, message) => {
     try {
@@ -200,39 +191,19 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   },
 
   stashChanges: async (agentId) => {
-    try {
-      await api.stashAgent(agentId);
-      await get().fetchGitState(agentId);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
+    await runGitMutation(get, agentId, () => api.stashAgent(agentId));
   },
 
   discardChanges: async (agentId) => {
-    try {
-      await api.discardAgentChanges(agentId);
-      await get().fetchGitState(agentId);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
+    await runGitMutation(get, agentId, () => api.discardAgentChanges(agentId));
   },
 
   abortMerge: async (agentId) => {
-    try {
-      await api.abortMergeAgent(agentId);
-      await get().fetchGitState(agentId);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
+    await runGitMutation(get, agentId, () => api.abortMergeAgent(agentId));
   },
 
   deleteBranch: async (agentId) => {
-    try {
-      await api.deleteBranchAgent(agentId);
-      await get().fetchGitState(agentId);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
+    await runGitMutation(get, agentId, () => api.deleteBranchAgent(agentId));
   },
 
   createPr: async (agentId, title, body) => {

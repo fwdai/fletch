@@ -1,5 +1,6 @@
 import type { RawEvent } from "../adapters";
 import { hasUsage, usageFromRecords } from "../adapters/usage";
+import type { AgentRecord, Workspace } from "../api";
 import {
   api,
   onAgentBranch,
@@ -41,6 +42,27 @@ import { getAllSettings } from "../storage/settings";
 import { playAgentDone } from "../util/sound";
 import { interruptedAgents } from "./interrupted";
 import type { AppSlice, SliceCreator } from "./types";
+
+type AppSet = Parameters<SliceCreator<AppSlice>>[0];
+type AppGet = Parameters<SliceCreator<AppSlice>>[1];
+
+type AgentPatch = Partial<AgentRecord> | ((a: AgentRecord) => Partial<AgentRecord>);
+
+// Map the agent matching `agentId` through `patch` (a flat partial or a
+// function of the current record), leaving the rest untouched. Returns the new
+// agents array; callers fold it into the workspace.
+const mapAgents = (ws: Workspace, agentId: string, patch: AgentPatch): AgentRecord[] =>
+  ws.agents.map((a) =>
+    a.id === agentId ? { ...a, ...(typeof patch === "function" ? patch(a) : patch) } : a,
+  );
+
+// Patch a single agent in the workspace and commit it. No-op when the
+// workspace isn't loaded yet.
+const patchAgent = (get: AppGet, set: AppSet, agentId: string, patch: AgentPatch) => {
+  const ws = get().workspace;
+  if (!ws) return;
+  set({ workspace: { ...ws, agents: mapAgents(ws, agentId, patch) } });
+};
 
 export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
   busy: false,
@@ -227,58 +249,21 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     });
 
     await onAgentBranch((e) => {
-      const ws = get().workspace;
-      if (!ws) return;
-      set({
-        workspace: {
-          ...ws,
-          agents: ws.agents.map((a) =>
-            a.id === e.agent_id
-              ? {
-                  ...a,
-                  repos: a.repos.map((r) =>
-                    r.subdir === e.subdir ? { ...r, branch: e.branch } : r,
-                  ),
-                }
-              : a,
-          ),
-        },
-      });
+      patchAgent(get, set, e.agent_id, (a) => ({
+        repos: a.repos.map((r) => (r.subdir === e.subdir ? { ...r, branch: e.branch } : r)),
+      }));
     });
 
     await onAgentRepoAdded((e) => {
-      const ws = get().workspace;
-      if (!ws) return;
-      set({
-        workspace: {
-          ...ws,
-          agents: ws.agents.map((a) =>
-            a.id === e.agent_id ? { ...a, repos: [...a.repos, e.repo] } : a,
-          ),
-        },
-      });
+      patchAgent(get, set, e.agent_id, (a) => ({ repos: [...a.repos, e.repo] }));
     });
 
     await onAgentTask((e) => {
-      const ws = get().workspace;
-      if (!ws) return;
-      set({
-        workspace: {
-          ...ws,
-          agents: ws.agents.map((a) => (a.id === e.agent_id ? { ...a, task: e.task } : a)),
-        },
-      });
+      patchAgent(get, set, e.agent_id, { task: e.task });
     });
 
     await onAgentView((e) => {
-      const ws = get().workspace;
-      if (!ws) return;
-      set({
-        workspace: {
-          ...ws,
-          agents: ws.agents.map((a) => (a.id === e.agent_id ? { ...a, view: e.view } : a)),
-        },
-      });
+      patchAgent(get, set, e.agent_id, { view: e.view });
     });
 
     await onAgentStatus((e) => {
@@ -290,15 +275,10 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
       if (e.status === "running") interruptedAgents.delete(e.agent_id);
       const next = {
         ...ws,
-        agents: ws.agents.map((a) =>
-          a.id === e.agent_id
-            ? {
-                ...a,
-                status: e.status,
-                last_error: e.last_error ?? a.last_error,
-              }
-            : a,
-        ),
+        agents: mapAgents(ws, e.agent_id, (a) => ({
+          status: e.status,
+          last_error: e.last_error ?? a.last_error,
+        })),
       };
       set((state) => ({
         workspace: next,
