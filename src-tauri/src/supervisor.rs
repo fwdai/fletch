@@ -1960,6 +1960,87 @@ pub(crate) fn read_jsonl_values(path: &Path) -> Result<Vec<Value>> {
     Ok(out)
 }
 
+/// Process-exit outcomes that feed `apply_exit_if_current`. `PtyExit` and
+/// `ManagedExit` are distinct types but carry the same fields, so this trait
+/// lets `make_exit_handler` cover both spawners with one closure.
+trait ExitOutcome {
+    fn into_parts(self) -> (bool, String);
+}
+
+impl ExitOutcome for crate::pty_session::PtyExit {
+    fn into_parts(self) -> (bool, String) {
+        (self.success, self.message)
+    }
+}
+
+impl ExitOutcome for crate::managed_session::ManagedExit {
+    fn into_parts(self) -> (bool, String) {
+        (self.success, self.message)
+    }
+}
+
+/// Raw-byte output callback shared by the PTY spawners: record activity, then
+/// emit `agent:output`.
+fn make_output_handler(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+) -> impl Fn(Vec<u8>) + Send + Sync + 'static {
+    move |bytes: Vec<u8>| {
+        if let Some(activity) = sup.activities.lock().get_mut(&agent_id) {
+            activity.observe_bytes(&bytes);
+        }
+
+        if let Err(e) = app.emit(
+            "agent:output",
+            AgentOutputPayload {
+                agent_id: agent_id.clone(),
+                bytes,
+            },
+        ) {
+            tracing::warn!(error = %e, agent_id = %agent_id, "emit agent:output failed");
+        }
+    }
+}
+
+/// Parsed-JSON event callback shared by the managed + per-turn spawners:
+/// record activity, then emit `agent:event`.
+fn make_event_handler(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+) -> impl Fn(Value) + Send + Sync + 'static {
+    move |event: Value| {
+        if let Some(activity) = sup.activities.lock().get_mut(&agent_id) {
+            activity.observe_event(&event);
+        }
+
+        if let Err(e) = app.emit(
+            "agent:event",
+            AgentEventPayload {
+                agent_id: agent_id.clone(),
+                event,
+            },
+        ) {
+            tracing::warn!(error = %e, agent_id = %agent_id, "emit agent:event failed");
+        }
+    }
+}
+
+/// Process-exit callback shared by the pty/managed spawners: hand the outcome
+/// to `apply_exit_if_current`, which ignores exits from a stale generation.
+fn make_exit_handler<E: ExitOutcome>(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+    gen: u64,
+) -> impl Fn(E) + Send + Sync + 'static {
+    move |exit: E| {
+        let (success, message) = exit.into_parts();
+        apply_exit_if_current(&sup, &app, &agent_id, gen, success, message);
+    }
+}
+
 fn spawn_pty_agent(
     spec: SpawnSpec<'_>,
     app: AppHandle,
@@ -1967,36 +2048,10 @@ fn spawn_pty_agent(
     sup: Arc<Supervisor>,
     gen: u64,
 ) -> Result<Agent> {
-    let app_for_output = app.clone();
-    let id_for_output = agent_id.clone();
-    let sup_for_output = sup.clone();
-    let sup_for_exit = sup;
-    let app_for_exit = app.clone();
-    let id_for_exit = agent_id.clone();
     Agent::spawn_pty(
         spec,
-        move |bytes| {
-            if let Some(activity) = sup_for_output
-                .activities
-                .lock()
-                .get_mut(&id_for_output)
-            {
-                activity.observe_bytes(&bytes);
-            }
-
-            if let Err(e) = app_for_output.emit(
-                "agent:output",
-                AgentOutputPayload {
-                    agent_id: id_for_output.clone(),
-                    bytes,
-                },
-            ) {
-                tracing::warn!(error = %e, agent_id = %id_for_output, "emit agent:output failed");
-            }
-        },
-        move |exit| {
-            apply_exit_if_current(&sup_for_exit, &app_for_exit, &id_for_exit, gen, exit.success, exit.message);
-        },
+        make_output_handler(sup.clone(), app.clone(), agent_id.clone()),
+        make_exit_handler(sup, app, agent_id, gen),
     )
 }
 
@@ -2011,33 +2066,11 @@ fn spawn_pty_per_turn_agent(
     sup: Arc<Supervisor>,
     gen: u64,
 ) -> Result<Agent> {
-    let app_for_output = app.clone();
-    let id_for_output = agent_id.clone();
-    let sup_for_output = sup.clone();
-    let sup_for_exit = sup;
-    let app_for_exit = app.clone();
-    let id_for_exit = agent_id.clone();
     Agent::spawn_pty_native(
         spec,
         &provider,
-        move |bytes| {
-            if let Some(activity) = sup_for_output.activities.lock().get_mut(&id_for_output) {
-                activity.observe_bytes(&bytes);
-            }
-
-            if let Err(e) = app_for_output.emit(
-                "agent:output",
-                AgentOutputPayload {
-                    agent_id: id_for_output.clone(),
-                    bytes,
-                },
-            ) {
-                tracing::warn!(error = %e, agent_id = %id_for_output, "emit agent:output failed");
-            }
-        },
-        move |exit| {
-            apply_exit_if_current(&sup_for_exit, &app_for_exit, &id_for_exit, gen, exit.success, exit.message);
-        },
+        make_output_handler(sup.clone(), app.clone(), agent_id.clone()),
+        make_exit_handler(sup, app, agent_id, gen),
     )
 }
 
@@ -2048,36 +2081,10 @@ fn spawn_managed_agent(
     sup: Arc<Supervisor>,
     gen: u64,
 ) -> Result<Agent> {
-    let app_for_event = app.clone();
-    let id_for_event = agent_id.clone();
-    let sup_for_event = sup.clone();
-    let sup_for_exit = sup.clone();
-    let app_for_exit = app.clone();
-    let id_for_exit = agent_id.clone();
     Agent::spawn_managed(
         spec,
-        move |event| {
-            if let Some(activity) = sup_for_event
-                .activities
-                .lock()
-                .get_mut(&id_for_event)
-            {
-                activity.observe_event(&event);
-            }
-
-            if let Err(e) = app_for_event.emit(
-                "agent:event",
-                AgentEventPayload {
-                    agent_id: id_for_event.clone(),
-                    event,
-                },
-            ) {
-                tracing::warn!(error = %e, agent_id = %id_for_event, "emit agent:event failed");
-            }
-        },
-        move |exit| {
-            apply_exit_if_current(&sup_for_exit, &app_for_exit, &id_for_exit, gen, exit.success, exit.message);
-        },
+        make_event_handler(sup.clone(), app.clone(), agent_id.clone()),
+        make_exit_handler(sup, app, agent_id, gen),
     )
 }
 
@@ -2099,29 +2106,13 @@ fn spawn_per_turn_agent(
     sup: Arc<Supervisor>,
     gen: u64,
 ) -> Result<Agent> {
-    let app_for_event = app.clone();
-    let id_for_event = agent_id.clone();
-    let sup_for_event = sup.clone();
     let id_for_sid = agent_id.clone();
     let sup_for_sid = sup.clone();
-    let app_for_exit = app;
-    let id_for_exit = agent_id;
-    let sup_for_exit = sup;
+    let app_for_exit = app.clone();
+    let id_for_exit = agent_id.clone();
+    let sup_for_exit = sup.clone();
 
-    let on_event = move |event: Value| {
-        if let Some(activity) = sup_for_event.activities.lock().get_mut(&id_for_event) {
-            activity.observe_event(&event);
-        }
-        if let Err(e) = app_for_event.emit(
-            "agent:event",
-            AgentEventPayload {
-                agent_id: id_for_event.clone(),
-                event,
-            },
-        ) {
-            tracing::warn!(error = %e, agent_id = %id_for_event, "emit agent:event failed");
-        }
-    };
+    let on_event = make_event_handler(sup, app, agent_id);
     let on_session_id = move |sid: String| {
         if let Err(e) = sup_for_sid.workspace.set_agent_session_id(&id_for_sid, &sid) {
             tracing::warn!(error = %e, agent_id = %id_for_sid, "persist session id failed");
