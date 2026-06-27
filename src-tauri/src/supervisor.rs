@@ -551,7 +551,7 @@ impl Supervisor {
         let app_for_task = app.clone();
         let id_for_task = agent_id.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = std::fs::create_dir_all(&parent_dir) {
+            if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                 return;
             }
@@ -583,7 +583,7 @@ impl Supervisor {
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
                 let _ = git::worktree_remove(&repo_path, &primary_worktree, true).await;
-                let _ = std::fs::remove_dir_all(&parent_dir);
+                let _ = tokio::fs::remove_dir_all(&parent_dir).await;
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
             }
         });
@@ -1246,7 +1246,7 @@ impl Supervisor {
         // Best-effort parent dir cleanup.
         if let Ok(parent) = agent_parent_dir(agent_id) {
             if parent.exists() {
-                let _ = std::fs::remove_dir_all(&parent);
+                let _ = tokio::fs::remove_dir_all(&parent).await;
             }
         }
 
@@ -1305,7 +1305,8 @@ impl Supervisor {
 
         // Ensure the agent parent dir exists.
         let parent_dir = agent_parent_dir(agent_id)?;
-        std::fs::create_dir_all(&parent_dir)
+        tokio::fs::create_dir_all(&parent_dir)
+            .await
             .map_err(|e| Error::Other(format!("create parent dir: {e}")))?;
 
         let mut restored: Vec<TrackedRepo> = Vec::with_capacity(archive.repos.len());
@@ -1314,7 +1315,8 @@ impl Supervisor {
 
             let worktree = repo_worktree_path(agent_id, &snap.subdir)?;
             if let Some(parent) = worktree.parent() {
-                std::fs::create_dir_all(parent)
+                tokio::fs::create_dir_all(parent)
+                    .await
                     .map_err(|e| Error::Other(format!("create worktree parent: {e}")))?;
             }
 
@@ -1538,7 +1540,7 @@ impl Supervisor {
         // worktree removal failed). Best-effort.
         if let Some(parent) = parent_dir {
             if parent.exists() {
-                let _ = std::fs::remove_dir_all(&parent);
+                let _ = tokio::fs::remove_dir_all(&parent).await;
             }
         }
 
