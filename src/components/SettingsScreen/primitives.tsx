@@ -77,13 +77,7 @@ export function SetRow({
   );
 }
 
-export function SetToggle({
-  on,
-  onClick,
-}: {
-  on: boolean;
-  onClick: () => void;
-}) {
+export function SetToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   return (
     <button
       type="button"

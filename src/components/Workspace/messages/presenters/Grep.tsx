@@ -1,11 +1,5 @@
 import type { ToolPresenter } from "./types";
-import {
-  ToolBlock,
-  SummaryNote,
-  countResultLines,
-  getStringField,
-  renderToolResult,
-} from "./util";
+import { countResultLines, getStringField, renderToolResult, SummaryNote, ToolBlock } from "./util";
 
 /** A muted count of what the grep returned, labelled by output_mode:
  *  - files_with_matches (default): one path per line  -> "N files"
@@ -31,13 +25,7 @@ function grepCount(
 
   const lines = countResultLines(result);
   const label =
-    mode === "content"
-      ? lines === 1
-        ? "match"
-        : "matches"
-      : lines === 1
-        ? "file"
-        : "files";
+    mode === "content" ? (lines === 1 ? "match" : "matches") : lines === 1 ? "file" : "files";
   return { count: lines, label };
 }
 

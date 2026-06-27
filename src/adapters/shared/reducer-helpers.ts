@@ -15,14 +15,8 @@ function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
  *  emits text/tool_use as separate content blocks within one turn, and a
  *  text delta arriving after a tool_use start still belongs to the agent
  *  message that's still streaming. */
-export function extendLastAssistant(
-  items: ChatItem[],
-  appendText: string,
-): ChatItem[] {
-  const idx = findLastIndex(
-    items,
-    (it) => it.kind === "agent_message" && it.streaming === true,
-  );
+export function extendLastAssistant(items: ChatItem[], appendText: string): ChatItem[] {
+  const idx = findLastIndex(items, (it) => it.kind === "agent_message" && it.streaming === true);
   if (idx !== -1) {
     const item = items[idx];
     if (item.kind === "agent_message") {
@@ -31,10 +25,7 @@ export function extendLastAssistant(
       return next;
     }
   }
-  return [
-    ...items,
-    { kind: "agent_message", text: appendText, streaming: true },
-  ];
+  return [...items, { kind: "agent_message", text: appendText, streaming: true }];
 }
 
 /** Clear the `streaming` flag on every streaming agent_message and tool_call.
@@ -63,9 +54,7 @@ export function upsertToolCall(
   items: ChatItem[],
   tool: Extract<ChatItem, { kind: "tool_call" }>,
 ): ChatItem[] {
-  const idx = items.findIndex(
-    (item) => item.kind === "tool_call" && item.id === tool.id,
-  );
+  const idx = items.findIndex((item) => item.kind === "tool_call" && item.id === tool.id);
   if (idx === -1) return [...items, tool];
   const next = items.slice();
   next[idx] = { ...tool };
@@ -95,8 +84,7 @@ export function appendToolInputDelta(
   if (idx === -1) return items;
   const item = items[idx];
   if (item.kind !== "tool_call") return items;
-  const input =
-    typeof item.input === "string" ? item.input + partialJson : partialJson;
+  const input = typeof item.input === "string" ? item.input + partialJson : partialJson;
   const next = items.slice();
   next[idx] = { ...item, input };
   return next;
@@ -134,8 +122,7 @@ export function dedupAgainstLast(
     last &&
     last.kind === "notice" &&
     last.subtype === "slash_command" &&
-    (candidate.text === last.text ||
-      candidate.text.startsWith(last.text + " "))
+    (candidate.text === last.text || candidate.text.startsWith(`${last.text} `))
   ) {
     return items;
   }

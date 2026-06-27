@@ -56,16 +56,15 @@ export function GhGate({ gh }: { gh: GhStatus }) {
           <>
             <div className="np-gate-t">GitHub CLI not found</div>
             <div className="np-gate-s">
-              Install the <code>gh</code> CLI to clone and create GitHub
-              repositories, then reopen this dialog.
+              Install the <code>gh</code> CLI to clone and create GitHub repositories, then reopen
+              this dialog.
             </div>
           </>
         ) : (
           <>
             <div className="np-gate-t">Not signed in to GitHub</div>
             <div className="np-gate-s">
-              Run <code>gh auth login</code> in your terminal, then reopen this
-              dialog.
+              Run <code>gh auth login</code> in your terminal, then reopen this dialog.
             </div>
           </>
         )}

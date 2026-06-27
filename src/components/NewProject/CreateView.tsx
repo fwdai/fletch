@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useAppStore } from "../../store";
 import { isValidRepoName } from "../../util/repoSpec";
-import { Segmented } from "../Settings/Segmented";
 import { Icon } from "../Icon";
+import { Segmented } from "../Settings/Segmented";
 import { DestRow, GhGate, type NewProjectShared } from "./shared";
 
 /** Create a brand-new repo locally and publish it to GitHub. */
@@ -27,7 +27,12 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
     setBusy(true);
     setError(null);
     try {
-      await createRepo(name.trim(), parent, visibility === "private", description.trim() || undefined);
+      await createRepo(
+        name.trim(),
+        parent,
+        visibility === "private",
+        description.trim() || undefined,
+      );
       onDone();
     } catch (e) {
       setError(String(e));
@@ -45,11 +50,7 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        {showNameError && (
-          <div className="np-hint e">
-            Use only letters, digits, “.”, “-”, “_”.
-          </div>
-        )}
+        {showNameError && <div className="np-hint e">Use only letters, digits, “.”, “-”, “_”.</div>}
       </div>
 
       <div className="np-field">
@@ -65,7 +66,9 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
       </div>
 
       <div className="np-field">
-        <label>Description <span className="np-opt">(optional)</span></label>
+        <label>
+          Description <span className="np-opt">(optional)</span>
+        </label>
         <input
           placeholder="What is this project?"
           value={description}

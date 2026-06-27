@@ -1,6 +1,6 @@
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
-import { SetHead, SetGroup, SetRow } from "./primitives";
+import { SetGroup, SetHead, SetRow } from "./primitives";
 
 /** Dev-only settings surface. The nav entry that routes here is gated on
  *  `import.meta.env.DEV`, so this pane only ships under `bun tauri dev`. */

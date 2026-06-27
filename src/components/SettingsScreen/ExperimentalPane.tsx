@@ -1,5 +1,5 @@
 import { useAppStore } from "../../store";
-import { SetHead, SetGroup, SetRow, SetToggle, type FeatureItem } from "./primitives";
+import { type FeatureItem, SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
 
 const EXPERIMENTS: FeatureItem[] = [
   {

@@ -1,7 +1,7 @@
 import { api } from "../api";
 import type { GitCommitAction } from "../components/RightPanel/primaryActions";
 import { setSetting } from "../storage/settings";
-import type { SliceCreator, GitSlice } from "./types";
+import type { GitSlice, SliceCreator } from "./types";
 
 export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   gitStates: {},
@@ -72,11 +72,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // throws would otherwise leave the key absent and pin the panel's
       // "checking…" placeholder, so degrade it to null (mergeable-only
       // fallback). A later transient error keeps the last good value.
-      set((s) =>
-        agentId in s.prChecks
-          ? {}
-          : { prChecks: { ...s.prChecks, [agentId]: null } },
-      );
+      set((s) => (agentId in s.prChecks ? {} : { prChecks: { ...s.prChecks, [agentId]: null } }));
     }
   },
 
@@ -88,9 +84,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // Non-fatal — the next poll tick retries. Degrade a first failure to
       // null (section omitted) rather than leaving the key absent.
       set((s) =>
-        agentId in s.prComments
-          ? {}
-          : { prComments: { ...s.prComments, [agentId]: null } },
+        agentId in s.prComments ? {} : { prComments: { ...s.prComments, [agentId]: null } },
       );
     }
   },
@@ -122,7 +116,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   markGitDelegationDequeued: (agentId) => {
     set((s) => {
       const d = s.gitDelegations[agentId];
-      if (!d || !d.queued) return s;
+      if (!d?.queued) return s;
       return {
         gitDelegations: {
           ...s.gitDelegations,

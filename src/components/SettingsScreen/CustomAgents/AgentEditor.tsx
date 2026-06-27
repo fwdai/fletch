@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { PROVIDERS } from "../../../data/providers";
-import { useAppStore } from "../../../store";
 import type { NewCustomAgent } from "../../../storage/customAgents";
+import { useAppStore } from "../../../store";
 import { Icon } from "../../Icon";
 import { ProviderIcon } from "../../ProviderIcon";
 import { Select } from "../../ui/Select";
@@ -141,9 +141,7 @@ export function AgentEditor({
               options={bases.map((p) => ({
                 value: p.id,
                 label: p.label,
-                icon: (
-                  <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={16} />
-                ),
+                icon: <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={16} />,
               }))}
             />
           </div>
@@ -175,11 +173,7 @@ export function AgentEditor({
             Reasoning budget
             <span className="ca-field-hint">Default thinking depth when this agent runs</span>
           </label>
-          <SetSeg
-            value={form.effort}
-            options={EFFORTS}
-            onChange={(v) => set({ effort: v })}
-          />
+          <SetSeg value={form.effort} options={EFFORTS} onChange={(v) => set({ effort: v })} />
         </div>
 
         {/* instructions */}

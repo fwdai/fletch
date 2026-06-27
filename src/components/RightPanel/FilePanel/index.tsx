@@ -15,19 +15,19 @@
 // Faithful port of the design (quorum v2 files.jsx), wired to the real
 // worktree via the `*_worktree_*` Tauri commands.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type AgentRecord, type WorktreeFile } from "../../../api";
-import { usePoll } from "../../../util/hooks";
+import { type AgentRecord, api, type WorktreeFile } from "../../../api";
 import { joinPath, parentDir } from "../../../util/format";
-import { FileContextMenu, type ContextMenuEntry } from "../FileContextMenu";
-import { TreeBrowser } from "./TreeBrowser";
+import { usePoll } from "../../../util/hooks";
+import { type ContextMenuEntry, FileContextMenu } from "../FileContextMenu";
 import { FileViewer } from "./FileViewer";
+import { TreeBrowser } from "./TreeBrowser";
 import {
   buildTree,
   duplicatePath,
-  errMsg,
-  filterTree,
   type EditState,
+  errMsg,
   type FileNode,
+  filterTree,
   type MenuState,
   type TreeNode,
 } from "./tree";
@@ -83,10 +83,7 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
   }, [openPath, refresh]);
   usePoll(pollTree, 2000, [pollTree]);
 
-  const fullTree = useMemo(
-    () => buildTree(files, [...pendingDirs]),
-    [files, pendingDirs],
-  );
+  const fullTree = useMemo(() => buildTree(files, [...pendingDirs]), [files, pendingDirs]);
 
   // Once a real file lands inside a tracked empty-dir, git lists the dir via
   // that file, so we can stop injecting it (and keep the set from growing).
@@ -94,7 +91,9 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
     setPendingDirs((s) => {
       if (!s.size) return s;
       const next = new Set(
-        [...s].filter((d) => !files.some((file) => file.path === d || file.path.startsWith(`${d}/`))),
+        [...s].filter(
+          (d) => !files.some((file) => file.path === d || file.path.startsWith(`${d}/`)),
+        ),
       );
       return next.size === s.size ? s : next;
     });
@@ -105,9 +104,7 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
 
   const changedCount = useMemo(() => files.filter((f) => f.status).length, [files]);
   const filtering = query.trim() !== "" || changedOnly;
-  const tree = filtering
-    ? filterTree(fullTree, query.trim().toLowerCase(), changedOnly)
-    : fullTree;
+  const tree = filtering ? filterTree(fullTree, query.trim().toLowerCase(), changedOnly) : fullTree;
 
   const toggleDir = (path: string) =>
     setExpanded((s) => {
@@ -117,8 +114,7 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
       return n;
     });
 
-  const expand = (path: string) =>
-    setExpanded((s) => new Set(s).add(path));
+  const expand = (path: string) => setExpanded((s) => new Set(s).add(path));
 
   // ── file operations ───────────────────────────────────────────────────
   const allPaths = useMemo(() => new Set(files.map((f) => f.path)), [files]);
@@ -137,13 +133,19 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
   const commitEdit = async (value: string) => {
     const name = value.trim();
     if (!edit) return;
-    if (!name) { setEdit(null); return; }
+    if (!name) {
+      setEdit(null);
+      return;
+    }
     setOpError(null);
     try {
       if (edit.mode === "rename") {
         const from = edit.path;
         const dest = joinPath(parentDir(from), name);
-        if (dest === from) { setEdit(null); return; }
+        if (dest === from) {
+          setEdit(null);
+          return;
+        }
         await api.renameWorktreePath(agent.id, from, dest);
         // An empty folder we're tracking moves with the rename; re-point it (and
         // any tracked descendants) or it would vanish and leave a phantom.
@@ -220,7 +222,14 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
       { icon: "folder", label: "New Folder…", onClick: () => beginCreate("newFolder", target) },
     ];
     const common: ContextMenuEntry[] = [
-      { icon: "edit", label: "Rename…", onClick: () => { setOpError(null); setEdit({ mode: "rename", path: node.path, isDir: node.type === "dir" }); } },
+      {
+        icon: "edit",
+        label: "Rename…",
+        onClick: () => {
+          setOpError(null);
+          setEdit({ mode: "rename", path: node.path, isDir: node.type === "dir" });
+        },
+      },
       { icon: "copy", label: "Copy Path", feedbackLabel: "Copied", onClick: () => copyPath(node) },
     ];
     const del: ContextMenuEntry = {
@@ -250,7 +259,10 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
         key={openPath}
         agent={agent}
         path={openPath}
-        onBack={() => { onOpenPath(null); void refresh(); }}
+        onBack={() => {
+          onOpenPath(null);
+          void refresh();
+        }}
       />
     );
   }

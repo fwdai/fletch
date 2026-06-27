@@ -1,7 +1,7 @@
-import type { ToolPresenter } from "./types";
-import { ToolBlock, DiffCount, getStringField, renderToolResult } from "./util";
 import { basename } from "../../../../util/format";
 import { lineDiffCounts } from "../../../../util/lineDiff";
+import type { ToolPresenter } from "./types";
+import { DiffCount, getStringField, renderToolResult, ToolBlock } from "./util";
 
 interface SingleEdit {
   old_string: string;
@@ -66,9 +66,7 @@ export const multiEditPresenter: ToolPresenter = {
             )}
             {e.new_string && (
               <ToolBlock label="+ new">
-                <span style={{ color: "var(--success, #6c9c5e)" }}>
-                  {e.new_string}
-                </span>
+                <span style={{ color: "var(--success, #6c9c5e)" }}>{e.new_string}</span>
               </ToolBlock>
             )}
           </div>

@@ -2,16 +2,16 @@
 // syntax-highlight layer, with line numbers and a git-style change gutter.
 // Edit, ⌘S to save, Revert to restore the agent's version. The "Diff" toggle
 // swaps the editor for a read-only unified diff of the agent's changes.
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { api, type AgentRecord, type WorktreeFileContents } from "../../../api";
-import { useAppStore } from "../../../store";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type AgentRecord, api, type WorktreeFileContents } from "../../../api";
 import { CODE_THEMES } from "../../../data/codeThemes";
-import { highlightToHtml } from "../../../util/highlight";
-import { useHljsTheme } from "../../../util/codeTheme";
 import { langLabel } from "../../../data/languages";
+import { useAppStore } from "../../../store";
+import { useHljsTheme } from "../../../util/codeTheme";
+import { highlightToHtml } from "../../../util/highlight";
 import { Icon } from "../../Icon";
-import { ViewerHeader } from "./ViewerHeader";
 import { FileDiff } from "../Code/DiffView";
+import { ViewerHeader } from "./ViewerHeader";
 
 interface FileEditorProps {
   agent: AgentRecord;
@@ -49,7 +49,9 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
   const savedRef = useRef(originalText);
   const valueRef = useRef(value);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { valueRef.current = value; }, [value]);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
 
   const lines = value.split("\n");
   const origLines = useMemo(() => originalText.split("\n"), [originalText]);
@@ -95,7 +97,10 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
 
   // Write the latest buffer to disk if it differs from what's there.
   const flush = async () => {
-    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
     const text = valueRef.current;
     if (text === savedRef.current) return;
     setSaveState("saving");
@@ -113,7 +118,9 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
   const scheduleSave = () => {
     setSaveState("saving");
     if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => { void flush(); }, 600);
+    timerRef.current = setTimeout(() => {
+      void flush();
+    }, 600);
   };
 
   // Let the "Saved" tick fade back to idle.
@@ -134,9 +141,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
         // failed final save through the global banner instead of losing it
         // silently. `getState()` avoids a stale closure in cleanup.
         void api.writeWorktreeFile(agent.id, path, text).catch((e) => {
-          useAppStore
-            .getState()
-            .setLastError(`Couldn't save ${path}: ${String(e)}`);
+          useAppStore.getState().setLastError(`Couldn't save ${path}: ${String(e)}`);
         });
       }
     };
@@ -144,7 +149,10 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
 
   const revert = async () => {
     // Restore the agent's version on disk and in the editor.
-    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
     setSaveState("saving");
     try {
       await api.writeWorktreeFile(agent.id, path, originalText);
@@ -177,9 +185,11 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
       const ta = e.currentTarget;
       const s = ta.selectionStart;
       const en = ta.selectionEnd;
-      const next = value.slice(0, s) + "  " + value.slice(en);
+      const next = `${value.slice(0, s)}  ${value.slice(en)}`;
       onChange(next);
-      requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = s + 2; });
+      requestAnimationFrame(() => {
+        ta.selectionStart = ta.selectionEnd = s + 2;
+      });
     }
   };
 
@@ -261,25 +271,44 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
       <div className="fp-meta">
         <span className="fp-meta-lang">{langLabel(file.lang)}</span>
         {diffView ? (
-          <><span className="fp-meta-dot">·</span><span>Diff vs {file.status === "A" ? "new file" : "base"}</span></>
+          <>
+            <span className="fp-meta-dot">·</span>
+            <span>Diff vs {file.status === "A" ? "new file" : "base"}</span>
+          </>
         ) : (
           <>
             <span className="fp-meta-dot">·</span>
             <span>{lines.length} lines</span>
             {saveState === "saving" ? (
-              <><span className="fp-meta-dot">·</span><span className="fp-meta-edited">Saving…</span></>
+              <>
+                <span className="fp-meta-dot">·</span>
+                <span className="fp-meta-edited">Saving…</span>
+              </>
             ) : saveState === "saved" ? (
-              <><span className="fp-meta-dot">·</span><span className="fp-meta-saved">Saved ✓</span></>
+              <>
+                <span className="fp-meta-dot">·</span>
+                <span className="fp-meta-saved">Saved ✓</span>
+              </>
             ) : saveState === "error" ? (
-              <><span className="fp-meta-dot">·</span><span className="fp-meta-failed">Save failed</span></>
+              <>
+                <span className="fp-meta-dot">·</span>
+                <span className="fp-meta-failed">Save failed</span>
+              </>
             ) : editedFromAgent ? (
-              <><span className="fp-meta-dot">·</span><span className="fp-meta-edited">Edited</span></>
+              <>
+                <span className="fp-meta-dot">·</span>
+                <span className="fp-meta-edited">Edited</span>
+              </>
             ) : null}
           </>
         )}
         <span className="fp-meta-grow"></span>
         {!diffView && editedFromAgent && (
-          <button className="fp-meta-btn" title="Discard edits, restore the agent's version" onClick={() => void revert()}>
+          <button
+            className="fp-meta-btn"
+            title="Discard edits, restore the agent's version"
+            onClick={() => void revert()}
+          >
             <Icon name="refresh" size={11} /> Revert
           </button>
         )}
@@ -290,7 +319,9 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
           title="Syntax highlighting theme"
         >
           {CODE_THEMES.map((t) => (
-            <option key={t.id} value={t.id}>{t.label}</option>
+            <option key={t.id} value={t.id}>
+              {t.label}
+            </option>
           ))}
         </select>
       </div>

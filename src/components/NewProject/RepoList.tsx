@@ -61,9 +61,7 @@ export function RepoList({ selected, onSelect }: Props) {
       <div className="np-list">
         {filtered.length === 0 && (
           <div className="np-list-msg">
-            {query.trim()
-              ? `No repositories match “${query}”.`
-              : "No repositories found."}
+            {query.trim() ? `No repositories match “${query}”.` : "No repositories found."}
           </div>
         )}
         {filtered.map((r) => (

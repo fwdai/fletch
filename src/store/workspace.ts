@@ -1,16 +1,16 @@
+import type { ChatItem } from "../adapters";
+import { hasUsage, usageFromRecords } from "../adapters/usage";
 import { api } from "../api";
-import { type ChatItem } from "../adapters";
-import { usageFromRecords, hasUsage } from "../adapters/usage";
-import { setSetting } from "../storage/settings";
-import { clearOutputBuffer } from "../pty/buffers";
 import {
-  providerFor,
-  passthroughSlashName,
-  reduceRecords,
   applyUserTurns,
-  sendWhenAgentReady,
   dropAgentEntries,
+  passthroughSlashName,
+  providerFor,
+  reduceRecords,
+  sendWhenAgentReady,
 } from "../helpers";
+import { clearOutputBuffer } from "../pty/buffers";
+import { setSetting } from "../storage/settings";
 import { interruptedAgents } from "./interrupted";
 import type { AppState, SliceCreator, WorkspaceSlice } from "./types";
 

@@ -1,12 +1,6 @@
-import type { ToolPresenter } from "./types";
-import {
-  ToolBlock,
-  SummaryNote,
-  countResultLines,
-  getStringField,
-  renderToolResult,
-} from "./util";
 import { basename } from "../../../../util/format";
+import type { ToolPresenter } from "./types";
+import { countResultLines, getStringField, renderToolResult, SummaryNote, ToolBlock } from "./util";
 
 export const readPresenter: ToolPresenter = {
   icon: "file",

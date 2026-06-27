@@ -6,12 +6,23 @@ const base = { prNumber: 7, base: "main" };
 
 function git(over: Partial<GitState> = {}): GitState {
   return {
-    branch: "feat", parent_branch: "main", ahead: 1, behind: 0, unpushed: 0,
-    files: [], additions: 0, deletions: 0, ...over,
+    branch: "feat",
+    parent_branch: "main",
+    ahead: 1,
+    behind: 0,
+    unpushed: 0,
+    files: [],
+    additions: 0,
+    deletions: 0,
+    ...over,
   };
 }
 const file = (kind: GitState["files"][number]["kind"]) => ({
-  path: "a.ts", kind, staged: false, additions: 1, deletions: 0,
+  path: "a.ts",
+  kind,
+  staged: false,
+  additions: 1,
+  deletions: 0,
 });
 function pr(over: Partial<PrState> = {}): PrState {
   return { number: 7, url: "https://x", state: "open", title: "t", mergeable: true, ...over };
@@ -36,8 +47,12 @@ describe("changes-state sticky commit action", () => {
   });
 
   it("honors the persisted selection", () => {
-    expect(primaryFor("changes", { files: 2, commitAction: "agent-commit" }).key).toBe("agent-commit");
-    expect(primaryFor("changes", { files: 2, commitAction: "agent-commit-push" }).key).toBe("agent-commit-push");
+    expect(primaryFor("changes", { files: 2, commitAction: "agent-commit" }).key).toBe(
+      "agent-commit",
+    );
+    expect(primaryFor("changes", { files: 2, commitAction: "agent-commit-push" }).key).toBe(
+      "agent-commit-push",
+    );
   });
 
   it("remaps Commit & open PR to Commit & push when a PR is already open", () => {
@@ -122,7 +137,9 @@ describe("pr-open secondary menu", () => {
   });
 
   it("offers agent-fix when checks are failing", () => {
-    const keys = secondaryFor("pr-open", { ...base, mergeState: "unstable", checksFailed: 1 }).map((s) => s.key);
+    const keys = secondaryFor("pr-open", { ...base, mergeState: "unstable", checksFailed: 1 }).map(
+      (s) => s.key,
+    );
     expect(keys).toContain("agent-fix");
   });
 

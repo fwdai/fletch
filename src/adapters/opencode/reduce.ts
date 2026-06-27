@@ -19,7 +19,6 @@
 // `step_finish:tool-calls`, and the final step ends with `step_finish:stop`,
 // which is the end-of-turn signal.
 
-import type { ChatItem, RawEvent } from "../types";
 import { asRecord } from "../shared/json";
 import {
   aliasToolInput,
@@ -27,6 +26,7 @@ import {
   finalizeStreamingItems,
   upsertToolCall,
 } from "../shared/reducer-helpers";
+import type { ChatItem, RawEvent } from "../types";
 
 /** OpenCode uses camelCase file fields (`filePath`/`oldString`/`newString`)
  *  while the shared tool presenters read Claude's snake_case names. Alias
@@ -149,12 +149,8 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
     // Defensive: surface a top-level error event as a visible notice.
     case "error": {
       const items = finalizeStreamingItems(prev);
-      const message =
-        typeof ev.message === "string" ? ev.message : "OpenCode reported an error.";
-      return [
-        ...items,
-        { kind: "notice", subtype: "error", text: message, is_error: true },
-      ];
+      const message = typeof ev.message === "string" ? ev.message : "OpenCode reported an error.";
+      return [...items, { kind: "notice", subtype: "error", text: message, is_error: true }];
     }
 
     default:

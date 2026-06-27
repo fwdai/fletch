@@ -1,17 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  api,
-  onRunOutput,
-  onRunState,
-  type AgentRecord,
-  type RunPhase,
-} from "../../api";
-import { Icon } from "../Icon";
+import { type AgentRecord, api, onRunOutput, onRunState, type RunPhase } from "../../api";
 import {
   deleteProjectSetting,
   getProjectSettings,
   setProjectSetting,
 } from "../../storage/projectSettings";
+import { Icon } from "../Icon";
 import { RunSettingsSheet, type SetupRow } from "./RunSettingsSheet";
 import { reconcileOverrides } from "./reconcileOverrides";
 
@@ -134,9 +128,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
 
     onRunOutput((e) => {
       if (e.agent_id !== agent.id) return;
-      const chunk = stripAnsi(
-        decoder.decode(new Uint8Array(e.bytes), { stream: true }),
-      );
+      const chunk = stripAnsi(decoder.decode(new Uint8Array(e.bytes), { stream: true }));
       setLog((prev) => prev + chunk);
     }).then((un) => {
       if (cancelled) {
@@ -172,13 +164,13 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     el.scrollTop = el.scrollHeight;
   }, [log]);
 
-  const valueOf = (id: string) => {
+  const fieldValue = (id: string) => {
     const row = rows.find((r) => r.id === id);
     return overrides[id] ?? row?.value ?? "";
   };
 
-  const devCmd = valueOf("dev");
-  const port = valueOf("port");
+  const devCmd = fieldValue("dev");
+  const port = fieldValue("port");
   const isActive = phase === "setup" || phase === "running";
   const linkLive = phase === "running";
 
@@ -240,7 +232,9 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           target="_blank"
           rel="noreferrer"
           className={`run-link${linkLive ? "" : " disabled"}`}
-          onClick={(e) => { if (!linkLive) e.preventDefault(); }}
+          onClick={(e) => {
+            if (!linkLive) e.preventDefault();
+          }}
         >
           <span className="colon">:</span>
           <span className="port">{port}</span>
@@ -260,9 +254,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       {/* ── Logs ── */}
       <div className="run-logs" ref={logRef}>
         {log.length > 0 && <div>{log}</div>}
-        {lastError && phase === "stopped" && (
-          <div className="e">{lastError}</div>
-        )}
+        {lastError && phase === "stopped" && <div className="e">{lastError}</div>}
         {isActive && (
           <div className="p">
             {"› "}

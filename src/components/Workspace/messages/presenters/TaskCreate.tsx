@@ -1,6 +1,6 @@
 import { Markdown } from "../../../Markdown";
 import type { ToolPresenter } from "./types";
-import { ToolBlock, getStringField, renderToolResult } from "./util";
+import { getStringField, renderToolResult, ToolBlock } from "./util";
 
 /** Pull a metadata object off the input bag, if present and non-empty. */
 function getMetadata(input: unknown): Record<string, unknown> | null {
@@ -15,9 +15,7 @@ function getMetadata(input: unknown): Record<string, unknown> | null {
 
 /** Extract the created task number from a result like
  *  "Task #4 created successfully: …". Returns "" when not found. */
-function getTaskNumber(
-  result: { content: unknown; is_error?: boolean } | null,
-): string {
+function getTaskNumber(result: { content: unknown; is_error?: boolean } | null): string {
   if (!result || result.is_error) return "";
   const match = renderToolResult(result.content).match(/#(\d+)/);
   return match ? `#${match[1]}` : "";
@@ -30,9 +28,7 @@ export const taskCreatePresenter: ToolPresenter = {
     const number = getTaskNumber(result);
     return (
       <>
-        {number && (
-          <span style={{ color: "var(--fg-3)", marginRight: 8 }}>{number}</span>
-        )}
+        {number && <span style={{ color: "var(--fg-3)", marginRight: 8 }}>{number}</span>}
         {subject || "(untitled task)"}
       </>
     );
@@ -70,11 +66,7 @@ export const taskCreatePresenter: ToolPresenter = {
             ⟳ {activeForm}
           </div>
         )}
-        {metadata && (
-          <ToolBlock label="metadata">
-            {JSON.stringify(metadata, null, 2)}
-          </ToolBlock>
-        )}
+        {metadata && <ToolBlock label="metadata">{JSON.stringify(metadata, null, 2)}</ToolBlock>}
         {result && (
           <div
             className={result.is_error ? "m-agent" : "m-agent m-agent-dim"}

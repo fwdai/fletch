@@ -1,10 +1,9 @@
-import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { piAdapter } from "./index";
+import { describe, expect, it } from "vitest";
 import type { ChatItem, RawEvent } from "../types";
+import { piAdapter } from "./index";
 
 // Fixtures are real `pi -p --mode json` output captured from pi 0.74.2
 // (@earendil-works/pi-coding-agent — see ./reduce.ts).
@@ -66,9 +65,7 @@ describe("piAdapter", () => {
 
   it("aliases Pi's `path` arg to `file_path` for the presenters", () => {
     const items = run(readJsonl("write.jsonl") as RawEvent[]);
-    const write = items.find(
-      (i) => i.kind === "tool_call" && i.name === "write",
-    );
+    const write = items.find((i) => i.kind === "tool_call" && i.name === "write");
     expect(write).toMatchObject({
       input: { path: "note.txt", file_path: "note.txt", content: "hi-there" },
     });
@@ -89,7 +86,13 @@ describe("piAdapter", () => {
 
   it("flags an errored tool result", () => {
     const items = run([
-      { type: "tool_execution_end", toolCallId: "z", toolName: "bash", result: { content: [{ type: "text", text: "boom" }] }, isError: true },
+      {
+        type: "tool_execution_end",
+        toolCallId: "z",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "boom" }] },
+        isError: true,
+      },
     ] as RawEvent[]);
     expect(items).toEqual([
       { kind: "tool_result", tool_use_id: "z", content: "boom", is_error: true },
@@ -121,9 +124,7 @@ describe("piAdapter", () => {
 
   it("captures a thinking block as a reasoning notice (real --thinking output)", () => {
     const items = run(readJsonl("reasoning.jsonl") as RawEvent[]);
-    const reasoning = items.find(
-      (i) => i.kind === "notice" && i.subtype === "reasoning",
-    );
+    const reasoning = items.find((i) => i.kind === "notice" && i.subtype === "reasoning");
     expect(reasoning).toBeDefined();
     expect((reasoning as { text: string }).text).toContain("12 times 8 equals 96");
     expect(piAdapter.policy["notice:reasoning"]).toBe("show");

@@ -2,7 +2,15 @@ import type { GitState, MergeState, PrState } from "../../api";
 import type { IconName } from "../Icon";
 
 /** Derived git panel state — computed from live GitState, not stored. */
-export type GitPanelState = "clean" | "changes" | "pushed" | "conflicts" | "pr-open" | "pr-closed" | "merged" | "loading";
+export type GitPanelState =
+  | "clean"
+  | "changes"
+  | "pushed"
+  | "conflicts"
+  | "pr-open"
+  | "pr-closed"
+  | "merged"
+  | "loading";
 
 /** Map live git + PR state to the panel state. Uncommitted changes outrank
  *  an open PR — the user's in-flight work is the actionable thing; the PR
@@ -11,10 +19,10 @@ export function deriveState(git: GitState | null, pr: PrState | null): GitPanelS
   if (!git) return "loading";
   if (git.files.some((f) => f.kind === "conflicted")) return "conflicts";
   if (pr?.state === "merged") return "merged";
-  if (git.files.length > 0)  return "changes";
-  if (pr?.state === "open")   return "pr-open";
+  if (git.files.length > 0) return "changes";
+  if (pr?.state === "open") return "pr-open";
   if (pr?.state === "closed") return "pr-closed";
-  if (git.ahead > 0)         return "pushed";
+  if (git.ahead > 0) return "pushed";
   return "clean";
 }
 
@@ -105,11 +113,23 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
 
   switch (state) {
     case "loading":
-      return { key: "loading", label: "Loading…", icon: "refresh", statusLabel: "loading git state", statusKind: "info" };
+      return {
+        key: "loading",
+        label: "Loading…",
+        icon: "refresh",
+        statusLabel: "loading git state",
+        statusKind: "info",
+      };
     case "changes": {
       // Override: user typed their own message → direct commit, agent bypassed.
       if (customActive) {
-        return { key: "commit-direct", label: "Commit", icon: "commit", statusLabel: "Direct commit", statusKind: "ready" };
+        return {
+          key: "commit-direct",
+          label: "Commit",
+          icon: "commit",
+          statusLabel: "Direct commit",
+          statusKind: "ready",
+        };
       }
       // Default: delegate to the agent, in the user's sticky commit mode.
       // With a PR already open, "open PR" degrades to "push" — that's what
@@ -137,7 +157,8 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
         key: "agent-open-pr",
         label: "Open PR",
         icon: "pr",
-        statusLabel: ahead === 1 ? "1 commit pushed, no PR yet" : `${ahead} commits pushed, no PR yet`,
+        statusLabel:
+          ahead === 1 ? "1 commit pushed, no PR yet" : `${ahead} commits pushed, no PR yet`,
         statusKind: "info",
       };
     case "pr-open":
@@ -270,7 +291,8 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
             label: `Rebase onto ${base}`,
             icon: "branch",
             tone: "ghost",
-            statusLabel: behind === 1 ? `1 commit behind ${base}` : `${behind} commits behind ${base}`,
+            statusLabel:
+              behind === 1 ? `1 commit behind ${base}` : `${behind} commits behind ${base}`,
             statusKind: "info",
           }
         : {
@@ -343,7 +365,13 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
       return [
         { key: "merge", label: "Merge PR", icon: "merge" },
         ...(needsUpdate
-          ? [{ key: "agent-update-branch", label: "Update branch with agent", icon: "branch" as IconName }]
+          ? [
+              {
+                key: "agent-update-branch",
+                label: "Update branch with agent",
+                icon: "branch" as IconName,
+              },
+            ]
           : []),
         ...(checksFailed > 0
           ? [{ key: "agent-fix", label: "Fix checks with agent", icon: "wrench" as IconName }]
@@ -359,14 +387,9 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
       ];
     case "pr-closed":
       // Primary is "Open new PR"; the menu offers the alternates only.
-      return [
-        ...pushItem,
-        { key: "view-pr", label: "View on GitHub", icon: "github" },
-      ];
+      return [...pushItem, { key: "view-pr", label: "View on GitHub", icon: "github" }];
     case "merged":
-      return [
-        { key: "delete-branch", label: "Delete branch", icon: "trash" },
-      ];
+      return [{ key: "delete-branch", label: "Delete branch", icon: "trash" }];
     case "clean":
       // Mirror of the clean primary: offer the action the primary didn't take,
       // so both Pull and Rebase-onto-base are always reachable.

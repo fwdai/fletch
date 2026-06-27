@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type DependencyList, useEffect, useState } from "react";
 
 /** Re-render once a minute so age strings ("5m", "2h") stay fresh. */
 export function useMinuteClock(): number {
@@ -18,12 +18,7 @@ export function useMinuteClock(): number {
  *  - `deps` is the React useEffect deps array — change it when the
  *    work `tick` captures changes (e.g. a different agent id).
  */
-export function usePoll(
-  tick: () => Promise<void>,
-  intervalMs: number,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  deps: any[],
-) {
+export function usePoll(tick: () => Promise<void>, intervalMs: number, deps: DependencyList) {
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
@@ -32,8 +27,11 @@ export function usePoll(
     const run = async () => {
       if (cancelled || inFlight || document.hidden) return;
       inFlight = true;
-      try { await tick(); }
-      finally { inFlight = false; }
+      try {
+        await tick();
+      } finally {
+        inFlight = false;
+      }
     };
     const start = () => {
       if (intervalId != null) return;

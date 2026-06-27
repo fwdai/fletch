@@ -1,7 +1,7 @@
 import type { ChatAdapter } from "../types";
-import { reduce } from "./reduce";
 import { normalizeTranscript } from "./normalize";
 import { cursorPolicy } from "./policy";
+import { reduce } from "./reduce";
 import { extractUsage } from "./usage";
 
 // Cursor Agent's stream-json is Claude Code's schema except for tool calls

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { parseUnifiedDiff } from "./diff";
 
 describe("parseUnifiedDiff", () => {
@@ -65,14 +65,7 @@ describe("parseUnifiedDiff", () => {
   });
 
   it("splits multiple hunks", () => {
-    const diff = [
-      "@@ -1,1 +1,1 @@",
-      "-a",
-      "+A",
-      "@@ -10,1 +10,1 @@ ctx",
-      "-b",
-      "+B",
-    ].join("\n");
+    const diff = ["@@ -1,1 +1,1 @@", "-a", "+A", "@@ -10,1 +10,1 @@ ctx", "-b", "+B"].join("\n");
 
     const hunks = parseUnifiedDiff(diff);
     expect(hunks).toHaveLength(2);

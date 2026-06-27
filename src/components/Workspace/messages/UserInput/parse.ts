@@ -119,15 +119,10 @@ function parseExitPlanMode(input: Record<string, unknown>): UIQuestion[] {
   ];
 }
 
-export function parseUserInput(
-  tool: UserInputTool,
-  rawInput: unknown,
-): UserInputModel {
+export function parseUserInput(tool: UserInputTool, rawInput: unknown): UserInputModel {
   const input = asRecord(rawInput);
   const questions =
-    tool === "ExitPlanMode"
-      ? parseExitPlanMode(input)
-      : parseAskUserQuestion(input);
+    tool === "ExitPlanMode" ? parseExitPlanMode(input) : parseAskUserQuestion(input);
   return { tool, questions };
 }
 
@@ -143,8 +138,7 @@ export function answersFromResultText(
 ): (UIAnswer | null)[] | null {
   const pairs: Record<string, string> = {};
   const re = /"([^"]+)"\s*=\s*"([^"]*)"/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) pairs[m[1]] = m[2];
+  for (const m of text.matchAll(re)) pairs[m[1]] = m[2];
 
   let matched = false;
   const answers = model.questions.map((q): UIAnswer | null => {
@@ -181,10 +175,7 @@ export function buildAnswers(
  *  a real tool_result (see UserInput/index.tsx), so the answer rides in as a
  *  normal turn instead. Single-question calls send just the answer;
  *  multi-question calls label each line so the model can tell them apart. */
-export function formatAnswer(
-  model: UserInputModel,
-  answers: UIAnswer[],
-): string {
+export function formatAnswer(model: UserInputModel, answers: UIAnswer[]): string {
   if (model.tool === "ExitPlanMode") {
     const a = answers[0];
     const picked = a?.optionIds?.[0] ?? a?.labels[0] ?? "";

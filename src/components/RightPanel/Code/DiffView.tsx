@@ -4,8 +4,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../../api";
 import { hljsLang } from "../../../data/languages";
+import { type DiffHunk, type DiffLine, parseUnifiedDiff } from "../../../util/diff";
 import { highlightToHtml } from "../../../util/highlight";
-import { parseUnifiedDiff, type DiffHunk, type DiffLine } from "../../../util/diff";
 
 export const extOf = (path: string) => path.split(".").pop() ?? "";
 
@@ -17,13 +17,32 @@ export function useFileDiff(agentId: string, path: string | null, dep?: string) 
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    if (!path) { setHunks([]); setError(false); setLoaded(false); return; }
+    if (!path) {
+      setHunks([]);
+      setError(false);
+      setLoaded(false);
+      return;
+    }
     let cancelled = false;
     api
       .getFileDiff(agentId, path)
-      .then((t) => { if (!cancelled) { setHunks(parseUnifiedDiff(t)); setError(false); setLoaded(true); } })
-      .catch(() => { if (!cancelled) { setHunks([]); setError(true); setLoaded(true); } });
-    return () => { cancelled = true; };
+      .then((t) => {
+        if (!cancelled) {
+          setHunks(parseUnifiedDiff(t));
+          setError(false);
+          setLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setHunks([]);
+          setError(true);
+          setLoaded(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [agentId, path, dep]);
 
   return { hunks, error, loaded };

@@ -9,11 +9,7 @@ const call = (id: string, name = "Bash", input: unknown = ""): ChatItem => ({
   input,
 });
 
-const result = (
-  toolUseId: string,
-  content: unknown = "ok",
-  isError = false,
-): ChatItem => ({
+const result = (toolUseId: string, content: unknown = "ok", isError = false): ChatItem => ({
   kind: "tool_result",
   tool_use_id: toolUseId,
   content,
@@ -40,10 +36,7 @@ describe("pairToolItems", () => {
     const c = call("1");
     const r = result("1", "out");
     const out = pairToolItems([c, agent("thinking..."), r]);
-    expect(out).toEqual([
-      { kind: "tool_pair", call: c, result: r },
-      agent("thinking..."),
-    ]);
+    expect(out).toEqual([{ kind: "tool_pair", call: c, result: r }, agent("thinking...")]);
   });
 
   it("renders an in-flight tool_call with null result", () => {

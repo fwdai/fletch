@@ -1,7 +1,7 @@
 import type { ChatAdapter } from "../types";
-import { reduce } from "./reduce";
 import { normalizeTranscript } from "./normalize";
 import { opencodePolicy } from "./policy";
+import { reduce } from "./reduce";
 import { extractUsage } from "./usage";
 
 // Reduces OpenCode's `opencode run --format json` step/part event stream

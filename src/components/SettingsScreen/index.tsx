@@ -1,25 +1,23 @@
-import { Suspense, lazy } from "react";
-import { useAppStore } from "../../store";
-import type { SettingsSection } from "../../storage/preferences";
-import { Icon, type IconName } from "../Icon";
+import { lazy, Suspense } from "react";
 import pkg from "../../../package.json";
-import { GeneralPane } from "./GeneralPane";
-import { AccountPane } from "./AccountPane";
-import { ProvidersPane } from "./ProvidersPane";
-import { CustomAgentsPane } from "./CustomAgents";
-import { ExperimentalPane } from "./ExperimentalPane";
 // Extension seam: settings panes contributed by whichever extensions are
 // present in this build (see src/extensions/registry.ts). Empty in a stock
 // public build that has no extensions on disk.
 import { settingsPanes as extSettingsPanes } from "../../extensions/registry";
+import type { SettingsSection } from "../../storage/preferences";
+import { useAppStore } from "../../store";
+import { Icon, type IconName } from "../Icon";
+import { AccountPane } from "./AccountPane";
+import { CustomAgentsPane } from "./CustomAgents";
+import { ExperimentalPane } from "./ExperimentalPane";
+import { GeneralPane } from "./GeneralPane";
+import { ProvidersPane } from "./ProvidersPane";
 
 // Lazily loaded behind `import.meta.env.DEV`. In production the ternary's dead
 // branch — including the dynamic import() — is dropped by Rollup, so the
 // DeveloperPane chunk is never emitted into the build (not merely unloaded).
 const DeveloperPane = import.meta.env.DEV
-  ? lazy(() =>
-      import("./DeveloperPane").then((m) => ({ default: m.DeveloperPane })),
-    )
+  ? lazy(() => import("./DeveloperPane").then((m) => ({ default: m.DeveloperPane })))
   : null;
 
 // Built-in sections carry explicit order weights (spaced by 10) so extension
@@ -88,9 +86,7 @@ export function SettingsScreen() {
           {section === "providers" && <ProvidersPane />}
           {section === "agents" && <CustomAgentsPane />}
           {section === "experimental" && <ExperimentalPane />}
-          {extSettingsPanes.map(
-            (p) => section === p.id && <p.Component key={p.id} />,
-          )}
+          {extSettingsPanes.map((p) => section === p.id && <p.Component key={p.id} />)}
           {section === "developer" && DeveloperPane && (
             <Suspense fallback={null}>
               <DeveloperPane />
@@ -98,8 +94,9 @@ export function SettingsScreen() {
           )}
           {/* Fallback: "developer" can't be selected in prod (no nav entry, and
               DeveloperPane is null), so a stale section value falls back here. */}
-          {(section === "general" ||
-            (section === "developer" && !DeveloperPane)) && <GeneralPane />}
+          {(section === "general" || (section === "developer" && !DeveloperPane)) && (
+            <GeneralPane />
+          )}
         </div>
       </div>
     </div>

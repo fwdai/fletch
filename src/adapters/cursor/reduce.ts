@@ -16,10 +16,10 @@
 //      `text`) terminated by `subtype:"completed"`, instead of a thinking
 //      content block on the `assistant` event.
 
-import type { ChatItem, RawEvent } from "../types";
+import { reduce as claudeReduce } from "../claude/reduce";
 import { asRecord } from "../shared/json";
 import { aliasToolInput, upsertToolCall } from "../shared/reducer-helpers";
-import { reduce as claudeReduce } from "../claude/reduce";
+import type { ChatItem, RawEvent } from "../types";
 
 /** Cursor names its file-tool fields differently from Claude — glob uses
  *  `globPattern`/`targetDirectory`, read/edit use `path`, edit carries the new
@@ -51,9 +51,7 @@ function toolCallParts(ev: RawEvent): {
   // Shell calls read best as the command string; other tools show their args
   // (with field names aliased to what the shared presenters expect).
   const input =
-    typeof args.command === "string"
-      ? args.command
-      : normalizeToolInput(inner.args ?? {});
+    typeof args.command === "string" ? args.command : normalizeToolInput(inner.args ?? {});
   return { name, input, inner };
 }
 
@@ -74,18 +72,14 @@ function handleToolCall(prev: ChatItem[], ev: RawEvent): ChatItem[] {
     const result = asRecord(inner.result);
     const success = asRecord(result.success);
     const isError =
-      "failure" in result ||
-      (typeof success.exitCode === "number" && success.exitCode !== 0);
+      "failure" in result || (typeof success.exitCode === "number" && success.exitCode !== 0);
     const content =
       typeof success.interleavedOutput === "string"
         ? success.interleavedOutput
         : typeof success.stdout === "string"
           ? success.stdout
           : (inner.result ?? "");
-    items = [
-      ...items,
-      { kind: "tool_result", tool_use_id: id, content, is_error: isError },
-    ];
+    items = [...items, { kind: "tool_result", tool_use_id: id, content, is_error: isError }];
     return items;
   }
 

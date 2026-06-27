@@ -1,11 +1,11 @@
 import type { ToolPresenter } from "./types";
 import {
-  ToolBlock,
-  SummaryNote,
   countResultLines,
   firstLineOf,
   getStringField,
   renderToolResult,
+  SummaryNote,
+  ToolBlock,
 } from "./util";
 
 /** Glob emits one matched path per line, or a "No files found" sentinel. */

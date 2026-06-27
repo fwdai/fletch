@@ -1,12 +1,12 @@
-import { useAppStore } from "../../store";
-import type { FeatureFlags, ThemeMode, Density } from "../../storage/preferences";
 import { ACCENTS, PROVIDERS } from "../../data/providers";
+import type { Density, FeatureFlags, ThemeMode } from "../../storage/preferences";
+import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
 import { Scrim } from "../ui/Scrim";
-import { Toggle } from "./Toggle";
 import { Segmented } from "./Segmented";
 import { SettingsRow, SettingsSection } from "./SettingsRow";
+import { Toggle } from "./Toggle";
 
 interface FeatureItem {
   key: keyof FeatureFlags;
@@ -18,9 +18,9 @@ const FEATURE_GROUPS: { label: string; items: FeatureItem[] }[] = [
   {
     label: "Side panels",
     items: [
-      { key: "code",     title: "Code",     sub: "Browse & edit files, plus a Live diff feed" },
-      { key: "git",      title: "Git",      sub: "Branch, file changes, smart actions" },
-      { key: "run",      title: "Run",      sub: "Dev server with setup table" },
+      { key: "code", title: "Code", sub: "Browse & edit files, plus a Live diff feed" },
+      { key: "git", title: "Git", sub: "Branch, file changes, smart actions" },
+      { key: "run", title: "Run", sub: "Dev server with setup table" },
       { key: "terminal", title: "Terminal", sub: "Interactive shell in the worktree" },
     ],
   },
@@ -28,8 +28,8 @@ const FEATURE_GROUPS: { label: string; items: FeatureItem[] }[] = [
     label: "Composer",
     items: [
       { key: "thinkingBudget", title: "Thinking budget", sub: "Low / medium / high cap" },
-      { key: "autoEdit",       title: "Auto-edit",       sub: "Skip approval for write tools" },
-      { key: "tokenUsage",     title: "Token usage",     sub: "Context window % meter in the composer" },
+      { key: "autoEdit", title: "Auto-edit", sub: "Skip approval for write tools" },
+      { key: "tokenUsage", title: "Token usage", sub: "Context window % meter in the composer" },
     ],
   },
 ];
@@ -110,10 +110,7 @@ function Popover({ onClose }: { onClose: () => void }) {
         <SettingsSection key={g.label} title={g.label}>
           {g.items.map((it) => (
             <SettingsRow key={it.key} label={it.title} description={it.sub}>
-              <Toggle
-                value={features[it.key]}
-                onChange={(v) => setFeature(it.key, v)}
-              />
+              <Toggle value={features[it.key]} onChange={(v) => setFeature(it.key, v)} />
             </SettingsRow>
           ))}
         </SettingsSection>
@@ -121,11 +118,7 @@ function Popover({ onClose }: { onClose: () => void }) {
 
       <SettingsSection title="Providers">
         {PROVIDERS.map((p) => (
-          <SettingsRow
-            key={p.id}
-            label={p.label}
-            description={`${p.sub} · ${p.version}`}
-          >
+          <SettingsRow key={p.id} label={p.label} description={`${p.sub} · ${p.version}`}>
             <Toggle
               value={providerFlags[p.id] !== false}
               onChange={(v) => setProviderEnabled(p.id, v)}

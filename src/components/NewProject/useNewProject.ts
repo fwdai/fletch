@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useCallback, useEffect, useState } from "react";
 import { api, type GhStatus } from "../../api";
 
 // The last parent folder a project was created in, pre-filled next time.
@@ -8,9 +8,7 @@ const PARENT_KEY = "q2:newProjectParent";
 /** Shared state for the New Project modal: destination parent (remembered),
  *  the gh availability probe, and the directory picker. */
 export function useNewProject() {
-  const [parent, setParentState] = useState<string>(
-    () => localStorage.getItem(PARENT_KEY) ?? "",
-  );
+  const [parent, setParentState] = useState<string>(() => localStorage.getItem(PARENT_KEY) ?? "");
   const [gh, setGh] = useState<GhStatus | null>(null);
 
   useEffect(() => {

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-
-import { opencodeAdapter } from "./index";
 import type { ChatItem, RawEvent } from "../types";
+import { opencodeAdapter } from "./index";
 
 function render(lines: unknown[]): ChatItem[] {
   return opencodeAdapter

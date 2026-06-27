@@ -1,4 +1,4 @@
-import { dbSelect, dbDelete, dbUpsert } from "./db";
+import { dbDelete, dbSelect, dbUpsert } from "./db";
 
 export interface ProjectSettingRow {
   project_id: string;
@@ -6,9 +6,7 @@ export interface ProjectSettingRow {
   value: string;
 }
 
-export async function getProjectSettings(
-  projectId: string,
-): Promise<Record<string, string>> {
+export async function getProjectSettings(projectId: string): Promise<Record<string, string>> {
   const rows = await dbSelect<ProjectSettingRow>("project_settings", {
     where: { project_id: projectId },
   });
@@ -24,16 +22,9 @@ export async function setProjectSetting(
   key: string,
   value: string,
 ): Promise<void> {
-  await dbUpsert(
-    "project_settings",
-    { project_id: projectId, key, value },
-    "project_id,key",
-  );
+  await dbUpsert("project_settings", { project_id: projectId, key, value }, "project_id,key");
 }
 
-export async function deleteProjectSetting(
-  projectId: string,
-  key: string,
-): Promise<void> {
+export async function deleteProjectSetting(projectId: string, key: string): Promise<void> {
   await dbDelete("project_settings", { project_id: projectId, key });
 }

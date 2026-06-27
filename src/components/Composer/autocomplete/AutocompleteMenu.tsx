@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import { FileIcon } from "../../RightPanel/FileIcon";
 import { Icon } from "../../Icon";
+import { FileIcon } from "../../RightPanel/FileIcon";
 import type { AcIcon, AcRow } from "./types";
 
 interface Props {

@@ -1,8 +1,8 @@
-import { Icon } from "../Icon";
-import { IconButton } from "../ui/IconButton";
-import { Avatar } from "../Avatar";
 import { useAppStore } from "../../store";
 import { accountInitials } from "../../util/format";
+import { Avatar } from "../Avatar";
+import { Icon } from "../Icon";
+import { IconButton } from "../ui/IconButton";
 
 export function SidebarFooter() {
   const theme = useAppStore((s) => s.theme);

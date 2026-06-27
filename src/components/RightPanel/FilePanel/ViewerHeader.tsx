@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { FileIcon } from "../FileIcon";
 import { Icon } from "../../Icon";
+import { FileIcon } from "../FileIcon";
 
 interface ViewerHeaderProps {
   name: string;

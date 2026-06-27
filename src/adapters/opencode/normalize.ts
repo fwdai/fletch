@@ -12,8 +12,8 @@
 // on-disk `type` to the live `{type, part}` event the reducer consumes
 // (the part blob IS the live event's inner `part`).
 
-import type { RawEvent } from "../types";
 import { asRecord } from "../shared/json";
+import type { RawEvent } from "../types";
 
 // On-disk part type → live event type the reducer switches on.
 const PART_TO_LIVE: Record<string, string> = {
@@ -43,8 +43,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
     const rec = asRecord(line);
     if (typeof rec.type !== "string") continue; // message blob — role captured above
 
-    const msgRole =
-      typeof rec.messageID === "string" ? roleOf.get(rec.messageID) : undefined;
+    const msgRole = typeof rec.messageID === "string" ? roleOf.get(rec.messageID) : undefined;
 
     // A user message's text is the prompt.
     if (rec.type === "text" && msgRole === "user") {
@@ -54,8 +53,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
 
     const liveType = PART_TO_LIVE[rec.type];
     if (!liveType) continue; // subtask / unknown — nothing renderable
-    const model =
-      typeof rec.messageID === "string" ? modelOf.get(rec.messageID) : undefined;
+    const model = typeof rec.messageID === "string" ? modelOf.get(rec.messageID) : undefined;
     out.push({ type: liveType, part: rec, model });
   }
   return out;

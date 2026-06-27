@@ -8,9 +8,9 @@
 // Every model lands in `byId` (metadata lookup) and under its agent in
 // `byAgent` (the future picker).
 
-import type { AgentModels, DiscoveredModel, ModelMeta, UnifiedCatalog } from "./types";
 import type { ModelsDevIndex } from "./modelsDev";
 import { lookupModel } from "./normalize";
+import type { AgentModels, DiscoveredModel, ModelMeta, UnifiedCatalog } from "./types";
 
 function releaseRank(meta: ModelMeta): number {
   if (!meta.releaseDate) return 0;
@@ -265,7 +265,8 @@ function cursorBaseRepresentatives(models: ModelMeta[]): ModelMeta[] {
   // `reps` is in first-seen (release-desc) order, so capPerGroup keeps the
   // newest per provider and the stable sort below preserves that order on ties.
   return capPerGroup(reps, cursorProvider, CURSOR_CAPS).sort((a, b) => {
-    const byProvider = cursorProviderRank(cursorProvider(a) as CursorProvider) -
+    const byProvider =
+      cursorProviderRank(cursorProvider(a) as CursorProvider) -
       cursorProviderRank(cursorProvider(b) as CursorProvider);
     if (byProvider) return byProvider;
     if (cursorProvider(a) === "anthropic") {
@@ -297,7 +298,10 @@ function curateCursorModels(models: ModelMeta[]): ModelMeta[] {
       return Number(b.id.includes("fast")) - Number(a.id.includes("fast"));
     });
 
-  return [...composer, ...cursorBaseRepresentatives(models.filter((meta) => !meta.id.startsWith("composer-")))];
+  return [
+    ...composer,
+    ...cursorBaseRepresentatives(models.filter((meta) => !meta.id.startsWith("composer-"))),
+  ];
 }
 
 /** Resolve a discovered model's metadata: models.dev wins, the CLI fills gaps.
@@ -340,9 +344,9 @@ export function buildCatalog(agents: AgentModels[], index: ModelsDevIndex): Unif
         ? curateClaudeModels(sorted)
         : agent === "pi"
           ? curatePiModels(sorted)
-        : agent === "cursor"
-          ? curateCursorModels(sorted)
-          : sorted;
+          : agent === "cursor"
+            ? curateCursorModels(sorted)
+            : sorted;
     byAgent[agent] = agentModels.map(displayModel);
   }
 

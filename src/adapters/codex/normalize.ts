@@ -13,8 +13,8 @@
 // `response_item` user/assistant messages are skipped — they duplicate the
 // event_msg ones and carry injected noise (AGENTS.md, permissions blurb).
 
-import type { RawEvent } from "../types";
 import { asRecord } from "../shared/json";
+import type { RawEvent } from "../types";
 
 function parseArgs(v: unknown): unknown {
   if (typeof v === "string") {
@@ -38,10 +38,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
     if (p.type === "function_call_output") {
       const id = String(p.call_id ?? "");
       if (id) {
-        outputs.set(
-          id,
-          typeof p.output === "string" ? p.output : JSON.stringify(p.output ?? ""),
-        );
+        outputs.set(id, typeof p.output === "string" ? p.output : JSON.stringify(p.output ?? ""));
       }
     }
   }

@@ -1,12 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DirListing } from "../../../../api";
-import {
-  filterDirEntries,
-  filterFiles,
-  isFsPath,
-  joinTypedDir,
-  splitFsPath,
-} from "../../mentions";
+import { filterDirEntries, filterFiles, isFsPath, joinTypedDir, splitFsPath } from "../../mentions";
 import type { AcPick, AcSource } from "../types";
 
 interface Args {

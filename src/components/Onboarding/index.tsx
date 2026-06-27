@@ -3,28 +3,21 @@
 // General. Ported from the design prototype (onboarding/app.jsx): ambient
 // stage, step sequence, cinematic transitions, progress rail, keyboard nav.
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getOrCreateAccount, linkOAuthAccount, type OAuthProfile } from "../../storage/accounts";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
-import {
-  getOrCreateAccount,
-  linkOAuthAccount,
-  type OAuthProfile,
-} from "../../storage/accounts";
 import { Ambient } from "./Ambient";
-import { WelcomeStep, Beat, IgniteStep } from "./steps";
-import { DeviceCode, type DeviceCodeInfo } from "./DeviceCode";
 import { BEATS } from "./beats";
+import { DeviceCode, type DeviceCodeInfo } from "./DeviceCode";
+import { Beat, IgniteStep, WelcomeStep } from "./steps";
 import "./onboarding.css";
 
 // flat step model: welcome · three feature beats · finale
-type Step =
-  | { kind: "welcome" }
-  | { kind: "beat"; beat: number }
-  | { kind: "ignite" };
+type Step = { kind: "welcome" } | { kind: "beat"; beat: number } | { kind: "ignite" };
 
 const STEPS: Step[] = [
   { kind: "welcome" },
@@ -161,7 +154,11 @@ export function Onboarding() {
         closeOnboarding();
       } else if (e.key === "Enter" && step.kind === "welcome" && !busy) {
         onAuth("github");
-      } else if ((e.key === "ArrowRight" || e.key === "Enter") && step.kind === "beat" && !inField) {
+      } else if (
+        (e.key === "ArrowRight" || e.key === "Enter") &&
+        step.kind === "beat" &&
+        !inField
+      ) {
         e.preventDefault();
         next();
       } else if (e.key === "ArrowLeft" && idx > 0 && step.kind !== "ignite" && !inField) {
@@ -207,7 +204,12 @@ export function Onboarding() {
               Skip
             </button>
           )}
-          <button className="ob-close" title="Close (Esc)" aria-label="Close onboarding" onClick={() => closeOnboarding()}>
+          <button
+            className="ob-close"
+            title="Close (Esc)"
+            aria-label="Close onboarding"
+            onClick={() => closeOnboarding()}
+          >
             <Icon name="close" size={15} />
           </button>
         </div>
@@ -216,7 +218,10 @@ export function Onboarding() {
       <div className="ob-stage">
         <Ambient phase={idx} />
 
-        <div className={`ob-view ${ready ? "ready" : ""} ${phase === "out" ? "out" : ""}`} key={idx}>
+        <div
+          className={`ob-view ${ready ? "ready" : ""} ${phase === "out" ? "out" : ""}`}
+          key={idx}
+        >
           {content}
         </div>
 

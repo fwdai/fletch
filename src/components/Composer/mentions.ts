@@ -21,7 +21,7 @@ export function splitFsPath(query: string): { dir: string; partial: string } {
 /** Append `name` to a typed directory, normalizing the separator (so `~` →
  *  `~/name`, `/` → `/name`, `~/Downloads` → `~/Downloads/name`). */
 export function joinTypedDir(dir: string, name: string): string {
-  return (dir.endsWith("/") ? dir : dir + "/") + name;
+  return (dir.endsWith("/") ? dir : `${dir}/`) + name;
 }
 
 /** Rank directory entries against a partial basename for the `@` menu:
@@ -86,10 +86,7 @@ export function filterFiles(files: string[], query: string, limit = 8): string[]
   }
 
   scored.sort(
-    (a, b) =>
-      a.score - b.score ||
-      a.path.length - b.path.length ||
-      (a.path < b.path ? -1 : 1),
+    (a, b) => a.score - b.score || a.path.length - b.path.length || (a.path < b.path ? -1 : 1),
   );
   return scored.slice(0, limit).map((s) => s.path);
 }

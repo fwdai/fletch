@@ -2,16 +2,12 @@
 // overrides anchor rendering so links open in the user's default browser
 // (via the Tauri shell plugin) instead of navigating inside the app window.
 
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import type { AnchorHTMLAttributes, MouseEvent } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { open as openExternal } from "@tauri-apps/plugin-shell";
 
-function ExternalLink({
-  href,
-  children,
-  ...rest
-}: AnchorHTMLAttributes<HTMLAnchorElement>) {
+function ExternalLink({ href, children, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement>) {
   // Handle both primary clicks (onClick) and auxiliary clicks such as
   // middle-click (onAuxClick); the latter is not covered by onClick and
   // would otherwise let the webview navigate away from the app.

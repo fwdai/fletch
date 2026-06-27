@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-
-import { reduceRecords } from "./helpers";
 import type { SessionRecord } from "./api";
+import { reduceRecords } from "./helpers";
 
 // Canonical session_records hold verbatim per-provider transcript bodies.
 // reduceRecords renders them the same way on-disk replay does:
@@ -34,10 +33,7 @@ describe("reduceRecords", () => {
   });
 
   it("is defensive against malformed bodies", () => {
-    const records = [
-      rec(null as unknown as Record<string, unknown>),
-      rec({ type: "weird" }),
-    ];
+    const records = [rec(null as unknown as Record<string, unknown>), rec({ type: "weird" })];
     expect(() => reduceRecords("pi", records)).not.toThrow();
     expect(reduceRecords("pi", records)).toEqual([]);
   });

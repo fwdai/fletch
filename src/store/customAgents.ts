@@ -1,9 +1,9 @@
 import {
+  type CustomAgent,
   createCustomAgent as dbCreate,
   deleteCustomAgent as dbDelete,
-  listCustomAgents,
   updateCustomAgent as dbUpdate,
-  type CustomAgent,
+  listCustomAgents,
   type NewCustomAgent,
 } from "../storage/customAgents";
 import type { CustomAgentsSlice, SliceCreator } from "./types";
@@ -13,10 +13,7 @@ import type { CustomAgentsSlice, SliceCreator } from "./types";
 // the in-memory list so the settings pane and composer picker stay in sync
 // without re-reading.
 
-export const createCustomAgentsSlice: SliceCreator<CustomAgentsSlice> = (
-  set,
-  get,
-) => ({
+export const createCustomAgentsSlice: SliceCreator<CustomAgentsSlice> = (set, get) => ({
   customAgents: [],
 
   loadCustomAgents: async () => {

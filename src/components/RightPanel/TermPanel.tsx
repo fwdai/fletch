@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from "react";
-import { Terminal, type ITheme } from "@xterm/xterm";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { SearchAddon } from "@xterm/addon-search";
 import { open } from "@tauri-apps/plugin-shell";
-import { api, type AgentRecord } from "../../api";
+import { SearchAddon } from "@xterm/addon-search";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import type { ITheme, Terminal } from "@xterm/xterm";
+import { useEffect, useRef, useState } from "react";
+import { type AgentRecord, api } from "../../api";
 import { getShellBuffer, registerShellSink } from "../../pty/buffers";
 import { useXterm } from "../../util/useXterm";
 import { Icon } from "../Icon";
@@ -18,12 +18,7 @@ function resolveCSSVar(name: string): string {
   document.body.removeChild(el);
   const m = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
   if (!m) return rgb;
-  return (
-    "#" +
-    [m[1], m[2], m[3]]
-      .map((n) => parseInt(n).toString(16).padStart(2, "0"))
-      .join("")
-  );
+  return `#${[m[1], m[2], m[3]].map((n) => parseInt(n, 10).toString(16).padStart(2, "0")).join("")}`;
 }
 
 /** Resolve --accent to an rgba() string with the given alpha (0–1).
@@ -40,28 +35,28 @@ function resolveAccentRgba(alpha: number): string {
  *  Called at mount and whenever the dark/light class changes on <html>. */
 function resolveTheme(): ITheme {
   return {
-    background:               resolveCSSVar("--bg-1"),
-    foreground:               resolveCSSVar("--fg-1"),
-    cursor:                   resolveCSSVar("--accent"),
-    cursorAccent:             resolveCSSVar("--bg-1"),
-    selectionBackground:      resolveAccentRgba(0.28),
+    background: resolveCSSVar("--bg-1"),
+    foreground: resolveCSSVar("--fg-1"),
+    cursor: resolveCSSVar("--accent"),
+    cursorAccent: resolveCSSVar("--bg-1"),
+    selectionBackground: resolveAccentRgba(0.28),
     selectionInactiveBackground: resolveAccentRgba(0.14),
-    black:               resolveCSSVar("--fg-3"),
-    red:                 resolveCSSVar("--danger"),
-    green:               resolveCSSVar("--success"),
-    yellow:              resolveCSSVar("--warn"),
-    blue:                resolveCSSVar("--info"),
-    magenta:             resolveCSSVar("--accent"),
-    cyan:                resolveCSSVar("--info"),
-    white:               resolveCSSVar("--fg-0"),
-    brightBlack:         resolveCSSVar("--fg-3"),
-    brightRed:           resolveCSSVar("--danger"),
-    brightGreen:         resolveCSSVar("--success"),
-    brightYellow:        resolveCSSVar("--warn"),
-    brightBlue:          resolveCSSVar("--info"),
-    brightMagenta:       resolveCSSVar("--accent"),
-    brightCyan:          resolveCSSVar("--info"),
-    brightWhite:         resolveCSSVar("--fg-0"),
+    black: resolveCSSVar("--fg-3"),
+    red: resolveCSSVar("--danger"),
+    green: resolveCSSVar("--success"),
+    yellow: resolveCSSVar("--warn"),
+    blue: resolveCSSVar("--info"),
+    magenta: resolveCSSVar("--accent"),
+    cyan: resolveCSSVar("--info"),
+    white: resolveCSSVar("--fg-0"),
+    brightBlack: resolveCSSVar("--fg-3"),
+    brightRed: resolveCSSVar("--danger"),
+    brightGreen: resolveCSSVar("--success"),
+    brightYellow: resolveCSSVar("--warn"),
+    brightBlue: resolveCSSVar("--info"),
+    brightMagenta: resolveCSSVar("--accent"),
+    brightCyan: resolveCSSVar("--info"),
+    brightWhite: resolveCSSVar("--fg-0"),
   };
 }
 
@@ -187,11 +182,7 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
           >
             <Icon name="chevD" />
           </button>
-          <button
-            className="btn-i sm tip"
-            data-tip="Close (Esc)"
-            onClick={closeSearch}
-          >
+          <button className="btn-i sm tip" data-tip="Close (Esc)" onClick={closeSearch}>
             <Icon name="close" />
           </button>
         </div>

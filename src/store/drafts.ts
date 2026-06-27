@@ -1,8 +1,8 @@
 import { api } from "../api";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "../data/providers";
-import { usedNames, sendWhenAgentReady } from "../helpers";
+import { sendWhenAgentReady, usedNames } from "../helpers";
 import { setSetting } from "../storage/settings";
-import type { AppState, SliceCreator, DraftsSlice } from "./types";
+import type { AppState, DraftsSlice, SliceCreator } from "./types";
 
 // ---- Drafts ----------------------------------------------------------------
 // A draft is a new agent the user is about to spawn. It owns a landmark
@@ -66,7 +66,14 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
 
   // ── drafts ─────────────────────────────────────────────────────────────────
   createDraft: async (repoPath) => {
-    const { workspace, drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
+    const {
+      workspace,
+      drafts,
+      newDraftProvider,
+      newDraftModel,
+      newDraftCustomAgentId,
+      modelsByAgent,
+    } = get();
     const used = [...usedNames(workspace, drafts)];
     const name = await api.allocateDraftName(used);
     const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
@@ -140,7 +147,15 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     }));
   },
 
-  spawnFromDraft: async (id, text, provider, model, attachments = [], thinking?, customAgentId?) => {
+  spawnFromDraft: async (
+    id,
+    text,
+    provider,
+    model,
+    attachments = [],
+    thinking?,
+    customAgentId?,
+  ) => {
     const draft = get().drafts.find((d) => d.id === id);
     if (!draft) return;
     get().setLastRepoPath(draft.repoPath);
@@ -194,7 +209,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       });
       if (view === "native") {
         await sendWhenAgentReady(() =>
-          api.writeToAgent(rec.id, text.replace(/\r?\n/g, " ") + "\r"),
+          api.writeToAgent(rec.id, `${text.replace(/\r?\n/g, " ")}\r`),
         );
       } else {
         await sendWhenAgentReady(() =>
@@ -205,9 +220,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       const selected = get().selectedAgentId;
       set((state) => ({
         lastError: String(e),
-        managedBusy: selected
-          ? { ...state.managedBusy, [selected]: false }
-          : state.managedBusy,
+        managedBusy: selected ? { ...state.managedBusy, [selected]: false } : state.managedBusy,
       }));
     } finally {
       set({ busy: false });

@@ -1,4 +1,4 @@
-import { dbSelectOne, dbInsert, dbUpdate } from "./db";
+import { dbInsert, dbSelectOne, dbUpdate } from "./db";
 
 export interface AccountRow {
   id: string;
@@ -74,10 +74,7 @@ export interface OAuthProfile {
 
 /** Persist identity fetched from an OAuth provider onto the single account.
  *  Splits the provider display name into first/last for the profile fields. */
-export async function linkOAuthAccount(
-  id: string,
-  profile: OAuthProfile,
-): Promise<void> {
+export async function linkOAuthAccount(id: string, profile: OAuthProfile): Promise<void> {
   const full = (profile.name ?? "").trim();
   const space = full.indexOf(" ");
   const firstName = space === -1 ? full : full.slice(0, space);

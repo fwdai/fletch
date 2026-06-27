@@ -45,9 +45,7 @@ export async function listCustomAgents(): Promise<CustomAgent[]> {
 }
 
 /** Insert a new custom agent and return the persisted row. */
-export async function createCustomAgent(
-  agent: NewCustomAgent,
-): Promise<CustomAgent> {
+export async function createCustomAgent(agent: NewCustomAgent): Promise<CustomAgent> {
   const now = Date.now();
   const row: CustomAgent = {
     ...agent,
@@ -69,11 +67,7 @@ export async function updateCustomAgent(
   const { id, created_at, ...writable } = next;
   void id;
   void created_at;
-  await dbUpdate(
-    TABLE,
-    { id: current.id },
-    writable as unknown as Record<string, unknown>,
-  );
+  await dbUpdate(TABLE, { id: current.id }, writable as unknown as Record<string, unknown>);
   return next;
 }
 

@@ -1,9 +1,9 @@
 import { useAppStore } from "../../store";
+import { basename, hueFromString } from "../../util/format";
 import { Icon } from "../Icon";
 import { QMark } from "../QMark";
 import { IconButton } from "../ui/IconButton";
 import { Breadcrumb, type CrumbEntry } from "./Breadcrumb";
-import { basename, hueFromString } from "../../util/format";
 
 /** Top-of-window bar. Houses the breadcrumb (Quorum / repo / agent)
  *  and the settings toggle. Drag + native double-click-to-zoom is
@@ -29,18 +29,10 @@ export function TitleBar() {
       </div>
       <Breadcrumb entries={entries} />
       <div className="tb-right">
-        <IconButton
-          tip="History"
-          active={historyOpen}
-          onClick={() => toggleHistory()}
-        >
+        <IconButton tip="History" active={historyOpen} onClick={() => toggleHistory()}>
           <Icon name="history" />
         </IconButton>
-        <IconButton
-          tip="Settings (⌘,)"
-          active={settingsOpen}
-          onClick={() => toggleSettings()}
-        >
+        <IconButton tip="Settings (⌘,)" active={settingsOpen} onClick={() => toggleSettings()}>
           <Icon name="settings" />
         </IconButton>
       </div>
@@ -56,12 +48,9 @@ function useCrumb(): CrumbEntry[] {
   const activeDraftId = useAppStore((s) => s.activeDraftId);
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
-  const agent = !draft && selectedId
-    ? workspace?.agents.find((a) => a.id === selectedId)
-    : null;
+  const agent = !draft && selectedId ? workspace?.agents.find((a) => a.id === selectedId) : null;
 
-  const repoPath =
-    draft?.repoPath ?? agent?.repos[0]?.repo_path ?? null;
+  const repoPath = draft?.repoPath ?? agent?.repos[0]?.repo_path ?? null;
   const repoLabel = repoPath ? basename(repoPath) : null;
   const repoHue = repoPath ? hueFromString(repoPath) : undefined;
 

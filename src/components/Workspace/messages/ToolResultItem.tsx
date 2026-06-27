@@ -4,11 +4,7 @@ import { firstLine } from "../../../util/format";
 
 /** Companion to ToolUseItem — shows the tool's textual output,
  *  collapsed by default. Error results get a red tinge. */
-export function ToolResultItem({
-  item,
-}: {
-  item: Extract<ChatItem, { kind: "tool_result" }>;
-}) {
+export function ToolResultItem({ item }: { item: Extract<ChatItem, { kind: "tool_result" }> }) {
   const [open, setOpen] = useState(false);
   const text = renderResult(item.content);
   return (

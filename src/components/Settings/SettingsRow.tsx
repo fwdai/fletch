@@ -18,13 +18,7 @@ export function SettingsRow({ label, description, children }: Props) {
   );
 }
 
-export function SettingsSection({
-  title,
-  children,
-}: {
-  title: string;
-  children: ReactNode;
-}) {
+export function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="sp-section">
       <div className="sp-title">{title}</div>

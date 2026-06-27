@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Subscribes to Tauri's window-level file drag-drop stream and reports

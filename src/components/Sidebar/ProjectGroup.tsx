@@ -20,7 +20,13 @@ interface Props {
 }
 
 export function ProjectGroup({
-  label, repoPath, agents, drafts, open, removable, onToggle,
+  label,
+  repoPath,
+  agents,
+  drafts,
+  open,
+  removable,
+  onToggle,
 }: Props) {
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
@@ -47,20 +53,11 @@ export function ProjectGroup({
 
   return (
     <div className="proj">
-      <div
-        className={`proj-h ${open ? "open" : ""}`}
-        onClick={onToggle}
-        title={repoPath}
-      >
+      <div className={`proj-h ${open ? "open" : ""}`} onClick={onToggle} title={repoPath}>
         <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
-        <button
-          className="padd tip"
-          data-tip="New agent"
-          data-tip-down=""
-          onClick={onAddAgent}
-        >
+        <button className="padd tip" data-tip="New agent" data-tip-down="" onClick={onAddAgent}>
           <Icon name="plus" size={11} />
         </button>
         {removable && (

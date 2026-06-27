@@ -224,8 +224,7 @@ export function QuestionCard({
               disabled={picks.size === 0}
               onClick={confirmMulti}
             >
-              Confirm{picks.size > 0 ? ` (${picks.size})` : ""}{" "}
-              <Icon name="arrowUp" size={11} />
+              Confirm{picks.size > 0 ? ` (${picks.size})` : ""} <Icon name="arrowUp" size={11} />
             </button>
           </div>
         )}

@@ -73,7 +73,13 @@ export function buildTree(files: WorktreeFile[], extraDirs: string[] = []): Tree
       const parent = prefix;
       prefix = prefix ? `${prefix}/${segs[i]}` : segs[i];
       if (!dirIndex.has(prefix)) {
-        const node: DirNode = { type: "dir", name: segs[i], path: prefix, children: [], changedCount: 0 };
+        const node: DirNode = {
+          type: "dir",
+          name: segs[i],
+          path: prefix,
+          children: [],
+          changedCount: 0,
+        };
         dirIndex.set(prefix, node);
         childrenOf(parent).push(node);
       }

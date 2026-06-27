@@ -4,9 +4,9 @@
 // on the store only for its type shape (AppState/DraftAgent) — a type-only
 // import, erased at compile time, so there's no runtime cycle.
 
+import { type ChatItem, getAdapter, type RawEvent } from "./adapters";
+import { hasUsage, usageFromRecords } from "./adapters/usage";
 import { api, type SessionRecord, type UserTurn, type Workspace } from "./api";
-import { getAdapter, type ChatItem, type RawEvent } from "./adapters";
-import { usageFromRecords, hasUsage } from "./adapters/usage";
 import { commandsFor } from "./data/slashCommands";
 import type { AppState, DraftAgent } from "./store";
 
@@ -18,15 +18,10 @@ export function providerFor(state: AppState, agentId: string): string | undefine
  *  given provider, return its bare name; otherwise null. The result is
  *  used both to swap the optimistic user_message for a slash_command
  *  notice and to set a busy label. */
-export function passthroughSlashName(
-  providerId: string | undefined,
-  text: string,
-): string | null {
+export function passthroughSlashName(providerId: string | undefined, text: string): string | null {
   if (!providerId || !text.startsWith("/")) return null;
   const first = text.split(/\s/)[0].slice(1);
-  const match = commandsFor(providerId).find(
-    (c) => c.kind === "passthrough" && c.name === first,
-  );
+  const match = commandsFor(providerId).find((c) => c.kind === "passthrough" && c.name === first);
   return match ? match.name : null;
 }
 
@@ -34,10 +29,7 @@ export function passthroughSlashName(
  *  bodies) into chat items via the same pipeline as on-disk replay:
  *  `normalizeTranscript` → `reduce`. Defensive: a malformed body or an adapter
  *  throw degrades gracefully instead of failing the whole restore. */
-export function reduceRecords(
-  provider: string | undefined,
-  records: SessionRecord[],
-): ChatItem[] {
+export function reduceRecords(provider: string | undefined, records: SessionRecord[]): ChatItem[] {
   const adapter = getAdapter(provider);
   let rawEvents: RawEvent[];
   try {
@@ -148,9 +140,7 @@ export function applyEvent(
     turnEnded,
     patch: {
       managedLogs: { ...state.managedLogs, [agentId]: next },
-      managedBusy: turnEnded
-        ? { ...state.managedBusy, [agentId]: false }
-        : state.managedBusy,
+      managedBusy: turnEnded ? { ...state.managedBusy, [agentId]: false } : state.managedBusy,
       managedBusyLabel: turnEnded
         ? { ...state.managedBusyLabel, [agentId]: undefined }
         : state.managedBusyLabel,
@@ -201,20 +191,14 @@ export async function persistLiveUsage(
  *  full `getWorkspace`. True when an agent's turn just landed yet its session
  *  id is still missing locally — the cue to re-fetch so the Native toggle
  *  unblocks without a reload. False once present, to avoid per-turn re-fetch. */
-export function needsSessionIdRefresh(
-  workspace: Workspace | null,
-  agentId: string,
-): boolean {
+export function needsSessionIdRefresh(workspace: Workspace | null, agentId: string): boolean {
   const agent = workspace?.agents.find((a) => a.id === agentId);
   return !!agent && !agent.session_id;
 }
 
 /** Names already taken by real or draft agents — passed to the backend
  *  name allocator so picks avoid collisions. */
-export function usedNames(
-  workspace: Workspace | null,
-  drafts: DraftAgent[],
-): Set<string> {
+export function usedNames(workspace: Workspace | null, drafts: DraftAgent[]): Set<string> {
   const used = new Set<string>();
   for (const a of workspace?.agents ?? []) used.add(a.name);
   for (const d of drafts) used.add(d.name);

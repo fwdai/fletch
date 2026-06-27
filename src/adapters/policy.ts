@@ -8,9 +8,6 @@ export function modeFor(item: ChatItem, policy: DisplayPolicy): DisplayMode {
   return policy[item.kind] ?? "show";
 }
 
-export function applyPolicy(
-  items: ChatItem[],
-  policy: DisplayPolicy,
-): ChatItem[] {
+export function applyPolicy(items: ChatItem[], policy: DisplayPolicy): ChatItem[] {
   return items.filter((item) => modeFor(item, policy) !== "hide");
 }

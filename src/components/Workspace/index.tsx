@@ -1,12 +1,12 @@
 import { useState } from "react";
+import type { AgentRecord } from "../../api";
 import { EMPTY_AGENTS, useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
-import { WorkspaceHeader } from "./WorkspaceHeader";
 import { ChatView } from "./ChatView";
-import { NativeView } from "./NativeView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
-import type { AgentRecord } from "../../api";
+import { NativeView } from "./NativeView";
+import { WorkspaceHeader } from "./WorkspaceHeader";
 
 /** Center pane orchestrator. Decides whether to show: a draft empty
  *  state, the chat view, the native xterm view, or a fallback
@@ -53,11 +53,7 @@ export function Workspace() {
     <div className="pane center fade-in" key={agent.id}>
       <WorkspaceHeader agent={agent} />
       {agent.status === "error" && <CrashBanner agent={agent} />}
-      {agent.view === "native" ? (
-        <NativeBody agent={agent} />
-      ) : (
-        <ChatView agent={agent} />
-      )}
+      {agent.view === "native" ? <NativeBody agent={agent} /> : <ChatView agent={agent} />}
     </div>
   );
 }

@@ -17,18 +17,9 @@ export function Breadcrumb({ entries }: { entries: CrumbEntry[] }) {
         <Fragment key={i}>
           {i > 0 && <span className="sep">/</span>}
           {c.swatchHue != null && (
-            <span
-              className="swatch"
-              style={{ background: `oklch(0.5 0.08 ${c.swatchHue})` }}
-            />
+            <span className="swatch" style={{ background: `oklch(0.5 0.08 ${c.swatchHue})` }} />
           )}
-          <span
-            className={
-              (c.active ? "active " : "") + (c.mono ? "mono" : "")
-            }
-          >
-            {c.label}
-          </span>
+          <span className={(c.active ? "active " : "") + (c.mono ? "mono" : "")}>{c.label}</span>
         </Fragment>
       ))}
     </div>

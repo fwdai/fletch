@@ -1,10 +1,6 @@
 import { api } from "../api";
-import {
-  getAccount,
-  saveAccountProfile,
-  toProfile,
-} from "../storage/accounts";
-import type { SliceCreator, AccountSlice } from "./types";
+import { getAccount, saveAccountProfile, toProfile } from "../storage/accounts";
+import type { AccountSlice, SliceCreator } from "./types";
 
 export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   account: null,

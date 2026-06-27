@@ -15,11 +15,11 @@ vi.mock("./db", () => ({
 }));
 
 import {
+  type CustomAgent,
   createCustomAgent,
   deleteCustomAgent,
   listCustomAgents,
   updateCustomAgent,
-  type CustomAgent,
 } from "./customAgents";
 
 const NEW = {

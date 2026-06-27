@@ -8,10 +8,10 @@
  * reducing the FULL event stream — i.e. the filter loses nothing.
  */
 
-import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
 
 import { getAdapter } from "./index";
 import type { ChatItem, RawEvent } from "./types";
@@ -42,10 +42,7 @@ function isDurable(provider: string, ev: RawEvent): boolean {
       return t === "assistant" || t === "user" || t === "result";
     case "codex":
       return (
-        t === "item.completed" ||
-        t === "turn.completed" ||
-        t === "turn.failed" ||
-        t === "error"
+        t === "item.completed" || t === "turn.completed" || t === "turn.failed" || t === "error"
       );
     case "opencode": {
       if (t === "text" || t === "step_finish" || t === "error") return true;
@@ -57,9 +54,7 @@ function isDurable(provider: string, ev: RawEvent): boolean {
       return false;
     }
     case "pi":
-      return (
-        t === "message_end" || t === "tool_execution_end" || t === "agent_end"
-      );
+      return t === "message_end" || t === "tool_execution_end" || t === "agent_end";
     case "cursor": {
       if (t === "assistant" || t === "user" || t === "result") return true;
       if (t === "tool_call") return (ev as Record<string, unknown>).subtype === "completed";

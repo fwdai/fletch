@@ -11,6 +11,9 @@
     "preview": "vite preview",
     "tauri": "if [ -f .env ]; then set -a; . ./.env; set +a; fi; tauri",
     "check": "tsc --noEmit",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "format": "biome format --write",
     "test": "vitest run"
   },
   "dependencies": {
@@ -35,6 +38,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.1",
     "@tauri-apps/cli": "^2.11.3",
     "@types/node": "^22.20.0",
     "@types/react": "^18.3.31",

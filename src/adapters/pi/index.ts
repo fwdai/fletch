@@ -1,7 +1,7 @@
 import type { ChatAdapter } from "../types";
-import { reduce } from "./reduce";
 import { normalizeTranscript } from "./normalize";
 import { piPolicy } from "./policy";
+import { reduce } from "./reduce";
 import { extractUsage } from "./usage";
 
 // Reduces Pi's `pi -p --mode json` event stream (verified against pi 0.74.2 —

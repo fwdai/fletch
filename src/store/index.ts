@@ -1,17 +1,17 @@
 import { create } from "zustand";
-import type { AppState } from "./types";
-import { createAppSlice } from "./app";
-import { createWorkspaceSlice } from "./workspace";
-import { createReposSlice } from "./repos";
-import { createGitSlice } from "./git";
-import { createComposerSlice } from "./composer";
-import { createDraftsSlice } from "./drafts";
-import { createUiSlice } from "./ui";
-import { createAccountSlice } from "./account";
-import { createAppearanceSlice } from "./appearance";
-import { createProvidersSlice } from "./providers";
-import { createCustomAgentsSlice } from "./customAgents";
 import type { AgentRecord } from "../api"; // for EMPTY_AGENTS
+import { createAccountSlice } from "./account";
+import { createAppSlice } from "./app";
+import { createAppearanceSlice } from "./appearance";
+import { createComposerSlice } from "./composer";
+import { createCustomAgentsSlice } from "./customAgents";
+import { createDraftsSlice } from "./drafts";
+import { createGitSlice } from "./git";
+import { createProvidersSlice } from "./providers";
+import { createReposSlice } from "./repos";
+import type { AppState } from "./types";
+import { createUiSlice } from "./ui";
+import { createWorkspaceSlice } from "./workspace";
 
 export const EMPTY_AGENTS: readonly AgentRecord[] = Object.freeze([]);
 
@@ -29,7 +29,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createCustomAgentsSlice(...a),
 }));
 
-export type { AppState } from "./types";
-export type { DraftAgent } from "./drafts";
 export type { ChatItem } from "../adapters";
 export type { AgentUsage } from "../adapters/usage";
+export type { DraftAgent } from "./drafts";
+export type { AppState } from "./types";

@@ -1,10 +1,10 @@
 import { api } from "../api";
-import { setSetting } from "../storage/settings";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
   type SettingsSection,
 } from "../storage/preferences";
+import { setSetting } from "../storage/settings";
 import type { SliceCreator, UiSlice } from "./types";
 
 export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
@@ -23,8 +23,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   rightPanelTabs: {},
 
   // ── UI ──────────────────────────────────────────────────────────────────────
-  toggleSettings: (open) =>
-    set((s) => ({ settingsOpen: open ?? !s.settingsOpen })),
+  toggleSettings: (open) => set((s) => ({ settingsOpen: open ?? !s.settingsOpen })),
   openSettingsScreen: (section, intent) =>
     set((s) => ({
       settingsScreenOpen: true,
@@ -51,9 +50,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       const next = open ?? !s.historyOpen;
       // Closing history clears any in-flight detail selection so the
       // next open lands on the list.
-      return next
-        ? { historyOpen: true }
-        : { historyOpen: false, selectedHistoryAgentId: null };
+      return next ? { historyOpen: true } : { historyOpen: false, selectedHistoryAgentId: null };
     }),
   selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
   toggleLeft: () =>

@@ -10,9 +10,7 @@ export const agentPresenter: ToolPresenter = {
     return (
       <>
         {subagentType && (
-          <span style={{ color: "var(--fg-3)", marginRight: 8 }}>
-            {subagentType}
-          </span>
+          <span style={{ color: "var(--fg-3)", marginRight: 8 }}>{subagentType}</span>
         )}
         {description}
       </>
@@ -40,9 +38,7 @@ export const agentPresenter: ToolPresenter = {
         )}
         {result && (
           <div
-            className={
-              result.is_error ? "m-agent" : "m-agent m-agent-dim"
-            }
+            className={result.is_error ? "m-agent" : "m-agent m-agent-dim"}
             style={{
               color: result.is_error ? "var(--danger)" : undefined,
               fontSize: 13.5,

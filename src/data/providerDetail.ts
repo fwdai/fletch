@@ -54,11 +54,11 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     // chosen at session creation, threaded through spawn_agent, and persisted on
     // the session record so it re-applies on every spawn. Fixed for the session.
     thinkingLevels: [
-      { label: "Low",   value: "low"    },
-      { label: "Med",   value: "medium" },
-      { label: "High",  value: "high"   },
-      { label: "xHigh", value: "xhigh"  },
-      { label: "Max",   value: "max"    },
+      { label: "Low", value: "low" },
+      { label: "Med", value: "medium" },
+      { label: "High", value: "high" },
+      { label: "xHigh", value: "xhigh" },
+      { label: "Max", value: "max" },
     ],
     defaultLevel: "xhigh", // matches Claude Code's own default
     effortAtSpawn: true,
@@ -72,9 +72,9 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     signIn: "Run `codex` once in a terminal to sign in.",
     // `codex exec -c reasoning_effort="<value>"`
     thinkingLevels: [
-      { label: "Low",  value: "low"    },
-      { label: "Med",  value: "medium" },
-      { label: "High", value: "high"   },
+      { label: "Low", value: "low" },
+      { label: "Med", value: "medium" },
+      { label: "High", value: "high" },
     ],
   },
   cursor: {
@@ -103,9 +103,9 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     signIn: "Run `opencode auth login` to connect a provider.",
     // `opencode run --variant <value>`
     thinkingLevels: [
-      { label: "Low",  value: "minimal" },
-      { label: "High", value: "high"    },
-      { label: "Max",  value: "max"     },
+      { label: "Low", value: "minimal" },
+      { label: "High", value: "high" },
+      { label: "Max", value: "max" },
     ],
   },
   pi: {
@@ -115,10 +115,10 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     docs: "https://pi.dev/",
     // `pi --thinking <value>`
     thinkingLevels: [
-      { label: "Off",   value: "off"    },
-      { label: "Low",   value: "low"    },
-      { label: "Med",   value: "medium" },
-      { label: "High",  value: "high"   },
+      { label: "Off", value: "off" },
+      { label: "Low", value: "low" },
+      { label: "Med", value: "medium" },
+      { label: "High", value: "high" },
       { label: "xHigh", value: "xhigh" },
     ],
   },

@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useAppStore, type AgentUsage } from "../../store";
 import { lookupModel } from "../../data/modelCatalog";
-import { formatTokens, formatCost } from "../../util/format";
+import { type AgentUsage, useAppStore } from "../../store";
+import { formatCost, formatTokens } from "../../util/format";
 
 /** Laconic context gauge for the composer foot — a donut ring + %, hover for a
  *  full breakdown. Mirrors the v2 design (.usage / .up-* styles in app.css).
@@ -27,8 +27,18 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
   const pct = Math.min(100, Math.round((used / contextWindow) * 100));
 
   const segments = [
-    { key: "cacheRead", label: "Cache read", tokens: usage.contextCacheRead, color: "var(--accent)" },
-    { key: "cacheWrite", label: "Cache write", tokens: usage.contextCacheWrite, color: "var(--info)" },
+    {
+      key: "cacheRead",
+      label: "Cache read",
+      tokens: usage.contextCacheRead,
+      color: "var(--accent)",
+    },
+    {
+      key: "cacheWrite",
+      label: "Cache write",
+      tokens: usage.contextCacheWrite,
+      color: "var(--info)",
+    },
     { key: "input", label: "Input", tokens: usage.contextInput, color: "var(--fg-2)" },
   ].filter((s) => s.tokens > 0);
 
@@ -69,7 +79,11 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
 
           <div className="up-bar">
             {segments.map((s) => (
-              <span key={s.key} className="up-seg" style={{ flex: s.tokens, background: s.color }} />
+              <span
+                key={s.key}
+                className="up-seg"
+                style={{ flex: s.tokens, background: s.color }}
+              />
             ))}
             <span className="up-seg track" style={{ flex: free }} />
           </div>

@@ -1,9 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
+import { useAppStore } from "./store";
 import { runStartupUpdateCheck } from "./util/autoUpdate";
 import { revealAppWindow } from "./util/window";
-import { useAppStore } from "./store";
 import "@fontsource/geist-sans/400.css";
 import "@fontsource/geist-sans/600.css";
 import "./app.css";

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { api, type GhStatus, type ToolStatus } from "../../api";
 import { Icon } from "../Icon";
 
@@ -12,18 +12,23 @@ export function DevToolsStatus() {
 
   const recheck = useCallback(() => {
     setChecking(true);
-    void Promise.allSettled([
-      api.checkCli("git").then(setGit),
-      api.ghStatus().then(setGh),
-    ]).finally(() => setChecking(false));
+    void Promise.allSettled([api.checkCli("git").then(setGit), api.ghStatus().then(setGh)]).finally(
+      () => setChecking(false),
+    );
   }, []);
 
-  useEffect(() => { recheck(); }, [recheck]);
+  useEffect(() => {
+    recheck();
+  }, [recheck]);
 
   const gitState: S = git ? (git.installed ? "ok" : "bad") : checking ? "checking" : "warn";
   const ghState: S = gh
-    ? gh.installed && gh.authenticated ? "ok" : "warn"
-    : checking ? "checking" : "warn";
+    ? gh.installed && gh.authenticated
+      ? "ok"
+      : "warn"
+    : checking
+      ? "checking"
+      : "warn";
   const ghFix = gh?.installed && !gh.authenticated ? "gh auth login" : undefined;
 
   return (
@@ -34,8 +39,12 @@ export function DevToolsStatus() {
         state={gitState}
         statusText={
           git
-            ? git.installed ? git.version ?? "Installed" : "Not found — required to run any agent"
-            : checking ? "Checking…" : "Couldn't check"
+            ? git.installed
+              ? (git.version ?? "Installed")
+              : "Not found — required to run any agent"
+            : checking
+              ? "Checking…"
+              : "Couldn't check"
         }
         fix={gitState === "bad" ? "xcode-select --install" : undefined}
         docs="https://git-scm.com/downloads"
@@ -46,10 +55,14 @@ export function DevToolsStatus() {
         state={ghState}
         statusText={
           gh
-            ? !gh.installed ? "Not found — needed for clone & PRs"
-            : !gh.authenticated ? "Installed — not signed in"
-            : `Signed in${gh.login ? ` as ${gh.login}` : ""}`
-            : checking ? "Checking…" : "Couldn't check"
+            ? !gh.installed
+              ? "Not found — needed for clone & PRs"
+              : !gh.authenticated
+                ? "Installed — not signed in"
+                : `Signed in${gh.login ? ` as ${gh.login}` : ""}`
+            : checking
+              ? "Checking…"
+              : "Couldn't check"
         }
         fix={ghFix}
         docs={!gh?.installed ? "https://cli.github.com" : undefined}
@@ -65,7 +78,14 @@ export function DevToolsStatus() {
   );
 }
 
-function ToolRow({ icon, name, state, statusText, fix, docs }: {
+function ToolRow({
+  icon,
+  name,
+  state,
+  statusText,
+  fix,
+  docs,
+}: {
   icon: ReactNode;
   name: string;
   state: S;

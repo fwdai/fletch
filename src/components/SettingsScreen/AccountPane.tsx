@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { useAppStore } from "../../store";
 import { accountInitials } from "../../util/format";
 import { Avatar } from "../Avatar";
-import { SetHead, SetGroup } from "./primitives";
 import { DevToolsStatus } from "./DevToolsStatus";
+import { SetGroup, SetHead } from "./primitives";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -26,9 +26,7 @@ export function AccountPane() {
 
   const dirty =
     !!account &&
-    (firstName !== account.firstName ||
-      lastName !== account.lastName ||
-      email !== account.email);
+    (firstName !== account.firstName || lastName !== account.lastName || email !== account.email);
   const emailValid = email.trim() === "" || EMAIL_RE.test(email.trim());
   const canSave = dirty && emailValid && !saving;
 
@@ -62,9 +60,7 @@ export function AccountPane() {
           <div className="set-profile-name">
             {fullName || <span className="set-profile-empty">Your name</span>}
           </div>
-          <div className="set-profile-mail mono">
-            {email || "no email set"}
-          </div>
+          <div className="set-profile-mail mono">{email || "no email set"}</div>
         </div>
       </div>
 
@@ -112,19 +108,12 @@ export function AccountPane() {
                 setSavedAt(false);
               }}
             />
-            {!emailValid && (
-              <span className="set-field-error">Enter a valid email address.</span>
-            )}
+            {!emailValid && <span className="set-field-error">Enter a valid email address.</span>}
           </label>
 
           <div className="set-form-actions">
             {savedAt && !dirty && <span className="set-saved mono">Saved</span>}
-            <button
-              type="button"
-              className="btn-t primary"
-              disabled={!canSave}
-              onClick={onSave}
-            >
+            <button type="button" className="btn-t primary" disabled={!canSave} onClick={onSave}>
               {saving ? "Saving…" : "Save changes"}
             </button>
           </div>

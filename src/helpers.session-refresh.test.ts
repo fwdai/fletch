@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-
-import { needsSessionIdRefresh } from "./helpers";
 import type { AgentRecord, Workspace } from "./api";
+import { needsSessionIdRefresh } from "./helpers";
 
 function agent(overrides: Partial<AgentRecord> = {}): AgentRecord {
   return {

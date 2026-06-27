@@ -1,11 +1,11 @@
-import { setSetting } from "../storage/settings";
 import {
   DEFAULT_FEATURES,
-  type ThemeMode,
   type Density,
+  type ThemeMode,
   type WorkspaceView,
 } from "../storage/preferences";
-import type { SliceCreator, AppearanceSlice } from "./types";
+import { setSetting } from "../storage/settings";
+import type { AppearanceSlice, SliceCreator } from "./types";
 
 export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   theme: "dark" as ThemeMode,

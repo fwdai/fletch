@@ -10,10 +10,5 @@ export function Scrim({ onClose, zIndex = 199 }: { onClose: () => void; zIndex?:
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-  return (
-    <div
-      style={{ position: "fixed", inset: 0, zIndex }}
-      onClick={onClose}
-    />
-  );
+  return <div style={{ position: "fixed", inset: 0, zIndex }} onClick={onClose} />;
 }

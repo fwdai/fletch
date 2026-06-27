@@ -1,16 +1,16 @@
 import { useMemo } from "react";
-import { Markdown } from "../../Markdown";
-import type { ChatItem } from "../../../store";
 import { applyPolicy, getAdapter } from "../../../adapters";
+import type { ChatItem } from "../../../store";
+import { stripInjectedInstructions } from "../../../util/instructions";
+import { AttachmentList } from "../../Composer/AttachmentList";
+import { Markdown } from "../../Markdown";
+import { APP_ACTION_PREFIX } from "../../RightPanel/delegation";
 import { pairToolItems, rowKey, type ViewItem } from "./pair";
+import { getPresenter } from "./presenters";
 import { ToolResultItem } from "./ToolResultItem";
 import { ToolRow } from "./ToolRow";
-import { getPresenter } from "./presenters";
 import { UserInput } from "./UserInput";
 import { isUserInputTool } from "./UserInput/parse";
-import { AttachmentList } from "../../Composer/AttachmentList";
-import { stripInjectedInstructions } from "../../../util/instructions";
-import { APP_ACTION_PREFIX } from "../../RightPanel/delegation";
 
 /** Dispatcher for one rendered row. Accepts either a raw ChatItem or
  *  the derived `tool_pair` from pairToolItems(). `provider` carries the
@@ -51,9 +51,7 @@ export function MessageItem({
       return (
         <div className="m-agent">
           <Markdown>{item.text}</Markdown>
-          {item.streaming && (
-            <span className="term-cursor" style={{ marginLeft: 4 }} />
-          )}
+          {item.streaming && <span className="term-cursor" style={{ marginLeft: 4 }} />}
         </div>
       );
     case "tool_pair": {
@@ -79,11 +77,7 @@ export function MessageItem({
             <>
               {presenter.expanded(item.call, item.result)}
               {children.length > 0 && (
-                <SubagentThread
-                  items={children}
-                  provider={provider}
-                  agentId={agentId}
-                />
+                <SubagentThread items={children} provider={provider} agentId={agentId} />
               )}
             </>
           }
@@ -95,9 +89,7 @@ export function MessageItem({
       // bypasses pairToolItems(). Render through the presenter anyway,
       // with a null result.
       if (isUserInputTool(item.name)) {
-        return (
-          <UserInput tool={item.name} call={item} result={null} agentId={agentId} />
-        );
+        return <UserInput tool={item.name} call={item} result={null} agentId={agentId} />;
       }
       const presenter = getPresenter(item.name);
       return (
@@ -146,22 +138,13 @@ function SubagentThread({
       }}
     >
       {rows.map((row, i) => (
-        <MessageItem
-          key={rowKey(row, i)}
-          item={row}
-          provider={provider}
-          agentId={agentId}
-        />
+        <MessageItem key={rowKey(row, i)} item={row} provider={provider} agentId={agentId} />
       ))}
     </div>
   );
 }
 
-function NoticeView({
-  item,
-}: {
-  item: Extract<ChatItem, { kind: "notice" }>;
-}) {
+function NoticeView({ item }: { item: Extract<ChatItem, { kind: "notice" }> }) {
   if (item.subtype === "slash_command") {
     return (
       <div className="m-reasoning" style={{ fontStyle: "italic" }}>

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Icon, type IconName } from "../../Icon";
 
 /** Shared chrome for every tool presenter: icon, name, one-line summary,

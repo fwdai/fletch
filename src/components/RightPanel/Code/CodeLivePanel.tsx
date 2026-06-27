@@ -7,13 +7,13 @@
 // and fetches each file's diff via `get_file_diff`. True edit-streaming (a
 // typing cursor per keystroke) is a deferred follow-up.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { type AgentRecord, type FileStatus } from "../../../api";
+import type { AgentRecord, FileStatus } from "../../../api";
 import { useAppStore } from "../../../store";
-import { usePoll } from "../../../util/hooks";
 import { useHljsTheme } from "../../../util/codeTheme";
-import { type DiffLine } from "../../../util/diff";
-import { DiffBody, useFileDiff, extOf } from "./DiffView";
+import type { DiffLine } from "../../../util/diff";
+import { usePoll } from "../../../util/hooks";
 import { Icon } from "../../Icon";
+import { DiffBody, extOf, useFileDiff } from "./DiffView";
 
 interface CodeLivePanelProps {
   agent: AgentRecord;
@@ -25,19 +25,31 @@ interface CodeLivePanelProps {
 
 function statusLetter(kind: FileStatus["kind"]): string {
   switch (kind) {
-    case "modified":   return "M";
-    case "added":      return "A";
-    case "deleted":    return "D";
-    case "renamed":    return "R";
-    case "untracked":  return "?";
-    case "conflicted": return "!";
-    default:           return "?";
+    case "modified":
+      return "M";
+    case "added":
+      return "A";
+    case "deleted":
+      return "D";
+    case "renamed":
+      return "R";
+    case "untracked":
+      return "?";
+    case "conflicted":
+      return "!";
+    default:
+      return "?";
   }
 }
 
 const sigOf = (f: FileStatus) => `${f.additions}:${f.deletions}`;
 
-export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }: CodeLivePanelProps) {
+export function CodeLivePanel({
+  agent,
+  selectedPath,
+  onSelect,
+  onOpenInEditor,
+}: CodeLivePanelProps) {
   const gitState = useAppStore((s) => s.gitStates[agent.id] ?? null);
   const fetchGitState = useAppStore((s) => s.fetchGitState);
   // Is the agent mid-turn? Same signal the chat "thinking" spinner uses, so
@@ -107,7 +119,10 @@ export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }:
       if (prev === sigOf(f)) continue;
       const [pa, pd] = prev ? prev.split(":").map(Number) : [0, 0];
       const delta = Math.abs(f.additions - pa) + Math.abs(f.deletions - pd);
-      if (delta > bestDelta) { bestDelta = delta; moved = f.path; }
+      if (delta > bestDelta) {
+        bestDelta = delta;
+        moved = f.path;
+      }
     }
     prevSig.current = sig;
     if (moved) setLiveFile(moved);
@@ -132,7 +147,7 @@ export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }:
       ? selectedPath
       : liveFile && changed.has(liveFile)
         ? liveFile
-        : files[0]?.path ?? null;
+        : (files[0]?.path ?? null);
 
   const displaySig = files.find((f) => f.path === displayPath);
   const displaySigStr = displaySig ? sigOf(displaySig) : "";
@@ -157,8 +172,7 @@ export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }:
   }, [hunks, displayPath]);
   useEffect(() => {
     const keys = new Set<string>();
-    for (const h of hunks)
-      for (const l of h.lines) if (l.op === "add") keys.add(addKey(l));
+    for (const h of hunks) for (const l of h.lines) if (l.op === "add") keys.add(addKey(l));
     prevAdds.current = { path: displayPath ?? "", keys };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hunks, displayPath]);
@@ -191,7 +205,10 @@ export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }:
       {/* header: totals + follow toggle */}
       <div className="code-h">
         <div className="code-h-l">
-          <span className="ch-count">{files.length}<span className="dim"> files</span></span>
+          <span className="ch-count">
+            {files.length}
+            <span className="dim"> files</span>
+          </span>
           <span className="ch-dot">·</span>
           <span className="ch-add">+{gitState?.additions ?? 0}</span>
           <span className="ch-rem">−{gitState?.deletions ?? 0}</span>
@@ -210,7 +227,9 @@ export function CodeLivePanel({ agent, selectedPath, onSelect, onOpenInEditor }:
         <button
           className={`code-follow ${follow ? "on" : "off"} ${busy ? "live" : ""} tip`}
           data-tip-down
-          data-tip={follow ? "Auto-following the agent's current file" : "Click to auto-follow agent edits"}
+          data-tip={
+            follow ? "Auto-following the agent's current file" : "Click to auto-follow agent edits"
+          }
           onClick={() => setFollow((v) => !v)}
         >
           <span className="cf-dot"></span>

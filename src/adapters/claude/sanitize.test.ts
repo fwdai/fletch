@@ -16,17 +16,13 @@ describe("sanitizeUserText", () => {
     ].join("\n");
     const out = sanitizeUserText(raw);
     expect(out.text).toBe("");
-    expect(out.notices).toEqual([
-      { kind: "notice", subtype: "slash_command", text: "/login" },
-    ]);
+    expect(out.notices).toEqual([{ kind: "notice", subtype: "slash_command", text: "/login" }]);
   });
 
   it("ensures the slash prefix when the name lacks one", () => {
     const raw = "<command-name>clear</command-name><command-message>clear</command-message>";
     const out = sanitizeUserText(raw);
-    expect(out.notices).toEqual([
-      { kind: "notice", subtype: "slash_command", text: "/clear" },
-    ]);
+    expect(out.notices).toEqual([{ kind: "notice", subtype: "slash_command", text: "/clear" }]);
   });
 
   it("extracts a system-reminder as a hook_output notice", () => {
@@ -39,8 +35,7 @@ describe("sanitizeUserText", () => {
   });
 
   it("preserves surrounding user text when wrappers are mixed in", () => {
-    const raw =
-      "Please run this:\n<system-reminder>session-reminder</system-reminder>\nThanks!";
+    const raw = "Please run this:\n<system-reminder>session-reminder</system-reminder>\nThanks!";
     const out = sanitizeUserText(raw);
     expect(out.text).toBe("Please run this:\n\nThanks!");
     expect(out.notices).toHaveLength(1);
@@ -87,8 +82,7 @@ describe("sanitizeUserText", () => {
   });
 
   it("unwraps Cursor's timestamp/user_query envelope", () => {
-    const raw =
-      "<timestamp>Tue, Jun 9, 2026</timestamp>\n<user_query>\nHey\n</user_query>";
+    const raw = "<timestamp>Tue, Jun 9, 2026</timestamp>\n<user_query>\nHey\n</user_query>";
     expect(sanitizeUserText(raw).text).toBe("Hey");
   });
 

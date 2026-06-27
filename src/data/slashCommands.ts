@@ -37,9 +37,9 @@ export type SlashCommand =
 
 export const PROVIDER_COMMANDS: Record<ProviderId, SlashCommand[]> = {
   claude: [
-    { kind: "passthrough", name: "help",    description: "Show available commands" },
+    { kind: "passthrough", name: "help", description: "Show available commands" },
     { kind: "passthrough", name: "compact", description: "Compact prior turns into a summary" },
-    { kind: "passthrough", name: "init",    description: "Create a CLAUDE.md for this repo" },
+    { kind: "passthrough", name: "init", description: "Create a CLAUDE.md for this repo" },
   ],
   codex: [],
   cursor: [],
@@ -52,10 +52,7 @@ export function commandsFor(providerId: string): SlashCommand[] {
   return PROVIDER_COMMANDS[providerId as ProviderId] ?? [];
 }
 
-export function filterCommands(
-  providerId: string,
-  query: string,
-): SlashCommand[] {
+export function filterCommands(providerId: string, query: string): SlashCommand[] {
   const q = query.toLowerCase();
   return commandsFor(providerId).filter((c) => c.name.startsWith(q));
 }

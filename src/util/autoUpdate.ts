@@ -5,8 +5,8 @@
 // the next launch regardless. Failures (offline, endpoint down, malformed
 // manifest) are logged and swallowed so they can never block app startup.
 
-import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 
 /**
  * Check for an update once, and download + stage it if found. Safe to call
@@ -16,9 +16,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
  *   downloaded and staged. The app is NOT relaunched here — the caller decides
  *   when to restart (see {@link restartForUpdate}).
  */
-export async function runStartupUpdateCheck(
-  onStaged: (version: string) => void,
-): Promise<void> {
+export async function runStartupUpdateCheck(onStaged: (version: string) => void): Promise<void> {
   // Dev builds aren't signed and have no release endpoint to check against.
   if (import.meta.env.DEV) return;
 

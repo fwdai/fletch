@@ -1,9 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export async function dbInsert(
-  table: string,
-  data: Record<string, unknown>,
-): Promise<string> {
+export async function dbInsert(table: string, data: Record<string, unknown>): Promise<string> {
   return invoke<string>("db_insert", { table, data });
 }
 
@@ -31,17 +28,11 @@ export async function dbUpdate(
   return invoke<number>("db_update", { table, query: { where }, data });
 }
 
-export async function dbDelete(
-  table: string,
-  where: Record<string, unknown>,
-): Promise<number> {
+export async function dbDelete(table: string, where: Record<string, unknown>): Promise<number> {
   return invoke<number>("db_delete", { table, query: { where } });
 }
 
-export async function dbCount(
-  table: string,
-  where?: Record<string, unknown>,
-): Promise<number> {
+export async function dbCount(table: string, where?: Record<string, unknown>): Promise<number> {
   const query = where ? { where } : {};
   return invoke<number>("db_count", { table, query });
 }
@@ -58,10 +49,7 @@ export async function dbUpsert(
   });
 }
 
-export async function dbQuery<T>(
-  sql: string,
-  params: unknown[] = [],
-): Promise<T[]> {
+export async function dbQuery<T>(sql: string, params: unknown[] = []): Promise<T[]> {
   const rows = await invoke<T[]>("db_query", { sql, params });
   return Array.isArray(rows) ? rows : [];
 }

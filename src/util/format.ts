@@ -27,7 +27,7 @@ export function hueFromString(s: string): number {
 export function firstLine(s: string, max = 56): string {
   const idx = s.indexOf("\n");
   const head = idx === -1 ? s : s.slice(0, idx);
-  return head.length > max ? head.slice(0, max - 1) + "…" : head;
+  return head.length > max ? `${head.slice(0, max - 1)}…` : head;
 }
 
 export function formatAge(iso: string, nowMs: number): string {
@@ -45,11 +45,7 @@ export function formatAge(iso: string, nowMs: number): string {
 
 /** Up-to-two-letter avatar initials: first + last initial, falling back to
  *  the email's first character, then a neutral placeholder. */
-export function accountInitials(
-  first: string,
-  last: string,
-  email = "",
-): string {
+export function accountInitials(first: string, last: string, email = ""): string {
   const combined = `${first.trim()[0] ?? ""}${last.trim()[0] ?? ""}`.toUpperCase();
   if (combined) return combined;
   const e = email.trim()[0];
