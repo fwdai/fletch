@@ -191,6 +191,44 @@ impl Supervisor {
             to = ?status,
             "agent status transition"
         );
+        self.persist_and_emit_status(app, agent_id, status, last_error);
+    }
+
+    /// Atomically flip the live status out of `Spawning` to `to`, returning
+    /// `true` iff this call performed the swap. The spawn task and the spawn
+    /// timeout both race to finish a `Spawning` agent; whoever flips it first
+    /// "wins" and owns the outcome. The check-and-swap happens under a single
+    /// lock so the two can never both succeed — losing the race is precisely
+    /// how each side learns the other already resolved the spawn.
+    fn claim_spawn_outcome(
+        &self,
+        app: &AppHandle,
+        agent_id: &str,
+        to: AgentStatus,
+        last_error: Option<String>,
+    ) -> bool {
+        {
+            let mut statuses = self.statuses.lock();
+            if !matches!(statuses.get(agent_id), Some(AgentStatus::Spawning)) {
+                return false;
+            }
+            statuses.insert(agent_id.to_string(), to.clone());
+        }
+        self.persist_and_emit_status(app, agent_id, to, last_error);
+        true
+    }
+
+    /// Durable side-effects of a status change: persist to the DB where the
+    /// status warrants it, then emit to the frontend. Split out of
+    /// `set_status` so `claim_spawn_outcome` can reuse it after writing the
+    /// status map under the lock.
+    fn persist_and_emit_status(
+        &self,
+        app: &AppHandle,
+        agent_id: &str,
+        status: AgentStatus,
+        last_error: Option<String>,
+    ) {
         // Persist durable side-effects: Error stores last_error; Spawning/Running
         // clear stale stopped/error; Idle persists nothing.
         match status {
@@ -827,11 +865,22 @@ impl Supervisor {
 
         // Initial status is always Idle now — at process start there's
         // never an in-flight turn (we no longer pass a task as a spawn
-        // arg). The user's first send flips it to Running. Only promote
-        // out of the live Spawning state (a turn that already started
-        // mustn't be clobbered).
-        if matches!(self.live_status(&agent_id_str), Some(AgentStatus::Spawning)) {
-            self.set_status(&app, &agent_id_str, AgentStatus::Idle, None);
+        // arg). The user's first send flips it to Running. Promote out of
+        // the live Spawning state atomically (a turn that already started
+        // mustn't be clobbered). If the swap fails because the spawn already
+        // timed out (status Error), the timeout fired before we inserted the
+        // process above — so its shutdown was a no-op and we'd leak a live
+        // process shown as failed. Tear down what we just started instead.
+        if !self.claim_spawn_outcome(&app, &agent_id_str, AgentStatus::Idle, None)
+            && matches!(self.live_status(&agent_id_str), Some(AgentStatus::Error))
+        {
+            if let Some(agent) = self.agents.lock().remove(&agent_id_str) {
+                let _ = agent.shutdown();
+            }
+            self.activities.lock().remove(&agent_id_str);
+            return Err(Error::Other(
+                "spawn aborted: timed out before the process became ready".into(),
+            ));
         }
 
         spawn_turn_watchdog(self.clone(), app.clone(), agent_id_str.clone(), my_gen);
@@ -2336,15 +2385,16 @@ fn spawn_rpc_watcher(
 fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: String) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(SPAWN_TIMEOUT).await;
-        // Only time out an agent still in the live Spawning state. One that
-        // has progressed to Running/Idle has a non-Spawning in-memory entry
-        // and must not be killed.
-        let still_spawning = matches!(sup.live_status(&agent_id), Some(AgentStatus::Spawning));
-        if !still_spawning {
+        // Atomically claim the timeout outcome. Only an agent still in the
+        // live Spawning state may be timed out; if the swap fails the spawn
+        // already left Spawning (completed, or failed on its own) and must
+        // not be killed. The compare-and-swap also closes the race with
+        // start_process: if the spawn task inserts its process concurrently,
+        // exactly one of us flips the status, and the loser tears down.
+        let err = "Spawn timed out after 15s — process did not become ready.".to_string();
+        if !sup.claim_spawn_outcome(&app, &agent_id, AgentStatus::Error, Some(err)) {
             return;
         }
-        let err = "Spawn timed out after 15s — process did not become ready.".to_string();
-        sup.set_status(&app, &agent_id, AgentStatus::Error, Some(err));
         if let Some(agent) = sup.agents.lock().remove(&agent_id) {
             let _ = agent.shutdown();
         }
