@@ -26,13 +26,31 @@ export interface ChatSearchState {
   prev: () => void;
 }
 
+/** Escape a user query so it can be matched literally inside a RegExp. */
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Walk every visible text node under `container` and collect a Range for each
  *  case-insensitive occurrence of `query`. Matches are returned in document
- *  order, which is also visual (top-to-bottom) order in this scroll log. */
+ *  order, which is also visual (top-to-bottom) order in this scroll log.
+ *
+ *  Matching runs against the original node text via a case-insensitive RegExp,
+ *  so `match.index` / length are always valid offsets into that same node. We
+ *  deliberately do NOT lowercase the text first: for code points whose
+ *  lowercase form expands (e.g. "İ" → "i" + combining dot), offsets computed
+ *  on the lowercased string would drift past the original node length and make
+ *  range.setEnd throw mid-search. */
 function collectRanges(container: HTMLElement, query: string): Range[] {
   const ranges: Range[] = [];
-  const needle = query.toLowerCase();
-  if (!needle) return ranges;
+  if (!query) return ranges;
+
+  let matcher: RegExp;
+  try {
+    matcher = new RegExp(escapeRegExp(query), "gi");
+  } catch {
+    return ranges; // malformed pattern — nothing to highlight
+  }
 
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -43,14 +61,16 @@ function collectRanges(container: HTMLElement, query: string): Range[] {
   });
 
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    const haystack = (node.nodeValue ?? "").toLowerCase();
-    let from = haystack.indexOf(needle);
-    while (from !== -1) {
+    const text = node.nodeValue ?? "";
+    matcher.lastIndex = 0;
+    for (let m = matcher.exec(text); m; m = matcher.exec(text)) {
       const range = document.createRange();
-      range.setStart(node, from);
-      range.setEnd(node, from + needle.length);
+      range.setStart(node, m.index);
+      range.setEnd(node, m.index + m[0].length);
       ranges.push(range);
-      from = haystack.indexOf(needle, from + needle.length);
+      // Guard against zero-length matches (defensive — the escaped query is
+      // never empty here) so exec() can't loop forever.
+      if (m[0].length === 0) matcher.lastIndex += 1;
     }
   }
   return ranges;
