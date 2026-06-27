@@ -216,6 +216,28 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   },
 
   archive: async (id) => {
+    // Optimistically hide the agent so the click feels instant: the sidebar
+    // filters on `!a.archive`, so stamping a placeholder ArchiveMetadata drops
+    // the row immediately. The real metadata (diff stats, branch snapshots)
+    // arrives with the fresh workspace fetch below. Snapshot the previous
+    // workspace first so we can roll back if the backend call fails.
+    const prevWorkspace = get().workspace;
+    const placeholder = {
+      archived_at: "",
+      repos: [],
+      diff_stats: { additions: 0, deletions: 0 },
+    };
+    set((s) => ({
+      workspace: s.workspace
+        ? {
+            ...s.workspace,
+            agents: s.workspace.agents.map((a) =>
+              a.id === id && !a.archive ? { ...a, archive: placeholder } : a,
+            ),
+          }
+        : s.workspace,
+      selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
+    }));
     try {
       await api.archiveAgent(id);
       clearOutputBuffer(id);
@@ -223,10 +245,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       set((s) => ({
         ...dropAgentEntries(s, id),
         workspace: fresh ?? s.workspace,
-        selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
       }));
     } catch (e) {
-      set({ lastError: String(e) });
+      // Roll back the optimistic hide; the agent reappears in the sidebar.
+      set({ workspace: prevWorkspace, lastError: String(e) });
     }
   },
 
