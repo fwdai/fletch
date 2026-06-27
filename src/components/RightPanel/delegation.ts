@@ -23,11 +23,13 @@ export interface GitDelegation {
    *  settled status is pre-send state, not a finished delegation turn. Used
    *  only to arm the give-up clock — never to confirm success. */
   sawRunning: boolean;
-  /** The agent ran a successful mutating git op (commit/push/PR/update) during
-   *  OUR turn — the backend's ground-truth `agent:git-action` signal. This is
-   *  the causal link a snapshot can't provide: it distinguishes a target the
-   *  agent reached from one already satisfied by a manual action or pre-existing
-   *  state. Only set once we're no longer queued behind a foreign turn. */
+  /** The agent ran a successful mutating git op (commit/push/PR/update) since
+   *  this delegation was sent — the backend's ground-truth `agent:git-action`
+   *  signal. This is the causal link a snapshot can't provide: it distinguishes
+   *  a target the agent reached from one already satisfied by a manual action or
+   *  pre-existing state. Set regardless of `queued`: the turn boundary isn't
+   *  reliably observable (the backend may skip an intermediate idle), so gating
+   *  on it would drop our own turn's signal. */
   sawGitOp: boolean;
   /** The agent was mid-turn when the trigger was sent, so it's queued behind
    *  that turn. The foreign turn's running/settling must not arm or clear

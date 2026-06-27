@@ -139,9 +139,14 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   markGitDelegationActed: (agentId) => {
     set((s) => {
       const d = s.gitDelegations[agentId];
-      // Ignore git ops fired by a foreign turn we're still queued behind — only
-      // OUR turn's mutations count. (`queued` drops once that turn settles.)
-      if (!d || d.queued || d.sawGitOp) return s;
+      // Record the git op regardless of `queued`. The backend can swap the
+      // running turn for our delegated turn without an intermediate idle, so the
+      // frontend may never observe the dequeue before our turn's commit/PR fires
+      // its `agent:git-action` — gating on `queued` would drop the only causal
+      // success signal and force a false give-up. Whether the op came from our
+      // turn or one we were queued behind, a real agent mutation reached the
+      // target, so pairing it with `resolved` keeps the success notice accurate.
+      if (!d || d.sawGitOp) return s;
       return {
         gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawGitOp: true } },
       };

@@ -130,7 +130,7 @@ describe("delegationStep", () => {
     // sawRunning alone (turn started) must NOT resolve; only sawGitOp does.
     expect(delegationStep(d({ sawRunning: true }), "running", true, soon)).toBe("wait");
     expect(delegationStep(d({ sawRunning: true }), "idle", true, late)).toBe("give-up");
-    // Queued behind a foreign turn: its activity is never ours.
+    // Queued, target matches, but no agent git op recorded yet → not success.
     expect(delegationStep(d({ queued: true }), "running", true, soon)).toBe("wait");
     // Our turn hasn't even started: wait within grace, give up after.
     expect(delegationStep(d(), "idle", true, soon)).toBe("wait");
@@ -141,6 +141,16 @@ describe("delegationStep", () => {
     // sawGitOp arrives from the backend even if the snapshot/status timing is
     // tight — once set, a reached target resolves rather than giving up.
     expect(delegationStep(d({ sawGitOp: true }), "idle", true, soon)).toBe("resolve");
+  });
+
+  it("a git op landing while still queued (backend skipped idle) still resolves", () => {
+    // The backend can swap the running turn for our delegated turn without an
+    // intermediate idle, so `queued` may still be set when our commit/PR fires
+    // its agent:git-action. The op is recorded regardless (store), and a reached
+    // target resolves rather than being dropped as a foreign turn.
+    expect(delegationStep(d({ queued: true, sawGitOp: true }), "running", true, soon)).toBe(
+      "resolve",
+    );
   });
 
   it("queued behind an in-flight turn: waits it out, then dequeues — never gives up", () => {
