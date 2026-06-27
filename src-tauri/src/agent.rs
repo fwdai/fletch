@@ -98,8 +98,10 @@ pub struct PerTurnDescriptor {
     /// Builds the args to launch this agent's interactive TUI in the native
     /// (PTY) view: `(session [None = fresh], model, custom_instructions)`.
     pty_args: fn(Option<&str>, Option<&str>, Option<&str>) -> Vec<String>,
-    /// Extracts the agent-assigned session id from a turn's events. No-op for
-    /// `plaintext` agents (they emit no events — see `session_id_from_cwd`).
+    /// Extracts the agent-assigned session id from a turn's events. The
+    /// event-based agents are thin wrappers over `gated_session_id` (same shape,
+    /// different gates). No-op for `plaintext` agents (they emit no events — see
+    /// `session_id_from_cwd`).
     session_id: fn(&Value) -> Option<String>,
     /// Constructs this agent's turn-end detector (custom-view `Activity`).
     pub activity: fn() -> Box<dyn Activity>,
@@ -601,10 +603,7 @@ fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Opt
     // prompt must come last, directly after `--print`. Putting another flag
     // between them makes that flag the prompt (agy then "answers" the flag name).
     let mut args = vec!["--dangerously-skip-permissions".to_string()];
-    if let Some(id) = session_id {
-        args.push("--conversation".into());
-        args.push(id.to_string());
-    }
+    push_opt(&mut args, "--conversation", session_id);
     args.push("--print".into());
     args.push(instructions::prepend_to_prompt(prompt, session_id, extra));
     args
@@ -618,10 +617,7 @@ fn antigravity_pty_args(session_id: Option<&str>, _model: Option<&str>, _extra: 
     // Native view: launch agy's interactive TUI (NOT `--print`, the
     // non-interactive turn runner), resuming the conversation by id.
     let mut args = vec!["--dangerously-skip-permissions".to_string()];
-    if let Some(id) = session_id {
-        args.push("--conversation".into());
-        args.push(id.to_string());
-    }
+    push_opt(&mut args, "--conversation", session_id);
     args
 }
 
@@ -1135,6 +1131,17 @@ fn model_args(model: Option<&str>) -> Vec<String> {
     }
 }
 
+/// Append `flag` then `value` to `args` when `value` is `Some` — the
+/// `<flag> <id>` resume/session pattern every per-turn arg builder repeats.
+/// `flag` is a positional subcommand for codex (`resume`) or a `--…` option for
+/// the others; either way it's two tokens.
+fn push_opt(args: &mut Vec<String>, flag: &str, value: Option<&str>) {
+    if let Some(v) = value {
+        args.push(flag.to_string());
+        args.push(v.to_string());
+    }
+}
+
 fn prepare_pty_args(
     spec: &SpawnSpec<'_>,
 ) -> Result<(tempfile::NamedTempFile, Vec<String>)> {
@@ -1242,10 +1249,7 @@ fn resolve_claude(home: &Path) -> Result<String> {
 /// lives outside the worktree that `workspace-write` would have confined it to.
 fn codex_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>, model: Option<&str>, extra: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["exec".into()];
-    if let Some(id) = session_id {
-        args.push("resume".into());
-        args.push(id.to_string());
-    }
+    push_opt(&mut args, "resume", session_id);
     args.push("--json".into());
     args.push("--skip-git-repo-check".into());
     args.push("-c".into());
@@ -1262,15 +1266,32 @@ fn codex_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&st
     args
 }
 
+/// Read a session id from one event: `None` unless the event's `type` matches
+/// `event_type` (when set) and the `require` key/value gate passes (when set),
+/// then read `id_field` as a string. The per-provider `*_session_id` extractors
+/// are one-line wrappers over this — same shape, different gates.
+fn gated_session_id(
+    event: &Value,
+    event_type: Option<&str>,
+    require: Option<(&str, &str)>,
+    id_field: &str,
+) -> Option<String> {
+    if let Some(ty) = event_type {
+        if event.get("type").and_then(|t| t.as_str()) != Some(ty) {
+            return None;
+        }
+    }
+    if let Some((key, val)) = require {
+        if event.get(key).and_then(|v| v.as_str()) != Some(val) {
+            return None;
+        }
+    }
+    event.get(id_field).and_then(|v| v.as_str()).map(str::to_string)
+}
+
 /// Codex assigns its thread id on the first turn via `thread.started`.
 fn codex_session_id(event: &Value) -> Option<String> {
-    if event.get("type").and_then(|t| t.as_str()) != Some("thread.started") {
-        return None;
-    }
-    event
-        .get("thread_id")
-        .and_then(|t| t.as_str())
-        .map(str::to_string)
+    gated_session_id(event, Some("thread.started"), None, "thread_id")
 }
 
 /// Cursor: `cursor-agent -p --output-format stream-json --force [--resume <id>] <prompt>`.
@@ -1285,29 +1306,17 @@ fn cursor_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&
         "--force".into(),
         "--trust".into(),
     ];
-    if let Some(id) = session_id {
-        args.push("--resume".into());
-        args.push(id.to_string());
-    }
+    push_opt(&mut args, "--resume", session_id);
     args.extend(model_args(model));
     // Prompt is positional and must come after options.
     args.push(instructions::prepend_to_prompt(prompt, session_id, extra));
     args
 }
 
-/// Cursor assigns its session id on the first turn, reported on the
-/// `system`/`init` event (and echoed on every later event).
+/// Cursor reports its session id on the `system`/`init` event (echoed on every
+/// later event; `maybe_capture_session_id` keeps only the first).
 fn cursor_session_id(event: &Value) -> Option<String> {
-    if event.get("type").and_then(|t| t.as_str()) != Some("system") {
-        return None;
-    }
-    if event.get("subtype").and_then(|s| s.as_str()) != Some("init") {
-        return None;
-    }
-    event
-        .get("session_id")
-        .and_then(|s| s.as_str())
-        .map(str::to_string)
+    gated_session_id(event, Some("system"), Some(("subtype", "init")), "session_id")
 }
 
 /// OpenCode: `opencode run --format json --dangerously-skip-permissions [--session <id>] <prompt>`.
@@ -1331,22 +1340,16 @@ fn opencode_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<
         args.push(variant.to_string());
     }
     args.extend(model_args(model));
-    if let Some(id) = session_id {
-        args.push("--session".into());
-        args.push(id.to_string());
-    }
+    push_opt(&mut args, "--session", session_id);
     args.push(instructions::prepend_to_prompt(prompt, session_id, extra));
     args
 }
 
-/// OpenCode stamps the session id (`ses_…`) on the top-level `sessionID`
-/// field of every event, so the first event of the first turn carries it.
-/// `maybe_capture_session_id` captures it once and ignores the later echoes.
+/// OpenCode stamps the session id (`ses_…`) on the top-level `sessionID` field
+/// of every event, so the first event of the first turn carries it (no type
+/// gate); `maybe_capture_session_id` keeps the first and ignores later echoes.
 fn opencode_session_id(event: &Value) -> Option<String> {
-    event
-        .get("sessionID")
-        .and_then(|s| s.as_str())
-        .map(str::to_string)
+    gated_session_id(event, None, None, "sessionID")
 }
 
 /// Pi: `pi -p --mode json [--session <id>] <prompt>`. `-p` runs one turn
@@ -1365,20 +1368,14 @@ fn pi_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>,
         args.push(level.to_string());
     }
     args.extend(instructions::append_system_prompt_args(extra));
-    if let Some(id) = session_id {
-        args.push("--session".into());
-        args.push(id.to_string());
-    }
+    push_opt(&mut args, "--session", session_id);
     args.push(prompt.to_string());
     args
 }
 
 /// Pi reports its session id on the first `{"type":"session","id":"…"}` event.
 fn pi_session_id(event: &Value) -> Option<String> {
-    if event.get("type").and_then(|t| t.as_str()) != Some("session") {
-        return None;
-    }
-    event.get("id").and_then(|s| s.as_str()).map(str::to_string)
+    gated_session_id(event, Some("session"), None, "id")
 }
 
 // ── native (PTY/TUI) arg builders ───────────────────────────────────────────
@@ -1397,10 +1394,7 @@ fn codex_pty_args(session_id: Option<&str>, model: Option<&str>, extra: Option<&
     let mut args: Vec<String> = vec!["--dangerously-bypass-approvals-and-sandbox".into()];
     args.extend(model_args(model));
     args.extend(instructions::codex_config_args(extra));
-    if let Some(id) = session_id {
-        args.push("resume".into());
-        args.push(id.to_string());
-    }
+    push_opt(&mut args, "resume", session_id);
     args
 }
 
@@ -1411,10 +1405,7 @@ fn codex_pty_args(session_id: Option<&str>, model: Option<&str>, extra: Option<&
 fn cursor_pty_args(session_id: Option<&str>, model: Option<&str>, _extra: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["--force".into()];
     args.extend(model_args(model));
-    if let Some(id) = session_id {
-        args.push("--resume".into());
-        args.push(id.to_string());
-    }
+    push_opt(&mut args, "--resume", session_id);
     args
 }
 
@@ -1427,10 +1418,7 @@ fn cursor_pty_args(session_id: Option<&str>, model: Option<&str>, _extra: Option
 fn opencode_pty_args(session_id: Option<&str>, model: Option<&str>, _extra: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     args.extend(model_args(model));
-    if let Some(id) = session_id {
-        args.push("--session".into());
-        args.push(id.to_string());
-    }
+    push_opt(&mut args, "--session", session_id);
     args
 }
 
@@ -1440,10 +1428,7 @@ fn opencode_pty_args(session_id: Option<&str>, model: Option<&str>, _extra: Opti
 fn pi_pty_args(session_id: Option<&str>, model: Option<&str>, extra: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = instructions::append_system_prompt_args(extra);
     args.extend(model_args(model));
-    if let Some(id) = session_id {
-        args.push("--session".into());
-        args.push(id.to_string());
-    }
+    push_opt(&mut args, "--session", session_id);
     args
 }
 
@@ -1971,6 +1956,42 @@ mod tests {
         let with_none = cursor_build_args("hi", None, None, None, None);
         let with_some = cursor_build_args("hi", None, Some("high"), None, None);
         assert_eq!(with_none, with_some);
+    }
+
+    // ── session-id extraction ──────────────────────────────────────────────
+
+    /// Each `*_session_id` reads the id only when its event-type and (for
+    /// cursor) subtype gates pass — the shared `gated_session_id` shape with
+    /// per-provider gates.
+    #[test]
+    fn session_id_extractors_gate_then_read() {
+        // Codex: gated on `thread.started`, reads `thread_id`.
+        assert_eq!(
+            codex_session_id(&json!({"type": "thread.started", "thread_id": "t-1"})),
+            Some("t-1".into())
+        );
+        assert_eq!(codex_session_id(&json!({"type": "turn.delta", "thread_id": "t-1"})), None);
+
+        // Cursor: gated on `system` + `subtype == init`, reads `session_id`.
+        assert_eq!(
+            cursor_session_id(&json!({"type": "system", "subtype": "init", "session_id": "s-1"})),
+            Some("s-1".into())
+        );
+        assert_eq!(
+            cursor_session_id(&json!({"type": "system", "subtype": "delta", "session_id": "s-1"})),
+            None,
+            "wrong subtype is gated out"
+        );
+
+        // OpenCode: no type gate, reads top-level `sessionID` off any event.
+        assert_eq!(
+            opencode_session_id(&json!({"type": "message", "sessionID": "ses_9"})),
+            Some("ses_9".into())
+        );
+
+        // Pi: gated on `session`, reads `id`.
+        assert_eq!(pi_session_id(&json!({"type": "session", "id": "u-7"})), Some("u-7".into()));
+        assert_eq!(pi_session_id(&json!({"type": "assistant", "id": "u-7"})), None);
     }
 
     // ── descriptor table ──────────────────────────────────────────────────
