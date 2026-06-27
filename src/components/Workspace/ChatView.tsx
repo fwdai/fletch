@@ -3,7 +3,10 @@ import { applyPolicy, getAdapter } from "../../adapters";
 import { type AgentRecord, api } from "../../api";
 import { providerLabel } from "../../data/providers";
 import { useAppStore } from "../../store";
+import { stripInjectedInstructions } from "../../util/instructions";
 import { Composer } from "../Composer";
+import { APP_ACTION_PREFIX } from "../RightPanel/delegation";
+import { ChatNav } from "./ChatNav";
 import { ChatSearch } from "./ChatSearch";
 import { MessageItem } from "./messages/MessageItem";
 import { pairToolItems, rowKey } from "./messages/pair";
@@ -132,6 +135,22 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     return pairToolItems(visible);
   }, [log, agent.provider]);
 
+  // Navigable turns = the real user prompts (git-action chips excluded). Each
+  // gets a stable ordinal that maps an item to its `data-chat-turn` marker, so
+  // ChatNav can jump straight to any bubble.
+  const { turns, turnIds } = useMemo(() => {
+    const turns: { id: number; text: string }[] = [];
+    const turnIds = items.map((it) => {
+      if (it.kind !== "user_message" || it.text.startsWith(APP_ACTION_PREFIX)) {
+        return undefined;
+      }
+      const id = turns.length;
+      turns.push({ id, text: stripInjectedInstructions(it.text) });
+      return id;
+    });
+    return { turns, turnIds };
+  }, [items]);
+
   // The model the agent actually used on its most recent turn (Claude, pi,
   // Codex, OpenCode report it in their transcripts). Undefined for Cursor /
   // Antigravity, or before the first turn — the composer then shows just the
@@ -170,47 +189,51 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           onClose={closeSearch}
         />
       )}
-      <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-        <div className="chat-inner fade-in" key={agent.id}>
-          {transcriptLoading && items.length === 0 ? (
-            <div className="writing">
-              <span className="dots">
-                <i />
-                <i />
-                <i />
-              </span>
-              <span>Loading transcript…</span>
-            </div>
-          ) : items.length === 0 && hasPriorConversation && !busy ? (
-            <div className="empty-msg" style={{ margin: "40px auto", maxWidth: 360 }}>
-              <div className="et">No transcript available</div>
-              <div>
-                {providerLabel(agent.provider)}'s session file is not on disk for this agent.
+      <div className="chat-scroll-wrap">
+        <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
+          <div className="chat-inner fade-in" key={agent.id}>
+            {transcriptLoading && items.length === 0 ? (
+              <div className="writing">
+                <span className="dots">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span>Loading transcript…</span>
               </div>
-            </div>
-          ) : (
-            items.map((item, i) => (
-              <MessageItem
-                key={rowKey(item, i)}
-                item={item}
-                provider={agent.provider}
-                agentId={agent.id}
-              />
-            ))
-          )}
-          {busy && !awaitingInput && (
-            <div className="writing">
-              <span className="dots">
-                <i />
-                <i />
-                <i />
-              </span>
-              <span>
-                {busyLabel ?? `${customAgent?.name ?? providerLabel(agent.provider)} is thinking`}
-              </span>
-            </div>
-          )}
+            ) : items.length === 0 && hasPriorConversation && !busy ? (
+              <div className="empty-msg" style={{ margin: "40px auto", maxWidth: 360 }}>
+                <div className="et">No transcript available</div>
+                <div>
+                  {providerLabel(agent.provider)}'s session file is not on disk for this agent.
+                </div>
+              </div>
+            ) : (
+              items.map((item, i) => (
+                <MessageItem
+                  key={rowKey(item, i)}
+                  item={item}
+                  provider={agent.provider}
+                  agentId={agent.id}
+                  turnId={turnIds[i]}
+                />
+              ))
+            )}
+            {busy && !awaitingInput && (
+              <div className="writing">
+                <span className="dots">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span>
+                  {busyLabel ?? `${customAgent?.name ?? providerLabel(agent.provider)} is thinking`}
+                </span>
+              </div>
+            )}
+          </div>
         </div>
+        {!searchOpen && <ChatNav scrollRef={scrollRef} turns={turns} />}
       </div>
       <div className="composer-wrap">
         <Composer
