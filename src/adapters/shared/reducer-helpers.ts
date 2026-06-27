@@ -10,6 +10,15 @@ function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
   return -1;
 }
 
+/** Append a successful turn_end notice. The agents whose live streams carry a
+ *  single, unconditional end-of-turn event (codex `turn.completed`, pi
+ *  `agent_end`, opencode `step_finish:stop`) all close the turn this way.
+ *  Claude differs — its result event encodes a pass/fail subtype — so it
+ *  builds the notice inline. */
+export function endTurn(items: ChatItem[]): ChatItem[] {
+  return [...items, { kind: "notice", subtype: "turn_end", text: "success" }];
+}
+
 /** Append text to the most recent streaming agent_message, or start a new one.
  *  Walks back across non-agent items (e.g. interleaved tool_calls) — claude
  *  emits text/tool_use as separate content blocks within one turn, and a

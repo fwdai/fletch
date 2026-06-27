@@ -10,25 +10,18 @@
 // Claude does not report a context-window size or cost on disk.
 
 import { asNumber, asRecord } from "../shared/json";
+import { buildTurnUsage } from "../shared/usage";
 import type { RawEvent, TurnUsage } from "../types";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
   if (body.type !== "assistant") return undefined;
   const message = asRecord(body.message);
   const usage = asRecord(message.usage);
-  const inputTokens = asNumber(usage.input_tokens);
-  const outputTokens = asNumber(usage.output_tokens);
-  const cacheReadTokens = asNumber(usage.cache_read_input_tokens);
-  const cacheWriteTokens = asNumber(usage.cache_creation_input_tokens);
-  if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) {
-    return undefined;
-  }
-  return {
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    context: { input: inputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheWriteTokens },
+  return buildTurnUsage({
+    inputTokens: asNumber(usage.input_tokens),
+    outputTokens: asNumber(usage.output_tokens),
+    cacheReadTokens: asNumber(usage.cache_read_input_tokens),
+    cacheWriteTokens: asNumber(usage.cache_creation_input_tokens),
     model: typeof message.model === "string" ? message.model : undefined,
-  };
+  });
 }
