@@ -122,8 +122,12 @@ export function UserInput({
       ? answersFromResultText(model, resultText(result.content))
       : null;
   const committed = committedLocally || !!fromTranscript;
+  // Reflect a locally chosen answer immediately, before the whole widget
+  // commits: in a multi-question stack the user may answer questions one at a
+  // time, and each card must show its own selection right away rather than
+  // staying blank until the last question is answered.
   const answerFor = (i: number): UIAnswer | null =>
-    committedLocally ? (answers[i] ?? null) : (fromTranscript?.[i] ?? null);
+    answers[i] ?? (committedLocally ? null : fromTranscript?.[i]) ?? null;
 
   // Answered, but the result didn't parse into per-question answers — fall back
   // to a compact summary of the raw result text rather than showing nothing.
