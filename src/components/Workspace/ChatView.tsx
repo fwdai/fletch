@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyPolicy, getAdapter } from "../../adapters";
 import { type AgentRecord, api } from "../../api";
 import { providerLabel } from "../../data/providers";
@@ -7,6 +7,7 @@ import { stripInjectedInstructions } from "../../util/instructions";
 import { Composer } from "../Composer";
 import { APP_ACTION_PREFIX } from "../RightPanel/delegation";
 import { ChatNav } from "./ChatNav";
+import { ChatSearch } from "./ChatSearch";
 import { MessageItem } from "./messages/MessageItem";
 import { pairToolItems, rowKey } from "./messages/pair";
 import { isUserInputTool } from "./messages/UserInput/parse";
@@ -41,6 +42,43 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   );
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+  }, []);
+
+  // ⌘F / Ctrl+F opens find-in-conversation. A repeat press while open just
+  // refocuses + selects the existing input (the bar is already mounted), which
+  // mirrors how browsers behave.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "f" || e.key === "F")) {
+        // The right-panel terminal has its own ⌘F (handled by xterm); its
+        // keydown still bubbles to window, so ignore presses originating there.
+        if ((e.target as HTMLElement | null)?.closest(".term-panel")) return;
+        e.preventDefault();
+        setSearchOpen(true);
+        requestAnimationFrame(() => {
+          const el = document.getElementById("chat-search-input") as HTMLInputElement | null;
+          el?.focus();
+          el?.select();
+        });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Close the find bar when switching conversations — its matches belong to the
+  // log we're leaving.
+  useEffect(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+  }, [agent.id]);
+
   // Whether the chat is "pinned" to the bottom. While true we follow new
   // messages; once the user scrolls up we stop auto-scrolling and leave their
   // position alone until they scroll back down to the bottom.
@@ -142,6 +180,15 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
 
   return (
     <div className="chat">
+      {searchOpen && (
+        <ChatSearch
+          containerRef={scrollRef}
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
+          contentVersion={items}
+          onClose={closeSearch}
+        />
+      )}
       <div className="chat-scroll-wrap">
         <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
           <div className="chat-inner fade-in" key={agent.id}>
@@ -186,7 +233,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
             )}
           </div>
         </div>
-        <ChatNav scrollRef={scrollRef} turns={turns} />
+        {!searchOpen && <ChatNav scrollRef={scrollRef} turns={turns} />}
       </div>
       <div className="composer-wrap">
         <Composer

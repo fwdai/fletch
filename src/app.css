@@ -1139,6 +1139,7 @@ button {
 
 /* chat */
 .chat {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -1149,6 +1150,82 @@ button {
   flex: 1;
   min-height: 0;
   display: flex;
+}
+
+/* Find-in-conversation bar (⌘F) — floats over the top-right of the log so it
+   never reflows the messages underneath it. */
+.chat-search {
+  position: absolute;
+  top: 12px;
+  right: 24px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
+  animation: chat-search-in 120ms ease-out;
+}
+@keyframes chat-search-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.chat-search-icon {
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.chat-search-input {
+  width: 200px;
+  height: 24px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-0);
+  font-size: 13px;
+  outline: none;
+}
+.chat-search-input::placeholder {
+  color: var(--fg-3);
+}
+.chat-search-count {
+  flex-shrink: 0;
+  min-width: 38px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+}
+.chat-search-count.no-match {
+  color: var(--danger);
+}
+.chat-search-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-left: 4px;
+  margin-left: 2px;
+  border-left: 1px solid var(--bd-soft);
+}
+
+/* Painted by the CSS Custom Highlight API (see useChatSearch). These pseudo-
+   elements style Range objects without touching the DOM React owns. */
+::highlight(chat-find) {
+  background: var(--accent-soft);
+  border-radius: 2px;
+}
+::highlight(chat-find-current) {
+  background: var(--accent);
+  color: var(--bg-0);
 }
 .chat-scroll {
   flex: 1;
