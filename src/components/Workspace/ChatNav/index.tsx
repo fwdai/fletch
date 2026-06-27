@@ -73,9 +73,7 @@ export function ChatNav({
 
   const jumpTo = useCallback(
     (id: number) => {
-      const target = scrollRef.current?.querySelector<HTMLElement>(
-        `[data-chat-turn="${id}"]`,
-      );
+      const target = scrollRef.current?.querySelector<HTMLElement>(`[data-chat-turn="${id}"]`);
       if (!target) return;
       target.scrollIntoView({ behavior: "smooth", block: "start" });
       setActiveId(id);
