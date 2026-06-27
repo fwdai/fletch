@@ -48,7 +48,12 @@ export function delegationStep(
   resolved: boolean,
   now: number,
 ): DelegationStep {
-  if (resolved) return "resolve";
+  // A snapshot match only counts as OUR result once our own turn has actually
+  // run. Before that — queued behind a foreign turn, or a target that already
+  // matched at trigger time (PR already open, tree cleaned by a manual
+  // discard/stash) — the match is stale and must not read as a finished
+  // delegation. `sawRunning` is the causal link; it's never set while queued.
+  if (resolved && delegation.sawRunning) return "resolve";
   const active = status === "running" || status === "spawning";
   // Queued behind a foreign turn: its activity is not ours to interpret.
   if (delegation.queued) return active ? "wait" : "dequeue";
@@ -137,6 +142,11 @@ export function delegationResolved(
     case "commit-push":
       return git != null && git.files.length === 0 && git.unpushed === 0;
     case "commit-pr":
+      // The agent both commits AND opens/updates the PR. A PR may already be
+      // open (new changes pushed onto an existing PR's branch), so "PR open"
+      // alone is not evidence the action ran — require the working tree to be
+      // clean too, proving the commit actually landed this turn.
+      return git != null && git.files.length === 0 && pr?.state === "open";
     case "open-pr":
       return pr?.state === "open";
     case "push":

@@ -178,6 +178,20 @@ impl Supervisor {
         }
     }
 
+    /// Invalidate this agent's current spawn generation. Any gen-guarded
+    /// background task (turn watchdog, RPC watcher) and any late process-exit
+    /// handler captured the old number, so after this bump they see
+    /// `current_gen != gen` and exit / no-op cleanly.
+    ///
+    /// `start_process` bumps on its own when it restarts the process; teardown
+    /// paths that DON'T restart (archive, discard, spawn-timeout kill, spawn
+    /// abort) must call this, or their loops spin for the app's lifetime and a
+    /// late clean exit re-emits `Idle` for an already-gone agent (ghost entry).
+    fn bump_generation(&self, agent_id: &str) {
+        let mut g = self.generations.lock();
+        *g.entry(agent_id.to_string()).or_insert(0) += 1;
+    }
+
     /// Kill and reap every live child process the supervisor is tracking:
     /// agent sessions (claude/codex/sandbox-exec), interactive shells, and
     /// run-panel dev servers (which hold ports). Called from the app's
@@ -812,6 +826,7 @@ impl Supervisor {
         if !self.claim_spawn_outcome(app, &agent_id_str, AgentStatus::Idle, None)
             && matches!(self.live_status(&agent_id_str), Some(AgentStatus::Error))
         {
+            self.bump_generation(&agent_id_str);
             if let Some(agent) = self.agents.lock().remove(&agent_id_str) {
                 let _ = agent.shutdown();
             }
@@ -1531,6 +1546,10 @@ impl Supervisor {
     /// in-memory state (activity detector, status, native input buffer, shell,
     /// and run-panel session). Shared by archive and discard.
     fn detach_runtime(&self, agent_id: &str) {
+        // Bump first: invalidates the watchdog/RPC-watcher loops and the
+        // process-exit handler before `shutdown()` triggers the latter, so the
+        // exit can't re-emit `Idle` for the agent we're tearing down.
+        self.bump_generation(agent_id);
         if let Some(agent) = self.agents.lock().remove(agent_id) {
             let _ = agent.shutdown();
         }
@@ -2432,6 +2451,9 @@ fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: String) {
         if !sup.claim_spawn_outcome(&app, &agent_id, AgentStatus::Error, Some(err)) {
             return;
         }
+        // Invalidate any gen-guarded loop / exit handler from this spawn before
+        // killing the process (same reason as `detach_runtime`).
+        sup.bump_generation(&agent_id);
         if let Some(agent) = sup.agents.lock().remove(&agent_id) {
             let _ = agent.shutdown();
         }

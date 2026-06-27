@@ -68,9 +68,17 @@ describe("delegationResolved", () => {
     expect(delegationResolved("commit-push", git(), null, null)).toBe(true);
   });
 
-  it("commit-pr and open-pr resolve when a PR is open", () => {
+  it("commit-pr needs BOTH a clean tree and an open PR (existing PR isn't enough)", () => {
     expect(delegationResolved("commit-pr", git(), null, null)).toBe(false);
+    // Reported bug: a PR is already open but new changes are still uncommitted —
+    // must NOT resolve off the pre-existing PR.
+    expect(delegationResolved("commit-pr", git({ files: [file("modified")] }), pr(), null)).toBe(
+      false,
+    );
     expect(delegationResolved("commit-pr", git(), pr(), null)).toBe(true);
+  });
+
+  it("open-pr resolves when a PR is open", () => {
     expect(delegationResolved("open-pr", git(), pr({ state: "closed" }), null)).toBe(false);
     expect(delegationResolved("open-pr", git(), pr(), null)).toBe(true);
   });
@@ -102,9 +110,20 @@ describe("delegationStep", () => {
   const soon = 2_000; // within the grace window of startedAt=1_000
   const late = 1_000 + DELEGATION_GIVE_UP_GRACE_MS + 1;
 
-  it("resolution wins over everything, even while queued", () => {
-    expect(delegationStep(d({ queued: true }), "running", true, soon)).toBe("resolve");
+  it("resolution only counts once OUR turn has run (sawRunning)", () => {
+    // sawRunning set → a matching snapshot is genuinely our result.
     expect(delegationStep(d({ sawRunning: true }), "idle", true, late)).toBe("resolve");
+    expect(delegationStep(d({ sawRunning: true }), "running", true, soon)).toBe("resolve");
+  });
+
+  it("a stale snapshot match before our turn never resolves (the reported bug)", () => {
+    // Queued behind a foreign turn: its activity (or a target that already
+    // matched at trigger time) must not read as our finished delegation.
+    expect(delegationStep(d({ queued: true }), "running", true, soon)).toBe("wait");
+    // Not queued, but our turn hasn't started yet (e.g. PR already open at
+    // click time): wait within grace, give up after — never a false resolve.
+    expect(delegationStep(d(), "idle", true, soon)).toBe("wait");
+    expect(delegationStep(d(), "idle", true, late)).toBe("give-up");
   });
 
   it("queued behind an in-flight turn: waits it out, then dequeues — never gives up", () => {
