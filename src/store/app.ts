@@ -225,9 +225,7 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
           a.id === e.agent_id
             ? {
                 ...a,
-                repos: a.repos.map((r) =>
-                  r.subdir === e.subdir ? { ...r, branch: e.branch } : r,
-                ),
+                repos: a.repos.map((r) => (r.subdir === e.subdir ? { ...r, branch: e.branch } : r)),
               }
             : a,
         ),
