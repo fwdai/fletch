@@ -16,6 +16,10 @@ export type GitDelegationKind =
 
 export interface GitDelegation {
   kind: GitDelegationKind;
+  /** The `[app-action]` trigger to deliver to the agent. Held here (not sent
+   *  immediately) when the delegation is `queued`, so it can be delivered once
+   *  the agent is idle — see `queued`. */
+  prompt: string;
   /** Epoch ms when the delegation entered the current phase: set at send,
    *  reset on dequeue. The give-up grace window counts from here. */
   startedAt: number;
@@ -23,18 +27,20 @@ export interface GitDelegation {
    *  settled status is pre-send state, not a finished delegation turn. Used
    *  only to arm the give-up clock — never to confirm success. */
   sawRunning: boolean;
-  /** The agent ran a successful git op matching THIS delegation's kind since it
-   *  was sent — the backend's ground-truth `agent:git-action` signal, filtered
+  /** The agent ran a successful git op matching THIS delegation's kind during
+   *  our turn — the backend's ground-truth `agent:git-action` signal, filtered
    *  by `gitActionProvesKind`. This is the causal link a snapshot can't provide:
    *  it distinguishes a target the agent reached from one already satisfied by a
-   *  manual action or pre-existing state. Set regardless of `queued` (the turn
-   *  boundary isn't reliably observable — the backend may skip an intermediate
-   *  idle — so gating on it would drop our own turn's signal); kind-matching,
-   *  not the queue flag, keeps a foreign turn's unrelated op from counting. */
+   *  manual action or pre-existing state. Ignored while `queued` (those ops
+   *  belong to the turn we're waiting behind), which is sound because we don't
+   *  deliver our trigger until that turn ends — so our own turn runs in
+   *  isolation and its ops can't be confused with the prior turn's. */
   sawGitOp: boolean;
-  /** The agent was mid-turn when the trigger was sent, so it's queued behind
-   *  that turn. The foreign turn's running/settling must not arm or clear
-   *  this delegation — it's waited out first, then `queued` drops. */
+  /** The agent was already running when the action was clicked, so our trigger
+   *  is held undelivered (`prompt`) rather than injected mid-turn — a mid-turn
+   *  injection would fold into the running turn (Claude coalesces stdin into the
+   *  current turn) instead of running as its own. We wait for the agent to go
+   *  idle, then deliver and drop `queued` (the delegated turn now runs alone). */
   queued: boolean;
 }
 
@@ -47,7 +53,8 @@ export const DELEGATION_GIVE_UP_GRACE_MS = 15_000;
  *  the panel effect maps each step to a store action:
  *  - "resolve": the watched git/PR transition landed → clear + success notice
  *  - "wait": nothing to do this pass
- *  - "dequeue": the pre-existing turn settled → drop `queued`, reset the clock
+ *  - "dequeue": the pre-existing turn settled → deliver the held trigger, drop
+ *    `queued`, reset the clock
  *  - "mark-running": our turn started → set `sawRunning` (arms the give-up clock)
  *  - "give-up": agent settled without the transition → clear + honest notice */
 export type DelegationStep = "resolve" | "wait" | "dequeue" | "mark-running" | "give-up";
@@ -59,11 +66,13 @@ export function delegationStep(
   now: number,
 ): DelegationStep {
   // Resolve only when the world reached the target (`resolved`) AND the agent
-  // actually ran a git mutation this turn (`sawGitOp`, the backend's
-  // ground-truth signal). Snapshot state alone can't attribute causality: a
-  // target already satisfied by a manual stash/discard or a pre-existing
-  // clean/open PR would otherwise read as success the agent never produced.
-  if (resolved && delegation.sawGitOp) return "resolve";
+  // ran a matching git mutation during OUR turn (`sawGitOp`). Snapshot state
+  // alone can't attribute causality: a target already satisfied by a manual
+  // stash/discard or a pre-existing clean/open PR would otherwise read as
+  // success the agent never produced. `!queued` is belt-and-suspenders — our
+  // trigger isn't delivered until the prior turn ends, so `sawGitOp` is never
+  // set while queued, but never resolve a still-queued delegation regardless.
+  if (resolved && delegation.sawGitOp && !delegation.queued) return "resolve";
   const active = status === "running" || status === "spawning";
   // Queued behind a foreign turn: its activity is not ours to interpret.
   if (delegation.queued) return active ? "wait" : "dequeue";

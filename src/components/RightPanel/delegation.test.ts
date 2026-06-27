@@ -15,6 +15,7 @@ import {
 function d(over: Partial<GitDelegation> = {}): GitDelegation {
   return {
     kind: "commit",
+    prompt: "[app-action] commit",
     startedAt: 1_000,
     sawRunning: false,
     sawGitOp: false,
@@ -144,14 +145,13 @@ describe("delegationStep", () => {
     expect(delegationStep(d({ sawGitOp: true }), "idle", true, soon)).toBe("resolve");
   });
 
-  it("a git op landing while still queued (backend skipped idle) still resolves", () => {
-    // The backend can swap the running turn for our delegated turn without an
-    // intermediate idle, so `queued` may still be set when our commit/PR fires
-    // its agent:git-action. The op is recorded regardless (store), and a reached
-    // target resolves rather than being dropped as a foreign turn.
-    expect(delegationStep(d({ queued: true, sawGitOp: true }), "running", true, soon)).toBe(
-      "resolve",
-    );
+  it("a still-queued delegation never resolves, even if a git op was recorded", () => {
+    // Our trigger isn't delivered until the agent goes idle, so while `queued`
+    // any git op belongs to the turn we're waiting behind. The store won't set
+    // sawGitOp while queued; delegationStep also refuses to resolve a queued
+    // delegation as belt-and-suspenders. It waits the turn out, then dequeues.
+    expect(delegationStep(d({ queued: true, sawGitOp: true }), "running", true, soon)).toBe("wait");
+    expect(delegationStep(d({ queued: true, sawGitOp: true }), "idle", true, late)).toBe("dequeue");
   });
 
   it("queued behind an in-flight turn: waits it out, then dequeues — never gives up", () => {
