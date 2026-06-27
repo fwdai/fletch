@@ -279,6 +279,36 @@ pub struct WorkspaceManager {
     db: Arc<Mutex<Connection>>,
 }
 
+/// Identity + task metadata live on `workspaces`; the provider run
+/// (provider / view / session id / last_error / effort / model /
+/// instructions / custom agent) lives on the single `sessions` row. Status
+/// is derived, never selected. Callers append their own `ORDER BY` / `WHERE`.
+const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
+            w.stopped_at, w.archived_at,
+            s.provider, s.view, s.provider_session_id, s.last_error,
+            s.effort, s.model, s.instructions, s.custom_agent_id
+     FROM workspaces w
+     LEFT JOIN sessions s ON s.workspace_id = w.id";
+
+/// Raw column tuple decoded from an [`AGENT_SELECT`] row, in column order.
+type AgentRow = (
+    String,         // w.id
+    String,         // w.project_id
+    String,         // w.name
+    String,         // w.task
+    i64,            // w.created_at
+    Option<i64>,    // w.stopped_at
+    Option<i64>,    // w.archived_at
+    Option<String>, // s.provider
+    Option<String>, // s.view
+    Option<String>, // s.provider_session_id
+    Option<String>, // s.last_error
+    Option<String>, // s.effort
+    Option<String>, // s.model
+    Option<String>, // s.instructions
+    Option<String>, // s.custom_agent_id
+);
+
 impl WorkspaceManager {
     pub fn new(db: Arc<Mutex<Connection>>) -> Self {
         // Status is derived, not stored, so there is nothing to reconcile at
@@ -1055,123 +1085,21 @@ impl WorkspaceManager {
     }
 
     fn query_all_agents(conn: &Connection) -> Vec<AgentRecord> {
-        // Identity + task metadata live on `workspaces`; the provider run
-        // (provider / view / session id / last_error) lives on the single
-        // `sessions` row. Status is derived, never selected.
-        let mut stmt = match conn.prepare(
-            "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
-                    w.stopped_at, w.archived_at,
-                    s.provider, s.view, s.provider_session_id, s.last_error,
-                    s.effort, s.model, s.instructions, s.custom_agent_id
-             FROM workspaces w
-             LEFT JOIN sessions s ON s.workspace_id = w.id
-             ORDER BY w.created_at",
-        ) {
+        let mut stmt = match conn.prepare(&format!("{AGENT_SELECT} ORDER BY w.created_at")) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
 
-        let agents: Vec<AgentRecord> = stmt
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                let project_id: String = row.get(1)?;
-                let name: String = row.get(2)?;
-                let task: String = row.get(3)?;
-                let created_millis: i64 = row.get(4)?;
-                let stopped_millis: Option<i64> = row.get(5)?;
-                let archived_millis: Option<i64> = row.get(6)?;
-                let provider: Option<String> = row.get(7)?;
-                let view_str: Option<String> = row.get(8)?;
-                let session_id: Option<String> = row.get(9)?;
-                let last_error: Option<String> = row.get(10)?;
-                let effort: Option<String> = row.get(11)?;
-                let model: Option<String> = row.get(12)?;
-                let instructions: Option<String> = row.get(13)?;
-                let custom_agent_id: Option<String> = row.get(14)?;
-
-                Ok((
-                    id,
-                    project_id,
-                    name,
-                    task,
-                    created_millis,
-                    stopped_millis,
-                    archived_millis,
-                    provider,
-                    view_str,
-                    session_id,
-                    last_error,
-                    effort,
-                    model,
-                    instructions,
-                    custom_agent_id,
-                ))
-            })
+        // Collect the raw rows first, then build records: building a record
+        // issues further queries on `conn`, which can't run while `stmt`
+        // still borrows it.
+        stmt.query_map([], Self::map_agent_row)
             .ok()
             .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
             .unwrap_or_default()
             .into_iter()
-            .map(
-                |(
-                    id,
-                    project_id,
-                    name,
-                    task,
-                    created_millis,
-                    stopped_millis,
-                    archived_millis,
-                    provider,
-                    view_str,
-                    session_id,
-                    last_error,
-                    effort,
-                    model,
-                    instructions,
-                    custom_agent_id,
-                )| {
-                    let is_archived = archived_millis.is_some();
-
-                    let (repos, archive) = if is_archived {
-                        // Build ArchiveMetadata from worktree snapshot fields.
-                        let archive_meta =
-                            Self::build_archive_metadata(conn, &id, archived_millis.unwrap());
-                        (Vec::new(), Some(archive_meta))
-                    } else {
-                        // Build TrackedRepo vec from worktrees+repos join.
-                        let tracked = Self::query_tracked_repos(conn, &id);
-                        (tracked, None)
-                    };
-
-                    let status = derive_status(
-                        is_archived,
-                        stopped_millis.is_some(),
-                        false,
-                        last_error.as_deref(),
-                    );
-
-                    AgentRecord {
-                        id,
-                        project_id,
-                        name,
-                        provider: provider.unwrap_or_else(default_provider),
-                        repos,
-                        task,
-                        status,
-                        view: str_to_view(view_str.as_deref().unwrap_or("custom")),
-                        session_id,
-                        effort,
-                        model,
-                        instructions,
-                        custom_agent_id,
-                        created_at: millis_to_iso(created_millis),
-                        last_error,
-                        archive,
-                    }
-                },
-            )
-            .collect();
-
-        agents
+            .map(|row| Self::build_agent_record(conn, row))
+            .collect()
     }
 
     fn query_tracked_repos(conn: &Connection, agent_id: &str) -> Vec<TrackedRepo> {
@@ -1373,42 +1301,46 @@ impl WorkspaceManager {
     }
 
     fn load_agent(conn: &Connection, id: &str) -> Result<AgentRecord> {
-        // Identity/task from `workspaces`; provider run from the single
-        // `sessions` row. Status is derived from durable dispositions.
         let row = conn
             .query_row(
-                "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
-                        w.stopped_at, w.archived_at,
-                        s.provider, s.view, s.provider_session_id, s.last_error,
-                        s.effort, s.model, s.instructions, s.custom_agent_id
-                 FROM workspaces w
-                 LEFT JOIN sessions s ON s.workspace_id = w.id
-                 WHERE w.id = ?1",
+                &format!("{AGENT_SELECT} WHERE w.id = ?1"),
                 [id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, Option<i64>>(5)?,
-                        row.get::<_, Option<i64>>(6)?,
-                        row.get::<_, Option<String>>(7)?,
-                        row.get::<_, Option<String>>(8)?,
-                        row.get::<_, Option<String>>(9)?,
-                        row.get::<_, Option<String>>(10)?,
-                        row.get::<_, Option<String>>(11)?,
-                        row.get::<_, Option<String>>(12)?,
-                        row.get::<_, Option<String>>(13)?,
-                        row.get::<_, Option<String>>(14)?,
-                    ))
-                },
+                Self::map_agent_row,
             )
             .map_err(|_| Error::AgentNotFound(id.to_string()))?;
 
+        Ok(Self::build_agent_record(conn, row))
+    }
+
+    /// Map a row from an [`AGENT_SELECT`] query into the raw column tuple.
+    /// Shared by `query_all_agents` and `load_agent` so the 15-column layout
+    /// is decoded in exactly one place.
+    fn map_agent_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRow> {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+            row.get(8)?,
+            row.get(9)?,
+            row.get(10)?,
+            row.get(11)?,
+            row.get(12)?,
+            row.get(13)?,
+            row.get(14)?,
+        ))
+    }
+
+    /// Build an [`AgentRecord`] from a raw [`AGENT_SELECT`] row, issuing the
+    /// follow-up queries for tracked repos or archive metadata. Status is
+    /// derived from durable dispositions, never selected.
+    fn build_agent_record(conn: &Connection, row: AgentRow) -> AgentRecord {
         let (
-            agent_id,
+            id,
             project_id,
             name,
             task,
@@ -1428,11 +1360,12 @@ impl WorkspaceManager {
         let is_archived = archived_millis.is_some();
 
         let (repos, archive) = if is_archived {
-            let archive_meta =
-                Self::build_archive_metadata(conn, &agent_id, archived_millis.unwrap());
+            // Build ArchiveMetadata from worktree snapshot fields.
+            let archive_meta = Self::build_archive_metadata(conn, &id, archived_millis.unwrap());
             (Vec::new(), Some(archive_meta))
         } else {
-            let tracked = Self::query_tracked_repos(conn, &agent_id);
+            // Build TrackedRepo vec from worktrees+repos join.
+            let tracked = Self::query_tracked_repos(conn, &id);
             (tracked, None)
         };
 
@@ -1443,8 +1376,8 @@ impl WorkspaceManager {
             last_error.as_deref(),
         );
 
-        Ok(AgentRecord {
-            id: agent_id,
+        AgentRecord {
+            id,
             project_id,
             name,
             provider: provider.unwrap_or_else(default_provider),
@@ -1460,7 +1393,7 @@ impl WorkspaceManager {
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,
-        })
+        }
     }
 }
 
