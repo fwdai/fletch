@@ -219,14 +219,16 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     // Optimistically hide the agent so the click feels instant: the sidebar
     // filters on `!a.archive`, so stamping a placeholder ArchiveMetadata drops
     // the row immediately. The real metadata (diff stats, branch snapshots)
-    // arrives with the fresh workspace fetch below. Snapshot the previous
-    // workspace first so we can roll back if the backend call fails.
-    const prevWorkspace = get().workspace;
+    // arrives with the fresh workspace fetch below. We keep `placeholder` by
+    // reference and remember the prior selection so a failure can undo exactly
+    // our own edits — without clobbering a newer workspace (status/repo/focus
+    // events, other actions) that may have landed while archiving was pending.
     const placeholder = {
       archived_at: "",
       repos: [],
       diff_stats: { additions: 0, deletions: 0 },
     };
+    const wasSelected = get().selectedAgentId === id;
     set((s) => ({
       workspace: s.workspace
         ? {
@@ -247,8 +249,23 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         workspace: fresh ?? s.workspace,
       }));
     } catch (e) {
-      // Roll back the optimistic hide; the agent reappears in the sidebar.
-      set({ workspace: prevWorkspace, lastError: String(e) });
+      // Roll back only our own optimistic edits, applied to the *current*
+      // state: clear the placeholder by reference (a newer fetch will have
+      // already replaced it, in which case there's nothing to undo) and
+      // restore the selection only if nothing else claimed it meanwhile.
+      set((s) => ({
+        workspace: s.workspace
+          ? {
+              ...s.workspace,
+              agents: s.workspace.agents.map((a) =>
+                a.id === id && a.archive === placeholder ? { ...a, archive: null } : a,
+              ),
+            }
+          : s.workspace,
+        selectedAgentId:
+          wasSelected && s.selectedAgentId === null ? id : s.selectedAgentId,
+        lastError: String(e),
+      }));
     }
   },
 
