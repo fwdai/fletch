@@ -9,6 +9,7 @@ import {
   delegationResolved,
   delegationStep,
   type GitDelegation,
+  gitActionProvesKind,
 } from "./delegation";
 
 function d(over: Partial<GitDelegation> = {}): GitDelegation {
@@ -176,6 +177,31 @@ describe("delegationStep", () => {
   it("spawning counts as active, not settled", () => {
     expect(delegationStep(d({ queued: true }), "spawning", false, late)).toBe("wait");
     expect(delegationStep(d({ sawRunning: true }), "spawning", false, late)).toBe("wait");
+  });
+});
+
+describe("gitActionProvesKind", () => {
+  it("accepts only ops that belong to the kind's own playbook", () => {
+    expect(gitActionProvesKind("commit", "git_commit")).toBe(true);
+    expect(gitActionProvesKind("push", "git_push")).toBe(true);
+    expect(gitActionProvesKind("open-pr", "open_pr")).toBe(true);
+    expect(gitActionProvesKind("update-branch", "git_update_branch")).toBe(true);
+    expect(gitActionProvesKind("resolve", "git_commit")).toBe(true);
+    // Multi-op kinds accept any op they touch (resolved gates real completion).
+    expect(gitActionProvesKind("commit-push", "git_commit")).toBe(true);
+    expect(gitActionProvesKind("commit-push", "git_push")).toBe(true);
+    expect(gitActionProvesKind("commit-pr", "git_commit")).toBe(true);
+    expect(gitActionProvesKind("commit-pr", "open_pr")).toBe(true);
+  });
+
+  it("rejects an unrelated op so a foreign queued turn can't prove the action", () => {
+    // The reported bug: a `commit` delegation queued behind a turn that pushes
+    // or opens a PR must NOT treat those as proof its commit ran.
+    expect(gitActionProvesKind("commit", "git_push")).toBe(false);
+    expect(gitActionProvesKind("commit", "open_pr")).toBe(false);
+    expect(gitActionProvesKind("push", "git_commit")).toBe(false);
+    expect(gitActionProvesKind("open-pr", "git_commit")).toBe(false);
+    expect(gitActionProvesKind("update-branch", "git_push")).toBe(false);
   });
 });
 

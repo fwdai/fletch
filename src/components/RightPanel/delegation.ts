@@ -23,13 +23,14 @@ export interface GitDelegation {
    *  settled status is pre-send state, not a finished delegation turn. Used
    *  only to arm the give-up clock — never to confirm success. */
   sawRunning: boolean;
-  /** The agent ran a successful mutating git op (commit/push/PR/update) since
-   *  this delegation was sent — the backend's ground-truth `agent:git-action`
-   *  signal. This is the causal link a snapshot can't provide: it distinguishes
-   *  a target the agent reached from one already satisfied by a manual action or
-   *  pre-existing state. Set regardless of `queued`: the turn boundary isn't
-   *  reliably observable (the backend may skip an intermediate idle), so gating
-   *  on it would drop our own turn's signal. */
+  /** The agent ran a successful git op matching THIS delegation's kind since it
+   *  was sent — the backend's ground-truth `agent:git-action` signal, filtered
+   *  by `gitActionProvesKind`. This is the causal link a snapshot can't provide:
+   *  it distinguishes a target the agent reached from one already satisfied by a
+   *  manual action or pre-existing state. Set regardless of `queued` (the turn
+   *  boundary isn't reliably observable — the backend may skip an intermediate
+   *  idle — so gating on it would drop our own turn's signal); kind-matching,
+   *  not the queue flag, keeps a foreign turn's unrelated op from counting. */
   sawGitOp: boolean;
   /** The agent was mid-turn when the trigger was sent, so it's queued behind
    *  that turn. The foreign turn's running/settling must not arm or clear
@@ -70,6 +71,33 @@ export function delegationStep(
   const armed = delegation.sawRunning || now - delegation.startedAt > DELEGATION_GIVE_UP_GRACE_MS;
   if (!active && armed) return "give-up";
   return "wait";
+}
+
+/** Does a successful `agent:git-action` op stand as proof that THIS delegation's
+ *  requested work ran? The backend emits the event for any successful mutating
+ *  op, but a turn we're queued behind can emit an unrelated mutation (e.g. a
+ *  `git_push` while we're waiting on a `commit`). Accepting that would let a
+ *  pre-satisfied target resolve before the requested action runs, so the op must
+ *  belong to the delegation's own playbook. Resolution still ANDs this with the
+ *  target snapshot, so listing every op a kind touches (not just the final one)
+ *  is safe — the snapshot gates the actual completion. */
+export function gitActionProvesKind(kind: GitDelegationKind, op: string): boolean {
+  switch (kind) {
+    case "commit":
+    case "resolve":
+      return op === "git_commit";
+    case "commit-push":
+    case "fix-checks":
+      return op === "git_commit" || op === "git_push";
+    case "commit-pr":
+      return op === "git_commit" || op === "open_pr";
+    case "open-pr":
+      return op === "open_pr";
+    case "push":
+      return op === "git_push";
+    case "update-branch":
+      return op === "git_update_branch";
+  }
 }
 
 /** Marker prefix for app-sent action triggers. The full per-action playbooks

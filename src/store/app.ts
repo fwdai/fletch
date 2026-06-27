@@ -249,7 +249,7 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // lifecycle resolves on this (paired with the target snapshot) instead of
   // inferring success from polled state, which can't attribute causality.
   await onAgentGitAction((e) => {
-    get().markGitDelegationActed(e.agent_id);
+    get().markGitDelegationActed(e.agent_id, e.op);
   });
 
   await onAgentTask((e) => {

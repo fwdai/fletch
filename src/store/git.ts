@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { gitActionProvesKind } from "../components/RightPanel/delegation";
 import type { GitCommitAction } from "../components/RightPanel/primaryActions";
 import { setSetting } from "../storage/settings";
 import type { GitSlice, SliceCreator } from "./types";
@@ -136,17 +137,16 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     });
   },
 
-  markGitDelegationActed: (agentId) => {
+  markGitDelegationActed: (agentId, op) => {
     set((s) => {
       const d = s.gitDelegations[agentId];
-      // Record the git op regardless of `queued`. The backend can swap the
-      // running turn for our delegated turn without an intermediate idle, so the
-      // frontend may never observe the dequeue before our turn's commit/PR fires
-      // its `agent:git-action` — gating on `queued` would drop the only causal
-      // success signal and force a false give-up. Whether the op came from our
-      // turn or one we were queued behind, a real agent mutation reached the
-      // target, so pairing it with `resolved` keeps the success notice accurate.
-      if (!d || d.sawGitOp) return s;
+      // Only an op belonging to this delegation's own playbook counts. We can't
+      // gate on `queued` (the backend may swap our delegated turn in without an
+      // intermediate idle, so the dequeue may never be observed before our
+      // commit/PR fires), so kind-matching is what keeps a turn we're queued
+      // behind from setting this off an unrelated mutation. Paired with
+      // `resolved` in delegationStep, that keeps the success notice honest.
+      if (!d || d.sawGitOp || !gitActionProvesKind(d.kind, op)) return s;
       return {
         gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawGitOp: true } },
       };
