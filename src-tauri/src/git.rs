@@ -662,12 +662,21 @@ pub async fn pull(worktree: &Path) -> Result<()> {
 pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
     let out = git_output(worktree, &["rebase", base]).await?;
     if !out.status.success() {
-        // Don't leave the worktree in a detached mid-rebase state.
-        let _ = git_output(worktree, &["rebase", "--abort"]).await;
-        return Err(Error::Git(format!(
-            "rebase onto {base} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+        let conflict = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // Don't leave the worktree mid-rebase. If the abort *itself* fails or
+        // times out, the worktree is stuck mid-rebase and needs manual
+        // recovery — surface that alongside the original conflict rather than
+        // silently swallowing it and reporting only the conflict.
+        if let Err(abort_err) =
+            run_git(worktree, &["rebase", "--abort"], "rebase --abort").await
+        {
+            return Err(Error::Git(format!(
+                "rebase onto {base} failed: {conflict}; the worktree is left \
+                 mid-rebase because cleanup also failed ({abort_err}) — run \
+                 `git rebase --abort` manually"
+            )));
+        }
+        return Err(Error::Git(format!("rebase onto {base} failed: {conflict}")));
     }
     Ok(())
 }
