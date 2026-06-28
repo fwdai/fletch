@@ -110,8 +110,20 @@ impl MessageQueue {
             .push_back(msg);
     }
 
+    /// Put a message back at the *front* of the queue — used when a flush failed
+    /// to deliver (raced with teardown/respawn), so it stays ahead of anything
+    /// queued since and the original send order is preserved.
+    pub fn requeue_front(&mut self, agent_id: &str, msg: PendingMsg) {
+        self.by_agent
+            .entry(agent_id.to_string())
+            .or_default()
+            .push_front(msg);
+    }
+
     pub fn is_empty(&self, agent_id: &str) -> bool {
-        self.by_agent.get(agent_id).is_none_or(VecDeque::is_empty)
+        // `map_or(true, …)` rather than `is_none_or` to stay on the crate's
+        // declared rust-version (1.77; `is_none_or` landed in 1.82).
+        self.by_agent.get(agent_id).map_or(true, VecDeque::is_empty)
     }
 
     pub fn len(&self, agent_id: &str) -> usize {
@@ -256,6 +268,17 @@ mod tests {
         assert!(q.drain_coalesced("a").is_some());
         assert!(q.is_empty("a"));
         assert_eq!(q.drain_coalesced("a"), None);
+    }
+
+    #[test]
+    fn requeue_front_keeps_failed_flush_ahead_of_newer_messages() {
+        // A failed flush re-queues the coalesced batch; a message queued since
+        // must not jump ahead of it.
+        let mut q = MessageQueue::new();
+        q.enqueue("a", msg("t-new", "queued after the failed flush", &[], None));
+        q.requeue_front("a", msg("t-coalesced", "first\n\nsecond", &[], None));
+        let out = q.drain_coalesced("a").unwrap();
+        assert_eq!(out.text, "first\n\nsecond\n\nqueued after the failed flush");
     }
 
     #[test]
