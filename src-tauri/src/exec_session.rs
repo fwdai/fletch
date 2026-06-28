@@ -179,9 +179,22 @@ impl ExecSession {
             "spawning per-turn agent process"
         );
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| Error::Other(format!("agent spawn: {e}")))?;
+        // Retry on ETXTBSY ("Text file busy"): when another thread/process forks
+        // (posix_spawn) it can transiently inherit an open write fd to the binary
+        // we're about to exec, making the kernel reject the exec. The window is
+        // tiny, so a few short backoffs reliably clear it.
+        let mut spawn_attempts = 0;
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(child) => break child,
+                // 26 == ETXTBSY on Linux and macOS.
+                Err(e) if e.raw_os_error() == Some(26) && spawn_attempts < 10 => {
+                    spawn_attempts += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => return Err(Error::Other(format!("agent spawn: {e}"))),
+            }
+        };
         let stdout = child
             .stdout
             .take()
@@ -192,6 +205,15 @@ impl ExecSession {
             .ok_or_else(|| Error::Other("agent: child stderr missing".into()))?;
 
         *self.child.lock() = Some(child);
+
+        // Honor an interrupt that arrived during the spawn/retry window, when
+        // no child yet existed for `interrupt()` to signal. Loading the flag
+        // *after* publishing the child closes the race: any `interrupt()` that
+        // latched the flag before seeing an empty slot is caught here, and any
+        // that arrives later finds the published child and signals it directly.
+        if self.interrupted.load(Ordering::SeqCst) {
+            self.sigint_child();
+        }
 
         let on_event = self.on_event.clone();
         let on_session_id = self.on_session_id.clone();
@@ -303,12 +325,23 @@ impl ExecSession {
     /// Interrupt the in-flight turn (SIGINT). The agent stays alive for
     /// the next message.
     pub fn interrupt(&self) {
+        // Latch the request *before* touching the child slot. A turn still in
+        // its spawn/retry window has no child yet, so signalling here is a
+        // no-op — but the latch is honored once `send_user_message` publishes
+        // the child. Storing the flag before acquiring the child lock (while
+        // `send_user_message` publishes the child before loading the flag)
+        // makes it impossible for both sides to miss each other.
+        self.interrupted.store(true, Ordering::SeqCst);
+        self.sigint_child();
+    }
+
+    /// Send SIGINT to the current per-turn child, if one is published.
+    fn sigint_child(&self) {
         #[cfg(unix)]
         {
             use nix::sys::signal::{kill, Signal};
             use nix::unistd::Pid;
             if let Some(child) = self.child.lock().as_ref() {
-                self.interrupted.store(true, Ordering::SeqCst);
                 let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGINT);
             }
         }
@@ -538,5 +571,66 @@ mod tests {
         assert!(!exit.interrupted);
         assert!(exit.message.contains("exit status: 127"), "{}", exit.message);
         assert!(exit.message.contains("node missing"), "{}", exit.message);
+    }
+
+    /// An interrupt that lands while a turn is still in its spawn/retry window
+    /// (no child published yet) must not be dropped: once the child appears it
+    /// has to receive the SIGINT and the turn must report `interrupted`.
+    ///
+    /// The window is forced open deterministically by holding a write fd to the
+    /// agent binary, which makes the first spawn attempts fail with ETXTBSY and
+    /// sit in the retry loop's sleeps with an empty child slot.
+    #[test]
+    fn interrupt_during_spawn_window_is_honored() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("slowagent.sh");
+        // Exit promptly on SIGINT; otherwise outlive the test's timeout.
+        std::fs::write(&script, "#!/bin/sh\ntrap 'exit 130' INT\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Holding a write fd to the script makes exec() return ETXTBSY, so the
+        // spawn loop keeps retrying (child slot empty) until we drop it.
+        let busy_fd = std::fs::OpenOptions::new().write(true).open(&script).unwrap();
+
+        let (xtx, xrx) = mpsc::channel();
+        let session = ExecSession::new(
+            ExecSpawn {
+                program: script,
+                prefix_args: vec![],
+                profile: None,
+                cwd: dir.path().to_path_buf(),
+                session_id: None,
+                model: None,
+                stdout_is_json: true,
+                env: vec![],
+            },
+            codex_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: |_ev| {},
+                on_session_id: |_sid| {},
+                on_exit: move |exit| {
+                    let _ = xtx.send(exit);
+                },
+            },
+        );
+
+        std::thread::scope(|s| {
+            // While send_user_message is stuck retrying the ETXTBSY spawn, land
+            // the interrupt (no child exists yet), then release the write fd so
+            // a retry can finally succeed and publish the child.
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(40));
+                session.interrupt();
+                drop(busy_fd);
+            });
+            session.send_user_message("hello", &[], None).unwrap();
+        });
+
+        let exit = xrx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("turn never reported exit — pre-spawn interrupt was dropped");
+        assert!(exit.interrupted, "interrupt was not honored: {exit:?}");
+        assert!(!exit.success, "interrupted turn should not report success: {exit:?}");
     }
 }
