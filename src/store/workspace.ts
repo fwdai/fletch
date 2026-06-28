@@ -84,24 +84,38 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     // Stable per-turn id, reused across the agent-not-ready retry below so the
     // backend's session_user_turns write is idempotent (one row per turn).
     const turnId = crypto.randomUUID();
+    // Sent mid-turn? Then this is a follow-up: render it as a queued_message
+    // and leave the running turn's busy state untouched. The backend decides
+    // whether to inject it live (claude) or queue it (per-turn agents); the
+    // store never drives delivery.
+    const wasBusy = get().managedBusy[id] === true;
     try {
       set((state) => {
-        const slashName = passthroughSlashName(providerFor(state, id), text);
-        const entry: ChatItem = slashName
-          ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
-          : attachments.length > 0
-            ? { kind: "user_message", text, attachments }
-            : { kind: "user_message", text };
+        const slashName = wasBusy ? null : passthroughSlashName(providerFor(state, id), text);
+        const entry: ChatItem = wasBusy
+          ? attachments.length > 0
+            ? { kind: "queued_message", text, attachments }
+            : { kind: "queued_message", text }
+          : slashName
+            ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
+            : attachments.length > 0
+              ? { kind: "user_message", text, attachments }
+              : { kind: "user_message", text };
         return {
           managedLogs: {
             ...state.managedLogs,
             [id]: [...(state.managedLogs[id] ?? []), entry],
           },
-          managedBusy: { ...state.managedBusy, [id]: true },
-          managedBusyLabel: {
-            ...state.managedBusyLabel,
-            [id]: slashName ? SLASH_BUSY_LABELS[slashName] : undefined,
-          },
+          // Only assert busy / set the slash label when *starting* a turn.
+          ...(wasBusy
+            ? {}
+            : {
+                managedBusy: { ...state.managedBusy, [id]: true },
+                managedBusyLabel: {
+                  ...state.managedBusyLabel,
+                  [id]: slashName ? SLASH_BUSY_LABELS[slashName] : undefined,
+                },
+              }),
         };
       });
       try {
@@ -121,7 +135,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     } catch (e) {
       set((state) => ({
         lastError: String(e),
-        managedBusy: { ...state.managedBusy, [id]: false },
+        // Only clear busy if this call started the turn; a failed mid-turn
+        // follow-up must not stop the still-running turn.
+        ...(wasBusy ? {} : { managedBusy: { ...state.managedBusy, [id]: false } }),
       }));
     }
   },

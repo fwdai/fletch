@@ -103,6 +103,27 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
   return result;
 }
 
+/** Carry forward optimistic mid-turn follow-ups (`queued_message`) onto a log
+ *  just rebuilt from canonical records, so they don't blink out before the
+ *  transcript catches up. Drops any the rebuilt conversation already accounts
+ *  for — its text (or first attachment path) now appears in a user message,
+ *  whether the follow-up was delivered live (claude) or coalesced (per-turn) —
+ *  mirroring the backend matcher's substring association. An attachment-only
+ *  follow-up with no needle is kept until it can be matched. */
+export function carryForwardQueued(rebuilt: ChatItem[], prev: ChatItem[]): ChatItem[] {
+  const stillQueued = prev.filter((it) => {
+    if (it.kind !== "queued_message") return false;
+    const needle = it.text || it.attachments?.[0];
+    if (!needle) return true;
+    return !rebuilt.some(
+      (r) =>
+        r.kind === "user_message" &&
+        (r.text.includes(needle) || (r.attachments?.includes(needle) ?? false)),
+    );
+  });
+  return [...rebuilt, ...stillQueued];
+}
+
 /** Apply one raw event to an agent's log via its provider adapter. Pure: it
  *  returns the state patch plus a `turnEnded` flag so the caller can fire any
  *  side effects (e.g. the completion chime). Catches adapter throws so a single

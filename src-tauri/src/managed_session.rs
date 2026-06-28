@@ -262,6 +262,13 @@ impl ManagedSession {
         write_line(&self.stdin, response)
     }
 
+    /// True while the turn is paused on a held permission prompt (a question
+    /// tool). We can't write a new user message into a paused turn, so the
+    /// supervisor queues mid-turn follow-ups instead of injecting them live.
+    pub fn is_tool_gated(&self) -> bool {
+        !self.pending.lock().is_empty()
+    }
+
     /// Send SIGINT to the child process to interrupt the current turn
     /// without killing it. First releases any held permission prompts (denied),
     /// so a turn paused on a question can unwind rather than hang.

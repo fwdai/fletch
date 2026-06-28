@@ -9,10 +9,11 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
-use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnSpec};
+use crate::agent::{capabilities, injection_mode, per_turn_descriptor, Agent, PerTurnSpec, SpawnSpec};
 use crate::error::{Error, Result};
 use crate::git;
 use crate::managed_session::ToolUseBehavior;
+use crate::message_queue::{decide_delivery, Delivery, MessageQueue, PendingMsg};
 use crate::pty_session::{PtySession, PtySpawn};
 use crate::rpc;
 use crate::run_session::{
@@ -132,6 +133,15 @@ pub struct Supervisor {
     /// transition (see `transition_active`), which respawns them onto the
     /// new binary. Empty in the common case.
     pub respawn_pending: Mutex<HashSet<String>>,
+    /// Follow-up messages sent while a turn is in progress, awaiting delivery
+    /// at the next turn boundary (per-turn agents, or claude paused on a tool
+    /// gate). In-memory only — see `message_queue`.
+    pub message_queue: Mutex<MessageQueue>,
+    /// Agent ids whose current turn was stopped by the user. The dying process
+    /// still converges on the Idle transition, so this flag lets the turn-end
+    /// flush distinguish a natural completion (flush queued follow-ups) from a
+    /// stop (keep them queued, don't auto-send — see `drain_message_queue`).
+    pub interrupted: Mutex<HashSet<String>>,
 }
 
 /// Resolved, per-spawn inputs for `spawn_agent_process` — everything that
@@ -183,6 +193,8 @@ impl Supervisor {
             shells: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
             respawn_pending: Mutex::new(HashSet::new()),
+            message_queue: Mutex::new(MessageQueue::new()),
+            interrupted: Mutex::new(HashSet::new()),
         }
     }
 
@@ -1018,6 +1030,12 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Route a user message by the provider's injection mode and the agent's
+    /// current state (see `message_queue::decide_delivery`):
+    /// - idle, queue empty  → deliver now as a new turn (the original path),
+    /// - idle, queue full    → flush the leftovers + this message, coalesced,
+    /// - busy, claude live    → inject into the running turn over stdin,
+    /// - busy, per-turn / tool-gated → queue for the next turn boundary.
     pub fn send_user_message(
         self: Arc<Self>,
         app: &AppHandle,
@@ -1027,9 +1045,70 @@ impl Supervisor {
         attachments: &[String],
         thinking: Option<&str>,
     ) -> Result<()> {
-        self.deliver_user_message(agent_id, turn_id, text, attachments, thinking)?;
-        mark_user_turn_started(&self, app, agent_id);
-        on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), text.to_string());
+        let mode = injection_mode(&self.workspace.agent(agent_id)?.provider);
+        let busy = matches!(
+            self.live_status(agent_id),
+            Some(AgentStatus::Spawning | AgentStatus::Running)
+        );
+        let tool_gated = self
+            .agents
+            .lock()
+            .get(agent_id)
+            .is_some_and(Agent::is_tool_gated);
+        let queue_nonempty = !self.message_queue.lock().is_empty(agent_id);
+
+        let msg = PendingMsg {
+            turn_id: turn_id.to_string(),
+            text: text.to_string(),
+            attachments: attachments.to_vec(),
+            thinking: thinking.map(str::to_string),
+        };
+
+        match decide_delivery(busy, mode, tool_gated, queue_nonempty) {
+            Delivery::DeliverNow => deliver_as_turn(&self, app, agent_id, &msg)?,
+            Delivery::FlushNow => {
+                self.message_queue.lock().enqueue(agent_id, msg);
+                flush_queued(&self, app, agent_id)?;
+            }
+            Delivery::WriteLive => {
+                if let Err(e) = self.inject_live(agent_id, &msg) {
+                    // The turn ended (or the pipe broke) in the race window
+                    // between the busy check and the write. Deliver as a fresh
+                    // turn *now* rather than only re-queueing: the turn-end Idle
+                    // drain may already have run against an empty queue, so a
+                    // bare re-enqueue would strand the follow-up until the next
+                    // user message (CQ3-A).
+                    tracing::warn!(error = %e, agent_id, "live inject failed; delivering as a new turn");
+                    self.message_queue.lock().enqueue(agent_id, msg);
+                    flush_queued(&self, app, agent_id)?;
+                }
+            }
+            Delivery::Enqueue => self.message_queue.lock().enqueue(agent_id, msg),
+        }
+        Ok(())
+    }
+
+    /// Inject a message into the running turn over the managed agent's open
+    /// stdin (claude). On success, persist its row so it matches the transcript
+    /// record the live message produces (the matcher stays 1→1 per live
+    /// message). Returns `Err` if the write fails — the turn ended or the pipe
+    /// broke in the race window between the busy check and the write — leaving
+    /// the message untouched so the caller can fall back without double-handling
+    /// it.
+    fn inject_live(&self, agent_id: &str, msg: &PendingMsg) -> Result<()> {
+        self.agents
+            .lock()
+            .get(agent_id)
+            .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))
+            .and_then(|a| {
+                a.send_user_message(&msg.text, &msg.attachments, msg.thinking.as_deref())
+            })?;
+        if let Err(e) =
+            self.workspace
+                .insert_user_turn(agent_id, &msg.turn_id, &msg.text, &msg.attachments)
+        {
+            tracing::warn!(error = %e, agent_id, "persist live-injected user turn failed");
+        }
         Ok(())
     }
 
@@ -1244,6 +1323,17 @@ impl Supervisor {
             let err = e.to_string();
             tracing::warn!(agent_id, error = %err, "binary-swap respawn failed");
             self.set_status(app, agent_id, AgentStatus::Error, Some(err));
+            return;
+        }
+
+        // This respawn passed through a turn-end Idle where the normal queue
+        // drain deferred to us (see `drain_message_queue`). Now that the agent
+        // is back, deliver any follow-ups queued during that turn — unless the
+        // user stopped (A2-A), which we own the interrupt check for here.
+        if !self.interrupted.lock().remove(agent_id) {
+            if let Err(e) = flush_queued(self, app, agent_id) {
+                tracing::warn!(agent_id, error = %e, "post-respawn queue flush failed");
+            }
         }
     }
 
@@ -1254,6 +1344,9 @@ impl Supervisor {
         // per-turn `exec` exits on SIGINT and its `on_turn_exit` handler
         // ends the turn (it emits no `turn.completed` when interrupted).
         let _ = app;
+        // Mark the stop so the turn-end Idle transition keeps the queue intact
+        // instead of auto-flushing it (A2-A). Cleared when a new turn starts.
+        self.interrupted.lock().insert(agent_id.to_string());
         let agents = self.agents.lock();
         if let Some(agent) = agents.get(agent_id) {
             agent.interrupt();
@@ -1564,6 +1657,8 @@ impl Supervisor {
         self.activities.lock().remove(agent_id);
         self.statuses.lock().remove(agent_id);
         self.native_input_lines.lock().remove(agent_id);
+        self.message_queue.lock().clear(agent_id);
+        self.interrupted.lock().remove(agent_id);
         self.shells.lock().remove(agent_id);
         if let Some(run) = self.runs.lock().remove(agent_id) {
             run.stop();
@@ -2301,10 +2396,94 @@ fn on_first_user_message(
 }
 
 fn mark_user_turn_started(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
+    // A new turn is starting, so any prior stop is moot: clear the interrupt
+    // flag so this turn's natural completion flushes queued follow-ups.
+    sup.interrupted.lock().remove(agent_id);
     if let Some(activity) = sup.activities.lock().get_mut(agent_id) {
         activity.reset_for_new_turn();
     }
     transition_active(sup, app, agent_id, AgentStatus::Running);
+}
+
+/// Deliver a single message as a fresh turn: persist it durably, hand it to the
+/// agent, and mark the turn started. The pre-existing send path, now shared by
+/// the direct-send and queue-flush routes.
+fn deliver_as_turn(
+    sup: &Arc<Supervisor>,
+    app: &AppHandle,
+    agent_id: &str,
+    msg: &PendingMsg,
+) -> Result<()> {
+    sup.deliver_user_message(
+        agent_id,
+        &msg.turn_id,
+        &msg.text,
+        &msg.attachments,
+        msg.thinking.as_deref(),
+    )?;
+    mark_user_turn_started(sup, app, agent_id);
+    on_first_user_message(sup.clone(), app.clone(), agent_id.to_string(), msg.text.clone());
+    Ok(())
+}
+
+/// Coalesce every queued follow-up for an agent into one prompt and deliver it
+/// as the next turn. No-op if the queue is empty. Persists a single
+/// `session_user_turns` row (the coalesced message's `turn_id`), so the matcher
+/// stays 1→1 with the one transcript record the turn produces.
+fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &str) -> Result<()> {
+    let count = sup.message_queue.lock().len(agent_id);
+    let Some(coalesced) = sup.message_queue.lock().drain_coalesced(agent_id) else {
+        return Ok(());
+    };
+    if count > 1 {
+        tracing::debug!(agent_id, count, "flushing coalesced follow-up messages as one turn");
+    }
+    if let Err(e) = deliver_as_turn(sup, app, agent_id, &coalesced) {
+        // Delivery raced with teardown/respawn (e.g. AgentNotFound). Put the
+        // follow-ups back rather than dropping them; a later boundary or the
+        // post-respawn flush retries. Re-queue at the front to preserve order.
+        tracing::warn!(error = %e, agent_id, "flush delivery failed; re-queueing follow-ups");
+        sup.message_queue.lock().requeue_front(agent_id, coalesced);
+    }
+    Ok(())
+}
+
+/// At a turn-end Idle transition, flush any queued follow-up messages as the
+/// next turn — but only on a *natural* completion. Order of the guards matters:
+///
+/// 1. A pending binary-swap respawn owns the flush (and the interrupt check):
+///    it tears down and restarts the agent, then flushes once it's ready (see
+///    `respawn_agent_for_bin`). Flushing here would race that teardown and
+///    `AgentNotFound` could drop the queue. The flag is still set at this point
+///    — `transition_active` calls us synchronously right after
+///    `drain_pending_bin_respawn`, before its spawned task clears it.
+/// 2. A user stop converges on this same Idle (the dying process emits its
+///    result), so when the interrupt flag is set we clear it and keep the queue
+///    intact (A2-A: stop never auto-sends).
+///
+/// Spawns the flush because `transition_active` holds only `&Supervisor`, and
+/// the delivery needs an owned `Arc` (recovered from Tauri state, like
+/// `drain_pending_bin_respawn`).
+fn drain_message_queue(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
+    if sup.respawn_pending.lock().contains(agent_id) {
+        return;
+    }
+    if sup.interrupted.lock().remove(agent_id) {
+        return;
+    }
+    if sup.message_queue.lock().is_empty(agent_id) {
+        return;
+    }
+    let Some(sup_arc) = app.try_state::<Arc<Supervisor>>().map(|s| s.inner().clone()) else {
+        return;
+    };
+    let app = app.clone();
+    let agent_id = agent_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = flush_queued(&sup_arc, &app, &agent_id) {
+            tracing::warn!(error = %e, agent_id, "flush queued follow-up messages failed");
+        }
+    });
 }
 
 fn spawn_turn_watchdog(
@@ -2520,6 +2699,7 @@ fn transition_active(
             // for agents without a reader.
             sup.trigger_session_sync(app.clone(), agent_id.to_string());
             drain_pending_bin_respawn(sup, app, agent_id);
+            drain_message_queue(sup, app, agent_id);
         }
     }
 }

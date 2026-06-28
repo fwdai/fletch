@@ -1446,6 +1446,22 @@ button {
   scroll-margin-top: 24px;
 }
 
+/* A mid-turn follow-up not yet in the transcript: same bubble, dimmed, with a
+   small "queued" tag. Reconciled to a normal user_message once it lands. */
+.m-user--queued {
+  opacity: 0.7;
+  border-style: dashed;
+}
+
+.m-user__queued-tag {
+  display: block;
+  margin-top: 4px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-2);
+}
+
 .m-agent {
   font-size: 14.5px;
   line-height: 1.7;

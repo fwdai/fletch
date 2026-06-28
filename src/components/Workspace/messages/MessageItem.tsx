@@ -43,14 +43,12 @@ export function MessageItem({
           </div>
         );
       }
-      return (
-        <div className="m-user" data-chat-turn={turnId}>
-          {stripInjectedInstructions(item.text)}
-          {item.attachments && item.attachments.length > 0 && (
-            <AttachmentList paths={item.attachments} className="message-attachments" />
-          )}
-        </div>
-      );
+      return <UserBubble text={item.text} attachments={item.attachments} turnId={turnId} />;
+    case "queued_message":
+      // Same bubble, marked queued: a follow-up the user sent mid-turn that the
+      // transcript hasn't caught up to yet. Reconciled away in app.ts once it
+      // lands canonically.
+      return <UserBubble text={item.text} attachments={item.attachments} queued />;
     case "agent_message":
       return (
         <div className="m-agent">
@@ -110,6 +108,31 @@ export function MessageItem({
     case "notice":
       return <NoticeView item={item} />;
   }
+}
+
+/** The user-prompt bubble, shared by the canonical `user_message` and the
+ *  optimistic `queued_message` (a mid-turn follow-up not yet in the transcript)
+ *  so both render identically aside from the queued marker. */
+function UserBubble({
+  text,
+  attachments,
+  queued,
+  turnId,
+}: {
+  text: string;
+  attachments?: string[];
+  queued?: boolean;
+  turnId?: number;
+}) {
+  return (
+    <div className={queued ? "m-user m-user--queued" : "m-user"} data-chat-turn={turnId}>
+      {stripInjectedInstructions(text)}
+      {attachments && attachments.length > 0 && (
+        <AttachmentList paths={attachments} className="message-attachments" />
+      )}
+      {queued && <span className="m-user__queued-tag">queued</span>}
+    </div>
+  );
 }
 
 /** A subagent's threaded sub-conversation, rendered inside its spawning

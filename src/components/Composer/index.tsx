@@ -258,7 +258,10 @@ export function Composer({
 
   function send() {
     const trimmed = text.trim();
-    if (stopping) {
+    // While the agent works, an empty composer's primary action is Stop; once
+    // the user types, it becomes Send so the message can be queued/injected
+    // mid-turn (the agent keeps running — see store.sendUserMessage).
+    if (showStop) {
       onStop?.();
       return;
     }
@@ -270,7 +273,7 @@ export function Composer({
   }
 
   function stop() {
-    if (!stopping) return;
+    if (!showStop) return;
     onStop?.();
   }
 
@@ -284,7 +287,11 @@ export function Composer({
     });
   }
 
-  const sendDisabled = stopping ? !onStop : disabled || (!text.trim() && attachments.length === 0);
+  const hasContent = text.trim().length > 0 || attachments.length > 0;
+  // Busy + empty → Stop; busy + typed (or idle) → Send. So a mid-turn
+  // follow-up sends with Enter, and an empty composer still stops the turn.
+  const showStop = stopping && !hasContent;
+  const sendDisabled = showStop ? !onStop : disabled || !hasContent;
 
   return (
     <div className={`composer${isDropTarget ? " is-drop-target" : ""}`}>
@@ -377,12 +384,12 @@ export function Composer({
         {features.tokenUsage && usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
         <button
           type="button"
-          className={`send ${stopping ? "is-stop" : ""}`}
+          className={`send ${showStop ? "is-stop" : ""}`}
           disabled={sendDisabled}
-          onClick={stopping ? stop : send}
-          aria-label={stopping ? "Stop" : "Send"}
+          onClick={showStop ? stop : send}
+          aria-label={showStop ? "Stop" : "Send"}
         >
-          <Icon name={stopping ? "stop" : "arrowUp"} size={13} />
+          <Icon name={showStop ? "stop" : "arrowUp"} size={13} />
         </button>
       </div>
     </div>

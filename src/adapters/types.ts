@@ -7,6 +7,12 @@
 
 export type ChatItem =
   | { kind: "user_message"; text: string; attachments?: string[] }
+  // A follow-up the user sent mid-turn that hasn't landed in the transcript
+  // yet: delivered live into the running turn (claude) or queued for the next
+  // turn boundary (per-turn agents). Store-inserted only — never produced by an
+  // adapter's reduce(). Reconciled away once the canonical transcript catches
+  // up (see app.ts onSessionRecordsAppended). Renders with the user bubble.
+  | { kind: "queued_message"; text: string; attachments?: string[] }
   | {
       kind: "agent_message";
       text: string;

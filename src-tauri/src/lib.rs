@@ -11,6 +11,7 @@ mod git;
 mod git_state;
 mod instructions;
 mod managed_session;
+mod message_queue;
 mod model_catalog;
 mod names;
 mod new_project;
