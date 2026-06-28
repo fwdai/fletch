@@ -375,6 +375,9 @@ export const api = {
     model?: string,
     instructions?: string,
     customAgentId?: string,
+    /** Explicit fork point (commit-ish). A workflow step passes the previous
+     *  step's HEAD here so its worktree continues that work. */
+    forkBase?: string,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
       view,
@@ -385,6 +388,7 @@ export const api = {
       model: model ?? null,
       instructions: instructions ?? null,
       customAgentId: customAgentId ?? null,
+      forkBase: forkBase ?? null,
     }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
