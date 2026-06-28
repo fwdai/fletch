@@ -579,6 +579,11 @@ impl Supervisor {
         model: Option<String>,
         instructions: Option<String>,
         custom_agent_id: Option<String>,
+        // Explicit fork point (a commit-ish). When set — e.g. a workflow step
+        // forking from the previous step's HEAD — the worktree is cut from this
+        // commit instead of the parent branch's remote fork-point. None keeps the
+        // default behavior.
+        fork_base: Option<String>,
     ) -> Result<AgentRecord> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -665,12 +670,17 @@ impl Supervisor {
                 return;
             }
 
-            // Fork from the freshest remote state of the parent branch so the
-            // agent never starts on stale local refs. Best-effort: offline, no
-            // remote, or a local-only branch all fall back to local HEAD.
-            let base = match &parent_for_fork {
-                Some(b) => git::fetch_fork_point(&repo_path, b).await,
-                None => None,
+            // Fork point: an explicit base (a workflow step forking from the
+            // previous step's HEAD) wins; otherwise fork from the freshest remote
+            // state of the parent branch so the agent never starts on stale local
+            // refs. Best-effort: offline, no remote, or a local-only branch all
+            // fall back to local HEAD.
+            let base = match &fork_base {
+                Some(sha) => Some(sha.clone()),
+                None => match &parent_for_fork {
+                    Some(b) => git::fetch_fork_point(&repo_path, b).await,
+                    None => None,
+                },
             };
             if let Err(e) =
                 git::worktree_add_detached(&repo_path, &primary_worktree, base.as_deref()).await

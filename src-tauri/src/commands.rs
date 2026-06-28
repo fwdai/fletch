@@ -177,6 +177,7 @@ pub async fn spawn_agent(
     model: Option<String>,
     instructions: Option<String>,
     custom_agent_id: Option<String>,
+    fork_base: Option<String>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
     sup.spawn_agent(
@@ -189,6 +190,7 @@ pub async fn spawn_agent(
         model,
         instructions,
         custom_agent_id,
+        fork_base,
     )
     .await
 }
