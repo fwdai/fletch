@@ -2268,6 +2268,85 @@ mod tests {
         assert_eq!(turns[0].native_id, None); // still pending → renders standalone
     }
 
+    // ── mid-turn follow-up messages (coalesced delivery + live injection) ──
+
+    #[test]
+    fn coalesced_follow_ups_persist_one_row_that_matches_one_record() {
+        // Per-turn flush (A5-A): N queued follow-ups coalesce into ONE prompt,
+        // delivered as one turn → one transcript record → one user_turn row
+        // that matches 1:1. No orphans.
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        wm.insert_user_turn(&ws_id, "t-coalesced", "first\n\nsecond", &[])
+            .unwrap();
+
+        let rec = serde_json::json!({"role": "user", "text": "first\n\nsecond"});
+        wm.append_session_records(&ws_id, "codex", "transcript", None, &[("rec-1", &rec)])
+            .unwrap();
+
+        assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 1);
+        let turns = wm.read_user_turns(&ws_id).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].native_id.as_deref(), Some("rec-1"));
+    }
+
+    #[test]
+    fn live_injected_follow_ups_each_match_their_own_record() {
+        // Claude live: each injected message is its own transcript user record,
+        // so two follow-ups inside one turn window match N→N (no coalescing).
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        wm.insert_user_turn(&ws_id, "t1", "original", &[]).unwrap();
+        wm.insert_user_turn(&ws_id, "t2", "actually also do X", &[])
+            .unwrap();
+
+        let rec_a = serde_json::json!({"role": "user", "text": "original"});
+        let rec_b = serde_json::json!({"role": "user", "text": "actually also do X"});
+        wm.append_session_records(
+            &ws_id,
+            "claude",
+            "transcript",
+            None,
+            &[("rec-A", &rec_a), ("rec-B", &rec_b)],
+        )
+        .unwrap();
+
+        assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 2);
+        let turns = wm.read_user_turns(&ws_id).unwrap();
+        assert_eq!(turns[0].native_id.as_deref(), Some("rec-A"));
+        assert_eq!(turns[1].native_id.as_deref(), Some("rec-B"));
+    }
+
+    #[test]
+    fn per_message_rows_orphan_against_a_coalesced_record() {
+        // Guards the A5-A decision: if a coalesced delivery (one merged record)
+        // were persisted as N separate rows instead of one, the claim-set lets
+        // only the first row match and the rest orphan forever. This is the bug
+        // we avoid by persisting a single coalesced row — documented here so a
+        // future change back to per-message rows fails loudly.
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        wm.insert_user_turn(&ws_id, "t1", "first", &[]).unwrap();
+        wm.insert_user_turn(&ws_id, "t2", "second", &[]).unwrap();
+
+        let rec = serde_json::json!({"role": "user", "text": "first\n\nsecond"});
+        wm.append_session_records(&ws_id, "codex", "transcript", None, &[("rec-1", &rec)])
+            .unwrap();
+
+        // Only one row can claim the single record; the other stays pending.
+        assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 1);
+        let pending = wm
+            .read_user_turns(&ws_id)
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.native_id.is_none())
+            .count();
+        assert_eq!(pending, 1, "the unclaimed row orphans — hence we coalesce to one row");
+    }
+
     #[test]
     fn allocate_subdir_handles_collision() {
         let used = vec!["luxembourg".to_string()];

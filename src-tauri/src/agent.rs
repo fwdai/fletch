@@ -23,6 +23,7 @@ use serde_json::Value;
 use crate::activity::{Activity, ManagedActivity};
 use crate::error::{Error, Result};
 use crate::exec_session::{ExecCallbacks, ExecExit, ExecSession, ExecSpawn};
+use crate::message_queue::InjectionMode;
 use crate::instructions;
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
@@ -179,6 +180,19 @@ pub fn capabilities(provider: &str) -> AgentCapabilities {
         None => AgentCapabilities {
             native_view: false,
         },
+    }
+}
+
+/// How a provider accepts a follow-up message sent mid-turn. Claude (the lone
+/// persistent-runner agent) keeps an open stream-json stdin, so it can take a
+/// message live; per-turn agents are one-shot processes with no live stdin, so
+/// they queue until the next turn boundary. Unknown providers default to the
+/// safe boundary path.
+pub fn injection_mode(provider: &str) -> InjectionMode {
+    match per_turn_descriptor(provider) {
+        Some(_) => InjectionMode::AtTurnBoundary,
+        None if provider == "claude" => InjectionMode::Live,
+        None => InjectionMode::AtTurnBoundary,
     }
 }
 
@@ -1035,6 +1049,16 @@ impl Agent {
             Self::Pty(_) => Err(Error::Other(
                 "send_user_message called on pty agent".into(),
             )),
+        }
+    }
+
+    /// True while a turn is paused on a held permission prompt. Only the managed
+    /// (Claude stream-json) transport can pause this way; per-turn and PTY
+    /// agents run fully auto-approved and never gate.
+    pub fn is_tool_gated(&self) -> bool {
+        match self {
+            Self::Managed(a) => a.session.is_tool_gated(),
+            Self::PerTurn(_) | Self::Pty(_) => false,
         }
     }
 

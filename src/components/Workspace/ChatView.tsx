@@ -172,10 +172,13 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     );
   }, [items]);
 
+  // Mid-turn follow-ups are allowed: a busy (running) agent still accepts a
+  // message — delivered live (claude) or queued for the next turn boundary
+  // (per-turn agents). So `canSend` no longer gates on `busy`; the Composer
+  // shows Stop when empty and Send once the user types (see Composer).
   const canSend =
     !transcriptLoading &&
     !switchInFlight &&
-    !busy &&
     (agent.status === "running" || agent.status === "idle");
 
   return (
@@ -252,9 +255,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                 ? "Loading transcript…"
                 : switchInFlight
                   ? "Switching view…"
-                  : busy
-                    ? "Waiting…"
-                    : "Agent is not ready"
+                  : "Agent is not ready"
           }
           stopping={busy}
           mentionSource={() =>
