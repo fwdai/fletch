@@ -1,0 +1,14 @@
+/* app frame */
+.app {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-0);
+  color: var(--fg-0);
+  overflow: hidden;
+  transition:
+    background 0.25s var(--ease),
+    color 0.25s var(--ease);
+}
+

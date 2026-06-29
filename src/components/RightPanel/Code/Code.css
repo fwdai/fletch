@@ -1,0 +1,439 @@
+/* ─── code panel: Files | Live, behind a secondary mode switch ───── */
+.code-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.code-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The mode switch is deliberately styled UNLIKE the panel tabs above it —
+   an inset filled-thumb pill, not an underline tab — so it reads as a control
+   within the Code panel rather than as switching between panels. */
+.code-modes {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+  flex-shrink: 0;
+}
+.code-modeswitch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-0);
+  border: 1px solid var(--bd-soft);
+  border-radius: 8px;
+}
+.cms-seg {
+  gap: 5px;
+  height: 22px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-2);
+  cursor: pointer;
+  position: relative;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    box-shadow 0.12s;
+}
+.cms-seg svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.9;
+}
+.cms-seg:hover {
+  color: var(--fg-0);
+}
+.cms-seg.active {
+  background: var(--bg-2);
+  color: var(--fg-0);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+.cms-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: 1px;
+  background: var(--fg-3); /* grey: there are changes, but nothing is happening now */
+}
+.cms-live-dot.on {
+  background: var(--success); /* green & pulsing only while the agent works */
+  animation: code-tab-live 1.6s ease-in-out infinite;
+}
+
+/* Live mode — activity feed of agent edits as diffs (ported from the design). */
+.code-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.code-h {
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+}
+.code-h .code-h-l {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.code-h .ch-count {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+.code-h .ch-count .dim {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+.code-h .ch-dot {
+  color: var(--fg-3);
+}
+.code-h .ch-add {
+  color: var(--success);
+}
+.code-h .ch-rem {
+  color: var(--danger);
+}
+
+.code-h .code-open {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 11px;
+  font-size: 10.5px;
+  font-weight: 500;
+  border: 1px solid var(--bd-soft);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    border-color 0.12s;
+}
+.code-h .code-open:hover {
+  color: var(--fg-0);
+  border-color: var(--bd);
+  background: var(--hover);
+}
+
+.code-h .code-follow {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px 0 8px;
+  border-radius: 11px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--bd-soft);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    border-color 0.12s;
+  white-space: nowrap;
+}
+.code-h .code-follow .cf-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  transition:
+    background 0.12s,
+    box-shadow 0.2s;
+}
+.code-h .code-follow.on {
+  color: var(--success);
+  border-color: color-mix(in oklch, var(--success), transparent 65%);
+  background: color-mix(in oklch, var(--success), transparent 90%);
+}
+.code-h .code-follow.on .cf-dot {
+  background: var(--success);
+}
+.code-h .code-follow.on.live .cf-dot {
+  animation: code-follow-pulse 1.8s ease-in-out infinite;
+}
+@keyframes code-follow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--success), transparent 40%);
+  }
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--success), transparent 88%);
+  }
+}
+.code-h .code-follow:hover {
+  color: var(--fg-0);
+  border-color: var(--bd);
+}
+.code-h .code-follow.on:hover {
+  background: color-mix(in oklch, var(--success), transparent 84%);
+}
+
+.code-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid var(--bd-soft);
+  background: var(--bg-0);
+  scrollbar-width: thin;
+  scroll-behavior: smooth;
+  flex-shrink: 0;
+}
+.code-tabs::-webkit-scrollbar {
+  height: 4px;
+}
+.code-tabs::-webkit-scrollbar-thumb {
+  background: var(--bd-soft);
+  border-radius: 2px;
+}
+.code-tab {
+  flex-shrink: 0;
+  gap: 7px;
+  height: 26px;
+  padding: 0 9px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+  position: relative;
+}
+.code-tab:hover {
+  color: var(--fg-0);
+  background: var(--hover);
+}
+.code-tab.active {
+  background: var(--bg-1);
+  color: var(--fg-0);
+  border-color: var(--bd-soft);
+  box-shadow: 0 1px 0 var(--bg-1);
+}
+.code-tab .ct-status {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.code-tab.status-m .ct-status {
+  background: color-mix(in oklch, var(--info), transparent 80%);
+  color: var(--info);
+}
+.code-tab.status-a .ct-status {
+  background: color-mix(in oklch, var(--success), transparent 80%);
+  color: var(--success);
+}
+.code-tab.status-d .ct-status {
+  background: color-mix(in oklch, var(--danger), transparent 80%);
+  color: var(--danger);
+}
+.code-tab.status-r .ct-status {
+  background: color-mix(in oklch, var(--warn), transparent 80%);
+  color: var(--warn);
+}
+.code-tab .ct-name {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+.code-tab .ct-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.code-tab .ct-stats .a {
+  color: var(--success);
+}
+.code-tab .ct-stats .r {
+  color: var(--danger);
+}
+.code-tab .ct-live {
+  margin-left: 1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  animation: code-tab-live 1.6s ease-in-out infinite;
+}
+@keyframes code-tab-live {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--success), transparent 35%);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in oklch, var(--success), transparent 88%);
+  }
+}
+.code-tab.live.active {
+  border-color: color-mix(in oklch, var(--success), transparent 60%);
+}
+
+.code-diff {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 0 80px;
+  background: var(--bg-0);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  position: relative;
+}
+.code-diff.live::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  display: block;
+  height: 2px;
+  margin: 0 0 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklch, var(--success), transparent 30%) 30%,
+    color-mix(in oklch, var(--success), transparent 30%) 70%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: code-diff-shimmer 2.4s linear infinite;
+  z-index: 1;
+}
+@keyframes code-diff-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+.code-hunk-h {
+  padding: 6px 12px;
+  background: color-mix(in oklch, var(--accent), var(--bg-0) 88%);
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-top: 1px solid var(--bd-soft);
+  border-bottom: 1px solid var(--bd-soft);
+  margin: 4px 0 0;
+}
+.code-diff .dl {
+  display: grid;
+  grid-template-columns: 34px 34px 14px 1fr;
+  align-items: baseline;
+  padding: 0 12px 0 0;
+  position: relative;
+  white-space: pre;
+  min-height: 18px;
+}
+.code-diff .dl-num {
+  font-size: 10px;
+  color: var(--fg-3);
+  text-align: right;
+  padding-right: 6px;
+  user-select: none;
+}
+.code-diff .dl-num.o {
+  padding-left: 6px;
+}
+.code-diff .dl-sigil {
+  text-align: center;
+  font-weight: 600;
+  color: var(--fg-3);
+  user-select: none;
+}
+.code-diff .dl-text {
+  overflow: hidden;
+  text-overflow: clip;
+  position: relative;
+  color: var(--fg-1);
+}
+.code-diff .dl.op-add {
+  background: color-mix(in oklch, var(--success), transparent 92%);
+}
+.code-diff .dl.op-add .dl-sigil {
+  color: var(--success);
+}
+.code-diff .dl.op-add .dl-num.n {
+  color: color-mix(in oklch, var(--success), var(--fg-2) 50%);
+}
+.code-diff .dl.op-rem {
+  background: color-mix(in oklch, var(--danger), transparent 92%);
+}
+.code-diff .dl.op-rem .dl-sigil {
+  color: var(--danger);
+}
+.code-diff .dl.op-rem .dl-num.o {
+  color: color-mix(in oklch, var(--danger), var(--fg-2) 50%);
+}
+.code-diff .dl.op-rem .dl-text {
+  color: color-mix(in oklch, var(--danger), var(--fg-1) 55%);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklch, var(--danger), transparent 60%);
+  text-decoration-thickness: 1px;
+}
+.code-diff .dl.fresh {
+  animation: code-line-arrive 1.6s ease-out;
+}
+@keyframes code-line-arrive {
+  0% {
+    background: color-mix(in oklch, var(--success), transparent 50%);
+  }
+  100% {
+    background: color-mix(in oklch, var(--success), transparent 92%);
+  }
+}
+.code-diff .dl:hover {
+  background-color: color-mix(in oklch, currentColor, var(--bg-1) 95%);
+}
+.code-diff .dl.op-add:hover {
+  background-color: color-mix(in oklch, var(--success), transparent 86%);
+}
+.code-diff .dl.op-rem:hover {
+  background-color: color-mix(in oklch, var(--danger), transparent 86%);
+}
+.code-diff .dl.op-ctx:hover {
+  background-color: var(--bg-1);
+}
+

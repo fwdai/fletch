@@ -1,0 +1,361 @@
+/* new project popover */
+.np-pop {
+  position: absolute;
+  left: 280px;
+  top: 60px;
+  width: 320px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.35);
+  z-index: var(--z-popover);
+  padding: 8px;
+  animation: ddIn 0.15s var(--ease);
+}
+.np-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  width: 100%;
+}
+.np-item:hover {
+  background: var(--hover);
+}
+.np-item .np-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.np-item .np-icon svg {
+  width: 15px;
+  height: 15px;
+}
+.np-item .np-text {
+  flex: 1;
+  min-width: 0;
+}
+.np-item .np-t {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-0);
+}
+.np-item .np-s {
+  font-size: 11.5px;
+  color: var(--fg-2);
+  margin-top: 2px;
+}
+
+/* ── New Project modal ────────────────────────────────────────────── */
+.np-modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 460px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
+  z-index: 301;
+  /* Own keyframe (not ddIn): the animated transform must keep the
+     translate(-50%,-50%) centering, or it jumps from the corner to center. */
+  animation: np-modal-in 0.18s var(--ease);
+}
+@keyframes np-modal-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 6px)) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+.np-modal-h {
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--bd);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.np-modal-h svg {
+  color: var(--accent);
+}
+.np-modal-h span {
+  flex: 1;
+}
+.np-close {
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  color: var(--fg-2);
+}
+.np-close:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+
+.np-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  overflow-y: auto;
+}
+.np-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.np-field > label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg-2);
+}
+.np-field .np-opt {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+.np-field input {
+  height: 34px;
+  padding: 0 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  color: var(--fg-0);
+}
+.np-field input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.np-hint {
+  font-size: 11.5px;
+  color: var(--fg-2);
+}
+.np-hint.e,
+.np-error {
+  color: var(--danger);
+}
+.np-error {
+  font-size: 12px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+}
+.np-link {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--accent);
+}
+.np-link:hover {
+  text-decoration: underline;
+}
+
+/* Destination chooser */
+.np-dest {
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  text-align: left;
+}
+.np-dest:hover {
+  border-color: var(--accent);
+}
+.np-dest svg {
+  color: var(--fg-2);
+  flex-shrink: 0;
+}
+.np-dest .np-dest-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--fg-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+.np-dest .np-dest-name {
+  color: var(--accent);
+}
+.np-dest .np-dest-empty {
+  flex: 1;
+  font-size: 12.5px;
+  color: var(--fg-3);
+}
+
+/* Repo picker */
+.np-list-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.np-search {
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+}
+.np-search svg {
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.np-search input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  font-size: 13px;
+  color: var(--fg-0);
+}
+.np-search input:focus {
+  outline: none;
+}
+.np-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+}
+.np-list-msg {
+  padding: 16px;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  text-align: center;
+}
+.np-list-msg.e {
+  color: var(--danger);
+}
+.np-repo {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 11px;
+  text-align: left;
+  width: 100%;
+  border-bottom: 1px solid var(--bd);
+}
+.np-repo:last-child {
+  border-bottom: none;
+}
+.np-repo:hover {
+  background: var(--hover);
+}
+.np-repo.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.np-repo svg {
+  color: var(--fg-2);
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+.np-repo-text {
+  flex: 1;
+  min-width: 0;
+}
+.np-repo-name {
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--fg-0);
+}
+.np-priv {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.np-repo-desc {
+  font-size: 11.5px;
+  color: var(--fg-2);
+  margin-top: 2px;
+}
+
+/* Actions + gate */
+.np-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+.np-primary {
+  gap: 7px;
+  height: 34px;
+  padding: 0 16px;
+  background: var(--accent);
+  color: var(--btn-fg-dark);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  font-weight: 600;
+}
+.theme-light .np-primary {
+  color: var(--btn-fg-light);
+}
+.np-primary:disabled {
+  opacity: 0.5;
+}
+.np-primary:not(:disabled):hover {
+  background: oklch(from var(--accent) calc(l + 0.04) c h);
+}
+.np-primary svg {
+  animation: np-spin 1s linear infinite;
+}
+@keyframes np-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.np-gate {
+  flex-direction: column;
+  gap: 8px;
+  text-align: center;
+  padding: 24px 12px;
+  color: var(--accent);
+}
+.np-gate-t {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-0);
+  margin-top: 4px;
+}
+.np-gate-s {
+  font-size: 12px;
+  color: var(--fg-2);
+  line-height: 1.5;
+  max-width: 320px;
+}
+.np-gate code {
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11.5px;
+  color: var(--fg-0);
+}
+

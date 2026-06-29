@@ -1,0 +1,96 @@
+/* icon button */
+.btn-i {
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+  transition: var(--transition-ui-ease);
+  position: relative;
+}
+.btn-i:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.btn-i:active:not(:disabled) {
+  background: var(--selected);
+}
+.btn-i.active {
+  color: var(--accent);
+}
+.btn-i:disabled {
+  opacity: 0.35;
+}
+.btn-i svg {
+  width: 14px;
+  height: 14px;
+}
+.btn-i.sm {
+  width: 22px;
+  height: 22px;
+}
+.btn-i.sm svg {
+  width: 12px;
+  height: 12px;
+}
+.btn-i.xs {
+  width: 22px;
+  height: 22px;
+}
+.btn-i.xs svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-t {
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  color: var(--fg-1);
+  font-weight: 500;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+  border: 1px solid transparent;
+}
+.btn-t:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.btn-t svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.8;
+}
+.btn-t.outline {
+  border-color: var(--bd);
+  background: var(--bg-1);
+}
+.btn-t.outline:hover {
+  border-color: var(--fg-3);
+  background: var(--hover);
+}
+.btn-t.ghost {
+  border-color: var(--bd-soft);
+}
+.btn-t.ghost:hover {
+  border-color: var(--bd);
+}
+.btn-t.primary {
+  background: var(--accent);
+  color: var(--btn-fg-dark);
+  border-color: transparent;
+}
+.theme-light .btn-t.primary {
+  color: var(--btn-fg-light);
+}
+.btn-t.primary:hover {
+  background: oklch(from var(--accent) calc(l + 0.04) c h);
+}
+.btn-t.primary svg {
+  opacity: 1;
+}
+

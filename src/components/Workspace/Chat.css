@@ -1,0 +1,483 @@
+/* chat */
+.chat {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.chat-scroll-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* Find-in-conversation bar (⌘F) — floats over the top-right of the log so it
+   never reflows the messages underneath it. */
+.chat-search {
+  position: absolute;
+  top: 12px;
+  right: 24px;
+  z-index: var(--z-titlebar);
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
+  animation: chat-search-in 120ms ease-out;
+}
+@keyframes chat-search-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.chat-search-icon {
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.chat-search-input {
+  width: 200px;
+  height: 24px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-0);
+  font-size: 13px;
+  outline: none;
+}
+.chat-search-input::placeholder {
+  color: var(--fg-3);
+}
+.chat-search-count {
+  flex-shrink: 0;
+  min-width: 38px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+}
+.chat-search-count.no-match {
+  color: var(--danger);
+}
+.chat-search-actions {
+  gap: 1px;
+  padding-left: 4px;
+  margin-left: 2px;
+  border-left: 1px solid var(--bd-soft);
+}
+
+/* Painted by the CSS Custom Highlight API (see useChatSearch). These pseudo-
+   elements style Range objects without touching the DOM React owns. */
+::highlight(chat-find) {
+  background: var(--accent-soft);
+  border-radius: 2px;
+}
+::highlight(chat-find-current) {
+  background: var(--accent);
+  color: var(--bg-0);
+}
+.chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 0 16px;
+}
+.chat-inner {
+  max-width: 860px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 0 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+@media (max-width: 1100px) {
+  .chat-inner {
+    padding: 0 24px;
+  }
+  .composer-wrap {
+    padding: 0 24px 16px;
+  }
+}
+@media (max-width: 900px) {
+  .chat-inner {
+    padding: 0 16px;
+  }
+  .composer-wrap {
+    padding: 0 16px 14px;
+  }
+}
+
+/* Turn navigator — compact pill docked bottom-right of the transcript. */
+.chat-nav {
+  position: absolute;
+  right: 18px;
+  top: 16px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  user-select: none;
+}
+.chat-nav-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: 10px;
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  opacity: 0.55;
+  transition: opacity 0.18s var(--ease);
+}
+.chat-nav:hover .chat-nav-bar,
+.chat-nav:focus-within .chat-nav-bar {
+  opacity: 1;
+}
+.chat-nav-btn,
+.chat-nav-count {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--fg-1);
+  cursor: pointer;
+  justify-content: center;
+  transition: var(--transition-ui-ease);
+}
+.chat-nav-btn {
+  /* Stretch to the bar's width (set by the widest row — usually the count) so
+     the chevron glyphs stay centered even with large turn counts like 44/54. */
+  width: 100%;
+  min-width: 32px;
+  height: 26px;
+  padding: 0 4px;
+}
+.chat-nav-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.chat-nav-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.chat-nav-btn svg {
+  width: 12px;
+  height: 12px;
+}
+/* The count and the list glyph share one grid cell: at rest the pill shows
+   "n / N"; on hover (or while open) it cross-dissolves into ☰ with a gentle
+   scale so it reads as a morph rather than a blink, hinting that clicking
+   reveals the table of contents. The cell sizes to the wider child (the
+   number), so the swap doesn't shift layout. */
+.chat-nav-count {
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  min-height: 28px;
+  padding: 6px 4px;
+  white-space: nowrap;
+  border-top: 1px solid var(--bd-soft);
+  border-bottom: 1px solid var(--bd-soft);
+}
+.chat-nav-count-n,
+.chat-nav-count svg {
+  grid-area: 1 / 1;
+  transition:
+    opacity 0.34s var(--ease),
+    transform 0.34s var(--ease);
+}
+.chat-nav-count-n {
+  display: inline-flex;
+  align-items: baseline;
+}
+.chat-nav-count svg {
+  width: 15px;
+  height: 15px;
+  color: var(--fg-0);
+  opacity: 0;
+  transform: scale(0.7);
+}
+.chat-nav-count:hover .chat-nav-count-n,
+.chat-nav-count[aria-expanded="true"] .chat-nav-count-n {
+  opacity: 0;
+  transform: scale(0.7);
+}
+.chat-nav-count:hover svg,
+.chat-nav-count[aria-expanded="true"] svg {
+  opacity: 1;
+  transform: scale(1);
+}
+.chat-nav-count:hover,
+.chat-nav-count[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.chat-nav-count[aria-expanded="true"] svg {
+  color: var(--accent);
+}
+.chat-nav-sep {
+  opacity: 0.5;
+  margin: 0 1px;
+}
+.chat-nav-list {
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: 12px;
+  box-shadow: var(--shadow-2);
+  width: 300px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chat-nav-row {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 7px 9px;
+  text-align: left;
+  color: var(--fg-1);
+  transition: background 0.12s var(--ease);
+}
+.chat-nav-row:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.chat-nav-row.is-active {
+  background: var(--accent-line);
+  color: var(--fg-0);
+}
+.chat-nav-row-n {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-3);
+  min-width: 16px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.chat-nav-row.is-active .chat-nav-row-n {
+  color: var(--accent);
+}
+.chat-nav-row-t {
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+/* Groups a message bubble/response with its hover-revealed action row (copy).
+   The wrapper carries the bottom margin so the actions sit tight under the
+   message rather than 16px below it. */
+.m-msg-wrap {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 16px;
+}
+.m-msg-wrap.is-user {
+  align-self: flex-end;
+  align-items: flex-end;
+  max-width: 78%;
+}
+.m-msg-wrap > .m-user,
+.m-msg-wrap > .m-agent {
+  margin-bottom: 0;
+  max-width: 100%;
+}
+
+.m-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 0.12s var(--ease);
+}
+.m-msg-wrap:hover .m-actions,
+.m-actions:focus-within {
+  opacity: 1;
+}
+
+.m-user {
+  align-self: flex-end;
+  max-width: 78%;
+  padding: 10px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: 16px 16px 4px 16px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--fg-0);
+  white-space: pre-wrap;
+  margin-bottom: 16px;
+  /* Leaves breathing room under the top padding when ChatNav jumps here. */
+  scroll-margin-top: 24px;
+}
+
+/* A mid-turn follow-up not yet in the transcript: same bubble, dimmed, with a
+   small "queued" tag. Reconciled to a normal user_message once it lands. */
+.m-user--queued {
+  opacity: 0.7;
+  border-style: dashed;
+}
+
+.m-user__queued-tag {
+  display: block;
+  margin-top: 4px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-2);
+}
+
+.m-agent {
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--fg-0);
+  margin-bottom: 16px;
+}
+.m-agent > *:first-child {
+  margin-top: 0;
+}
+.m-agent > *:last-child {
+  margin-bottom: 0;
+}
+.m-agent p {
+  margin: 0 0 12px;
+}
+.m-agent h1,
+.m-agent h2,
+.m-agent h3,
+.m-agent h4 {
+  margin: 22px 0 10px;
+  font-weight: 650;
+  line-height: 1.25;
+  color: var(--fg-0);
+}
+.m-agent h1 {
+  font-size: 20px;
+}
+.m-agent h2 {
+  font-size: 17px;
+}
+.m-agent h3 {
+  font-size: 15px;
+}
+.m-agent h4 {
+  font-size: 14px;
+}
+.m-agent ul,
+.m-agent ol {
+  margin: 8px 0 14px;
+  padding-left: 24px;
+}
+.m-agent li {
+  margin: 3px 0;
+}
+.m-agent li > p {
+  margin: 4px 0;
+}
+.m-agent blockquote {
+  margin: 12px 0;
+  padding: 4px 0 4px 14px;
+  color: var(--fg-2);
+  border-left: 2px solid var(--accent-line);
+}
+.m-agent code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--hover);
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--bd-soft);
+}
+.m-agent pre {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+}
+.m-agent pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  white-space: pre;
+}
+.m-agent table {
+  width: 100%;
+  margin: 12px 0 16px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.m-agent th,
+.m-agent td {
+  padding: 7px 9px;
+  border: 1px solid var(--bd-soft);
+  text-align: left;
+  vertical-align: top;
+}
+.m-agent th {
+  color: var(--fg-1);
+  background: var(--bg-2);
+  font-weight: 600;
+}
+.m-agent a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.m-agent hr {
+  margin: 18px 0;
+  border: 0;
+  border-top: 1px solid var(--bd-soft);
+}
+
+.m-agent.m-agent-dim,
+.m-agent.m-agent-dim h1,
+.m-agent.m-agent-dim h2,
+.m-agent.m-agent-dim h3,
+.m-agent.m-agent-dim h4,
+.m-agent.m-agent-dim th {
+  color: var(--fg-2);
+}
+
+.m-reasoning {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--fg-2);
+  padding: 4px 18px;
+  border-left: 1px solid var(--accent-line);
+  font-style: italic;
+  white-space: pre-wrap;
+}
+.m-reasoning .label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  font-style: normal;
+  margin-right: 8px;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+

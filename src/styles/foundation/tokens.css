@@ -1,0 +1,114 @@
+/* Quorum — quiet & editorial. Ported from the Quorum v2 prototype.
+ * Color tokens are OKLCH; theme via `.theme-dark` / `.theme-light` on <html>;
+ * density via `.density-comfortable` / `.density-compact`; accent vars are
+ * overridden at runtime by App.tsx based on the selected palette.
+ */
+
+:root {
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+  --font-geist: "Geist Sans", var(--font-sans);
+  --font-serif: "Iowan Old Style", "Cormorant Garamond", Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 9px;
+  --r-lg: 14px;
+
+  --ease: cubic-bezier(0.3, 0.7, 0.4, 1);
+  --transition-ui: background 0.12s, color 0.12s;
+  --transition-ui-ease: background 0.12s var(--ease), color 0.12s var(--ease);
+
+  --dens-sm: 6px;
+  --dens-md: 10px;
+  --dens-lg: 16px;
+
+  /* z-index scale */
+  --z-titlebar: 20; /* title bar + chat-search overlay */
+  --z-dropdown: 200; /* menus, model picker */
+  --z-popover: 300; /* popovers (usage, settings, new-project) */
+  --z-overlay: 400; /* full-screen overlays (history) */
+  --z-toast: 500; /* tooltips, error banners, toasts */
+
+  /* transition shorthand */
+  --transition-colors: background 0.12s, color 0.12s;
+}
+
+/* dark — neutral cool gray, contrast between panels */
+.theme-dark {
+  --bg-0: oklch(0.17 0.003 250);
+  --bg-1: oklch(0.205 0.003 250);
+  --bg-2: oklch(0.235 0.003 250);
+  --bg-3: oklch(0.275 0.004 250);
+  --hover: oklch(0.245 0.004 250);
+  --selected: oklch(0.275 0.005 250);
+  --bd: oklch(0.32 0.005 250 / 0.9);
+  --bd-soft: oklch(0.32 0.005 250 / 0.55);
+  --bd-strong: oklch(0.36 0.006 250 / 0.9);
+  --fg-0: oklch(0.97 0.003 250);
+  --fg-1: oklch(0.78 0.004 250);
+  --fg-2: oklch(0.58 0.005 250);
+  --fg-3: oklch(0.42 0.006 250);
+  --accent: oklch(0.72 0.13 50);
+  --accent-soft: oklch(0.72 0.13 50 / 0.14);
+  --accent-line: oklch(0.72 0.13 50 / 0.35);
+  --success: oklch(0.74 0.13 150);
+  --warn: oklch(0.8 0.13 92);
+  --att: oklch(0.72 0.16 45);
+  --danger: oklch(0.7 0.18 25);
+  --info: oklch(0.74 0.12 230);
+  --purple: oklch(0.7 0.15 300);
+  --merged: var(--purple);
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 28px rgba(0, 0, 0, 0.35);
+  /* button/badge foreground on accent backgrounds */
+  --btn-fg-dark: oklch(0.16 0.02 60); /* primary buttons in dark theme */
+  --btn-fg-dark-alt: oklch(0.18 0.02 60); /* send button + run-go variant */
+  --btn-fg-light: oklch(0.98 0.005 60); /* light text on danger/saturated backgrounds */
+  color-scheme: dark;
+}
+
+.theme-light {
+  --bg-0: oklch(0.95 0.003 250);
+  --bg-1: oklch(0.98 0.003 250);
+  --bg-2: oklch(1 0 0);
+  --bg-3: oklch(0.92 0.004 250);
+  --hover: oklch(0.93 0.004 250);
+  --selected: oklch(0.9 0.005 250);
+  --bd: oklch(0.86 0.005 250 / 0.9);
+  --bd-soft: oklch(0.86 0.005 250 / 0.55);
+  --bd-strong: oklch(0.8 0.006 250 / 0.9);
+  --fg-0: oklch(0.2 0.006 250);
+  --fg-1: oklch(0.4 0.006 250);
+  --fg-2: oklch(0.55 0.006 250);
+  --fg-3: oklch(0.7 0.006 250);
+  --accent: oklch(0.5 0.15 45);
+  --accent-soft: oklch(0.5 0.15 45 / 0.1);
+  --accent-line: oklch(0.5 0.15 45 / 0.35);
+  --success: oklch(0.48 0.13 150);
+  --warn: oklch(0.6 0.14 92);
+  --att: oklch(0.58 0.16 45);
+  --danger: oklch(0.55 0.18 25);
+  --info: oklch(0.5 0.12 230);
+  --purple: oklch(0.5 0.16 300);
+  --merged: var(--purple);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.1);
+  /* button/badge foreground on accent backgrounds */
+  --btn-fg-dark: oklch(0.16 0.02 60);
+  --btn-fg-dark-alt: oklch(0.18 0.02 60);
+  --btn-fg-light: oklch(0.98 0.005 60);
+  color-scheme: light;
+}
+
+.density-comfortable {
+  --dens-sm: 6px;
+  --dens-md: 10px;
+  --dens-lg: 18px;
+}
+.density-compact {
+  --dens-sm: 4px;
+  --dens-md: 7px;
+  --dens-lg: 12px;
+}
+

@@ -1,0 +1,390 @@
+/* composer */
+.composer-wrap {
+  padding: 0 20px 20px;
+  display: flex;
+  justify-content: center;
+}
+.composer {
+  position: relative;
+  width: 100%;
+  max-width: 860px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+/* Shared autocomplete menu (files via @, PRs via #, slash commands). */
+.ac-menu {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.ac-item {
+  gap: 8px;
+  align-items: center;
+}
+.ac-item .ac-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-0);
+  flex-shrink: 0;
+}
+.ac-item .ac-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-2);
+}
+/* Long directory paths read better ellipsized from the left. */
+.ac-item .ac-detail.rtl {
+  direction: rtl;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+.ac-item.active {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.ac-item.active .ac-detail {
+  color: var(--fg-1);
+}
+.composer:focus-within {
+  border-color: color-mix(in oklch, var(--accent), transparent 50%);
+  box-shadow:
+    var(--shadow-2),
+    0 0 0 4px color-mix(in oklch, var(--accent), transparent 88%);
+}
+.composer.is-drop-target {
+  border-color: color-mix(in oklch, var(--accent), transparent 30%);
+  box-shadow:
+    var(--shadow-2),
+    0 0 0 4px color-mix(in oklch, var(--accent), transparent 78%);
+}
+.composer-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--bg-2), transparent 12%);
+  backdrop-filter: blur(1px);
+  color: var(--fg-2);
+  font-size: 12px;
+  pointer-events: none;
+}
+.composer-drop-overlay svg {
+  color: var(--accent);
+  opacity: 0.85;
+}
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px 0;
+}
+/* Read-only attachment chips shown on a sent user message. */
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.attachment {
+  gap: 6px;
+  max-width: 220px;
+  height: 24px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  font-size: 11.5px;
+  color: var(--fg-1);
+}
+.attachment svg {
+  color: var(--fg-2);
+  flex-shrink: 0;
+}
+.attachment-name {
+  min-width: 0;
+}
+.attachment-remove {
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-xs);
+  color: var(--fg-3);
+  flex-shrink: 0;
+  transition: var(--transition-ui);
+}
+.attachment-remove:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.composer-input {
+  width: 100%;
+  padding: 12px 14px 8px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--fg-0);
+  resize: none;
+  min-height: 24px;
+  max-height: 240px;
+}
+.composer-input::placeholder {
+  color: var(--fg-3);
+}
+.composer-input:disabled {
+  opacity: 0.55;
+}
+.composer-foot {
+  gap: 6px;
+  padding: 6px 8px 6px 10px;
+}
+.c-chip {
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+  color: var(--fg-1);
+  border: 1px solid transparent;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.c-chip:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.c-chip > svg {
+  width: 11px;
+  height: 11px;
+  color: var(--fg-2);
+}
+.c-chip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.c-chip.with-border {
+  border-color: var(--bd);
+}
+.c-chip:disabled {
+  opacity: 0.78;
+  cursor: default;
+}
+.c-chip:disabled:hover {
+  background: transparent;
+  color: var(--fg-1);
+}
+
+.model-picker {
+  position: relative;
+  min-width: 0;
+}
+.model-chip {
+  max-width: min(390px, 48vw);
+}
+.model-chip-agent {
+  font-weight: 550;
+  white-space: nowrap;
+}
+.model-chip-model {
+  min-width: 0;
+  max-width: 170px;
+  color: var(--fg-2);
+}
+
+.send {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--btn-fg-dark-alt);
+  justify-content: center;
+  transition:
+    background 0.12s,
+    transform 0.08s;
+}
+.theme-light .send {
+  color: var(--btn-fg-light);
+}
+.send:hover:not(:disabled) {
+  background: oklch(from var(--accent) calc(l + 0.04) c h);
+}
+.send:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.send svg {
+  width: 13px;
+  height: 13px;
+}
+.send:disabled {
+  background: var(--hover);
+  color: var(--fg-3);
+}
+.send.is-stop {
+  background: var(--danger);
+  color: var(--btn-fg-light);
+}
+.send.is-stop:hover:not(:disabled) {
+  background: oklch(from var(--danger) calc(l + 0.04) c h);
+}
+
+/* composer · token usage meter */
+.usage {
+  position: relative;
+  display: inline-flex;
+}
+.usage-chip {
+  gap: 5px;
+  height: 24px;
+  padding: 0 7px 0 5px;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  transition: var(--transition-ui);
+}
+.usage:hover .usage-chip {
+  background: var(--hover);
+  color: var(--fg-1);
+}
+.usage-ring {
+  flex-shrink: 0;
+  transition: transform 0.15s var(--ease);
+}
+.usage:hover .usage-ring {
+  transform: rotate(8deg);
+}
+.usage-val {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.usage-pop {
+  position: absolute;
+  bottom: calc(100% + 9px);
+  right: -6px;
+  width: 256px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.32);
+  padding: 12px 13px 11px;
+  z-index: var(--z-popover);
+  animation: ddIn 0.14s var(--ease);
+}
+.usage-pop::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 11px;
+  border: 5px solid transparent;
+  border-top-color: var(--bg-2);
+  filter: drop-shadow(0 1px 0 var(--bd));
+}
+.up-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+.up-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.up-frac {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+}
+.up-frac b {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+.up-bar {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  border-radius: 99px;
+  overflow: hidden;
+  margin-bottom: 11px;
+}
+.up-seg {
+  display: block;
+  min-width: 0;
+}
+.up-seg.track {
+  background: var(--bd-strong);
+}
+.up-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.up-leg {
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg-1);
+}
+.up-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.up-dot.track {
+  background: var(--bd-strong);
+}
+.up-k {
+  flex: 1;
+}
+.up-v,
+.up-rv {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+}
+.up-sep {
+  height: 1px;
+  background: var(--bd-soft);
+  margin: 11px 0 9px;
+}
+.up-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.up-row {
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--fg-1);
+}
+.up-row.total {
+  margin-top: 2px;
+}
+.up-row.total span:first-child {
+  color: var(--fg-2);
+}
+.up-row.total .up-rv {
+  color: var(--accent);
+}
+

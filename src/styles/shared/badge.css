@@ -1,0 +1,195 @@
+/* compact status badges (PR state, error, draft) */
+.ag-badge {
+  gap: 3px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+}
+.ag-badge svg {
+  width: 10px;
+  height: 10px;
+}
+/* badge base — color-mix formula written once for ag-badge variants */
+.ag-badge.pr-open,
+.ag-badge.pr-merged,
+.ag-badge.pr-closed,
+.ag-badge.err {
+  background: color-mix(in oklch, var(--badge-color), transparent 86%);
+  color: var(--badge-color);
+}
+.ag-badge.pr-open {
+  --badge-color: var(--info);
+}
+.ag-badge.pr-merged {
+  --badge-color: var(--purple);
+}
+.ag-badge.pr-closed {
+  --badge-color: var(--fg-2);
+  /* pr-closed is slightly more transparent than the other variants */
+  background: color-mix(in oklch, var(--badge-color), transparent 88%);
+}
+.ag-badge.err {
+  --badge-color: var(--danger);
+}
+.ag-badge.new {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.agent-sub {
+  gap: 8px;
+  margin-top: 2px;
+  min-height: 17px;
+}
+.agent-sub .a-task {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: color-mix(in oklch, var(--fg-1), var(--fg-0) 30%);
+}
+.agent-sub .a-task.a-task-draft {
+  color: var(--fg-3);
+  font-style: italic;
+}
+.agent-sub .a-diff {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+}
+.agent-sub .a-diff .add {
+  color: var(--success);
+}
+.agent-sub .a-diff .del {
+  color: var(--danger);
+}
+.agent-sub .a-time {
+  color: var(--fg-3);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  position: relative;
+  cursor: default;
+  padding: 1px 3px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+.agent-sub .a-time:hover {
+  background: var(--hover);
+  color: var(--fg-1);
+}
+
+.ag-stats-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: 220px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.35);
+  padding: 10px 12px;
+  z-index: 220;
+  font-family: var(--font-sans);
+  animation: ddIn 0.12s var(--ease);
+}
+.ag-stats-pop .st-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 11.5px;
+}
+.ag-stats-pop .st-row .st-k {
+  color: var(--fg-2);
+}
+.ag-stats-pop .st-row .st-v {
+  color: var(--fg-0);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.ag-stats-pop .st-bar {
+  margin-top: 6px;
+  height: 3px;
+  background: var(--hover);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.ag-stats-pop .st-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.25s var(--ease);
+}
+
+.agent-new {
+  gap: 8px;
+  padding: 8px 8px;
+  margin-bottom: 6px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  color: var(--fg-3);
+  width: 100%;
+  text-align: left;
+}
+.agent-new:hover {
+  background: var(--hover);
+  color: var(--fg-1);
+}
+.agent-new svg {
+  width: 15px;
+  height: 15px;
+}
+
+.side-foot {
+  height: 52px;
+  padding: 0 12px;
+  border-top: 1px solid var(--bd-soft);
+  gap: 10px;
+  flex-shrink: 0;
+}
+.user-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--btn-fg-dark);
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.user-avatar img,
+.set-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  display: block;
+}
+.user-info {
+  flex: 1;
+  min-width: 0;
+}
+.user-info .un {
+  font-size: 12px;
+  color: var(--fg-0);
+  font-weight: 500;
+}
+.user-info .ue {
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+

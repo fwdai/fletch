@@ -1,0 +1,59 @@
+/* main split */
+.main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  transition: opacity 0.15s var(--ease);
+}
+.pane.left {
+  background: var(--bg-0);
+  border-right: 1px solid var(--bd-soft);
+  flex-shrink: 0;
+}
+.pane.center {
+  flex: 1;
+  background: var(--bg-1);
+}
+.pane.right {
+  background: var(--bg-1);
+  border-left: 1px solid var(--bd-soft);
+  flex-shrink: 0;
+}
+.pane.collapsed {
+  width: 0 !important;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border: 0;
+}
+
+.splitter {
+  width: 1px;
+  margin-left: -3px;
+  margin-right: -3px;
+  padding: 0 3px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 8;
+  flex-shrink: 0;
+  background-clip: content-box;
+  transition: background-color 0.15s;
+}
+.splitter::before {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 100%;
+  background: transparent;
+}
+.splitter:hover::before,
+.splitter.dragging::before {
+  background: var(--accent-line);
+}
+
