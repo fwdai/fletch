@@ -103,7 +103,9 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
   }
 
   for (const t of pending) {
-    const item: ChatItem = { kind: "user_message", text: t.text, failed: true };
+    // Carry the turn id so this failed bubble's retry reuses the same pending
+    // row (matched on success) instead of minting a second one.
+    const item: ChatItem = { kind: "user_message", text: t.text, failed: true, turnId: t.turn_id };
     if (t.attachments.length > 0) item.attachments = t.attachments;
     if (t.thinking) item.thinking = t.thinking;
     result.push(item);

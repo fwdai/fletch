@@ -89,6 +89,10 @@ export interface WorkspaceSlice {
     text: string,
     attachments?: string[],
     thinking?: string,
+    /** Reuse this outgoing-turn id instead of minting a new one — set by a retry
+     *  so the failed send's pending row is reused (matched on success) rather
+     *  than orphaned. Omit for a normal send. */
+    reuseTurnId?: string,
   ) => Promise<void>;
   /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
    *  Looks up the held control-protocol request for `toolUseId` and delivers

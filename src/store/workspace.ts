@@ -80,10 +80,12 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  sendUserMessage: async (id, text, attachments = [], thinking) => {
+  sendUserMessage: async (id, text, attachments = [], thinking, reuseTurnId) => {
     // Stable per-turn id, reused across the agent-not-ready retry below so the
-    // backend's session_user_turns write is idempotent (one row per turn).
-    const turnId = crypto.randomUUID();
+    // backend's session_user_turns write is idempotent (one row per turn). A
+    // retry of a failed send passes the original id (`reuseTurnId`) so its
+    // pending row is reused — matched on success, not orphaned as a zombie.
+    const turnId = reuseTurnId ?? crypto.randomUUID();
     // Sent mid-turn? Then this is a follow-up: render it as a queued_message
     // and leave the running turn's busy state untouched. The backend decides
     // whether to inject it live (claude) or queue it (per-turn agents); the
@@ -103,9 +105,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     } else if (slashName) {
       entry = { kind: "notice", subtype: "slash_command", text: `/${slashName}` };
     } else {
-      // Carry attachments + the reasoning effort so a retry replays this turn
-      // exactly (see ChatItem.thinking).
-      entry = { kind: "user_message", text };
+      // Carry attachments, the reasoning effort, and this turn's id so a retry
+      // replays the turn exactly and reuses its row (see ChatItem.thinking /
+      // .turnId).
+      entry = { kind: "user_message", text, turnId };
       if (attachments.length > 0) entry.attachments = attachments;
       if (thinking) entry.thinking = thinking;
     }
@@ -180,7 +183,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       next.splice(idx, 1);
       return { managedLogs: { ...state.managedLogs, [id]: next } };
     });
-    await get().sendUserMessage(id, text, attachments, thinking);
+    // Reuse the failed turn's id so its pending session_user_turns row is reused
+    // (matched on success) rather than left behind to re-render as a zombie.
+    const reuseTurnId = target.kind === "user_message" ? target.turnId : undefined;
+    await get().sendUserMessage(id, text, attachments, thinking, reuseTurnId);
   },
 
   answerToolUse: async (id, toolUseId, updatedInput, behavior = "allow", message) => {

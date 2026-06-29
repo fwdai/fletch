@@ -44,7 +44,7 @@ describe("applyUserTurns", () => {
     const items: ChatItem[] = [userMsg("delivered"), agentMsg("reply")];
     const turns = [
       turn({ native_id: "rec-A", text: "delivered" }),
-      turn({ native_id: null, text: "never sent", attachments: ["/tmp/lost"] }),
+      turn({ turn_id: "t-lost", native_id: null, text: "never sent", attachments: ["/tmp/lost"] }),
     ];
 
     const out = applyUserTurns(items, turns);
@@ -53,13 +53,16 @@ describe("applyUserTurns", () => {
       text: "never sent",
       attachments: ["/tmp/lost"],
       failed: true,
+      turnId: "t-lost",
     });
   });
 
-  it("carries a pending turn's reasoning effort so a reloaded retry replays it", () => {
-    const turns = [turn({ native_id: null, text: "do it", thinking: "high" })];
+  it("carries a pending turn's effort and id so a reloaded retry replays + reuses it", () => {
+    const turns = [turn({ turn_id: "t-1", native_id: null, text: "do it", thinking: "high" })];
     const out = applyUserTurns([], turns);
-    expect(out).toEqual([{ kind: "user_message", text: "do it", failed: true, thinking: "high" }]);
+    expect(out).toEqual([
+      { kind: "user_message", text: "do it", failed: true, thinking: "high", turnId: "t-1" },
+    ]);
   });
 
   it("overlays a matched turn's effort onto its canonical bubble (e.g. an errored turn)", () => {

@@ -6,17 +6,20 @@
 // for the design rationale.
 
 export type ChatItem =
-  // `failed` flags an optimistic send that threw before the turn started, so the
-  // chat can offer a retry on that exact bubble; `thinking` records the reasoning
-  // effort that send used so the retry replays it exactly. Both are store-set
-  // only (never produced by an adapter's reduce) and live only on the optimistic
-  // entry — a canonical user_message rebuilt from records carries neither.
+  // `failed` flags a send that threw before the turn started, so the chat can
+  // offer a retry on that exact bubble; `thinking` records the reasoning effort
+  // that send used so the retry replays it exactly; `turnId` is the outgoing
+  // turn's id, carried on a failed bubble so its retry can reuse it (the
+  // `session_user_turns` write is idempotent on turn id, so reusing it converts
+  // the pending row into a matched one on success instead of orphaning it). All
+  // three are store/overlay-set only — never produced by an adapter's reduce.
   | {
       kind: "user_message";
       text: string;
       attachments?: string[];
       failed?: boolean;
       thinking?: string;
+      turnId?: string;
     }
   // A follow-up the user sent mid-turn that hasn't landed in the transcript
   // yet: delivered live into the running turn (claude) or queued for the next
