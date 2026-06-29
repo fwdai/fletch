@@ -107,9 +107,14 @@ export interface WorkspaceSlice {
    *  threw, flagged on its user_message) before re-dispatching so the retry
    *  replaces it rather than stacking a duplicate; an agent-errored turn has a
    *  canonical bubble with no flag, so nothing is dropped and it re-asks fresh.
-   *  `text` should be the stripped prompt the user typed — re-sending replays
-   *  the original send exactly. */
-  retryUserMessage: (id: string, text: string, attachments?: string[]) => Promise<void>;
+   *  `text` should be the stripped prompt the user typed and `thinking` the
+   *  reasoning effort it used — re-sending replays the original send exactly. */
+  retryUserMessage: (
+    id: string,
+    text: string,
+    attachments?: string[],
+    thinking?: string,
+  ) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
   resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;

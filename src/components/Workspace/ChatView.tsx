@@ -233,8 +233,16 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                           // Re-pin so the user follows the re-run, and re-send
                           // the prompt they typed (strip our injected block, a
                           // no-op on the optimistic copy) so it replays exactly.
+                          // A failed send carries its own reasoning effort; a
+                          // canonical (agent-errored) bubble doesn't, so fall
+                          // back to the agent's session effort.
                           pinnedToBottom.current = true;
-                          retry(agent.id, stripInjectedInstructions(item.text), item.attachments);
+                          retry(
+                            agent.id,
+                            stripInjectedInstructions(item.text),
+                            item.attachments,
+                            item.thinking ?? agent.effort ?? undefined,
+                          );
                         }
                       : undefined
                   }

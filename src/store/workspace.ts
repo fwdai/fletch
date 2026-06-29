@@ -94,15 +94,21 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     // *this exact bubble* by identity (indexOf below), not by position, so a
     // concurrent records-rebuild (onSessionRecordsAppended) that reorders or
     // drops log entries mid-flight can't make us mark the wrong prompt.
-    const entry: ChatItem = wasBusy
-      ? attachments.length > 0
-        ? { kind: "queued_message", text, attachments }
-        : { kind: "queued_message", text }
-      : slashName
-        ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
-        : attachments.length > 0
-          ? { kind: "user_message", text, attachments }
-          : { kind: "user_message", text };
+    let entry: ChatItem;
+    if (wasBusy) {
+      entry =
+        attachments.length > 0
+          ? { kind: "queued_message", text, attachments }
+          : { kind: "queued_message", text };
+    } else if (slashName) {
+      entry = { kind: "notice", subtype: "slash_command", text: `/${slashName}` };
+    } else {
+      // Carry attachments + the reasoning effort so a retry replays this turn
+      // exactly (see ChatItem.thinking).
+      entry = { kind: "user_message", text };
+      if (attachments.length > 0) entry.attachments = attachments;
+      if (thinking) entry.thinking = thinking;
+    }
     try {
       set((state) => ({
         managedLogs: {
@@ -159,7 +165,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  retryUserMessage: async (id, text, attachments = []) => {
+  retryUserMessage: async (id, text, attachments = [], thinking) => {
     // Drop any failed optimistic bubble (a send that threw) so re-dispatching
     // reuses the slot instead of stacking a duplicate. An agent-errored turn
     // has only a canonical, unflagged bubble, so nothing is pruned and the retry
@@ -171,7 +177,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       if (pruned.length === log.length) return {};
       return { managedLogs: { ...state.managedLogs, [id]: pruned } };
     });
-    await get().sendUserMessage(id, text, attachments);
+    await get().sendUserMessage(id, text, attachments, thinking);
   },
 
   answerToolUse: async (id, toolUseId, updatedInput, behavior = "allow", message) => {
