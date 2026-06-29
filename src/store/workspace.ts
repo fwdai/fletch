@@ -142,6 +142,39 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
+  retryUserMessage: async (id, text, attachments = []) => {
+    // Fresh per-turn id: the failed turn produced no completed transcript row,
+    // so there's nothing to dedupe against.
+    const turnId = crypto.randomUUID();
+    const status = get().workspace?.agents.find((a) => a.id === id)?.status;
+    // Clear the prior failure and re-assert busy. The message is already in the
+    // log (left there optimistically on the failed send), so unlike
+    // sendUserMessage we do NOT append a new bubble — we just re-run its turn.
+    set((state) => ({
+      lastError: null,
+      managedBusy: { ...state.managedBusy, [id]: true },
+      managedBusyLabel: { ...state.managedBusyLabel, [id]: undefined },
+    }));
+    try {
+      if (status === "error") {
+        // The process exited — restart it in --resume mode, then deliver once
+        // it's back (sendWhenAgentReady polls past the transient "agent not
+        // found" while the new process spins up). Same pattern sendUserMessage
+        // uses for a dead idle agent.
+        clearOutputBuffer(id);
+        await api.resumeAgent(id);
+        await sendWhenAgentReady(() => api.sendUserMessage(id, turnId, text, attachments));
+      } else {
+        await api.sendUserMessage(id, turnId, text, attachments);
+      }
+    } catch (e) {
+      set((state) => ({
+        lastError: String(e),
+        managedBusy: { ...state.managedBusy, [id]: false },
+      }));
+    }
+  },
+
   answerToolUse: async (id, toolUseId, updatedInput, behavior = "allow", message) => {
     const requestId = get().pendingToolUse[id]?.[toolUseId];
     if (!requestId) return;

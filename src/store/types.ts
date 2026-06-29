@@ -90,6 +90,12 @@ export interface WorkspaceSlice {
     attachments?: string[],
     thinking?: string,
   ) => Promise<void>;
+  /** Re-send the last user turn after it failed (connection drop, auth error,
+   *  a crashed process). If the agent's process exited (status "error") it's
+   *  resumed first, then the message is re-delivered. Unlike sendUserMessage
+   *  this never appends a new bubble — the message is already in the log; it
+   *  just re-runs that turn. */
+  retryUserMessage: (id: string, text: string, attachments?: string[]) => Promise<void>;
   /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
    *  Looks up the held control-protocol request for `toolUseId` and delivers
    *  `updatedInput` (the tool's input with the user's `answers` merged in) as

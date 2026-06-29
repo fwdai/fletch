@@ -23,6 +23,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   const send = useAppStore((s) => s.sendUserMessage);
+  const retry = useAppStore((s) => s.retryUserMessage);
   const stop = useAppStore((s) => s.stop);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
   const usage = useAppStore((s) => s.usage[agent.id]);
@@ -151,6 +152,19 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     return { turns, turnIds };
   }, [items]);
 
+  // When the agent's last response failed (status "error"), offer a one-click
+  // Retry on the most recent user turn: it resumes the crashed process if
+  // needed and re-delivers that message, sparing the user a copy-paste or a
+  // manual "continue". Index of that bubble (git-action chips excluded).
+  const lastUserIndex = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const it = items[i];
+      if (it.kind === "user_message" && !it.text.startsWith(APP_ACTION_PREFIX)) return i;
+    }
+    return -1;
+  }, [items]);
+  const canRetry = agent.status === "error";
+
   // The model the agent actually used on its most recent turn (Claude, pi,
   // Codex, OpenCode report it in their transcripts). Undefined for Cursor /
   // Antigravity, or before the first turn — the composer then shows just the
@@ -219,6 +233,14 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                   provider={agent.provider}
                   agentId={agent.id}
                   turnId={turnIds[i]}
+                  onRetry={
+                    canRetry && i === lastUserIndex && item.kind === "user_message"
+                      ? () => {
+                          pinnedToBottom.current = true;
+                          void retry(agent.id, item.text, item.attachments ?? []);
+                        }
+                      : undefined
+                  }
                 />
               ))
             )}
