@@ -51,16 +51,16 @@ export function AccountPane() {
 
       <div className="set-profile flex-center">
         <Avatar
-          className="set-avatar flex-center"
+          className="set-avatar flex-center text-xl"
           avatarUrl={account?.avatarUrl ?? null}
           initials={accountInitials(firstName, lastName, email)}
           alt={fullName}
         />
         <div className="set-profile-body">
-          <div className="set-profile-name">
+          <div className="set-profile-name text-xl">
             {fullName || <span className="set-profile-empty">Your name</span>}
           </div>
-          <div className="set-profile-mail mono">{email || "no email set"}</div>
+          <div className="set-profile-mail mono text-base">{email || "no email set"}</div>
         </div>
       </div>
 
@@ -68,9 +68,9 @@ export function AccountPane() {
         <div className="set-form">
           <div className="set-form-grid">
             <label className="set-field">
-              <span className="set-field-label">First name</span>
+              <span className="set-field-label text-sm">First name</span>
               <input
-                className="set-text"
+                className="set-text text-base"
                 value={firstName}
                 placeholder="Ada"
                 spellCheck={false}
@@ -81,9 +81,9 @@ export function AccountPane() {
               />
             </label>
             <label className="set-field">
-              <span className="set-field-label">Last name</span>
+              <span className="set-field-label text-sm">Last name</span>
               <input
-                className="set-text"
+                className="set-text text-base"
                 value={lastName}
                 placeholder="Lovelace"
                 spellCheck={false}
@@ -95,9 +95,9 @@ export function AccountPane() {
             </label>
           </div>
           <label className="set-field">
-            <span className="set-field-label">Email</span>
+            <span className="set-field-label text-sm">Email</span>
             <input
-              className={`set-text ${emailValid ? "" : "invalid"}`}
+              className={`set-text text-base ${emailValid ? "" : "invalid"}`}
               type="email"
               value={email}
               placeholder="ada@example.com"
@@ -108,11 +108,13 @@ export function AccountPane() {
                 setSavedAt(false);
               }}
             />
-            {!emailValid && <span className="set-field-error">Enter a valid email address.</span>}
+            {!emailValid && (
+              <span className="set-field-error text-sm">Enter a valid email address.</span>
+            )}
           </label>
 
           <div className="set-form-actions flex-center">
-            {savedAt && !dirty && <span className="set-saved mono">Saved</span>}
+            {savedAt && !dirty && <span className="set-saved mono text-sm">Saved</span>}
             <button
               type="button"
               className="btn-t iflex-center primary"

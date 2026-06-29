@@ -31,9 +31,9 @@ export function CommitComposer({
       {/* collapsed note — animates shut when writing */}
       <div className={`cm-row note ${writing ? "shut" : ""}`} aria-hidden={writing}>
         <div className="cm-row-inner">
-          <div className="cm-note">
+          <div className="cm-note text-xs">
             Agent will write the commit message &amp; PR.{" "}
-            <button className="cm-link" onClick={onOpen} tabIndex={writing ? -1 : 0}>
+            <button className="cm-link text-xs" onClick={onOpen} tabIndex={writing ? -1 : 0}>
               Write it yourself
             </button>
           </div>
@@ -43,17 +43,17 @@ export function CommitComposer({
       {/* override field — animates open when writing */}
       <div className={`cm-row field ${writing ? "open" : ""}`} aria-hidden={!writing}>
         <div className="cm-row-inner">
-          <div className="cm-title">
+          <div className="cm-title text-xs">
             <span>Your message</span>
             <span className="grow" />
-            <button className="cm-revert" onClick={onRevert} tabIndex={writing ? 0 : -1}>
+            <button className="cm-revert text-xs" onClick={onRevert} tabIndex={writing ? 0 : -1}>
               <Icon name="close" size={11} />
               <span>Let agent write it</span>
             </button>
           </div>
           <textarea
             ref={textareaRef}
-            className="cm-input"
+            className="cm-input text-sm"
             rows={2}
             placeholder="Describe this commit…"
             value={msg}
@@ -66,7 +66,7 @@ export function CommitComposer({
               }
             }}
           />
-          <div className={`cm-foot ${hasMsg ? "on" : ""}`}>
+          <div className={`cm-foot text-xs ${hasMsg ? "on" : ""}`}>
             {hasMsg ? (
               <>
                 <Icon name="branch" size={11} />

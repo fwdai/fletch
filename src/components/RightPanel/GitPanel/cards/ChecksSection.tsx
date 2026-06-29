@@ -34,7 +34,7 @@ export function ChecksSection({ checks, prUrl }: { checks: PrChecks; prUrl: stri
         : "all passing";
   return (
     <div className="pr-checks">
-      <div className="pr-checks-h">
+      <div className="pr-checks-h text-2xs">
         <span>Checks</span>
         <span className={`pr-checks-sum ${checks.rollup}`}>{summary}</span>
       </div>

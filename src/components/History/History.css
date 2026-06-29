@@ -56,7 +56,6 @@
 .hh-search {
   gap: 10px;
   height: 36px;
-  font-size: 14px;
   color: var(--fg-3);
 }
 .hh-search > svg {
@@ -69,7 +68,6 @@
   flex: 1;
   min-width: 0;
   color: var(--fg-0);
-  font-size: 14px;
   font-family: inherit;
   background: transparent;
   border: none;
@@ -91,7 +89,6 @@
   margin: 60px auto;
   max-width: 360px;
   text-align: center;
-  font-size: 13px;
   color: var(--fg-3);
 }
 
@@ -106,12 +103,10 @@
   z-index: 5;
 }
 .hg-h .hg-d {
-  font-size: 12px;
   color: var(--fg-1);
   font-weight: 500;
 }
 .hg-h .hg-n {
-  font-size: 12px;
   color: var(--fg-3);
   font-variant-numeric: tabular-nums;
 }
@@ -122,7 +117,6 @@
   gap: 10px;
   padding: 5px 24px 5px 28px;
   text-align: left;
-  font-size: 13px;
   color: var(--fg-1);
   background: transparent;
   border: none;
@@ -158,21 +152,18 @@
 .hr-project {
   width: 110px;
   flex-shrink: 0;
-  font-size: 13px;
   color: var(--fg-2);
   font-weight: 400;
 }
 
 .hr-sep {
   color: var(--fg-3);
-  font-size: 13px;
   flex-shrink: 0;
 }
 
 .hr-title {
   color: var(--fg-0);
   font-weight: 500;
-  font-size: 13px;
   flex-shrink: 1;
   min-width: 0;
   max-width: 56%;
@@ -180,14 +171,12 @@
 
 .hr-dot {
   color: var(--fg-3);
-  font-size: 13px;
   flex-shrink: 0;
 }
 
 .hr-branch {
   color: var(--fg-2);
   font-family: var(--font-mono);
-  font-size: 12px;
   flex-shrink: 1;
   min-width: 0;
 }
@@ -203,7 +192,6 @@
   border: 1px solid var(--bd-soft);
   border-radius: var(--r-xs);
   font-family: var(--font-mono);
-  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
@@ -219,7 +207,6 @@
   flex-shrink: 0;
   text-align: right;
   color: var(--fg-3);
-  font-size: 12px;
   font-variant-numeric: tabular-nums;
   transition: opacity 0.12s;
 }
@@ -232,7 +219,6 @@
   right: 24px;
   gap: 4px;
   color: var(--fg-1);
-  font-size: 12px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s var(--ease);
@@ -269,7 +255,6 @@
   border-top: 1px solid var(--bd-soft);
   gap: 16px;
   padding: 8px 20px;
-  font-size: 11px;
   color: var(--fg-2);
 }
 .history-foot .kbd {

@@ -296,7 +296,7 @@ export function Composer({
   return (
     <div className={`composer${isDropTarget ? " is-drop-target" : ""}`}>
       {isDropTarget && (
-        <div className="composer-drop-overlay flex-center">
+        <div className="composer-drop-overlay flex-center text-sm">
           <Icon name="upload" size={20} />
           <span>Drop files to attach</span>
         </div>
@@ -310,7 +310,7 @@ export function Composer({
       )}
       <textarea
         ref={ta}
-        className="composer-input"
+        className="composer-input text-base"
         placeholder={placeholder || "Message agent · /commands · @ to attach · # for PRs"}
         value={text}
         rows={1}

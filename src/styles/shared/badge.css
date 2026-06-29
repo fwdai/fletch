@@ -4,7 +4,7 @@
   height: 16px;
   padding: 0 5px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   font-family: var(--font-mono);
   letter-spacing: 0.01em;
@@ -52,7 +52,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: color-mix(in oklch, var(--fg-1), var(--fg-0) 30%);
 }
 .agent-sub .a-task.a-task-draft {
@@ -61,7 +61,7 @@
 }
 .agent-sub .a-diff {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   letter-spacing: -0.02em;
   flex-shrink: 0;
 }
@@ -73,7 +73,7 @@
 }
 .agent-sub .a-time {
   color: var(--fg-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--font-mono);
   position: relative;
   cursor: default;
@@ -108,7 +108,7 @@
   justify-content: space-between;
   align-items: baseline;
   padding: 3px 0;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 .ag-stats-pop .st-row .st-k {
   color: var(--fg-2);
@@ -116,7 +116,7 @@
 .ag-stats-pop .st-row .st-v {
   color: var(--fg-0);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 .ag-stats-pop .st-bar {
@@ -138,7 +138,7 @@
   padding: 8px 8px;
   margin-bottom: 6px;
   border-radius: var(--r-sm);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-3);
   width: 100%;
   text-align: left;
@@ -166,7 +166,7 @@
   background: var(--accent);
   color: var(--btn-fg-dark);
   justify-content: center;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   flex-shrink: 0;
   overflow: hidden;
@@ -184,11 +184,11 @@
   min-width: 0;
 }
 .user-info .un {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-0);
   font-weight: 500;
 }
 .user-info .ue {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-3);
 }

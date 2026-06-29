@@ -12,7 +12,7 @@ export function SidebarHeader({ query, onChange }: Props) {
   const [focused, setFocused] = useState(false);
   return (
     <div className="side-head flex-center">
-      <div className="search flex-center">
+      <div className="search flex-center text-base">
         <Icon name="search" size={12} />
         <input
           id="sidebar-search"

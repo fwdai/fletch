@@ -48,14 +48,14 @@ export function CloneView({ shared, onDone }: { shared: NewProjectShared; onDone
             value={url}
             onChange={(e) => setUrl(e.target.value)}
           />
-          <button className="np-link" onClick={() => setPasteMode(false)}>
+          <button className="np-link text-sm" onClick={() => setPasteMode(false)}>
             Pick from my repositories instead
           </button>
         </div>
       ) : (
         <>
           <RepoList selected={selected} onSelect={setSelected} />
-          <button className="np-link" onClick={() => setPasteMode(true)}>
+          <button className="np-link text-sm" onClick={() => setPasteMode(true)}>
             Paste a URL instead
           </button>
         </>
@@ -63,10 +63,10 @@ export function CloneView({ shared, onDone }: { shared: NewProjectShared; onDone
 
       <DestRow parent={parent} onPick={pickParent} name={parsed.name} />
 
-      {error && <div className="np-error">{error}</div>}
+      {error && <div className="np-error text-sm">{error}</div>}
 
       <div className="np-actions">
-        <button className="np-primary flex-center" disabled={!canClone} onClick={onClone}>
+        <button className="np-primary flex-center text-base" disabled={!canClone} onClick={onClone}>
           {busy ? (
             <>
               <Icon name="refresh" size={13} /> Cloning…

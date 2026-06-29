@@ -222,7 +222,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           <Icon name={isActive ? "stop" : "play"} size={12} />
         </button>
 
-        <div className="run-cmd">
+        <div className="run-cmd text-sm">
           <span className="p">$</span>
           <span className="cmd-text">{devCmd}</span>
         </div>
@@ -231,7 +231,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           href={`http://localhost:${port}`}
           target="_blank"
           rel="noreferrer"
-          className={`run-link${linkLive ? "" : " disabled"}`}
+          className={`run-link text-xs${linkLive ? "" : " disabled"}`}
           onClick={(e) => {
             if (!linkLive) e.preventDefault();
           }}
@@ -252,7 +252,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       </div>
 
       {/* ── Logs ── */}
-      <div className="run-logs" ref={logRef}>
+      <div className="run-logs text-sm" ref={logRef}>
         {log.length > 0 && <div>{log}</div>}
         {lastError && phase === "stopped" && <div className="e">{lastError}</div>}
         {isActive && (

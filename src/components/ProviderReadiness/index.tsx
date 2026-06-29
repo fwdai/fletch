@@ -63,9 +63,9 @@ function Row({
       <span className="rdy-icon">{icon}</span>
       <div className="rdy-main">
         <div className="rdy-line flex-center">
-          <span className="rdy-name">{name}</span>
+          <span className="rdy-name text-base">{name}</span>
           <span className={`rdy-dot ${state}`} />
-          <span className="rdy-status">{statusText}</span>
+          <span className="rdy-status text-sm">{statusText}</span>
         </div>
         {needsFix && (fix || docs) && (
           <div className="rdy-fix flex-center">
@@ -73,7 +73,7 @@ function Row({
             {docs && (
               <button
                 type="button"
-                className="rdy-docs iflex-center"
+                className="rdy-docs iflex-center text-sm"
                 onClick={() => void openExternal(docs)}
               >
                 Setup guide
@@ -82,7 +82,7 @@ function Row({
             )}
           </div>
         )}
-        {state === "ok" && hint && <div className="rdy-hint">{hint}</div>}
+        {state === "ok" && hint && <div className="rdy-hint text-sm">{hint}</div>}
       </div>
     </div>
   );
@@ -208,7 +208,7 @@ export function ProviderReadiness() {
       />
 
       <div className="rdy-foot flex-center">
-        <span className="rdy-count">
+        <span className="rdy-count text-sm">
           {checking
             ? "Checking…"
             : providersProbed

@@ -31,7 +31,7 @@ export function ToolResultItem({ item }: { item: Extract<ChatItem, { kind: "tool
             margin: 0,
             padding: "8px 14px 12px",
             fontFamily: "var(--font-mono)",
-            fontSize: 11.5,
+            fontSize: "var(--fs-sm)",
             color: item.is_error ? "var(--danger)" : "var(--fg-2)",
             whiteSpace: "pre-wrap",
             wordBreak: "break-word",

@@ -98,7 +98,7 @@ export function BinaryPathRow({
           <div className="set-prov-bin-input-row flex-center">
             <input
               ref={inputRef}
-              className="set-prov-bin-input mono"
+              className="set-prov-bin-input mono text-sm"
               value={draft}
               placeholder={effectivePath}
               spellCheck={false}
@@ -136,9 +136,9 @@ export function BinaryPathRow({
             </button>
           </div>
           {error ? (
-            <div className="set-prov-bin-err">{error}</div>
+            <div className="set-prov-bin-err text-xs">{error}</div>
           ) : (
-            <div className="set-prov-bin-hint">
+            <div className="set-prov-bin-hint text-xs">
               Absolute path to the {providerLabel} binary. Leave blank to auto-detect.
             </div>
           )}
@@ -148,7 +148,7 @@ export function BinaryPathRow({
           <div className="set-prov-bin-view flex-center">
             <span className={`set-prov-dv mono ${broken ? "broken" : ""}`}>{effectivePath}</span>
             {override && <span className="set-badge custom">Custom</span>}
-            {broken && <span className="set-prov-bin-warn">not found</span>}
+            {broken && <span className="set-prov-bin-warn text-2xs">not found</span>}
             <span className="grow" />
             {override && (
               <button
@@ -169,7 +169,7 @@ export function BinaryPathRow({
               <Icon name="edit" size={13} />
             </button>
           </div>
-          {error && <div className="set-prov-bin-err">{error}</div>}
+          {error && <div className="set-prov-bin-err text-xs">{error}</div>}
         </div>
       )}
     </div>

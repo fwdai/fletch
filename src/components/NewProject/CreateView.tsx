@@ -50,7 +50,9 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        {showNameError && <div className="np-hint e">Use only letters, digits, “.”, “-”, “_”.</div>}
+        {showNameError && (
+          <div className="np-hint e text-sm">Use only letters, digits, “.”, “-”, “_”.</div>
+        )}
       </div>
 
       <div className="np-field">
@@ -78,10 +80,14 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
 
       <DestRow parent={parent} onPick={pickParent} name={nameOk ? name.trim() : undefined} />
 
-      {error && <div className="np-error">{error}</div>}
+      {error && <div className="np-error text-sm">{error}</div>}
 
       <div className="np-actions">
-        <button className="np-primary flex-center" disabled={!canCreate} onClick={onCreate}>
+        <button
+          className="np-primary flex-center text-base"
+          disabled={!canCreate}
+          onClick={onCreate}
+        >
           {busy ? (
             <>
               <Icon name="refresh" size={13} /> Creating…

@@ -17,7 +17,7 @@ export function ToolBlock({
         margin: 0,
         padding: "4px 0",
         fontFamily: "var(--font-mono)",
-        fontSize: 11.5,
+        fontSize: "var(--fs-sm)",
         color: isError ? "var(--danger)" : "var(--fg-2)",
         whiteSpace: "pre-wrap",
         wordBreak: "break-word",

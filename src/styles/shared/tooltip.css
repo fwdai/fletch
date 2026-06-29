@@ -11,7 +11,7 @@
   background: var(--bg-1);
   border: 1px solid var(--bd);
   color: var(--fg-0);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 4px 8px;
   border-radius: var(--r-xs);
   white-space: nowrap;

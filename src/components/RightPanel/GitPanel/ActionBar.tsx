@@ -44,22 +44,22 @@ export function ActionBar({
   return (
     <div className="git-act flex-center">
       {busy ? (
-        <div className="git-act-status flex-center info">
+        <div className="git-act-status flex-center info text-xs">
           <Spinner />
           <span className="lbl">{busy}</span>
         </div>
       ) : delegationLabel ? (
-        <div className="git-act-status flex-center info working">
+        <div className="git-act-status flex-center info working text-xs">
           <Spinner />
           <span className="lbl">{delegationLabel}</span>
         </div>
       ) : notice ? (
-        <div className="git-notice iflex-center">
+        <div className="git-notice iflex-center text-xs">
           <Icon name="check" size={11} />
           <span>{notice}</span>
         </div>
       ) : (
-        <div className={`git-act-status flex-center ${statusKind}`}>
+        <div className={`git-act-status flex-center text-xs ${statusKind}`}>
           <span className="d" />
           <span className="lbl">
             {panelState === "pushed" && pushedLink ? (
@@ -73,7 +73,7 @@ export function ActionBar({
               statusLabel
             )}
           </span>
-          {statusExtra && <span className="ex">{statusExtra}</span>}
+          {statusExtra && <span className="ex text-xs">{statusExtra}</span>}
           {/* View on GitHub is a convenience link, not an action — a quiet
               chip beside the status, never a menu item. */}
           {panelState === "pr-open" && prUrl && (

@@ -46,7 +46,7 @@ export function SplitAction({
 
   return (
     <div className={`git-split ${toneClass} ${busy ? "busy" : ""}`}>
-      <button className="gsa-main" disabled={mainDisabled || busy} onClick={onRun}>
+      <button className="gsa-main text-base" disabled={mainDisabled || busy} onClick={onRun}>
         {busy ? <Spinner /> : <Icon name={selected.icon} />}
         <span className="gsa-label">{busy ? busyLabel : selected.label}</span>
       </button>

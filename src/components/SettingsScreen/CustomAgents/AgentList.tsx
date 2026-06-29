@@ -50,7 +50,7 @@ export function AgentList({
       />
 
       {agents.length === 0 ? (
-        <button className="ca-empty flex-center" onClick={onNew}>
+        <button className="ca-empty flex-center text-base" onClick={onNew}>
           <span className="ca-empty-ic iflex-center">
             <Icon name="plus" />
           </span>
@@ -76,9 +76,9 @@ export function AgentList({
               >
                 <Mono name={a.name} hue={a.color} />
                 <div className="ca-id">
-                  <div className="ca-name flex-center">
+                  <div className="ca-name flex-center text-base">
                     {a.name}
-                    <span className="ca-base iflex-center">
+                    <span className="ca-base iflex-center text-xs">
                       <span
                         className="ca-base-dot"
                         style={{ background: `oklch(0.7 0.1 ${prov?.hue ?? 30})` }}
@@ -86,7 +86,7 @@ export function AgentList({
                       {prov?.label ?? a.base} · {modelLabel(a)}
                     </span>
                   </div>
-                  <div className="ca-desc truncate">
+                  <div className="ca-desc truncate text-sm">
                     {a.description || a.instructions || "No instructions yet."}
                   </div>
                 </div>

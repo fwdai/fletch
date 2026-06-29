@@ -39,7 +39,7 @@ export function ProvidersPane() {
         desc={`${enabledCount} of ${installed.length} agents enabled. Toggle an agent off to hide it from the composer's model picker without signing out.`}
         actions={
           <>
-            {scanning && <span className="set-checked mono">Scanning…</span>}
+            {scanning && <span className="set-checked mono text-xs">Scanning…</span>}
             <button
               className="btn-i iflex-center tip"
               data-tip-down
@@ -118,11 +118,11 @@ function ProviderRow({
         />
         <ProviderIcon slug={provider.id} short={provider.short} hue={provider.hue} />
         <div className="set-prov-id">
-          <div className="set-prov-name flex-center">
+          <div className="set-prov-name flex-center text-base">
             {provider.label}
-            <span className="set-prov-ver mono">{liveVersion ?? provider.version}</span>
+            <span className="set-prov-ver mono text-xs">{liveVersion ?? provider.version}</span>
           </div>
-          <div className="set-prov-sub flex-center truncate mono">{effectivePath}</div>
+          <div className="set-prov-sub flex-center truncate mono text-sm">{effectivePath}</div>
         </div>
         <button
           className={`set-prov-chev iflex-center ${open ? "open" : ""}`}

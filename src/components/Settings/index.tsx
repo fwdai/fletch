@@ -61,7 +61,7 @@ function Popover({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="settings-pop">
-      <div className="sp-h flex-center">
+      <div className="sp-h flex-center text-base">
         <span>Settings</span>
         <span className="grow" />
         <IconButton size="sm" onClick={onClose} aria-label="Close">

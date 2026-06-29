@@ -35,7 +35,7 @@
 .q-label {
   gap: 6px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -49,7 +49,6 @@
 }
 .q-step {
   font-family: var(--font-mono);
-  font-size: 9.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--accent);
@@ -60,13 +59,13 @@
 .q-ctx {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-3);
   min-width: 0;
 }
 
 .q-prompt {
-  font-size: 14px;
+  font-size: var(--fs-lg);
   line-height: 1.6;
   color: var(--fg-0);
   text-wrap: pretty;
@@ -86,7 +85,6 @@
   border: 1px solid var(--bd-soft);
   border-radius: var(--r-md);
   background: var(--bg-1);
-  font-size: 12.5px;
   line-height: 1.55;
   color: var(--fg-1);
   max-height: 280px;
@@ -210,7 +208,7 @@
   flex-wrap: wrap;
 }
 .q-opt-label {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
   color: var(--fg-0);
   letter-spacing: -0.005em;
@@ -219,7 +217,6 @@
   color: var(--fg-2);
 }
 .q-rec {
-  font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -229,7 +226,7 @@
   border-radius: 999px;
 }
 .q-opt-desc {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--fg-2);
   text-wrap: pretty;
@@ -243,7 +240,6 @@
   border: 1px solid var(--bd-soft);
   border-radius: 4px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
   color: var(--fg-3);
   transition:
     border-color 0.14s,
@@ -266,7 +262,6 @@
 .q-other-input {
   width: 100%;
   padding: 11px 12px 6px;
-  font-size: 13px;
   line-height: 1.55;
   color: var(--fg-0);
   resize: none;
@@ -287,7 +282,6 @@
   padding: 6px 8px 8px 12px;
 }
 .q-other-hint {
-  font-size: 11px;
   color: var(--fg-3);
   gap: 6px;
 }
@@ -306,7 +300,6 @@
   height: 26px;
   padding: 0 10px;
   border-radius: var(--r-sm);
-  font-size: 12px;
   color: var(--fg-2);
   font-weight: 500;
   background: transparent;
@@ -322,7 +315,7 @@
   height: 26px;
   padding: 0 11px;
   border-radius: var(--r-sm);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   background: var(--accent);
   color: var(--btn-fg-dark);
@@ -378,7 +371,7 @@
 .qa-text {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
   color: var(--fg-0);
   text-wrap: pretty;
@@ -402,7 +395,6 @@
 }
 .q-dismissed-note {
   margin-top: 8px;
-  font-size: 12px;
   color: var(--fg-3);
   font-style: italic;
 }
@@ -410,7 +402,7 @@
 .m-tool {
   gap: 10px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-1);
   padding: 6px 0;
   width: 100%;
@@ -434,13 +426,13 @@
 }
 .m-tool .t-result {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-3);
 }
 
 .writing {
   gap: 8px;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--fg-3);
   font-style: italic;
   padding-left: 18px;

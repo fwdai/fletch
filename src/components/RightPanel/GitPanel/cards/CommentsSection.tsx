@@ -21,7 +21,7 @@ export function CommentsSection({
   const rows = [...list].sort((a, b) => Number(b.is_bot) - Number(a.is_bot));
   return (
     <div className="pr-comments">
-      <div className="pr-comments-h">
+      <div className="pr-comments-h text-2xs">
         <span>Comments</span>
         <span className="pr-comments-sum">{list.length} unresolved</span>
       </div>
@@ -31,16 +31,16 @@ export function CommentsSection({
           <div key={c.url} className="pr-comment">
             <Icon name={c.is_bot ? "bot" : "user"} size={12} />
             <div className="pc-body">
-              <div className="pc-top">
+              <div className="pc-top text-xs">
                 <span className="pc-author">{c.author}</span>
-                {loc && <span className="pc-loc">{loc}</span>}
+                {loc && <span className="pc-loc text-xs">{loc}</span>}
                 {c.replies > 0 && (
                   <span className="pc-replies">
                     +{c.replies} {c.replies === 1 ? "reply" : "replies"}
                   </span>
                 )}
               </div>
-              <div className="pc-text">{c.body}</div>
+              <div className="pc-text text-sm">{c.body}</div>
             </div>
             <div className="pc-acts">
               <button

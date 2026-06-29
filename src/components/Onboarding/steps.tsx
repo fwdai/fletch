@@ -70,7 +70,7 @@ export function WelcomeStep({
           <span className="mk">
             <PeaksMark />
           </span>
-          <span className="wd">QUORUM</span>
+          <span className="wd text-xl">QUORUM</span>
         </div>
         <h1 className="ob-display ob-reveal" style={{ "--d": ".16s" } as CSSProperties}>
           A new era of <em>agentic</em> engineering.
@@ -102,7 +102,7 @@ export function WelcomeStep({
           </button>
         </div>
 
-        <p className="ob-legal ob-reveal" style={{ "--d": ".58s" } as CSSProperties}>
+        <p className="ob-legal ob-reveal text-xs" style={{ "--d": ".58s" } as CSSProperties}>
           By continuing you agree to Quorum's{" "}
           <a
             href={TERMS_URL}
@@ -137,7 +137,7 @@ export function Beat({ beat }: { beat: BeatDef }) {
     <div className="ob-step">
       <div className="ob-beat">
         <div className="ob-beat-copy">
-          <div className="ob-eyebrow ob-reveal" style={{ "--d": ".05s" } as CSSProperties}>
+          <div className="ob-eyebrow ob-reveal text-xs" style={{ "--d": ".05s" } as CSSProperties}>
             <span className="num">{beat.num}</span>
             <span className="ln" />
             <span>{beat.eyebrow}</span>
@@ -215,7 +215,7 @@ export function IgniteStep({ onEnter }: { onEnter: () => void }) {
           Enter Quorum
           <Icon name="arrowR" />
         </button>
-        <p className="ob-fineprint ob-reveal" style={{ "--d": ".64s" } as CSSProperties}>
+        <p className="ob-fineprint ob-reveal text-sm" style={{ "--d": ".64s" } as CSSProperties}>
           Quorum shares anonymous usage data to improve the app. Turn it off anytime in Settings ›
           General.
         </p>

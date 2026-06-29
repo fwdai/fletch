@@ -10,7 +10,6 @@
   border-radius: var(--r-md);
   border: 1px solid var(--bd);
   background: var(--bg-0);
-  font-size: 13px;
   color: var(--fg-0);
   cursor: pointer;
   text-align: left;
@@ -62,7 +61,7 @@
   text-align: left;
 }
 .ui-select-dd .dd-item .di-l {
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .ui-select-dd .dd-item > svg {
   margin-left: auto;

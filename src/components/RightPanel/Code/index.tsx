@@ -82,7 +82,7 @@ function ModeSwitch({
         <button
           role="tab"
           aria-selected={mode === "files"}
-          className={`cms-seg iflex-center ${mode === "files" ? "active" : ""} tip`}
+          className={`cms-seg iflex-center text-xs ${mode === "files" ? "active" : ""} tip`}
           data-tip-down
           data-tip="Browse and edit any file in the worktree"
           onClick={() => onChange("files")}
@@ -93,7 +93,7 @@ function ModeSwitch({
         <button
           role="tab"
           aria-selected={mode === "live"}
-          className={`cms-seg iflex-center ${mode === "live" ? "active" : ""} tip`}
+          className={`cms-seg iflex-center text-xs ${mode === "live" ? "active" : ""} tip`}
           data-tip-down
           data-tip="Watch the agent's changes as they happen"
           onClick={() => onChange("live")}

@@ -240,7 +240,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
                   const k = lineKind(i);
                   return (
                     <div className="fp-gline" key={i}>
-                      <span className="fp-num">{i + 1}</span>
+                      <span className="fp-num text-2xs">{i + 1}</span>
                       <span className={`fp-bar ${k || ""}`}></span>
                     </div>
                   );
@@ -268,7 +268,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
         </>
       )}
 
-      <div className="fp-meta flex-center">
+      <div className="fp-meta flex-center text-xs">
         <span className="fp-meta-lang">{langLabel(file.lang)}</span>
         {diffView ? (
           <>
@@ -313,7 +313,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
           </button>
         )}
         <select
-          className="fp-theme-select"
+          className="fp-theme-select text-xs"
           value={codeTheme}
           onChange={(e) => setCodeTheme(e.target.value)}
           title="Syntax highlighting theme"

@@ -73,13 +73,13 @@ export function TreeBrowser({
           )}
         </div>
         <button
-          className={`fp-filter iflex-center ${changedOnly ? "on" : ""}`}
+          className={`fp-filter iflex-center text-xs ${changedOnly ? "on" : ""}`}
           title={changedOnly ? "Showing changed files only" : "Show only files the agent changed"}
           onClick={onToggleChangedOnly}
         >
           <span className="fp-filter-dot"></span>
           Changed
-          <span className="fp-filter-count">{changedCount}</span>
+          <span className="fp-filter-count text-2xs">{changedCount}</span>
         </button>
         <button
           className="btn-i iflex-center xs"
@@ -103,7 +103,7 @@ export function TreeBrowser({
       {opError && (
         // Key by message so a new error remounts the banner and re-runs the
         // attention flash even when one is already showing.
-        <div key={opError} className="fp-op-error flex-center" role="alert">
+        <div key={opError} className="fp-op-error flex-center text-sm" role="alert">
           <Icon name="close" size={11} />
           <span>{opError}</span>
           <button className="fp-clear iflex-center" onClick={onClearOpError} aria-label="Dismiss">

@@ -32,7 +32,6 @@
 }
 .git-hdr .pill {
   flex-shrink: 0;
-  font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -49,7 +48,6 @@
 }
 .git-hdr .bn {
   font-family: var(--font-mono);
-  font-size: 11.5px;
   color: var(--fg-1);
   min-width: 0;
   overflow: hidden;
@@ -58,7 +56,6 @@
 }
 .git-hdr .base {
   font-family: var(--font-mono);
-  font-size: 11px;
   color: var(--fg-3);
   flex-shrink: 0;
 }
@@ -73,7 +70,6 @@
   display: flex;
   gap: 8px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
 }
 .git-hdr .hdr-diff .add {
   color: var(--success);
@@ -181,7 +177,6 @@
   z-index: 1;
   background: var(--bg-1);
   padding: 8px 18px 7px;
-  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -213,7 +208,6 @@
   gap: 10px;
   padding: 6px 18px;
   font-family: var(--font-mono);
-  font-size: 12px;
   color: var(--fg-1);
   cursor: default;
   transition: background 0.1s;
@@ -228,7 +222,6 @@
 .git-file .gs {
   width: 14px;
   text-align: center;
-  font-size: 10px;
   font-weight: 600;
 }
 .git-file .gs.modified {
@@ -257,7 +250,6 @@
   white-space: nowrap;
 }
 .git-file .gx {
-  font-size: 10px;
   display: flex;
   gap: 4px;
   flex-shrink: 0;
@@ -274,7 +266,6 @@
   margin: 18px;
   padding: 12px;
   border-radius: var(--r-md);
-  font-size: 12.5px;
   line-height: 1.45;
   gap: 8px;
 }
@@ -283,7 +274,6 @@
 }
 .git-banner .mono {
   font-family: var(--font-mono);
-  font-size: 11px;
 }
 .git-banner.success {
   border: 1px solid color-mix(in oklch, var(--success), transparent 70%);
@@ -307,7 +297,6 @@
   border-bottom: 1px solid var(--bd-soft);
 }
 .git-card-h {
-  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -315,13 +304,11 @@
   margin-bottom: 8px;
 }
 .git-card-title {
-  font-size: 13px;
   font-weight: 500;
   color: var(--fg-0);
   line-height: 1.4;
 }
 .git-card-meta {
-  font-size: 11.5px;
   color: var(--fg-2);
   margin-top: 4px;
   font-family: var(--font-mono);
@@ -330,7 +317,6 @@
   display: flex;
   gap: 12px;
   margin-top: 12px;
-  font-size: 11.5px;
   color: var(--fg-2);
 }
 .git-card-row .ok {
@@ -345,7 +331,7 @@
 .git-card-link {
   gap: 5px;
   margin-top: 10px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-2);
   text-decoration: none;
   width: fit-content;
@@ -438,7 +424,6 @@
 
 /* collapsed note (agent default) — quiet one-liner */
 .cm-note {
-  font-size: 11px;
   line-height: 1.55;
   color: var(--fg-3);
   text-wrap: pretty;
@@ -447,7 +432,6 @@
   background: none;
   border: 0;
   padding: 0;
-  font-size: 11px;
   color: var(--fg-1);
   font-weight: 500;
   white-space: nowrap;
@@ -469,7 +453,6 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -486,7 +469,6 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 10.5px;
   letter-spacing: 0;
   text-transform: none;
   font-weight: 500;
@@ -515,7 +497,6 @@
   box-sizing: border-box;
   resize: none;
   font-family: var(--font-mono);
-  font-size: 12px;
   line-height: 1.5;
   color: var(--fg-0);
   padding: 9px 11px;
@@ -538,7 +519,6 @@
   align-items: center;
   gap: 6px;
   margin-top: 7px;
-  font-size: 10.5px;
   line-height: 1.4;
   color: var(--fg-3);
 }
@@ -570,7 +550,6 @@
   gap: 7px;
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 11px;
   color: var(--success);
   min-height: 14px;
   padding: 5px 9px;
@@ -591,7 +570,6 @@
   gap: 7px;
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 11px;
   color: var(--fg-2);
 }
 .git-act-status .d {
@@ -631,7 +609,6 @@
 .git-act-status .ex {
   flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: 10.5px;
   color: var(--fg-3);
   white-space: nowrap;
 }
@@ -674,7 +651,6 @@
   gap: 7px;
   height: 100%;
   padding: 0 14px;
-  font-size: 12.5px;
   font-weight: 600;
   color: var(--btn-fg-dark);
   background: var(--accent);
@@ -851,7 +827,6 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-3);
@@ -874,7 +849,7 @@
   background: none;
   color: var(--fg-2);
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   text-align: left;
   cursor: pointer;
   min-width: 0;
@@ -918,7 +893,7 @@
   background: none;
   padding: 3px 4px;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-3);
   cursor: pointer;
 }
@@ -937,7 +912,6 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-3);
@@ -975,7 +949,6 @@
   align-items: baseline;
   gap: 6px;
   min-width: 0;
-  font-size: 11px;
 }
 .pr-comment .pc-author {
   color: var(--fg-1);
@@ -985,7 +958,6 @@
 .pr-comment .pc-loc {
   color: var(--fg-3);
   font-family: var(--mono, monospace);
-  font-size: 10.5px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -997,7 +969,6 @@
   margin-left: auto;
 }
 .pr-comment .pc-text {
-  font-size: 11.5px;
   color: var(--fg-2);
   line-height: 1.35;
   display: -webkit-box;

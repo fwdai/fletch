@@ -85,20 +85,20 @@ export function AgentEditor({
   return (
     <div className="set-pane">
       <div className="ca-editor">
-        <button className="ca-ed-back iflex-center" onClick={onCancel}>
+        <button className="ca-ed-back iflex-center text-sm" onClick={onCancel}>
           <Icon name="chevL" size={13} /> All custom agents
         </button>
 
         {/* identity */}
         <div className="ca-ed-head flex-center">
           <span
-            className="ca-mono iflex-center ca-ed-mono"
+            className="ca-mono iflex-center ca-ed-mono text-xl"
             style={{ ["--h" as string]: form.color }}
           >
             {shortFor(form.name)}
           </span>
           <input
-            className="ca-ed-name"
+            className="ca-ed-name text-2xl"
             placeholder="Name this agent…"
             value={form.name}
             autoFocus
@@ -119,12 +119,12 @@ export function AgentEditor({
 
         {/* description */}
         <div className="set-field ca-field">
-          <label className="set-field-label">
+          <label className="set-field-label text-sm">
             Description
             <span className="ca-field-hint">A short role tagline, shown in the picker</span>
           </label>
           <input
-            className="set-text"
+            className="set-text text-base"
             placeholder="e.g. Plans before coding · writes PLAN.md"
             value={form.description}
             onChange={(e) => set({ description: e.target.value })}
@@ -134,7 +134,7 @@ export function AgentEditor({
         {/* base + model */}
         <div className="ca-grid2">
           <div className="set-field">
-            <label className="set-field-label">
+            <label className="set-field-label text-sm">
               Base agent <span className="ca-req">*</span>
             </label>
             <Select
@@ -149,7 +149,7 @@ export function AgentEditor({
             />
           </div>
           <div className="set-field">
-            <label className="set-field-label">Model</label>
+            <label className="set-field-label text-sm">Model</label>
             <Select
               ariaLabel="Model"
               value={form.model}
@@ -163,7 +163,7 @@ export function AgentEditor({
           </div>
         </div>
 
-        <div className="ca-inject flex-center">
+        <div className="ca-inject flex-center text-sm">
           <Icon name="zap" size={13} />
           <span>
             Instructions injected via <b>{INJECTION_HINT[form.base] ?? "the agent's CLI"}</b>
@@ -172,7 +172,7 @@ export function AgentEditor({
 
         {/* reasoning budget */}
         <div className="set-field ca-field">
-          <label className="set-field-label">
+          <label className="set-field-label text-sm">
             Reasoning budget
             <span className="ca-field-hint">Default thinking depth when this agent runs</span>
           </label>
@@ -181,12 +181,12 @@ export function AgentEditor({
 
         {/* instructions */}
         <div className="set-field ca-field">
-          <label className="set-field-label">
+          <label className="set-field-label text-sm">
             Instructions
             <span className="ca-field-hint">The standing system prompt for this agent</span>
           </label>
           <textarea
-            className="set-text ca-textarea"
+            className="set-text ca-textarea text-base"
             value={form.instructions}
             placeholder="Describe this agent's role, how it should work, and what it should hand off…"
             onChange={(e) => set({ instructions: e.target.value })}

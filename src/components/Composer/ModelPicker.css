@@ -38,7 +38,6 @@
   gap: 7px;
   padding: 9px 10px 5px;
   color: var(--fg-3);
-  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -72,7 +71,6 @@
 .model-agent-name {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
   font-weight: 500;
   color: var(--fg-0);
 }
@@ -80,7 +78,6 @@
   flex-shrink: 0;
   color: var(--fg-3);
   font-family: var(--font-mono);
-  font-size: 10px;
 }
 .model-agent-row > svg:last-child {
   flex-shrink: 0;
@@ -162,14 +159,12 @@
 .model-side-fly-name {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
   font-weight: 550;
   color: var(--fg-0);
 }
 .model-side-fly-tag {
   flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: 9.5px;
   color: var(--fg-3);
 }
 .model-side-fly-list {
@@ -210,7 +205,6 @@
   gap: 1px;
 }
 .model-option-name {
-  font-size: 12.5px;
   font-weight: 450;
   color: var(--fg-0);
 }
@@ -219,7 +213,6 @@
 }
 .model-option-desc {
   color: var(--fg-3);
-  font-size: 10.5px;
 }
 .model-ctx {
   flex-shrink: 0;
@@ -227,7 +220,6 @@
   border: 1px solid var(--bd-soft);
   border-radius: 5px;
   font-family: var(--font-mono);
-  font-size: 9.5px;
   color: var(--fg-2);
   white-space: nowrap;
 }
@@ -241,7 +233,6 @@
   border: 1px dashed var(--bd);
   border-radius: 9px;
   color: var(--fg-3);
-  font-size: 11.5px;
   text-align: center;
 }
 @media (max-width: 760px) {

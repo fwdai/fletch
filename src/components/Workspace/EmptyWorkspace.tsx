@@ -32,7 +32,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
         <div className="task" style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <span
             style={{
-              fontSize: 11,
+              fontSize: "var(--fs-xs)",
               color: "var(--fg-3)",
               fontFamily: "var(--font-mono)",
               textTransform: "uppercase",
@@ -41,7 +41,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
           >
             Drafting
           </span>
-          <span className="serif" style={{ fontSize: 16, color: "var(--accent)" }}>
+          <span className="serif" style={{ fontSize: "var(--fs-xl)", color: "var(--accent)" }}>
             {draft.name}
           </span>
         </div>
@@ -52,11 +52,15 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
 
       <div className="empty-wrap flex-center fade-in">
         <div className="empty-id flex-center">
-          <div className="empty-mark flex-center">
+          <div className="empty-mark flex-center text-xs">
             <span className="d" />
             <span>NEW WORKSPACE</span>
           </div>
-          <div className="empty-name" onClick={() => rerollDraftName(draft.id)} title="Reroll name">
+          <div
+            className="empty-name text-6xl"
+            onClick={() => rerollDraftName(draft.id)}
+            title="Reroll name"
+          >
             <LandmarkGlyph
               name={draft.name}
               size={36}
@@ -67,8 +71,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
           </div>
         </div>
 
-        <h1 className="empty-title">What should be the first task?</h1>
-        <p className="empty-sub">
+        <h1 className="empty-title text-6xl">What should be the first task?</h1>
+        <p className="empty-sub text-lg">
           A worktree and sandbox will be created at{" "}
           <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
             ~/.quorum/worktrees/{draft.name}

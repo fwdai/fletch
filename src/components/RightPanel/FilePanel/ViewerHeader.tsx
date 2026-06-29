@@ -22,7 +22,7 @@ export function ViewerHeader({ name, dir, status, dirty, onBack, actions }: View
         <Icon name="chevL" size={13} />
       </button>
       <FileIcon name={name} />
-      <div className="fp-crumb">
+      <div className="fp-crumb text-sm">
         {dir && <span className="fp-crumb-dir">{dir}/</span>}
         <span className="fp-crumb-file">{name}</span>
         {dirty && <span className="fp-crumb-dot" title="Unsaved changes"></span>}

@@ -106,7 +106,7 @@ export function UserInput({
             {q.prompt}
           </div>
         ))}
-        <div className="q-dismissed-note">Not answered — you stopped the agent.</div>
+        <div className="q-dismissed-note text-sm">Not answered — you stopped the agent.</div>
       </div>
     );
   }

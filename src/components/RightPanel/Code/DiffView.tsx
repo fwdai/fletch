@@ -64,10 +64,10 @@ export function DiffBody({
   freshKeys?: Set<string>;
 }) {
   return (
-    <div className={`code-diff ${isQuorum ? "cq" : ""} ${live ? "live" : ""}`}>
+    <div className={`code-diff text-sm ${isQuorum ? "cq" : ""} ${live ? "live" : ""}`}>
       {hunks.map((h, i) => (
         <div key={i}>
-          <div className="code-hunk-h">{h.header}</div>
+          <div className="code-hunk-h text-xs">{h.header}</div>
           {h.lines.map((l, j) => (
             <DiffLineRow
               key={j}
@@ -90,8 +90,8 @@ function DiffLineRow({ line, lang, fresh }: { line: DiffLine; lang: string; fres
   );
   return (
     <div className={`dl op-${line.op}${fresh ? " fresh" : ""}`}>
-      <span className="dl-num o">{line.o ?? ""}</span>
-      <span className="dl-num n">{line.n ?? ""}</span>
+      <span className="dl-num o text-2xs">{line.o ?? ""}</span>
+      <span className="dl-num n text-2xs">{line.n ?? ""}</span>
       <span className="dl-sigil">{sigil}</span>
       <span className="dl-text" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
