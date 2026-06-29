@@ -695,4 +695,3 @@
 .theme-light :is(.fp-hl, .code-diff).cq .hljs-doctag {
   color: oklch(0.4 0.09 200);
 }
-
