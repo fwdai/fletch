@@ -2151,6 +2151,7 @@ button {
   color: var(--fg-2);
   flex-shrink: 0;
 }
+.attachment-name { min-width: 0; }
 .attachment-remove {
   justify-content: center;
   width: 16px;
