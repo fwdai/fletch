@@ -71,7 +71,7 @@ export function SplitAction({
             {items.map((a) => (
               <div
                 key={a.key}
-                className={`dd-item ${a.key === selectedKey ? "active" : ""}`}
+                className={`dd-item flex-center ${a.key === selectedKey ? "active" : ""}`}
                 onClick={() => {
                   onSelect(a.key);
                   setOpen(false);

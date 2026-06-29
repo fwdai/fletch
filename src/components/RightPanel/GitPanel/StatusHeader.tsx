@@ -125,7 +125,7 @@ export function StatusHeader({
   const adds = git?.additions ?? 0;
   const dels = git?.deletions ?? 0;
   return (
-    <div className={`git-hdr k-${h.kind}`}>
+    <div className={`git-hdr flex-center k-${h.kind}`}>
       {h.dot && <span className="hdr-dot" />}
       {h.pill && <span className="pill">{h.pill}</span>}
       <span className="bn">{h.text}</span>

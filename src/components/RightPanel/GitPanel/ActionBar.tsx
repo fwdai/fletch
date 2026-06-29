@@ -42,24 +42,24 @@ export function ActionBar({
   onRun: () => void;
 }) {
   return (
-    <div className="git-act">
+    <div className="git-act flex-center">
       {busy ? (
-        <div className="git-act-status info">
+        <div className="git-act-status flex-center info">
           <Spinner />
           <span className="lbl">{busy}</span>
         </div>
       ) : delegationLabel ? (
-        <div className="git-act-status info working">
+        <div className="git-act-status flex-center info working">
           <Spinner />
           <span className="lbl">{delegationLabel}</span>
         </div>
       ) : notice ? (
-        <div className="git-notice">
+        <div className="git-notice iflex-center">
           <Icon name="check" size={11} />
           <span>{notice}</span>
         </div>
       ) : (
-        <div className={`git-act-status ${statusKind}`}>
+        <div className={`git-act-status flex-center ${statusKind}`}>
           <span className="d" />
           <span className="lbl">
             {panelState === "pushed" && pushedLink ? (

@@ -11,8 +11,8 @@ interface Props {
 export function SidebarHeader({ query, onChange }: Props) {
   const [focused, setFocused] = useState(false);
   return (
-    <div className="side-head">
-      <div className="search">
+    <div className="side-head flex-center">
+      <div className="search flex-center">
         <Icon name="search" size={12} />
         <input
           id="sidebar-search"

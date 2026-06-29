@@ -62,12 +62,12 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
 
   return (
     <>
-      <div className="right-h">
+      <div className="right-h flex-center">
         <div className="right-tabs">
           {tabs.map((t) => (
             <button
               key={t.id}
-              className={`r-tab ${tab === t.id ? "active" : ""}`}
+              className={`r-tab iflex-center ${tab === t.id ? "active" : ""}`}
               onClick={() => selectTab(t.id)}
             >
               <Icon name={t.icon} />

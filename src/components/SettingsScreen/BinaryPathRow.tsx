@@ -95,7 +95,7 @@ export function BinaryPathRow({
       <span className="set-prov-dk">Binary</span>
       {editing ? (
         <div className="set-prov-bin-edit">
-          <div className="set-prov-bin-input-row">
+          <div className="set-prov-bin-input-row flex-center">
             <input
               ref={inputRef}
               className="set-prov-bin-input mono"
@@ -115,7 +115,7 @@ export function BinaryPathRow({
               }}
             />
             <button
-              className="btn-i sm-i tip"
+              className="btn-i iflex-center sm-i tip"
               data-tip-down
               data-tip="Save"
               aria-label="Save path"
@@ -125,7 +125,7 @@ export function BinaryPathRow({
               <Icon name="check" size={14} />
             </button>
             <button
-              className="btn-i sm-i tip"
+              className="btn-i iflex-center sm-i tip"
               data-tip-down
               data-tip="Cancel"
               aria-label="Cancel"
@@ -145,18 +145,22 @@ export function BinaryPathRow({
         </div>
       ) : (
         <div className="set-prov-bin-edit">
-          <div className="set-prov-bin-view">
+          <div className="set-prov-bin-view flex-center">
             <span className={`set-prov-dv mono ${broken ? "broken" : ""}`}>{effectivePath}</span>
             {override && <span className="set-badge custom">Custom</span>}
             {broken && <span className="set-prov-bin-warn">not found</span>}
             <span className="grow" />
             {override && (
-              <button className="btn-t ghost sm-t" disabled={busy} onClick={() => void reset()}>
+              <button
+                className="btn-t iflex-center ghost sm-t"
+                disabled={busy}
+                onClick={() => void reset()}
+              >
                 Reset to auto
               </button>
             )}
             <button
-              className="btn-i sm-i tip"
+              className="btn-i iflex-center sm-i tip"
               data-tip-down
               data-tip="Edit path"
               aria-label="Edit binary path"

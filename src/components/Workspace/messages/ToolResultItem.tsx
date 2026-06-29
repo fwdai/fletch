@@ -11,7 +11,7 @@ export function ToolResultItem({ item }: { item: Extract<ChatItem, { kind: "tool
     <div>
       <button
         type="button"
-        className="m-tool"
+        className="m-tool flex-center"
         onClick={() => setOpen((o) => !o)}
         style={{
           width: "100%",

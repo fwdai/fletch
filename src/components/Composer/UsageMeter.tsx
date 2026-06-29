@@ -48,8 +48,12 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
   const ringColor = pct >= 90 ? "var(--danger)" : pct >= 75 ? "var(--warn)" : "var(--accent)";
 
   return (
-    <div className="usage" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
-      <button type="button" className="usage-chip" aria-label={`Context ${pct}% used`}>
+    <div
+      className="usage iflex-center"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button type="button" className="usage-chip iflex-center" aria-label={`Context ${pct}% used`}>
         <svg className="usage-ring" viewBox="0 0 18 18" width="15" height="15">
           <circle cx="9" cy="9" r={R} fill="none" stroke="var(--bd-strong)" strokeWidth="2.2" />
           <circle
@@ -90,13 +94,13 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
 
           <div className="up-legend">
             {segments.map((s) => (
-              <div key={s.key} className="up-leg">
+              <div key={s.key} className="up-leg flex-center">
                 <span className="up-dot" style={{ background: s.color }} />
                 <span className="up-k">{s.label}</span>
                 <span className="up-v">{formatTokens(s.tokens)}</span>
               </div>
             ))}
-            <div className="up-leg">
+            <div className="up-leg flex-center">
               <span className="up-dot track" />
               <span className="up-k">Free</span>
               <span className="up-v">{formatTokens(free)}</span>
@@ -109,7 +113,7 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
             <Row label="Input" value={formatTokens(usage.inputTokens)} />
             <Row label="Output" value={formatTokens(usage.outputTokens)} />
             {usage.costUsd > 0 && (
-              <div className="up-row total">
+              <div className="up-row flex-center total">
                 <span>Est. cost</span>
                 <span className="up-rv">{formatCost(usage.costUsd)}</span>
               </div>
@@ -123,7 +127,7 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="up-row">
+    <div className="up-row flex-center">
       <span>{label}</span>
       <span className="up-rv">{value}</span>
     </div>

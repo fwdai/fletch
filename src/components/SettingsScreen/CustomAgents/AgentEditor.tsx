@@ -85,13 +85,16 @@ export function AgentEditor({
   return (
     <div className="set-pane">
       <div className="ca-editor">
-        <button className="ca-ed-back" onClick={onCancel}>
+        <button className="ca-ed-back iflex-center" onClick={onCancel}>
           <Icon name="chevL" size={13} /> All custom agents
         </button>
 
         {/* identity */}
-        <div className="ca-ed-head">
-          <span className="ca-mono ca-ed-mono" style={{ ["--h" as string]: form.color }}>
+        <div className="ca-ed-head flex-center">
+          <span
+            className="ca-mono iflex-center ca-ed-mono"
+            style={{ ["--h" as string]: form.color }}
+          >
             {shortFor(form.name)}
           </span>
           <input
@@ -101,7 +104,7 @@ export function AgentEditor({
             autoFocus
             onChange={(e) => set({ name: e.target.value })}
           />
-          <div className="ca-hues">
+          <div className="ca-hues flex-center">
             {CA_HUES.map((h) => (
               <button
                 key={h}
@@ -160,7 +163,7 @@ export function AgentEditor({
           </div>
         </div>
 
-        <div className="ca-inject">
+        <div className="ca-inject flex-center">
           <Icon name="zap" size={13} />
           <span>
             Instructions injected via <b>{INJECTION_HINT[form.base] ?? "the agent's CLI"}</b>
@@ -190,12 +193,12 @@ export function AgentEditor({
           />
         </div>
 
-        <div className="ca-ed-foot">
+        <div className="ca-ed-foot flex-center">
           <span className="ca-grow" />
-          <button className="btn-t ghost" onClick={onCancel}>
+          <button className="btn-t iflex-center ghost" onClick={onCancel}>
             Cancel
           </button>
-          <button className="btn-t primary" disabled={!canSave} onClick={submit}>
+          <button className="btn-t iflex-center primary" disabled={!canSave} onClick={submit}>
             <Icon name="check" size={13} /> {isNew ? "Create agent" : "Save changes"}
           </button>
         </div>

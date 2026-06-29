@@ -67,9 +67,14 @@ export function DevToolsStatus() {
         fix={ghFix}
         docs={!gh?.installed ? "https://cli.github.com" : undefined}
       />
-      <div className="rdy-foot">
+      <div className="rdy-foot flex-center">
         <span className="rdy-count" />
-        <button type="button" className="btn-t outline" onClick={recheck} disabled={checking}>
+        <button
+          type="button"
+          className="btn-t iflex-center outline"
+          onClick={recheck}
+          disabled={checking}
+        >
           <Icon name="refresh" size={12} />
           {checking ? "Checking…" : "Re-check"}
         </button>
@@ -98,16 +103,20 @@ function ToolRow({
     <div className="rdy-row">
       <span className="rdy-icon">{icon}</span>
       <div className="rdy-main">
-        <div className="rdy-line">
+        <div className="rdy-line flex-center">
           <span className="rdy-name">{name}</span>
           <span className={`rdy-dot ${state}`} />
           <span className="rdy-status">{statusText}</span>
         </div>
         {needsFix && (fix || docs) && (
-          <div className="rdy-fix">
+          <div className="rdy-fix flex-center">
             {fix && <CopyCmd cmd={fix} />}
             {docs && (
-              <button type="button" className="rdy-docs" onClick={() => void openExternal(docs)}>
+              <button
+                type="button"
+                className="rdy-docs iflex-center"
+                onClick={() => void openExternal(docs)}
+              >
                 Setup guide
                 <Icon name="external" size={10} />
               </button>
@@ -124,7 +133,7 @@ function CopyCmd({ cmd }: { cmd: string }) {
   return (
     <button
       type="button"
-      className="rdy-cmd"
+      className="rdy-cmd iflex-center"
       title="Copy command"
       onClick={() => {
         void navigator.clipboard.writeText(cmd);

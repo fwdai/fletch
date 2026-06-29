@@ -196,7 +196,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
           <div className="chat-inner fade-in" key={agent.id}>
             {transcriptLoading && items.length === 0 ? (
-              <div className="writing">
+              <div className="writing flex-center">
                 <span className="dots">
                   <i />
                   <i />
@@ -223,7 +223,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               ))
             )}
             {busy && !awaitingInput && (
-              <div className="writing">
+              <div className="writing flex-center">
                 <span className="dots">
                   <i />
                   <i />

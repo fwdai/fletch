@@ -39,7 +39,7 @@ export function ProjectPicker({ value, repos, onChange }: Props) {
               {repos.map((r) => (
                 <div
                   key={r}
-                  className={`dd-item ${r === value ? "active" : ""}`}
+                  className={`dd-item flex-center ${r === value ? "active" : ""}`}
                   style={{ padding: "7px 9px" }}
                   title={r}
                   onClick={() => {

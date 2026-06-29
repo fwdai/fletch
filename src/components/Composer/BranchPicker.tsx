@@ -77,7 +77,7 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
             {canScrollUp && (
               <button
                 type="button"
-                className="bp-scroll-btn"
+                className="bp-scroll-btn flex-center"
                 onClick={() => scrollBy(-SCROLL_STEP)}
               >
                 <Icon name="chevU" size={11} />
@@ -90,14 +90,14 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
               onScroll={updateScrollState}
             >
               {branches.length === 0 ? (
-                <div className="dd-item is-disabled" style={{ padding: "7px 9px" }}>
+                <div className="dd-item flex-center is-disabled" style={{ padding: "7px 9px" }}>
                   Loading…
                 </div>
               ) : (
                 branches.map((b) => (
                   <div
                     key={b}
-                    className={`dd-item ${b === value ? "active" : ""}`}
+                    className={`dd-item flex-center ${b === value ? "active" : ""}`}
                     style={{ padding: "7px 9px" }}
                     onClick={() => {
                       onChange(b);
@@ -114,7 +114,11 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
             </div>
 
             {canScrollDown && (
-              <button type="button" className="bp-scroll-btn" onClick={() => scrollBy(SCROLL_STEP)}>
+              <button
+                type="button"
+                className="bp-scroll-btn flex-center"
+                onClick={() => scrollBy(SCROLL_STEP)}
+              >
                 <Icon name="chevD" size={11} />
               </button>
             )}

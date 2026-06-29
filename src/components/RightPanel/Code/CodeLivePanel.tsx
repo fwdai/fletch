@@ -203,7 +203,7 @@ export function CodeLivePanel({
   return (
     <div className="code-wrap">
       {/* header: totals + follow toggle */}
-      <div className="code-h">
+      <div className="code-h flex-center">
         <div className="code-h-l">
           <span className="ch-count">
             {files.length}
@@ -246,7 +246,7 @@ export function CodeLivePanel({
             <button
               key={f.path}
               role="tab"
-              className={`code-tab ${f.path === displayPath ? "active" : ""} ${live ? "live" : ""} status-${statusLetter(f.kind).toLowerCase()}`}
+              className={`code-tab iflex-center ${f.path === displayPath ? "active" : ""} ${live ? "live" : ""} status-${statusLetter(f.kind).toLowerCase()}`}
               onClick={() => onPickTab(f.path)}
               title={f.path}
             >

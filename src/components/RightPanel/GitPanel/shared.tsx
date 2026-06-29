@@ -10,7 +10,7 @@ export function Spinner() {
 /** A quiet inline link out to GitHub — accent text, underline on hover, ↗. */
 export function GitLink({ href, children }: { href: string; children: ReactNode }) {
   return (
-    <button type="button" className="git-link" onClick={() => void open(href)}>
+    <button type="button" className="git-link iflex-center" onClick={() => void open(href)}>
       {children}
       <Icon name="external" size={10} />
     </button>

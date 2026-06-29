@@ -19,14 +19,14 @@ export function SidebarFooter() {
   const sub = account?.email || "local workspace";
 
   return (
-    <div className="side-foot">
+    <div className="side-foot flex-center">
       <button
         className="side-user"
         onClick={() => openSettingsScreen("account")}
         aria-label="Account settings"
       >
         <Avatar
-          className="user-avatar"
+          className="user-avatar flex-center"
           avatarUrl={account?.avatarUrl ?? null}
           initials={initial}
           alt={name}

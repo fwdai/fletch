@@ -94,6 +94,21 @@
   --dens-lg: 12px;
 }
 
+/* ── UTILITIES ─────────────────────────────────────────────────────────── */
+.flex-center {
+  display: flex;
+  align-items: center;
+}
+.iflex-center {
+  display: inline-flex;
+  align-items: center;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* reset */
 * {
   box-sizing: border-box;
@@ -155,8 +170,6 @@ button {
 .tb {
   height: 36px;
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
   padding: 0 10px;
   border-bottom: 1px solid var(--bd-soft);
   position: relative;
@@ -168,8 +181,6 @@ button {
 }
 .tb-logo {
   margin-left: 12px;
-  display: inline-flex;
-  align-items: center;
   gap: 8px;
   font-family: var(--font-sans);
   font-size: 16px;
@@ -198,8 +209,6 @@ button {
   margin-right: 1px;
 }
 .tb-badge {
-  display: inline-flex;
-  align-items: center;
   height: 16px;
   font-family: var(--font-sans);
   font-size: 8px;
@@ -219,8 +228,6 @@ button {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
   gap: 8px;
   font-size: 12px;
   color: var(--fg-2);
@@ -244,16 +251,12 @@ button {
 }
 .tb-right {
   margin-left: auto;
-  display: flex;
-  align-items: center;
   gap: 2px;
   -webkit-app-region: no-drag;
 }
 
 /* icon button */
 .btn-i {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   width: 26px;
   height: 26px;
@@ -297,8 +300,6 @@ button {
 }
 
 .btn-t {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   height: 28px;
   padding: 0 11px;
@@ -437,15 +438,11 @@ button {
 /* sidebar */
 .side-head {
   padding: 14px 12px 10px;
-  display: flex;
-  align-items: center;
   gap: 8px;
   flex-shrink: 0;
 }
 .search {
   flex: 1;
-  display: flex;
-  align-items: center;
   gap: 8px;
   height: 30px;
   padding: 0 10px;
@@ -490,8 +487,6 @@ button {
   padding: 4px;
 }
 .add-proj-cta {
-  display: flex;
-  align-items: center;
   justify-content: center;
   gap: 6px;
   width: 100%;
@@ -521,8 +516,6 @@ button {
   margin-bottom: 16px;
 }
 .proj-h {
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 0 8px;
   height: 28px;
@@ -677,8 +670,6 @@ button {
 }
 
 .agent-row {
-  display: flex;
-  align-items: center;
   gap: 7px;
   min-height: 21px;
 }
@@ -719,8 +710,6 @@ button {
 .ag-slot {
   position: relative;
   margin-left: auto;
-  display: inline-flex;
-  align-items: center;
   justify-content: flex-end;
   flex-shrink: 0;
   min-height: 21px;
@@ -752,8 +741,6 @@ button {
   pointer-events: auto;
 }
 .ag-act {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   width: 21px;
   height: 21px;
@@ -848,8 +835,6 @@ button {
 
 /* compact status badges (PR state, error, draft) */
 .ag-badge {
-  display: inline-flex;
-  align-items: center;
   gap: 3px;
   height: 16px;
   padding: 0 5px;
@@ -892,8 +877,6 @@ button {
 }
 
 .agent-sub {
-  display: flex;
-  align-items: center;
   gap: 8px;
   margin-top: 2px;
   min-height: 17px;
@@ -986,8 +969,6 @@ button {
 }
 
 .agent-new {
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 8px 8px;
   margin-bottom: 6px;
@@ -1010,8 +991,6 @@ button {
   height: 52px;
   padding: 0 12px;
   border-top: 1px solid var(--bd-soft);
-  display: flex;
-  align-items: center;
   gap: 10px;
   flex-shrink: 0;
 }
@@ -1021,8 +1000,6 @@ button {
   border-radius: 50%;
   background: var(--accent);
   color: oklch(0.16 0.02 60);
-  display: flex;
-  align-items: center;
   justify-content: center;
   font-size: 10.5px;
   font-weight: 600;
@@ -1053,8 +1030,6 @@ button {
 
 /* center pane */
 .center-h {
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding: 0 16px;
   height: 48px;
@@ -1163,8 +1138,6 @@ button {
   top: 12px;
   right: 24px;
   z-index: 20;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 5px 6px 5px 10px;
   background: var(--bg-2);
@@ -1213,8 +1186,6 @@ button {
   color: var(--danger);
 }
 .chat-search-actions {
-  display: flex;
-  align-items: center;
   gap: 1px;
   padding-left: 4px;
   margin-left: 2px;
@@ -1297,8 +1268,6 @@ button {
   border: 0;
   color: var(--fg-1);
   cursor: pointer;
-  display: flex;
-  align-items: center;
   justify-content: center;
   transition: var(--transition-ui-ease);
 }
@@ -1427,9 +1396,6 @@ button {
 .chat-nav-row-t {
   font-size: 12.5px;
   line-height: 1.4;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .m-user {
@@ -1633,14 +1599,10 @@ button {
 }
 
 .q-head {
-  display: flex;
-  align-items: center;
   gap: 10px;
   margin-bottom: 10px;
 }
 .q-label {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -1670,9 +1632,6 @@ button {
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--fg-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
 }
 
@@ -1762,8 +1721,6 @@ button {
   flex-shrink: 0;
   margin-top: 1px;
   position: relative;
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   color: var(--fg-3);
   transition:
@@ -1852,8 +1809,6 @@ button {
   width: 18px;
   height: 18px;
   margin-top: 1px;
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   border: 1px solid var(--bd-soft);
   border-radius: 4px;
@@ -1898,16 +1853,12 @@ button {
   color: var(--fg-3);
 }
 .q-other-foot {
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 6px 8px 8px 12px;
 }
 .q-other-hint {
   font-size: 11px;
   color: var(--fg-3);
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
 }
 .q-other-hint .kbd,
@@ -1937,8 +1888,6 @@ button {
   color: var(--fg-0);
 }
 .q-other-send {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   height: 26px;
   padding: 0 11px;
@@ -1976,8 +1925,6 @@ button {
   background: var(--accent-line);
 }
 .q-answer {
-  display: flex;
-  align-items: center;
   gap: 10px;
   margin-top: 12px;
   padding: 10px 12px;
@@ -1993,8 +1940,6 @@ button {
   border-radius: 50%;
   background: var(--accent);
   color: oklch(0.16 0.02 60);
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
 }
 .theme-light .qa-mark {
@@ -2033,8 +1978,6 @@ button {
 }
 
 .m-tool {
-  display: flex;
-  align-items: center;
   gap: 10px;
   font-family: var(--font-mono);
   font-size: 12px;
@@ -2066,8 +2009,6 @@ button {
 }
 
 .writing {
-  display: flex;
-  align-items: center;
   gap: 8px;
   font-size: 12.5px;
   color: var(--fg-3);
@@ -2178,9 +2119,7 @@ button {
   position: absolute;
   inset: 0;
   z-index: 2;
-  display: flex;
   flex-direction: column;
-  align-items: center;
   justify-content: center;
   gap: 8px;
   border-radius: var(--r-lg);
@@ -2208,8 +2147,6 @@ button {
   margin-top: 8px;
 }
 .attachment {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   max-width: 220px;
   height: 24px;
@@ -2225,13 +2162,9 @@ button {
   flex-shrink: 0;
 }
 .attachment-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
 }
 .attachment-remove {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   width: 16px;
   height: 16px;
@@ -2261,14 +2194,10 @@ button {
   opacity: 0.55;
 }
 .composer-foot {
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 6px 8px 6px 10px;
 }
 .c-chip {
-  display: inline-flex;
-  align-items: center;
   gap: 5px;
   height: 24px;
   padding: 0 8px;
@@ -2322,9 +2251,6 @@ button {
 .model-chip-model {
   min-width: 0;
   max-width: 170px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-2);
 }
 
@@ -2334,8 +2260,6 @@ button {
   border-radius: var(--r-sm);
   background: var(--accent);
   color: oklch(0.18 0.02 60);
-  display: flex;
-  align-items: center;
   justify-content: center;
   transition:
     background 0.12s,
@@ -2372,8 +2296,6 @@ button {
   display: inline-flex;
 }
 .usage-chip {
-  display: inline-flex;
-  align-items: center;
   gap: 5px;
   height: 24px;
   padding: 0 7px 0 5px;
@@ -2466,8 +2388,6 @@ button {
   gap: 6px;
 }
 .up-leg {
-  display: flex;
-  align-items: center;
   gap: 8px;
   font-size: 11.5px;
   color: var(--fg-1);
@@ -2502,8 +2422,6 @@ button {
   gap: 6px;
 }
 .up-row {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   font-size: 11.5px;
   color: var(--fg-1);
@@ -2541,8 +2459,6 @@ button {
   }
 }
 .dd-item {
-  display: flex;
-  align-items: center;
   gap: 9px;
   padding: 7px 9px;
   border-radius: var(--r-sm);
@@ -2627,8 +2543,6 @@ button {
 }
 /* Section header with trailing rule, mirroring the prototype's dividers. */
 .model-sect {
-  display: flex;
-  align-items: center;
   gap: 7px;
   padding: 9px 10px 5px;
   color: var(--fg-3);
@@ -2646,8 +2560,6 @@ button {
 .model-agent-row {
   width: 100%;
   min-width: 0;
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding: 7px 9px;
   border-radius: 9px;
@@ -2668,9 +2580,6 @@ button {
 .model-agent-name {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 13px;
   font-weight: 500;
   color: var(--fg-0);
@@ -2754,8 +2663,6 @@ button {
 }
 .model-side-fly-head {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
   gap: 9px;
   padding: 9px 11px;
   border-bottom: 1px solid var(--bd-soft);
@@ -2763,9 +2670,6 @@ button {
 .model-side-fly-name {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 12.5px;
   font-weight: 550;
   color: var(--fg-0);
@@ -2789,8 +2693,6 @@ button {
 .model-option {
   width: 100%;
   min-width: 0;
-  display: flex;
-  align-items: center;
   gap: 9px;
   padding: 6px 9px;
   border-radius: 8px;
@@ -2816,9 +2718,6 @@ button {
   gap: 1px;
 }
 .model-option-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 12.5px;
   font-weight: 450;
   color: var(--fg-0);
@@ -2827,9 +2726,6 @@ button {
   font-weight: 550;
 }
 .model-option-desc {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-3);
   font-size: 10.5px;
 }
@@ -2864,8 +2760,6 @@ button {
 
 /* branch picker scroll buttons */
 .bp-scroll-btn {
-  display: flex;
-  align-items: center;
   justify-content: center;
   width: 100%;
   height: 24px;
@@ -2889,8 +2783,6 @@ button {
 
 /* right pane */
 .right-h {
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 0 8px 0 16px;
   height: 48px;
@@ -2910,8 +2802,6 @@ button {
   border-radius: var(--r-sm);
   font-size: 12px;
   color: var(--fg-2);
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   font-weight: 500;
 }
@@ -2964,8 +2854,6 @@ button {
    an inset filled-thumb pill, not an underline tab — so it reads as a control
    within the Code panel rather than as switching between panels. */
 .code-modes {
-  display: flex;
-  align-items: center;
   padding: 7px 10px;
   border-bottom: 1px solid var(--bd-soft);
   background: var(--bg-1);
@@ -2980,8 +2868,6 @@ button {
   border-radius: 8px;
 }
 .cms-seg {
-  display: inline-flex;
-  align-items: center;
   gap: 5px;
   height: 22px;
   padding: 0 10px;
@@ -3032,8 +2918,6 @@ button {
 }
 
 .code-h {
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--bd-soft);
@@ -3172,8 +3056,6 @@ button {
 }
 .code-tab {
   flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
   gap: 7px;
   height: 26px;
   padding: 0 9px;
@@ -3410,8 +3292,6 @@ button {
    · fixable (can't merge / conflicts)=orange · ready=green · merged=purple. */
 .git-hdr {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
   gap: 8px;
   min-height: 40px;
   box-sizing: border-box;
@@ -3585,8 +3465,6 @@ button {
   color: var(--fg-3);
   border-top: 1px solid var(--bd-soft);
   border-bottom: 1px solid var(--bd-soft);
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   white-space: nowrap;
 }
@@ -3609,8 +3487,6 @@ button {
   padding: 4px 0;
 }
 .git-file {
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding: 6px 18px;
   font-family: var(--font-mono);
@@ -3677,8 +3553,6 @@ button {
   border-radius: var(--r-md);
   font-size: 12.5px;
   line-height: 1.45;
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 .git-banner svg {
@@ -3746,8 +3620,6 @@ button {
   color: var(--fg-3);
 }
 .git-card-link {
-  display: inline-flex;
-  align-items: center;
   gap: 5px;
   margin-top: 10px;
   font-size: 11.5px;
@@ -3778,8 +3650,6 @@ button {
 
 /* quiet inline link in copy (e.g. the pushed-state commit/compare link) */
 .git-link {
-  display: inline-flex;
-  align-items: center;
   gap: 2px;
   background: none;
   border: 0;
@@ -3969,15 +3839,11 @@ button {
    (see the @container rule at the end of this block). */
 .git-act {
   padding: 11px 18px 14px;
-  display: flex;
-  align-items: center;
   gap: 10px;
   flex-wrap: wrap;
 }
 /* transient confirmation shown in place of the status line after an action */
 .git-notice {
-  display: inline-flex;
-  align-items: center;
   gap: 7px;
   flex: 1 1 auto;
   min-width: 0;
@@ -3999,8 +3865,6 @@ button {
   white-space: nowrap;
 }
 .git-act-status {
-  display: flex;
-  align-items: center;
   gap: 7px;
   flex: 1 1 auto;
   min-width: 0;
@@ -4280,8 +4144,6 @@ button {
   color: var(--success);
 }
 .pr-check {
-  display: flex;
-  align-items: center;
   gap: 7px;
   padding: 3px 4px;
   border: 0;
@@ -4763,8 +4625,6 @@ button {
   background: transparent;
   border: 0;
   color: var(--fg-3);
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   transition:
     background 0.1s,
@@ -4808,8 +4668,6 @@ button {
   border-bottom-right-radius: calc(var(--r-sm) - 1px);
 }
 .rs-row {
-  display: flex;
-  align-items: center;
   gap: 12px;
   padding: 10px 12px;
   background: var(--bg-1);
@@ -4844,8 +4702,6 @@ button {
   margin-top: 2px;
   font-size: 10.5px;
   color: var(--fg-3);
-  display: inline-flex;
-  align-items: center;
   gap: 4px;
 }
 .rs-source code {
@@ -4863,14 +4719,10 @@ button {
   color: var(--accent);
 }
 .rs-row-r {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   flex-shrink: 0;
 }
 .rs-value {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   max-width: 220px;
   height: 28px;
@@ -4920,8 +4772,6 @@ button {
   background: transparent;
   border: 0;
   color: var(--fg-3);
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   transition:
     background 0.1s,
@@ -4935,8 +4785,6 @@ button {
  * doesn't rotate with it (and the button doesn't form a stacking context
  * that would trap the tooltip under the next row). */
 .rs-revert-ic {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   transition: transform 0.1s;
 }
@@ -4945,8 +4793,6 @@ button {
 }
 
 .run-sheet-f {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 14px;
@@ -4959,9 +4805,6 @@ button {
   color: var(--fg-2);
   min-width: 0;
   flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .rsf-actions {
   display: inline-flex;
@@ -4992,23 +4835,17 @@ button {
 /* empty workspace (draft) */
 .empty-wrap {
   flex: 1;
-  display: flex;
   flex-direction: column;
-  align-items: center;
   justify-content: center;
   padding: 40px 40px 60px;
   position: relative;
 }
 /* identity group: eyebrow + rerollable workspace name, tightly grouped */
 .empty-id {
-  display: flex;
   flex-direction: column;
-  align-items: center;
   margin-bottom: 28px;
 }
 .empty-mark {
-  display: flex;
-  align-items: center;
   gap: 8px;
   font-family: var(--font-mono);
   font-size: 10.5px;
@@ -5065,9 +4902,7 @@ button {
 
 .empty-meta {
   margin-top: 16px;
-  display: flex;
   gap: 8px;
-  align-items: center;
   justify-content: center;
   flex-wrap: wrap;
 }
@@ -5120,8 +4955,6 @@ button {
   overflow-y: auto;
 }
 .sp-h {
-  display: flex;
-  align-items: center;
   font-size: 13px;
   font-weight: 500;
   margin-bottom: 10px;
@@ -5144,8 +4977,6 @@ button {
   padding: 0 4px 6px;
 }
 .sp-row {
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding: 8px 10px;
   border-radius: var(--r-sm);
@@ -5320,8 +5151,6 @@ button {
   }
 }
 .np-modal-h {
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 14px 16px;
   border-bottom: 1px solid var(--bd);
@@ -5336,8 +5165,6 @@ button {
   flex: 1;
 }
 .np-close {
-  display: flex;
-  align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
@@ -5409,8 +5236,6 @@ button {
 
 /* Destination chooser */
 .np-dest {
-  display: flex;
-  align-items: center;
   gap: 8px;
   height: 36px;
   padding: 0 10px;
@@ -5453,8 +5278,6 @@ button {
   gap: 8px;
 }
 .np-search {
-  display: flex;
-  align-items: center;
   gap: 8px;
   height: 34px;
   padding: 0 10px;
@@ -5521,8 +5344,6 @@ button {
   min-width: 0;
 }
 .np-repo-name {
-  display: flex;
-  align-items: center;
   gap: 8px;
   font-size: 12.5px;
   color: var(--fg-0);
@@ -5541,9 +5362,6 @@ button {
   font-size: 11.5px;
   color: var(--fg-2);
   margin-top: 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Actions + gate */
@@ -5553,8 +5371,6 @@ button {
   margin-top: 2px;
 }
 .np-primary {
-  display: flex;
-  align-items: center;
   gap: 7px;
   height: 34px;
   padding: 0 16px;
@@ -5582,9 +5398,7 @@ button {
   }
 }
 .np-gate {
-  display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 8px;
   text-align: center;
   padding: 24px 12px;
@@ -5652,8 +5466,6 @@ button {
 /* Inline per-agent crash notice under the workspace header (status === error).
    Same danger tint as .error-banner, but inline (not a floating toast). */
 .crash-banner {
-  display: flex;
-  align-items: center;
   gap: 12px;
   margin: 8px 12px 0;
   padding: 8px 10px 8px 12px;
@@ -5851,8 +5663,6 @@ button {
 
 /* Terminal in-panel search bar */
 .term-search {
-  display: flex;
-  align-items: center;
   gap: 4px;
   padding: 5px 10px;
   background: var(--bg-2);
@@ -5962,8 +5772,6 @@ button {
   border-bottom: 1px solid var(--bd-soft);
 }
 .hh-search {
-  display: flex;
-  align-items: center;
   gap: 10px;
   height: 36px;
   font-size: 14px;
@@ -6029,8 +5837,6 @@ button {
 /* row */
 .hrow {
   width: 100%;
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding: 5px 24px 5px 28px;
   text-align: left;
@@ -6058,8 +5864,6 @@ button {
 }
 
 .hr-status {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   width: 16px;
   flex-shrink: 0;
@@ -6075,9 +5879,6 @@ button {
   font-size: 13px;
   color: var(--fg-2);
   font-weight: 400;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .hr-sep {
@@ -6090,9 +5891,6 @@ button {
   color: var(--fg-0);
   font-weight: 500;
   font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   flex-shrink: 1;
   min-width: 0;
   max-width: 56%;
@@ -6108,9 +5906,6 @@ button {
   color: var(--fg-2);
   font-family: var(--font-mono);
   font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   flex-shrink: 1;
   min-width: 0;
 }
@@ -6121,8 +5916,6 @@ button {
 }
 
 .hr-diff {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   padding: 1px 7px;
   border: 1px solid var(--bd-soft);
@@ -6155,8 +5948,6 @@ button {
 .hr-goto {
   position: absolute;
   right: 24px;
-  display: inline-flex;
-  align-items: center;
   gap: 4px;
   color: var(--fg-1);
   font-size: 12px;
@@ -6194,8 +5985,6 @@ button {
 .history-foot {
   flex-shrink: 0;
   border-top: 1px solid var(--bd-soft);
-  display: flex;
-  align-items: center;
   gap: 16px;
   padding: 8px 20px;
   font-size: 11px;
@@ -6222,8 +6011,6 @@ button {
 /* toolbar: search + changed-filter + collapse */
 .fp-toolbar {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--bd-soft);
@@ -6231,8 +6018,6 @@ button {
 .fp-search {
   flex: 1;
   min-width: 0;
-  display: flex;
-  align-items: center;
   gap: 6px;
   height: 26px;
   padding: 0 8px;
@@ -6263,8 +6048,6 @@ button {
   color: var(--fg-3);
 }
 .fp-clear {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   width: 16px;
   height: 16px;
@@ -6282,8 +6065,6 @@ button {
 
 .fp-filter {
   flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   height: 26px;
   padding: 0 9px;
@@ -6337,8 +6118,6 @@ button {
   flex-direction: column;
 }
 .fp-row {
-  display: flex;
-  align-items: center;
   gap: 6px;
   width: 100%;
   height: 24px;
@@ -6359,8 +6138,6 @@ button {
   color: var(--fg-0);
 }
 .fp-twisty {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   width: 12px;
   flex-shrink: 0;
@@ -6384,9 +6161,6 @@ button {
 .fp-name {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* changed files — colored name + status badge (VS Code style) */
@@ -6416,8 +6190,6 @@ button {
   font-weight: 600;
   width: 15px;
   height: 15px;
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   border-radius: var(--r-xs);
 }
@@ -6505,8 +6277,6 @@ button {
 
 /* ── inline op-error bar ── */
 .fp-op-error {
-  display: flex;
-  align-items: center;
   gap: 6px;
   margin: 0 8px 4px;
   padding: 5px 8px;
@@ -6539,16 +6309,12 @@ button {
 /* ── viewer header ── */
 .fp-viewer-h {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 8px 12px 8px 8px;
   border-bottom: 1px solid var(--bd-soft);
   background: var(--bg-1);
 }
 .fp-back {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
@@ -6564,8 +6330,6 @@ button {
   color: var(--fg-0);
 }
 .fp-vh-actions {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   flex-shrink: 0;
 }
@@ -6603,8 +6367,6 @@ button {
 /* ── viewer meta line ── */
 .fp-meta {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
   gap: 7px;
   padding: 6px 12px;
   font-family: var(--font-mono);
@@ -6634,8 +6396,6 @@ button {
   font-weight: 500;
 }
 .fp-meta-btn {
-  display: inline-flex;
-  align-items: center;
   gap: 4px;
   height: 20px;
   padding: 0 7px;
@@ -6689,8 +6449,6 @@ button {
 /* ── viewer banners (added / deleted file) ── */
 .fp-banner {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 8px 12px;
   font-size: 11.5px;
@@ -6958,8 +6716,6 @@ button {
   padding: 14px 12px 10px;
 }
 .set-back {
-  display: flex;
-  align-items: center;
   gap: 9px;
   white-space: nowrap;
   padding: 8px 10px;
@@ -6987,8 +6743,6 @@ button {
   gap: 1px;
 }
 .set-nav-item {
-  display: flex;
-  align-items: center;
   gap: 11px;
   padding: 9px 11px;
   border-radius: var(--r-md);
@@ -7087,8 +6841,6 @@ button {
   min-width: 0;
 }
 .set-head-actions {
-  display: flex;
-  align-items: center;
   gap: 4px;
   flex-shrink: 0;
 }
@@ -7143,8 +6895,6 @@ button {
 }
 
 .set-row {
-  display: flex;
-  align-items: center;
   gap: 24px;
   padding: 16px 0;
   border-bottom: 1px solid var(--bd-soft);
@@ -7175,8 +6925,6 @@ button {
 }
 .set-row-c {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 
@@ -7254,8 +7002,6 @@ button {
   height: 26px;
   border-radius: 8px;
   background: var(--sw);
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   color: oklch(0.18 0.02 60);
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
@@ -7278,8 +7024,6 @@ button {
 
 /* ── ACCOUNT ─────────────────────────────────────────────────────────── */
 .set-profile {
-  display: flex;
-  align-items: center;
   gap: 16px;
   padding: 4px 0 4px;
   margin-bottom: 8px;
@@ -7294,8 +7038,6 @@ button {
     color-mix(in oklch, var(--accent), black 22%)
   );
   color: oklch(0.18 0.02 60);
-  display: flex;
-  align-items: center;
   justify-content: center;
   font-size: 17px;
   font-weight: 600;
@@ -7382,8 +7124,6 @@ button {
   color: var(--danger);
 }
 .set-form-actions {
-  display: flex;
-  align-items: center;
   justify-content: flex-end;
   gap: 12px;
   margin-top: 4px;
@@ -7434,8 +7174,6 @@ button {
 }
 
 .set-prov-main {
-  display: flex;
-  align-items: center;
   gap: 13px;
   padding: 13px 15px;
 }
@@ -7459,8 +7197,6 @@ button {
 .chip-mono {
   flex-shrink: 0;
   position: relative;
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   border-radius: 7px;
   font-family: var(--font-mono);
@@ -7499,8 +7235,6 @@ button {
   min-width: 0;
 }
 .set-prov-name {
-  display: flex;
-  align-items: center;
   gap: 9px;
   flex-wrap: nowrap;
   font-size: 13.5px;
@@ -7518,15 +7252,10 @@ button {
   white-space: nowrap;
 }
 .set-prov-sub {
-  display: flex;
-  align-items: center;
   gap: 6px;
   font-size: 12px;
   color: var(--fg-2);
   margin-top: 3px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .set-prov-sub.muted {
   color: var(--fg-3);
@@ -7538,8 +7267,6 @@ button {
   flex-shrink: 0;
   border-radius: var(--r-sm);
   color: var(--fg-3);
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   transition:
     background 0.12s,
@@ -7582,8 +7309,6 @@ button {
 
 /* Binary path row: read-only by default, edit-in-place on the pencil. */
 .set-prov-bin-view {
-  display: flex;
-  align-items: center;
   gap: 8px;
   min-width: 0;
 }
@@ -7627,8 +7352,6 @@ button {
   min-width: 0;
 }
 .set-prov-bin-input-row {
-  display: flex;
-  align-items: center;
   gap: 6px;
   min-width: 0;
 }
@@ -7657,8 +7380,6 @@ button {
   color: var(--danger);
 }
 .set-prov-detail-actions {
-  display: flex;
-  align-items: center;
   gap: 6px;
   margin-top: 12px;
 }
@@ -7698,8 +7419,6 @@ button {
 
 /* ── quick-popover "All settings" footer button ──────────────────────── */
 .sp-allbtn {
-  display: flex;
-  align-items: center;
   gap: 9px;
   width: 100%;
   margin-top: 6px;
@@ -7757,9 +7476,7 @@ button {
 .err-boundary-box {
   max-width: 420px;
   text-align: center;
-  display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 10px;
 }
 .err-boundary-title {
@@ -7803,8 +7520,6 @@ button {
   gap: 5px;
 }
 .rdy-line {
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 .rdy-name {
@@ -7835,14 +7550,10 @@ button {
   background: var(--fg-3);
 }
 .rdy-fix {
-  display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
 }
 .rdy-cmd {
-  display: inline-flex;
-  align-items: center;
   gap: 8px;
   min-width: 0;
   max-width: 100%;
@@ -7863,8 +7574,6 @@ button {
   border-color: var(--fg-3);
 }
 .rdy-docs {
-  display: inline-flex;
-  align-items: center;
   gap: 4px;
   color: var(--accent);
   font-size: 11.5px;
@@ -7874,8 +7583,6 @@ button {
   font-size: 11.5px;
 }
 .rdy-foot {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   margin-top: 12px;
   padding-top: 12px;
@@ -7890,8 +7597,6 @@ button {
 /* Colored monogram tile standing in for a custom agent avatar; `--h` is the
    agent's hue (0-360). Used in the list, editor head, and composer picker. */
 .ca-mono {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   flex-shrink: 0;
   font-weight: 600;
@@ -7912,8 +7617,6 @@ button {
   gap: 8px;
 }
 .ca-card {
-  display: flex;
-  align-items: center;
   gap: 13px;
   padding: 12px 14px;
   border: 1px solid var(--bd-soft);
@@ -7937,16 +7640,12 @@ button {
   min-width: 0;
 }
 .ca-name {
-  display: flex;
-  align-items: center;
   gap: 10px;
   font-size: 13.5px;
   font-weight: 500;
   color: var(--fg-0);
 }
 .ca-base {
-  display: inline-flex;
-  align-items: center;
   gap: 5px;
   font-size: 11px;
   color: var(--fg-3);
@@ -7962,21 +7661,14 @@ button {
   font-size: 12px;
   color: var(--fg-2);
   margin-top: 3px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .ca-acts {
-  display: flex;
-  align-items: center;
   gap: 2px;
   flex-shrink: 0;
 }
 
 .ca-empty {
-  display: flex;
   flex-direction: column;
-  align-items: center;
   justify-content: center;
   gap: 10px;
   width: 100%;
@@ -7998,8 +7690,6 @@ button {
   background: var(--hover);
 }
 .ca-empty-ic {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   width: 34px;
   height: 34px;
@@ -8017,8 +7707,6 @@ button {
 }
 .ca-ed-back {
   align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
   gap: 5px;
   font-size: 12px;
   color: var(--fg-2);
@@ -8029,8 +7717,6 @@ button {
   color: var(--fg-0);
 }
 .ca-ed-head {
-  display: flex;
-  align-items: center;
   gap: 14px;
 }
 .ca-ed-mono {
@@ -8065,8 +7751,6 @@ button {
   border-color: var(--accent-line);
 }
 .ca-hues {
-  display: flex;
-  align-items: center;
   gap: 6px;
   flex-shrink: 0;
 }
@@ -8112,8 +7796,6 @@ button {
   font-family: var(--font-sans);
 }
 .ca-inject {
-  display: flex;
-  align-items: center;
   gap: 7px;
   font-size: 12px;
   color: var(--fg-2);
@@ -8135,8 +7817,6 @@ button {
 }
 
 .ca-ed-foot {
-  display: flex;
-  align-items: center;
   gap: 12px;
   margin-top: 6px;
   padding-top: 18px;
@@ -8149,8 +7829,6 @@ button {
 /* Custom agents section of the model picker dropdown — mirrors .model-agent-row. */
 .model-custom-row {
   width: 100%;
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding: 7px 9px;
   border-radius: 9px;
@@ -8196,8 +7874,6 @@ button {
 /* Empty-state call to action — opens the new-custom-agent editor. */
 .model-custom-cta {
   width: 100%;
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding: 7px 9px;
   border-radius: 9px;
@@ -8242,8 +7918,6 @@ button {
   width: 100%;
   height: 36px;
   padding: 0 10px 0 12px;
-  display: flex;
-  align-items: center;
   gap: 8px;
   border-radius: var(--r-md);
   border: 1px solid var(--bd);
@@ -8272,16 +7946,11 @@ button {
   flex-shrink: 0;
 }
 .ui-select-icon {
-  display: inline-flex;
-  align-items: center;
   flex-shrink: 0;
 }
 .ui-select-value {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .ui-select-value.is-placeholder {
   color: var(--fg-3);

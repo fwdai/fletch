@@ -41,7 +41,7 @@ export function AutocompleteMenu({ heading, rows, highlight, onPick, onHighlight
         <div
           key={i}
           ref={i === highlight ? activeRef : undefined}
-          className={`dd-item ac-item ${i === highlight ? "active" : ""}`}
+          className={`dd-item flex-center ac-item ${i === highlight ? "active" : ""}`}
           role="option"
           aria-selected={i === highlight}
           onMouseDown={(e) => {

@@ -96,8 +96,8 @@ export function UserInput({
   if (!committedLocally && result?.is_error && !pendingRequestId) {
     return (
       <div className="m-q is-dismissed">
-        <div className="q-head">
-          <span className="q-label dismissed">
+        <div className="q-head flex-center">
+          <span className="q-label iflex-center dismissed">
             <Icon name="close" size={11} /> Dismissed
           </span>
         </div>
@@ -134,8 +134,8 @@ export function UserInput({
   if (!committedLocally && result && !result.is_error && !fromTranscript) {
     return (
       <div className="m-q is-answered">
-        <div className="q-head">
-          <span className="q-label resolved">
+        <div className="q-head flex-center">
+          <span className="q-label iflex-center resolved">
             <Icon name="check" size={11} /> Answered
           </span>
         </div>
@@ -144,8 +144,8 @@ export function UserInput({
             {q.prompt}
           </div>
         ))}
-        <div className="q-answer">
-          <span className="qa-mark">
+        <div className="q-answer flex-center">
+          <span className="qa-mark iflex-center">
             <Icon name="check" size={10} />
           </span>
           <span className="qa-text">{resultText(result.content)}</span>

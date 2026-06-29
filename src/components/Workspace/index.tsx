@@ -27,7 +27,7 @@ export function Workspace() {
   if (!workspace || !agent) {
     return (
       <div className="pane center">
-        <div className="center-h">
+        <div className="center-h flex-center">
           <IconButton
             tip={leftCollapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
             onClick={toggleLeft}
@@ -72,14 +72,14 @@ function CrashBanner({ agent }: { agent: AgentRecord }) {
   // before `finally` runs.)
   const [resuming, setResuming] = useState(false);
   return (
-    <div className="crash-banner" role="alert">
+    <div className="crash-banner flex-center" role="alert">
       <div className="crash-text">
         <span className="crash-title">Agent stopped unexpectedly</span>
         {agent.last_error && <span className="crash-detail">{agent.last_error}</span>}
       </div>
       <button
         type="button"
-        className="btn-t outline"
+        className="btn-t iflex-center outline"
         disabled={resuming}
         onClick={() => {
           setResuming(true);

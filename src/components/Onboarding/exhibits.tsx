@@ -87,27 +87,27 @@ function ExhibitAgentRow({ a }: { a: ParallelAgent }) {
   return (
     <div className={`agent ${a.active ? "active" : ""}`}>
       <span className={`ag-rail ${rail}`} />
-      <div className="agent-row">
+      <div className="agent-row flex-center">
         <span className={`ag-name ${working ? "shimmer" : ""}`}>{a.name}</span>
         <span className="ag-prov-chip">
           <ProviderIcon slug={a.provider} {...providerChip(a.provider)} size={14} />
         </span>
-        <span className="ag-slot">
+        <span className="ag-slot iflex-center">
           <span className="ag-meta">
             {working && <span className="ag-loader" aria-label="Working" />}
             {!working && a.unseen && (
               <span className="ag-unseen" aria-label="New results to review" />
             )}
-            {a.status === "error" && <span className="ag-badge err">error</span>}
+            {a.status === "error" && <span className="ag-badge iflex-center err">error</span>}
           </span>
           <span className="ag-actions">
-            <span className="ag-act">
+            <span className="ag-act iflex-center">
               <Icon name={working ? "stop" : "archive"} size={11} />
             </span>
           </span>
         </span>
       </div>
-      <div className="agent-sub">
+      <div className="agent-sub flex-center">
         <span className="a-task">{a.task}</span>
         <span className="a-diff">
           <span className="add">+{a.add}</span> <span className="del">−{a.rem}</span>
@@ -125,7 +125,7 @@ export function ExhibitParallel() {
         <ExBar title="quorum — worktrees" />
         <div className="ex-side">
           <div className="proj">
-            <div className="proj-h open">
+            <div className="proj-h flex-center open">
               <Icon name="chevR" size={10} className="chev" />
               <span className="pname">quorum-core</span>
               <span className="pcount">4</span>

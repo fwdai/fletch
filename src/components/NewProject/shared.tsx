@@ -25,7 +25,7 @@ export function DestRow({
   return (
     <div className="np-field">
       <label>Location</label>
-      <button className="np-dest" onClick={onPick}>
+      <button className="np-dest flex-center" onClick={onPick}>
         <Icon name="folder" size={14} />
         {parent ? (
           <span className="np-dest-path">
@@ -50,7 +50,7 @@ export function DestRow({
 export function GhGate({ gh }: { gh: GhStatus }) {
   return (
     <div className="np-body">
-      <div className="np-gate">
+      <div className="np-gate flex-center">
         <Icon name="github" size={22} />
         {!gh.installed ? (
           <>

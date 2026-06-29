@@ -53,7 +53,11 @@ export function ProjectGroup({
 
   return (
     <div className="proj">
-      <div className={`proj-h ${open ? "open" : ""}`} onClick={onToggle} title={repoPath}>
+      <div
+        className={`proj-h flex-center ${open ? "open" : ""}`}
+        onClick={onToggle}
+        title={repoPath}
+      >
         <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
@@ -74,7 +78,7 @@ export function ProjectGroup({
       </div>
 
       <div className={`agents ${open ? "" : "closed"}`}>
-        <button className="agent-new" onClick={onAddAgent}>
+        <button className="agent-new flex-center" onClick={onAddAgent}>
           <Icon name="plus" size={11} />
           <span>New agent</span>
         </button>

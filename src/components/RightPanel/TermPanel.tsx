@@ -153,7 +153,7 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
   return (
     <div className="term-panel">
       {searchOpen && (
-        <div className="term-search">
+        <div className="term-search flex-center">
           <input
             autoFocus
             className="term-search-input"
@@ -169,20 +169,24 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
             }}
           />
           <button
-            className="btn-i sm tip"
+            className="btn-i iflex-center sm tip"
             data-tip="Previous (Shift+Enter)"
             onClick={() => runSearch(searchQuery, "prev")}
           >
             <Icon name="chevU" />
           </button>
           <button
-            className="btn-i sm tip"
+            className="btn-i iflex-center sm tip"
             data-tip="Next (Enter)"
             onClick={() => runSearch(searchQuery, "next")}
           >
             <Icon name="chevD" />
           </button>
-          <button className="btn-i sm tip" data-tip="Close (Esc)" onClick={closeSearch}>
+          <button
+            className="btn-i iflex-center sm tip"
+            data-tip="Close (Esc)"
+            onClick={closeSearch}
+          >
             <Icon name="close" />
           </button>
         </div>

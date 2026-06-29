@@ -129,7 +129,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
       onKeyDown={(e) => activateOnKey(e, onClick)}
     >
       <span className={`ag-rail ${railClass}`} />
-      <div className="agent-row">
+      <div className="agent-row flex-center">
         <span className={`ag-name ${working ? "shimmer" : ""}`}>{agent.name}</span>
         <span
           className="ag-prov-chip tip"
@@ -146,7 +146,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={14} />
           )}
         </span>
-        <span className="ag-slot">
+        <span className="ag-slot iflex-center">
           <span className="ag-meta">
             {working && <span className="ag-loader" aria-label="Working" />}
             {agent.status === "idle" && !active && unseen && (
@@ -156,17 +156,22 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
                 aria-label="New results to review"
               />
             )}
-            {agent.status === "error" && <span className="ag-badge err">error</span>}
+            {agent.status === "error" && <span className="ag-badge iflex-center err">error</span>}
           </span>
           <span className="ag-actions">
             {stoppable && (
-              <button className="ag-act tip" data-tip="Stop" onClick={onStop} aria-label="Stop">
+              <button
+                className="ag-act iflex-center tip"
+                data-tip="Stop"
+                onClick={onStop}
+                aria-label="Stop"
+              >
                 <Icon name="stop" size={11} />
               </button>
             )}
             {archivable && (
               <button
-                className="ag-act tip"
+                className="ag-act iflex-center tip"
                 data-tip="Archive"
                 onClick={onArchive}
                 aria-label="Archive"
@@ -177,7 +182,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
           </span>
         </span>
       </div>
-      <div className="agent-sub">
+      <div className="agent-sub flex-center">
         <span className="a-task">{taskOrBranch}</span>
         {prState ? <PrBadge pr={prState} /> : hasChanges ? <DiffStat stats={shortstats} /> : null}
         <span
@@ -213,7 +218,7 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
       onKeyDown={(e) => activateOnKey(e, onClick)}
     >
       <span className="ag-rail idle" />
-      <div className="agent-row">
+      <div className="agent-row flex-center">
         <span className="ag-name ag-name-draft">{draft.name}</span>
         <span
           className="ag-prov-chip tip"
@@ -222,13 +227,13 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
         >
           <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={14} />
         </span>
-        <span className="ag-slot">
+        <span className="ag-slot iflex-center">
           <span className="ag-meta">
-            <span className="ag-badge new">new</span>
+            <span className="ag-badge iflex-center new">new</span>
           </span>
           <span className="ag-actions">
             <button
-              className="ag-act tip"
+              className="ag-act iflex-center tip"
               data-tip="Discard"
               onClick={onDiscard}
               aria-label="Discard"
@@ -238,7 +243,7 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
           </span>
         </span>
       </div>
-      <div className="agent-sub">
+      <div className="agent-sub flex-center">
         <span className="a-task a-task-draft">Define task…</span>
       </div>
     </div>
@@ -252,14 +257,17 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
 function PrBadge({ pr }: { pr: PrState }) {
   if (pr.state === "merged") {
     return (
-      <span className="ag-badge pr-merged tip" data-tip={`PR #${pr.number} · merged`}>
+      <span className="ag-badge iflex-center pr-merged tip" data-tip={`PR #${pr.number} · merged`}>
         <Icon name="merge" size={10} />#{pr.number}
       </span>
     );
   }
   const cls = pr.state === "closed" ? "pr-closed" : "pr-open";
   return (
-    <span className={`ag-badge ${cls} tip`} data-tip={`PR #${pr.number} · ${pr.state}`}>
+    <span
+      className={`ag-badge iflex-center ${cls} tip`}
+      data-tip={`PR #${pr.number} · ${pr.state}`}
+    >
       <Icon name="pr" size={10} />
       PR
     </span>

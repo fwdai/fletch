@@ -104,7 +104,7 @@ export function History() {
       <div className="history-sheet" onClick={(e) => e.stopPropagation()}>
         {/* Search header */}
         <div className="hh">
-          <div className="hh-search">
+          <div className="hh-search flex-center">
             <Icon name="search" size={16} />
             <input
               autoFocus
@@ -145,7 +145,7 @@ export function History() {
                     return (
                       <button
                         key={a.id}
-                        className={`hrow archived${isFocused ? " focused" : ""}`}
+                        className={`hrow flex-center archived${isFocused ? " focused" : ""}`}
                         onClick={() => onRowClick(a.id)}
                         onMouseEnter={() => setFocusedIndex(myIdx)}
                         disabled={!!restoringId}
@@ -154,21 +154,21 @@ export function History() {
                         // parent opacity would otherwise cap the child rule).
                         style={{ opacity: !isRestoring && restoringId ? 0.5 : undefined }}
                       >
-                        <span className="hr-status">
+                        <span className="hr-status iflex-center">
                           <Icon name="dot" size={6} />
                         </span>
-                        <span className="hr-project">{repoLabel}</span>
+                        <span className="hr-project truncate">{repoLabel}</span>
                         <span className="hr-sep">/</span>
-                        <span className="hr-title">{task}</span>
+                        <span className="hr-title truncate">{task}</span>
                         {branchLabel && (
                           <>
                             <span className="hr-dot">·</span>
-                            <span className="hr-branch">{branchLabel}</span>
+                            <span className="hr-branch truncate">{branchLabel}</span>
                           </>
                         )}
                         <span className="hr-spacer" />
                         {showStats && (
-                          <span className="hr-diff">
+                          <span className="hr-diff iflex-center">
                             <span className="add">+{adds}</span>
                             <span className="rem">-{dels}</span>
                           </span>
@@ -212,7 +212,7 @@ export function History() {
         </div>
 
         {/* Footer */}
-        <div className="history-foot">
+        <div className="history-foot flex-center">
           <span>
             <kbd className="kbd">Esc</kbd> <span className="dim">to close</span>
           </span>

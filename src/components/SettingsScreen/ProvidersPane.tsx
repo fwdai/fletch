@@ -41,7 +41,7 @@ export function ProvidersPane() {
           <>
             {scanning && <span className="set-checked mono">Scanning…</span>}
             <button
-              className="btn-i tip"
+              className="btn-i iflex-center tip"
               data-tip-down
               data-tip="Coming soon"
               aria-label="Add provider"
@@ -50,7 +50,7 @@ export function ProvidersPane() {
               <Icon name="plus" />
             </button>
             <button
-              className="btn-i tip"
+              className="btn-i iflex-center tip"
               data-tip-down
               data-tip="Re-scan system"
               aria-label="Re-scan system"
@@ -111,21 +111,21 @@ function ProviderRow({
 
   return (
     <div className={`set-prov ${enabled ? "" : "off"} ${open ? "open" : ""}`}>
-      <div className="set-prov-main">
+      <div className="set-prov-main flex-center">
         <span
           className={`set-prov-status ${livePath ? "" : "none"}`}
           title={livePath ? "Detected on this system" : "Not found"}
         />
         <ProviderIcon slug={provider.id} short={provider.short} hue={provider.hue} />
         <div className="set-prov-id">
-          <div className="set-prov-name">
+          <div className="set-prov-name flex-center">
             {provider.label}
             <span className="set-prov-ver mono">{liveVersion ?? provider.version}</span>
           </div>
-          <div className="set-prov-sub mono">{effectivePath}</div>
+          <div className="set-prov-sub flex-center truncate mono">{effectivePath}</div>
         </div>
         <button
-          className={`set-prov-chev ${open ? "open" : ""}`}
+          className={`set-prov-chev iflex-center ${open ? "open" : ""}`}
           aria-label={open ? "Collapse details" : "Expand details"}
           onClick={() => setOpen((v) => !v)}
         >
@@ -144,8 +144,8 @@ function ProviderRow({
             onSave={onSavePath}
           />
           <ProvDetailRow k="Models" v={d.models} />
-          <div className="set-prov-detail-actions">
-            <button className="btn-t ghost sm-t">View logs</button>
+          <div className="set-prov-detail-actions flex-center">
+            <button className="btn-t iflex-center ghost sm-t">View logs</button>
           </div>
         </div>
       )}
