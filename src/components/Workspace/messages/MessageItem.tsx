@@ -5,6 +5,7 @@ import { stripInjectedInstructions } from "../../../util/instructions";
 import { AttachmentList } from "../../Composer/AttachmentList";
 import { Markdown } from "../../Markdown";
 import { APP_ACTION_PREFIX } from "../../RightPanel/delegation";
+import { CopyButton } from "../../ui/CopyButton";
 import { pairToolItems, rowKey, type ViewItem } from "./pair";
 import { getPresenter } from "./presenters";
 import { ToolResultItem } from "./ToolResultItem";
@@ -51,9 +52,17 @@ export function MessageItem({
       return <UserBubble text={item.text} attachments={item.attachments} queued />;
     case "agent_message":
       return (
-        <div className="m-agent">
-          <Markdown>{item.text}</Markdown>
-          {item.streaming && <span className="term-cursor" style={{ marginLeft: 4 }} />}
+        <div className="m-msg-wrap">
+          <div className="m-agent">
+            <Markdown>{item.text}</Markdown>
+            {item.streaming && <span className="term-cursor" style={{ marginLeft: 4 }} />}
+          </div>
+          {/* Copy is offered once the response has settled, not mid-stream. */}
+          {!item.streaming && (
+            <div className="m-actions">
+              <CopyButton text={item.text} />
+            </div>
+          )}
         </div>
       );
     case "tool_pair": {
@@ -124,13 +133,22 @@ function UserBubble({
   queued?: boolean;
   turnId?: number;
 }) {
+  const display = stripInjectedInstructions(text);
   return (
-    <div className={queued ? "m-user m-user--queued" : "m-user"} data-chat-turn={turnId}>
-      {stripInjectedInstructions(text)}
-      {attachments && attachments.length > 0 && (
-        <AttachmentList paths={attachments} className="message-attachments" />
+    <div className="m-msg-wrap is-user">
+      <div className={queued ? "m-user m-user--queued" : "m-user"} data-chat-turn={turnId}>
+        {display}
+        {attachments && attachments.length > 0 && (
+          <AttachmentList paths={attachments} className="message-attachments" />
+        )}
+        {queued && <span className="m-user__queued-tag">queued</span>}
+      </div>
+      {/* A queued follow-up isn't canonical yet, so skip its copy affordance. */}
+      {!queued && (
+        <div className="m-actions">
+          <CopyButton text={display} />
+        </div>
       )}
-      {queued && <span className="m-user__queued-tag">queued</span>}
     </div>
   );
 }
