@@ -118,6 +118,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     set({
       activeDraftId: id,
       selectedAgentId: null,
+      selectedRunId: null,
     }),
 
   setNewDraftSelection: (provider, model, customAgentId) => {

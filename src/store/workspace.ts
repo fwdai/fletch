@@ -26,6 +26,7 @@ const SLASH_BUSY_LABELS: Record<string, string> = {
 export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => ({
   workspace: null,
   selectedAgentId: null,
+  selectedRunId: null,
   managedLogs: {},
   pendingToolUse: {},
   transcriptLoading: {},
@@ -48,11 +49,24 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       }
       return {
         selectedAgentId: id,
+        selectedRunId: null,
         activeDraftId: null,
         historyOpen: false,
         selectedHistoryAgentId: null,
         unseenResults,
       };
+    }),
+
+  // Select a workflow run for the main pane. Mirrors selectAgent: clears
+  // agent/draft/history/settings selection.
+  selectRun: (id) =>
+    set({
+      selectedRunId: id,
+      selectedAgentId: null,
+      activeDraftId: null,
+      historyOpen: false,
+      selectedHistoryAgentId: null,
+      settingsScreenOpen: false,
     }),
 
   spawn: async (view, repoPath) => {

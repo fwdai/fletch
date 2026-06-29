@@ -15,13 +15,9 @@ export type SettingsSection =
   | "account"
   | "providers"
   | "agents"
+  | "workflows"
   | "experimental"
-  | "developer"
-  // Extension seam: extensions contribute settings panes under namespaced
-  // `ext:*` section ids (see src/extensions). The core knows the shape, never
-  // the specific extension; in a build with no extensions this branch is
-  // simply never reachable.
-  | `ext:${string}`;
+  | "developer";
 
 /** One-shot deep-link intent handed to a settings pane when it opens. */
 export type SettingsIntent = "new-custom-agent";

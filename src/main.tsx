@@ -7,6 +7,7 @@ import { revealAppWindow } from "./util/window";
 import "@fontsource/geist-sans/400.css";
 import "@fontsource/geist-sans/600.css";
 import "./app.css";
+import "./workflows/workflows.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
