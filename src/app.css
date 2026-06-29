@@ -16,6 +16,8 @@
   --r-lg: 14px;
 
   --ease: cubic-bezier(0.3, 0.7, 0.4, 1);
+  --transition-ui: background 0.12s, color 0.12s;
+  --transition-ui-ease: background 0.12s var(--ease), color 0.12s var(--ease);
 
   --dens-sm: 6px;
   --dens-md: 10px;
@@ -257,9 +259,7 @@ button {
   height: 26px;
   border-radius: var(--r-sm);
   color: var(--fg-1);
-  transition:
-    background 0.12s var(--ease),
-    color 0.12s var(--ease);
+  transition: var(--transition-ui-ease);
   position: relative;
 }
 .btn-i:hover:not(:disabled) {
@@ -570,9 +570,7 @@ button {
   align-items: center;
   justify-content: center;
   color: var(--fg-2);
-  transition:
-    background 0.12s,
-    color 0.12s;
+  transition: var(--transition-ui);
 }
 .proj-h:hover .padd {
   display: inline-flex;
@@ -1296,9 +1294,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition:
-    background 0.12s var(--ease),
-    color 0.12s var(--ease);
+  transition: var(--transition-ui-ease);
 }
 .chat-nav-btn {
   /* Stretch to the bar's width (set by the widest row — usually the count) so
@@ -1928,9 +1924,7 @@ button {
   font-weight: 500;
   background: transparent;
   border: 0;
-  transition:
-    background 0.12s,
-    color 0.12s;
+  transition: var(--transition-ui);
 }
 .q-other-cancel:hover {
   background: var(--hover);
@@ -2238,9 +2232,7 @@ button {
   border-radius: var(--r-xs);
   color: var(--fg-3);
   flex-shrink: 0;
-  transition:
-    background 0.12s,
-    color 0.12s;
+  transition: var(--transition-ui);
 }
 .attachment-remove:hover {
   background: var(--hover);
@@ -2382,9 +2374,7 @@ button {
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-2);
-  transition:
-    background 0.12s,
-    color 0.12s;
+  transition: var(--transition-ui);
 }
 .usage:hover .usage-chip {
   background: var(--hover);
@@ -3909,9 +3899,7 @@ button {
   white-space: nowrap;
   flex-shrink: 0;
   cursor: pointer;
-  transition:
-    background 0.12s,
-    color 0.12s;
+  transition: var(--transition-ui);
 }
 .git-commit .cm-title .cm-revert:hover {
   color: var(--fg-1);
@@ -4608,9 +4596,7 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition:
-    background 0.12s,
-    color 0.12s;
+  transition: var(--transition-ui);
 }
 .run-bar.v2 .run-gear:hover {
   background: var(--hover);
@@ -6971,9 +6957,7 @@ button {
   font-size: 12.5px;
   color: var(--fg-2);
   font-weight: 500;
-  transition:
-    background 0.12s,
-    color 0.12s;
+  transition: var(--transition-ui);
 }
 .set-back:hover {
   background: var(--hover);
@@ -7001,9 +6985,7 @@ button {
   color: var(--fg-1);
   font-weight: 500;
   position: relative;
-  transition:
-    background 0.12s,
-    color 0.12s;
+  transition: var(--transition-ui);
 }
 .set-nav-item svg {
   color: var(--fg-2);
@@ -7240,9 +7222,7 @@ button {
   font-size: 12px;
   font-weight: 500;
   color: var(--fg-2);
-  transition:
-    background 0.12s,
-    color 0.12s;
+  transition: var(--transition-ui);
 }
 .set-seg button:hover {
   color: var(--fg-0);
@@ -7619,9 +7599,7 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition:
-    background 0.12s,
-    color 0.12s;
+  transition: var(--transition-ui);
 }
 .btn-i.sm-i:hover:not(:disabled) {
   background: var(--hover);
@@ -8214,9 +8192,7 @@ button {
   border-radius: 9px;
   color: var(--fg-2);
   text-align: left;
-  transition:
-    background 0.12s var(--ease),
-    color 0.12s var(--ease);
+  transition: var(--transition-ui-ease);
 }
 .model-custom-cta:hover {
   background: var(--hover);
