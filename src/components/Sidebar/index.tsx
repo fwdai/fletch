@@ -111,7 +111,7 @@ export function Sidebar() {
       <div className="side-scroll">
         <div className="side-section">
           <button
-            className="add-proj-cta flex-center"
+            className="add-proj-cta flex-center text-sm"
             onClick={() => setNpOpen(true)}
             aria-label="Add project"
           >

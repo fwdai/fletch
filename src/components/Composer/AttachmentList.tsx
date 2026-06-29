@@ -21,7 +21,7 @@ export function AttachmentList({ paths, onRemove, className = "composer-attachme
   return (
     <div className={className}>
       {paths.map((path) => (
-        <span key={path} className="attachment iflex-center" title={path}>
+        <span key={path} className="attachment iflex-center text-sm" title={path}>
           <Icon name="file" size={12} />
           <span className="attachment-name truncate">{basename(path)}</span>
           {onRemove && (

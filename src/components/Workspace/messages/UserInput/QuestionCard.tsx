@@ -102,7 +102,7 @@ export function QuestionCard({
         <span className="q-label iflex-center">
           <Icon name="sparkle" size={11} /> Needs your input
           {total > 1 && (
-            <span className="q-step">
+            <span className="q-step text-2xs">
               {index + 1}/{total}
             </span>
           )}
@@ -111,7 +111,7 @@ export function QuestionCard({
       </div>
       <div className="q-prompt">{question.prompt}</div>
       {question.body && (
-        <div className="q-body">
+        <div className="q-body text-base">
           <Markdown>{question.body}</Markdown>
         </div>
       )}
@@ -148,11 +148,11 @@ export function QuestionCard({
               <span className="q-opt-body">
                 <span className="q-opt-top">
                   <span className="q-opt-label">{o.label}</span>
-                  {o.recommended && <span className="q-rec">Recommended</span>}
+                  {o.recommended && <span className="q-rec text-2xs">Recommended</span>}
                 </span>
                 {o.desc && <span className="q-opt-desc">{o.desc}</span>}
               </span>
-              {!question.multiSelect && <span className="q-kbd iflex-center">{i + 1}</span>}
+              {!question.multiSelect && <span className="q-kbd iflex-center text-xs">{i + 1}</span>}
             </button>
           );
         })}
@@ -178,7 +178,7 @@ export function QuestionCard({
           <div className="q-other">
             <textarea
               ref={otherRef}
-              className="q-other-input"
+              className="q-other-input text-base"
               placeholder="Tell the agent what you'd prefer…"
               value={otherText}
               onChange={(e) => setOtherText(e.target.value)}
@@ -194,13 +194,13 @@ export function QuestionCard({
               }}
             />
             <div className="q-other-foot flex-center">
-              <span className="q-other-hint iflex-center">
+              <span className="q-other-hint iflex-center text-xs">
                 <span className="kbd">↵</span> to send
               </span>
               <span className="grow" />
               <button
                 type="button"
-                className="q-other-cancel"
+                className="q-other-cancel text-sm"
                 onClick={() => {
                   setOtherOpen(false);
                   setOtherText("");

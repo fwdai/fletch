@@ -48,10 +48,10 @@ export function PRCard({
   const gate = CARD_GATE_BY_SITUATION[situation];
   return (
     <div className="git-card">
-      <div className="git-card-h">Pull request</div>
-      <div className="git-card-title">{pr.title}</div>
-      <div className="git-card-meta">#{pr.number} · open</div>
-      <div className="git-card-row">
+      <div className="git-card-h text-2xs">Pull request</div>
+      <div className="git-card-title text-base">{pr.title}</div>
+      <div className="git-card-meta text-sm">#{pr.number} · open</div>
+      <div className="git-card-row text-sm">
         <span className={gate.cls}>{gate.text(base)}</span>
       </div>
       {checks && <ChecksSection checks={checks} prUrl={pr.url} />}
@@ -89,9 +89,9 @@ export function PRCard({
 export function ClosedPRCard({ pr }: { pr: PrState }) {
   return (
     <div className="git-card">
-      <div className="git-card-h">Pull request</div>
-      <div className="git-card-title">{pr.title}</div>
-      <div className="git-card-meta">#{pr.number} · closed</div>
+      <div className="git-card-h text-2xs">Pull request</div>
+      <div className="git-card-title text-base">{pr.title}</div>
+      <div className="git-card-meta text-sm">#{pr.number} · closed</div>
       <button
         type="button"
         className="git-card-link iflex-center"

@@ -67,12 +67,12 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
           {tabs.map((t) => (
             <button
               key={t.id}
-              className={`r-tab iflex-center ${tab === t.id ? "active" : ""}`}
+              className={`r-tab iflex-center text-sm ${tab === t.id ? "active" : ""}`}
               onClick={() => selectTab(t.id)}
             >
               <Icon name={t.icon} />
               {t.label}
-              {t.count != null && t.count > 0 && <span className="count">{t.count}</span>}
+              {t.count != null && t.count > 0 && <span className="count text-2xs">{t.count}</span>}
             </button>
           ))}
         </div>

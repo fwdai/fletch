@@ -68,8 +68,8 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
         {/* Header */}
         <div className="run-sheet-h">
           <div className="rsh-left">
-            <div className="rsh-title">Run configuration</div>
-            <div className="rsh-sub">
+            <div className="rsh-title text-base">Run configuration</div>
+            <div className="rsh-sub text-sm">
               {ecosystem ? (
                 <>
                   Detected · <code>{ECOSYSTEM_LABEL[ecosystem] ?? ecosystem}</code>
@@ -88,7 +88,7 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
         <div className="run-sheet-body">
           {groups.map((g) => (
             <div key={g} className="rs-group">
-              <div className="rs-group-h">{g}</div>
+              <div className="rs-group-h text-2xs">{g}</div>
               <div className="rs-group-rows">
                 {rows
                   .filter((r) => r.group === g)
@@ -108,7 +108,7 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
 
         {/* Footer */}
         <div className="run-sheet-f flex-center">
-          <div className="rsf-status truncate">
+          <div className="rsf-status truncate text-sm">
             {changed.length === 0 ? (
               <span style={{ color: "var(--fg-3)" }}>No overrides — using detected values</span>
             ) : (
@@ -167,8 +167,8 @@ function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps) {
   return (
     <div className={`rs-row flex-center${hasOverride ? " overridden" : ""}`}>
       <div className="rs-row-l">
-        <div className="rs-label">{row.key}</div>
-        <div className="rs-source iflex-center">
+        <div className="rs-label text-base">{row.key}</div>
+        <div className="rs-source iflex-center text-xs">
           {hasOverride ? (
             <>
               <span className="dot" />
@@ -185,7 +185,7 @@ function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps) {
         {editing ? (
           <input
             ref={inputRef}
-            className="rs-input"
+            className="rs-input text-sm"
             type="text"
             defaultValue={display}
             placeholder={row.value}
@@ -204,7 +204,7 @@ function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps) {
             }}
           />
         ) : (
-          <button className="rs-value iflex-center" onClick={() => setEditing(true)}>
+          <button className="rs-value iflex-center text-sm" onClick={() => setEditing(true)}>
             <span className="rsv-text">{display}</span>
             <Icon name="edit" size={10} />
           </button>

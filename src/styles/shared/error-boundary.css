@@ -17,8 +17,8 @@
 }
 .err-boundary-msg {
   color: var(--fg-2);
-  font-size: 12.5px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-base);
+  font-family: var(--font-mono);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 6em;

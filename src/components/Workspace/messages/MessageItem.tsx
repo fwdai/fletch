@@ -53,7 +53,7 @@ export function MessageItem({
     case "agent_message":
       return (
         <div className="m-msg-wrap">
-          <div className="m-agent">
+          <div className="m-agent text-lg">
             <Markdown>{item.text}</Markdown>
             {item.streaming && <span className="term-cursor" style={{ marginLeft: 4 }} />}
           </div>
@@ -141,7 +141,7 @@ function UserBubble({
         {attachments && attachments.length > 0 && (
           <AttachmentList paths={attachments} className="message-attachments" />
         )}
-        {queued && <span className="m-user__queued-tag">queued</span>}
+        {queued && <span className="m-user__queued-tag text-xs">queued</span>}
       </div>
       {/* A queued follow-up isn't canonical yet, so skip its copy affordance. */}
       {!queued && (

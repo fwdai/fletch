@@ -85,14 +85,16 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
           }}
         >
           <span className="model-option-main">
-            <span className="model-option-name truncate def">Default model</span>
-            <span className="model-option-desc truncate">Use {p.label}'s configured default</span>
+            <span className="model-option-name truncate def text-base">Default model</span>
+            <span className="model-option-desc truncate text-xs">
+              Use {p.label}'s configured default
+            </span>
           </span>
           {isCurrent && !model && <Icon name="check" size={13} />}
         </button>
 
         {models.length === 0 ? (
-          <div className="model-empty">
+          <div className="model-empty text-sm">
             {p.fixedModel
               ? `${p.label} manages its own model — no selection needed.`
               : `Model catalog unavailable for ${p.label}.`}
@@ -111,10 +113,10 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                 }}
               >
                 <span className="model-option-main">
-                  <span className="model-option-name truncate">{m.name}</span>
+                  <span className="model-option-name truncate text-base">{m.name}</span>
                 </span>
                 {m.contextWindow > 0 && (
-                  <span className="model-ctx">{formatContext(m.contextWindow)}</span>
+                  <span className="model-ctx text-2xs">{formatContext(m.contextWindow)}</span>
                 )}
                 {active && <Icon name="check" size={13} />}
               </button>
@@ -166,7 +168,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
             onMouseLeave={() => setHovered(null)}
           >
             <div className="model-dd-main">
-              <div className="model-sect flex-center">
+              <div className="model-sect flex-center text-2xs">
                 <span>Coding agents</span>
                 <span className="model-sect-line" />
               </div>
@@ -196,8 +198,8 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                     onClick={() => usable && pickModel(p.id, undefined)}
                   >
                     <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={26} />
-                    <span className="model-agent-name truncate">{p.label}</span>
-                    <span className="model-agent-ver">
+                    <span className="model-agent-name truncate text-base">{p.label}</span>
+                    <span className="model-agent-ver text-2xs">
                       {missing ? "Not installed" : (providerVersions[p.id] ?? p.version)}
                     </span>
                     {usable && <Icon name="chevR" size={12} />}
@@ -205,7 +207,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                 );
               })}
 
-              <div className="model-sect flex-center">
+              <div className="model-sect flex-center text-2xs">
                 <span>Custom agents</span>
                 <span className="model-sect-line" />
               </div>
@@ -261,8 +263,10 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                         hue={hoveredAgent.hue}
                         size={20}
                       />
-                      <span className="model-side-fly-name truncate">{hoveredAgent.label}</span>
-                      <span className="model-side-fly-tag">model</span>
+                      <span className="model-side-fly-name truncate text-base">
+                        {hoveredAgent.label}
+                      </span>
+                      <span className="model-side-fly-tag text-2xs">model</span>
                     </div>
                     <div className="model-side-fly-list">{renderModelList(hoveredAgent)}</div>
                   </div>

@@ -15,7 +15,7 @@ export function NewProject({ mode, onClose }: { mode: NewProjectMode; onClose: (
     <>
       <Scrim onClose={onClose} zIndex={300} />
       <div className="np-modal" role="dialog" aria-modal="true">
-        <div className="np-modal-h flex-center">
+        <div className="np-modal-h flex-center text-base">
           <Icon name={mode === "clone" ? "github" : "sparkle"} size={15} />
           <span>{mode === "clone" ? "Clone from GitHub" : "Create new project"}</span>
           <button className="np-close flex-center" aria-label="Close" onClick={onClose}>

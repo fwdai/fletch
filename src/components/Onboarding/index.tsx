@@ -189,18 +189,18 @@ export function Onboarding() {
     <div className="ob">
       <div className="ob-tb" data-tauri-drag-region>
         <div className="ob-tb-gutter" data-tauri-drag-region />
-        <div className="ob-tb-mark">
+        <div className="ob-tb-mark text-2xs">
           <span className="d" />
           <span>QUORUM</span>
         </div>
         <div className="ob-tb-right">
           {step.kind !== "ignite" && (
-            <span className="ob-step-count">
+            <span className="ob-step-count text-xs">
               <b>{Math.min(idx + 1, RAIL_LEN)}</b> / {RAIL_LEN}
             </span>
           )}
           {step.kind !== "ignite" && (
-            <button className="ob-skip" onClick={() => go(STEPS.length - 1)}>
+            <button className="ob-skip text-sm" onClick={() => go(STEPS.length - 1)}>
               Skip
             </button>
           )}
@@ -229,7 +229,7 @@ export function Onboarding() {
           <div className="ob-foot">
             <div className="ob-foot-l">
               {showBack && (
-                <button className="ob-back" onClick={back}>
+                <button className="ob-back text-base" onClick={back}>
                   <Icon name="chevL" /> Back
                 </button>
               )}
@@ -247,7 +247,7 @@ export function Onboarding() {
             </div>
             <div className="ob-foot-r">
               {showNext && (
-                <button className="ob-next" onClick={next}>
+                <button className="ob-next text-base" onClick={next}>
                   Continue <Icon name="arrowR" />
                 </button>
               )}

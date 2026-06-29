@@ -24,7 +24,6 @@
   padding: 8px 10px;
   margin-bottom: 14px;
   border-radius: var(--r-sm);
-  font-size: 12.5px;
   color: var(--fg-2);
   font-weight: 500;
   transition: var(--transition-ui);
@@ -49,7 +48,6 @@
   gap: 11px;
   padding: 9px 11px;
   border-radius: var(--r-md);
-  font-size: 13px;
   color: var(--fg-1);
   font-weight: 500;
   position: relative;
@@ -90,7 +88,6 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 10.5px;
   color: var(--fg-2);
   letter-spacing: 0.04em;
 }
@@ -148,7 +145,6 @@
   flex-shrink: 0;
 }
 .set-eyebrow {
-  font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -157,7 +153,6 @@
   margin-bottom: 12px;
 }
 .set-h1 {
-  font-size: 30px;
   font-weight: 500;
   letter-spacing: -0.025em;
   color: var(--fg-0);
@@ -165,7 +160,6 @@
   line-height: 1.05;
 }
 .set-lead {
-  font-size: 13.5px;
   line-height: 1.6;
   color: var(--fg-2);
   margin: 12px 0 0;
@@ -185,7 +179,6 @@
   padding-top: 0;
 }
 .set-group-h {
-  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -213,13 +206,11 @@
   min-width: 0;
 }
 .set-row-t {
-  font-size: 13.5px;
   color: var(--fg-0);
   font-weight: 500;
   letter-spacing: -0.005em;
 }
 .set-row-s {
-  font-size: 12px;
   color: var(--fg-2);
   line-height: 1.5;
   margin-top: 3px;
@@ -281,7 +272,7 @@
   height: 26px;
   padding: 0 14px;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--fg-2);
   transition: var(--transition-ui);
@@ -342,7 +333,6 @@
   );
   color: var(--btn-fg-dark-alt);
   justify-content: center;
-  font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.02em;
   flex-shrink: 0;
@@ -354,7 +344,6 @@
   min-width: 0;
 }
 .set-profile-name {
-  font-size: 17px;
   font-weight: 600;
   color: var(--fg-0);
   letter-spacing: -0.015em;
@@ -364,7 +353,6 @@
   font-weight: 500;
 }
 .set-profile-mail {
-  font-size: 12.5px;
   color: var(--fg-2);
   margin-top: 2px;
 }
@@ -393,7 +381,6 @@
   min-width: 0;
 }
 .set-field-label {
-  font-size: 12px;
   color: var(--fg-1);
   font-weight: 500;
 }
@@ -403,7 +390,6 @@
   border-radius: var(--r-md);
   border: 1px solid var(--bd);
   background: var(--bg-0);
-  font-size: 13px;
   color: var(--fg-0);
   transition:
     border-color 0.15s,
@@ -423,7 +409,6 @@
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--danger), transparent 88%);
 }
 .set-field-error {
-  font-size: 11.5px;
   color: var(--danger);
 }
 .set-form-actions {
@@ -432,7 +417,6 @@
   margin-top: 4px;
 }
 .set-saved {
-  font-size: 12px;
   color: var(--success);
 }
 .btn-t.primary:disabled {
@@ -442,7 +426,6 @@
 
 /* ── PROVIDERS ───────────────────────────────────────────────────────── */
 .set-checked {
-  font-size: 11px;
   color: var(--fg-3);
   white-space: nowrap;
   margin-right: 6px;
@@ -503,7 +486,7 @@
   justify-content: center;
   border-radius: 7px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.02em;
   border: 1px solid color-mix(in oklch, var(--ph, var(--accent)) 50%, transparent);
@@ -540,7 +523,6 @@
 .set-prov-name {
   gap: 9px;
   flex-wrap: nowrap;
-  font-size: 13.5px;
   font-weight: 600;
   color: var(--fg-0);
   letter-spacing: -0.01em;
@@ -549,14 +531,12 @@
   flex-shrink: 0;
 }
 .set-prov-ver {
-  font-size: 11px;
   color: var(--fg-3);
   font-weight: 400;
   white-space: nowrap;
 }
 .set-prov-sub {
   gap: 6px;
-  font-size: 12px;
   color: var(--fg-2);
   margin-top: 3px;
 }
@@ -595,7 +575,7 @@
   gap: 14px;
   align-items: baseline;
   padding: 5px 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .set-prov-dk {
   color: var(--fg-3);
@@ -623,7 +603,6 @@
   color: var(--accent);
 }
 .set-prov-bin-warn {
-  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--warn);
@@ -663,7 +642,6 @@
   min-width: 0;
   height: 26px;
   padding: 0 8px;
-  font-size: 12px;
   color: var(--fg-0);
   background: var(--bg-1);
   border: 1px solid var(--bd);
@@ -675,11 +653,9 @@
   border-color: var(--accent);
 }
 .set-prov-bin-hint {
-  font-size: 11px;
   color: var(--fg-3);
 }
 .set-prov-bin-err {
-  font-size: 11px;
   color: var(--danger);
 }
 .set-prov-detail-actions {
@@ -692,7 +668,7 @@
 .btn-t.sm-t {
   height: 26px;
   padding: 0 10px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 .btn-t.danger {
@@ -729,7 +705,7 @@
   border-radius: var(--r-sm);
   border: 1px solid var(--bd-soft);
   background: var(--bg-1);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--fg-1);
   font-weight: 500;
   transition:

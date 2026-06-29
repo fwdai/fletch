@@ -71,7 +71,6 @@
   background: var(--bg-0);
   border: 1px solid var(--bd-soft);
   font-family: var(--font-mono);
-  font-size: 11.5px;
   color: var(--fg-0);
   overflow: hidden;
 }
@@ -94,7 +93,6 @@
   padding: 0 8px;
   border-radius: var(--r-sm);
   font-family: var(--font-mono);
-  font-size: 11px;
   color: var(--fg-1);
   text-decoration: none;
   border: 1px solid var(--bd-soft);
@@ -163,7 +161,6 @@
   overflow-y: auto;
   min-height: 0;
   font-family: var(--font-mono);
-  font-size: 11.5px;
   line-height: 1.65;
   padding: 10px 18px 16px;
   color: var(--fg-1);
@@ -271,19 +268,17 @@
   min-width: 0;
 }
 .rsh-title {
-  font-size: 13px;
   font-weight: 600;
   color: var(--fg-0);
   letter-spacing: -0.005em;
 }
 .rsh-sub {
   margin-top: 3px;
-  font-size: 11.5px;
   color: var(--fg-2);
 }
 .rsh-sub code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-1);
   padding: 0 4px;
   background: var(--bg-2);
@@ -317,7 +312,6 @@
   margin-top: 14px;
 }
 .rs-group-h {
-  font-size: 9.5px;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -367,19 +361,17 @@
   min-width: 0;
 }
 .rs-label {
-  font-size: 12.5px;
   color: var(--fg-0);
   font-weight: 500;
 }
 .rs-source {
   margin-top: 2px;
-  font-size: 10.5px;
   color: var(--fg-3);
   gap: 4px;
 }
 .rs-source code {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-2);
 }
 .rs-source .dot {
@@ -404,7 +396,6 @@
   border: 1px solid var(--bd-soft);
   border-radius: var(--r-sm);
   font-family: var(--font-mono);
-  font-size: 11.5px;
   color: var(--fg-0);
   cursor: text;
   transition:
@@ -434,7 +425,6 @@
   outline: none;
   border-radius: var(--r-sm);
   font-family: var(--font-mono);
-  font-size: 11.5px;
   color: var(--fg-0);
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 85%);
 }
@@ -474,7 +464,6 @@
   flex-shrink: 0;
 }
 .rsf-status {
-  font-size: 11.5px;
   color: var(--fg-2);
   min-width: 0;
   flex: 1;
@@ -488,7 +477,7 @@
   background: transparent;
   border: 0;
   color: var(--fg-2);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   padding: 6px 10px;
   border-radius: var(--r-sm);
 }

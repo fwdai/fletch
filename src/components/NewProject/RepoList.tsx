@@ -41,10 +41,10 @@ export function RepoList({ selected, onSelect }: Props) {
   }, [repos, query]);
 
   if (error) {
-    return <div className="np-list-msg e">Couldn’t load your repos: {error}</div>;
+    return <div className="np-list-msg e text-base">Couldn’t load your repos: {error}</div>;
   }
   if (!repos) {
-    return <div className="np-list-msg">Loading your repositories…</div>;
+    return <div className="np-list-msg text-base">Loading your repositories…</div>;
   }
 
   return (
@@ -60,7 +60,7 @@ export function RepoList({ selected, onSelect }: Props) {
       </div>
       <div className="np-list">
         {filtered.length === 0 && (
-          <div className="np-list-msg">
+          <div className="np-list-msg text-base">
             {query.trim() ? `No repositories match “${query}”.` : "No repositories found."}
           </div>
         )}
@@ -72,11 +72,13 @@ export function RepoList({ selected, onSelect }: Props) {
           >
             <Icon name="github" size={13} />
             <div className="np-repo-text">
-              <div className="np-repo-name flex-center">
+              <div className="np-repo-name flex-center text-base">
                 {r.name_with_owner}
-                {r.is_private && <span className="np-priv">Private</span>}
+                {r.is_private && <span className="np-priv text-2xs">Private</span>}
               </div>
-              {r.description && <div className="np-repo-desc truncate">{r.description}</div>}
+              {r.description && (
+                <div className="np-repo-desc truncate text-sm">{r.description}</div>
+              )}
             </div>
           </button>
         ))}

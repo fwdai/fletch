@@ -28,7 +28,7 @@ export function DestRow({
       <button className="np-dest flex-center" onClick={onPick}>
         <Icon name="folder" size={14} />
         {parent ? (
-          <span className="np-dest-path">
+          <span className="np-dest-path text-base">
             {trimmed}
             {name ? (
               <span className="np-dest-name">
@@ -38,7 +38,7 @@ export function DestRow({
             ) : null}
           </span>
         ) : (
-          <span className="np-dest-empty">Choose a folder…</span>
+          <span className="np-dest-empty text-base">Choose a folder…</span>
         )}
         <Icon name="chevR" size={13} />
       </button>
@@ -54,16 +54,16 @@ export function GhGate({ gh }: { gh: GhStatus }) {
         <Icon name="github" size={22} />
         {!gh.installed ? (
           <>
-            <div className="np-gate-t">GitHub CLI not found</div>
-            <div className="np-gate-s">
+            <div className="np-gate-t text-base">GitHub CLI not found</div>
+            <div className="np-gate-s text-sm">
               Install the <code>gh</code> CLI to clone and create GitHub repositories, then reopen
               this dialog.
             </div>
           </>
         ) : (
           <>
-            <div className="np-gate-t">Not signed in to GitHub</div>
-            <div className="np-gate-s">
+            <div className="np-gate-t text-base">Not signed in to GitHub</div>
+            <div className="np-gate-s text-sm">
               Run <code>gh auth login</code> in your terminal, then reopen this dialog.
             </div>
           </>

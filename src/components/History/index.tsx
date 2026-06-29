@@ -104,9 +104,10 @@ export function History() {
       <div className="history-sheet" onClick={(e) => e.stopPropagation()}>
         {/* Search header */}
         <div className="hh">
-          <div className="hh-search flex-center">
+          <div className="hh-search flex-center text-lg">
             <Icon name="search" size={16} />
             <input
+              className="text-lg"
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -118,15 +119,17 @@ export function History() {
         {/* Scrollable list */}
         <div className="history-list" ref={listRef}>
           {filtered.length === 0 ? (
-            <div className="h-empty">{query ? "No matches" : "No archived sessions yet"}</div>
+            <div className="h-empty text-base">
+              {query ? "No matches" : "No archived sessions yet"}
+            </div>
           ) : (
             (() => {
               let flatIdx = 0;
               return groups.map(({ label, items }) => (
                 <div key={label}>
                   <div className="hg-h">
-                    <span className="hg-d">{label}</span>
-                    <span className="hg-n">{items.length}</span>
+                    <span className="hg-d text-sm">{label}</span>
+                    <span className="hg-n text-sm">{items.length}</span>
                   </div>
                   {items.map((a) => {
                     const myIdx = flatIdx++;
@@ -145,7 +148,7 @@ export function History() {
                     return (
                       <button
                         key={a.id}
-                        className={`hrow flex-center archived${isFocused ? " focused" : ""}`}
+                        className={`hrow flex-center archived text-base${isFocused ? " focused" : ""}`}
                         onClick={() => onRowClick(a.id)}
                         onMouseEnter={() => setFocusedIndex(myIdx)}
                         disabled={!!restoringId}
@@ -157,24 +160,26 @@ export function History() {
                         <span className="hr-status iflex-center">
                           <Icon name="dot" size={6} />
                         </span>
-                        <span className="hr-project truncate">{repoLabel}</span>
-                        <span className="hr-sep">/</span>
-                        <span className="hr-title truncate">{task}</span>
+                        <span className="hr-project truncate text-base">{repoLabel}</span>
+                        <span className="hr-sep text-base">/</span>
+                        <span className="hr-title truncate text-base">{task}</span>
                         {branchLabel && (
                           <>
-                            <span className="hr-dot">·</span>
-                            <span className="hr-branch truncate">{branchLabel}</span>
+                            <span className="hr-dot text-base">·</span>
+                            <span className="hr-branch truncate text-sm">{branchLabel}</span>
                           </>
                         )}
                         <span className="hr-spacer" />
                         {showStats && (
-                          <span className="hr-diff iflex-center">
+                          <span className="hr-diff iflex-center text-sm">
                             <span className="add">+{adds}</span>
                             <span className="rem">-{dels}</span>
                           </span>
                         )}
-                        <span className="hr-date">{when}</span>
-                        <span className={`hr-goto iflex-center${isRestoring ? " restoring" : ""}`}>
+                        <span className="hr-date text-sm">{when}</span>
+                        <span
+                          className={`hr-goto iflex-center text-sm${isRestoring ? " restoring" : ""}`}
+                        >
                           {isRestoring ? (
                             <>
                               <span className="dots">
@@ -212,7 +217,7 @@ export function History() {
         </div>
 
         {/* Footer */}
-        <div className="history-foot flex-center">
+        <div className="history-foot flex-center text-xs">
           <span>
             <kbd className="kbd">Esc</kbd> <span className="dim">to close</span>
           </span>

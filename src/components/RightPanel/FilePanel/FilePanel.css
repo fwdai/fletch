@@ -42,7 +42,7 @@
   outline: 0;
   background: transparent;
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-0);
 }
 .fp-search input::placeholder {
@@ -74,7 +74,6 @@
   background: var(--bg-0);
   color: var(--fg-2);
   font-family: var(--font-sans);
-  font-size: 11px;
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -94,7 +93,6 @@
 }
 .fp-filter .fp-filter-count {
   font-family: var(--font-mono);
-  font-size: 10px;
   color: var(--fg-3);
 }
 .fp-filter.on {
@@ -130,7 +128,7 @@
   text-align: left;
   color: var(--fg-1);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   letter-spacing: -0.005em;
   position: relative;
 }
@@ -187,7 +185,7 @@
 .fp-badge {
   flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   width: 15px;
   height: 15px;
@@ -206,7 +204,7 @@
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   border-radius: var(--r-xs);
   --badge-color: var(--warn);
@@ -285,7 +283,6 @@
   background: color-mix(in oklch, var(--danger), transparent 92%);
   color: var(--danger);
   border-radius: var(--r-sm);
-  font-size: 11.5px;
   /* The banner is pinned above the tree, so it can't scroll off-screen — a
      brief flash on appear draws the eye when an op fails deep in the list. */
   animation: fp-op-error-flash 0.6s var(--ease);
@@ -341,7 +338,6 @@
   align-items: baseline;
   gap: 1px;
   font-family: var(--font-mono);
-  font-size: 12px;
   overflow: hidden;
   white-space: nowrap;
 }
@@ -371,7 +367,6 @@
   gap: 7px;
   padding: 6px 12px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
   color: var(--fg-2);
   border-top: 1px solid var(--bd-soft);
   background: var(--bg-1);
@@ -406,7 +401,7 @@
   cursor: pointer;
   color: var(--fg-2);
   font-family: var(--font-sans);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 500;
 }
 .fp-meta-btn:hover {
@@ -435,7 +430,6 @@
   background: transparent;
   color: var(--fg-2);
   font-family: var(--font-sans);
-  font-size: 10.5px;
   font-weight: 500;
   cursor: pointer;
 }
@@ -452,7 +446,7 @@
   flex-shrink: 0;
   gap: 8px;
   padding: 8px 12px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 .fp-banner.del {
   color: var(--danger);
@@ -497,7 +491,6 @@
   text-align: right;
   padding-right: 9px;
   font-family: var(--font-mono);
-  font-size: 10px;
   line-height: 18px;
   color: var(--fg-3);
   user-select: none;
@@ -538,7 +531,7 @@
   border: 0;
   padding: 8px 14px 16px 12px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   line-height: 18px;
   letter-spacing: 0;
   tab-size: 2;

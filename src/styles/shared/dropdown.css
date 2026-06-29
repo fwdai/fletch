@@ -24,7 +24,7 @@
   gap: 9px;
   padding: 7px 9px;
   border-radius: var(--r-sm);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--fg-1);
   cursor: default;
 }
@@ -51,7 +51,7 @@
 }
 .dd-item .di-m {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-3);
 }
 .dd-sep {
@@ -61,7 +61,7 @@
 }
 .dd-sect {
   padding: 7px 9px 4px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;

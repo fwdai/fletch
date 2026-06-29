@@ -28,12 +28,12 @@ export function SetHead({
     <header className="set-head">
       <div className="set-head-top">
         <div className="set-head-titles">
-          <div className="set-eyebrow mono">{eyebrow}</div>
-          <h1 className="set-h1">{title}</h1>
+          <div className="set-eyebrow mono text-2xs">{eyebrow}</div>
+          <h1 className="set-h1 text-4xl">{title}</h1>
         </div>
         {actions && <div className="set-head-actions flex-center">{actions}</div>}
       </div>
-      {desc && <p className="set-lead">{desc}</p>}
+      {desc && <p className="set-lead text-base">{desc}</p>}
     </header>
   );
 }
@@ -49,7 +49,7 @@ export function SetGroup({
 }) {
   return (
     <section className={`set-group ${last ? "last" : ""}`}>
-      {label && <div className="set-group-h mono">{label}</div>}
+      {label && <div className="set-group-h mono text-2xs">{label}</div>}
       <div className="set-rows">{children}</div>
     </section>
   );
@@ -69,8 +69,8 @@ export function SetRow({
   return (
     <div className={`set-row flex-center ${align === "start" ? "align-start" : ""}`}>
       <div className="set-row-l">
-        <div className="set-row-t">{title}</div>
-        {sub && <div className="set-row-s">{sub}</div>}
+        <div className="set-row-t text-base">{title}</div>
+        {sub && <div className="set-row-s text-sm">{sub}</div>}
       </div>
       {children && <div className="set-row-c flex-center">{children}</div>}
     </div>

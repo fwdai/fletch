@@ -35,8 +35,8 @@ export function DeviceCode({
             <p className="ob-device-lede">
               Finish signing in to {label} in your browser, then enter this code:
             </p>
-            <div className="ob-device-code">{info.userCode}</div>
-            <p className="ob-device-uri">{info.verificationUri}</p>
+            <div className="ob-device-code text-4xl">{info.userCode}</div>
+            <p className="ob-device-uri text-base">{info.verificationUri}</p>
             <button className="ob-cancel" onClick={onCancel}>
               Cancel
             </button>

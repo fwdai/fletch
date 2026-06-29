@@ -123,7 +123,7 @@ export function OnboardingReadiness() {
       </div>
 
       <div className="ob-rdy-foot">
-        <span className="ob-rdy-count">
+        <span className="ob-rdy-count text-sm">
           {checking
             ? "checking…"
             : providersProbed

@@ -204,7 +204,7 @@ export function CodeLivePanel({
     <div className="code-wrap">
       {/* header: totals + follow toggle */}
       <div className="code-h flex-center">
-        <div className="code-h-l">
+        <div className="code-h-l text-sm">
           <span className="ch-count">
             {files.length}
             <span className="dim"> files</span>
@@ -215,7 +215,7 @@ export function CodeLivePanel({
         </div>
         {displayPath && (
           <button
-            className="code-open tip"
+            className="code-open tip text-xs"
             data-tip-down
             data-tip="Open this file in the editor"
             onClick={() => onOpenInEditor(displayPath)}
@@ -225,7 +225,7 @@ export function CodeLivePanel({
           </button>
         )}
         <button
-          className={`code-follow ${follow ? "on" : "off"} ${busy ? "live" : ""} tip`}
+          className={`code-follow ${follow ? "on" : "off"} ${busy ? "live" : ""} tip text-xs`}
           data-tip-down
           data-tip={
             follow ? "Auto-following the agent's current file" : "Click to auto-follow agent edits"
@@ -246,13 +246,13 @@ export function CodeLivePanel({
             <button
               key={f.path}
               role="tab"
-              className={`code-tab iflex-center ${f.path === displayPath ? "active" : ""} ${live ? "live" : ""} status-${statusLetter(f.kind).toLowerCase()}`}
+              className={`code-tab iflex-center text-sm ${f.path === displayPath ? "active" : ""} ${live ? "live" : ""} status-${statusLetter(f.kind).toLowerCase()}`}
               onClick={() => onPickTab(f.path)}
               title={f.path}
             >
-              <span className="ct-status">{statusLetter(f.kind)}</span>
+              <span className="ct-status text-2xs">{statusLetter(f.kind)}</span>
               <span className="ct-name">{base}</span>
-              <span className="ct-stats">
+              <span className="ct-stats text-2xs">
                 {f.additions > 0 && <span className="a">+{f.additions}</span>}
                 {f.deletions > 0 && <span className="r">−{f.deletions}</span>}
               </span>

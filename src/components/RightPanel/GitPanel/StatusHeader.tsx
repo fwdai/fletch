@@ -127,12 +127,12 @@ export function StatusHeader({
   return (
     <div className={`git-hdr flex-center k-${h.kind}`}>
       {h.dot && <span className="hdr-dot" />}
-      {h.pill && <span className="pill">{h.pill}</span>}
-      <span className="bn">{h.text}</span>
-      {h.sub && <span className="base">{h.sub}</span>}
+      {h.pill && <span className="pill text-2xs">{h.pill}</span>}
+      <span className="bn text-sm">{h.text}</span>
+      {h.sub && <span className="base text-xs">{h.sub}</span>}
       <div className="hdr-meta">
         {h.diff && (adds > 0 || dels > 0) && (
-          <span className="hdr-diff">
+          <span className="hdr-diff text-xs">
             {adds > 0 && <span className="add">+{adds}</span>}
             {dels > 0 && <span className="rem">−{dels}</span>}
           </span>

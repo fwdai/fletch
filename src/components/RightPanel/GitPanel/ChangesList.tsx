@@ -36,7 +36,7 @@ export function ChangesList({
 }) {
   return (
     <div className="git-files">
-      <div className="git-files-h flex-center">
+      <div className="git-files-h flex-center text-2xs">
         <span>
           Changes <span className="n">{files.length}</span>
         </span>
@@ -50,12 +50,12 @@ export function ChangesList({
         {files.map((f) => (
           <div
             key={f.path}
-            className={`git-file flex-center ${selected === f.path ? "active" : ""}`}
+            className={`git-file flex-center text-sm ${selected === f.path ? "active" : ""}`}
             onClick={() => onSelect(f.path)}
           >
-            <span className={`gs ${f.kind}`}>{kindLabel(f.kind)}</span>
+            <span className={`gs text-2xs ${f.kind}`}>{kindLabel(f.kind)}</span>
             <span className="gn">{f.path}</span>
-            <span className="gx">
+            <span className="gx text-2xs">
               {f.additions > 0 && <span className="add">+{f.additions}</span>}
               {f.deletions > 0 && <span className="rem">−{f.deletions}</span>}
             </span>

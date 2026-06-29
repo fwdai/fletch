@@ -36,7 +36,7 @@ export function ChatSearch({
       <input
         id="chat-search-input"
         ref={inputRef}
-        className="chat-search-input"
+        className="chat-search-input text-base"
         placeholder="Find in conversation…"
         value={query}
         spellCheck={false}

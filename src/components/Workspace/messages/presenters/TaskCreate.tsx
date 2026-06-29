@@ -46,7 +46,7 @@ export const taskCreatePresenter: ToolPresenter = {
               padding: "4px 0 4px 14px",
               color: "var(--fg-2)",
               borderLeft: "2px solid var(--accent-line)",
-              fontSize: 13.5,
+              fontSize: "var(--fs-base)",
               lineHeight: 1.6,
               whiteSpace: "pre-wrap",
               wordBreak: "break-word",
@@ -60,7 +60,7 @@ export const taskCreatePresenter: ToolPresenter = {
             style={{
               marginBottom: metadata || result ? 12 : 0,
               color: "var(--fg-3)",
-              fontSize: 13,
+              fontSize: "var(--fs-base)",
             }}
           >
             ⟳ {activeForm}
@@ -72,7 +72,7 @@ export const taskCreatePresenter: ToolPresenter = {
             className={result.is_error ? "m-agent" : "m-agent m-agent-dim"}
             style={{
               color: result.is_error ? "var(--danger)" : undefined,
-              fontSize: 13.5,
+              fontSize: "var(--fs-base)",
             }}
           >
             <Markdown>{renderToolResult(result.content)}</Markdown>

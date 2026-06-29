@@ -84,7 +84,7 @@ export function Select<T extends string>({
     <div className="ui-select">
       <button
         type="button"
-        className={`ui-select-trigger flex-center ${open ? "open" : ""}`}
+        className={`ui-select-trigger flex-center text-base ${open ? "open" : ""}`}
         disabled={disabled}
         aria-label={ariaLabel}
         aria-haspopup="listbox"

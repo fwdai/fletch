@@ -58,7 +58,7 @@ export function SettingsScreen() {
   return (
     <div className="set-screen">
       <nav className="set-nav">
-        <button className="set-back flex-center" onClick={close}>
+        <button className="set-back flex-center text-base" onClick={close}>
           <Icon name="chevL" size={13} />
           <span>Back to app</span>
         </button>
@@ -66,7 +66,7 @@ export function SettingsScreen() {
           {NAV.map((n) => (
             <button
               key={n.id}
-              className={`set-nav-item flex-center ${section === n.id ? "active" : ""}`}
+              className={`set-nav-item flex-center text-base ${section === n.id ? "active" : ""}`}
               onClick={() => setSection(n.id)}
             >
               <Icon name={n.icon} size={14} />
@@ -74,7 +74,7 @@ export function SettingsScreen() {
             </button>
           ))}
         </div>
-        <div className="set-nav-foot">
+        <div className="set-nav-foot text-2xs">
           <span className="mono">Quorum</span>
           <span className="mono dim">v{pkg.version}</span>
         </div>

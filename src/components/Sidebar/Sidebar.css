@@ -11,7 +11,6 @@
   padding: 0 10px;
   border: 1px solid var(--bd-soft);
   border-radius: var(--r-md);
-  font-size: 12.5px;
   color: var(--fg-2);
   transition:
     border-color 0.12s,
@@ -58,7 +57,6 @@
   border: 1px dashed var(--bd);
   border-radius: var(--r-md);
   color: var(--fg-2);
-  font-size: 12px;
   font-weight: 500;
   transition:
     border-color 0.12s,
@@ -83,7 +81,7 @@
   padding: 0 8px;
   height: 28px;
   border-radius: var(--r-sm);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -115,7 +113,7 @@
   width: 22px;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-3);
 }
 .proj-h .padd {
@@ -173,7 +171,7 @@
   display: block;
   padding: 7px 9px 7px 13px;
   border-radius: var(--r-sm);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--fg-1);
   transition: background 0.12s;
   position: relative;
