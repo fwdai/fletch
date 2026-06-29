@@ -89,35 +89,37 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     // whether to inject it live (claude) or queue it (per-turn agents); the
     // store never drives delivery.
     const wasBusy = get().managedBusy[id] === true;
+    const slashName = wasBusy ? null : passthroughSlashName(providerFor(get(), id), text);
+    // Build the optimistic entry once and keep its reference: a failed send flags
+    // *this exact bubble* by identity (indexOf below), not by position, so a
+    // concurrent records-rebuild (onSessionRecordsAppended) that reorders or
+    // drops log entries mid-flight can't make us mark the wrong prompt.
+    const entry: ChatItem = wasBusy
+      ? attachments.length > 0
+        ? { kind: "queued_message", text, attachments }
+        : { kind: "queued_message", text }
+      : slashName
+        ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
+        : attachments.length > 0
+          ? { kind: "user_message", text, attachments }
+          : { kind: "user_message", text };
     try {
-      set((state) => {
-        const slashName = wasBusy ? null : passthroughSlashName(providerFor(state, id), text);
-        const entry: ChatItem = wasBusy
-          ? attachments.length > 0
-            ? { kind: "queued_message", text, attachments }
-            : { kind: "queued_message", text }
-          : slashName
-            ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
-            : attachments.length > 0
-              ? { kind: "user_message", text, attachments }
-              : { kind: "user_message", text };
-        return {
-          managedLogs: {
-            ...state.managedLogs,
-            [id]: [...(state.managedLogs[id] ?? []), entry],
-          },
-          // Only assert busy / set the slash label when *starting* a turn.
-          ...(wasBusy
-            ? {}
-            : {
-                managedBusy: { ...state.managedBusy, [id]: true },
-                managedBusyLabel: {
-                  ...state.managedBusyLabel,
-                  [id]: slashName ? SLASH_BUSY_LABELS[slashName] : undefined,
-                },
-              }),
-        };
-      });
+      set((state) => ({
+        managedLogs: {
+          ...state.managedLogs,
+          [id]: [...(state.managedLogs[id] ?? []), entry],
+        },
+        // Only assert busy / set the slash label when *starting* a turn.
+        ...(wasBusy
+          ? {}
+          : {
+              managedBusy: { ...state.managedBusy, [id]: true },
+              managedBusyLabel: {
+                ...state.managedBusyLabel,
+                [id]: slashName ? SLASH_BUSY_LABELS[slashName] : undefined,
+              },
+            }),
+      }));
       try {
         await api.sendUserMessage(id, turnId, text, attachments, thinking);
       } catch (e) {
@@ -137,21 +139,22 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         // A failed mid-turn follow-up must not stop the still-running turn, and
         // there's no standalone bubble of ours to flag (it rendered as queued).
         if (wasBusy) return { lastError: String(e) };
-        // Flag the optimistic user bubble we just pushed so the chat can offer a
-        // retry. It's the last log entry — unless this was a passthrough slash
-        // command (rendered as a notice), in which case there's no bubble to
-        // flag and we leave the log alone.
-        const log = state.managedLogs[id] ?? [];
-        const last = log[log.length - 1];
-        const managedLogs =
-          last?.kind === "user_message"
-            ? { ...state.managedLogs, [id]: [...log.slice(0, -1), { ...last, failed: true }] }
-            : state.managedLogs;
-        return {
+        const base = {
           lastError: String(e),
-          managedLogs,
           managedBusy: { ...state.managedBusy, [id]: false },
         };
+        // Flag our optimistic bubble so the chat can offer a retry — located by
+        // identity, not position. A passthrough slash command is a notice (not a
+        // retryable bubble), and if a concurrent rebuild dropped our entry the
+        // reference is gone: either way we leave the log untouched rather than
+        // mark a stale prompt failed.
+        if (entry.kind !== "user_message") return base;
+        const log = state.managedLogs[id] ?? [];
+        const idx = log.indexOf(entry);
+        if (idx === -1) return base;
+        const next = [...log];
+        next[idx] = { ...entry, failed: true };
+        return { ...base, managedLogs: { ...state.managedLogs, [id]: next } };
       });
     }
   },
