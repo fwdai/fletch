@@ -23,7 +23,7 @@ export function AttachmentList({ paths, onRemove, className = "composer-attachme
       {paths.map((path) => (
         <span key={path} className="attachment iflex-center" title={path}>
           <Icon name="file" size={12} />
-          <span className="attachment-name">{basename(path)}</span>
+          <span className="attachment-name truncate">{basename(path)}</span>
           {onRemove && (
             <button
               type="button"
