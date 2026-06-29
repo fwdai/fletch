@@ -94,7 +94,9 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.1);
   /* button/badge foreground on accent backgrounds */
-  --btn-fg-light: oklch(0.98 0.005 60); /* primary buttons in light theme */
+  --btn-fg-dark: oklch(0.16 0.02 60);
+  --btn-fg-dark-alt: oklch(0.18 0.02 60);
+  --btn-fg-light: oklch(0.98 0.005 60);
   color-scheme: light;
 }
 
