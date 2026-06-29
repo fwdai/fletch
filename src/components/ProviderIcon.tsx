@@ -70,7 +70,9 @@ export function ProviderIcon({ slug, short, hue, size = 30 }: ProviderIconProps)
     };
   }, [slug]);
 
-  const cls = ["chip-mono", svg && !failed ? "has-brand-icon" : ""].filter(Boolean).join(" ");
+  const cls = ["chip-mono", "iflex-center", svg && !failed ? "has-brand-icon" : ""]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <span
