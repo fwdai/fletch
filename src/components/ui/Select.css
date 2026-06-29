@@ -1,0 +1,76 @@
+/* ── UI SELECT (custom dropdown replacing native <select>) ───────────────── */
+.ui-select {
+  position: relative;
+}
+.ui-select-trigger {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px 0 12px;
+  gap: 8px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--bd);
+  background: var(--bg-0);
+  font-size: 13px;
+  color: var(--fg-0);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.ui-select-trigger:hover:not(:disabled) {
+  border-color: var(--fg-3);
+}
+.ui-select-trigger.open {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 90%);
+}
+.ui-select-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ui-select-trigger > svg {
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.ui-select-icon {
+  flex-shrink: 0;
+}
+.ui-select-value {
+  flex: 1;
+  min-width: 0;
+}
+.ui-select-value.is-placeholder {
+  color: var(--fg-3);
+}
+.ui-select-dd {
+  top: calc(100% + 4px);
+  left: 0;
+  width: 100%;
+  min-width: 0;
+  max-height: min(300px, 40vh);
+  overflow-y: auto;
+}
+/* Options are <button>s for keyboard operability — reset UA chrome and make
+   them full-width so they read like the div-based .dd-item rows elsewhere. */
+.ui-select-dd .dd-item {
+  width: 100%;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.ui-select-dd .dd-item .di-l {
+  font-size: 13px;
+}
+.ui-select-dd .dd-item > svg {
+  margin-left: auto;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.ui-select-dd .dd-item:focus-visible {
+  outline: none;
+  background: var(--hover);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}

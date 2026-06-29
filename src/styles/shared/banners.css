@@ -1,0 +1,157 @@
+/* error banner */
+.error-banner {
+  position: fixed;
+  left: 50%;
+  /* Sit just below the 36px title bar, anchored to the top. */
+  top: calc(36px + 8px);
+  transform: translateX(-50%);
+  max-width: 720px;
+  padding: 10px 36px 10px 14px;
+  /* Same light-red the old transparent tint produced over the app
+     background, but fully opaque — mixed with --bg-0 instead of transparent
+     so content never bleeds through. Mixed in sRGB (not oklch) so it behaves
+     like alpha compositing and keeps danger's hue instead of interpolating
+     toward the blue-hued background. */
+  background: color-mix(in srgb, var(--danger), var(--bg-0) 80%);
+  border: 1px solid color-mix(in srgb, var(--danger), var(--bg-0) 50%);
+  color: var(--fg-0);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  z-index: var(--z-toast);
+  box-shadow: var(--shadow-2);
+}
+.error-banner .close {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  color: var(--fg-2);
+  font-size: 14px;
+  border-radius: var(--r-xs);
+}
+.error-banner .close:hover {
+  background: color-mix(in srgb, var(--danger), var(--bg-0) 65%);
+  color: var(--fg-0);
+}
+
+/* Inline per-agent crash notice under the workspace header (status === error).
+   Same danger tint as .error-banner, but inline (not a floating toast). */
+.crash-banner {
+  gap: 12px;
+  margin: 8px 12px 0;
+  padding: 8px 10px 8px 12px;
+  background: color-mix(in srgb, var(--danger), var(--bg-0) 86%);
+  border: 1px solid color-mix(in srgb, var(--danger), var(--bg-0) 70%);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+}
+.crash-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.crash-title {
+  color: var(--danger);
+  font-weight: 600;
+}
+.crash-detail {
+  color: var(--fg-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Crash reasons can be long; clamp so the banner doesn't dominate. */
+  max-height: 4.5em;
+  overflow: auto;
+}
+.crash-banner .btn-t {
+  flex-shrink: 0;
+}
+
+/* update-ready toast — bottom-right, offers restart now / skip */
+.update-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 360px;
+  padding: 12px 14px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
+  z-index: var(--z-toast);
+  transform-origin: bottom right;
+  /* Spring-like reveal: rise from below + overshoot past full size, then
+     settle. The back-eased curve gives the "pop". */
+  animation: update-toast-in 0.42s cubic-bezier(0.18, 0.9, 0.32, 1.4) both;
+}
+@keyframes update-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.update-toast > svg {
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  color: var(--accent);
+  flex: none;
+  /* The icon pops in just after the card lands. */
+  animation: update-toast-icon-in 0.5s 0.12s var(--ease) both;
+}
+@keyframes update-toast-icon-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4) rotate(-12deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.15) rotate(0deg);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-toast,
+  .update-toast > svg {
+    animation: none;
+  }
+}
+.update-toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.update-toast-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.update-toast-text strong {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+.update-toast-text span {
+  color: var(--fg-2);
+}
+.update-toast-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}

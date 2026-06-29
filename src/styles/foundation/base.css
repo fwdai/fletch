@@ -1,0 +1,54 @@
+/* ── UTILITIES ─────────────────────────────────────────────────────────── */
+.flex-center {
+  display: flex;
+  align-items: center;
+}
+.iflex-center {
+  display: inline-flex;
+  align-items: center;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* reset */
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-0);
+  color: var(--fg-0);
+  font-size: 13.5px;
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+  color: inherit;
+  font-size: inherit;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  margin: 0;
+}
+button {
+  cursor: default;
+}
+::selection {
+  background: var(--accent-soft);
+}
