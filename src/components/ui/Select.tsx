@@ -84,15 +84,15 @@ export function Select<T extends string>({
     <div className="ui-select">
       <button
         type="button"
-        className={`ui-select-trigger ${open ? "open" : ""}`}
+        className={`ui-select-trigger flex-center ${open ? "open" : ""}`}
         disabled={disabled}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => !disabled && setOpen((v) => !v)}
       >
-        {selected?.icon && <span className="ui-select-icon">{selected.icon}</span>}
-        <span className={`ui-select-value ${selected ? "" : "is-placeholder"}`}>
+        {selected?.icon && <span className="ui-select-icon iflex-center">{selected.icon}</span>}
+        <span className={`ui-select-value truncate ${selected ? "" : "is-placeholder"}`}>
           {selected?.label ?? placeholder}
         </span>
         <Icon name="chevD" size={11} />
@@ -108,10 +108,10 @@ export function Select<T extends string>({
                 type="button"
                 role="option"
                 aria-selected={o.value === value}
-                className={`dd-item ${o.value === value ? "active" : ""}`}
+                className={`dd-item flex-center ${o.value === value ? "active" : ""}`}
                 onClick={() => pick(o.value)}
               >
-                {o.icon && <span className="ui-select-icon">{o.icon}</span>}
+                {o.icon && <span className="ui-select-icon iflex-center">{o.icon}</span>}
                 <span className="di-l">{o.label}</span>
                 {o.hint && <span className="di-m">{o.hint}</span>}
                 {o.value === value && <Icon name="check" size={12} />}

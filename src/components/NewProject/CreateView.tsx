@@ -81,7 +81,7 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
       {error && <div className="np-error">{error}</div>}
 
       <div className="np-actions">
-        <button className="np-primary" disabled={!canCreate} onClick={onCreate}>
+        <button className="np-primary flex-center" disabled={!canCreate} onClick={onCreate}>
           {busy ? (
             <>
               <Icon name="refresh" size={13} /> Creating…

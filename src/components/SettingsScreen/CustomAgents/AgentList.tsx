@@ -43,15 +43,15 @@ export function AgentList({
         title="Custom agents"
         desc="Give a base coding agent a name, a model, and a standing brief. Custom agents show up in the composer next to the built-ins."
         actions={
-          <button className="btn-t primary" onClick={onNew}>
+          <button className="btn-t iflex-center primary" onClick={onNew}>
             <Icon name="plus" size={13} /> New agent
           </button>
         }
       />
 
       {agents.length === 0 ? (
-        <button className="ca-empty" onClick={onNew}>
-          <span className="ca-empty-ic">
+        <button className="ca-empty flex-center" onClick={onNew}>
+          <span className="ca-empty-ic iflex-center">
             <Icon name="plus" />
           </span>
           <span>Create your first custom agent</span>
@@ -63,7 +63,7 @@ export function AgentList({
             return (
               <div
                 key={a.id}
-                className="ca-card"
+                className="ca-card flex-center"
                 role="button"
                 tabIndex={0}
                 onClick={() => onEdit(a)}
@@ -76,9 +76,9 @@ export function AgentList({
               >
                 <Mono name={a.name} hue={a.color} />
                 <div className="ca-id">
-                  <div className="ca-name">
+                  <div className="ca-name flex-center">
                     {a.name}
-                    <span className="ca-base">
+                    <span className="ca-base iflex-center">
                       <span
                         className="ca-base-dot"
                         style={{ background: `oklch(0.7 0.1 ${prov?.hue ?? 30})` }}
@@ -86,13 +86,13 @@ export function AgentList({
                       {prov?.label ?? a.base} · {modelLabel(a)}
                     </span>
                   </div>
-                  <div className="ca-desc">
+                  <div className="ca-desc truncate">
                     {a.description || a.instructions || "No instructions yet."}
                   </div>
                 </div>
-                <div className="ca-acts" onClick={(e) => e.stopPropagation()}>
+                <div className="ca-acts flex-center" onClick={(e) => e.stopPropagation()}>
                   <button
-                    className="btn-i sm tip"
+                    className="btn-i iflex-center sm tip"
                     data-tip-down
                     data-tip="Duplicate"
                     aria-label="Duplicate"
@@ -101,7 +101,7 @@ export function AgentList({
                     <Icon name="copy" />
                   </button>
                   <button
-                    className="btn-i sm tip"
+                    className="btn-i iflex-center sm tip"
                     data-tip-down
                     data-tip="Edit"
                     aria-label="Edit"
@@ -110,7 +110,7 @@ export function AgentList({
                     <Icon name="edit" />
                   </button>
                   <button
-                    className={`btn-i sm tip ${armedDeleteId === a.id ? "danger" : ""}`}
+                    className={`btn-i iflex-center sm tip ${armedDeleteId === a.id ? "danger" : ""}`}
                     data-tip-down
                     data-tip={armedDeleteId === a.id ? "Click again to delete" : "Delete"}
                     aria-label={armedDeleteId === a.id ? "Confirm delete" : "Delete"}

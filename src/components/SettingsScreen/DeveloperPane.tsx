@@ -24,7 +24,7 @@ export function DeveloperPane() {
         >
           <button
             type="button"
-            className="btn-t outline"
+            className="btn-t iflex-center outline"
             onClick={() => {
               closeSettingsScreen();
               openOnboarding();
@@ -43,7 +43,7 @@ export function DeveloperPane() {
         >
           <button
             type="button"
-            className="btn-t outline"
+            className="btn-t iflex-center outline"
             onClick={() => {
               closeSettingsScreen();
               setUpdateReady("9.9.9-test");

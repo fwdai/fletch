@@ -203,9 +203,9 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
         dirty={saveState === "saving"}
         actions={
           canDiff ? (
-            <span className="fp-vh-actions">
+            <span className="fp-vh-actions iflex-center">
               <button
-                className={`fp-meta-btn ${diffView ? "active" : ""}`}
+                className={`fp-meta-btn iflex-center ${diffView ? "active" : ""}`}
                 title={diffView ? "Back to the file" : "Show what the agent changed"}
                 onClick={() => setView((v) => (v === "diff" ? "code" : "diff"))}
               >
@@ -221,13 +221,13 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
       ) : (
         <>
           {isDeleted && (
-            <div className="fp-banner del">
+            <div className="fp-banner flex-center del">
               <Icon name="trash" size={12} />
               <span>Deleted by the agent. Edits here re-create the file.</span>
             </div>
           )}
           {file.status === "A" && value === originalText && (
-            <div className="fp-banner add">
+            <div className="fp-banner flex-center add">
               <Icon name="plus" size={12} />
               <span>New file added by the agent.</span>
             </div>
@@ -268,7 +268,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
         </>
       )}
 
-      <div className="fp-meta">
+      <div className="fp-meta flex-center">
         <span className="fp-meta-lang">{langLabel(file.lang)}</span>
         {diffView ? (
           <>
@@ -305,7 +305,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
         <span className="fp-meta-grow"></span>
         {!diffView && editedFromAgent && (
           <button
-            className="fp-meta-btn"
+            className="fp-meta-btn iflex-center"
             title="Discard edits, restore the agent's version"
             onClick={() => void revert()}
           >

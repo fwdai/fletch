@@ -17,8 +17,8 @@ interface ViewerHeaderProps {
 export function ViewerHeader({ name, dir, status, dirty, onBack, actions }: ViewerHeaderProps) {
   const st = status ? status.toLowerCase() : "";
   return (
-    <div className="fp-viewer-h">
-      <button className="fp-back" title="Back to files" onClick={onBack}>
+    <div className="fp-viewer-h flex-center">
+      <button className="fp-back iflex-center" title="Back to files" onClick={onBack}>
         <Icon name="chevL" size={13} />
       </button>
       <FileIcon name={name} />
@@ -27,7 +27,7 @@ export function ViewerHeader({ name, dir, status, dirty, onBack, actions }: View
         <span className="fp-crumb-file">{name}</span>
         {dirty && <span className="fp-crumb-dot" title="Unsaved changes"></span>}
       </div>
-      {status && <span className={`fp-badge s-${st}`}>{status}</span>}
+      {status && <span className={`fp-badge iflex-center s-${st}`}>{status}</span>}
       {actions}
     </div>
   );

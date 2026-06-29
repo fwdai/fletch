@@ -130,7 +130,7 @@ export function OnboardingReadiness() {
               ? `${detected} of ${agents.length} agents detected`
               : "couldn't detect agents"}
         </span>
-        <button type="button" className="btn-t outline" onClick={recheck} disabled={checking}>
+        <button type="button" className="btn-t iflex-center outline" onClick={recheck} disabled={checking}>
           <Icon name="refresh" size={11} />
           {checking ? "checking…" : "re-check"}
         </button>
@@ -165,7 +165,7 @@ function CheckRow({
         <div className="ob-rdy-check-fix">
           {fix && <CopyCmd cmd={fix} />}
           {docs && (
-            <button type="button" className="rdy-docs" onClick={() => void openExternal(docs)}>
+            <button type="button" className="rdy-docs iflex-center" onClick={() => void openExternal(docs)}>
               guide <Icon name="external" size={9} />
             </button>
           )}
@@ -203,7 +203,7 @@ function AgentTile({
         <div className="ob-rdy-tile-fix">
           {fix && <CopyCmd cmd={fix} />}
           {docs && (
-            <button type="button" className="rdy-docs" onClick={() => void openExternal(docs)}>
+            <button type="button" className="rdy-docs iflex-center" onClick={() => void openExternal(docs)}>
               install <Icon name="external" size={9} />
             </button>
           )}
@@ -218,7 +218,7 @@ function CopyCmd({ cmd }: { cmd: string }) {
   return (
     <button
       type="button"
-      className="rdy-cmd"
+      className="rdy-cmd iflex-center"
       title="Copy command"
       onClick={() => {
         void navigator.clipboard.writeText(cmd);

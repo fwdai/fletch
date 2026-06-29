@@ -21,13 +21,13 @@ export function AttachmentList({ paths, onRemove, className = "composer-attachme
   return (
     <div className={className}>
       {paths.map((path) => (
-        <span key={path} className="attachment" title={path}>
+        <span key={path} className="attachment iflex-center" title={path}>
           <Icon name="file" size={12} />
           <span className="attachment-name">{basename(path)}</span>
           {onRemove && (
             <button
               type="button"
-              className="attachment-remove"
+              className="attachment-remove iflex-center"
               aria-label={`Remove ${basename(path)}`}
               onClick={() => onRemove(path)}
             >

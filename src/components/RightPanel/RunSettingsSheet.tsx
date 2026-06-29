@@ -79,7 +79,7 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
               )}
             </div>
           </div>
-          <button className="run-sheet-x" onClick={onClose} aria-label="Close">
+          <button className="run-sheet-x iflex-center" onClick={onClose} aria-label="Close">
             <Icon name="close" size={12} />
           </button>
         </div>
@@ -107,8 +107,8 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
         </div>
 
         {/* Footer */}
-        <div className="run-sheet-f">
-          <div className="rsf-status">
+        <div className="run-sheet-f flex-center">
+          <div className="rsf-status truncate">
             {changed.length === 0 ? (
               <span style={{ color: "var(--fg-3)" }}>No overrides — using detected values</span>
             ) : (
@@ -122,14 +122,14 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
           </div>
           <div className="rsf-actions">
             <button
-              className="btn-t ghost"
+              className="btn-t iflex-center ghost"
               onClick={() => setDraft({})}
               disabled={Object.keys(draft).length === 0}
             >
               Reset all
             </button>
 
-            <button className="btn-t primary" onClick={() => onApply(draft)} disabled={!dirty}>
+            <button className="btn-t iflex-center primary" onClick={() => onApply(draft)} disabled={!dirty}>
               <Icon name="refresh" size={11} />
               Apply &amp; restart
             </button>
@@ -164,7 +164,7 @@ function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps) {
     <div className={`rs-row${hasOverride ? " overridden" : ""}`}>
       <div className="rs-row-l">
         <div className="rs-label">{row.key}</div>
-        <div className="rs-source">
+        <div className="rs-source iflex-center">
           {hasOverride ? (
             <>
               <span className="dot" />
@@ -177,7 +177,7 @@ function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps) {
           )}
         </div>
       </div>
-      <div className="rs-row-r">
+      <div className="rs-row-r iflex-center">
         {editing ? (
           <input
             ref={inputRef}
@@ -200,14 +200,14 @@ function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps) {
             }}
           />
         ) : (
-          <button className="rs-value" onClick={() => setEditing(true)}>
+          <button className="rs-value iflex-center" onClick={() => setEditing(true)}>
             <span className="rsv-text">{display}</span>
             <Icon name="edit" size={10} />
           </button>
         )}
         {hasOverride && !editing && (
-          <button className="rs-revert tip" data-tip="Revert to detected" onClick={onRevert}>
-            <span className="rs-revert-ic">
+          <button className="rs-revert iflex-center tip" data-tip="Revert to detected" onClick={onRevert}>
+            <span className="rs-revert-ic iflex-center">
               <Icon name="refresh" size={11} />
             </span>
           </button>

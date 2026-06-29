@@ -18,17 +18,17 @@ export function TitleBar() {
   const entries = useCrumb();
 
   return (
-    <div className="tb" data-tauri-drag-region>
+    <div className="tb flex-center" data-tauri-drag-region>
       <div className="tb-lights-gutter" data-tauri-drag-region />
-      <div className="tb-logo" data-tauri-drag-region aria-label="Quorum">
+      <div className="tb-logo iflex-center" data-tauri-drag-region aria-label="Quorum">
         <span className="tb-wordmark" aria-hidden="true">
           <QMark className="tb-qmark" />
           uorum
         </span>
-        <span className="tb-badge">beta</span>
+        <span className="tb-badge iflex-center">beta</span>
       </div>
       <Breadcrumb entries={entries} />
-      <div className="tb-right">
+      <div className="tb-right flex-center">
         <IconButton tip="History" active={historyOpen} onClick={() => toggleHistory()}>
           <Icon name="history" />
         </IconButton>

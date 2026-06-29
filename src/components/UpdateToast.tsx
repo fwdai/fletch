@@ -37,10 +37,10 @@ export function UpdateToast() {
           <span>Version {version} has been downloaded.</span>
         </div>
         <div className="update-toast-actions">
-          <button className="btn-t ghost" onClick={dismiss} disabled={restarting}>
+          <button className="btn-t iflex-center ghost" onClick={dismiss} disabled={restarting}>
             Skip for now
           </button>
-          <button className="btn-t primary" onClick={onRestart} disabled={restarting}>
+          <button className="btn-t iflex-center primary" onClick={onRestart} disabled={restarting}>
             {restarting ? "Restarting…" : "Restart now"}
           </button>
         </div>

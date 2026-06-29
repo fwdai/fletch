@@ -12,7 +12,7 @@ export interface CrumbEntry {
 
 export function Breadcrumb({ entries }: { entries: CrumbEntry[] }) {
   return (
-    <div className="tb-crumb">
+    <div className="tb-crumb flex-center">
       {entries.map((c, i) => (
         <Fragment key={i}>
           {i > 0 && <span className="sep">/</span>}

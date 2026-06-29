@@ -54,7 +54,7 @@ export function WorkspaceHeader({ agent }: Props) {
   }, [nativeView, agent.view, agent.id, switchInFlight, switchView]);
 
   return (
-    <div className="center-h">
+    <div className="center-h flex-center">
       <IconButton
         tip={leftCollapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
         onClick={toggleLeft}

@@ -141,7 +141,7 @@ export function ChatNav({
         </button>
         <button
           type="button"
-          className="chat-nav-count"
+          className="chat-nav-count flex-center"
           aria-label="Show all messages"
           aria-haspopup="listbox"
           aria-expanded={open}
@@ -178,7 +178,7 @@ export function ChatNav({
               onClick={() => jumpTo(t.id)}
             >
               <span className="chat-nav-row-n">{i + 1}</span>
-              <span className="chat-nav-row-t">{preview(t.text)}</span>
+              <span className="chat-nav-row-t truncate">{preview(t.text)}</span>
             </button>
           ))}
         </div>

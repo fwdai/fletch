@@ -95,7 +95,7 @@ export function FileContextMenu({ x, y, entries, onClose }: Props) {
             key={i}
             type="button"
             role="menuitem"
-            className={`dd-item fp-ctx-item ${entry.danger || isArmed ? "danger" : ""}`}
+            className={`dd-item flex-center fp-ctx-item ${entry.danger || isArmed ? "danger" : ""}`}
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               if (entry.confirmLabel && !isArmed) {

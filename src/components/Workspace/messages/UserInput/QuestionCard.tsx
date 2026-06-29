@@ -76,15 +76,15 @@ export function QuestionCard({
   if (committed && answer) {
     return (
       <div className="m-q is-answered">
-        <div className="q-head">
-          <span className="q-label resolved">
+        <div className="q-head flex-center">
+          <span className="q-label iflex-center resolved">
             <Icon name="check" size={11} /> Answered
           </span>
-          {question.header && <span className="q-ctx">{question.header}</span>}
+          {question.header && <span className="q-ctx truncate">{question.header}</span>}
         </div>
         <div className="q-prompt resolved">{question.prompt}</div>
-        <div className="q-answer">
-          <span className="qa-mark">
+        <div className="q-answer flex-center">
+          <span className="qa-mark iflex-center">
             <Icon name="check" size={10} />
           </span>
           <span className={`qa-text ${answer.isOther ? "other" : ""}`}>
@@ -98,8 +98,8 @@ export function QuestionCard({
   // ── live ──────────────────────────────────────────────────────────
   return (
     <div className="m-q">
-      <div className="q-head">
-        <span className="q-label">
+      <div className="q-head flex-center">
+        <span className="q-label iflex-center">
           <Icon name="sparkle" size={11} /> Needs your input
           {total > 1 && (
             <span className="q-step">
@@ -107,7 +107,7 @@ export function QuestionCard({
             </span>
           )}
         </span>
-        {question.header && <span className="q-ctx">{question.header}</span>}
+        {question.header && <span className="q-ctx truncate">{question.header}</span>}
       </div>
       <div className="q-prompt">{question.prompt}</div>
       {question.body && (
@@ -142,7 +142,7 @@ export function QuestionCard({
                 }
               }}
             >
-              <span className={`q-radio ${question.multiSelect ? "check" : ""}`}>
+              <span className={`q-radio iflex-center ${question.multiSelect ? "check" : ""}`}>
                 {question.multiSelect && checked && <Icon name="check" size={10} />}
               </span>
               <span className="q-opt-body">
@@ -152,7 +152,7 @@ export function QuestionCard({
                 </span>
                 {o.desc && <span className="q-opt-desc">{o.desc}</span>}
               </span>
-              {!question.multiSelect && <span className="q-kbd">{i + 1}</span>}
+              {!question.multiSelect && <span className="q-kbd iflex-center">{i + 1}</span>}
             </button>
           );
         })}
@@ -164,7 +164,7 @@ export function QuestionCard({
             style={{ animationDelay: `${0.04 * opts.length + 0.02}s` }}
             onClick={() => setOtherOpen(true)}
           >
-            <span className="q-radio plus">
+            <span className="q-radio iflex-center plus">
               <Icon name="plus" size={10} />
             </span>
             <span className="q-opt-body">
@@ -193,8 +193,8 @@ export function QuestionCard({
                 }
               }}
             />
-            <div className="q-other-foot">
-              <span className="q-other-hint">
+            <div className="q-other-foot flex-center">
+              <span className="q-other-hint iflex-center">
                 <span className="kbd">↵</span> to send
               </span>
               <span className="grow" />
@@ -210,7 +210,7 @@ export function QuestionCard({
               </button>
               <button
                 type="button"
-                className="q-other-send"
+                className="q-other-send iflex-center"
                 disabled={!otherText.trim()}
                 onClick={answerOther}
               >
@@ -224,7 +224,7 @@ export function QuestionCard({
           <div className="q-multi-foot">
             <button
               type="button"
-              className="q-other-send"
+              className="q-other-send iflex-center"
               disabled={picks.size === 0}
               onClick={confirmMulti}
             >

@@ -66,7 +66,7 @@ export function CloneView({ shared, onDone }: { shared: NewProjectShared; onDone
       {error && <div className="np-error">{error}</div>}
 
       <div className="np-actions">
-        <button className="np-primary" disabled={!canClone} onClick={onClone}>
+        <button className="np-primary flex-center" disabled={!canClone} onClick={onClone}>
           {busy ? (
             <>
               <Icon name="refresh" size={13} /> Cloning…

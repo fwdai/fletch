@@ -22,7 +22,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
 
   return (
     <div className="pane center">
-      <div className="center-h">
+      <div className="center-h flex-center">
         <IconButton
           tip={leftCollapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
           onClick={toggleLeft}
@@ -50,9 +50,9 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
         </IconButton>
       </div>
 
-      <div className="empty-wrap fade-in">
-        <div className="empty-id">
-          <div className="empty-mark">
+      <div className="empty-wrap flex-center fade-in">
+        <div className="empty-id flex-center">
+          <div className="empty-mark flex-center">
             <span className="d" />
             <span>NEW WORKSPACE</span>
           </div>
@@ -91,7 +91,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
               spawnFromDraft(draft.id, text, provider, model, attachments, thinking, customAgentId)
             }
           />
-          <div className="empty-meta">
+          <div className="empty-meta flex-center">
             <ProjectPicker
               value={draft.repoPath}
               repos={repos}

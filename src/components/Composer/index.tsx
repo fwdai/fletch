@@ -296,7 +296,7 @@ export function Composer({
   return (
     <div className={`composer${isDropTarget ? " is-drop-target" : ""}`}>
       {isDropTarget && (
-        <div className="composer-drop-overlay">
+        <div className="composer-drop-overlay flex-center">
           <Icon name="upload" size={20} />
           <span>Drop files to attach</span>
         </div>
@@ -329,7 +329,7 @@ export function Composer({
           }
         }}
       />
-      <div className="composer-foot">
+      <div className="composer-foot flex-center">
         <ModelPicker
           provider={provider}
           model={model}
@@ -384,7 +384,7 @@ export function Composer({
         {features.tokenUsage && usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
         <button
           type="button"
-          className={`send ${showStop ? "is-stop" : ""}`}
+          className={`send flex-center ${showStop ? "is-stop" : ""}`}
           disabled={sendDisabled}
           onClick={showStop ? stop : send}
           aria-label={showStop ? "Stop" : "Send"}

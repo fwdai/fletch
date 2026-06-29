@@ -44,7 +44,7 @@ export function ChecksSection({ checks, prUrl }: { checks: PrChecks; prUrl: stri
           <button
             type="button"
             key={r.name}
-            className="pr-check"
+            className="pr-check flex-center"
             onClick={() => void open(r.url ?? `${prUrl}/checks`)}
           >
             {tone === "run" ? (

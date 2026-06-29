@@ -49,9 +49,9 @@ export function AccountPane() {
     <div className="set-pane">
       <SetHead eyebrow="Settings · Account" title="Account" />
 
-      <div className="set-profile">
+      <div className="set-profile flex-center">
         <Avatar
-          className="set-avatar"
+          className="set-avatar flex-center"
           avatarUrl={account?.avatarUrl ?? null}
           initials={accountInitials(firstName, lastName, email)}
           alt={fullName}
@@ -111,9 +111,9 @@ export function AccountPane() {
             {!emailValid && <span className="set-field-error">Enter a valid email address.</span>}
           </label>
 
-          <div className="set-form-actions">
+          <div className="set-form-actions flex-center">
             {savedAt && !dirty && <span className="set-saved mono">Saved</span>}
-            <button type="button" className="btn-t primary" disabled={!canSave} onClick={onSave}>
+            <button type="button" className="btn-t iflex-center primary" disabled={!canSave} onClick={onSave}>
               {saving ? "Saving…" : "Save changes"}
             </button>
           </div>

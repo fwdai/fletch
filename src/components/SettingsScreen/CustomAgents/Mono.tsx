@@ -5,7 +5,7 @@ import { shortFor } from "./shared";
 export function Mono({ name, hue, size = 38 }: { name: string; hue: number; size?: number }) {
   return (
     <span
-      className="ca-mono"
+      className="ca-mono iflex-center"
       style={{
         width: size,
         height: size,

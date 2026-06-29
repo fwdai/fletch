@@ -31,7 +31,7 @@ export function SetHead({
           <div className="set-eyebrow mono">{eyebrow}</div>
           <h1 className="set-h1">{title}</h1>
         </div>
-        {actions && <div className="set-head-actions">{actions}</div>}
+        {actions && <div className="set-head-actions flex-center">{actions}</div>}
       </div>
       {desc && <p className="set-lead">{desc}</p>}
     </header>
@@ -67,12 +67,12 @@ export function SetRow({
   children?: ReactNode;
 }) {
   return (
-    <div className={`set-row ${align === "start" ? "align-start" : ""}`}>
+    <div className={`set-row flex-center ${align === "start" ? "align-start" : ""}`}>
       <div className="set-row-l">
         <div className="set-row-t">{title}</div>
         {sub && <div className="set-row-s">{sub}</div>}
       </div>
-      {children && <div className="set-row-c">{children}</div>}
+      {children && <div className="set-row-c flex-center">{children}</div>}
     </div>
   );
 }

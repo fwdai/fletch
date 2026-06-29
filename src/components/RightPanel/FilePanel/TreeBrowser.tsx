@@ -52,8 +52,8 @@ export function TreeBrowser({
 }: TreeBrowserProps) {
   return (
     <div className="fp-wrap">
-      <div className="fp-toolbar">
-        <div className="fp-search">
+      <div className="fp-toolbar flex-center">
+        <div className="fp-search flex-center">
           <Icon name="search" size={12} />
           <input
             type="text"
@@ -63,13 +63,13 @@ export function TreeBrowser({
             spellCheck={false}
           />
           {query && (
-            <button className="fp-clear" onClick={() => onQueryChange("")} aria-label="Clear">
+            <button className="fp-clear iflex-center" onClick={() => onQueryChange("")} aria-label="Clear">
               <Icon name="close" size={10} />
             </button>
           )}
         </div>
         <button
-          className={`fp-filter ${changedOnly ? "on" : ""}`}
+          className={`fp-filter iflex-center ${changedOnly ? "on" : ""}`}
           title={changedOnly ? "Showing changed files only" : "Show only files the agent changed"}
           onClick={onToggleChangedOnly}
         >
@@ -77,17 +77,17 @@ export function TreeBrowser({
           Changed
           <span className="fp-filter-count">{changedCount}</span>
         </button>
-        <button className="btn-i xs" title="New file" onClick={() => onBeginCreate("newFile", "")}>
+        <button className="btn-i iflex-center xs" title="New file" onClick={() => onBeginCreate("newFile", "")}>
           <Icon name="file" />
         </button>
         <button
-          className="btn-i xs"
+          className="btn-i iflex-center xs"
           title="New folder"
           onClick={() => onBeginCreate("newFolder", "")}
         >
           <Icon name="folder" />
         </button>
-        <button className="btn-i xs" title="Collapse all" onClick={onCollapseAll}>
+        <button className="btn-i iflex-center xs" title="Collapse all" onClick={onCollapseAll}>
           <Icon name="shrink" />
         </button>
       </div>
@@ -95,10 +95,10 @@ export function TreeBrowser({
       {opError && (
         // Key by message so a new error remounts the banner and re-runs the
         // attention flash even when one is already showing.
-        <div key={opError} className="fp-op-error" role="alert">
+        <div key={opError} className="fp-op-error flex-center" role="alert">
           <Icon name="close" size={11} />
           <span>{opError}</span>
-          <button className="fp-clear" onClick={onClearOpError} aria-label="Dismiss">
+          <button className="fp-clear iflex-center" onClick={onClearOpError} aria-label="Dismiss">
             <Icon name="close" size={10} />
           </button>
         </div>
@@ -172,7 +172,7 @@ function TreeRow({
     return (
       <>
         <button
-          className="fp-row dir"
+          className="fp-row flex-center dir"
           style={{ paddingLeft: pad }}
           onClick={() => onToggle(node.path)}
           onContextMenu={(e) => {
@@ -180,14 +180,14 @@ function TreeRow({
             onMenu(node, e.clientX, e.clientY);
           }}
         >
-          <span className={`fp-twisty ${isOpen ? "open" : ""}`}>
+          <span className={`fp-twisty iflex-center ${isOpen ? "open" : ""}`}>
             <Icon name="chevR" size={11} />
           </span>
           <FileIcon name={node.name} folder open={isOpen} />
           {renaming ? (
             <NameInput initial={node.name} onCommit={onCommit} onCancel={onCancel} />
           ) : (
-            <span className="fp-name">{node.name}</span>
+            <span className="fp-name truncate">{node.name}</span>
           )}
           {/* When collapsed, surface that this folder hides agent edits. */}
           {!isOpen && !renaming && node.changedCount > 0 && (
@@ -247,9 +247,9 @@ function TreeRow({
       {renaming ? (
         <NameInput initial={node.name} onCommit={onCommit} onCancel={onCancel} />
       ) : (
-        <span className="fp-name">{node.name}</span>
+        <span className="fp-name truncate">{node.name}</span>
       )}
-      {node.status && !renaming && <span className={`fp-badge s-${st}`}>{node.status}</span>}
+      {node.status && !renaming && <span className={`fp-badge iflex-center s-${st}`}>{node.status}</span>}
     </button>
   );
 }
@@ -331,7 +331,7 @@ function CreateRow({ mode, depth, onCommit, onCancel }: CreateRowProps) {
   const pad = 10 + depth * 13;
   const isFolder = mode === "newFolder";
   return (
-    <div className="fp-row file fp-creating" style={{ paddingLeft: pad + 13 }}>
+    <div className="fp-row flex-center file fp-creating" style={{ paddingLeft: pad + 13 }}>
       <FileIcon name="" folder={isFolder} open={isFolder} />
       <NameInput initial="" onCommit={onCommit} onCancel={onCancel} />
     </div>

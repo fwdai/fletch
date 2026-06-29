@@ -80,7 +80,7 @@ export function GeneralPane() {
               <button
                 key={a.id}
                 type="button"
-                className={`set-swatch ${a.id === accent ? "active" : ""}`}
+                className={`set-swatch iflex-center ${a.id === accent ? "active" : ""}`}
                 style={{ ["--sw" as string]: a.color }}
                 title={a.label}
                 aria-label={a.label}
@@ -126,7 +126,7 @@ export function GeneralPane() {
           title="Logs"
           sub="Quorum writes a local log file. Reveal it to attach to a bug report."
         >
-          <button type="button" className="btn-t outline" onClick={() => void revealLogs()}>
+          <button type="button" className="btn-t iflex-center outline" onClick={() => void revealLogs()}>
             <Icon name="folder" size={12} />
             Reveal logs
           </button>

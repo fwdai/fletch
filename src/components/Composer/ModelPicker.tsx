@@ -78,15 +78,15 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
       <div className="model-list">
         <button
           type="button"
-          className={`model-option ${isCurrent && !model ? "active" : ""}`}
+          className={`model-option flex-center ${isCurrent && !model ? "active" : ""}`}
           onClick={(e) => {
             e.stopPropagation();
             pickModel(p.id, undefined);
           }}
         >
           <span className="model-option-main">
-            <span className="model-option-name def">Default model</span>
-            <span className="model-option-desc">Use {p.label}'s configured default</span>
+            <span className="model-option-name truncate def">Default model</span>
+            <span className="model-option-desc truncate">Use {p.label}'s configured default</span>
           </span>
           {isCurrent && !model && <Icon name="check" size={13} />}
         </button>
@@ -104,14 +104,14 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
               <button
                 key={m.id}
                 type="button"
-                className={`model-option ${active ? "active" : ""}`}
+                className={`model-option flex-center ${active ? "active" : ""}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   pickModel(p.id, m.id);
                 }}
               >
                 <span className="model-option-main">
-                  <span className="model-option-name">{m.name}</span>
+                  <span className="model-option-name truncate">{m.name}</span>
                 </span>
                 {m.contextWindow > 0 && (
                   <span className="model-ctx">{formatContext(m.contextWindow)}</span>
@@ -140,13 +140,13 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
           <>
             <Mono name={activeCustom.name} hue={activeCustom.color} size={15} />
             <span className="model-chip-agent">{activeCustom.name}</span>
-            <span className="model-chip-model">{providerLabel(activeCustom.base)}</span>
+            <span className="model-chip-model truncate">{providerLabel(activeCustom.base)}</span>
           </>
         ) : (
           <>
             <ProviderIcon slug={selected.id} short={selected.short} hue={selected.hue} size={15} />
             <span className="model-chip-agent">{selected.label}</span>
-            <span className="model-chip-model">{currentModel?.name ?? "Default model"}</span>
+            <span className="model-chip-model truncate">{currentModel?.name ?? "Default model"}</span>
           </>
         )}
         {!locked && <Icon name="chevD" size={9} />}
@@ -164,7 +164,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
             onMouseLeave={() => setHovered(null)}
           >
             <div className="model-dd-main">
-              <div className="model-sect">
+              <div className="model-sect flex-center">
                 <span>Coding agents</span>
                 <span className="model-sect-line" />
               </div>
@@ -184,7 +184,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                     key={p.id}
                     type="button"
                     disabled={!usable}
-                    className={`model-agent-row ${isSelected ? "active" : ""} ${isOpen ? "hot" : ""}`}
+                    className={`model-agent-row flex-center ${isSelected ? "active" : ""} ${isOpen ? "hot" : ""}`}
                     title={
                       missing
                         ? "Not installed — see Settings › Providers"
@@ -194,7 +194,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                     onClick={() => usable && pickModel(p.id, undefined)}
                   >
                     <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={26} />
-                    <span className="model-agent-name">{p.label}</span>
+                    <span className="model-agent-name truncate">{p.label}</span>
                     <span className="model-agent-ver">
                       {missing ? "Not installed" : (providerVersions[p.id] ?? p.version)}
                     </span>
@@ -203,7 +203,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                 );
               })}
 
-              <div className="model-sect">
+              <div className="model-sect flex-center">
                 <span>Custom agents</span>
                 <span className="model-sect-line" />
               </div>
@@ -214,7 +214,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                     <button
                       key={a.id}
                       type="button"
-                      className={`model-custom-row ${active ? "active" : ""}`}
+                      className={`model-custom-row flex-center ${active ? "active" : ""}`}
                       onMouseEnter={() => setHovered(null)}
                       onClick={() => pickCustom(a.id, a.base, a.model)}
                     >
@@ -230,7 +230,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
               ) : (
                 <button
                   type="button"
-                  className="model-custom-cta"
+                  className="model-custom-cta flex-center"
                   onMouseEnter={() => setHovered(null)}
                   onClick={() => {
                     setOpen(false);
@@ -252,14 +252,14 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
               <div className="model-side-fly">
                 <div className="model-side-fly-card">
                   <div className="model-side-fly-inner" key={hoveredAgent.id}>
-                    <div className="model-side-fly-head">
+                    <div className="model-side-fly-head flex-center">
                       <ProviderIcon
                         slug={hoveredAgent.id}
                         short={hoveredAgent.short}
                         hue={hoveredAgent.hue}
                         size={20}
                       />
-                      <span className="model-side-fly-name">{hoveredAgent.label}</span>
+                      <span className="model-side-fly-name truncate">{hoveredAgent.label}</span>
                       <span className="model-side-fly-tag">model</span>
                     </div>
                     <div className="model-side-fly-list">{renderModelList(hoveredAgent)}</div>

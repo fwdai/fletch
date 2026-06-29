@@ -61,7 +61,7 @@ function Popover({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="settings-pop">
-      <div className="sp-h">
+      <div className="sp-h flex-center">
         <span>Settings</span>
         <span className="grow" />
         <IconButton size="sm" onClick={onClose} aria-label="Close">
@@ -127,7 +127,7 @@ function Popover({ onClose }: { onClose: () => void }) {
         ))}
       </SettingsSection>
 
-      <button className="sp-allbtn" onClick={() => openSettingsScreen("general")}>
+      <button className="sp-allbtn flex-center" onClick={() => openSettingsScreen("general")}>
         <Icon name="settings" size={13} />
         <span>All settings</span>
         <span className="grow" />

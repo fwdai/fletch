@@ -34,12 +34,12 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children;
     return (
       <div className="err-boundary" role="alert">
-        <div className="err-boundary-box">
+        <div className="err-boundary-box flex-center">
           <div className="err-boundary-title">
             Something went wrong{this.props.label ? ` in ${this.props.label}` : ""}.
           </div>
           <div className="err-boundary-msg">{error.message || String(error)}</div>
-          <button type="button" className="btn-t outline" onClick={this.reset}>
+          <button type="button" className="btn-t iflex-center outline" onClick={this.reset}>
             Try again
           </button>
         </div>

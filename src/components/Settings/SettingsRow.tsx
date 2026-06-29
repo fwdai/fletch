@@ -8,7 +8,7 @@ interface Props {
 
 export function SettingsRow({ label, description, children }: Props) {
   return (
-    <div className="sp-row">
+    <div className="sp-row flex-center">
       <div className="sp-l">
         {label}
         {description && <small>{description}</small>}

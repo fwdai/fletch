@@ -49,7 +49,7 @@ export function RepoList({ selected, onSelect }: Props) {
 
   return (
     <div className="np-list-wrap">
-      <div className="np-search">
+      <div className="np-search flex-center">
         <Icon name="search" size={13} />
         <input
           autoFocus
@@ -72,11 +72,11 @@ export function RepoList({ selected, onSelect }: Props) {
           >
             <Icon name="github" size={13} />
             <div className="np-repo-text">
-              <div className="np-repo-name">
+              <div className="np-repo-name flex-center">
                 {r.name_with_owner}
                 {r.is_private && <span className="np-priv">Private</span>}
               </div>
-              {r.description && <div className="np-repo-desc">{r.description}</div>}
+              {r.description && <div className="np-repo-desc truncate">{r.description}</div>}
             </div>
           </button>
         ))}

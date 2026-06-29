@@ -31,7 +31,7 @@ export function ChatSearch({
   const noMatches = query.length > 0 && total === 0;
 
   return (
-    <div className="chat-search" role="search">
+    <div className="chat-search flex-center" role="search">
       <Icon name="search" size={12} className="chat-search-icon" />
       <input
         id="chat-search-input"
@@ -55,19 +55,19 @@ export function ChatSearch({
       <span className={`chat-search-count${noMatches ? " no-match" : ""}`}>
         {query ? `${current}/${total}` : ""}
       </span>
-      <div className="chat-search-actions">
+      <div className="chat-search-actions flex-center">
         <button
-          className="btn-i sm tip"
+          className="btn-i iflex-center sm tip"
           data-tip="Previous (⇧⏎)"
           disabled={total === 0}
           onClick={prev}
         >
           <Icon name="chevU" />
         </button>
-        <button className="btn-i sm tip" data-tip="Next (⏎)" disabled={total === 0} onClick={next}>
+        <button className="btn-i iflex-center sm tip" data-tip="Next (⏎)" disabled={total === 0} onClick={next}>
           <Icon name="chevD" />
         </button>
-        <button className="btn-i sm tip" data-tip="Close (Esc)" onClick={onClose}>
+        <button className="btn-i iflex-center sm tip" data-tip="Close (Esc)" onClick={onClose}>
           <Icon name="close" />
         </button>
       </div>
