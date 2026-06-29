@@ -133,13 +133,42 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         }
       }
     } catch (e) {
-      set((state) => ({
-        lastError: String(e),
-        // Only clear busy if this call started the turn; a failed mid-turn
-        // follow-up must not stop the still-running turn.
-        ...(wasBusy ? {} : { managedBusy: { ...state.managedBusy, [id]: false } }),
-      }));
+      set((state) => {
+        // A failed mid-turn follow-up must not stop the still-running turn, and
+        // there's no standalone bubble of ours to flag (it rendered as queued).
+        if (wasBusy) return { lastError: String(e) };
+        // Flag the optimistic user bubble we just pushed so the chat can offer a
+        // retry. It's the last log entry — unless this was a passthrough slash
+        // command (rendered as a notice), in which case there's no bubble to
+        // flag and we leave the log alone.
+        const log = state.managedLogs[id] ?? [];
+        const last = log[log.length - 1];
+        const managedLogs =
+          last?.kind === "user_message"
+            ? { ...state.managedLogs, [id]: [...log.slice(0, -1), { ...last, failed: true }] }
+            : state.managedLogs;
+        return {
+          lastError: String(e),
+          managedLogs,
+          managedBusy: { ...state.managedBusy, [id]: false },
+        };
+      });
     }
+  },
+
+  retryUserMessage: async (id, text, attachments = []) => {
+    // Drop any failed optimistic bubble (a send that threw) so re-dispatching
+    // reuses the slot instead of stacking a duplicate. An agent-errored turn
+    // has only a canonical, unflagged bubble, so nothing is pruned and the retry
+    // appends a fresh turn below the prior error.
+    set((state) => {
+      const log = state.managedLogs[id];
+      if (!log) return {};
+      const pruned = log.filter((e) => !(e.kind === "user_message" && e.failed));
+      if (pruned.length === log.length) return {};
+      return { managedLogs: { ...state.managedLogs, [id]: pruned } };
+    });
+    await get().sendUserMessage(id, text, attachments);
   },
 
   answerToolUse: async (id, toolUseId, updatedInput, behavior = "allow", message) => {

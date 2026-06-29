@@ -8,6 +8,7 @@ import { Composer } from "../Composer";
 import { APP_ACTION_PREFIX } from "../RightPanel/delegation";
 import { ChatNav } from "./ChatNav";
 import { ChatSearch } from "./ChatSearch";
+import { failedTurnIndex } from "./messages/failedTurn";
 import { MessageItem } from "./messages/MessageItem";
 import { pairToolItems, rowKey } from "./messages/pair";
 import { isUserInputTool } from "./messages/UserInput/parse";
@@ -23,6 +24,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   const send = useAppStore((s) => s.sendUserMessage);
+  const retry = useAppStore((s) => s.retryUserMessage);
   const stop = useAppStore((s) => s.stop);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
   const usage = useAppStore((s) => s.usage[agent.id]);
@@ -172,6 +174,12 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     );
   }, [items]);
 
+  // Index of the user bubble whose turn failed (gets a Retry action), or -1.
+  const retryTurnIndex = useMemo(
+    () => failedTurnIndex(items, { busy, loading: transcriptLoading }),
+    [items, busy, transcriptLoading],
+  );
+
   // Mid-turn follow-ups are allowed: a busy (running) agent still accepts a
   // message — delivered live (claude) or queued for the next turn boundary
   // (per-turn agents). So `canSend` no longer gates on `busy`; the Composer
@@ -219,6 +227,17 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                   provider={agent.provider}
                   agentId={agent.id}
                   turnId={turnIds[i]}
+                  onRetry={
+                    i === retryTurnIndex && item.kind === "user_message"
+                      ? () => {
+                          // Re-pin so the user follows the re-run, and re-send
+                          // the prompt they typed (strip our injected block, a
+                          // no-op on the optimistic copy) so it replays exactly.
+                          pinnedToBottom.current = true;
+                          retry(agent.id, stripInjectedInstructions(item.text), item.attachments);
+                        }
+                      : undefined
+                  }
                 />
               ))
             )}

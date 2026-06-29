@@ -6,7 +6,11 @@
 // for the design rationale.
 
 export type ChatItem =
-  | { kind: "user_message"; text: string; attachments?: string[] }
+  // `failed` flags an optimistic send that threw before the turn started, so the
+  // chat can offer a retry on that exact bubble. Store-set only (never produced
+  // by an adapter's reduce) and only on the live optimistic entry — a canonical
+  // user_message rebuilt from records never carries it.
+  | { kind: "user_message"; text: string; attachments?: string[]; failed?: boolean }
   // A follow-up the user sent mid-turn that hasn't landed in the transcript
   // yet: delivered live into the running turn (claude) or queued for the next
   // turn boundary (per-turn agents). Store-inserted only — never produced by an

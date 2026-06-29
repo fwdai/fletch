@@ -6,6 +6,7 @@ import { AttachmentList } from "../../Composer/AttachmentList";
 import { Markdown } from "../../Markdown";
 import { APP_ACTION_PREFIX } from "../../RightPanel/delegation";
 import { CopyButton } from "../../ui/CopyButton";
+import { RetryButton } from "../../ui/RetryButton";
 import { pairToolItems, rowKey, type ViewItem } from "./pair";
 import { getPresenter } from "./presenters";
 import { ToolResultItem } from "./ToolResultItem";
@@ -23,6 +24,7 @@ export function MessageItem({
   provider,
   agentId,
   turnId,
+  onRetry,
 }: {
   item: ViewItem;
   provider?: string;
@@ -30,6 +32,9 @@ export function MessageItem({
   /** Ordinal of this user turn, used by ChatNav to locate the bubble in the
    *  DOM. Set only for top-level navigable user prompts. */
   turnId?: number;
+  /** Set only on the user bubble of a failed turn — renders a Retry action
+   *  beside Copy that re-runs the turn. */
+  onRetry?: () => void;
 }) {
   switch (item.kind) {
     case "user_message":
@@ -44,7 +49,14 @@ export function MessageItem({
           </div>
         );
       }
-      return <UserBubble text={item.text} attachments={item.attachments} turnId={turnId} />;
+      return (
+        <UserBubble
+          text={item.text}
+          attachments={item.attachments}
+          turnId={turnId}
+          onRetry={onRetry}
+        />
+      );
     case "queued_message":
       // Same bubble, marked queued: a follow-up the user sent mid-turn that the
       // transcript hasn't caught up to yet. Reconciled away in app.ts once it
@@ -127,11 +139,13 @@ function UserBubble({
   attachments,
   queued,
   turnId,
+  onRetry,
 }: {
   text: string;
   attachments?: string[];
   queued?: boolean;
   turnId?: number;
+  onRetry?: () => void;
 }) {
   const display = stripInjectedInstructions(text);
   return (
@@ -146,6 +160,7 @@ function UserBubble({
       {/* A queued follow-up isn't canonical yet, so skip its copy affordance. */}
       {!queued && (
         <div className="m-actions">
+          {onRetry && <RetryButton onClick={onRetry} />}
           <CopyButton text={display} />
         </div>
       )}
