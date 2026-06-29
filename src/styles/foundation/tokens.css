@@ -10,6 +10,26 @@
   --font-serif: "Iowan Old Style", "Cormorant Garamond", Georgia, serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 
+  /* ── type scale ──────────────────────────────────────────────────────
+   * <body> inherits --fs-base; everything derives from these tokens — no
+   * hardcoded font-size anywhere. Body range is 1px-stepped (at small sizes
+   * each px is a real tier, and ~90% of this UI's text is small chrome);
+   * display range follows a looser ~1.25–1.4 ratio. 10px is the legibility
+   * floor. Old half-pixel sizes snap to the nearest step; a one-off that
+   * genuinely needs its own size gets a named token, never a literal.
+   * Components migrate onto these one at a time. */
+  --fs-2xs: 10px; /* micro: badges, overlines, counts (floor) */
+  --fs-xs: 11px; /* dense chrome: sidebar meta, secondary labels */
+  --fs-sm: 12px; /* secondary / panel body */
+  --fs-base: 13px; /* regular body — inherited from <body> */
+  --fs-lg: 14px; /* emphasized body, small section titles */
+  --fs-xl: 16px; /* card / dialog titles */
+  --fs-2xl: 20px; /* section headings */
+  --fs-3xl: 24px; /* page titles */
+  --fs-4xl: 32px; /* empty-state / onboarding */
+  --fs-5xl: 44px; /* hero */
+  --fs-6xl: 56px; /* brand / splash */
+
   --r-xs: 4px;
   --r-sm: 6px;
   --r-md: 9px;

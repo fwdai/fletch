@@ -13,6 +13,44 @@
   white-space: nowrap;
 }
 
+/* type-scale utilities — apply on an element to size it off the scale (see
+ * the --fs-* tokens). An element's size lives in exactly ONE place: a .text-*
+ * class here, or font-size in CSS for pseudo-elements that can't take a class.
+ * Never both. */
+.text-2xs {
+  font-size: var(--fs-2xs);
+}
+.text-xs {
+  font-size: var(--fs-xs);
+}
+.text-sm {
+  font-size: var(--fs-sm);
+}
+.text-base {
+  font-size: var(--fs-base);
+}
+.text-lg {
+  font-size: var(--fs-lg);
+}
+.text-xl {
+  font-size: var(--fs-xl);
+}
+.text-2xl {
+  font-size: var(--fs-2xl);
+}
+.text-3xl {
+  font-size: var(--fs-3xl);
+}
+.text-4xl {
+  font-size: var(--fs-4xl);
+}
+.text-5xl {
+  font-size: var(--fs-5xl);
+}
+.text-6xl {
+  font-size: var(--fs-6xl);
+}
+
 /* reset */
 * {
   box-sizing: border-box;
@@ -27,7 +65,7 @@ body {
   font-family: var(--font-sans);
   background: var(--bg-0);
   color: var(--fg-0);
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 400;
   letter-spacing: -0.005em;
   -webkit-font-smoothing: antialiased;
