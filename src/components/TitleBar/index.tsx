@@ -20,12 +20,12 @@ export function TitleBar() {
   return (
     <div className="tb flex-center" data-tauri-drag-region>
       <div className="tb-lights-gutter" data-tauri-drag-region />
-      <div className="tb-logo iflex-center" data-tauri-drag-region aria-label="Quorum">
+      <div className="tb-logo iflex-center text-xl" data-tauri-drag-region aria-label="Quorum">
         <span className="tb-wordmark" aria-hidden="true">
           <QMark className="tb-qmark" />
           uorum
         </span>
-        <span className="tb-badge iflex-center">beta</span>
+        <span className="tb-badge iflex-center text-2xs">beta</span>
       </div>
       <Breadcrumb entries={entries} />
       <div className="tb-right flex-center">
