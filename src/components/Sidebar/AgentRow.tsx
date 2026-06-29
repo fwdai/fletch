@@ -160,7 +160,12 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
           </span>
           <span className="ag-actions">
             {stoppable && (
-              <button className="ag-act iflex-center tip" data-tip="Stop" onClick={onStop} aria-label="Stop">
+              <button
+                className="ag-act iflex-center tip"
+                data-tip="Stop"
+                onClick={onStop}
+                aria-label="Stop"
+              >
                 <Icon name="stop" size={11} />
               </button>
             )}
@@ -259,7 +264,10 @@ function PrBadge({ pr }: { pr: PrState }) {
   }
   const cls = pr.state === "closed" ? "pr-closed" : "pr-open";
   return (
-    <span className={`ag-badge iflex-center ${cls} tip`} data-tip={`PR #${pr.number} · ${pr.state}`}>
+    <span
+      className={`ag-badge iflex-center ${cls} tip`}
+      data-tip={`PR #${pr.number} · ${pr.state}`}
+    >
       <Icon name="pr" size={10} />
       PR
     </span>

@@ -114,7 +114,11 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
             </div>
 
             {canScrollDown && (
-              <button type="button" className="bp-scroll-btn flex-center" onClick={() => scrollBy(SCROLL_STEP)}>
+              <button
+                type="button"
+                className="bp-scroll-btn flex-center"
+                onClick={() => scrollBy(SCROLL_STEP)}
+              >
                 <Icon name="chevD" size={11} />
               </button>
             )}

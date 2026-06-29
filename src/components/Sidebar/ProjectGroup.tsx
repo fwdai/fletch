@@ -53,7 +53,11 @@ export function ProjectGroup({
 
   return (
     <div className="proj">
-      <div className={`proj-h flex-center ${open ? "open" : ""}`} onClick={onToggle} title={repoPath}>
+      <div
+        className={`proj-h flex-center ${open ? "open" : ""}`}
+        onClick={onToggle}
+        title={repoPath}
+      >
         <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>

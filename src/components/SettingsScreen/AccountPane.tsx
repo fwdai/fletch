@@ -113,7 +113,12 @@ export function AccountPane() {
 
           <div className="set-form-actions flex-center">
             {savedAt && !dirty && <span className="set-saved mono">Saved</span>}
-            <button type="button" className="btn-t iflex-center primary" disabled={!canSave} onClick={onSave}>
+            <button
+              type="button"
+              className="btn-t iflex-center primary"
+              disabled={!canSave}
+              onClick={onSave}
+            >
               {saving ? "Saving…" : "Save changes"}
             </button>
           </div>

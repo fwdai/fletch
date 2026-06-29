@@ -110,7 +110,11 @@ export function Sidebar() {
       <SidebarHeader query={query} onChange={setQuery} />
       <div className="side-scroll">
         <div className="side-section">
-          <button className="add-proj-cta flex-center" onClick={() => setNpOpen(true)} aria-label="Add project">
+          <button
+            className="add-proj-cta flex-center"
+            onClick={() => setNpOpen(true)}
+            aria-label="Add project"
+          >
             <Icon name="plus" size={13} />
             <span>Add project</span>
           </button>

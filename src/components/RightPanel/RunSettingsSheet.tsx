@@ -129,7 +129,11 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
               Reset all
             </button>
 
-            <button className="btn-t iflex-center primary" onClick={() => onApply(draft)} disabled={!dirty}>
+            <button
+              className="btn-t iflex-center primary"
+              onClick={() => onApply(draft)}
+              disabled={!dirty}
+            >
               <Icon name="refresh" size={11} />
               Apply &amp; restart
             </button>
@@ -206,7 +210,11 @@ function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps) {
           </button>
         )}
         {hasOverride && !editing && (
-          <button className="rs-revert iflex-center tip" data-tip="Revert to detected" onClick={onRevert}>
+          <button
+            className="rs-revert iflex-center tip"
+            data-tip="Revert to detected"
+            onClick={onRevert}
+          >
             <span className="rs-revert-ic iflex-center">
               <Icon name="refresh" size={11} />
             </span>

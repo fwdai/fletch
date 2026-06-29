@@ -64,7 +64,12 @@ export function ChatSearch({
         >
           <Icon name="chevU" />
         </button>
-        <button className="btn-i iflex-center sm tip" data-tip="Next (⏎)" disabled={total === 0} onClick={next}>
+        <button
+          className="btn-i iflex-center sm tip"
+          data-tip="Next (⏎)"
+          disabled={total === 0}
+          onClick={next}
+        >
           <Icon name="chevD" />
         </button>
         <button className="btn-i iflex-center sm tip" data-tip="Close (Esc)" onClick={onClose}>

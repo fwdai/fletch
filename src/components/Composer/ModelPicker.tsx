@@ -146,7 +146,9 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
           <>
             <ProviderIcon slug={selected.id} short={selected.short} hue={selected.hue} size={15} />
             <span className="model-chip-agent">{selected.label}</span>
-            <span className="model-chip-model truncate">{currentModel?.name ?? "Default model"}</span>
+            <span className="model-chip-model truncate">
+              {currentModel?.name ?? "Default model"}
+            </span>
           </>
         )}
         {!locked && <Icon name="chevD" size={9} />}

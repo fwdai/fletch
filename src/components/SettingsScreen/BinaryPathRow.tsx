@@ -151,7 +151,11 @@ export function BinaryPathRow({
             {broken && <span className="set-prov-bin-warn">not found</span>}
             <span className="grow" />
             {override && (
-              <button className="btn-t iflex-center ghost sm-t" disabled={busy} onClick={() => void reset()}>
+              <button
+                className="btn-t iflex-center ghost sm-t"
+                disabled={busy}
+                onClick={() => void reset()}
+              >
                 Reset to auto
               </button>
             )}

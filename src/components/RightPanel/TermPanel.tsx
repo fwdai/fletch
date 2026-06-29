@@ -182,7 +182,11 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
           >
             <Icon name="chevD" />
           </button>
-          <button className="btn-i iflex-center sm tip" data-tip="Close (Esc)" onClick={closeSearch}>
+          <button
+            className="btn-i iflex-center sm tip"
+            data-tip="Close (Esc)"
+            onClick={closeSearch}
+          >
             <Icon name="close" />
           </button>
         </div>

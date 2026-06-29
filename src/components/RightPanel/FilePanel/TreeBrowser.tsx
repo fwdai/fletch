@@ -63,7 +63,11 @@ export function TreeBrowser({
             spellCheck={false}
           />
           {query && (
-            <button className="fp-clear iflex-center" onClick={() => onQueryChange("")} aria-label="Clear">
+            <button
+              className="fp-clear iflex-center"
+              onClick={() => onQueryChange("")}
+              aria-label="Clear"
+            >
               <Icon name="close" size={10} />
             </button>
           )}
@@ -77,7 +81,11 @@ export function TreeBrowser({
           Changed
           <span className="fp-filter-count">{changedCount}</span>
         </button>
-        <button className="btn-i iflex-center xs" title="New file" onClick={() => onBeginCreate("newFile", "")}>
+        <button
+          className="btn-i iflex-center xs"
+          title="New file"
+          onClick={() => onBeginCreate("newFile", "")}
+        >
           <Icon name="file" />
         </button>
         <button
@@ -249,7 +257,9 @@ function TreeRow({
       ) : (
         <span className="fp-name truncate">{node.name}</span>
       )}
-      {node.status && !renaming && <span className={`fp-badge iflex-center s-${st}`}>{node.status}</span>}
+      {node.status && !renaming && (
+        <span className={`fp-badge iflex-center s-${st}`}>{node.status}</span>
+      )}
     </button>
   );
 }

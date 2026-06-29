@@ -71,7 +71,11 @@ function Row({
           <div className="rdy-fix flex-center">
             {fix && <CopyCmd cmd={fix} />}
             {docs && (
-              <button type="button" className="rdy-docs iflex-center" onClick={() => void openExternal(docs)}>
+              <button
+                type="button"
+                className="rdy-docs iflex-center"
+                onClick={() => void openExternal(docs)}
+              >
                 Setup guide
                 <Icon name="external" size={10} />
               </button>
@@ -211,7 +215,12 @@ export function ProviderReadiness() {
               ? `${detected} of ${agents.length} agents detected`
               : "Couldn't detect agents"}
         </span>
-        <button type="button" className="btn-t iflex-center outline" onClick={recheck} disabled={checking}>
+        <button
+          type="button"
+          className="btn-t iflex-center outline"
+          onClick={recheck}
+          disabled={checking}
+        >
           <Icon name="refresh" size={12} />
           {checking ? "Checking…" : "Re-check"}
         </button>

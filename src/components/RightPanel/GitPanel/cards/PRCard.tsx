@@ -57,7 +57,11 @@ export function PRCard({
       {checks && <ChecksSection checks={checks} prUrl={pr.url} />}
       {comments && <CommentsSection comments={comments} onAddToChat={onAddToChat} />}
       <div className="git-card-links">
-        <button type="button" className="git-card-link iflex-center" onClick={() => void open(pr.url)}>
+        <button
+          type="button"
+          className="git-card-link iflex-center"
+          onClick={() => void open(pr.url)}
+        >
           <Icon name="github" size={11} />
           Overview
         </button>
@@ -88,7 +92,11 @@ export function ClosedPRCard({ pr }: { pr: PrState }) {
       <div className="git-card-h">Pull request</div>
       <div className="git-card-title">{pr.title}</div>
       <div className="git-card-meta">#{pr.number} · closed</div>
-      <button type="button" className="git-card-link iflex-center" onClick={() => void open(pr.url)}>
+      <button
+        type="button"
+        className="git-card-link iflex-center"
+        onClick={() => void open(pr.url)}
+      >
         <Icon name="github" size={11} />
         View on GitHub
       </button>

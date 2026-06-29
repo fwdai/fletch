@@ -48,7 +48,11 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
   const ringColor = pct >= 90 ? "var(--danger)" : pct >= 75 ? "var(--warn)" : "var(--accent)";
 
   return (
-    <div className="usage iflex-center" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+    <div
+      className="usage iflex-center"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
       <button type="button" className="usage-chip iflex-center" aria-label={`Context ${pct}% used`}>
         <svg className="usage-ring" viewBox="0 0 18 18" width="15" height="15">
           <circle cx="9" cy="9" r={R} fill="none" stroke="var(--bd-strong)" strokeWidth="2.2" />

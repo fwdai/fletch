@@ -91,7 +91,10 @@ export function AgentEditor({
 
         {/* identity */}
         <div className="ca-ed-head flex-center">
-          <span className="ca-mono iflex-center ca-ed-mono" style={{ ["--h" as string]: form.color }}>
+          <span
+            className="ca-mono iflex-center ca-ed-mono"
+            style={{ ["--h" as string]: form.color }}
+          >
             {shortFor(form.name)}
           </span>
           <input
