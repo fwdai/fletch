@@ -866,21 +866,27 @@ button {
   width: 10px;
   height: 10px;
 }
+/* badge base — color-mix formula written once for ag-badge variants */
+.ag-badge.pr-open,
+.ag-badge.pr-merged,
+.ag-badge.pr-closed,
+.ag-badge.err {
+  background: color-mix(in oklch, var(--badge-color), transparent 86%);
+  color: var(--badge-color);
+}
 .ag-badge.pr-open {
-  color: var(--info);
-  background: color-mix(in oklch, var(--info), transparent 86%);
+  --badge-color: var(--info);
 }
 .ag-badge.pr-merged {
-  color: var(--purple);
-  background: color-mix(in oklch, var(--purple), transparent 86%);
+  --badge-color: var(--purple);
 }
 .ag-badge.pr-closed {
-  color: var(--fg-2);
-  background: color-mix(in oklch, var(--fg-2), transparent 88%);
+  --badge-color: var(--fg-2);
+  /* pr-closed is slightly more transparent than the other variants */
+  background: color-mix(in oklch, var(--badge-color), transparent 88%);
 }
 .ag-badge.err {
-  color: var(--danger);
-  background: color-mix(in oklch, var(--danger), transparent 86%);
+  --badge-color: var(--danger);
 }
 .ag-badge.new {
   color: var(--accent);
@@ -6444,24 +6450,29 @@ button {
   font-size: 9.5px;
   font-weight: 600;
   border-radius: var(--r-xs);
-  background: color-mix(in oklch, var(--warn), transparent 84%);
-  color: var(--warn);
+  --badge-color: var(--warn);
+  background: color-mix(in oklch, var(--badge-color), transparent 84%);
+  color: var(--badge-color);
+}
+/* badge base — color-mix formula written once for fp-badge variants */
+.fp-badge.s-m,
+.fp-badge.s-a,
+.fp-badge.s-d,
+.fp-badge.s-r {
+  background: color-mix(in oklch, var(--badge-color), transparent 82%);
+  color: var(--badge-color);
 }
 .fp-badge.s-m {
-  background: color-mix(in oklch, var(--warn), transparent 82%);
-  color: var(--warn);
+  --badge-color: var(--warn);
 }
 .fp-badge.s-a {
-  background: color-mix(in oklch, var(--success), transparent 82%);
-  color: var(--success);
+  --badge-color: var(--success);
 }
 .fp-badge.s-d {
-  background: color-mix(in oklch, var(--danger), transparent 82%);
-  color: var(--danger);
+  --badge-color: var(--danger);
 }
 .fp-badge.s-r {
-  background: color-mix(in oklch, var(--info), transparent 82%);
-  color: var(--info);
+  --badge-color: var(--info);
 }
 
 /* ── inline rename / create input ── */
