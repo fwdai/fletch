@@ -124,35 +124,41 @@ export function carryForwardQueued(rebuilt: ChatItem[], prev: ChatItem[]): ChatI
   return [...rebuilt, ...stillQueued];
 }
 
-/** Re-apply optimistic failure metadata (`failed`, `thinking`) onto a log just
- *  rebuilt from records, so a Retry button survives a records-append rebuild.
+/** Re-apply store-only optimistic metadata (`failed`, `thinking`) onto a log
+ *  just rebuilt from records, so it survives a records-append / transcript
+ *  rebuild. Neither field is in records — both live only on the live optimistic
+ *  bubble:
+ *   - `failed` lets a failed send keep its Retry button. The backend persists
+ *     the turn's `session_user_turns` row before delivery, so `applyUserTurns`
+ *     already re-adds the bubble — but plain, dropping the affordance.
+ *   - `thinking` lets a retry replay the turn's reasoning effort exactly, e.g.
+ *     a Case B agent-errored turn whose canonical bubble would otherwise lose
+ *     it and fall back to the agent's current effort.
  *
- *  A failed send persists its `session_user_turns` row (the backend writes it
- *  before delivery), so `applyUserTurns` already re-adds the bubble — but as a
- *  plain `user_message`, dropping the retry affordance. We transfer the flag
- *  back onto that reconstructed bubble, matched by exact text end-first (the
- *  stored turn text is verbatim what was sent, so it equals the optimistic
- *  copy). End-first so a later canonical re-ask of the same prompt — which sorts
- *  ahead of the still-pending bubble `applyUserTurns` appends — isn't the one we
- *  flag. If no reconstructed bubble matches (the rare case where the row write
- *  itself failed), the optimistic entry is re-appended so it isn't lost. */
-export function carryForwardFailed(rebuilt: ChatItem[], prev: ChatItem[]): ChatItem[] {
-  const failed = prev.filter((it) => it.kind === "user_message" && it.failed);
-  if (failed.length === 0) return rebuilt;
+ *  Matched by exact text, end-first: the stored turn text is verbatim what was
+ *  sent (so it equals the optimistic copy), and end-first means a later
+ *  canonical re-ask of the same prompt — which sorts ahead of the still-pending
+ *  bubble `applyUserTurns` appends — isn't the one we touch. A failed entry with
+ *  no reconstructed match (the rare case where the row write itself failed) is
+ *  re-appended so it isn't lost; a thinking-only entry is for an already
+ *  canonical turn, so it needs no such fallback. */
+export function carryForwardOptimistic(rebuilt: ChatItem[], prev: ChatItem[]): ChatItem[] {
+  const carry = prev.filter((it) => it.kind === "user_message" && (it.failed || it.thinking));
+  if (carry.length === 0) return rebuilt;
   const result = rebuilt.map((it) => ({ ...it }));
-  for (const f of failed) {
-    if (f.kind !== "user_message") continue;
+  for (const c of carry) {
+    if (c.kind !== "user_message") continue;
     let merged = false;
     for (let i = result.length - 1; i >= 0; i -= 1) {
       const it = result[i];
-      if (it.kind === "user_message" && !it.failed && it.text === f.text) {
-        it.failed = true;
-        if (f.thinking) it.thinking = f.thinking;
+      if (it.kind === "user_message" && !it.failed && it.text === c.text) {
+        if (c.failed) it.failed = true;
+        if (c.thinking) it.thinking = c.thinking;
         merged = true;
         break;
       }
     }
-    if (!merged) result.push({ ...f });
+    if (!merged && c.failed) result.push({ ...c });
   }
   return result;
 }
