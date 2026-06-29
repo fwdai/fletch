@@ -48,6 +48,9 @@ export interface AppSlice {
 export interface WorkspaceSlice {
   workspace: Workspace | null;
   selectedAgentId: string | null;
+  /** A workflow run selected for the main pane, by run id. Mutually exclusive
+   *  with selectedAgentId / activeDraftId. */
+  selectedRunId: string | null;
   managedLogs: Record<string, ChatItem[]>;
   /** Question tools the agent is paused on, awaiting a human answer.
    *  Keyed by agent id, then by the tool_use id of the held `AskUserQuestion`
@@ -83,6 +86,8 @@ export interface WorkspaceSlice {
   usage: Record<string, AgentUsage>;
 
   selectAgent: (id: string | null) => void;
+  /** Select a workflow run for the main pane (clears agent/draft/settings selection). */
+  selectRun: (id: string) => void;
   spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
   sendUserMessage: (
     id: string,

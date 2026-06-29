@@ -30,6 +30,10 @@ interface Props {
   autoFocus?: boolean;
   disabled?: boolean;
   stopping?: boolean;
+  /** Minimum visible lines for the input box (default 1). The new-agent page
+   *  uses 2 to give first prompts more room; it stays a floor — the box still
+   *  grows with content and never shrinks below this. */
+  minRows?: number;
   /** Fired on Enter (without Shift) or send-button click. `attachments`
    *  holds absolute paths of staged files; the agent receives them as
    *  separate content blocks, kept out of the typed message body. */
@@ -111,6 +115,7 @@ export function Composer({
   autoFocus,
   disabled,
   stopping = false,
+  minRows = 1,
   onSend,
   onStop,
   onLocalCommand,
@@ -313,7 +318,10 @@ export function Composer({
         className="composer-input"
         placeholder={placeholder || "Message agent · /commands · @ to attach · # for PRs"}
         value={text}
-        rows={1}
+        rows={minRows}
+        // Floor at `minRows` lines; mirrors .composer-input's line-height (1.55)
+        // and vertical padding (12+8px), so grow() can't shrink it below this.
+        style={minRows > 1 ? { minHeight: `calc(${minRows} * 1.55em + 20px)` } : undefined}
         disabled={disabled}
         onChange={(e) => {
           setText(e.target.value);

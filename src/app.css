@@ -5003,9 +5003,22 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* Content is vertically centered. The mode switcher is pinned out of this
+     flow (.empty-modeswitch, below), so re-centering when the agent/workflow
+     content changes height never moves it. The top padding keeps the centered
+     content clear of the pinned switcher on shorter windows. */
   justify-content: center;
-  padding: 40px 40px 60px;
+  padding: 72px 40px 60px;
   position: relative;
+}
+/* The whole centered unit minus the switcher (identity + heading + composer +
+   pickers). A real box so it can carry the fade, re-triggered via `key={mode}`
+   on switch — the content cross-fades in place instead of snapping. */
+.empty-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
 }
 /* identity group: eyebrow + rerollable workspace name, tightly grouped */
 .empty-id {
@@ -8329,4 +8342,22 @@ button {
   outline: none;
   background: var(--hover);
   box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+/* New-agent page: Agent | Workflow kickoff toggle (extension composer modes). */
+/* Pinned out of the centered flow so it holds a fixed spot on the page while
+   the content below re-centers on mode switch. */
+.empty-modeswitch {
+  position: absolute;
+  top: 24px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 1;
+}
+.empty-modeswitch .set-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }

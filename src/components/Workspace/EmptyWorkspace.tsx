@@ -1,5 +1,8 @@
+import { useState } from "react";
 import type { DraftAgent } from "../../store";
 import { useAppStore } from "../../store";
+import { useWorkflows } from "../../workflows/run/useWorkflows";
+import { WorkflowComposer, WorkflowHeading } from "../../workflows/run/WorkflowComposer";
 import { Composer } from "../Composer";
 import { BranchPicker } from "../Composer/BranchPicker";
 import { ProjectPicker } from "../Composer/ProjectPicker";
@@ -19,6 +22,13 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const repos = useAppStore((s) => s.workspace?.repos ?? []);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
+
+  // Kickoff mode: a single agent, or a workflow. The toggle sits at the top of
+  // the page and swaps the whole block — it is not part of the prompt box. The
+  // Workflow option only appears once at least one workflow has been defined.
+  const [mode, setMode] = useState<"agent" | "workflow">("agent");
+  const hasWorkflows = useWorkflows().length > 0;
+  const workflowMode = mode === "workflow" && hasWorkflows;
 
   return (
     <div className="pane center">
@@ -51,46 +61,96 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
       </div>
 
       <div className="empty-wrap fade-in">
-        <div className="empty-id">
-          <div className="empty-mark">
-            <span className="d" />
-            <span>NEW WORKSPACE</span>
+        {hasWorkflows && (
+          <div className="empty-modeswitch">
+            <div className="set-seg">
+              <button className={mode === "agent" ? "active" : ""} onClick={() => setMode("agent")}>
+                <Icon name="bot" size={13} /> Agent
+              </button>
+              <button
+                className={mode === "workflow" ? "active" : ""}
+                onClick={() => setMode("workflow")}
+              >
+                <Icon name="combine" size={13} /> Workflow
+              </button>
+            </div>
           </div>
-          <div className="empty-name" onClick={() => rerollDraftName(draft.id)} title="Reroll name">
-            <LandmarkGlyph
-              name={draft.name}
-              size={36}
-              strokeWidth={1.1}
-              style={{ display: "inline-block", verticalAlign: "-6px", marginRight: 6 }}
-            />
-            {draft.name}
+        )}
+
+        {/* Everything but the switcher — identity, the mode-variable heading +
+            composer, and the pickers — centered as one unit and keyed by mode so
+            switching cross-fades it in place. The switcher is pinned separately
+            (it never moves regardless of this block's height). */}
+        <div className="empty-body fade-in" key={mode}>
+          <div className="empty-id">
+            <div className="empty-mark">
+              <span className="d" />
+              <span>NEW WORKSPACE</span>
+            </div>
+            <div
+              className="empty-name"
+              onClick={() => rerollDraftName(draft.id)}
+              title="Reroll name"
+            >
+              <LandmarkGlyph
+                name={draft.name}
+                size={36}
+                strokeWidth={1.1}
+                style={{ display: "inline-block", verticalAlign: "-6px", marginRight: 6 }}
+              />
+              {draft.name}
+            </div>
           </div>
-        </div>
 
-        <h1 className="empty-title">What should be the first task?</h1>
-        <p className="empty-sub">
-          A worktree and sandbox will be created at{" "}
-          <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
-            ~/.quorum/worktrees/{draft.name}
-          </span>
-        </p>
+          {workflowMode ? (
+            <WorkflowHeading />
+          ) : (
+            <>
+              <h1 className="empty-title">What should be the first task?</h1>
+              <p className="empty-sub">
+                A worktree and sandbox will be created at{" "}
+                <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
+                  ~/.quorum/worktrees/{draft.name}
+                </span>
+              </p>
+            </>
+          )}
 
-        <div className="empty-composer">
-          <Composer
-            autoFocus
-            draftKey={draft.id}
-            defaultProvider={draft.provider}
-            defaultModel={draft.model}
-            defaultCustomAgentId={draft.customAgentId}
-            onChangeSelection={(provider, model, customAgentId) => {
-              updateDraft(draft.id, { provider, model, customAgentId });
-              setNewDraftSelection(provider, model, customAgentId);
-            }}
-            placeholder="Describe the task for the agent. ↵ to spawn."
-            onSend={({ text, provider, model, attachments, thinking, customAgentId }) =>
-              spawnFromDraft(draft.id, text, provider, model, attachments, thinking, customAgentId)
-            }
-          />
+          <div className="empty-composer">
+            {workflowMode ? (
+              <WorkflowComposer
+                repoPath={draft.repoPath}
+                baseBranch={draft.base}
+                name={draft.name}
+              />
+            ) : (
+              <Composer
+                autoFocus
+                minRows={2}
+                draftKey={draft.id}
+                defaultProvider={draft.provider}
+                defaultModel={draft.model}
+                defaultCustomAgentId={draft.customAgentId}
+                onChangeSelection={(provider, model, customAgentId) => {
+                  updateDraft(draft.id, { provider, model, customAgentId });
+                  setNewDraftSelection(provider, model, customAgentId);
+                }}
+                placeholder="Describe the task for the agent. ↵ to spawn."
+                onSend={({ text, provider, model, attachments, thinking, customAgentId }) =>
+                  spawnFromDraft(
+                    draft.id,
+                    text,
+                    provider,
+                    model,
+                    attachments,
+                    thinking,
+                    customAgentId,
+                  )
+                }
+              />
+            )}
+          </div>
+
           <div className="empty-meta">
             <ProjectPicker
               value={draft.repoPath}

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { AgentRecord } from "../../api";
 import { EMPTY_AGENTS, useAppStore } from "../../store";
+import { RunView } from "../../workflows/run/RunView";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
 import { ChatView } from "./ChatView";
@@ -15,6 +16,7 @@ export function Workspace() {
   const workspace = useAppStore((s) => s.workspace);
   const agents = useAppStore((s) => s.workspace?.agents ?? EMPTY_AGENTS);
   const selectedId = useAppStore((s) => s.selectedAgentId);
+  const selectedRunId = useAppStore((s) => s.selectedRunId);
   const drafts = useAppStore((s) => s.drafts);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
@@ -22,6 +24,11 @@ export function Workspace() {
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
   if (draft) return <EmptyWorkspace draft={draft} key={draft.id} />;
+
+  // A selected workflow run takes the center pane.
+  if (selectedRunId) {
+    return <RunView id={selectedRunId} key={selectedRunId} />;
+  }
 
   const agent = agents.find((a) => a.id === selectedId);
   if (!workspace || !agent) {
