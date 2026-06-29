@@ -24,11 +24,11 @@
   --dens-lg: 16px;
 
   /* z-index scale */
-  --z-titlebar: 20;    /* title bar + chat-search overlay */
-  --z-dropdown: 200;   /* menus, model picker */
-  --z-popover: 300;    /* popovers (usage, settings, new-project) */
-  --z-overlay: 400;    /* full-screen overlays (history) */
-  --z-toast: 500;      /* tooltips, error banners, toasts */
+  --z-titlebar: 20; /* title bar + chat-search overlay */
+  --z-dropdown: 200; /* menus, model picker */
+  --z-popover: 300; /* popovers (usage, settings, new-project) */
+  --z-overlay: 400; /* full-screen overlays (history) */
+  --z-toast: 500; /* tooltips, error banners, toasts */
 
   /* transition shorthand */
   --transition-colors: background 0.12s, color 0.12s;
@@ -62,8 +62,8 @@
   --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.25);
   --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 28px rgba(0, 0, 0, 0.35);
   /* button/badge foreground on accent backgrounds */
-  --btn-fg-dark: oklch(0.16 0.02 60);  /* primary buttons in dark theme */
-  --btn-fg-dark-alt: oklch(0.18 0.02 60);  /* send button + run-go variant */
+  --btn-fg-dark: oklch(0.16 0.02 60); /* primary buttons in dark theme */
+  --btn-fg-dark-alt: oklch(0.18 0.02 60); /* send button + run-go variant */
   color-scheme: dark;
 }
 
@@ -94,7 +94,7 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.1);
   /* button/badge foreground on accent backgrounds */
-  --btn-fg-light: oklch(0.98 0.005 60);  /* primary buttons in light theme */
+  --btn-fg-light: oklch(0.98 0.005 60); /* primary buttons in light theme */
   color-scheme: light;
 }
 
