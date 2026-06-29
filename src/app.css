@@ -22,6 +22,16 @@
   --dens-sm: 6px;
   --dens-md: 10px;
   --dens-lg: 16px;
+
+  /* z-index scale */
+  --z-titlebar: 20; /* title bar + chat-search overlay */
+  --z-dropdown: 200; /* menus, model picker */
+  --z-popover: 300; /* popovers (usage, settings, new-project) */
+  --z-overlay: 400; /* full-screen overlays (history) */
+  --z-toast: 500; /* tooltips, error banners, toasts */
+
+  /* transition shorthand */
+  --transition-colors: background 0.12s, color 0.12s;
 }
 
 /* dark — neutral cool gray, contrast between panels */
@@ -51,6 +61,10 @@
   --merged: var(--purple);
   --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.25);
   --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 28px rgba(0, 0, 0, 0.35);
+  /* button/badge foreground on accent backgrounds */
+  --btn-fg-dark: oklch(0.16 0.02 60); /* primary buttons in dark theme */
+  --btn-fg-dark-alt: oklch(0.18 0.02 60); /* send button + run-go variant */
+  --btn-fg-light: oklch(0.98 0.005 60); /* light text on danger/saturated backgrounds */
   color-scheme: dark;
 }
 
@@ -80,6 +94,10 @@
   --merged: var(--purple);
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.1);
+  /* button/badge foreground on accent backgrounds */
+  --btn-fg-dark: oklch(0.16 0.02 60);
+  --btn-fg-dark-alt: oklch(0.18 0.02 60);
+  --btn-fg-light: oklch(0.98 0.005 60);
   color-scheme: light;
 }
 
@@ -173,7 +191,7 @@ button {
   padding: 0 10px;
   border-bottom: 1px solid var(--bd-soft);
   position: relative;
-  z-index: 20;
+  z-index: var(--z-titlebar);
 }
 .tb-lights-gutter {
   width: 76px;
@@ -338,11 +356,11 @@ button {
 }
 .btn-t.primary {
   background: var(--accent);
-  color: oklch(0.16 0.02 60);
+  color: var(--btn-fg-dark);
   border-color: transparent;
 }
 .theme-light .btn-t.primary {
-  color: oklch(0.98 0.005 60);
+  color: var(--btn-fg-light);
 }
 .btn-t.primary:hover {
   background: oklch(from var(--accent) calc(l + 0.04) c h);
@@ -369,7 +387,7 @@ button {
   border-radius: var(--r-xs);
   white-space: nowrap;
   pointer-events: none;
-  z-index: 500;
+  z-index: var(--z-toast);
 }
 .tip[data-tip-down]:hover::after {
   bottom: auto;
@@ -999,7 +1017,7 @@ button {
   height: 24px;
   border-radius: 50%;
   background: var(--accent);
-  color: oklch(0.16 0.02 60);
+  color: var(--btn-fg-dark);
   justify-content: center;
   font-size: 10.5px;
   font-weight: 600;
@@ -1137,7 +1155,7 @@ button {
   position: absolute;
   top: 12px;
   right: 24px;
-  z-index: 20;
+  z-index: var(--z-titlebar);
   gap: 6px;
   padding: 5px 6px 5px 10px;
   background: var(--bg-2);
@@ -1895,14 +1913,14 @@ button {
   font-size: 12px;
   font-weight: 600;
   background: var(--accent);
-  color: oklch(0.16 0.02 60);
+  color: var(--btn-fg-dark);
   border: 0;
   transition:
     background 0.12s,
     opacity 0.12s;
 }
 .theme-light .q-other-send {
-  color: oklch(0.98 0.005 60);
+  color: var(--btn-fg-light);
 }
 .q-other-send:hover:not(:disabled) {
   background: oklch(from var(--accent) calc(l + 0.04) c h);
@@ -1939,11 +1957,11 @@ button {
   height: 18px;
   border-radius: 50%;
   background: var(--accent);
-  color: oklch(0.16 0.02 60);
+  color: var(--btn-fg-dark);
   justify-content: center;
 }
 .theme-light .qa-mark {
-  color: oklch(0.98 0.005 60);
+  color: var(--btn-fg-light);
 }
 .qa-text {
   flex: 1;
@@ -2259,14 +2277,14 @@ button {
   height: 28px;
   border-radius: var(--r-sm);
   background: var(--accent);
-  color: oklch(0.18 0.02 60);
+  color: var(--btn-fg-dark-alt);
   justify-content: center;
   transition:
     background 0.12s,
     transform 0.08s;
 }
 .theme-light .send {
-  color: oklch(0.98 0.005 60);
+  color: var(--btn-fg-light);
 }
 .send:hover:not(:disabled) {
   background: oklch(from var(--accent) calc(l + 0.04) c h);
@@ -2284,7 +2302,7 @@ button {
 }
 .send.is-stop {
   background: var(--danger);
-  color: oklch(0.98 0.005 60);
+  color: var(--btn-fg-light);
 }
 .send.is-stop:hover:not(:disabled) {
   background: oklch(from var(--danger) calc(l + 0.04) c h);
@@ -2332,7 +2350,7 @@ button {
   border-radius: var(--r-md);
   box-shadow: 0 16px 44px rgba(0, 0, 0, 0.32);
   padding: 12px 13px 11px;
-  z-index: 300;
+  z-index: var(--z-popover);
   animation: ddIn 0.14s var(--ease);
 }
 .usage-pop::after {
@@ -2445,7 +2463,7 @@ button {
   border-radius: var(--r-md);
   box-shadow: 0 16px 44px rgba(0, 0, 0, 0.3);
   padding: 5px;
-  z-index: 200;
+  z-index: var(--z-dropdown);
   animation: ddIn 0.15s var(--ease);
 }
 @keyframes ddIn {
@@ -2510,7 +2528,7 @@ button {
  *  side panel (below it) so the panel slides out from underneath the dropdown. */
 .model-dd-wrap {
   position: absolute;
-  z-index: 200;
+  z-index: var(--z-dropdown);
   /* The side panel is absolute, so it must not be clipped by the wrapper. */
   overflow: visible;
 }
@@ -3953,13 +3971,13 @@ button {
   padding: 0 14px;
   font-size: 12.5px;
   font-weight: 600;
-  color: oklch(0.16 0.02 60);
+  color: var(--btn-fg-dark);
   background: var(--accent);
   border: 0;
   border-radius: var(--r-md) 0 0 var(--r-md);
 }
 .theme-light .git-split .gsa-main {
-  color: oklch(0.98 0.005 60);
+  color: var(--btn-fg-light);
 }
 .git-split .gsa-main svg {
   width: 13px;
@@ -3989,10 +4007,10 @@ button {
   border: 0;
   border-left: 1px solid color-mix(in oklch, black, transparent 82%);
   border-radius: 0 var(--r-md) var(--r-md) 0;
-  color: oklch(0.16 0.02 60);
+  color: var(--btn-fg-dark);
 }
 .theme-light .git-split .gsa-caret {
-  color: oklch(0.98 0.005 60);
+  color: var(--btn-fg-light);
 }
 .git-split .gsa-caret svg {
   width: 12px;
@@ -4948,7 +4966,7 @@ button {
   border: 1px solid var(--bd);
   border-radius: var(--r-lg);
   box-shadow: 0 28px 72px rgba(0, 0, 0, 0.45);
-  z-index: 300;
+  z-index: var(--z-popover);
   padding: 14px;
   animation: ddIn 0.2s var(--ease);
   max-height: calc(100vh - 80px);
@@ -5074,7 +5092,7 @@ button {
   border: 1px solid var(--bd);
   border-radius: var(--r-md);
   box-shadow: 0 20px 56px rgba(0, 0, 0, 0.35);
-  z-index: 300;
+  z-index: var(--z-popover);
   padding: 8px;
   animation: ddIn 0.15s var(--ease);
 }
@@ -5375,13 +5393,13 @@ button {
   height: 34px;
   padding: 0 16px;
   background: var(--accent);
-  color: oklch(0.16 0.02 60);
+  color: var(--btn-fg-dark);
   border-radius: var(--r-sm);
   font-size: 13px;
   font-weight: 600;
 }
 .theme-light .np-primary {
-  color: oklch(0.98 0.005 60);
+  color: var(--btn-fg-light);
 }
 .np-primary:disabled {
   opacity: 0.5;
@@ -5444,7 +5462,7 @@ button {
   color: var(--fg-0);
   border-radius: var(--r-md);
   font-size: 12.5px;
-  z-index: 500;
+  z-index: var(--z-toast);
   box-shadow: var(--shadow-2);
 }
 .error-banner .close {
@@ -5513,7 +5531,7 @@ button {
   border: 1px solid var(--bd);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-2);
-  z-index: 500;
+  z-index: var(--z-toast);
   transform-origin: bottom right;
   /* Spring-like reveal: rise from below + overshoot past full size, then
      settle. The back-eased curve gives the "pop". */
@@ -5723,7 +5741,7 @@ button {
   background: rgba(0, 0, 0, 0.55);
   -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
-  z-index: 400;
+  z-index: var(--z-overlay);
   display: flex;
   flex-direction: column;
   animation: hovIn 0.18s var(--ease);
@@ -7003,7 +7021,7 @@ button {
   border-radius: 8px;
   background: var(--sw);
   justify-content: center;
-  color: oklch(0.18 0.02 60);
+  color: var(--btn-fg-dark-alt);
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
   transition:
     transform 0.12s var(--ease),
@@ -7037,7 +7055,7 @@ button {
     color-mix(in oklch, var(--accent), white 8%),
     color-mix(in oklch, var(--accent), black 22%)
   );
-  color: oklch(0.18 0.02 60);
+  color: var(--btn-fg-dark-alt);
   justify-content: center;
   font-size: 17px;
   font-weight: 600;
