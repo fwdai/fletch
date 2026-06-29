@@ -20,6 +20,7 @@ import { isCommitAction } from "../components/RightPanel/primaryActions";
 import {
   applyEvent,
   applyUserTurns,
+  carryForwardFailed,
   carryForwardQueued,
   needsSessionIdRefresh,
   persistLiveUsage,
@@ -217,8 +218,10 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
         const provider = providerFor(get(), id);
         const rebuilt = applyUserTurns(reduceRecords(provider, records), turns);
         // Keep optimistic mid-turn follow-ups visible until the transcript
-        // catches up (then they reconcile away). See carryForwardQueued.
-        const items = carryForwardQueued(rebuilt, get().managedLogs[id] ?? []);
+        // catches up (then they reconcile away), and re-apply retry metadata to
+        // a failed send's reconstructed bubble so its Retry survives the rebuild.
+        const prev = get().managedLogs[id] ?? [];
+        const items = carryForwardFailed(carryForwardQueued(rebuilt, prev), prev);
         const usage = usageFromRecords(provider, records);
         set((state) => ({
           managedLogs: { ...state.managedLogs, [id]: items },

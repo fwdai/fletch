@@ -124,6 +124,39 @@ export function carryForwardQueued(rebuilt: ChatItem[], prev: ChatItem[]): ChatI
   return [...rebuilt, ...stillQueued];
 }
 
+/** Re-apply optimistic failure metadata (`failed`, `thinking`) onto a log just
+ *  rebuilt from records, so a Retry button survives a records-append rebuild.
+ *
+ *  A failed send persists its `session_user_turns` row (the backend writes it
+ *  before delivery), so `applyUserTurns` already re-adds the bubble — but as a
+ *  plain `user_message`, dropping the retry affordance. We transfer the flag
+ *  back onto that reconstructed bubble, matched by exact text end-first (the
+ *  stored turn text is verbatim what was sent, so it equals the optimistic
+ *  copy). End-first so a later canonical re-ask of the same prompt — which sorts
+ *  ahead of the still-pending bubble `applyUserTurns` appends — isn't the one we
+ *  flag. If no reconstructed bubble matches (the rare case where the row write
+ *  itself failed), the optimistic entry is re-appended so it isn't lost. */
+export function carryForwardFailed(rebuilt: ChatItem[], prev: ChatItem[]): ChatItem[] {
+  const failed = prev.filter((it) => it.kind === "user_message" && it.failed);
+  if (failed.length === 0) return rebuilt;
+  const result = rebuilt.map((it) => ({ ...it }));
+  for (const f of failed) {
+    if (f.kind !== "user_message") continue;
+    let merged = false;
+    for (let i = result.length - 1; i >= 0; i -= 1) {
+      const it = result[i];
+      if (it.kind === "user_message" && !it.failed && it.text === f.text) {
+        it.failed = true;
+        if (f.thinking) it.thinking = f.thinking;
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) result.push({ ...f });
+  }
+  return result;
+}
+
 /** Apply one raw event to an agent's log via its provider adapter. Pure: it
  *  returns the state patch plus a `turnEnded` flag so the caller can fire any
  *  side effects (e.g. the completion chime). Catches adapter throws so a single
