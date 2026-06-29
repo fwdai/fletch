@@ -140,19 +140,21 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
     const t = matched[matched.length - k];
     const item = result[userIdxs[userIdxs.length - k]];
     if (item.kind === "user_message") {
+      // The stored (typed) text is a prefix of the rendered message for a
+      // correctly end-aligned pairing — the runner only ever *appends*
+      // `Attached file:` lines. When it isn't, the pairing is misaligned (e.g.
+      // a slash-command turn has a row but no rendered bubble, shifting the
+      // count), so we neither rewrite the text nor hang this turn's duration on
+      // an unrelated message — a wrong "Ran …" is worse than none.
+      const aligned = item.text.startsWith(t.text);
       // Run-timer: the durable per-turn duration rides on the turn's user
       // message, so the renderer has one source for the live/static footer.
-      item.timing = turnTiming(t);
+      if (aligned) item.timing = turnTiming(t);
       if (t.attachments.length > 0) {
         item.attachments = t.attachments;
-        // Render the clean text the user actually typed (what the live render
-        // showed) rather than the transcript's copy, which the runner padded
-        // with `Attached file: <path>` reference lines. The stored turn text is
-        // verbatim what was sent, so it matches the optimistic render exactly.
-        // Prefix-guard so a mis-aligned match can't rewrite an unrelated message.
-        if (item.text.startsWith(t.text)) {
-          item.text = t.text;
-        }
+        // Render the clean text the user typed rather than the transcript's
+        // padded copy — only when the pairing is trustworthy.
+        if (aligned) item.text = t.text;
       }
     }
   }

@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { applyPolicy, getAdapter, type TurnTiming } from "../../adapters";
+import { applyPolicy, getAdapter } from "../../adapters";
 import { type AgentRecord, api } from "../../api";
 import { providerLabel } from "../../data/providers";
 import { useAppStore } from "../../store";
@@ -11,7 +11,7 @@ import { ChatSearch } from "./ChatSearch";
 import { MessageItem } from "./messages/MessageItem";
 import { pairToolItems, rowKey } from "./messages/pair";
 import { isUserInputTool } from "./messages/UserInput/parse";
-import { LiveTurnFooter, TurnFooter } from "./RunTimer";
+import { LiveTurnFooter, planTurnFooters, TurnFooter } from "./RunTimer";
 
 /** Custom-view body: scrolling chat log + composer at the bottom.
  *  The composer here dispatches the user's message via the store; it
@@ -152,34 +152,9 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     return { turns, turnIds };
   }, [items]);
 
-  // Run-timer placement. A turn spans a user_message to just before the next
-  // one; its timing rides on the opening user_message. `completedFooters` maps
-  // the index of each completed turn's *last* item → its final duration (the
-  // static "Ran …" record renders after that item, doubling as the turn seam).
-  // `openTurnTiming` is the in-flight turn's timing, driving the live ticker.
-  const { completedFooters, openTurnTiming } = useMemo(() => {
-    const completedFooters = new Map<number, number>();
-    let turnTiming: TurnTiming | undefined;
-    let turnOpen = false;
-    let openTurnTiming: TurnTiming | undefined;
-    const closeAt = (lastIdx: number) => {
-      if (turnOpen && turnTiming?.completedAt != null) {
-        completedFooters.set(lastIdx, turnTiming.activeMs / 1000);
-      }
-    };
-    items.forEach((it, i) => {
-      if (it.kind === "user_message") {
-        closeAt(i - 1); // the previous turn ends just before this one
-        turnTiming = it.timing;
-        turnOpen = true;
-      }
-    });
-    if (turnOpen) {
-      closeAt(items.length - 1); // close the last turn at the end of the feed
-      if (turnTiming && turnTiming.completedAt == null) openTurnTiming = turnTiming;
-    }
-    return { completedFooters, openTurnTiming };
-  }, [items]);
+  // Run-timer placement: where each completed turn's static footer renders and
+  // which turn is live (see planTurnFooters).
+  const { completedFooters, openTurnTiming } = useMemo(() => planTurnFooters(items), [items]);
 
   // The model the agent actually used on its most recent turn (Claude, pi,
   // Codex, OpenCode report it in their transcripts). Undefined for Cursor /

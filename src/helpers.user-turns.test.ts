@@ -107,17 +107,26 @@ describe("applyUserTurns", () => {
 
   it("leaves text alone if the stored text isn't a prefix (guards a mis-aligned match)", () => {
     const items = [userMsg("totally different message")];
-    const turns = [turn({ native_id: "rec-A", text: "what I typed", attachments: ["/tmp/x"] })];
+    const turns = [
+      turn({
+        native_id: "rec-A",
+        text: "what I typed",
+        attachments: ["/tmp/x"],
+        active_ms: 9_000,
+        completed_at: 1,
+      }),
+    ];
 
     const out = applyUserTurns(items, turns);
-    // Attachments still hang (existing behavior), but we don't rewrite the
-    // text to something that doesn't belong to this message.
+    // Attachments still hang (existing behavior), but on a mis-aligned pairing
+    // we rewrite neither the text nor the duration — a wrong "Ran …" on an
+    // unrelated turn is worse than none.
     expect(out[0]).toEqual({
       kind: "user_message",
       text: "totally different message",
       attachments: ["/tmp/x"],
-      timing: NO_DURATION,
     });
+    expect(out[0]).not.toHaveProperty("timing");
   });
 
   it("is a no-op when there are no user turns", () => {
