@@ -3,7 +3,6 @@ import { hasUsage, usageFromRecords } from "../adapters/usage";
 import { api } from "../api";
 import {
   applyUserTurns,
-  carryForwardOptimistic,
   dropAgentEntries,
   passthroughSlashName,
   providerFor,
@@ -386,18 +385,16 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       const items = applyUserTurns(reduceRecords(provider, records), turns);
       const usage = usageFromRecords(provider, records);
       set((state) => {
-        const prev = state.managedLogs[id] ?? [];
         // Nothing stored but a live turn is already rendering — don't clobber it.
-        if (items.length === 0 && prev.length > 0) {
+        if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {
           return {};
         }
         return {
-          // Re-apply store-only retry metadata (failed flag, reasoning effort)
-          // onto the reconstructed bubble: a view switch / transcript reload
-          // rebuilds from records and would otherwise strip the Retry button and
-          // the turn's effort (and, once stripped, no later rebuild could
-          // recover them). See carryForwardOptimistic.
-          managedLogs: { ...state.managedLogs, [id]: carryForwardOptimistic(items, prev) },
+          // A failed send's Retry (and per-message effort) ride along on `items`
+          // itself: applyUserTurns flags pending user-turn rows as failed and
+          // overlays their effort, so this survives a view switch / reload
+          // straight from the persisted rows — no carry-forward needed.
+          managedLogs: { ...state.managedLogs, [id]: items },
           managedBusy: { ...state.managedBusy, [id]: false },
           // Only overwrite when records carried usage — cursor folds usage
           // live, so an empty records result must not wipe it.

@@ -1113,10 +1113,13 @@ impl Supervisor {
             .and_then(|a| {
                 a.send_user_message(&msg.text, &msg.attachments, msg.thinking.as_deref())
             })?;
-        if let Err(e) =
-            self.workspace
-                .insert_user_turn(agent_id, &msg.turn_id, &msg.text, &msg.attachments)
-        {
+        if let Err(e) = self.workspace.insert_user_turn(
+            agent_id,
+            &msg.turn_id,
+            &msg.text,
+            &msg.attachments,
+            msg.thinking.as_deref(),
+        ) {
             tracing::warn!(error = %e, agent_id, "persist live-injected user turn failed");
         }
         Ok(())
@@ -1146,9 +1149,9 @@ impl Supervisor {
         thinking: Option<&str>,
     ) -> Result<()> {
         // Durable capture first — independent of whether the agent accepts.
-        if let Err(e) = self
-            .workspace
-            .insert_user_turn(agent_id, turn_id, text, attachments)
+        if let Err(e) =
+            self.workspace
+                .insert_user_turn(agent_id, turn_id, text, attachments, thinking)
         {
             tracing::warn!(error = %e, agent_id, "persist outgoing user turn failed");
         }

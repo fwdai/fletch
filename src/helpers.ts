@@ -56,14 +56,18 @@ export function reduceRecords(provider: string | undefined, records: SessionReco
   return items;
 }
 
-/** Overlay Quorum-origin outgoing-turn metadata (attachments) onto the
- *  transcript-rendered conversation. Additive only — never replaces transcript
- *  content (which stays the canonical, re-ingestable history):
- *  - Matched turns (`native_id` set) hang their attachments on the rendered
- *    user message. Aligned from the end, so older turns that predate this
- *    feature (no row) simply keep no attachments instead of mis-grabbing them.
- *  - Pending turns (`native_id` null — the agent never logged them, e.g. a
- *    failed send) render standalone so the message survives reload + retry. */
+/** Overlay Quorum-origin outgoing-turn metadata (attachments, per-message
+ *  reasoning effort, failed-ness) onto the transcript-rendered conversation.
+ *  Additive only — never replaces transcript content (which stays the canonical,
+ *  re-ingestable history):
+ *  - Matched turns (`native_id` set) hang their attachments + `thinking` on the
+ *    rendered user message. Aligned from the end, so older turns that predate
+ *    this feature (no row) simply keep no metadata instead of mis-grabbing it.
+ *  - Pending turns (`native_id` null) never matched a transcript record. The
+ *    backend associates delivered turns *before* emitting records-appended, so
+ *    a row still pending here is an undelivered/failed send: render it standalone
+ *    and `failed` so its Retry button (and effort) survive reload — durably,
+ *    from the DB, not just the live in-memory log. */
 export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[] {
   if (turns.length === 0) return items;
 
@@ -81,7 +85,8 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
   for (let k = 1; k <= n; k++) {
     const t = matched[matched.length - k];
     const item = result[userIdxs[userIdxs.length - k]];
-    if (item.kind === "user_message" && t.attachments.length > 0) {
+    if (item.kind !== "user_message") continue;
+    if (t.attachments.length > 0) {
       item.attachments = t.attachments;
       // Render the clean text the user actually typed (what the live render
       // showed) rather than the transcript's copy, which the runner padded
@@ -92,11 +97,15 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
         item.text = t.text;
       }
     }
+    // Carry the per-message effort so a retry of this (canonical) turn replays
+    // it exactly — e.g. a turn the agent errored on mid-response.
+    if (t.thinking) item.thinking = t.thinking;
   }
 
   for (const t of pending) {
-    const item: ChatItem = { kind: "user_message", text: t.text };
+    const item: ChatItem = { kind: "user_message", text: t.text, failed: true };
     if (t.attachments.length > 0) item.attachments = t.attachments;
+    if (t.thinking) item.thinking = t.thinking;
     result.push(item);
   }
 
@@ -122,45 +131,6 @@ export function carryForwardQueued(rebuilt: ChatItem[], prev: ChatItem[]): ChatI
     );
   });
   return [...rebuilt, ...stillQueued];
-}
-
-/** Re-apply store-only optimistic metadata (`failed`, `thinking`) onto a log
- *  just rebuilt from records, so it survives a records-append / transcript
- *  rebuild. Neither field is in records — both live only on the live optimistic
- *  bubble:
- *   - `failed` lets a failed send keep its Retry button. The backend persists
- *     the turn's `session_user_turns` row before delivery, so `applyUserTurns`
- *     already re-adds the bubble — but plain, dropping the affordance.
- *   - `thinking` lets a retry replay the turn's reasoning effort exactly, e.g.
- *     a Case B agent-errored turn whose canonical bubble would otherwise lose
- *     it and fall back to the agent's current effort.
- *
- *  Matched by exact text, end-first: the stored turn text is verbatim what was
- *  sent (so it equals the optimistic copy), and end-first means a later
- *  canonical re-ask of the same prompt — which sorts ahead of the still-pending
- *  bubble `applyUserTurns` appends — isn't the one we touch. A failed entry with
- *  no reconstructed match (the rare case where the row write itself failed) is
- *  re-appended so it isn't lost; a thinking-only entry is for an already
- *  canonical turn, so it needs no such fallback. */
-export function carryForwardOptimistic(rebuilt: ChatItem[], prev: ChatItem[]): ChatItem[] {
-  const carry = prev.filter((it) => it.kind === "user_message" && (it.failed || it.thinking));
-  if (carry.length === 0) return rebuilt;
-  const result = rebuilt.map((it) => ({ ...it }));
-  for (const c of carry) {
-    if (c.kind !== "user_message") continue;
-    let merged = false;
-    for (let i = result.length - 1; i >= 0; i -= 1) {
-      const it = result[i];
-      if (it.kind === "user_message" && !it.failed && it.text === c.text) {
-        if (c.failed) it.failed = true;
-        if (c.thinking) it.thinking = c.thinking;
-        merged = true;
-        break;
-      }
-    }
-    if (!merged && c.failed) result.push({ ...c });
-  }
-  return result;
 }
 
 /** Apply one raw event to an agent's log via its provider adapter. Pure: it

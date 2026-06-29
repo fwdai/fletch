@@ -273,6 +273,9 @@ pub struct UserTurn {
     pub attachments: Vec<String>,
     /// Matched `session_records.native_id`; `None` = pending or failed turn.
     pub native_id: Option<String>,
+    /// Per-message reasoning effort the turn was sent with; `None` = the agent's
+    /// session default. Lets a retry replay the exact effort even from records.
+    pub thinking: Option<String>,
 }
 
 pub struct WorkspaceManager {
@@ -887,6 +890,7 @@ impl WorkspaceManager {
         turn_id: &str,
         text: &str,
         attachments: &[String],
+        thinking: Option<&str>,
     ) -> Result<bool> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
@@ -903,9 +907,9 @@ impl WorkspaceManager {
         )?;
         let n = tx.execute(
             "INSERT OR IGNORE INTO session_user_turns
-                (turn_id, session_id, seq, text, attachments, native_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
-            rusqlite::params![turn_id, sid, seq, text, attachments_json, now_millis()],
+                (turn_id, session_id, seq, text, attachments, native_id, created_at, thinking)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7)",
+            rusqlite::params![turn_id, sid, seq, text, attachments_json, now_millis(), thinking],
         )?;
         tx.commit()?;
         Ok(n > 0)
@@ -918,16 +922,16 @@ impl WorkspaceManager {
             return Ok(vec![]);
         };
         let mut stmt = conn.prepare(
-            "SELECT turn_id, seq, text, attachments, native_id
+            "SELECT turn_id, seq, text, attachments, native_id, thinking
              FROM session_user_turns WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
-        let rows: Vec<(String, i64, String, String, Option<String>)> = stmt
+        let rows: Vec<(String, i64, String, String, Option<String>, Option<String>)> = stmt
             .query_map([&sid], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
             })?
             .collect::<std::result::Result<_, rusqlite::Error>>()?;
         rows.into_iter()
-            .map(|(turn_id, seq, text, attachments_text, native_id)| {
+            .map(|(turn_id, seq, text, attachments_text, native_id, thinking)| {
                 let attachments = serde_json::from_str(&attachments_text)
                     .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
                 Ok(UserTurn {
@@ -936,6 +940,7 @@ impl WorkspaceManager {
                     text,
                     attachments,
                     native_id,
+                    thinking,
                 })
             })
             .collect()
@@ -2168,7 +2173,7 @@ mod tests {
         let (ws_id, wm) = make_workspace_with_session(&db);
 
         assert!(wm
-            .insert_user_turn(&ws_id, "turn-1", "hello", &["/tmp/a.png".into()])
+            .insert_user_turn(&ws_id, "turn-1", "hello", &["/tmp/a.png".into()], None)
             .unwrap());
 
         let turns = wm.read_user_turns(&ws_id).unwrap();
@@ -2185,9 +2190,9 @@ mod tests {
         let db = test_db();
         let (ws_id, wm) = make_workspace_with_session(&db);
 
-        assert!(wm.insert_user_turn(&ws_id, "turn-1", "first", &[]).unwrap());
+        assert!(wm.insert_user_turn(&ws_id, "turn-1", "first", &[], None).unwrap());
         // Same turn_id (a send retry) — ignored, original retained, no new row.
-        assert!(!wm.insert_user_turn(&ws_id, "turn-1", "second", &[]).unwrap());
+        assert!(!wm.insert_user_turn(&ws_id, "turn-1", "second", &[], None).unwrap());
 
         let turns = wm.read_user_turns(&ws_id).unwrap();
         assert_eq!(turns.len(), 1);
@@ -2200,9 +2205,9 @@ mod tests {
         let (ws_id, wm) = make_workspace_with_session(&db);
 
         // Two outgoing turns: one with an attachment, one plain.
-        wm.insert_user_turn(&ws_id, "t1", "look at this", &["/tmp/diagram.png".into()])
+        wm.insert_user_turn(&ws_id, "t1", "look at this", &["/tmp/diagram.png".into()], None)
             .unwrap();
-        wm.insert_user_turn(&ws_id, "t2", "now refactor", &[]).unwrap();
+        wm.insert_user_turn(&ws_id, "t2", "now refactor", &[], None).unwrap();
 
         // Transcript user-message records as the agent logged them (attachment
         // turn carries the injected reference line; plain turn is just text).
@@ -2235,7 +2240,7 @@ mod tests {
 
         // Multi-line message — the transcript stores it JSON-escaped (\n → \\n).
         let text = "Please do this:\n- step one\n- step two";
-        wm.insert_user_turn(&ws_id, "t1", text, &[]).unwrap();
+        wm.insert_user_turn(&ws_id, "t1", text, &[], None).unwrap();
 
         let rec_body = serde_json::json!({"role": "user", "text": text});
         wm.append_session_records(
@@ -2259,7 +2264,7 @@ mod tests {
         let (ws_id, wm) = make_workspace_with_session(&db);
 
         // Sent, but the agent never logged it (call failed) — no transcript row.
-        wm.insert_user_turn(&ws_id, "t1", "never delivered", &[])
+        wm.insert_user_turn(&ws_id, "t1", "never delivered", &[], None)
             .unwrap();
         assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 0);
 
@@ -2278,7 +2283,7 @@ mod tests {
         let db = test_db();
         let (ws_id, wm) = make_workspace_with_session(&db);
 
-        wm.insert_user_turn(&ws_id, "t-coalesced", "first\n\nsecond", &[])
+        wm.insert_user_turn(&ws_id, "t-coalesced", "first\n\nsecond", &[], None)
             .unwrap();
 
         let rec = serde_json::json!({"role": "user", "text": "first\n\nsecond"});
@@ -2298,8 +2303,8 @@ mod tests {
         let db = test_db();
         let (ws_id, wm) = make_workspace_with_session(&db);
 
-        wm.insert_user_turn(&ws_id, "t1", "original", &[]).unwrap();
-        wm.insert_user_turn(&ws_id, "t2", "actually also do X", &[])
+        wm.insert_user_turn(&ws_id, "t1", "original", &[], None).unwrap();
+        wm.insert_user_turn(&ws_id, "t2", "actually also do X", &[], None)
             .unwrap();
 
         let rec_a = serde_json::json!({"role": "user", "text": "original"});
@@ -2329,8 +2334,8 @@ mod tests {
         let db = test_db();
         let (ws_id, wm) = make_workspace_with_session(&db);
 
-        wm.insert_user_turn(&ws_id, "t1", "first", &[]).unwrap();
-        wm.insert_user_turn(&ws_id, "t2", "second", &[]).unwrap();
+        wm.insert_user_turn(&ws_id, "t1", "first", &[], None).unwrap();
+        wm.insert_user_turn(&ws_id, "t2", "second", &[], None).unwrap();
 
         let rec = serde_json::json!({"role": "user", "text": "first\n\nsecond"});
         wm.append_session_records(&ws_id, "codex", "transcript", None, &[("rec-1", &rec)])

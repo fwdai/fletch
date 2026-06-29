@@ -543,6 +543,9 @@ export interface UserTurn {
   text: string;
   attachments: string[];
   native_id: string | null;
+  /** Per-message reasoning effort the turn was sent with; null = the agent's
+   *  session default. Lets a retry replay the exact effort, even from records. */
+  thinking: string | null;
 }
 
 export interface SessionRecordsAppendedEvent {

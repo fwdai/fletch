@@ -4,7 +4,15 @@ import type { UserTurn } from "./api";
 import { applyUserTurns } from "./helpers";
 
 function turn(over: Partial<UserTurn>): UserTurn {
-  return { turn_id: "t", seq: 0, text: "", attachments: [], native_id: null, ...over };
+  return {
+    turn_id: "t",
+    seq: 0,
+    text: "",
+    attachments: [],
+    native_id: null,
+    thinking: null,
+    ...over,
+  };
 }
 
 const userMsg = (text: string): ChatItem => ({ kind: "user_message", text });
@@ -32,7 +40,7 @@ describe("applyUserTurns", () => {
     expect(out[2]).toEqual({ kind: "user_message", text: "new", attachments: ["/tmp/x"] });
   });
 
-  it("renders a pending (unmatched) turn standalone so a failed send survives", () => {
+  it("renders a pending (unmatched) turn standalone and failed so its Retry survives", () => {
     const items: ChatItem[] = [userMsg("delivered"), agentMsg("reply")];
     const turns = [
       turn({ native_id: "rec-A", text: "delivered" }),
@@ -44,7 +52,21 @@ describe("applyUserTurns", () => {
       kind: "user_message",
       text: "never sent",
       attachments: ["/tmp/lost"],
+      failed: true,
     });
+  });
+
+  it("carries a pending turn's reasoning effort so a reloaded retry replays it", () => {
+    const turns = [turn({ native_id: null, text: "do it", thinking: "high" })];
+    const out = applyUserTurns([], turns);
+    expect(out).toEqual([{ kind: "user_message", text: "do it", failed: true, thinking: "high" }]);
+  });
+
+  it("overlays a matched turn's effort onto its canonical bubble (e.g. an errored turn)", () => {
+    const items = [userMsg("compute"), agentMsg("error")];
+    const turns = [turn({ native_id: "rec-A", text: "compute", thinking: "high" })];
+    const out = applyUserTurns(items, turns);
+    expect(out[0]).toEqual({ kind: "user_message", text: "compute", thinking: "high" });
   });
 
   it("shows the clean typed text on restore, not the runner's injected 'Attached file' lines", () => {
