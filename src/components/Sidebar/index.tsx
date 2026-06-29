@@ -5,6 +5,8 @@ import { NewProject, type NewProjectMode } from "@/components/NewProject";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
+import type { WorkflowRun } from "@/workflows/run/types";
+import { useRuns } from "@/workflows/run/useRuns";
 import { NewProjectPopover } from "./NewProjectPopover";
 import { ProjectGroup } from "./ProjectGroup";
 import { SidebarFooter } from "./SidebarFooter";
@@ -15,32 +17,34 @@ interface RepoGroup {
   repoPath: string;
   agents: AgentRecord[];
   drafts: DraftAgent[];
+  runs: WorkflowRun[];
   pinned: boolean;
 }
 
 /** Build groups from (a) pinned repos, (b) any repo referenced by an
- *  existing agent, (c) any repo referenced by a draft. */
+ *  existing agent, (c) any repo referenced by a draft, (d) any workflow run. */
 function groupByRepo(
   pinned: string[],
   agents: readonly AgentRecord[],
   drafts: readonly DraftAgent[],
+  runs: readonly WorkflowRun[],
 ): RepoGroup[] {
   const map = new Map<string, RepoGroup>();
-  for (const p of pinned) {
-    map.set(p, { repoPath: p, agents: [], drafts: [], pinned: true });
-  }
+  const ensure = (p: string, pinnedFlag = false): RepoGroup => {
+    let g = map.get(p);
+    if (!g) {
+      g = { repoPath: p, agents: [], drafts: [], runs: [], pinned: pinnedFlag };
+      map.set(p, g);
+    }
+    return g;
+  };
+  for (const p of pinned) ensure(p, true);
   for (const a of agents) {
     const primary = a.repos[0]?.repo_path;
-    if (!primary) continue;
-    const existing = map.get(primary);
-    if (existing) existing.agents.push(a);
-    else map.set(primary, { repoPath: primary, agents: [a], drafts: [], pinned: false });
+    if (primary) ensure(primary).agents.push(a);
   }
-  for (const d of drafts) {
-    const existing = map.get(d.repoPath);
-    if (existing) existing.drafts.push(d);
-    else map.set(d.repoPath, { repoPath: d.repoPath, agents: [], drafts: [d], pinned: false });
-  }
+  for (const d of drafts) ensure(d.repoPath).drafts.push(d);
+  for (const r of runs) ensure(r.repo_path).runs.push(r);
   return Array.from(map.values());
 }
 
@@ -61,11 +65,14 @@ function applySearch(
           a.repos[0]?.branch?.toLowerCase().includes(needle),
       ),
       drafts: g.drafts.filter((d) => d.name.toLowerCase().includes(needle)),
+      // Run rows render their own body; keep them when the repo matches.
+      runs: labelOf(g.repoPath).toLowerCase().includes(needle) ? g.runs : [],
     }))
     .filter(
       (g) =>
         g.agents.length > 0 ||
         g.drafts.length > 0 ||
+        g.runs.length > 0 ||
         labelOf(g.repoPath).toLowerCase().includes(needle),
     );
 }
@@ -75,6 +82,7 @@ export function Sidebar() {
   const drafts = useAppStore((s) => s.drafts);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
+  const selectedRunId = useAppStore((s) => s.selectedRunId);
 
   const [query, setQuery] = useState("");
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
@@ -108,12 +116,13 @@ export function Sidebar() {
         .sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
     [workspace?.agents],
   );
+  const runs = useRuns();
   const groups = useMemo(() => {
-    const built = groupByRepo(workspace?.repos ?? [], liveAgents, drafts);
+    const built = groupByRepo(workspace?.repos ?? [], liveAgents, drafts, runs);
     const order = sortPaths(built.map((g) => g.repoPath));
     const byPath = new Map(built.map((g) => [g.repoPath, g]));
     return order.map((p) => byPath.get(p)).filter((g): g is RepoGroup => g !== undefined);
-  }, [workspace?.repos, liveAgents, drafts, sortPaths]);
+  }, [workspace?.repos, liveAgents, drafts, runs, sortPaths]);
   // Custom display name per pinned repo. Groups derived only from an agent's
   // repo (never pinned) have no entry and fall back to the folder basename.
   const labelOf = useMemo(() => {
@@ -185,20 +194,21 @@ export function Sidebar() {
   // so they don't leak past this component's life.
   useEffect(() => () => dragCleanup.current?.(), []);
 
-  // Auto-expand a project when its agent or draft is selected.
+  // Auto-expand a project when its agent, draft, or run is selected.
   useEffect(() => {
     setOpenMap((prev) => {
       const next = { ...prev };
       for (const g of groups) {
         if (g.agents.some((a) => a.id === selectedAgentId)) next[g.repoPath] = true;
         if (g.drafts.some((d) => d.id === activeDraftId)) next[g.repoPath] = true;
+        if (g.runs.some((r) => r.id === selectedRunId)) next[g.repoPath] = true;
         if (!(g.repoPath in next)) {
-          next[g.repoPath] = g.agents.length > 0 || g.drafts.length > 0;
+          next[g.repoPath] = g.agents.length > 0 || g.drafts.length > 0 || g.runs.length > 0;
         }
       }
       return next;
     });
-  }, [groups, selectedAgentId, activeDraftId]);
+  }, [groups, selectedAgentId, activeDraftId, selectedRunId]);
 
   return (
     <>
@@ -233,8 +243,14 @@ export function Sidebar() {
                   repoPath={g.repoPath}
                   agents={g.agents}
                   drafts={g.drafts}
+                  runs={g.runs}
                   open={openMap[g.repoPath] ?? false}
-                  removable={g.pinned && g.agents.length === 0 && g.drafts.length === 0}
+                  removable={
+                    g.pinned &&
+                    g.agents.length === 0 &&
+                    g.drafts.length === 0 &&
+                    g.runs.length === 0
+                  }
                   onToggle={() => setOpenMap((m) => ({ ...m, [g.repoPath]: !m[g.repoPath] }))}
                   reorderable={reorderable}
                   dragging={dragPath === g.repoPath}

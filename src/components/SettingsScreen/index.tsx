@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import type { SettingsSection } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { WorkflowsPane } from "@/workflows/builder";
 import pkg from "../../../package.json";
 import { AccountPane } from "./AccountPane";
 import { CustomAgentsPane } from "./CustomAgents";
@@ -27,6 +28,8 @@ const NAV: NavItem[] = [
   { id: "general", label: "General", icon: "settings", order: 20 },
   { id: "providers", label: "Providers", icon: "cube", order: 30 },
   { id: "agents", label: "Custom agents", icon: "bot", order: 40 },
+  // Right after Custom agents — workflows chain those agents.
+  { id: "workflows", label: "Workflows", icon: "combine", order: 41 },
   { id: "skills", label: "Skills", icon: "notebookPen", order: 42 },
   { id: "tools", label: "Tools", icon: "zap", order: 44 },
   { id: "experimental", label: "Experimental", icon: "flask", order: 50 },
@@ -45,6 +48,9 @@ export function SettingsScreen() {
   const section = useAppStore((s) => s.settingsSection);
   const setSection = useAppStore((s) => s.setSettingsSection);
   const close = useAppStore((s) => s.closeSettingsScreen);
+
+  // The workflow builder canvas needs a wider content column than the forms.
+  const wide = section === "workflows";
 
   return (
     <div className="set-screen">
@@ -72,10 +78,11 @@ export function SettingsScreen() {
       </nav>
 
       <div className="set-main">
-        <div className="set-content">
+        <div className={`set-content ${wide ? "is-wide" : ""}`}>
           {section === "account" && <AccountPane />}
           {section === "providers" && <ProvidersPane />}
           {section === "agents" && <CustomAgentsPane />}
+          {section === "workflows" && <WorkflowsPane />}
           {section === "skills" && <SkillsPane />}
           {section === "tools" && <McpServersPane />}
           {section === "experimental" && <ExperimentalPane />}

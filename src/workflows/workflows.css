@@ -1,0 +1,924 @@
+/* workflows.css — styles for the workflow builder, run monitor, and composer.
+   Extracted from the design prototype; all design tokens (--fg-*, --accent-*,
+   --bg-*, --r-*, --font-*, etc.) and shared chrome (.set-pane, .dd, .btn-t)
+   are inherited from the host app.css. Only the workflow-specific rules and
+   the one keyframe the host lacks live here. */
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.set-list-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 2px 0 18px;
+}
+.set-list-head .sl-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-3);
+  letter-spacing: 0;
+}
+.ca-select,
+.ca-input,
+.ca-textarea {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  color: var(--fg-0);
+  font-size: 13px;
+  padding: 9px 11px;
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
+}
+.ca-select {
+  appearance: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6l5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+}
+.ca-input:focus,
+.ca-select:focus,
+.ca-textarea:focus {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.wf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wf-card {
+  padding: 15px 16px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  transition:
+    border-color 0.14s,
+    background 0.14s;
+  cursor: default;
+}
+.wf-card:hover {
+  border-color: var(--bd-strong);
+  background: var(--hover);
+}
+.wf-card-h {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.wf-card-h .wf-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 14.5px;
+  font-weight: 500;
+  color: var(--fg-0);
+}
+.wf-card-h .wf-desc {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
+.wf-card .wf-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.wf-card .wf-acts {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.14s;
+}
+.wf-card:hover .wf-acts {
+  opacity: 1;
+}
+.wf-mini {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-top: 13px;
+  flex-wrap: wrap;
+}
+.wf-mini-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 11px 0 8px;
+  border: 1px solid var(--bd-soft);
+  border-radius: 999px;
+  background: var(--bg-2);
+  font-size: 11.5px;
+  color: var(--fg-1);
+}
+.wf-mini-step .wf-mini-mono {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 600;
+  color: oklch(0.18 0.03 var(--h));
+  background: oklch(0.72 0.13 var(--h));
+}
+.wf-mini-arrow {
+  color: var(--fg-3);
+  display: inline-flex;
+  padding: 0 6px;
+}
+.wf-mini-arrow svg {
+  width: 12px;
+  height: 12px;
+}
+.wf-mini-loop {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  border: 1px dashed var(--accent-line);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.wf-mini-loop svg {
+  width: 11px;
+  height: 11px;
+}
+.wb {
+  --wb-step-w: 256px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  animation: fade-in 0.2s var(--ease);
+}
+.wb-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+.wb-top .wb-titlewrap {
+  flex: 1;
+  min-width: 0;
+}
+.wb-name {
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--fg-0);
+  letter-spacing: -0.015em;
+  background: transparent;
+  border: 0;
+  padding: 2px 5px;
+  border-radius: var(--r-sm);
+  width: 100%;
+}
+.wb-name:focus {
+  background: var(--bg-2);
+  box-shadow: 0 0 0 1px var(--accent-line);
+}
+.wb-desc {
+  margin-top: 4px;
+  width: 100%;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-2);
+  background: transparent;
+  border: 0;
+  padding: 2px 5px;
+  border-radius: var(--r-sm);
+  resize: none;
+}
+.wb-desc:focus {
+  background: var(--bg-2);
+  box-shadow: 0 0 0 1px var(--accent-line);
+  color: var(--fg-1);
+}
+.wb-canvas {
+  margin-top: 20px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-lg);
+  background:
+    radial-gradient(var(--bd-soft) 0.6px, transparent 0.6px) 0 0 / 22px 22px,
+    var(--bg-1);
+  overflow: hidden;
+}
+/* The track is the horizontal scroller. Steps and the add button are
+   fixed-width and left-aligned, so the chain stays compact when short and
+   scrolls right as it grows. Padding lives here (not on the canvas) so the
+   loop ribbon and the scrollbar sit inside the scrolling area. */
+.wb-track-inner {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 50px 24px 26px;
+  overflow-x: auto;
+}
+.wb-conn {
+  width: 30px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  align-self: center;
+}
+.wb-conn::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  top: 50%;
+  height: 1.5px;
+  background: var(--bd-strong);
+}
+.wb-conn svg {
+  position: relative;
+  z-index: 1;
+  width: 12px;
+  height: 12px;
+  color: var(--fg-3);
+  background: var(--bg-1);
+  border-radius: 50%;
+}
+.wb-step {
+  flex: 0 0 var(--wb-step-w);
+  width: var(--wb-step-w);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-1);
+  position: relative;
+  transition:
+    border-color 0.14s,
+    box-shadow 0.14s;
+}
+.wb-step:hover {
+  border-color: var(--bd-strong);
+}
+.wb-step.is-loop-target {
+  border-color: var(--accent-line);
+}
+.wb-step-h {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 10px 8px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.wb-step-idx {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--fg-3);
+  letter-spacing: 0.04em;
+}
+.wb-step-mono {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: oklch(0.18 0.03 var(--h));
+  background: oklch(0.72 0.13 var(--h));
+  flex-shrink: 0;
+}
+.wb-step-mono.empty {
+  background: transparent;
+  color: var(--fg-3);
+  border: 1.5px dashed var(--bd-strong);
+}
+.wb-step-agent {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.wb-step-agent .wb-step-agent-text {
+  flex: 1;
+  min-width: 0;
+}
+.wb-step-agent .wb-an {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-step-agent .wb-an.empty {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+.wb-step-agent .wb-am {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--fg-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Scoped under .wb-step so `position: absolute` beats `.tip { position: relative }`
+   (same specificity otherwise — the tooltip class was winning, leaving the
+   button in flow and centered in the header). */
+.wb-step .wb-step-menu {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    background 0.12s,
+    color 0.12s;
+  z-index: 3;
+}
+.wb-step .wb-step-menu svg {
+  width: 14px;
+  height: 14px;
+}
+.wb-step .wb-step-menu:hover {
+  background: color-mix(in oklch, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+.wb-step:hover .wb-step-menu {
+  opacity: 1;
+}
+.wb-step-goal {
+  padding: 10px 11px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--fg-1);
+  min-height: 72px;
+  flex: 1;
+  background: transparent;
+  border: 0;
+  resize: none;
+  width: 100%;
+  font-family: var(--font-sans);
+}
+.wb-step-goal::placeholder {
+  color: var(--fg-3);
+}
+.wb-step-goal:focus {
+  outline: 0;
+  background: var(--bg-1);
+}
+.wb-step-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+  border-radius: 0 0 var(--r-md) var(--r-md);
+}
+.wb-advance {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--fg-2);
+}
+.wb-advance svg {
+  width: 11px;
+  height: 11px;
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.wb-advance .wb-adv-sel {
+  color: var(--fg-1);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--bd-strong);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.wb-advance .wb-adv-sel:hover {
+  color: var(--accent);
+  text-decoration-color: var(--accent-line);
+}
+.wb-loop-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  color: var(--fg-3);
+}
+.wb-loop-btn:hover {
+  background: var(--hover);
+  color: var(--accent);
+}
+.wb-loop-btn.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.wb-loop-btn svg {
+  width: 13px;
+  height: 13px;
+}
+.wf-loop-inline {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 12px 11px;
+  padding: 7px 9px;
+  border: 1px dashed var(--accent-line);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: left;
+}
+.wf-loop-inline svg {
+  flex-shrink: 0;
+}
+.wf-loop-inline b {
+  font-weight: 600;
+}
+.wf-loop-inline:hover {
+  border-style: solid;
+}
+.wb-add {
+  flex: 0 0 var(--wb-step-w);
+  width: var(--wb-step-w);
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px;
+  border: 1.5px dashed var(--bd-strong);
+  border-radius: var(--r-md);
+  color: var(--fg-3);
+  background: transparent;
+  transition: all 0.14s var(--ease);
+}
+.wb-add:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.wb-add .wb-add-ic {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.wb-add .wb-add-ic svg {
+  width: 14px;
+  height: 14px;
+}
+.wb-add .wb-add-l {
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+}
+.wb-loop-ribbon {
+  position: absolute;
+  top: 16px;
+  height: 30px;
+  border: 1.5px dashed var(--accent-line);
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+  pointer-events: none;
+}
+.wb-loop-ribbon .wb-loop-label {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--bg-0);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+.wb-loop-label svg {
+  width: 11px;
+  height: 11px;
+}
+.wb-loop-label .wb-loop-x {
+  margin-left: 2px;
+  color: var(--fg-3);
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.wb-loop-label .wb-loop-x:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.wb-loop-ribbon .wb-loop-arrow {
+  position: absolute;
+  left: -1px;
+  bottom: -7px;
+  color: var(--accent);
+}
+.wb-loop-ribbon .wb-loop-arrow svg {
+  width: 13px;
+  height: 13px;
+}
+.wb-loop-pop {
+  position: absolute;
+  z-index: 60;
+  width: 260px;
+  padding: 13px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
+  animation: ddIn 0.14s var(--ease);
+}
+.wb-loop-pop .wlp-h {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-bottom: 10px;
+}
+.wb-loop-pop .wlp-row {
+  margin-bottom: 11px;
+}
+.wb-loop-pop .wlp-row:last-child {
+  margin-bottom: 0;
+}
+.wb-loop-pop label {
+  font-size: 11.5px;
+  color: var(--fg-1);
+  display: block;
+  margin-bottom: 5px;
+}
+.wb-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--bd-soft);
+}
+.wb-foot .grow {
+  flex: 1;
+}
+.wb-foot .wb-summary {
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.wb-foot .wb-summary b {
+  color: var(--fg-1);
+  font-weight: 500;
+}
+.wb-pick {
+  min-width: 244px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.wb-pick .dd-sect {
+  position: sticky;
+  top: 0;
+  background: var(--bg-2);
+}
+.wb-pick-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: var(--r-sm);
+}
+.wb-pick-item:hover {
+  background: var(--hover);
+}
+.wb-pick-mono {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: oklch(0.18 0.03 var(--h));
+  background: oklch(0.72 0.13 var(--h));
+}
+.wb-pick-item .wb-pick-l {
+  flex: 1;
+  min-width: 0;
+}
+.wb-pick-item .wb-pick-n {
+  font-size: 12.5px;
+  color: var(--fg-0);
+}
+.wb-pick-item .wb-pick-m {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-3);
+}
+
+/* ── run: launch form ─────────────────────────────────────────────────── */
+.wf-launch {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 4px;
+}
+.wf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wf-field-l {
+  font-size: 11.5px;
+  color: var(--fg-1);
+}
+.wf-field-empty {
+  font-size: 12px;
+  color: var(--fg-3);
+  padding: 8px 0;
+}
+
+/* ── run: monitor ─────────────────────────────────────────────────────── */
+.wf-run-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 2px 0 18px;
+  font-size: 11.5px;
+}
+.wf-run-meta .mono {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+.wf-run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.wf-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.wf-run-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wf-run-step {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 13px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+}
+.wf-run-idx {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--fg-3);
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.wf-run-who {
+  flex: 1;
+  min-width: 0;
+}
+.wf-run-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-0);
+}
+.wf-run-goal {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+/* Leading workflow marker on a sidebar run row (prefixes the agent-row name). */
+.ag-wf-prefix {
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* Workflow tile (composer selector chip) + status dot (run monitor rail). The
+   sidebar run row otherwise reuses the agent-row classes (.agent/.ag-*). */
+.wf-srow-tile {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: oklch(0.2 0.03 var(--h));
+  background: oklch(0.72 0.13 var(--h));
+}
+.wf-srow-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── new-agent page: workflow step preview, built into the composer top ── */
+.cmp-flow-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.cmp-flow-strip .cf-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--accent);
+}
+.cmp-flow-strip .cf-arr {
+  color: var(--fg-3);
+}
+.cmp-flow-strip .cf-note {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+.cmp-flow-strip .cf-q {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px dashed var(--bd-strong);
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
+/* ── run monitor: step rail + embedded body ─────────────────────────── */
+.wf-run {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.wf-run .wf-run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.wf-run .t-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.wf-rrail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--bd-soft);
+  flex-shrink: 0;
+}
+/* Run status + run-level action, pinned to the right end of the rail. */
+.wf-rrail-end {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-left: 8px;
+}
+.wf-rstep {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid var(--bd-soft);
+  border-radius: 999px;
+  background: var(--bg-1);
+  color: var(--fg-1);
+  flex-shrink: 0;
+}
+.wf-rstep:hover {
+  border-color: var(--bd-strong);
+}
+.wf-rstep.sel {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.wf-rstep-idx {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-3);
+}
+.wf-rstep-name {
+  font-size: 12px;
+}
+.wf-rstep-chip {
+  display: inline-flex;
+  align-items: center;
+}
+.wf-rstep-q {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px dashed var(--bd-strong);
+  color: var(--fg-3);
+  font-size: 11px;
+}
+.wf-run-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

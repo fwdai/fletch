@@ -4,6 +4,8 @@ import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
+import { RunRow } from "@/workflows/run/RunRow";
+import type { WorkflowRun } from "@/workflows/run/types";
 import { AgentRow } from "./AgentRow";
 
 interface Props {
@@ -13,6 +15,8 @@ interface Props {
   repoPath: string;
   agents: AgentRecord[];
   drafts: DraftAgent[];
+  /** Workflow runs grouped under this repo. */
+  runs: WorkflowRun[];
   /** Whether the user has expanded this group. */
   open: boolean;
   /** Show the remove (×) button — only true when this is a pinned-but-empty group. */
@@ -35,6 +39,7 @@ export function ProjectGroup({
   repoPath,
   agents,
   drafts,
+  runs,
   open,
   removable,
   onToggle,
@@ -45,13 +50,15 @@ export function ProjectGroup({
 }: Props) {
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
+  const selectedRunId = useAppStore((s) => s.selectedRunId);
   const selectAgent = useAppStore((s) => s.selectAgent);
   const selectDraft = useAppStore((s) => s.selectDraft);
+  const selectRun = useAppStore((s) => s.selectRun);
   const createDraft = useAppStore((s) => s.createDraft);
   const removeWorkspaceRepo = useAppStore((s) => s.removeWorkspaceRepo);
   const openProjectSettings = useAppStore((s) => s.openProjectSettings);
 
-  const count = agents.length + drafts.length;
+  const count = agents.length + drafts.length + runs.length;
 
   async function onRemove(e: React.MouseEvent) {
     e.stopPropagation();
@@ -152,6 +159,14 @@ export function ProjectGroup({
             agent={a}
             active={a.id === selectedAgentId}
             onClick={() => selectAgent(a.id)}
+          />
+        ))}
+        {runs.map((run) => (
+          <RunRow
+            key={run.id}
+            run={run}
+            selected={selectedRunId === run.id}
+            onSelect={() => selectRun(run.id)}
           />
         ))}
       </div>
