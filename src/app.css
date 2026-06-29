@@ -1430,6 +1430,37 @@ button {
   white-space: nowrap;
 }
 
+/* Groups a message bubble/response with its hover-revealed action row (copy).
+   The wrapper carries the bottom margin so the actions sit tight under the
+   message rather than 16px below it. */
+.m-msg-wrap {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 16px;
+}
+.m-msg-wrap.is-user {
+  align-self: flex-end;
+  align-items: flex-end;
+  max-width: 78%;
+}
+.m-msg-wrap > .m-user,
+.m-msg-wrap > .m-agent {
+  margin-bottom: 0;
+  max-width: 100%;
+}
+
+.m-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 0.12s var(--ease);
+}
+.m-msg-wrap:hover .m-actions,
+.m-actions:focus-within {
+  opacity: 1;
+}
+
 .m-user {
   align-self: flex-end;
   max-width: 78%;
