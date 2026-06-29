@@ -93,9 +93,19 @@
 }
 
 /* ── UTILITIES ─────────────────────────────────────────────────────────── */
-.flex-center   { display: flex; align-items: center; }
-.iflex-center  { display: inline-flex; align-items: center; }
-.truncate      { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flex-center {
+  display: flex;
+  align-items: center;
+}
+.iflex-center {
+  display: inline-flex;
+  align-items: center;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* reset */
 * {
@@ -2151,7 +2161,9 @@ button {
   color: var(--fg-2);
   flex-shrink: 0;
 }
-.attachment-name { min-width: 0; }
+.attachment-name {
+  min-width: 0;
+}
 .attachment-remove {
   justify-content: center;
   width: 16px;
