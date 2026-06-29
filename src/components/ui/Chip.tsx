@@ -13,7 +13,13 @@ interface Props {
  *  base-branch selector. Visual sibling of `IconButton` but with a
  *  text label slot. */
 export function Chip({ children, onClick, bordered, tip, className, disabled }: Props) {
-  const cls = ["c-chip", bordered ? "with-border" : "", tip ? "tip" : "", className ?? ""]
+  const cls = [
+    "c-chip",
+    "iflex-center",
+    bordered ? "with-border" : "",
+    tip ? "tip" : "",
+    className ?? "",
+  ]
     .filter(Boolean)
     .join(" ");
   return (
