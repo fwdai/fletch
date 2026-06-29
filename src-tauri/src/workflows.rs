@@ -418,6 +418,18 @@ pub async fn workflow_file_exists(
     Ok(json!({ "exists": wt.join(rel).exists() }))
 }
 
+/// A run only ever pushes to its own generated `wf/<slug>-<id>` branch. Enforce
+/// that namespace (and a safe ref charset) so a tampered run row or a direct
+/// command invoke can't redirect the push onto `main` or another existing branch.
+fn is_run_branch(b: &str) -> bool {
+    b.starts_with("wf/")
+        && b.len() <= 200
+        && !b.contains("..")
+        && b
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'/' | b'-' | b'_' | b'.'))
+}
+
 /// Push the run's final HEAD to its branch, then best-effort open a PR. Pushing
 /// detached `HEAD:refs/heads/<branch>` needs no local branch, so it never
 /// collides with a worktree's checkout.
@@ -430,6 +442,9 @@ pub async fn workflow_finalize(
     title: Option<String>,
     body: Option<String>,
 ) -> Result<Value, String> {
+    if !is_run_branch(&branch) {
+        return Err(format!("refusing to push: '{branch}' is not a wf/ run branch"));
+    }
     let wt = worktree(&agent_id, &subdir)?;
     git_ok(&wt, &["push", "origin", &format!("HEAD:refs/heads/{branch}")])?;
     // PR is best-effort: a missing/unauthed gh, or an existing PR, must not fail
