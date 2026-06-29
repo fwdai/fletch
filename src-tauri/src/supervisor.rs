@@ -853,9 +853,8 @@ impl Supervisor {
         // timed out (status Error), the timeout fired before we inserted the
         // process above — so its shutdown was a no-op and we'd leak a live
         // process shown as failed. Tear down what we just started instead.
-        if !self.claim_spawn_outcome(app, &agent_id_str, AgentStatus::Idle, None)
-            && matches!(self.live_status(&agent_id_str), Some(AgentStatus::Error))
-        {
+        let promoted = self.claim_spawn_outcome(app, &agent_id_str, AgentStatus::Idle, None);
+        if !promoted && matches!(self.live_status(&agent_id_str), Some(AgentStatus::Error)) {
             self.bump_generation(&agent_id_str);
             if let Some(agent) = self.agents.lock().remove(&agent_id_str) {
                 let _ = agent.shutdown();
@@ -864,6 +863,20 @@ impl Supervisor {
             return Err(Error::Other(
                 "spawn aborted: timed out before the process became ready".into(),
             ));
+        }
+
+        // A message sent before the process finished coming up was enqueued —
+        // a Spawning agent counts as busy, so `send_user_message` routes the
+        // first send as a follow-up (Enqueue for per-turn, a retried
+        // AgentNotFound for claude). Turn-end Idle drains the queue via
+        // `transition_active`, but this spawn-completion Idle doesn't go through
+        // that path, so drain here too. Without it a queued first message sits
+        // undelivered until the *next* message flushes it (the user sees their
+        // bubble + a spinner that clears with no reply). No-op when the queue is
+        // empty — the common case — and `drain_coalesced` makes it safe against a
+        // concurrent FlushNow from a racing second send.
+        if promoted {
+            drain_message_queue(self, app, &agent_id_str);
         }
 
         spawn_turn_watchdog(self.clone(), app.clone(), agent_id_str.clone(), my_gen);
