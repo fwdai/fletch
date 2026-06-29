@@ -64,6 +64,7 @@
   /* button/badge foreground on accent backgrounds */
   --btn-fg-dark: oklch(0.16 0.02 60); /* primary buttons in dark theme */
   --btn-fg-dark-alt: oklch(0.18 0.02 60); /* send button + run-go variant */
+  --btn-fg-light: oklch(0.98 0.005 60); /* light text on danger/saturated backgrounds */
   color-scheme: dark;
 }
 
