@@ -20,15 +20,21 @@ export function CopyButton({
   // Clear the pending revert if the button unmounts mid-confirmation.
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  const onCopy = () => {
-    navigator.clipboard
-      ?.writeText(text)
-      .then(() => {
-        setCopied(true);
-        clearTimeout(timer.current);
-        timer.current = setTimeout(() => setCopied(false), 1500);
-      })
-      .catch(() => {});
+  const onCopy = async () => {
+    // Guard the whole call: the Clipboard API is absent in insecure contexts,
+    // some webviews, and most test runtimes, and writeText can throw
+    // synchronously (not just reject) — which a trailing .catch() would miss.
+    try {
+      if (!navigator.clipboard?.writeText) return;
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Denied or unavailable — leave the icon as-is rather than falsely
+      // confirming a copy that didn't happen.
+      return;
+    }
+    setCopied(true);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopied(false), 1500);
   };
 
   return (
