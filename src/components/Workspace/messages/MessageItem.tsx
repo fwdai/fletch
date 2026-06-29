@@ -53,7 +53,7 @@ export function MessageItem({
     case "agent_message":
       return (
         <div className="m-msg-wrap">
-          <div className="m-agent text-lg">
+          <div className="m-agent text-base">
             <Markdown>{item.text}</Markdown>
             {item.streaming && <span className="term-cursor" style={{ marginLeft: 4 }} />}
           </div>

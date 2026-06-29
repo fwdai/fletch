@@ -70,7 +70,7 @@ export function WelcomeStep({
           <span className="mk">
             <PeaksMark />
           </span>
-          <span className="wd text-xl">QUORUM</span>
+          <span className="wd text-lg">QUORUM</span>
         </div>
         <h1 className="ob-display ob-reveal" style={{ "--d": ".16s" } as CSSProperties}>
           A new era of <em>agentic</em> engineering.

@@ -41,7 +41,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
           >
             Drafting
           </span>
-          <span className="serif" style={{ fontSize: "var(--fs-xl)", color: "var(--accent)" }}>
+          <span className="serif" style={{ fontSize: "var(--fs-lg)", color: "var(--accent)" }}>
             {draft.name}
           </span>
         </div>
@@ -57,7 +57,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             <span>NEW WORKSPACE</span>
           </div>
           <div
-            className="empty-name text-6xl"
+            className="empty-name text-5xl"
             onClick={() => rerollDraftName(draft.id)}
             title="Reroll name"
           >
@@ -71,8 +71,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
           </div>
         </div>
 
-        <h1 className="empty-title text-6xl">What should be the first task?</h1>
-        <p className="empty-sub text-lg">
+        <h1 className="empty-title text-5xl">What should be the first task?</h1>
+        <p className="empty-sub text-base">
           A worktree and sandbox will be created at{" "}
           <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
             ~/.quorum/worktrees/{draft.name}

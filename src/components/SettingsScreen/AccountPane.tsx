@@ -51,13 +51,13 @@ export function AccountPane() {
 
       <div className="set-profile flex-center">
         <Avatar
-          className="set-avatar flex-center text-xl"
+          className="set-avatar flex-center text-lg"
           avatarUrl={account?.avatarUrl ?? null}
           initials={accountInitials(firstName, lastName, email)}
           alt={fullName}
         />
         <div className="set-profile-body">
-          <div className="set-profile-name text-xl">
+          <div className="set-profile-name text-lg">
             {fullName || <span className="set-profile-empty">Your name</span>}
           </div>
           <div className="set-profile-mail mono text-base">{email || "no email set"}</div>

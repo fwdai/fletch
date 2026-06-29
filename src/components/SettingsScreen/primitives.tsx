@@ -29,7 +29,7 @@ export function SetHead({
       <div className="set-head-top">
         <div className="set-head-titles">
           <div className="set-eyebrow mono text-2xs">{eyebrow}</div>
-          <h1 className="set-h1 text-4xl">{title}</h1>
+          <h1 className="set-h1 text-3xl">{title}</h1>
         </div>
         {actions && <div className="set-head-actions flex-center">{actions}</div>}
       </div>

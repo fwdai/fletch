@@ -362,16 +362,16 @@
   color: var(--fg-0);
 }
 .m-agent h1 {
-  font-size: var(--fs-2xl);
+  font-size: var(--fs-xl);
 }
 .m-agent h2 {
-  font-size: var(--fs-xl);
+  font-size: var(--fs-lg);
 }
 .m-agent h3 {
-  font-size: var(--fs-xl);
+  font-size: var(--fs-lg);
 }
 .m-agent h4 {
-  font-size: var(--fs-lg);
+  font-size: var(--fs-base);
 }
 .m-agent ul,
 .m-agent ol {

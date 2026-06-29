@@ -277,7 +277,7 @@
   color: var(--accent);
 }
 .ob-lede {
-  font-size: var(--fs-xl);
+  font-size: var(--fs-lg);
   line-height: 1.66;
   color: var(--fg-2);
   margin: 0;
@@ -334,13 +334,13 @@
   padding-left: 0.36em;
 }
 .ob-welcome .ob-display {
-  font-size: var(--fs-6xl);
+  font-size: var(--fs-5xl);
   line-height: 1.14;
 }
 .ob-welcome .ob-lede {
   margin-top: 26px;
   max-width: 500px;
-  font-size: var(--fs-xl);
+  font-size: var(--fs-lg);
 }
 
 .ob-auth {
@@ -362,7 +362,7 @@
   border: 1px solid var(--bd-strong);
   background: var(--bg-2);
   color: var(--fg-0);
-  font-size: var(--fs-lg);
+  font-size: var(--fs-base);
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -480,7 +480,7 @@
   max-width: 440px;
 }
 .ob-beat-copy .ob-display {
-  font-size: var(--fs-5xl);
+  font-size: var(--fs-4xl);
   line-height: 1.18;
   margin-top: 22px;
 }
@@ -1027,7 +1027,7 @@
 }
 .ex-room-title {
   font-family: var(--font-serif);
-  font-size: var(--fs-3xl);
+  font-size: var(--fs-2xl);
   line-height: 1.18;
   color: var(--fg-0);
   letter-spacing: -0.01em;
@@ -1137,7 +1137,7 @@
   border-radius: var(--r-md);
   background: var(--accent);
   color: oklch(0.18 0.02 60);
-  font-size: var(--fs-lg);
+  font-size: var(--fs-base);
   font-weight: 600;
   cursor: pointer;
   border: 0;
@@ -1328,7 +1328,7 @@
   }
 }
 .ob-ignite .ob-display {
-  font-size: var(--fs-6xl);
+  font-size: var(--fs-5xl);
   line-height: 1.12;
 }
 .ob-ignite .ob-lede {
@@ -1339,7 +1339,7 @@
   margin-top: 36px;
   height: 48px;
   padding: 0 26px;
-  font-size: var(--fs-lg);
+  font-size: var(--fs-base);
 }
 
 /* controls + compact labels must never wrap, whatever font is active */
@@ -1368,7 +1368,7 @@
 }
 @media (max-height: 740px) {
   .ob-welcome .ob-display {
-    font-size: var(--fs-5xl);
+    font-size: var(--fs-4xl);
   }
   .ob-auth {
     margin-top: 26px;
@@ -1431,7 +1431,7 @@
   height: 34px;
 }
 .ob-ignite-setup .ob-display {
-  font-size: var(--fs-4xl);
+  font-size: var(--fs-3xl);
 }
 .ob-ignite-setup .ob-lede {
   margin-top: 14px;

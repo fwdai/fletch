@@ -47,9 +47,6 @@
 .text-5xl {
   font-size: var(--fs-5xl);
 }
-.text-6xl {
-  font-size: var(--fs-6xl);
-}
 
 /* reset */
 * {
