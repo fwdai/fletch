@@ -8,7 +8,7 @@ import { Composer } from "../Composer";
 import { APP_ACTION_PREFIX } from "../RightPanel/delegation";
 import { ChatNav } from "./ChatNav";
 import { ChatSearch } from "./ChatSearch";
-import { failedTurnIndex } from "./messages/failedTurn";
+import { retryableTurns } from "./messages/failedTurn";
 import { MessageItem } from "./messages/MessageItem";
 import { pairToolItems, rowKey } from "./messages/pair";
 import { isUserInputTool } from "./messages/UserInput/parse";
@@ -174,9 +174,9 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     );
   }, [items]);
 
-  // Index of the user bubble whose turn failed (gets a Retry action), or -1.
-  const retryTurnIndex = useMemo(
-    () => failedTurnIndex(items, { busy, loading: transcriptLoading }),
+  // Indices of user bubbles whose turn failed — each gets its own Retry action.
+  const retryable = useMemo(
+    () => retryableTurns(items, { busy, loading: transcriptLoading }),
     [items, busy, transcriptLoading],
   );
 
@@ -228,7 +228,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                   agentId={agent.id}
                   turnId={turnIds[i]}
                   onRetry={
-                    i === retryTurnIndex && item.kind === "user_message"
+                    retryable.has(i) && item.kind === "user_message"
                       ? () => {
                           // Re-pin so the user follows the re-run, and re-send
                           // the prompt they typed (strip our injected block, a
@@ -239,6 +239,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                           pinnedToBottom.current = true;
                           retry(
                             agent.id,
+                            item,
                             stripInjectedInstructions(item.text),
                             item.attachments,
                             item.thinking ?? agent.effort ?? undefined,

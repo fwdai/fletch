@@ -165,17 +165,20 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  retryUserMessage: async (id, text, attachments = [], thinking) => {
-    // Drop any failed optimistic bubble (a send that threw) so re-dispatching
-    // reuses the slot instead of stacking a duplicate. An agent-errored turn
-    // has only a canonical, unflagged bubble, so nothing is pruned and the retry
-    // appends a fresh turn below the prior error.
+  retryUserMessage: async (id, target, text, attachments = [], thinking) => {
+    // Drop just the clicked failed bubble (a send that threw), by identity, so
+    // re-dispatching reuses its slot instead of stacking a duplicate — and a
+    // second failed send elsewhere in the log keeps its own bubble and Retry.
+    // An agent-errored turn's bubble is canonical and unflagged, so it isn't
+    // removed and the retry appends a fresh turn below the prior error.
     set((state) => {
       const log = state.managedLogs[id];
-      if (!log) return {};
-      const pruned = log.filter((e) => !(e.kind === "user_message" && e.failed));
-      if (pruned.length === log.length) return {};
-      return { managedLogs: { ...state.managedLogs, [id]: pruned } };
+      if (!log || !(target.kind === "user_message" && target.failed)) return {};
+      const idx = log.indexOf(target);
+      if (idx === -1) return {};
+      const next = [...log];
+      next.splice(idx, 1);
+      return { managedLogs: { ...state.managedLogs, [id]: next } };
     });
     await get().sendUserMessage(id, text, attachments, thinking);
   },

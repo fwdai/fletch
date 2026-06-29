@@ -103,14 +103,16 @@ export interface WorkspaceSlice {
     behavior?: "allow" | "deny",
     message?: string,
   ) => Promise<void>;
-  /** Re-send a failed turn. Drops the failed optimistic bubble (a send that
-   *  threw, flagged on its user_message) before re-dispatching so the retry
-   *  replaces it rather than stacking a duplicate; an agent-errored turn has a
-   *  canonical bubble with no flag, so nothing is dropped and it re-asks fresh.
-   *  `text` should be the stripped prompt the user typed and `thinking` the
-   *  reasoning effort it used — re-sending replays the original send exactly. */
+  /** Re-send a failed turn. `target` is the exact bubble being retried: if it's
+   *  a failed optimistic send (flagged on its user_message) it's dropped by
+   *  identity before re-dispatching so the retry replaces it rather than
+   *  stacking a duplicate — leaving any other failed bubble untouched. An
+   *  agent-errored turn's canonical bubble has no flag, so nothing is dropped
+   *  and it re-asks fresh. `text` should be the stripped prompt the user typed
+   *  and `thinking` the reasoning effort it used — re-sending replays exactly. */
   retryUserMessage: (
     id: string,
+    target: ChatItem,
     text: string,
     attachments?: string[],
     thinking?: string,
