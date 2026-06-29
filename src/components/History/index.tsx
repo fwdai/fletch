@@ -104,10 +104,10 @@ export function History() {
       <div className="history-sheet" onClick={(e) => e.stopPropagation()}>
         {/* Search header */}
         <div className="hh">
-          <div className="hh-search flex-center text-lg">
+          <div className="hh-search flex-center text-base">
             <Icon name="search" size={16} />
             <input
-              className="text-lg"
+              className="text-base"
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}

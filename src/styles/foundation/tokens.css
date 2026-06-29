@@ -21,14 +21,13 @@
   --fs-2xs: 10px; /* micro: badges, overlines, counts (floor) */
   --fs-xs: 11px; /* dense chrome: sidebar meta, secondary labels */
   --fs-sm: 12px; /* secondary / panel body */
-  --fs-base: 13px; /* regular body — inherited from <body> */
-  --fs-lg: 14px; /* emphasized body, small section titles */
-  --fs-xl: 16px; /* card / dialog titles */
-  --fs-2xl: 20px; /* section headings */
-  --fs-3xl: 24px; /* page titles */
-  --fs-4xl: 32px; /* empty-state / onboarding */
-  --fs-5xl: 44px; /* hero */
-  --fs-6xl: 56px; /* brand / splash */
+  --fs-base: 14px; /* regular body — inherited from <body> */
+  --fs-lg: 16px; /* emphasized body / card / dialog titles */
+  --fs-xl: 20px; /* section headings */
+  --fs-2xl: 24px; /* page titles */
+  --fs-3xl: 32px; /* empty-state / onboarding */
+  --fs-4xl: 44px; /* hero */
+  --fs-5xl: 56px; /* brand / splash */
 
   --r-xs: 4px;
   --r-sm: 6px;

@@ -65,7 +65,7 @@
 }
 
 .q-prompt {
-  font-size: var(--fs-lg);
+  font-size: var(--fs-base);
   line-height: 1.6;
   color: var(--fg-0);
   text-wrap: pretty;

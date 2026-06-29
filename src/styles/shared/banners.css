@@ -28,7 +28,7 @@
   width: 22px;
   height: 22px;
   color: var(--fg-2);
-  font-size: var(--fs-lg);
+  font-size: var(--fs-base);
   border-radius: var(--r-xs);
 }
 .error-banner .close:hover {

@@ -92,13 +92,13 @@ export function AgentEditor({
         {/* identity */}
         <div className="ca-ed-head flex-center">
           <span
-            className="ca-mono iflex-center ca-ed-mono text-xl"
+            className="ca-mono iflex-center ca-ed-mono text-lg"
             style={{ ["--h" as string]: form.color }}
           >
             {shortFor(form.name)}
           </span>
           <input
-            className="ca-ed-name text-2xl"
+            className="ca-ed-name text-xl"
             placeholder="Name this agent…"
             value={form.name}
             autoFocus
