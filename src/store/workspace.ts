@@ -3,6 +3,7 @@ import { hasUsage, usageFromRecords } from "../adapters/usage";
 import { api } from "../api";
 import {
   applyUserTurns,
+  carryForwardFailed,
   dropAgentEntries,
   passthroughSlashName,
   providerFor,
@@ -385,12 +386,17 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       const items = applyUserTurns(reduceRecords(provider, records), turns);
       const usage = usageFromRecords(provider, records);
       set((state) => {
+        const prev = state.managedLogs[id] ?? [];
         // Nothing stored but a live turn is already rendering — don't clobber it.
-        if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {
+        if (items.length === 0 && prev.length > 0) {
           return {};
         }
         return {
-          managedLogs: { ...state.managedLogs, [id]: items },
+          // Re-apply a failed send's retry metadata onto its reconstructed
+          // bubble: a view switch / transcript reload rebuilds from records and
+          // would otherwise strip the Retry button (and, once stripped, no later
+          // rebuild could recover it). See carryForwardFailed.
+          managedLogs: { ...state.managedLogs, [id]: carryForwardFailed(items, prev) },
           managedBusy: { ...state.managedBusy, [id]: false },
           // Only overwrite when records carried usage — cursor folds usage
           // live, so an empty records result must not wipe it.
