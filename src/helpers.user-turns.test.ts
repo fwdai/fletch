@@ -4,8 +4,21 @@ import type { UserTurn } from "./api";
 import { applyUserTurns } from "./helpers";
 
 function turn(over: Partial<UserTurn>): UserTurn {
-  return { turn_id: "t", seq: 0, text: "", attachments: [], native_id: null, ...over };
+  return {
+    turn_id: "t",
+    seq: 0,
+    text: "",
+    attachments: [],
+    native_id: null,
+    active_ms: 0,
+    running_since: null,
+    completed_at: null,
+    ...over,
+  };
 }
+
+// Default timing attached to any turn with a row (0/null = no duration yet).
+const NO_DURATION = { activeMs: 0, runningSince: null, completedAt: null };
 
 const userMsg = (text: string): ChatItem => ({ kind: "user_message", text });
 const agentMsg = (text: string): ChatItem => ({ kind: "agent_message", text });
@@ -17,9 +30,23 @@ describe("applyUserTurns", () => {
 
     const out = applyUserTurns(items, turns);
     expect(out).toEqual([
-      { kind: "user_message", text: "look", attachments: ["/tmp/a.png"] },
+      { kind: "user_message", text: "look", attachments: ["/tmp/a.png"], timing: NO_DURATION },
       { kind: "agent_message", text: "ok" },
     ]);
+  });
+
+  it("attaches the turn's duration to its user message", () => {
+    const items = [userMsg("build it"), agentMsg("done")];
+    const turns = [
+      turn({ native_id: "rec-A", text: "build it", active_ms: 38_000, completed_at: 1_700_000 }),
+    ];
+
+    const out = applyUserTurns(items, turns);
+    expect(out[0]).toEqual({
+      kind: "user_message",
+      text: "build it",
+      timing: { activeMs: 38_000, runningSince: null, completedAt: 1_700_000 },
+    });
   });
 
   it("end-aligns so older un-tracked turns keep no attachments", () => {
@@ -29,7 +56,12 @@ describe("applyUserTurns", () => {
 
     const out = applyUserTurns(items, turns);
     expect(out[0]).toEqual({ kind: "user_message", text: "old" }); // untouched
-    expect(out[2]).toEqual({ kind: "user_message", text: "new", attachments: ["/tmp/x"] });
+    expect(out[2]).toEqual({
+      kind: "user_message",
+      text: "new",
+      attachments: ["/tmp/x"],
+      timing: NO_DURATION,
+    });
   });
 
   it("renders a pending (unmatched) turn standalone so a failed send survives", () => {
@@ -44,6 +76,7 @@ describe("applyUserTurns", () => {
       kind: "user_message",
       text: "never sent",
       attachments: ["/tmp/lost"],
+      timing: NO_DURATION,
     });
   });
 
@@ -68,6 +101,7 @@ describe("applyUserTurns", () => {
       kind: "user_message",
       text: "What's on this image?",
       attachments: ["/Users/alex/Downloads/Clair.png"],
+      timing: NO_DURATION,
     });
   });
 
@@ -82,6 +116,7 @@ describe("applyUserTurns", () => {
       kind: "user_message",
       text: "totally different message",
       attachments: ["/tmp/x"],
+      timing: NO_DURATION,
     });
   });
 

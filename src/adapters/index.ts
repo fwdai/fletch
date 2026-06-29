@@ -8,7 +8,14 @@ import { piAdapter } from "./pi";
 import type { ChatAdapter } from "./types";
 
 export { applyPolicy, modeFor } from "./policy";
-export type { ChatAdapter, ChatItem, DisplayPolicy, NoticeSubtype, RawEvent } from "./types";
+export type {
+  ChatAdapter,
+  ChatItem,
+  DisplayPolicy,
+  NoticeSubtype,
+  RawEvent,
+  TurnTiming,
+} from "./types";
 
 // Partial: not every provider is wired. Agents listed in PROVIDERS without an
 // entry here are "coming soon" — the picker gates them via `hasAdapter` so they

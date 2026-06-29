@@ -241,6 +241,24 @@ pub fn answer_tool_use(
         .answer_tool_use(&agent_id, &request_id, updated_input, behavior, message)
 }
 
+/// Run-timer: freeze the open turn's clock while it awaits a human answer.
+/// Reported by the UI when a held question surfaces (the backend has no native
+/// awaiting-input state); the active-time math lives in `WorkspaceManager`.
+#[tauri::command]
+pub fn mark_turn_paused(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
+    supervisor
+        .workspace
+        .mark_turn_paused(&agent_id, chrono::Utc::now().timestamp_millis())
+}
+
+/// Run-timer: resume the open turn's clock once the human has answered.
+#[tauri::command]
+pub fn mark_turn_resumed(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
+    supervisor
+        .workspace
+        .mark_turn_resumed(&agent_id, chrono::Utc::now().timestamp_millis())
+}
+
 #[tauri::command]
 pub fn resize_agent(
     supervisor: State<'_, Arc<Supervisor>>,

@@ -2412,6 +2412,15 @@ fn mark_user_turn_started(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
     if let Some(activity) = sup.activities.lock().get_mut(agent_id) {
         activity.reset_for_new_turn();
     }
+    // Run-timer: start the open turn's clock (the `session_user_turns` row was
+    // just inserted by the deliver path). Best-effort — a timing miss must never
+    // break message delivery.
+    if let Err(e) = sup
+        .workspace
+        .mark_turn_running(agent_id, chrono::Utc::now().timestamp_millis())
+    {
+        tracing::warn!(error = %e, agent_id, "mark_turn_running failed");
+    }
     transition_active(sup, app, agent_id, AgentStatus::Running);
 }
 
@@ -2703,6 +2712,16 @@ fn transition_active(
         sup.set_status(app, agent_id, new.clone(), None);
         if matches!(new, AgentStatus::Idle) {
             sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+            // Run-timer: close the open turn's clock and persist its final
+            // duration. Folds the open span (or excludes it if the turn ended
+            // while paused). Best-effort. No-op when there's no open turn (e.g.
+            // the initial spawn→Idle with no user turn yet).
+            if let Err(e) = sup
+                .workspace
+                .mark_turn_completed(agent_id, chrono::Utc::now().timestamp_millis())
+            {
+                tracing::warn!(error = %e, agent_id, "mark_turn_completed failed");
+            }
             // Turn ended (managed in-band, per-turn exit, or native silence all
             // converge here). Ingest the just-written transcript into
             // session_records. Idempotent + reader-gated, so it's a cheap no-op

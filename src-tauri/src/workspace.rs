@@ -273,6 +273,13 @@ pub struct UserTurn {
     pub attachments: Vec<String>,
     /// Matched `session_records.native_id`; `None` = pending or failed turn.
     pub native_id: Option<String>,
+    /// Run-timer fields (see migration 0012). `active_ms` is accumulated active
+    /// (non-paused) working time; `running_since` is the open span's start ms
+    /// epoch (`None` while paused or completed); `completed_at` is set on
+    /// turn-end. The frontend renders the live/final duration from these.
+    pub active_ms: i64,
+    pub running_since: Option<i64>,
+    pub completed_at: Option<i64>,
 }
 
 pub struct WorkspaceManager {
@@ -918,27 +925,130 @@ impl WorkspaceManager {
             return Ok(vec![]);
         };
         let mut stmt = conn.prepare(
-            "SELECT turn_id, seq, text, attachments, native_id
+            "SELECT turn_id, seq, text, attachments, native_id,
+                    active_ms, running_since, completed_at
              FROM session_user_turns WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
-        let rows: Vec<(String, i64, String, String, Option<String>)> = stmt
-            .query_map([&sid], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        let rows: Vec<(String, i64, String, String, Option<String>, i64, Option<i64>, Option<i64>)> =
+            stmt.query_map([&sid], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
             })?
             .collect::<std::result::Result<_, rusqlite::Error>>()?;
         rows.into_iter()
-            .map(|(turn_id, seq, text, attachments_text, native_id)| {
-                let attachments = serde_json::from_str(&attachments_text)
-                    .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
-                Ok(UserTurn {
+            .map(
+                |(
                     turn_id,
                     seq,
                     text,
-                    attachments,
+                    attachments_text,
                     native_id,
-                })
-            })
+                    active_ms,
+                    running_since,
+                    completed_at,
+                )| {
+                    let attachments = serde_json::from_str(&attachments_text)
+                        .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
+                    Ok(UserTurn {
+                        turn_id,
+                        seq,
+                        text,
+                        attachments,
+                        native_id,
+                        active_ms,
+                        running_since,
+                        completed_at,
+                    })
+                },
+            )
             .collect()
+    }
+
+    // ── Run-timer: per-turn active-time accumulation (migration 0012) ──────
+    //
+    // All four operate on the session's *open* turn — the latest row (max seq)
+    // whose `completed_at IS NULL`. Timing is a small state machine:
+    //   start  → running_since=now, active_ms=0, completed_at=NULL
+    //   pause  → fold open span into active_ms, running_since=NULL
+    //   resume → running_since=now (only if currently paused/open)
+    //   end    → fold any open span into active_ms, stamp completed_at
+    // Each is idempotent-safe (no-op when the precondition doesn't hold), so a
+    // stray duplicate signal can't corrupt the accumulated value. `now` is
+    // injected (ms epoch) so the accumulation is deterministically testable.
+
+    /// Begin timing the open turn (called at turn start).
+    pub fn mark_turn_running(&self, workspace_id: &str, now: i64) -> Result<()> {
+        self.update_open_turn(
+            workspace_id,
+            "SET running_since = :now, active_ms = 0, completed_at = NULL",
+            now,
+        )
+    }
+
+    /// Freeze the clock: fold the open active span into `active_ms` and clear
+    /// `running_since` (called when the turn pauses awaiting a human answer).
+    /// No-op when already paused (`running_since IS NULL`).
+    pub fn mark_turn_paused(&self, workspace_id: &str, now: i64) -> Result<()> {
+        self.update_open_turn(
+            workspace_id,
+            "SET active_ms = active_ms + (:now - running_since), running_since = NULL
+             WHERE running_since IS NOT NULL AND",
+            now,
+        )
+    }
+
+    /// Resume ticking a paused turn (called when the human answers). No-op
+    /// unless the turn is currently paused (`running_since IS NULL`).
+    pub fn mark_turn_resumed(&self, workspace_id: &str, now: i64) -> Result<()> {
+        self.update_open_turn(
+            workspace_id,
+            "SET running_since = :now WHERE running_since IS NULL AND",
+            now,
+        )
+    }
+
+    /// Close the open turn: fold any open span into `active_ms` and stamp
+    /// `completed_at` (called at turn-end). Excludes paused time — if the turn
+    /// ends while paused (`running_since IS NULL`) nothing is added.
+    pub fn mark_turn_completed(&self, workspace_id: &str, now: i64) -> Result<()> {
+        self.update_open_turn(
+            workspace_id,
+            "SET active_ms = active_ms
+                 + (CASE WHEN running_since IS NULL THEN 0 ELSE :now - running_since END),
+                 running_since = NULL,
+                 completed_at = :now",
+            now,
+        )
+    }
+
+    /// Apply a timing `SET …` clause to the session's open turn — the latest
+    /// (`MAX(seq)`) row whose `completed_at IS NULL`. The clause may carry its
+    /// own extra `WHERE … AND` predicate (kept idempotent), terminated by the
+    /// open-turn match this appends. No-op when there's no open turn.
+    fn update_open_turn(&self, workspace_id: &str, set_clause: &str, now: i64) -> Result<()> {
+        let conn = self.db.lock();
+        let Some(sid) = current_session_id(&conn, workspace_id) else {
+            return Ok(());
+        };
+        let needs_where = !set_clause.contains(" WHERE ");
+        let sql = format!(
+            "UPDATE session_user_turns {set_clause} {connector} turn_id = (
+                 SELECT turn_id FROM session_user_turns
+                 WHERE session_id = :sid AND completed_at IS NULL
+                 ORDER BY seq DESC LIMIT 1
+             )",
+            connector = if needs_where { "WHERE" } else { "" },
+        );
+        conn.execute(&sql, rusqlite::named_params! { ":now": now, ":sid": sid })?;
+        Ok(())
     }
 
     /// Match pending (`native_id IS NULL`) user turns to their canonical
@@ -2178,6 +2288,164 @@ mod tests {
         assert_eq!(turns[0].text, "hello");
         assert_eq!(turns[0].attachments, vec!["/tmp/a.png".to_string()]);
         assert_eq!(turns[0].native_id, None);
+    }
+
+    // ── Run-timer accumulation (migration 0012) ──────────────────────────
+
+    /// Read the single open/most-recent turn back for timing assertions.
+    fn last_turn(wm: &WorkspaceManager, ws_id: &str) -> UserTurn {
+        wm.read_user_turns(ws_id).unwrap().pop().unwrap()
+    }
+
+    #[test]
+    fn fresh_turn_has_no_timing() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "t1", "hi", &[]).unwrap();
+
+        let t = last_turn(&wm, &ws_id);
+        assert_eq!(t.active_ms, 0);
+        assert_eq!(t.running_since, None);
+        assert_eq!(t.completed_at, None);
+    }
+
+    #[test]
+    fn mark_turn_running_seeds_open_span() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "t1", "hi", &[]).unwrap();
+
+        wm.mark_turn_running(&ws_id, 1_000).unwrap();
+
+        let t = last_turn(&wm, &ws_id);
+        assert_eq!(t.active_ms, 0);
+        assert_eq!(t.running_since, Some(1_000));
+        assert_eq!(t.completed_at, None);
+    }
+
+    #[test]
+    fn pause_folds_span_and_clears_running_since() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "t1", "hi", &[]).unwrap();
+
+        wm.mark_turn_running(&ws_id, 1_000).unwrap();
+        wm.mark_turn_paused(&ws_id, 4_000).unwrap(); // 3s active
+
+        let t = last_turn(&wm, &ws_id);
+        assert_eq!(t.active_ms, 3_000);
+        assert_eq!(t.running_since, None);
+        assert_eq!(t.completed_at, None);
+    }
+
+    #[test]
+    fn pause_when_already_paused_is_noop() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "t1", "hi", &[]).unwrap();
+
+        wm.mark_turn_running(&ws_id, 1_000).unwrap();
+        wm.mark_turn_paused(&ws_id, 4_000).unwrap();
+        wm.mark_turn_paused(&ws_id, 9_000).unwrap(); // no open span → unchanged
+
+        assert_eq!(last_turn(&wm, &ws_id).active_ms, 3_000);
+    }
+
+    #[test]
+    fn resume_restarts_the_clock_from_now() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "t1", "hi", &[]).unwrap();
+
+        wm.mark_turn_running(&ws_id, 1_000).unwrap();
+        wm.mark_turn_paused(&ws_id, 4_000).unwrap(); // 3s
+        wm.mark_turn_resumed(&ws_id, 10_000).unwrap();
+
+        let t = last_turn(&wm, &ws_id);
+        assert_eq!(t.active_ms, 3_000); // unchanged until next fold
+        assert_eq!(t.running_since, Some(10_000));
+    }
+
+    #[test]
+    fn resume_when_not_paused_is_noop() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "t1", "hi", &[]).unwrap();
+
+        wm.mark_turn_running(&ws_id, 1_000).unwrap();
+        wm.mark_turn_resumed(&ws_id, 5_000).unwrap(); // already running → unchanged
+
+        assert_eq!(last_turn(&wm, &ws_id).running_since, Some(1_000));
+    }
+
+    #[test]
+    fn multiple_pause_resume_cycles_accumulate() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "t1", "hi", &[]).unwrap();
+
+        wm.mark_turn_running(&ws_id, 0).unwrap();
+        wm.mark_turn_paused(&ws_id, 2_000).unwrap(); // +2s = 2s
+        wm.mark_turn_resumed(&ws_id, 10_000).unwrap();
+        wm.mark_turn_paused(&ws_id, 15_000).unwrap(); // +5s = 7s
+        wm.mark_turn_resumed(&ws_id, 100_000).unwrap();
+        wm.mark_turn_completed(&ws_id, 101_000).unwrap(); // +1s = 8s
+
+        let t = last_turn(&wm, &ws_id);
+        assert_eq!(t.active_ms, 8_000);
+        assert_eq!(t.running_since, None);
+        assert_eq!(t.completed_at, Some(101_000));
+    }
+
+    #[test]
+    fn completed_folds_final_open_span() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "t1", "hi", &[]).unwrap();
+
+        wm.mark_turn_running(&ws_id, 1_000).unwrap();
+        wm.mark_turn_completed(&ws_id, 39_000).unwrap(); // 38s, no pauses
+
+        let t = last_turn(&wm, &ws_id);
+        assert_eq!(t.active_ms, 38_000);
+        assert_eq!(t.completed_at, Some(39_000));
+    }
+
+    #[test]
+    fn completed_while_paused_does_not_double_count() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "t1", "hi", &[]).unwrap();
+
+        wm.mark_turn_running(&ws_id, 1_000).unwrap();
+        wm.mark_turn_paused(&ws_id, 4_000).unwrap(); // 3s, then paused
+        wm.mark_turn_completed(&ws_id, 100_000).unwrap(); // ends while paused
+
+        let t = last_turn(&wm, &ws_id);
+        assert_eq!(t.active_ms, 3_000); // wait-on-user time excluded
+        assert_eq!(t.completed_at, Some(100_000));
+    }
+
+    #[test]
+    fn timing_targets_only_the_open_turn() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+
+        // Turn 1: run and complete.
+        wm.insert_user_turn(&ws_id, "t1", "first", &[]).unwrap();
+        wm.mark_turn_running(&ws_id, 0).unwrap();
+        wm.mark_turn_completed(&ws_id, 5_000).unwrap();
+
+        // Turn 2: a new open turn.
+        wm.insert_user_turn(&ws_id, "t2", "second", &[]).unwrap();
+        wm.mark_turn_running(&ws_id, 10_000).unwrap();
+        wm.mark_turn_completed(&ws_id, 12_000).unwrap();
+
+        let turns = wm.read_user_turns(&ws_id).unwrap();
+        assert_eq!(turns[0].active_ms, 5_000); // first untouched by second's timing
+        assert_eq!(turns[0].completed_at, Some(5_000));
+        assert_eq!(turns[1].active_ms, 2_000);
+        assert_eq!(turns[1].completed_at, Some(12_000));
     }
 
     #[test]

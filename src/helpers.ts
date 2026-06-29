@@ -4,7 +4,7 @@
 // on the store only for its type shape (AppState/DraftAgent) — a type-only
 // import, erased at compile time, so there's no runtime cycle.
 
-import { type ChatItem, getAdapter, type RawEvent } from "./adapters";
+import { type ChatItem, getAdapter, type RawEvent, type TurnTiming } from "./adapters";
 import { hasUsage, usageFromRecords } from "./adapters/usage";
 import { api, type SessionRecord, type UserTurn, type Workspace } from "./api";
 import { commandsFor } from "./data/slashCommands";
@@ -56,12 +56,70 @@ export function reduceRecords(provider: string | undefined, records: SessionReco
   return items;
 }
 
-/** Overlay Quorum-origin outgoing-turn metadata (attachments) onto the
- *  transcript-rendered conversation. Additive only — never replaces transcript
- *  content (which stays the canonical, re-ingestable history):
- *  - Matched turns (`native_id` set) hang their attachments on the rendered
- *    user message. Aligned from the end, so older turns that predate this
- *    feature (no row) simply keep no attachments instead of mis-grabbing them.
+/** Project a `session_user_turns` row's timing columns onto the camelCase
+ *  `TurnTiming` carried on the rendered turn. Pre-feature rows (0/null) map
+ *  through untouched, so `completedAt == null` reads as "no duration to show". */
+export function turnTiming(t: UserTurn): TurnTiming {
+  return {
+    activeMs: t.active_ms,
+    runningSince: t.running_since,
+    completedAt: t.completed_at,
+  };
+}
+
+/** The open turn's `user_message` item index (the last one), or -1. The open
+ *  turn is whichever user message starts the trailing, not-yet-completed turn. */
+function openTurnIndex(items: ChatItem[]): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].kind === "user_message") return i;
+  }
+  return -1;
+}
+
+/** Run-timer pause: fold the open turn's running span into `activeMs` and clear
+ *  `runningSince`, mirroring the backend's `mark_turn_paused` so the live
+ *  display matches the persisted (wait-excluded) value through the pause. No-op
+ *  if there's no open, running turn. Returns a new array only when it changes. */
+export function freezeOpenTurnTiming(items: ChatItem[], now: number): ChatItem[] {
+  const i = openTurnIndex(items);
+  if (i < 0) return items;
+  const item = items[i];
+  if (item.kind !== "user_message") return items;
+  const t = item.timing;
+  if (!t || t.completedAt != null || t.runningSince == null) return items;
+  const next = items.slice();
+  next[i] = {
+    ...item,
+    timing: {
+      activeMs: t.activeMs + (now - t.runningSince),
+      runningSince: null,
+      completedAt: null,
+    },
+  };
+  return next;
+}
+
+/** Run-timer resume: restart the open turn's clock from `now`, mirroring the
+ *  backend's `mark_turn_resumed`. No-op unless the open turn is paused. */
+export function resumeOpenTurnTiming(items: ChatItem[], now: number): ChatItem[] {
+  const i = openTurnIndex(items);
+  if (i < 0) return items;
+  const item = items[i];
+  if (item.kind !== "user_message") return items;
+  const t = item.timing;
+  if (!t || t.completedAt != null || t.runningSince != null) return items;
+  const next = items.slice();
+  next[i] = { ...item, timing: { ...t, runningSince: now } };
+  return next;
+}
+
+/** Overlay Quorum-origin outgoing-turn metadata (attachments + run-timer
+ *  duration) onto the transcript-rendered conversation. Additive only — never
+ *  replaces transcript content (which stays the canonical, re-ingestable
+ *  history):
+ *  - Matched turns (`native_id` set) hang their attachments and timing on the
+ *    rendered user message. Aligned from the end, so older turns that predate
+ *    these features (no row) keep nothing instead of mis-grabbing.
  *  - Pending turns (`native_id` null — the agent never logged them, e.g. a
  *    failed send) render standalone so the message survives reload + retry. */
 export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[] {
@@ -81,21 +139,26 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
   for (let k = 1; k <= n; k++) {
     const t = matched[matched.length - k];
     const item = result[userIdxs[userIdxs.length - k]];
-    if (item.kind === "user_message" && t.attachments.length > 0) {
-      item.attachments = t.attachments;
-      // Render the clean text the user actually typed (what the live render
-      // showed) rather than the transcript's copy, which the runner padded
-      // with `Attached file: <path>` reference lines. The stored turn text is
-      // verbatim what was sent, so it matches the optimistic render exactly.
-      // Prefix-guard so a mis-aligned match can't rewrite an unrelated message.
-      if (item.text.startsWith(t.text)) {
-        item.text = t.text;
+    if (item.kind === "user_message") {
+      // Run-timer: the durable per-turn duration rides on the turn's user
+      // message, so the renderer has one source for the live/static footer.
+      item.timing = turnTiming(t);
+      if (t.attachments.length > 0) {
+        item.attachments = t.attachments;
+        // Render the clean text the user actually typed (what the live render
+        // showed) rather than the transcript's copy, which the runner padded
+        // with `Attached file: <path>` reference lines. The stored turn text is
+        // verbatim what was sent, so it matches the optimistic render exactly.
+        // Prefix-guard so a mis-aligned match can't rewrite an unrelated message.
+        if (item.text.startsWith(t.text)) {
+          item.text = t.text;
+        }
       }
     }
   }
 
   for (const t of pending) {
-    const item: ChatItem = { kind: "user_message", text: t.text };
+    const item: ChatItem = { kind: "user_message", text: t.text, timing: turnTiming(t) };
     if (t.attachments.length > 0) item.attachments = t.attachments;
     result.push(item);
   }

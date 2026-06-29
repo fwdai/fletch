@@ -2095,6 +2095,43 @@ button {
   }
 }
 
+/* run timer — live ticker value (accent: the one moving element earns the eye) */
+.turn-clock {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums; /* stable width as digits tick */
+  color: var(--accent);
+}
+.turn-clock-i {
+  display: inline-flex;
+  color: var(--accent);
+}
+.turn-sep {
+  opacity: 0.4;
+}
+
+/* run timer — static completed-turn footer: a record, not a status. The
+   border-top doubles as the seam between turns; the live footer omits it. */
+.turn-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 13px;
+  padding-top: 13px;
+  border-top: 1px solid var(--bd-soft);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+/* The numeric timer conveys state, not decoration — keep it updating under
+   reduced motion; only the decorative dot bounce drops. */
+@media (prefers-reduced-motion: reduce) {
+  .writing .dots i {
+    animation: none;
+  }
+}
+
 /* composer */
 .composer-wrap {
   padding: 0 20px 20px;

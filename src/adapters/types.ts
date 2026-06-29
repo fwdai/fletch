@@ -5,8 +5,22 @@
 // See docs/superpowers/specs/2026-05-27-multi-agent-chat-adapters-design.md
 // for the design rationale.
 
+/** Run-timer state for a turn (mirrors the `session_user_turns` timing columns,
+ *  see migration 0012). Rides on the turn's `user_message` item so the renderer
+ *  has one source for both the live ticker and the static completed footer.
+ *  Live elapsed = activeMs + (runningSince ? Date.now() − runningSince : 0).
+ *  Absent for turns that predate the feature. */
+export interface TurnTiming {
+  /** Accumulated active (non-paused) working time, ms. */
+  activeMs: number;
+  /** Open active span's start (ms epoch); null while paused or completed. */
+  runningSince: number | null;
+  /** Turn-end timestamp (ms epoch); null while the turn is still open. */
+  completedAt: number | null;
+}
+
 export type ChatItem =
-  | { kind: "user_message"; text: string; attachments?: string[] }
+  | { kind: "user_message"; text: string; attachments?: string[]; timing?: TurnTiming }
   // A follow-up the user sent mid-turn that hasn't landed in the transcript
   // yet: delivered live into the running turn (claude) or queued for the next
   // turn boundary (per-turn agents). Store-inserted only — never produced by an

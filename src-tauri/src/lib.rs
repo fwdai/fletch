@@ -479,6 +479,8 @@ pub fn run() {
             commands::write_to_agent,
             commands::send_user_message,
             commands::answer_tool_use,
+            commands::mark_turn_paused,
+            commands::mark_turn_resumed,
             commands::resize_agent,
             commands::switch_view,
             commands::resume_agent,

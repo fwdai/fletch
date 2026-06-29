@@ -7,6 +7,7 @@ import {
   passthroughSlashName,
   providerFor,
   reduceRecords,
+  resumeOpenTurnTiming,
   sendWhenAgentReady,
 } from "../helpers";
 import { clearOutputBuffer } from "../pty/buffers";
@@ -92,6 +93,11 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       set((state) => {
         const slashName = wasBusy ? null : passthroughSlashName(providerFor(state, id), text);
+        // Run-timer: seed the open turn's clock optimistically so the live timer
+        // ticks immediately (the backend stamps its own authoritative
+        // running_since; sub-second skew is invisible at 1s resolution, and the
+        // final duration is replaced by the backend value at turn-end rebuild).
+        const timing = { activeMs: 0, runningSince: Date.now(), completedAt: null };
         const entry: ChatItem = wasBusy
           ? attachments.length > 0
             ? { kind: "queued_message", text, attachments }
@@ -99,8 +105,8 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
           : slashName
             ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
             : attachments.length > 0
-              ? { kind: "user_message", text, attachments }
-              : { kind: "user_message", text };
+              ? { kind: "user_message", text, attachments, timing }
+              : { kind: "user_message", text, timing };
         return {
           managedLogs: {
             ...state.managedLogs,
@@ -148,6 +154,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     // Drop the held prompt and mark busy: feeding the answer resumes the
     // paused turn. The transcript records the resulting tool_result, so there's
     // no separate durable row to write.
+    const now = Date.now();
     set((state) => {
       const forAgent = { ...(state.pendingToolUse[id] ?? {}) };
       delete forAgent[toolUseId];
@@ -155,8 +162,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         pendingToolUse: { ...state.pendingToolUse, [id]: forAgent },
         managedBusy: { ...state.managedBusy, [id]: true },
         managedBusyLabel: { ...state.managedBusyLabel, [id]: undefined },
+        // Run-timer: answering resumes the paused turn — restart its clock.
+        managedLogs: {
+          ...state.managedLogs,
+          [id]: resumeOpenTurnTiming(state.managedLogs[id] ?? [], now),
+        },
       };
     });
+    void api.markTurnResumed(id);
     try {
       await api.answerToolUse(id, requestId, updatedInput, behavior, message);
     } catch (e) {

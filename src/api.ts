@@ -420,6 +420,10 @@ export const api = {
       behavior,
       message: message ?? null,
     }),
+  /** Run-timer: freeze the open turn's clock while it awaits a human answer. */
+  markTurnPaused: (agentId: string) => invoke<void>("mark_turn_paused", { agentId }),
+  /** Run-timer: resume the open turn's clock once the human has answered. */
+  markTurnResumed: (agentId: string) => invoke<void>("mark_turn_resumed", { agentId }),
   resizeAgent: (agentId: string, cols: number, rows: number) =>
     invoke<void>("resize_agent", { agentId, cols, rows }),
   switchView: (agentId: string, view: AgentView) => invoke<void>("switch_view", { agentId, view }),
@@ -543,6 +547,14 @@ export interface UserTurn {
   text: string;
   attachments: string[];
   native_id: string | null;
+  /** Run-timer (migration 0012). `active_ms` is accumulated active working time
+   *  (excludes paused/awaiting-input spans); `running_since` is the open span's
+   *  start (ms epoch, null when paused or completed); `completed_at` is set at
+   *  turn-end (null while open). Live elapsed = active_ms + (running_since
+   *  ? now − running_since : 0). All zero/null for turns predating the feature. */
+  active_ms: number;
+  running_since: number | null;
+  completed_at: number | null;
 }
 
 export interface SessionRecordsAppendedEvent {

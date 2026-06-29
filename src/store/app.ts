@@ -21,6 +21,7 @@ import {
   applyEvent,
   applyUserTurns,
   carryForwardQueued,
+  freezeOpenTurnTiming,
   needsSessionIdRefresh,
   persistLiveUsage,
   providerFor,
@@ -144,6 +145,11 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
       const requestId = (ev as { request_id?: string }).request_id;
       const toolUseId = req?.tool_use_id;
       if (req?.subtype === "can_use_tool" && typeof toolUseId === "string" && requestId) {
+        // Run-timer: a held question pauses the turn — freeze its clock. The
+        // backend has no native awaiting-input state, so the UI (which owns the
+        // pendingToolUse signal) reports it; the optimistic log freeze keeps the
+        // live display in step with the persisted value.
+        const now = Date.now();
         set((state) => ({
           pendingToolUse: {
             ...state.pendingToolUse,
@@ -152,7 +158,12 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
               [toolUseId]: requestId,
             },
           },
+          managedLogs: {
+            ...state.managedLogs,
+            [e.agent_id]: freezeOpenTurnTiming(state.managedLogs[e.agent_id] ?? [], now),
+          },
         }));
+        void api.markTurnPaused(e.agent_id);
       }
       return;
     }
