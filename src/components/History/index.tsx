@@ -174,7 +174,7 @@ export function History() {
                           </span>
                         )}
                         <span className="hr-date">{when}</span>
-                        <span className={`hr-goto${isRestoring ? " restoring" : ""}`}>
+                        <span className={`hr-goto iflex-center${isRestoring ? " restoring" : ""}`}>
                           {isRestoring ? (
                             <>
                               <span className="dots">

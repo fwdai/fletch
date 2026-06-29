@@ -165,7 +165,7 @@ function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps) {
   const display = hasOverride ? override : row.value;
 
   return (
-    <div className={`rs-row${hasOverride ? " overridden" : ""}`}>
+    <div className={`rs-row flex-center${hasOverride ? " overridden" : ""}`}>
       <div className="rs-row-l">
         <div className="rs-label">{row.key}</div>
         <div className="rs-source iflex-center">

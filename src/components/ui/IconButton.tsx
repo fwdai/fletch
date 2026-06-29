@@ -35,6 +35,7 @@ export function IconButton({
 }: Props) {
   const cls = [
     "btn-i",
+    "iflex-center",
     size === "sm" ? "sm" : size === "xs" ? "xs" : "",
     active ? "active" : "",
     tip ? "tip" : "",
