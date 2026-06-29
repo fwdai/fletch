@@ -874,14 +874,20 @@ button {
   background: color-mix(in oklch, var(--badge-color), transparent 86%);
   color: var(--badge-color);
 }
-.ag-badge.pr-open   { --badge-color: var(--info); }
-.ag-badge.pr-merged { --badge-color: var(--purple); }
+.ag-badge.pr-open {
+  --badge-color: var(--info);
+}
+.ag-badge.pr-merged {
+  --badge-color: var(--purple);
+}
 .ag-badge.pr-closed {
   --badge-color: var(--fg-2);
   /* pr-closed is slightly more transparent than the other variants */
   background: color-mix(in oklch, var(--badge-color), transparent 88%);
 }
-.ag-badge.err       { --badge-color: var(--danger); }
+.ag-badge.err {
+  --badge-color: var(--danger);
+}
 .ag-badge.new {
   color: var(--accent);
   background: var(--accent-soft);
@@ -6456,10 +6462,18 @@ button {
   background: color-mix(in oklch, var(--badge-color), transparent 82%);
   color: var(--badge-color);
 }
-.fp-badge.s-m { --badge-color: var(--warn); }
-.fp-badge.s-a { --badge-color: var(--success); }
-.fp-badge.s-d { --badge-color: var(--danger); }
-.fp-badge.s-r { --badge-color: var(--info); }
+.fp-badge.s-m {
+  --badge-color: var(--warn);
+}
+.fp-badge.s-a {
+  --badge-color: var(--success);
+}
+.fp-badge.s-d {
+  --badge-color: var(--danger);
+}
+.fp-badge.s-r {
+  --badge-color: var(--info);
+}
 
 /* ── inline rename / create input ── */
 .fp-name-input {
