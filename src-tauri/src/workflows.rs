@@ -405,8 +405,17 @@ pub async fn workflow_file_exists(
     subdir: String,
     path: String,
 ) -> Result<Value, String> {
+    use std::path::Component;
     let wt = worktree(&agent_id, &subdir)?;
-    Ok(json!({ "exists": wt.join(&path).exists() }))
+    // The gate only ever checks a file *inside* the worktree. The path comes
+    // from the workflow's `artifact` field (renderer-supplied), so reject
+    // absolute paths and `..` traversal — otherwise `wt.join(path)` would let a
+    // crafted artifact name probe the filesystem outside the worktree.
+    let rel = Path::new(&path);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err("artifact path must be relative to the worktree".into());
+    }
+    Ok(json!({ "exists": wt.join(rel).exists() }))
 }
 
 /// Push the run's final HEAD to its branch, then best-effort open a PR. Pushing
