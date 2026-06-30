@@ -3,6 +3,7 @@ import { PROVIDERS } from "../../../data/providers";
 import type { CustomAgent } from "../../../storage/customAgents";
 import { useAppStore } from "../../../store";
 import { Icon } from "../../Icon";
+import { Button } from "../../ui/Button";
 import { SetHead } from "../primitives";
 import { Mono } from "./Mono";
 
@@ -43,9 +44,9 @@ export function AgentList({
         title="Custom agents"
         desc="Give a base coding agent a name, a model, and a standing brief. Custom agents show up in the composer next to the built-ins."
         actions={
-          <button className="btn-t iflex-center primary" onClick={onNew}>
+          <Button variant="primary" onClick={onNew}>
             <Icon name="plus" size={13} /> New agent
-          </button>
+          </Button>
         }
       />
 

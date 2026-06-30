@@ -4,6 +4,7 @@ import type { NewCustomAgent } from "../../../storage/customAgents";
 import { useAppStore } from "../../../store";
 import { Icon } from "../../Icon";
 import { ProviderIcon } from "../../ProviderIcon";
+import { Button } from "../../ui/Button";
 import { Select } from "../../ui/Select";
 import { SetSeg } from "../primitives";
 import { CA_HUES, INJECTION_HINT, shortFor } from "./shared";
@@ -195,12 +196,12 @@ export function AgentEditor({
 
         <div className="ca-ed-foot flex-center">
           <span className="ca-grow" />
-          <button className="btn-t iflex-center ghost" onClick={onCancel}>
+          <Button variant="ghost" onClick={onCancel}>
             Cancel
-          </button>
-          <button className="btn-t iflex-center primary" disabled={!canSave} onClick={submit}>
+          </Button>
+          <Button variant="primary" disabled={!canSave} onClick={submit}>
             <Icon name="check" size={13} /> {isNew ? "Create agent" : "Save changes"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../Icon";
+import { Button } from "../ui/Button";
 
 export interface SetupRow {
   id: string;
@@ -121,22 +122,18 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
             )}
           </div>
           <div className="rsf-actions">
-            <button
-              className="btn-t iflex-center ghost"
+            <Button
+              variant="ghost"
               onClick={() => setDraft({})}
               disabled={Object.keys(draft).length === 0}
             >
               Reset all
-            </button>
+            </Button>
 
-            <button
-              className="btn-t iflex-center primary"
-              onClick={() => onApply(draft)}
-              disabled={!dirty}
-            >
+            <Button variant="primary" onClick={() => onApply(draft)} disabled={!dirty}>
               <Icon name="refresh" size={11} />
               Apply &amp; restart
-            </button>
+            </Button>
           </div>
         </div>
       </div>

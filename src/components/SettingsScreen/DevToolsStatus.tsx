@@ -2,6 +2,7 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { api, type GhStatus, type ToolStatus } from "../../api";
 import { Icon } from "../Icon";
+import { Button } from "../ui/Button";
 
 type S = "ok" | "warn" | "bad" | "checking";
 
@@ -69,15 +70,10 @@ export function DevToolsStatus() {
       />
       <div className="rdy-foot flex-center">
         <span className="rdy-count" />
-        <button
-          type="button"
-          className="btn-t iflex-center outline"
-          onClick={recheck}
-          disabled={checking}
-        >
+        <Button variant="outline" onClick={recheck} disabled={checking}>
           <Icon name="refresh" size={12} />
           {checking ? "Checking…" : "Re-check"}
-        </button>
+        </Button>
       </div>
     </div>
   );
