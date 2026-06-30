@@ -1,4 +1,4 @@
-import type { ComponentPropsWithoutRef, ReactNode } from "react";
+import type { ComponentPropsWithoutRef } from "react";
 import { forwardRef } from "react";
 
 /** The menu shell — a positioned, styled `.dd` container. Purely
@@ -18,8 +18,9 @@ export const DropdownMenu = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<
 interface ItemState {
   /** Selected/current row. */
   active?: boolean;
-  /** Dimmed, non-actionable (loading/unavailable). For `as="button"` it also
-   *  sets the native `disabled` attribute. */
+  /** Dimmed, non-actionable (loading/unavailable). `as="button"` gets the
+   *  native `disabled` attribute; `as="div"` gets `aria-disabled` and its
+   *  `onClick` is suppressed (a div has no native disabled semantics). */
   disabled?: boolean;
   /** Destructive action tint. */
   danger?: boolean;
@@ -65,19 +66,29 @@ export function DropdownItem({
       </button>
     );
   }
+  const divProps = rest as ComponentPropsWithoutRef<"div">;
   return (
-    <div className={cls} {...(rest as ComponentPropsWithoutRef<"div">)}>
+    <div
+      {...divProps}
+      className={cls}
+      aria-disabled={disabled || undefined}
+      onClick={disabled ? undefined : divProps.onClick}
+    >
       {children}
     </div>
   );
 }
 
 /** Uppercase section heading inside a menu. */
-export function DropdownSection({ children }: { children: ReactNode }) {
-  return <div className="dd-sect">{children}</div>;
+export function DropdownSection({ className, children, ...rest }: ComponentPropsWithoutRef<"div">) {
+  return (
+    <div className={["dd-sect", className].filter(Boolean).join(" ")} {...rest}>
+      {children}
+    </div>
+  );
 }
 
 /** Thin divider between groups of items. */
-export function DropdownSeparator() {
-  return <div className="dd-sep" />;
+export function DropdownSeparator({ className, ...rest }: ComponentPropsWithoutRef<"div">) {
+  return <div className={["dd-sep", className].filter(Boolean).join(" ")} {...rest} />;
 }
