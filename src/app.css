@@ -6,6 +6,7 @@
 
 @import "./styles/foundation/tokens.css";
 @import "./styles/foundation/base.css";
+@import "./styles/shared/type.css";
 @import "./styles/foundation/app-frame.css";
 @import "./components/TitleBar/TitleBar.css";
 @import "./styles/shared/icon-button.css";

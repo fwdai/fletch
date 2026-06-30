@@ -32,7 +32,7 @@ describe("claude extractUsage", () => {
   } as RawEvent;
 
   it("maps fresh input / output / cache and context fill", () => {
-    expect(claudeAdapter.extractUsage!(body)).toEqual({
+    expect(claudeAdapter.extractUsage?.(body)).toEqual({
       inputTokens: 2,
       outputTokens: 300,
       cacheReadTokens: 7900,
@@ -43,9 +43,9 @@ describe("claude extractUsage", () => {
   });
 
   it("ignores non-assistant and zero-usage records", () => {
-    expect(claudeAdapter.extractUsage!({ type: "user" } as RawEvent)).toBeUndefined();
+    expect(claudeAdapter.extractUsage?.({ type: "user" } as RawEvent)).toBeUndefined();
     expect(
-      claudeAdapter.extractUsage!({ type: "assistant", message: {} } as RawEvent),
+      claudeAdapter.extractUsage?.({ type: "assistant", message: {} } as RawEvent),
     ).toBeUndefined();
   });
 });
@@ -69,7 +69,7 @@ describe("codex extractUsage", () => {
   } as RawEvent;
 
   it("takes cumulative totals, derives fresh input, sums reasoning", () => {
-    expect(codexAdapter.extractUsage!(body)).toEqual({
+    expect(codexAdapter.extractUsage?.(body)).toEqual({
       cumulative: true,
       inputTokens: 65134 - 56064,
       outputTokens: 959 + 336,
@@ -82,7 +82,7 @@ describe("codex extractUsage", () => {
 
   it("ignores non token_count event_msgs", () => {
     expect(
-      codexAdapter.extractUsage!({
+      codexAdapter.extractUsage?.({
         type: "event_msg",
         payload: { type: "agent_message" },
       } as RawEvent),
@@ -98,7 +98,7 @@ describe("opencode extractUsage", () => {
   } as RawEvent;
 
   it("maps per-step delta with cost and context fill", () => {
-    expect(opencodeAdapter.extractUsage!(body)).toEqual({
+    expect(opencodeAdapter.extractUsage?.(body)).toEqual({
       inputTokens: 1532,
       outputTokens: 33 + 51,
       cacheReadTokens: 12864,
@@ -120,7 +120,7 @@ describe("opencode extractUsage", () => {
   } as RawEvent;
 
   it("maps the on-disk assistant-message shape (no step-finish type)", () => {
-    expect(opencodeAdapter.extractUsage!(onDiskMessage)).toEqual({
+    expect(opencodeAdapter.extractUsage?.(onDiskMessage)).toEqual({
       inputTokens: 98,
       outputTokens: 18,
       cacheReadTokens: 10624,
@@ -132,7 +132,7 @@ describe("opencode extractUsage", () => {
   });
 
   it("ignores user/non-usage messages", () => {
-    expect(opencodeAdapter.extractUsage!({ role: "user" } as RawEvent)).toBeUndefined();
+    expect(opencodeAdapter.extractUsage?.({ role: "user" } as RawEvent)).toBeUndefined();
   });
 
   // The live `run --format json` stream wraps the step-finish delta under
@@ -149,7 +149,7 @@ describe("opencode extractUsage", () => {
   } as RawEvent;
 
   it("maps the live step_finish wrapper (tokens under .part)", () => {
-    expect(opencodeAdapter.extractUsage!(liveStepFinish)).toEqual({
+    expect(opencodeAdapter.extractUsage?.(liveStepFinish)).toEqual({
       inputTokens: 57,
       outputTokens: 4 + 6,
       cacheReadTokens: 18560,
@@ -183,7 +183,7 @@ describe("pi extractUsage", () => {
   } as RawEvent;
 
   it("maps per-message delta with cost", () => {
-    expect(piAdapter.extractUsage!(body)).toEqual({
+    expect(piAdapter.extractUsage?.(body)).toEqual({
       inputTokens: 2,
       outputTokens: 258,
       cacheReadTokens: 0,
@@ -196,7 +196,7 @@ describe("pi extractUsage", () => {
 
   it("ignores user / toolResult messages", () => {
     expect(
-      piAdapter.extractUsage!({ type: "message", message: { role: "user" } } as RawEvent),
+      piAdapter.extractUsage?.({ type: "message", message: { role: "user" } } as RawEvent),
     ).toBeUndefined();
   });
 });
@@ -211,7 +211,7 @@ describe("cursor extractUsage (persisted live result)", () => {
 
   it("is marked persistLiveUsage and reads the result event", () => {
     expect(cursorAdapter.persistLiveUsage).toBe(true);
-    expect(cursorAdapter.extractUsage!(body)).toEqual({
+    expect(cursorAdapter.extractUsage?.(body)).toEqual({
       inputTokens: 2,
       outputTokens: 122,
       cacheReadTokens: 0,
@@ -222,7 +222,7 @@ describe("cursor extractUsage (persisted live result)", () => {
 
   it("ignores cursor's on-disk transcript bodies (no usage there)", () => {
     expect(
-      cursorAdapter.extractUsage!({ type: "assistant", message: {} } as RawEvent),
+      cursorAdapter.extractUsage?.({ type: "assistant", message: {} } as RawEvent),
     ).toBeUndefined();
   });
 
@@ -359,7 +359,9 @@ describe("addTurnUsage (fold primitive)", () => {
         usage: { inputTokens: 3, outputTokens: 50, cacheReadTokens: 5000, cacheWriteTokens: 80 },
       },
     ] as RawEvent[]) {
-      acc = addTurnUsage(acc, cursorAdapter.extractUsage!(body)!);
+      const usage = cursorAdapter.extractUsage!(body);
+      if (!usage) throw new Error("expected usage");
+      acc = addTurnUsage(acc, usage);
     }
     expect(acc.inputTokens).toBe(5);
     expect(acc.outputTokens).toBe(150);

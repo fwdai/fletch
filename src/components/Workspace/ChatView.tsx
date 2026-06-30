@@ -8,8 +8,10 @@ import { Composer } from "../Composer";
 import { APP_ACTION_PREFIX } from "../RightPanel/delegation";
 import { ChatNav } from "./ChatNav";
 import { ChatSearch } from "./ChatSearch";
+import { ChatWorkingStatus } from "./ChatWorkingStatus";
 import { MessageItem } from "./messages/MessageItem";
 import { pairToolItems, rowKey } from "./messages/pair";
+import { isTurnPending } from "./messages/turnPending";
 import { isUserInputTool } from "./messages/UserInput/parse";
 
 /** Custom-view body: scrolling chat log + composer at the bottom.
@@ -115,8 +117,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     const el = scrollRef.current;
     if (!el) return;
     // Allow a small slop so the user counts as "at the bottom" even a few
-    // pixels short — sub-pixel rounding and the trailing typing indicator
-    // otherwise make exact equality flaky.
+    // pixels short — sub-pixel rounding otherwise makes exact equality flaky.
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     pinnedToBottom.current = distanceFromBottom <= 40;
   };
@@ -172,6 +173,10 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     );
   }, [items]);
 
+  // Phase A: user just sent a turn-starting prompt and nothing has landed yet.
+  // A quiet inline anchor (dots only — label lives in the bottom status strip).
+  const turnPending = busy && !awaitingInput && isTurnPending(items);
+
   // Mid-turn follow-ups are allowed: a busy (running) agent still accepts a
   // message — delivered live (claude) or queued for the next turn boundary
   // (per-turn agents). So `canSend` no longer gates on `busy`; the Composer
@@ -222,15 +227,12 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                 />
               ))
             )}
-            {busy && !awaitingInput && (
-              <div className="writing flex-center">
+            {turnPending && (
+              <div className="chat-pending" aria-hidden="true">
                 <span className="dots">
                   <i />
                   <i />
                   <i />
-                </span>
-                <span>
-                  {busyLabel ?? `${customAgent?.name ?? providerLabel(agent.provider)} is thinking`}
                 </span>
               </div>
             )}
@@ -239,41 +241,49 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         {!searchOpen && <ChatNav scrollRef={scrollRef} turns={turns} />}
       </div>
       <div className="composer-wrap">
-        <Composer
-          existingSession
-          activeModel={activeModel}
-          usage={usage}
-          defaultProvider={agent.provider}
-          defaultModel={agent.model ?? undefined}
-          defaultCustomAgentId={agent.custom_agent_id ?? undefined}
-          initialThinking={agent.effort ?? undefined}
-          disabled={!canSend}
-          placeholder={
-            canSend
-              ? undefined
-              : transcriptLoading
-                ? "Loading transcript…"
-                : switchInFlight
-                  ? "Switching view…"
-                  : "Agent is not ready"
-          }
-          stopping={busy}
-          mentionSource={() =>
-            api.listWorktreeTree(agent.id).then((files) => files.map((f) => f.path))
-          }
-          listDir={api.listDir}
-          listPrs={() => api.listPrs(agent.id)}
-          seed={composerSeed}
-          onSeedConsumed={onSeedConsumed}
-          draftKey={agent.id}
-          onSend={({ text, thinking, attachments }) => {
-            // Sending is an explicit action: re-pin so the user follows their
-            // own new message even if they'd scrolled up to read history.
-            pinnedToBottom.current = true;
-            send(agent.id, text, attachments, thinking);
-          }}
-          onStop={() => stop(agent.id)}
-        />
+        <div className="composer-stack">
+          <div className="composer-anchor">
+            <ChatWorkingStatus
+              visible={busy && !awaitingInput}
+              label={
+                busyLabel ?? `${customAgent?.name ?? providerLabel(agent.provider)} is working`
+              }
+            />
+            <Composer
+              existingSession
+              activeModel={activeModel}
+              usage={usage}
+              defaultProvider={agent.provider}
+              defaultModel={agent.model ?? undefined}
+              defaultCustomAgentId={agent.custom_agent_id ?? undefined}
+              initialThinking={agent.effort ?? undefined}
+              disabled={!canSend}
+              placeholder={
+                canSend
+                  ? undefined
+                  : transcriptLoading
+                    ? "Loading transcript…"
+                    : switchInFlight
+                      ? "Switching view…"
+                      : "Agent is not ready"
+              }
+              stopping={busy}
+              mentionSource={() =>
+                api.listWorktreeTree(agent.id).then((files) => files.map((f) => f.path))
+              }
+              listDir={api.listDir}
+              listPrs={() => api.listPrs(agent.id)}
+              seed={composerSeed}
+              onSeedConsumed={onSeedConsumed}
+              draftKey={agent.id}
+              onSend={({ text, thinking, attachments }) => {
+                pinnedToBottom.current = true;
+                send(agent.id, text, attachments, thinking);
+              }}
+              onStop={() => stop(agent.id)}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

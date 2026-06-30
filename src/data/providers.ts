@@ -73,7 +73,7 @@ export const agentIconUrl = (slug: string) => `https://quorum.fwdai.org/agents/$
 /** Human-readable name for a provider id (e.g. "claude" → "Claude Code").
  *  Falls back to the raw id when unknown so we never render an empty label. */
 export function providerLabel(id: string | null | undefined): string {
-  if (!id) return PROVIDERS.find((p) => p.id === DEFAULT_PROVIDER_ID)!.label;
+  if (!id) return PROVIDERS.find((p) => p.id === DEFAULT_PROVIDER_ID)?.label ?? DEFAULT_PROVIDER_ID;
   return PROVIDERS.find((p) => p.id === id)?.label ?? id;
 }
 
@@ -85,7 +85,7 @@ export function providerLabel(id: string | null | undefined): string {
 export function providerChip(id: string | null | undefined): { short: string; hue: number } {
   const p = PROVIDERS.find((x) => x.id === (id || DEFAULT_PROVIDER_ID));
   if (p) return { short: p.short, hue: p.hue };
-  return { short: id!.slice(0, 2).toUpperCase(), hue: 0 };
+  return { short: (id ?? "").slice(0, 2).toUpperCase(), hue: 0 };
 }
 
 export interface Accent {
