@@ -60,7 +60,7 @@ import {
 } from "lucide-react";
 import type { ComponentType, CSSProperties, ReactNode, SVGProps } from "react";
 import { createElement } from "react";
-import { LANDMARK_GLYPHS } from "../data/landmarks";
+import { LANDMARK_GLYPHS } from "@/data/landmarks";
 
 // Lucide v1 removed brand icons, so we keep the GitHub mark inline.
 type IconComponentProps = Omit<SVGProps<SVGSVGElement>, "ref"> & {

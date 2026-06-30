@@ -4,8 +4,8 @@
 // deltas), and `reduce` already handles those finalized forms — so this
 // normalizer is essentially a filter that drops unrelated record kinds.
 
-import { asRecord } from "../shared/json";
-import type { RawEvent } from "../types";
+import { asRecord } from "@/adapters/shared/json";
+import type { RawEvent } from "@/adapters/types";
 import { transcriptTextContent } from "./content";
 
 const PASS_THROUGH = new Set(["user", "assistant", "result"]);

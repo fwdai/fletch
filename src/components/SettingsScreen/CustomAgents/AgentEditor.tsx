@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { PROVIDERS } from "../../../data/providers";
-import type { NewCustomAgent } from "../../../storage/customAgents";
-import { useAppStore } from "../../../store";
-import { Icon } from "../../Icon";
-import { ProviderIcon } from "../../ProviderIcon";
-import { Button } from "../../ui/Button";
-import { Select } from "../../ui/Select";
-import { SetSeg } from "../primitives";
+import { Icon } from "@/components/Icon";
+import { ProviderIcon } from "@/components/ProviderIcon";
+import { SetSeg } from "@/components/SettingsScreen/primitives";
+import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
+import { PROVIDERS } from "@/data/providers";
+import type { NewCustomAgent } from "@/storage/customAgents";
+import { useAppStore } from "@/store";
 import { CA_HUES, INJECTION_HINT, shortFor } from "./shared";
 
 /** Mutable editor form state. `model`/`effort` use "" as the "provider default"

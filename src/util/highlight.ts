@@ -5,7 +5,7 @@
 // The token COLORS come from the design's palette (see app.css: `.fp-hl
 // .hljs-*`), so output matches the mockup while covering any language.
 import hljs from "highlight.js/lib/common";
-import { hljsLang } from "../data/languages";
+import { hljsLang } from "@/data/languages";
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { useAppStore } from "../../store";
-import { accountInitials } from "../../util/format";
-import { Avatar } from "../Avatar";
-import { Button } from "../ui/Button";
+import { Avatar } from "@/components/Avatar";
+import { Button } from "@/components/ui/Button";
+import { useAppStore } from "@/store";
+import { accountInitials } from "@/util/format";
 import { DevToolsStatus } from "./DevToolsStatus";
 import { SetGroup, SetHead } from "./primitives";
 

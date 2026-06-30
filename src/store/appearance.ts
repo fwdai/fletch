@@ -3,8 +3,8 @@ import {
   type Density,
   type ThemeMode,
   type WorkspaceView,
-} from "../storage/preferences";
-import { setSetting } from "../storage/settings";
+} from "@/storage/preferences";
+import { setSetting } from "@/storage/settings";
 import type { AppearanceSlice, SliceCreator } from "./types";
 
 export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({

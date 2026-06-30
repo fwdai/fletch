@@ -11,9 +11,9 @@
 // turn-end; from then on usage folds from records like every other agent —
 // restart-safe. `inputTokens` is fresh (excludes cache), Anthropic-style.
 
-import { asNumber, asRecord } from "../shared/json";
-import { buildTurnUsage } from "../shared/usage";
-import type { RawEvent, TurnUsage } from "../types";
+import { asNumber, asRecord } from "@/adapters/shared/json";
+import { buildTurnUsage } from "@/adapters/shared/usage";
+import type { RawEvent, TurnUsage } from "@/adapters/types";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
   if (body.type !== "result") return undefined;

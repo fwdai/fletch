@@ -2,7 +2,7 @@
 // would not generalize to providers that don't use the same content-block
 // envelope.
 
-import { asBlockList } from "../shared/json";
+import { asBlockList } from "@/adapters/shared/json";
 
 /** Extract joined text from a string or content-block array. */
 export function contentText(content: unknown): string {

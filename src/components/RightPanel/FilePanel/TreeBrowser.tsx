@@ -3,8 +3,8 @@
 // state and file operations live in the FilePanel orchestrator (so they
 // survive opening/closing the editor) and arrive here as props.
 import { useEffect, useRef } from "react";
-import { Icon } from "../../Icon";
-import { FileIcon } from "../FileIcon";
+import { Icon } from "@/components/Icon";
+import { FileIcon } from "@/components/RightPanel/FileIcon";
 import type { EditState, TreeNode } from "./tree";
 
 interface TreeBrowserProps {

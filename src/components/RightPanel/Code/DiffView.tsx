@@ -2,10 +2,10 @@
 // editor's "Diff" toggle both fetch a file's unified diff and render it here,
 // so there's a single implementation of the diff markup + syntax highlighting.
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../../../api";
-import { hljsLang } from "../../../data/languages";
-import { type DiffHunk, type DiffLine, parseUnifiedDiff } from "../../../util/diff";
-import { highlightToHtml } from "../../../util/highlight";
+import { api } from "@/api";
+import { hljsLang } from "@/data/languages";
+import { type DiffHunk, type DiffLine, parseUnifiedDiff } from "@/util/diff";
+import { highlightToHtml } from "@/util/highlight";
 
 export const extOf = (path: string) => path.split(".").pop() ?? "";
 

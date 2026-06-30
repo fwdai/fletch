@@ -15,14 +15,14 @@
 // token-level text deltas in exec mode — items arrive whole, so assistant
 // text and tool calls render on their `item.completed`.
 
-import { asRecord } from "../shared/json";
+import { asRecord } from "@/adapters/shared/json";
 import {
   dedupAgainstLast,
   endTurn,
   finalizeStreamingItems,
   upsertToolCall,
-} from "../shared/reducer-helpers";
-import type { ChatItem, RawEvent } from "../types";
+} from "@/adapters/shared/reducer-helpers";
+import type { ChatItem, RawEvent } from "@/adapters/types";
 
 /** Human label for a tool-call item. */
 function toolName(item: Record<string, unknown>): string {

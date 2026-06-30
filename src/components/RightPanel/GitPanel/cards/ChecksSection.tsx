@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-shell";
-import type { CheckRun, PrChecks } from "../../../../api";
-import { Icon } from "../../../Icon";
+import type { CheckRun, PrChecks } from "@/api";
+import { Icon } from "@/components/Icon";
 
 /** Visual class for one check row: ok / fail / skip dot, or a spinner while
  *  the run is queued / in progress. */

@@ -6,7 +6,7 @@
 // `extractUsage` reads its agent's on-disk body shape (see <agent>/usage.ts);
 // this fold is provider-agnostic.
 
-import type { SessionRecord } from "../api";
+import type { SessionRecord } from "@/api";
 import { getAdapter } from "./index";
 import type { TurnUsage } from "./types";
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { lookupModel } from "../../data/modelCatalog";
-import { type AgentUsage, useAppStore } from "../../store";
-import { formatCost, formatTokens } from "../../util/format";
+import { lookupModel } from "@/data/modelCatalog";
+import { type AgentUsage, useAppStore } from "@/store";
+import { formatCost, formatTokens } from "@/util/format";
 
 /** Laconic context gauge for the composer foot — a donut ring + %, hover for a
  *  full breakdown. Mirrors the v2 design (.usage / .up-* styles in app.css).

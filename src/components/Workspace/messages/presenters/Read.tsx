@@ -1,4 +1,4 @@
-import { basename } from "../../../../util/format";
+import { basename } from "@/util/format";
 import type { ToolPresenter } from "./types";
 import { countResultLines, getStringField, renderToolResult, SummaryNote, ToolBlock } from "./util";
 

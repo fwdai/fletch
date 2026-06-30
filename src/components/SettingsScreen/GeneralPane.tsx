@@ -1,8 +1,8 @@
-import { ACCENTS } from "../../data/providers";
-import type { Density, ThemeMode } from "../../storage/preferences";
-import { useAppStore } from "../../store";
-import { Icon } from "../Icon";
-import { Button } from "../ui/Button";
+import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
+import { ACCENTS } from "@/data/providers";
+import type { Density, ThemeMode } from "@/storage/preferences";
+import { useAppStore } from "@/store";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 const SIDE_PANELS: FeatureItem[] = [

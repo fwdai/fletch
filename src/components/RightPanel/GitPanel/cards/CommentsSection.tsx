@@ -1,7 +1,7 @@
 import { open } from "@tauri-apps/plugin-shell";
-import type { PrComment, PrComments } from "../../../../api";
-import { Icon } from "../../../Icon";
-import { commentLocation } from "../../prComments";
+import type { PrComment, PrComments } from "@/api";
+import { Icon } from "@/components/Icon";
+import { commentLocation } from "@/components/RightPanel/prComments";
 
 // ── Review comments ───────────────────────────────────────────────
 // Unresolved PR review threads (Greptile / other bots / humans), each

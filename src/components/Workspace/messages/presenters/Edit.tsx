@@ -1,5 +1,5 @@
-import { basename } from "../../../../util/format";
-import { lineDiffCounts } from "../../../../util/lineDiff";
+import { basename } from "@/util/format";
+import { lineDiffCounts } from "@/util/lineDiff";
 import type { ToolPresenter } from "./types";
 import { DiffCount, getStringField, renderToolResult, ToolBlock } from "./util";
 

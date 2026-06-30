@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { hasAdapter } from "../../adapters";
-import { PROVIDERS, providerLabel } from "../../data/providers";
-import { useAppStore } from "../../store";
-import { Icon } from "../Icon";
-import { ProviderIcon } from "../ProviderIcon";
-import { Mono } from "../SettingsScreen/CustomAgents/Mono";
-import { Chip } from "../ui/Chip";
-import { Scrim } from "../ui/Scrim";
+import { hasAdapter } from "@/adapters";
+import { Icon } from "@/components/Icon";
+import { ProviderIcon } from "@/components/ProviderIcon";
+import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
+import { Chip } from "@/components/ui/Chip";
+import { Scrim } from "@/components/ui/Scrim";
+import { PROVIDERS, providerLabel } from "@/data/providers";
+import { useAppStore } from "@/store";
 
 interface Props {
   provider: string;

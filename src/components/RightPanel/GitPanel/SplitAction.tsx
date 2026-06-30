@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Icon, type IconName } from "../../Icon";
-import type { ActionTone } from "../primaryActions";
+import { Icon, type IconName } from "@/components/Icon";
+import type { ActionTone } from "@/components/RightPanel/primaryActions";
 import { Spinner } from "./shared";
 
 /** One action as presented by the split button — the unified shape the main

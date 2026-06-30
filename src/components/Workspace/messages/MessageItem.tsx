@@ -1,11 +1,11 @@
 import { useMemo } from "react";
-import { applyPolicy, getAdapter } from "../../../adapters";
-import type { ChatItem } from "../../../store";
-import { stripInjectedInstructions } from "../../../util/instructions";
-import { AttachmentList } from "../../Composer/AttachmentList";
-import { Markdown } from "../../Markdown";
-import { APP_ACTION_PREFIX } from "../../RightPanel/delegation";
-import { CopyButton } from "../../ui/CopyButton";
+import { applyPolicy, getAdapter } from "@/adapters";
+import { AttachmentList } from "@/components/Composer/AttachmentList";
+import { Markdown } from "@/components/Markdown";
+import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
+import { CopyButton } from "@/components/ui/CopyButton";
+import type { ChatItem } from "@/store";
+import { stripInjectedInstructions } from "@/util/instructions";
 import { pairToolItems, rowKey, type ViewItem } from "./pair";
 import { getPresenter } from "./presenters";
 import { ToolResultItem } from "./ToolResultItem";

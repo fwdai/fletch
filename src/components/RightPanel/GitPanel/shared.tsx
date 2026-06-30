@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-shell";
 import type { ReactNode } from "react";
-import { Icon } from "../../Icon";
+import { Icon } from "@/components/Icon";
 
 /** A small CSS spinner used in loading states (status line + busy CTA). */
 export function Spinner() {

@@ -2,7 +2,7 @@
 // "@", PRs via "#", slash commands via "/") plugs into one menu + one set of
 // keyboard mechanics by producing `AcRow`s and a `pick` that says how to
 // rewrite the trigger token. See `useAutocomplete`.
-import type { IconName } from "../../Icon";
+import type { IconName } from "@/components/Icon";
 
 /** Left-hand icon for a row: a Material file icon (by file/folder name) or a
  *  built-in UI glyph. */

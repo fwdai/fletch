@@ -1,5 +1,5 @@
-import type { GhStatus } from "../../api";
-import { Icon } from "../Icon";
+import type { GhStatus } from "@/api";
+import { Icon } from "@/components/Icon";
 
 /** Shared state passed from the modal shell to each view. */
 export interface NewProjectShared {

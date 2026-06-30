@@ -1,8 +1,8 @@
-import { useAppStore } from "../../store";
-import { basename, hueFromString } from "../../util/format";
-import { Icon } from "../Icon";
-import { QMark } from "../QMark";
-import { IconButton } from "../ui/IconButton";
+import { Icon } from "@/components/Icon";
+import { QMark } from "@/components/QMark";
+import { IconButton } from "@/components/ui/IconButton";
+import { useAppStore } from "@/store";
+import { basename, hueFromString } from "@/util/format";
 import { Breadcrumb, type CrumbEntry } from "./Breadcrumb";
 
 /** Top-of-window bar. Houses the breadcrumb (Quorum / repo / agent)

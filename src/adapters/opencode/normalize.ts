@@ -12,8 +12,8 @@
 // on-disk `type` to the live `{type, part}` event the reducer consumes
 // (the part blob IS the live event's inner `part`).
 
-import { asRecord } from "../shared/json";
-import type { RawEvent } from "../types";
+import { asRecord } from "@/adapters/shared/json";
+import type { RawEvent } from "@/adapters/types";
 
 // On-disk part type → live event type the reducer switches on.
 const PART_TO_LIVE: Record<string, string> = {

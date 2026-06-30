@@ -1,8 +1,8 @@
 import { useState } from "react";
-import type { AgentRecord } from "../../api";
-import { useAppStore } from "../../store";
-import type { RightPanelTab as TabId } from "../../store/types";
-import { Icon, type IconName } from "../Icon";
+import type { AgentRecord } from "@/api";
+import { Icon, type IconName } from "@/components/Icon";
+import { useAppStore } from "@/store";
+import type { RightPanelTab as TabId } from "@/store/types";
 import { CodePanel } from "./Code";
 import { GitPanel } from "./GitPanel";
 import { RunPanel } from "./RunPanel";

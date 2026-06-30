@@ -12,7 +12,7 @@
 // models. See extensions/README.md.
 
 import type { ComponentType } from "react";
-import type { IconName } from "../components/Icon";
+import type { IconName } from "@/components/Icon";
 
 /** A settings pane contributed by an extension, mounted by SettingsScreen
  *  alongside the built-in panes. `id` is namespaced `ext:*` so it slots into

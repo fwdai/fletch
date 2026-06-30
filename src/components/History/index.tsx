@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentRecord } from "../../api";
-import { useAppStore } from "../../store";
-import { basename, firstLine } from "../../util/format";
-import { Icon } from "../Icon";
+import type { AgentRecord } from "@/api";
+import { Icon } from "@/components/Icon";
+import { useAppStore } from "@/store";
+import { basename, firstLine } from "@/util/format";
 
 export function History() {
   const workspace = useAppStore((s) => s.workspace);

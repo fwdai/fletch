@@ -1,8 +1,8 @@
 import { useCallback } from "react";
-import type { MergeState } from "../../../../api";
-import { useAppStore } from "../../../../store";
-import { usePoll } from "../../../../util/hooks";
-import { deriveState } from "../../primaryActions";
+import type { MergeState } from "@/api";
+import { deriveState } from "@/components/RightPanel/primaryActions";
+import { useAppStore } from "@/store";
+import { usePoll } from "@/util/hooks";
 
 /** All the live git/PR reads the panel renders from, plus the polling that
  *  keeps them fresh while the panel is mounted:

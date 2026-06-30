@@ -3,10 +3,10 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
-import { type AgentRecord, api } from "../../api";
-import { getShellBuffer, registerShellSink } from "../../pty/buffers";
-import { useXterm } from "../../util/useXterm";
-import { Icon } from "../Icon";
+import { type AgentRecord, api } from "@/api";
+import { Icon } from "@/components/Icon";
+import { getShellBuffer, registerShellSink } from "@/pty/buffers";
+import { useXterm } from "@/util/useXterm";
 
 /** Resolve a CSS custom property to a #rrggbb hex string.
  *  Works because the browser resolves oklch/hsl/etc to rgb() in getComputedStyle. */

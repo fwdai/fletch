@@ -1,8 +1,8 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useAppStore } from "../../store";
-import { Icon, type IconName } from "../Icon";
-import type { NewProjectMode } from "../NewProject";
-import { Scrim } from "../ui/Scrim";
+import { Icon, type IconName } from "@/components/Icon";
+import type { NewProjectMode } from "@/components/NewProject";
+import { Scrim } from "@/components/ui/Scrim";
+import { useAppStore } from "@/store";
 
 /** Choose how to add a project to the sidebar: open a local folder, clone
  *  from GitHub, or create a new repo. The latter two open the New Project

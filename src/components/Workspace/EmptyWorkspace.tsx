@@ -1,10 +1,10 @@
-import type { DraftAgent } from "../../store";
-import { useAppStore } from "../../store";
-import { Composer } from "../Composer";
-import { BranchPicker } from "../Composer/BranchPicker";
-import { ProjectPicker } from "../Composer/ProjectPicker";
-import { Icon, LandmarkGlyph } from "../Icon";
-import { IconButton } from "../ui/IconButton";
+import { Composer } from "@/components/Composer";
+import { BranchPicker } from "@/components/Composer/BranchPicker";
+import { ProjectPicker } from "@/components/Composer/ProjectPicker";
+import { Icon, LandmarkGlyph } from "@/components/Icon";
+import { IconButton } from "@/components/ui/IconButton";
+import type { DraftAgent } from "@/store";
+import { useAppStore } from "@/store";
 
 /** Empty-state pane shown when the user has started a draft agent.
  *  First message in the composer spawns the real agent and dispatches

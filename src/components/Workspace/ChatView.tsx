@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { applyPolicy, getAdapter } from "../../adapters";
-import { type AgentRecord, api } from "../../api";
-import { providerLabel } from "../../data/providers";
-import { useAppStore } from "../../store";
-import { stripInjectedInstructions } from "../../util/instructions";
-import { Composer } from "../Composer";
-import { APP_ACTION_PREFIX } from "../RightPanel/delegation";
+import { applyPolicy, getAdapter } from "@/adapters";
+import { type AgentRecord, api } from "@/api";
+import { Composer } from "@/components/Composer";
+import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
+import { providerLabel } from "@/data/providers";
+import { useAppStore } from "@/store";
+import { stripInjectedInstructions } from "@/util/instructions";
 import { ChatNav } from "./ChatNav";
 import { ChatSearch } from "./ChatSearch";
 import { ChatWorkingStatus } from "./ChatWorkingStatus";

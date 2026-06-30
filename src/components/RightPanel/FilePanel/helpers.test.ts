@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { WorktreeFile } from "../../../api";
-import { joinPath, parentDir } from "../../../util/format";
+import type { WorktreeFile } from "@/api";
+import { joinPath, parentDir } from "@/util/format";
 import { buildTree, duplicatePath } from "./tree";
 
 const f = (path: string): WorktreeFile => ({ path, status: null, additions: 0, deletions: 0 });

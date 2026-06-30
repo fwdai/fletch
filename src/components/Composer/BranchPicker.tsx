@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../../api";
-import { Icon } from "../Icon";
-import { Scrim } from "../ui/Scrim";
+import { api } from "@/api";
+import { Icon } from "@/components/Icon";
+import { Scrim } from "@/components/ui/Scrim";
 
 const ITEM_HEIGHT = 34; // approximate px per dd-item row
 const VISIBLE_ITEMS = 8;

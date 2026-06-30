@@ -1,4 +1,4 @@
-import type { TurnUsage } from "../types";
+import type { TurnUsage } from "@/adapters/types";
 
 export interface UsageTokens {
   inputTokens: number;

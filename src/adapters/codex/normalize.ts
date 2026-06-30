@@ -13,8 +13,8 @@
 // `response_item` user/assistant messages are skipped — they duplicate the
 // event_msg ones and carry injected noise (AGENTS.md, permissions blurb).
 
-import { asRecord } from "../shared/json";
-import type { RawEvent } from "../types";
+import { asRecord } from "@/adapters/shared/json";
+import type { RawEvent } from "@/adapters/types";
 
 function parseArgs(v: unknown): unknown {
   if (typeof v === "string") {

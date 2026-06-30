@@ -1,5 +1,5 @@
-import { Icon } from "../../Icon";
-import type { ActionTone, GitPanelState, StatusKind } from "../primaryActions";
+import { Icon } from "@/components/Icon";
+import type { ActionTone, GitPanelState, StatusKind } from "@/components/RightPanel/primaryActions";
 import { SplitAction, type SplitActionItem } from "./SplitAction";
 import { GitLink, Spinner, ViewOnGitHub } from "./shared";
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Icon } from "../Icon";
+import { Icon } from "@/components/Icon";
 import { IconButton } from "./IconButton";
 
 /** Copies `text` to the clipboard and briefly swaps the copy icon for a check

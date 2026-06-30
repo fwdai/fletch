@@ -15,9 +15,9 @@
 // local models). OpenCode does not persist a context-window size — the meter
 // resolves that from the catalog via `model`.
 
-import { asNumber, asRecord } from "../shared/json";
-import { buildTurnUsage } from "../shared/usage";
-import type { RawEvent, TurnUsage } from "../types";
+import { asNumber, asRecord } from "@/adapters/shared/json";
+import { buildTurnUsage } from "@/adapters/shared/usage";
+import type { RawEvent, TurnUsage } from "@/adapters/types";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
   const isLiveFinish = body.type === "step_finish";

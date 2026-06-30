@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { basename } from "../../util/format";
-import { Icon } from "../Icon";
-import { Scrim } from "../ui/Scrim";
+import { Icon } from "@/components/Icon";
+import { Scrim } from "@/components/ui/Scrim";
+import { basename } from "@/util/format";
 
 interface Props {
   /** Currently selected repo path. */

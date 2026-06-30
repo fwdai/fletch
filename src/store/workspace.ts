@@ -1,6 +1,6 @@
-import type { ChatItem } from "../adapters";
-import { hasUsage, usageFromRecords } from "../adapters/usage";
-import { api } from "../api";
+import type { ChatItem } from "@/adapters";
+import { hasUsage, usageFromRecords } from "@/adapters/usage";
+import { api } from "@/api";
 import {
   applyUserTurns,
   dropAgentEntries,
@@ -8,9 +8,9 @@ import {
   providerFor,
   reduceRecords,
   sendWhenAgentReady,
-} from "../helpers";
-import { clearOutputBuffer } from "../pty/buffers";
-import { setSetting } from "../storage/settings";
+} from "@/helpers";
+import { clearOutputBuffer } from "@/pty/buffers";
+import { setSetting } from "@/storage/settings";
 import { interruptedAgents } from "./interrupted";
 import type { AppState, SliceCreator, WorkspaceSlice } from "./types";
 

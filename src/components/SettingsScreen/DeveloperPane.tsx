@@ -1,6 +1,6 @@
-import { useAppStore } from "../../store";
-import { Icon } from "../Icon";
-import { Button } from "../ui/Button";
+import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
+import { useAppStore } from "@/store";
 import { SetGroup, SetHead, SetRow } from "./primitives";
 
 /** Dev-only settings surface. The nav entry that routes here is gated on

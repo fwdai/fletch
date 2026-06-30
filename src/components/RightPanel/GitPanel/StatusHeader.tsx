@@ -1,6 +1,6 @@
-import type { GitState, MergeState, PrState } from "../../../api";
-import { describeMergeGate, type MergeGateTone } from "../mergeGate";
-import type { GitPanelState } from "../primaryActions";
+import type { GitState, MergeState, PrState } from "@/api";
+import { describeMergeGate, type MergeGateTone } from "@/components/RightPanel/mergeGate";
+import type { GitPanelState } from "@/components/RightPanel/primaryActions";
 import { ViewOnGitHub } from "./shared";
 
 // ── Color-coded status header ─────────────────────────────────────

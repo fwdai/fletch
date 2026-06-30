@@ -1,4 +1,4 @@
-import type { ChatAdapter } from "../types";
+import type { ChatAdapter } from "@/adapters/types";
 import { normalizeTranscript } from "./normalize";
 import { claudePolicy } from "./policy";
 import { reduce } from "./reduce";

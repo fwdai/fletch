@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { useAppStore } from "../../../../store";
-import { Icon } from "../../../Icon";
-import type { ToolCall, ToolResult } from "../presenters/types";
+import { Icon } from "@/components/Icon";
+import type { ToolCall, ToolResult } from "@/components/Workspace/messages/presenters/types";
+import { useAppStore } from "@/store";
 import {
   answersFromResultText,
   buildAnswers,

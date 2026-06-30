@@ -1,8 +1,8 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import type { AgentRecord } from "../../api";
-import type { DraftAgent } from "../../store";
-import { useAppStore } from "../../store";
-import { Icon } from "../Icon";
+import type { AgentRecord } from "@/api";
+import { Icon } from "@/components/Icon";
+import type { DraftAgent } from "@/store";
+import { useAppStore } from "@/store";
 import { AgentRow } from "./AgentRow";
 
 interface Props {

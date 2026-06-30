@@ -2,7 +2,7 @@
 // the renderer can present them as one collapsible row. Orphan
 // tool_results (no matching call, defensive case) pass through.
 
-import type { ChatItem } from "../../../store";
+import type { ChatItem } from "@/store";
 import type { ToolCall, ToolResult } from "./presenters/types";
 
 export type ViewItem = ChatItem | { kind: "tool_pair"; call: ToolCall; result: ToolResult | null };

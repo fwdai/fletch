@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Icon } from "../../../Icon";
-import { Markdown } from "../../../Markdown";
+import { Icon } from "@/components/Icon";
+import { Markdown } from "@/components/Markdown";
 import type { UIAnswer, UIQuestion } from "./parse";
 
 /** One question rendered as the prototype's `.m-q` card. Live until answered;
