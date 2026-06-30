@@ -20,7 +20,7 @@ export function Badge({ children, variant = "neutral", tip, className }: Props) 
     "iflex-center",
     variant === "neutral" ? "" : variant,
     tip ? "tip" : "",
-    className ?? "",
+    className,
   ]
     .filter(Boolean)
     .join(" ");
