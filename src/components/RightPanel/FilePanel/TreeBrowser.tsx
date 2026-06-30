@@ -242,7 +242,7 @@ function TreeRow({
   const st = node.status ? node.status.toLowerCase() : "";
   return (
     <button
-      className={`fp-row file ${node.status ? `changed s-${st}` : ""}`}
+      className={`fp-row flex-center file ${node.status ? `changed s-${st}` : ""}`}
       style={{ paddingLeft: pad + 13 }}
       onClick={() => onOpen(node.path)}
       onContextMenu={(e) => {
