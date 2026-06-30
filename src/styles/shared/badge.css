@@ -52,7 +52,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--fs-base);
+  font-size: var(--fs-sm);
   color: color-mix(in oklch, var(--fg-1), var(--fg-0) 30%);
 }
 .agent-sub .a-task.a-task-draft {
