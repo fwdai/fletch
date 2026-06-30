@@ -1,3 +1,117 @@
+/* Agent activity — slides up from behind the composer on show. */
+.composer-anchor {
+  position: relative;
+}
+.composer-anchor .composer {
+  position: relative;
+  z-index: 2;
+}
+.chat-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 6px 6px 10px;
+  margin-bottom: -4px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--fg-2);
+  transform: translateY(10px);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 130ms cubic-bezier(0.2, 0, 0, 1),
+    opacity 100ms linear;
+}
+.chat-status.is-open {
+  transform: translateY(0);
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-status {
+    transition: none;
+  }
+}
+.chat-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-status .dots {
+  display: inline-flex;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.chat-status .dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: bounce 1.2s var(--ease) infinite;
+}
+.chat-status .dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.chat-status .dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* Inline turn-pending anchor — dots only; label is in .chat-status below. */
+.chat-pending {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px 0 6px 18px;
+  margin-bottom: 10px;
+  border-left: 1px solid var(--bd);
+  animation: chat-pending-in 220ms ease-out;
+}
+.chat-pending .dots {
+  display: inline-flex;
+  gap: 4px;
+}
+.chat-pending .dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--fg-2);
+  animation: chat-pending-bounce 1.3s var(--ease) infinite;
+}
+.chat-pending .dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.chat-pending .dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes chat-pending-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 0.9;
+  }
+}
+@keyframes chat-pending-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* chat */
 .chat {
   position: relative;

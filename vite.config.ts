@@ -12,7 +12,10 @@ function copyFileIcons(): Plugin {
   return {
     name: "copy-material-file-icons",
     configResolved() {
-      const src = path.resolve(process.cwd(), "node_modules/material-icon-theme/icons");
+      const src = path.resolve(
+        process.cwd(),
+        "node_modules/material-icon-theme/icons",
+      );
       const dest = path.resolve(process.cwd(), "public/file-icons");
       if (existsSync(dest) && readdirSync(dest).length > 0) return; // already copied
       if (existsSync(src)) cpSync(src, dest, { recursive: true });

@@ -1,8 +1,16 @@
 /* composer */
 .composer-wrap {
+  flex-shrink: 0;
   padding: 0 20px 20px;
   display: flex;
   justify-content: center;
+  background: var(--bg-1);
+}
+.composer-stack {
+  width: 100%;
+  max-width: 860px;
+  display: flex;
+  flex-direction: column;
 }
 .composer {
   position: relative;
