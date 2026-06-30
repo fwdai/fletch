@@ -157,10 +157,10 @@
   letter-spacing: -0.025em;
   color: var(--fg-0);
   margin: 0;
-  line-height: 1.05;
+  line-height: var(--lh-none);
 }
 .set-lead {
-  line-height: 1.6;
+  line-height: var(--lh-relaxed);
   color: var(--fg-2);
   margin: 12px 0 0;
   max-width: 56ch;
@@ -212,7 +212,7 @@
 }
 .set-row-s {
   color: var(--fg-2);
-  line-height: 1.5;
+  line-height: var(--lh-normal);
   margin-top: 3px;
   max-width: 52ch;
   text-wrap: pretty;

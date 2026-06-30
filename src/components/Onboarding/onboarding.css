@@ -278,7 +278,7 @@
 }
 .ob-lede {
   font-size: var(--fs-lg);
-  line-height: 1.66;
+  line-height: var(--lh-relaxed);
   color: var(--fg-2);
   margin: 0;
   text-wrap: pretty;
@@ -335,7 +335,7 @@
 }
 .ob-welcome .ob-display {
   font-size: var(--fs-5xl);
-  line-height: 1.14;
+  line-height: var(--lh-tight);
 }
 .ob-welcome .ob-lede {
   margin-top: 26px;
@@ -421,7 +421,7 @@
 
 .ob-legal {
   margin-top: 34px;
-  line-height: 1.6;
+  line-height: var(--lh-relaxed);
   color: var(--fg-3);
   max-width: 360px;
   text-align: center;
@@ -481,7 +481,7 @@
 }
 .ob-beat-copy .ob-display {
   font-size: var(--fs-4xl);
-  line-height: 1.18;
+  line-height: var(--lh-tight);
   margin-top: 22px;
 }
 .ob-beat-copy .ob-lede {
@@ -498,7 +498,7 @@
   align-items: flex-start;
   gap: 11px;
   font-size: var(--fs-base);
-  line-height: 1.5;
+  line-height: var(--lh-normal);
   color: var(--fg-1);
 }
 .ob-point .ic {
@@ -864,7 +864,7 @@
   border-bottom: 1px solid var(--bd-soft);
   background: color-mix(in oklch, var(--success), var(--bg-1) 93%);
   font-size: var(--fs-xs);
-  line-height: 1.45;
+  line-height: var(--lh-snug);
   color: var(--fg-1);
   font-style: italic;
   text-wrap: pretty;
@@ -877,7 +877,7 @@
 .ex-diff {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  line-height: 1.62;
+  line-height: var(--lh-relaxed);
   padding: 6px 0 10px;
   max-height: 304px;
   overflow: hidden;
@@ -1028,7 +1028,7 @@
 .ex-room-title {
   font-family: var(--font-serif);
   font-size: var(--fs-2xl);
-  line-height: 1.18;
+  line-height: var(--lh-tight);
   color: var(--fg-0);
   letter-spacing: -0.01em;
   margin-bottom: 16px;
@@ -1168,7 +1168,7 @@
 .ob-fineprint {
   margin: 14px 0 0;
   max-width: 40ch;
-  line-height: 1.5;
+  line-height: var(--lh-normal);
   color: var(--fg-3);
   text-wrap: pretty;
 }
@@ -1329,7 +1329,7 @@
 }
 .ob-ignite .ob-display {
   font-size: var(--fs-5xl);
-  line-height: 1.12;
+  line-height: var(--lh-tight);
 }
 .ob-ignite .ob-lede {
   margin-top: 20px;
@@ -1533,7 +1533,7 @@
   font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--fg-0);
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 .ob-rdy-tile-foot {
   display: flex;

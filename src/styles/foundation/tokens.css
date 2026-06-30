@@ -28,6 +28,14 @@
   --fs-4xl: 44px; /* hero */
   --fs-5xl: 56px; /* brand / splash */
 
+  /* line-height — unitless so it inherits as a ratio. (Code editor/gutter
+   * keep their own px line-height for glyph alignment — not on this scale.) */
+  --lh-none: 1; /* single-line UI + tight display titles */
+  --lh-tight: 1.2; /* headings */
+  --lh-snug: 1.4; /* sub-headings, dense multi-line */
+  --lh-normal: 1.5; /* default body */
+  --lh-relaxed: 1.65; /* prose / agent messages */
+
   --r-xs: 4px;
   --r-sm: 6px;
   --r-md: 9px;

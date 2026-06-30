@@ -30,7 +30,7 @@
   font-family: var(--font-serif);
   font-weight: 400;
   letter-spacing: -0.025em;
-  line-height: 1.05;
+  line-height: var(--lh-none);
   font-style: italic;
   color: var(--accent);
   border-bottom: 1px dashed var(--accent-line);
@@ -45,7 +45,7 @@
   letter-spacing: -0.025em;
   color: var(--fg-0);
   margin: 0 0 14px;
-  line-height: 1.05;
+  line-height: var(--lh-none);
   text-align: center;
   font-style: italic;
 }
@@ -54,7 +54,7 @@
   margin: 0 0 32px;
   max-width: 560px;
   text-align: center;
-  line-height: 1.55;
+  line-height: var(--lh-normal);
 }
 .empty-composer {
   width: 100%;

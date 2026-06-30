@@ -273,7 +273,7 @@
   color: var(--accent);
 }
 .chat-nav-row-t {
-  line-height: 1.4;
+  line-height: var(--lh-snug);
 }
 
 /* Groups a message bubble/response with its hover-revealed action row (copy).
@@ -315,7 +315,7 @@
   border: 1px solid var(--bd-soft);
   border-radius: 16px 16px 4px 16px;
   font-size: var(--fs-base);
-  line-height: 1.55;
+  line-height: var(--lh-normal);
   color: var(--fg-0);
   white-space: pre-wrap;
   margin-bottom: 16px;
@@ -339,7 +339,7 @@
 }
 
 .m-agent {
-  line-height: 1.7;
+  line-height: var(--lh-relaxed);
   color: var(--fg-0);
   margin-bottom: 16px;
 }
@@ -358,7 +358,7 @@
 .m-agent h4 {
   margin: 22px 0 10px;
   font-weight: 600;
-  line-height: 1.25;
+  line-height: var(--lh-tight);
   color: var(--fg-0);
 }
 .m-agent h1 {
@@ -453,7 +453,7 @@
 
 .m-reasoning {
   font-size: var(--fs-base);
-  line-height: 1.65;
+  line-height: var(--lh-relaxed);
   color: var(--fg-2);
   padding: 4px 18px;
   border-left: 1px solid var(--accent-line);

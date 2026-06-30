@@ -333,7 +333,7 @@
 }
 .np-gate-s {
   color: var(--fg-2);
-  line-height: 1.5;
+  line-height: var(--lh-normal);
   max-width: 320px;
 }
 .np-gate code {

@@ -66,7 +66,7 @@
 
 .q-prompt {
   font-size: var(--fs-base);
-  line-height: 1.6;
+  line-height: var(--lh-relaxed);
   color: var(--fg-0);
   text-wrap: pretty;
 }
@@ -85,7 +85,7 @@
   border: 1px solid var(--bd-soft);
   border-radius: var(--r-md);
   background: var(--bg-1);
-  line-height: 1.55;
+  line-height: var(--lh-normal);
   color: var(--fg-1);
   max-height: 280px;
   overflow: auto;
@@ -227,7 +227,7 @@
 }
 .q-opt-desc {
   font-size: var(--fs-sm);
-  line-height: 1.5;
+  line-height: var(--lh-normal);
   color: var(--fg-2);
   text-wrap: pretty;
 }
@@ -262,7 +262,7 @@
 .q-other-input {
   width: 100%;
   padding: 11px 12px 6px;
-  line-height: 1.55;
+  line-height: var(--lh-normal);
   color: var(--fg-0);
   resize: none;
   min-height: 56px;

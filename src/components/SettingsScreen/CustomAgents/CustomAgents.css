@@ -189,7 +189,7 @@
   height: auto;
   min-height: 150px;
   padding: 11px 12px;
-  line-height: 1.55;
+  line-height: var(--lh-normal);
   resize: vertical;
   font-family: var(--font-sans);
 }
@@ -250,7 +250,7 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 .model-custom-text > span:first-child {
   font-size: var(--fs-base);

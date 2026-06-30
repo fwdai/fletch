@@ -130,7 +130,7 @@
 .composer-input {
   width: 100%;
   padding: 12px 14px 8px;
-  line-height: 1.55;
+  line-height: var(--lh-normal);
   color: var(--fg-0);
   resize: none;
   min-height: 24px;
