@@ -235,7 +235,7 @@
   min-height: 21px;
 }
 .agent-row .ag-name {
-  font-weight: 550;
+  font-weight: 600;
   color: var(--fg-0);
   flex-shrink: 0;
 }
