@@ -18,10 +18,11 @@ export interface AgentStats {
 /** Floats off the agent-row time chip on hover. Visual lift only —
  *  pure stats display, no actions. */
 export function AgentStatsPopover({ stats }: { stats: AgentStats }) {
-  const hasUsage = stats.contextTokens != null;
-  const contextLabel = hasUsage
-    ? `${formatTokens(stats.contextTokens!)} / ${formatTokens(stats.contextWindow)}`
-    : "—";
+  const contextTokens = stats.contextTokens;
+  const contextLabel =
+    contextTokens != null
+      ? `${formatTokens(contextTokens)} / ${formatTokens(stats.contextWindow)}`
+      : "—";
   const ioLabel =
     stats.totalInput != null && stats.totalOutput != null
       ? `${formatTokens(stats.totalInput)} in · ${formatTokens(stats.totalOutput)} out`

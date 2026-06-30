@@ -24,7 +24,11 @@ describe("isTurnPending", () => {
   it("is false for a mid-turn queued follow-up", () => {
     const items: ViewItem[] = [
       { kind: "user_message", text: "hello" },
-      { kind: "tool_pair", call: { id: "t1", name: "bash", input: "ls" }, result: null },
+      {
+        kind: "tool_pair",
+        call: { kind: "tool_call", id: "t1", name: "bash", input: "ls" },
+        result: null,
+      },
       { kind: "queued_message", text: "also do this" },
     ];
     expect(isTurnPending(items)).toBe(false);

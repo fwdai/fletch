@@ -37,5 +37,7 @@ export function getAdapter(provider: string | null | undefined): ChatAdapter {
       `[adapters] unknown provider "${provider}", falling back to ${DEFAULT_ADAPTER_ID}`,
     );
   }
-  return ADAPTERS[DEFAULT_ADAPTER_ID]!;
+  const fallback = ADAPTERS[DEFAULT_ADAPTER_ID];
+  if (!fallback) throw new Error(`missing adapter: ${DEFAULT_ADAPTER_ID}`);
+  return fallback;
 }

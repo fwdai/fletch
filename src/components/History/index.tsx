@@ -133,7 +133,8 @@ export function History() {
                   </div>
                   {items.map((a) => {
                     const myIdx = flatIdx++;
-                    const archive = a.archive!;
+                    if (!a.archive) return null;
+                    const archive = a.archive;
                     const primary = archive.repos[0];
                     const repoLabel = primary ? basename(primary.repo_path) : a.name;
                     const branchLabel = primary?.branch_name ?? null;
@@ -251,9 +252,10 @@ function groupByDate(records: AgentRecord[]): DateGroup[] {
       groups.set(day, []);
       labels.push(day);
     }
-    groups.get(day)!.push(r);
+    const bucket = groups.get(day);
+    if (bucket) bucket.push(r);
   }
-  return labels.map((label) => ({ label, items: groups.get(label)! }));
+  return labels.map((label) => ({ label, items: groups.get(label) ?? [] }));
 }
 
 function startOfLocalDay(d: Date): number {

@@ -41,7 +41,9 @@ export async function getOrCreateAccount(): Promise<AccountRow> {
   const existing = await getAccount();
   if (existing) return existing;
   const id = await dbInsert("accounts", { name: "" });
-  return (await dbSelectOne<AccountRow>("accounts", { where: { id } }))!;
+  const row = await dbSelectOne<AccountRow>("accounts", { where: { id } });
+  if (!row) throw new Error("failed to create account row");
+  return row;
 }
 
 /** Persist edited profile fields. Also writes a derived `name` ("First Last")

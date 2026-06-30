@@ -28,7 +28,7 @@ const XTERM_BASE_OPTIONS: ITerminalOptions = {
  */
 export function useXterm(
   options: ITerminalOptions,
-  onReady: (term: Terminal) => (() => void) | void,
+  onReady: (term: Terminal) => (() => void) | undefined,
   deps: DependencyList,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -100,6 +100,7 @@ export function useXterm(
       term.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+    // biome-ignore lint/correctness/useExhaustiveDependencies: caller supplies the dep list
   }, deps);
 
   return containerRef;

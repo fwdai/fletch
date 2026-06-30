@@ -83,9 +83,9 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const stats: AgentStats = {
     launched: age || "just now",
     runtime: liveRuntime(agent.created_at, now, agent.status),
-    contextTokens: hasUsage ? usage!.contextTokens : null,
+    contextTokens: hasUsage ? usage?.contextTokens : null,
     contextWindow,
-    contextPct: hasUsage ? contextPct(usage!.contextTokens, contextWindow) : 0,
+    contextPct: hasUsage ? contextPct(usage?.contextTokens, contextWindow) : 0,
     // Fresh input only — matching the composer gauge. Cumulative cache read
     // balloons (the same cached prefix re-read every turn) and is misleading
     // as a session "input" total.
