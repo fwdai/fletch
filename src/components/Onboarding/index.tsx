@@ -189,7 +189,7 @@ export function Onboarding() {
     <div className="ob">
       <div className="ob-tb" data-tauri-drag-region>
         <div className="ob-tb-gutter" data-tauri-drag-region />
-        <div className="ob-tb-mark text-2xs">
+        <div className="ob-tb-mark text-xs">
           <span className="d" />
           <span>QUORUM</span>
         </div>

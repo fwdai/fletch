@@ -21,7 +21,7 @@
 /* utility */
 .kbd {
   font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   padding: 1px 5px;
   border: 1px solid var(--bd-soft);
   border-bottom-width: 1.5px;

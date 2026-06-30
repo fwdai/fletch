@@ -250,9 +250,9 @@ export function CodeLivePanel({
               onClick={() => onPickTab(f.path)}
               title={f.path}
             >
-              <span className="ct-status text-2xs">{statusLetter(f.kind)}</span>
+              <span className="ct-status text-xs">{statusLetter(f.kind)}</span>
               <span className="ct-name">{base}</span>
-              <span className="ct-stats text-2xs">
+              <span className="ct-stats text-xs">
                 {f.additions > 0 && <span className="a">+{f.additions}</span>}
                 {f.deletions > 0 && <span className="r">−{f.deletions}</span>}
               </span>

@@ -88,7 +88,7 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
         <div className="run-sheet-body">
           {groups.map((g) => (
             <div key={g} className="rs-group">
-              <div className="rs-group-h text-2xs">{g}</div>
+              <div className="rs-group-h text-xs">{g}</div>
               <div className="rs-group-rows">
                 {rows
                   .filter((r) => r.group === g)

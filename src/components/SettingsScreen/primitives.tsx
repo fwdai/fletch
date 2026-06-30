@@ -28,7 +28,7 @@ export function SetHead({
     <header className="set-head">
       <div className="set-head-top">
         <div className="set-head-titles">
-          <div className="set-eyebrow mono text-2xs">{eyebrow}</div>
+          <div className="set-eyebrow mono text-xs">{eyebrow}</div>
           <h1 className="set-h1 text-3xl">{title}</h1>
         </div>
         {actions && <div className="set-head-actions flex-center">{actions}</div>}
@@ -49,7 +49,7 @@ export function SetGroup({
 }) {
   return (
     <section className={`set-group ${last ? "last" : ""}`}>
-      {label && <div className="set-group-h mono text-2xs">{label}</div>}
+      {label && <div className="set-group-h mono text-xs">{label}</div>}
       <div className="set-rows">{children}</div>
     </section>
   );

@@ -127,7 +127,7 @@ export function StatusHeader({
   return (
     <div className={`git-hdr flex-center k-${h.kind}`}>
       {h.dot && <span className="hdr-dot" />}
-      {h.pill && <span className="pill text-2xs">{h.pill}</span>}
+      {h.pill && <span className="pill text-xs">{h.pill}</span>}
       <span className="bn text-sm">{h.text}</span>
       {h.sub && <span className="base text-xs">{h.sub}</span>}
       <div className="hdr-meta">

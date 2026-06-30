@@ -102,7 +102,7 @@ export function QuestionCard({
         <span className="q-label iflex-center">
           <Icon name="sparkle" size={11} /> Needs your input
           {total > 1 && (
-            <span className="q-step text-2xs">
+            <span className="q-step text-xs">
               {index + 1}/{total}
             </span>
           )}
@@ -148,7 +148,7 @@ export function QuestionCard({
               <span className="q-opt-body">
                 <span className="q-opt-top">
                   <span className="q-opt-label">{o.label}</span>
-                  {o.recommended && <span className="q-rec text-2xs">Recommended</span>}
+                  {o.recommended && <span className="q-rec text-xs">Recommended</span>}
                 </span>
                 {o.desc && <span className="q-opt-desc">{o.desc}</span>}
               </span>

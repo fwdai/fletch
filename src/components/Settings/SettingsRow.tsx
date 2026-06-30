@@ -21,7 +21,7 @@ export function SettingsRow({ label, description, children }: Props) {
 export function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="sp-section">
-      <div className="sp-title text-2xs">{title}</div>
+      <div className="sp-title text-xs">{title}</div>
       {children}
     </div>
   );

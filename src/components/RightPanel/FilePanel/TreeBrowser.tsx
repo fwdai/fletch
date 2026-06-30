@@ -79,7 +79,7 @@ export function TreeBrowser({
         >
           <span className="fp-filter-dot"></span>
           Changed
-          <span className="fp-filter-count text-2xs">{changedCount}</span>
+          <span className="fp-filter-count text-xs">{changedCount}</span>
         </button>
         <button
           className="btn-i iflex-center xs"

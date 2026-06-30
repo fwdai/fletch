@@ -116,7 +116,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                   <span className="model-option-name truncate text-base">{m.name}</span>
                 </span>
                 {m.contextWindow > 0 && (
-                  <span className="model-ctx text-2xs">{formatContext(m.contextWindow)}</span>
+                  <span className="model-ctx text-xs">{formatContext(m.contextWindow)}</span>
                 )}
                 {active && <Icon name="check" size={13} />}
               </button>
@@ -168,7 +168,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
             onMouseLeave={() => setHovered(null)}
           >
             <div className="model-dd-main">
-              <div className="model-sect flex-center text-2xs">
+              <div className="model-sect flex-center text-xs">
                 <span>Coding agents</span>
                 <span className="model-sect-line" />
               </div>
@@ -199,7 +199,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                   >
                     <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={26} />
                     <span className="model-agent-name truncate text-base">{p.label}</span>
-                    <span className="model-agent-ver text-2xs">
+                    <span className="model-agent-ver text-xs">
                       {missing ? "Not installed" : (providerVersions[p.id] ?? p.version)}
                     </span>
                     {usable && <Icon name="chevR" size={12} />}
@@ -207,7 +207,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                 );
               })}
 
-              <div className="model-sect flex-center text-2xs">
+              <div className="model-sect flex-center text-xs">
                 <span>Custom agents</span>
                 <span className="model-sect-line" />
               </div>
@@ -266,7 +266,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                       <span className="model-side-fly-name truncate text-base">
                         {hoveredAgent.label}
                       </span>
-                      <span className="model-side-fly-tag text-2xs">model</span>
+                      <span className="model-side-fly-tag text-xs">model</span>
                     </div>
                     <div className="model-side-fly-list">{renderModelList(hoveredAgent)}</div>
                   </div>

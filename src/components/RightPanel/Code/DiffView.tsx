@@ -90,8 +90,8 @@ function DiffLineRow({ line, lang, fresh }: { line: DiffLine; lang: string; fres
   );
   return (
     <div className={`dl op-${line.op}${fresh ? " fresh" : ""}`}>
-      <span className="dl-num o text-2xs">{line.o ?? ""}</span>
-      <span className="dl-num n text-2xs">{line.n ?? ""}</span>
+      <span className="dl-num o text-xs">{line.o ?? ""}</span>
+      <span className="dl-num n text-xs">{line.n ?? ""}</span>
       <span className="dl-sigil">{sigil}</span>
       <span className="dl-text" dangerouslySetInnerHTML={{ __html: html }} />
     </div>

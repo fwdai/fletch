@@ -75,7 +75,7 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
       {open && (
         <div className="usage-pop">
           <div className="up-head">
-            <span className="up-title text-2xs">Context window</span>
+            <span className="up-title text-xs">Context window</span>
             <span className="up-frac text-xs">
               <b>{formatTokens(used)}</b> / {formatTokens(contextWindow)}
             </span>

@@ -486,7 +486,7 @@
   justify-content: center;
   border-radius: 7px;
   font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.02em;
   border: 1px solid color-mix(in oklch, var(--ph, var(--accent)) 50%, transparent);

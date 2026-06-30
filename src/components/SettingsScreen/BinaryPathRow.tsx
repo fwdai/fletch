@@ -148,7 +148,7 @@ export function BinaryPathRow({
           <div className="set-prov-bin-view flex-center">
             <span className={`set-prov-dv mono ${broken ? "broken" : ""}`}>{effectivePath}</span>
             {override && <span className="set-badge custom">Custom</span>}
-            {broken && <span className="set-prov-bin-warn text-2xs">not found</span>}
+            {broken && <span className="set-prov-bin-warn text-xs">not found</span>}
             <span className="grow" />
             {override && (
               <button

@@ -240,7 +240,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
                   const k = lineKind(i);
                   return (
                     <div className="fp-gline" key={i}>
-                      <span className="fp-num text-2xs">{i + 1}</span>
+                      <span className="fp-num text-xs">{i + 1}</span>
                       <span className={`fp-bar ${k || ""}`}></span>
                     </div>
                   );

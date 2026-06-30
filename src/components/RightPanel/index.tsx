@@ -72,7 +72,7 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
             >
               <Icon name={t.icon} />
               {t.label}
-              {t.count != null && t.count > 0 && <span className="count text-2xs">{t.count}</span>}
+              {t.count != null && t.count > 0 && <span className="count text-xs">{t.count}</span>}
             </button>
           ))}
         </div>

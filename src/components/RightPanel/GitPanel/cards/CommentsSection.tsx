@@ -21,7 +21,7 @@ export function CommentsSection({
   const rows = [...list].sort((a, b) => Number(b.is_bot) - Number(a.is_bot));
   return (
     <div className="pr-comments">
-      <div className="pr-comments-h text-2xs">
+      <div className="pr-comments-h text-xs">
         <span>Comments</span>
         <span className="pr-comments-sum">{list.length} unresolved</span>
       </div>
