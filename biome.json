@@ -28,6 +28,19 @@
         "noControlCharactersInRegex": "off",
         "noArrayIndexKey": "warn"
       },
+      "style": {
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "patterns": [
+              {
+                "group": ["../**", "!**/package.json"],
+                "message": "Use the @/ path alias instead of relative parent imports."
+              }
+            ]
+          }
+        }
+      },
       "security": {
         "noDangerouslySetInnerHtml": "off"
       }
