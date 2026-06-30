@@ -109,7 +109,9 @@ describe("applyUserTurns", () => {
 
   it("overlays only startedAt on an in-flight (pending) turn", () => {
     const items: ChatItem[] = [];
-    const turns = [turn({ native_id: null, text: "running now", started_at: 5000, ended_at: null })];
+    const turns = [
+      turn({ native_id: null, text: "running now", started_at: 5000, ended_at: null }),
+    ];
 
     const out = applyUserTurns(items, turns);
     expect(out[0]).toMatchObject({ kind: "user_message", startedAt: 5000 });
