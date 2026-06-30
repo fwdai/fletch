@@ -194,7 +194,7 @@
   max-width: min(390px, 48vw);
 }
 .model-chip-agent {
-  font-weight: 550;
+  font-weight: 600;
   white-space: nowrap;
 }
 .model-chip-model {

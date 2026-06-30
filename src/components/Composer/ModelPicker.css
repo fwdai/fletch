@@ -159,7 +159,7 @@
 .model-side-fly-name {
   flex: 1;
   min-width: 0;
-  font-weight: 550;
+  font-weight: 600;
   color: var(--fg-0);
 }
 .model-side-fly-tag {
@@ -205,11 +205,11 @@
   gap: 1px;
 }
 .model-option-name {
-  font-weight: 450;
+  font-weight: 500;
   color: var(--fg-0);
 }
 .model-option-name.def {
-  font-weight: 550;
+  font-weight: 600;
 }
 .model-option-desc {
   color: var(--fg-3);
