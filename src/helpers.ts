@@ -64,6 +64,12 @@ export function reduceRecords(provider: string | undefined, records: SessionReco
  *    feature (no row) simply keep no attachments instead of mis-grabbing them.
  *  - Pending turns (`native_id` null — the agent never logged them, e.g. a
  *    failed send) render standalone so the message survives reload + retry. */
+/** Copy a turn's run timing onto its rendered user message, if present. */
+function applyTurnTiming(item: Extract<ChatItem, { kind: "user_message" }>, t: UserTurn): void {
+  if (t.started_at != null) item.startedAt = t.started_at;
+  if (t.ended_at != null) item.endedAt = t.ended_at;
+}
+
 export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[] {
   if (turns.length === 0) return items;
 
@@ -81,15 +87,18 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
   for (let k = 1; k <= n; k++) {
     const t = matched[matched.length - k];
     const item = result[userIdxs[userIdxs.length - k]];
-    if (item.kind === "user_message" && t.attachments.length > 0) {
-      item.attachments = t.attachments;
-      // Render the clean text the user actually typed (what the live render
-      // showed) rather than the transcript's copy, which the runner padded
-      // with `Attached file: <path>` reference lines. The stored turn text is
-      // verbatim what was sent, so it matches the optimistic render exactly.
-      // Prefix-guard so a mis-aligned match can't rewrite an unrelated message.
-      if (item.text.startsWith(t.text)) {
-        item.text = t.text;
+    if (item.kind === "user_message") {
+      applyTurnTiming(item, t);
+      if (t.attachments.length > 0) {
+        item.attachments = t.attachments;
+        // Render the clean text the user actually typed (what the live render
+        // showed) rather than the transcript's copy, which the runner padded
+        // with `Attached file: <path>` reference lines. The stored turn text is
+        // verbatim what was sent, so it matches the optimistic render exactly.
+        // Prefix-guard so a mis-aligned match can't rewrite an unrelated message.
+        if (item.text.startsWith(t.text)) {
+          item.text = t.text;
+        }
       }
     }
   }
@@ -97,6 +106,7 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
   for (const t of pending) {
     const item: ChatItem = { kind: "user_message", text: t.text };
     if (t.attachments.length > 0) item.attachments = t.attachments;
+    applyTurnTiming(item, t);
     result.push(item);
   }
 

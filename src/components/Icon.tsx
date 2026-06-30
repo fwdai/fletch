@@ -12,6 +12,7 @@ import {
   ChevronRight,
   ChevronsDownUp,
   ChevronUp,
+  Clock,
   Code,
   Combine,
   Copy,
@@ -146,6 +147,7 @@ const ICON_COMPONENTS = {
   moon: Moon,
   sun: Sun,
   zap: Zap,
+  clock: Clock,
 } satisfies Record<string, ComponentType<IconComponentProps>>;
 
 // Originally rendered with fill="currentColor". Setting fill on the root SVG

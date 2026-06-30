@@ -66,6 +66,10 @@ export interface WorkspaceSlice {
    *  that turn. Drives the send-button disabled state and the
    *  "thinking…" indicator. */
   managedBusy: Record<string, boolean>;
+  /** Client wall-clock millis when the current turn entered `running` — the
+   *  live-timer anchor. Captured here (not from send time) so it lines up with
+   *  the backend's post-spawn `started_at`; re-stamped each turn. */
+  turnStartedAt: Record<string, number>;
   /** Optional label shown alongside the busy indicator, e.g. "Compacting"
    *  for `/compact`. Cleared when the turn ends. */
   managedBusyLabel: Record<string, string | undefined>;

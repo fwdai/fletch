@@ -543,6 +543,10 @@ export interface UserTurn {
   text: string;
   attachments: string[];
   native_id: string | null;
+  /** Epoch millis when the turn started running; null if it never started. */
+  started_at: number | null;
+  /** Epoch millis when the turn finished; null while in flight. */
+  ended_at: number | null;
 }
 
 export interface SessionRecordsAppendedEvent {

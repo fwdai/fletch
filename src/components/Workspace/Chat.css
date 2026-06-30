@@ -16,11 +16,16 @@
   align-items: center;
   gap: 8px;
   min-height: 26px;
-  padding: 6px 6px 10px;
+  padding: 8px 6px 12px;
   margin-bottom: -4px;
   font-size: 12px;
   line-height: 1.2;
   color: var(--fg-2);
+  /* Glassy surface: translucent fill + blur so chat text scrolling under the
+     strip is veiled rather than sharply visible. */
+  background: color-mix(in oklch, var(--bg-1), transparent 25%);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   transform: translateY(10px);
   opacity: 0;
   pointer-events: none;
@@ -55,6 +60,72 @@
 }
 .chat-status .dots i:nth-child(3) {
   animation-delay: 0.3s;
+}
+/* Live timer riding the working strip — the one moving numeric value. */
+.chat-status-sep {
+  flex-shrink: 0;
+  opacity: 0.4;
+}
+.chat-status .turn-clock-i {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.chat-status .turn-clock {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+/* Turn footer — a quiet "Ran …" record plus copy, and the seam between turns.
+   Pulled up close to the message it closes; the copy button rides the right. */
+.turn-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 22px;
+  margin: -6px 0 16px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in oklch, var(--bd-soft) 55%, transparent);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  /* Match the composer's "Default model" label. */
+  color: var(--fg-2);
+}
+/* Direct child only — the clock glyph. Must not reach the copy button's
+   nested icon (sized below) or fade it via this opacity. */
+.turn-meta > svg {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+  opacity: 0.65;
+}
+/* Always visible — unlike the hover-only user-message copy, the turn footer
+   keeps its copy affordance on so the agent's reply is one click away. Same
+   tone as the "Run …" text (the composer's "Default model" label); the .btn-i
+   hover state brightens it. */
+.turn-meta .turn-copy {
+  margin-left: auto;
+  color: var(--fg-2);
+}
+
+/* The fixed 22px .btn-i.xs box clamps the copy glyph, so size the button to its
+   content (plus a small hit-area pad) and let the 12px glyph through, on both
+   the user and turn-footer copies. */
+.m-actions .btn-i.xs,
+.turn-meta .btn-i.xs {
+  width: auto;
+  height: auto;
+  padding: 3px;
+}
+.m-actions .btn-i.xs svg,
+.turn-meta .btn-i.xs svg {
+  width: 12px;
+  height: 12px;
 }
 
 /* Inline turn-pending anchor — dots only; label is in .chat-status below. */
@@ -213,7 +284,8 @@
 }
 .chat-inner {
   max-width: 860px;
-  margin: 0 auto;
+  /* Bottom gap so the last message clears the working strip's glass overlay. */
+  margin: 0 auto 24px;
   width: 100%;
   padding: 0 20px;
   display: flex;

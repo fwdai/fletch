@@ -4,7 +4,16 @@ import type { UserTurn } from "./api";
 import { applyUserTurns } from "./helpers";
 
 function turn(over: Partial<UserTurn>): UserTurn {
-  return { turn_id: "t", seq: 0, text: "", attachments: [], native_id: null, ...over };
+  return {
+    turn_id: "t",
+    seq: 0,
+    text: "",
+    attachments: [],
+    native_id: null,
+    started_at: null,
+    ended_at: null,
+    ...over,
+  };
 }
 
 const userMsg = (text: string): ChatItem => ({ kind: "user_message", text });
@@ -88,5 +97,22 @@ describe("applyUserTurns", () => {
   it("is a no-op when there are no user turns", () => {
     const items = [userMsg("hi"), agentMsg("yo")];
     expect(applyUserTurns(items, [])).toEqual(items);
+  });
+
+  it("overlays run timing onto a completed turn's user message", () => {
+    const items = [userMsg("go"), agentMsg("done")];
+    const turns = [turn({ native_id: "rec-A", text: "go", started_at: 1000, ended_at: 39000 })];
+
+    const out = applyUserTurns(items, turns);
+    expect(out[0]).toMatchObject({ startedAt: 1000, endedAt: 39000 });
+  });
+
+  it("overlays only startedAt on an in-flight (pending) turn", () => {
+    const items: ChatItem[] = [];
+    const turns = [turn({ native_id: null, text: "running now", started_at: 5000, ended_at: null })];
+
+    const out = applyUserTurns(items, turns);
+    expect(out[0]).toMatchObject({ kind: "user_message", startedAt: 5000 });
+    expect((out[0] as { endedAt?: number }).endedAt).toBeUndefined();
   });
 });

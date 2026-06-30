@@ -45,7 +45,7 @@ export function CopyButton({
       onClick={onCopy}
       aria-label="Copy message"
     >
-      <Icon name={copied ? "check" : "copy"} />
+      <Icon name={copied ? "check" : "copy"} size={12} />
     </IconButton>
   );
 }
