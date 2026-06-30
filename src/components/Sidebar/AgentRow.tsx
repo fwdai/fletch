@@ -10,6 +10,7 @@ import { useMinuteClock } from "../../util/hooks";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
 import { Mono } from "../SettingsScreen/CustomAgents/Mono";
+import { Badge } from "../ui/Badge";
 import { type AgentStats, AgentStatsPopover } from "./AgentStatsPopover";
 
 /** The agent rows carry nested buttons (stop/archive/discard), so they can't be
@@ -156,7 +157,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
                 aria-label="New results to review"
               />
             )}
-            {agent.status === "error" && <span className="ag-badge iflex-center err">error</span>}
+            {agent.status === "error" && <Badge variant="err">error</Badge>}
           </span>
           <span className="ag-actions">
             {stoppable && (
@@ -229,7 +230,7 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
         </span>
         <span className="ag-slot iflex-center">
           <span className="ag-meta">
-            <span className="ag-badge iflex-center new">new</span>
+            <Badge variant="new">new</Badge>
           </span>
           <span className="ag-actions">
             <button
@@ -257,20 +258,17 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
 function PrBadge({ pr }: { pr: PrState }) {
   if (pr.state === "merged") {
     return (
-      <span className="ag-badge iflex-center pr-merged tip" data-tip={`PR #${pr.number} · merged`}>
+      <Badge variant="pr-merged" tip={`PR #${pr.number} · merged`}>
         <Icon name="merge" size={10} />#{pr.number}
-      </span>
+      </Badge>
     );
   }
-  const cls = pr.state === "closed" ? "pr-closed" : "pr-open";
+  const variant = pr.state === "closed" ? "pr-closed" : "pr-open";
   return (
-    <span
-      className={`ag-badge iflex-center ${cls} tip`}
-      data-tip={`PR #${pr.number} · ${pr.state}`}
-    >
+    <Badge variant={variant} tip={`PR #${pr.number} · ${pr.state}`}>
       <Icon name="pr" size={10} />
       PR
-    </span>
+    </Badge>
   );
 }
 

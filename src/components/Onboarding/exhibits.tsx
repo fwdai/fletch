@@ -8,6 +8,7 @@ import type { ProviderId } from "../../data/providers";
 import { PROVIDERS, providerChip } from "../../data/providers";
 import { Icon, LandmarkGlyph } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
+import { Badge } from "../ui/Badge";
 
 // ── tiny faux window chrome for an exhibit ──────────────────────────
 function ExBar({ title }: { title: string }) {
@@ -98,7 +99,7 @@ function ExhibitAgentRow({ a }: { a: ParallelAgent }) {
             {!working && a.unseen && (
               <span className="ag-unseen" aria-label="New results to review" />
             )}
-            {a.status === "error" && <span className="ag-badge iflex-center err">error</span>}
+            {a.status === "error" && <Badge variant="err">error</Badge>}
           </span>
           <span className="ag-actions">
             <span className="ag-act iflex-center">
