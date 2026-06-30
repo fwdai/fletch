@@ -32,11 +32,6 @@
   transform: translateY(0);
   opacity: 1;
 }
-@media (prefers-reduced-motion: reduce) {
-  .chat-status {
-    transition: none;
-  }
-}
 .chat-status-label {
   min-width: 0;
   overflow: hidden;
@@ -109,6 +104,20 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-status {
+    transition: none;
+  }
+  .chat-status .dots i {
+    animation: none;
+  }
+  .chat-pending {
+    animation: none;
+  }
+  .chat-pending .dots i {
+    animation: none;
   }
 }
 

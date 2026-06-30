@@ -9,10 +9,15 @@ function useSlideReveal(visible: boolean) {
   useEffect(() => {
     if (visible) {
       setMounted(true);
-      const id = requestAnimationFrame(() => {
-        requestAnimationFrame(() => setOpen(true));
+      let id1 = 0;
+      let id2 = 0;
+      id1 = requestAnimationFrame(() => {
+        id2 = requestAnimationFrame(() => setOpen(true));
       });
-      return () => cancelAnimationFrame(id);
+      return () => {
+        cancelAnimationFrame(id1);
+        cancelAnimationFrame(id2);
+      };
     }
     setOpen(false);
     const t = window.setTimeout(() => setMounted(false), DURATION_MS);
