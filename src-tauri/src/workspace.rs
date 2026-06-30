@@ -918,16 +918,17 @@ impl WorkspaceManager {
         Ok(n > 0)
     }
 
-    /// Stamp a turn's run start when it flips to Running. Guarded on
-    /// `started_at IS NULL` so a delivery retry (same `turn_id`) never resets
-    /// the clock. No-op when the row doesn't exist (native PTY turns carry no
-    /// timing row).
-    pub fn mark_user_turn_started(&self, turn_id: &str) -> Result<()> {
+    /// Stamp a turn's run start when it flips to Running, with the caller's
+    /// timestamp so the same value reaches the live timer (via the `turn:started`
+    /// event) and the persisted duration. Guarded on `started_at IS NULL` so a
+    /// delivery retry (same `turn_id`) never resets the clock. No-op when the row
+    /// doesn't exist (native PTY turns carry no timing row).
+    pub fn mark_user_turn_started(&self, turn_id: &str, started_at: i64) -> Result<()> {
         let conn = self.db.lock();
         conn.execute(
             "UPDATE session_user_turns SET started_at = ?1
              WHERE turn_id = ?2 AND started_at IS NULL",
-            rusqlite::params![now_millis(), turn_id],
+            rusqlite::params![started_at, turn_id],
         )?;
         Ok(())
     }
@@ -2242,9 +2243,9 @@ mod tests {
         wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
 
         // Start stamps started_at; end stamps ended_at on the open turn.
-        wm.mark_user_turn_started("turn-1").unwrap();
+        wm.mark_user_turn_started("turn-1", 1000).unwrap();
         let started = wm.read_user_turns(&ws_id).unwrap()[0].started_at;
-        assert!(started.is_some());
+        assert_eq!(started, Some(1000));
         assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].ended_at, None);
 
         wm.mark_user_turn_ended(&ws_id).unwrap();
@@ -2259,10 +2260,10 @@ mod tests {
         let (ws_id, wm) = make_workspace_with_session(&db);
         wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
 
-        wm.mark_user_turn_started("turn-1").unwrap();
+        wm.mark_user_turn_started("turn-1", 1000).unwrap();
         let first = wm.read_user_turns(&ws_id).unwrap()[0].started_at;
         // A delivery retry re-stamps — but the guard keeps the original clock.
-        wm.mark_user_turn_started("turn-1").unwrap();
+        wm.mark_user_turn_started("turn-1", 2000).unwrap();
         assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].started_at, first);
     }
 

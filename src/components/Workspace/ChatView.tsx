@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyPolicy, getAdapter } from "../../adapters";
 import { type AgentRecord, api } from "../../api";
 import { providerLabel } from "../../data/providers";
@@ -13,6 +13,7 @@ import { MessageItem } from "./messages/MessageItem";
 import { pairToolItems, rowKey } from "./messages/pair";
 import { isTurnPending } from "./messages/turnPending";
 import { isUserInputTool } from "./messages/UserInput/parse";
+import { TurnFooter } from "./RunTimer";
 
 /** Custom-view body: scrolling chat log + composer at the bottom.
  *  The composer here dispatches the user's message via the store; it
@@ -23,6 +24,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const transcriptLoaded = useAppStore((s) => s.transcriptLoaded[agent.id] ?? false);
   const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
   const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
+  const turnStartedAt = useAppStore((s) => s.turnStartedAt[agent.id]);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   const send = useAppStore((s) => s.sendUserMessage);
   const stop = useAppStore((s) => s.stop);
@@ -152,6 +154,40 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     return { turns, turnIds };
   }, [items]);
 
+  // Footer closing each *ended* turn (border + "Ran …" + copy), placed at the
+  // turn's last item — the seam before the next turn. Gated on the same
+  // turn-end signal as the duration, so it only appears once the turn finishes;
+  // the open turn (started, not ended) carries no footer, just its live timer
+  // on the working strip.
+  const { turnFooters, openTurnStartedAt } = useMemo(() => {
+    const footers: ({ runSec: number; copyText: string } | null)[] = items.map(() => null);
+    let openStart: number | undefined;
+    const starts: number[] = [];
+    items.forEach((it, i) => {
+      if (it.kind === "user_message" && !it.text.startsWith(APP_ACTION_PREFIX)) starts.push(i);
+    });
+    starts.forEach((startIdx, k) => {
+      const start = items[startIdx];
+      if (start.kind !== "user_message" || start.startedAt == null) return;
+      const endExclusive = k + 1 < starts.length ? starts[k + 1] : items.length;
+      if (start.endedAt == null) {
+        openStart = start.startedAt; // turn still running
+        return;
+      }
+      // The agent's settled prose for this turn — what "copy" yields.
+      const texts: string[] = [];
+      for (let j = startIdx; j < endExclusive; j += 1) {
+        const it = items[j];
+        if (it.kind === "agent_message" && !it.streaming && it.text) texts.push(it.text);
+      }
+      footers[endExclusive - 1] = {
+        runSec: (start.endedAt - start.startedAt) / 1000,
+        copyText: texts.join("\n\n"),
+      };
+    });
+    return { turnFooters: footers, openTurnStartedAt: openStart };
+  }, [items]);
+
   // The model the agent actually used on its most recent turn (Claude, pi,
   // Codex, OpenCode report it in their transcripts). Undefined for Cursor /
   // Antigravity, or before the first turn — the composer then shows just the
@@ -173,9 +209,34 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     );
   }, [items]);
 
+  // The backend emits a transient `idle` between process spawn and the first
+  // turn's `running` (every process rests at Idle at spawn). Raw `busy` thus
+  // dips false→true mid-startup, which would flash the working strip and
+  // restart the timer. Hold "working" through brief dips: rise immediately,
+  // fall only after a short grace period.
+  const liveBusyRaw = busy && !awaitingInput;
+  const [liveBusy, setLiveBusy] = useState(liveBusyRaw);
+  useEffect(() => {
+    if (liveBusyRaw) {
+      setLiveBusy(true);
+      return;
+    }
+    const t = window.setTimeout(() => setLiveBusy(false), 700);
+    return () => window.clearTimeout(t);
+  }, [liveBusyRaw]);
+
   // Phase A: user just sent a turn-starting prompt and nothing has landed yet.
   // A quiet inline anchor (dots only — label lives in the bottom status strip).
-  const turnPending = busy && !awaitingInput && isTurnPending(items);
+  // Only on the first turn: for later turns the chat already has content above
+  // and the bottom status strip carries the "is working" signal, so the inline
+  // anchor is redundant.
+  const turnPending = liveBusy && isTurnPending(items) && turns.length <= 1;
+
+  // Live-timer anchor: the backend's turn-start timestamp (from `turn:started`,
+  // the same value the footer's duration uses, so they never drift). On reload
+  // mid-turn no event fired this session, so fall back to the open turn's
+  // persisted start. Absent during spawn → strip shows, timer waits.
+  const liveStartedAt = liveBusy ? (turnStartedAt ?? openTurnStartedAt) : undefined;
 
   // Mid-turn follow-ups are allowed: a busy (running) agent still accepts a
   // message — delivered live (claude) or queued for the next turn boundary
@@ -218,13 +279,15 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               </div>
             ) : (
               items.map((item, i) => (
-                <MessageItem
-                  key={rowKey(item, i)}
-                  item={item}
-                  provider={agent.provider}
-                  agentId={agent.id}
-                  turnId={turnIds[i]}
-                />
+                <Fragment key={rowKey(item, i)}>
+                  <MessageItem
+                    item={item}
+                    provider={agent.provider}
+                    agentId={agent.id}
+                    turnId={turnIds[i]}
+                  />
+                  {turnFooters[i] != null && <TurnFooter {...turnFooters[i]!} />}
+                </Fragment>
               ))
             )}
             {turnPending && (
@@ -244,10 +307,11 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         <div className="composer-stack">
           <div className="composer-anchor">
             <ChatWorkingStatus
-              visible={busy && !awaitingInput}
+              visible={liveBusy}
               label={
                 busyLabel ?? `${customAgent?.name ?? providerLabel(agent.provider)} is working`
               }
+              startedAt={liveStartedAt}
             />
             <Composer
               existingSession

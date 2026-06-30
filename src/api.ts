@@ -543,6 +543,10 @@ export interface UserTurn {
   text: string;
   attachments: string[];
   native_id: string | null;
+  /** Epoch millis when the turn started running; null if it never started. */
+  started_at: number | null;
+  /** Epoch millis when the turn finished; null while in flight. */
+  ended_at: number | null;
 }
 
 export interface SessionRecordsAppendedEvent {
@@ -557,6 +561,18 @@ export function onSessionRecordsAppended(
   return listen<SessionRecordsAppendedEvent>("session:records-appended", (event) =>
     cb(event.payload),
   );
+}
+
+export interface TurnStartedEvent {
+  agent_id: string;
+  /** Backend epoch millis the turn began — the live-timer anchor. */
+  started_at: number;
+}
+
+/** Fires when a turn flips to Running, carrying the backend's own start
+ *  timestamp so the live timer shares the persisted duration's clock. */
+export function onTurnStarted(cb: (e: TurnStartedEvent) => void): Promise<UnlistenFn> {
+  return listen<TurnStartedEvent>("turn:started", (event) => cb(event.payload));
 }
 
 export function onAgentStatus(cb: (e: AgentStatusEvent) => void): Promise<UnlistenFn> {

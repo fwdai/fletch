@@ -31,6 +31,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   transcriptLoading: {},
   transcriptLoaded: {},
   managedBusy: {},
+  turnStartedAt: {},
   managedBusyLabel: {},
   switchInFlight: {},
   unseenResults: {},

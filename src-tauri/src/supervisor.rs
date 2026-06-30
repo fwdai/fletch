@@ -42,6 +42,16 @@ pub struct SessionRecordsAppendedPayload {
     pub agent_id: String,
 }
 
+/// Emitted when a turn flips to Running, carrying the backend's own start
+/// timestamp (the same value persisted as the turn's `started_at`). The live
+/// timer anchors to this rather than the event's client-receipt time, so it
+/// shares the footer's clock and the two never disagree by the delivery latency.
+#[derive(Clone, serde::Serialize)]
+pub struct TurnStartedPayload {
+    pub agent_id: String,
+    pub started_at: i64,
+}
+
 #[derive(Clone, serde::Serialize)]
 pub struct AgentStatusPayload {
     pub agent_id: String,
@@ -2439,13 +2449,24 @@ fn mark_user_turn_started(
     if let Some(activity) = sup.activities.lock().get_mut(agent_id) {
         activity.reset_for_new_turn();
     }
-    // Stamp the turn's run start. Native PTY turns have no quorum-origin row
-    // (no turn_id), so they carry no timing.
+    // Stamp the turn's run start with a single timestamp shared by the persisted
+    // row and the `turn:started` event, so the live timer and the footer measure
+    // from the identical instant. Native PTY turns have no quorum-origin row (no
+    // turn_id), so they carry no persisted timing — but still emit the event so
+    // their live timer has an anchor.
+    let started_at = chrono::Utc::now().timestamp_millis();
     if let Some(turn_id) = turn_id {
-        if let Err(e) = sup.workspace.mark_user_turn_started(turn_id) {
+        if let Err(e) = sup.workspace.mark_user_turn_started(turn_id, started_at) {
             tracing::warn!(error = %e, agent_id, "stamp user turn start failed");
         }
     }
+    let _ = app.emit(
+        "turn:started",
+        TurnStartedPayload {
+            agent_id: agent_id.to_string(),
+            started_at,
+        },
+    );
     transition_active(sup, app, agent_id, AgentStatus::Running);
 }
 

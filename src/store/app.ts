@@ -14,6 +14,7 @@ import {
   onPrStateChanged,
   onSessionRecordsAppended,
   onShellOutput,
+  onTurnStarted,
   onWorkspaceChanged,
 } from "../api";
 import { isCommitAction } from "../components/RightPanel/primaryActions";
@@ -278,32 +279,51 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
         last_error: e.last_error ?? a.last_error,
       })),
     };
+    set((state) => {
+      // Clear the live-timer anchor at turn end so the next turn's send→running
+      // gap can't show a stale one. The anchor itself is set from the
+      // `turn:started` event (the backend's own timestamp), not here.
+      const turnStartedAt = { ...state.turnStartedAt };
+      if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
+        delete turnStartedAt[e.agent_id];
+      }
+      return {
+        workspace: next,
+        managedLogs:
+          e.status === "stopped" && (state.managedBusy[e.agent_id] ?? false)
+            ? {
+                ...state.managedLogs,
+                [e.agent_id]: [
+                  ...(state.managedLogs[e.agent_id] ?? []),
+                  {
+                    kind: "notice",
+                    subtype: "info",
+                    text: "Agent was interrupted.",
+                  },
+                ],
+              }
+            : state.managedLogs,
+        // `running` is the backend's authoritative "a turn is in flight"
+        // signal — re-assert busy here so a stale `idle` (e.g. the one
+        // start_process emits just before the first turn lands) can't
+        // leave the spinner off. `idle`/`error`/`stopped` clear it.
+        managedBusy:
+          e.status === "running"
+            ? { ...state.managedBusy, [e.agent_id]: true }
+            : e.status === "error" || e.status === "stopped" || e.status === "idle"
+              ? { ...state.managedBusy, [e.agent_id]: false }
+              : state.managedBusy,
+        turnStartedAt,
+      };
+    });
+  });
+
+  // The turn's start timestamp from the backend — the live-timer anchor, shared
+  // with the persisted duration so the strip and footer measure from the same
+  // instant (no off-by-the-delivery-latency drift).
+  await onTurnStarted((e) => {
     set((state) => ({
-      workspace: next,
-      managedLogs:
-        e.status === "stopped" && (state.managedBusy[e.agent_id] ?? false)
-          ? {
-              ...state.managedLogs,
-              [e.agent_id]: [
-                ...(state.managedLogs[e.agent_id] ?? []),
-                {
-                  kind: "notice",
-                  subtype: "info",
-                  text: "Agent was interrupted.",
-                },
-              ],
-            }
-          : state.managedLogs,
-      // `running` is the backend's authoritative "a turn is in flight"
-      // signal — re-assert busy here so a stale `idle` (e.g. the one
-      // start_process emits just before the first turn lands) can't
-      // leave the spinner off. `idle`/`error`/`stopped` clear it.
-      managedBusy:
-        e.status === "running"
-          ? { ...state.managedBusy, [e.agent_id]: true }
-          : e.status === "error" || e.status === "stopped" || e.status === "idle"
-            ? { ...state.managedBusy, [e.agent_id]: false }
-            : state.managedBusy,
+      turnStartedAt: { ...state.turnStartedAt, [e.agent_id]: e.started_at },
     }));
   });
 

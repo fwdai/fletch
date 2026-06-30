@@ -6,7 +6,16 @@
 // for the design rationale.
 
 export type ChatItem =
-  | { kind: "user_message"; text: string; attachments?: string[] }
+  | {
+      kind: "user_message";
+      text: string;
+      attachments?: string[];
+      /** Run timing for the turn this message starts, overlaid from the
+       *  matching `UserTurn` row (epoch millis). `endedAt` null = still in
+       *  flight (the live turn); both absent for turns with no timing row. */
+      startedAt?: number;
+      endedAt?: number;
+    }
   // A follow-up the user sent mid-turn that hasn't landed in the transcript
   // yet: delivered live into the running turn (claude) or queued for the next
   // turn boundary (per-turn agents). Store-inserted only — never produced by an

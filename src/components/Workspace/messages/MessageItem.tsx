@@ -51,18 +51,15 @@ export function MessageItem({
       // lands canonically.
       return <UserBubble text={item.text} attachments={item.attachments} queued />;
     case "agent_message":
+      // Copy isn't offered here: it lives in the turn footer (see TurnFooter),
+      // right-aligned on the seam, so the message itself reserves no extra
+      // vertical space for a hover-only affordance.
       return (
         <div className="m-msg-wrap">
           <div className="m-agent text-base">
             <Markdown>{item.text}</Markdown>
             {item.streaming && <span className="term-cursor" style={{ marginLeft: 4 }} />}
           </div>
-          {/* Copy is offered once the response has settled, not mid-stream. */}
-          {!item.streaming && (
-            <div className="m-actions">
-              <CopyButton text={item.text} />
-            </div>
-          )}
         </div>
       );
     case "tool_pair": {
