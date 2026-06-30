@@ -317,6 +317,15 @@ impl Supervisor {
             }
             _ => {}
         }
+        // Close the in-flight turn's timer on any terminal state. Idle covers
+        // the in-band turn-end and clean process exit; Error covers a crash.
+        // No-op when no turn is open (resting Idle at spawn, native turns), so
+        // it's safe to run unconditionally on these transitions.
+        if matches!(status, AgentStatus::Idle | AgentStatus::Error) {
+            if let Err(e) = self.workspace.mark_user_turn_ended(agent_id) {
+                tracing::warn!(error = %e, agent_id, "stamp user turn end failed");
+            }
+        }
         emit_status(app, agent_id, status, last_error);
     }
 
@@ -1047,7 +1056,7 @@ impl Supervisor {
             agent.write_pty(bytes)?;
         }
         for submitted in observe_native_input(&self, agent_id, bytes) {
-            mark_user_turn_started(&self, app, agent_id);
+            mark_user_turn_started(&self, app, agent_id, None);
             on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), submitted);
         }
         Ok(())
@@ -2418,12 +2427,24 @@ fn on_first_user_message(
     }
 }
 
-fn mark_user_turn_started(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
+fn mark_user_turn_started(
+    sup: &Supervisor,
+    app: &AppHandle,
+    agent_id: &str,
+    turn_id: Option<&str>,
+) {
     // A new turn is starting, so any prior stop is moot: clear the interrupt
     // flag so this turn's natural completion flushes queued follow-ups.
     sup.interrupted.lock().remove(agent_id);
     if let Some(activity) = sup.activities.lock().get_mut(agent_id) {
         activity.reset_for_new_turn();
+    }
+    // Stamp the turn's run start. Native PTY turns have no quorum-origin row
+    // (no turn_id), so they carry no timing.
+    if let Some(turn_id) = turn_id {
+        if let Err(e) = sup.workspace.mark_user_turn_started(turn_id) {
+            tracing::warn!(error = %e, agent_id, "stamp user turn start failed");
+        }
     }
     transition_active(sup, app, agent_id, AgentStatus::Running);
 }
@@ -2444,7 +2465,7 @@ fn deliver_as_turn(
         &msg.attachments,
         msg.thinking.as_deref(),
     )?;
-    mark_user_turn_started(sup, app, agent_id);
+    mark_user_turn_started(sup, app, agent_id, Some(&msg.turn_id));
     on_first_user_message(sup.clone(), app.clone(), agent_id.to_string(), msg.text.clone());
     Ok(())
 }
