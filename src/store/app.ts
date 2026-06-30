@@ -14,6 +14,7 @@ import {
   onPrStateChanged,
   onSessionRecordsAppended,
   onShellOutput,
+  onTurnStarted,
   onWorkspaceChanged,
 } from "../api";
 import { isCommitAction } from "../components/RightPanel/primaryActions";
@@ -279,14 +280,11 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
       })),
     };
     set((state) => {
-      // Anchor the live timer to the turn's actual start — `running` is emitted
-      // alongside the backend's `started_at`, so the live count matches the
-      // persisted "Ran …" rather than counting spawn time from the send. Clear
-      // at turn end so the next turn's send→running gap can't show a stale one.
+      // Clear the live-timer anchor at turn end so the next turn's send→running
+      // gap can't show a stale one. The anchor itself is set from the
+      // `turn:started` event (the backend's own timestamp), not here.
       const turnStartedAt = { ...state.turnStartedAt };
-      if (e.status === "running") {
-        turnStartedAt[e.agent_id] = Date.now();
-      } else if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
+      if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
         delete turnStartedAt[e.agent_id];
       }
       return {
@@ -318,6 +316,15 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
         turnStartedAt,
       };
     });
+  });
+
+  // The turn's start timestamp from the backend — the live-timer anchor, shared
+  // with the persisted duration so the strip and footer measure from the same
+  // instant (no off-by-the-delivery-latency drift).
+  await onTurnStarted((e) => {
+    set((state) => ({
+      turnStartedAt: { ...state.turnStartedAt, [e.agent_id]: e.started_at },
+    }));
   });
 
   // Archive / restore reshape `repos` and `archive` on the record,
