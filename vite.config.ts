@@ -22,6 +22,11 @@ function copyFileIcons(): Plugin {
 
 export default defineConfig(async () => ({
   plugins: [react(), copyFileIcons()],
+  resolve: {
+    alias: {
+      "@": path.resolve(process.cwd(), "src"),
+    },
+  },
   clearScreen: false,
   server: {
     port: 1420,
