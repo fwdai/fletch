@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { Icon } from "../Icon";
+import { DropdownItem, DropdownMenu, DropdownSection } from "../ui/Dropdown";
 import { Scrim } from "../ui/Scrim";
 
 const ITEM_HEIGHT = 34; // approximate px per dd-item row
@@ -66,13 +67,10 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
       {open && (
         <>
           <Scrim onClose={() => setOpen(false)} />
-          <div
-            className="dd"
+          <DropdownMenu
             style={{ bottom: "calc(100% + 6px)", left: 0, padding: 0, overflow: "hidden" }}
           >
-            <div className="dd-sect" style={{ padding: "7px 9px 4px" }}>
-              Local branches
-            </div>
+            <DropdownSection>Local branches</DropdownSection>
 
             {canScrollUp && (
               <button
@@ -90,14 +88,14 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
               onScroll={updateScrollState}
             >
               {branches.length === 0 ? (
-                <div className="dd-item flex-center is-disabled" style={{ padding: "7px 9px" }}>
+                <DropdownItem disabled style={{ padding: "7px 9px" }}>
                   Loading…
-                </div>
+                </DropdownItem>
               ) : (
                 branches.map((b) => (
-                  <div
+                  <DropdownItem
                     key={b}
-                    className={`dd-item flex-center ${b === value ? "active" : ""}`}
+                    active={b === value}
                     style={{ padding: "7px 9px" }}
                     onClick={() => {
                       onChange(b);
@@ -108,7 +106,7 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
                     <span className="di-l" style={{ fontFamily: "var(--font-mono)" }}>
                       {b}
                     </span>
-                  </div>
+                  </DropdownItem>
                 ))
               )}
             </div>
@@ -122,7 +120,7 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
                 <Icon name="chevD" size={11} />
               </button>
             )}
-          </div>
+          </DropdownMenu>
         </>
       )}
     </span>

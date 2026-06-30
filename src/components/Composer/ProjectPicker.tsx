@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { basename } from "../../util/format";
 import { Icon } from "../Icon";
+import { DropdownItem, DropdownMenu, DropdownSection } from "../ui/Dropdown";
 import { Scrim } from "../ui/Scrim";
 
 interface Props {
@@ -28,18 +29,15 @@ export function ProjectPicker({ value, repos, onChange }: Props) {
       {open && (
         <>
           <Scrim onClose={() => setOpen(false)} />
-          <div
-            className="dd"
+          <DropdownMenu
             style={{ bottom: "calc(100% + 6px)", left: 0, padding: 0, overflow: "hidden" }}
           >
-            <div className="dd-sect" style={{ padding: "7px 9px 4px" }}>
-              Projects
-            </div>
+            <DropdownSection>Projects</DropdownSection>
             <div style={{ maxHeight: 272, overflowY: "auto" }}>
               {repos.map((r) => (
-                <div
+                <DropdownItem
                   key={r}
-                  className={`dd-item flex-center ${r === value ? "active" : ""}`}
+                  active={r === value}
                   style={{ padding: "7px 9px" }}
                   title={r}
                   onClick={() => {
@@ -49,10 +47,10 @@ export function ProjectPicker({ value, repos, onChange }: Props) {
                 >
                   <Icon name="folder" size={14} />
                   <span className="di-l">{basename(r)}</span>
-                </div>
+                </DropdownItem>
               ))}
             </div>
-          </div>
+          </DropdownMenu>
         </>
       )}
     </span>

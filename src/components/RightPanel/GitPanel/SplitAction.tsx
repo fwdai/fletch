@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Icon, type IconName } from "../../Icon";
+import { DropdownItem, DropdownMenu } from "../../ui/Dropdown";
 import type { ActionTone } from "../primaryActions";
 import { Spinner } from "./shared";
 
@@ -67,11 +68,11 @@ export function SplitAction({
             style={{ position: "fixed", inset: 0, zIndex: 199 }}
             onClick={() => setOpen(false)}
           />
-          <div className="dd gsa-menu">
+          <DropdownMenu className="gsa-menu">
             {items.map((a) => (
-              <div
+              <DropdownItem
                 key={a.key}
-                className={`dd-item flex-center ${a.key === selectedKey ? "active" : ""}`}
+                active={a.key === selectedKey}
                 onClick={() => {
                   onSelect(a.key);
                   setOpen(false);
@@ -82,9 +83,9 @@ export function SplitAction({
                 </div>
                 <span className="di-l">{a.label}</span>
                 {a.kbd && <span className="di-m">{a.kbd}</span>}
-              </div>
+              </DropdownItem>
             ))}
-          </div>
+          </DropdownMenu>
         </>
       )}
     </div>
