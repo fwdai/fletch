@@ -11,6 +11,7 @@ and is the path of least resistance for new UI.
 | `IconButton` | Square icon-only button (title bar, sidebar, panels). Built-in CSS tooltip via `tip`. | `.btn-i` |
 | `Chip` | Composer footer chip with a text label (model picker, base branch, attach). | `.c-chip` |
 | `Select` | Custom `<select>` replacement (keyboard-operable dropdown of string options). | `.ui-select-*` |
+| `DropdownMenu` / `DropdownItem` / `DropdownSection` / `DropdownSeparator` | Presentational menu shell + rows. Owns structure + state classes (`active`/`disabled`/`danger`); **caller owns behavior** (open/close, positioning via `style`, dismissal, keyboard). | `.dd` / `.dd-item` |
 | `CopyButton` | Copy-to-clipboard affordance with copied-state feedback. | — |
 | `Scrim` | Full-screen dim/click-catcher behind popovers and overlays. | — |
 
@@ -23,5 +24,7 @@ Tooltips are CSS-only: pass `tip="…"` (and `tipDown` where supported) — it s
 - Import directly (`import { Badge } from "../ui/Badge"`) or via the barrel
   (`import { Badge } from "../ui"`).
 
-## Planned
-- `Dropdown` — shared menu shell + items (`.dd` / `.dd-item`).
+Some menus stay bespoke on purpose — `Select` (own keyboard/focus), `ModelPicker`
+(own `model-dd-*` classes + side panel), and the `@`/`#`/`/` autocomplete
+(parent-controlled highlight + per-item scroll). The `Dropdown*` primitives
+cover the simpler click-to-pick menus.

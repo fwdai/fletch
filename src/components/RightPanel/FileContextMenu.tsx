@@ -8,6 +8,7 @@
 // runs it. Used to guard destructive actions like deleting a folder.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "../Icon";
+import { DropdownItem, DropdownMenu, DropdownSeparator } from "../ui/Dropdown";
 
 export interface ContextMenuItem {
   icon: IconName;
@@ -79,23 +80,24 @@ export function FileContextMenu({ x, y, entries, onClose }: Props) {
   }, [onClose]);
 
   return (
-    <div
+    <DropdownMenu
       ref={ref}
-      className="dd fp-ctx"
+      className="fp-ctx"
       style={{ position: "fixed", left: pos.x, top: pos.y }}
       role="menu"
       onScroll={onClose}
     >
       {entries.map((entry, i) => {
-        if (entry === "sep") return <div key={i} className="dd-sep" />;
+        if (entry === "sep") return <DropdownSeparator key={i} />;
         const isArmed = armed === i;
         const isDone = done === i;
         return (
-          <button
+          <DropdownItem
             key={i}
-            type="button"
+            as="button"
             role="menuitem"
-            className={`dd-item flex-center fp-ctx-item ${entry.danger || isArmed ? "danger" : ""}`}
+            className="fp-ctx-item"
+            danger={entry.danger || isArmed}
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               if (entry.confirmLabel && !isArmed) {
@@ -117,9 +119,9 @@ export function FileContextMenu({ x, y, entries, onClose }: Props) {
             <span className="di-l">
               {isArmed ? entry.confirmLabel : isDone ? entry.feedbackLabel : entry.label}
             </span>
-          </button>
+          </DropdownItem>
         );
       })}
-    </div>
+    </DropdownMenu>
   );
 }

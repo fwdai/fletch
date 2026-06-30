@@ -8,6 +8,7 @@ export type { ButtonVariant } from "./Button";
 export { Button } from "./Button";
 export { Chip } from "./Chip";
 export { CopyButton } from "./CopyButton";
+export { DropdownItem, DropdownMenu, DropdownSection, DropdownSeparator } from "./Dropdown";
 export { IconButton } from "./IconButton";
 export { Scrim } from "./Scrim";
 export type { SelectOption } from "./Select";
