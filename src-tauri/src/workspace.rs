@@ -273,6 +273,13 @@ pub struct UserTurn {
     pub attachments: Vec<String>,
     /// Matched `session_records.native_id`; `None` = pending or failed turn.
     pub native_id: Option<String>,
+    /// Wall-clock millis when the turn flipped to Running. `None` for turns
+    /// that never started a run (native PTY turns, or rows from before timing
+    /// existed).
+    pub started_at: Option<i64>,
+    /// Wall-clock millis when the turn reached a terminal state. `None` while
+    /// in flight — the live-timer signal.
+    pub ended_at: Option<i64>,
 }
 
 pub struct WorkspaceManager {
@@ -911,6 +918,39 @@ impl WorkspaceManager {
         Ok(n > 0)
     }
 
+    /// Stamp a turn's run start when it flips to Running. Guarded on
+    /// `started_at IS NULL` so a delivery retry (same `turn_id`) never resets
+    /// the clock. No-op when the row doesn't exist (native PTY turns carry no
+    /// timing row).
+    pub fn mark_user_turn_started(&self, turn_id: &str) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "UPDATE session_user_turns SET started_at = ?1
+             WHERE turn_id = ?2 AND started_at IS NULL",
+            rusqlite::params![now_millis(), turn_id],
+        )?;
+        Ok(())
+    }
+
+    /// Close the in-flight turn at turn end by stamping `ended_at` on the open
+    /// turn (started, not yet ended) of the workspace's current session. No-op
+    /// when none is open — e.g. the resting Idle emitted at spawn, or a native
+    /// turn with no timing row. At most one turn is ever open per session
+    /// (each end closes the open turn before the next one starts), but the
+    /// `WHERE` would safely close all open turns if one were ever stranded.
+    pub fn mark_user_turn_ended(&self, workspace_id: &str) -> Result<()> {
+        let conn = self.db.lock();
+        let Some(sid) = current_session_id(&conn, workspace_id) else {
+            return Ok(());
+        };
+        conn.execute(
+            "UPDATE session_user_turns SET ended_at = ?1
+             WHERE session_id = ?2 AND started_at IS NOT NULL AND ended_at IS NULL",
+            rusqlite::params![now_millis(), sid],
+        )?;
+        Ok(())
+    }
+
     /// All outgoing user turns for the workspace's current session, in seq order.
     pub fn read_user_turns(&self, workspace_id: &str) -> Result<Vec<UserTurn>> {
         let conn = self.db.lock();
@@ -918,26 +958,38 @@ impl WorkspaceManager {
             return Ok(vec![]);
         };
         let mut stmt = conn.prepare(
-            "SELECT turn_id, seq, text, attachments, native_id
+            "SELECT turn_id, seq, text, attachments, native_id, started_at, ended_at
              FROM session_user_turns WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
-        let rows: Vec<(String, i64, String, String, Option<String>)> = stmt
-            .query_map([&sid], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        let rows: Vec<(String, i64, String, String, Option<String>, Option<i64>, Option<i64>)> =
+            stmt.query_map([&sid], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
             })?
             .collect::<std::result::Result<_, rusqlite::Error>>()?;
         rows.into_iter()
-            .map(|(turn_id, seq, text, attachments_text, native_id)| {
-                let attachments = serde_json::from_str(&attachments_text)
-                    .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
-                Ok(UserTurn {
-                    turn_id,
-                    seq,
-                    text,
-                    attachments,
-                    native_id,
-                })
-            })
+            .map(
+                |(turn_id, seq, text, attachments_text, native_id, started_at, ended_at)| {
+                    let attachments = serde_json::from_str(&attachments_text)
+                        .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
+                    Ok(UserTurn {
+                        turn_id,
+                        seq,
+                        text,
+                        attachments,
+                        native_id,
+                        started_at,
+                        ended_at,
+                    })
+                },
+            )
             .collect()
     }
 
@@ -2178,6 +2230,51 @@ mod tests {
         assert_eq!(turns[0].text, "hello");
         assert_eq!(turns[0].attachments, vec!["/tmp/a.png".to_string()]);
         assert_eq!(turns[0].native_id, None);
+        // Timing is unset until the turn starts/ends.
+        assert_eq!(turns[0].started_at, None);
+        assert_eq!(turns[0].ended_at, None);
+    }
+
+    #[test]
+    fn user_turn_timing_start_then_end() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
+
+        // Start stamps started_at; end stamps ended_at on the open turn.
+        wm.mark_user_turn_started("turn-1").unwrap();
+        let started = wm.read_user_turns(&ws_id).unwrap()[0].started_at;
+        assert!(started.is_some());
+        assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].ended_at, None);
+
+        wm.mark_user_turn_ended(&ws_id).unwrap();
+        let turn = wm.read_user_turns(&ws_id).unwrap().remove(0);
+        assert_eq!(turn.started_at, started, "start clock not reset by end");
+        assert!(turn.ended_at >= turn.started_at, "ended_at after started_at");
+    }
+
+    #[test]
+    fn mark_user_turn_started_is_idempotent() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
+
+        wm.mark_user_turn_started("turn-1").unwrap();
+        let first = wm.read_user_turns(&ws_id).unwrap()[0].started_at;
+        // A delivery retry re-stamps — but the guard keeps the original clock.
+        wm.mark_user_turn_started("turn-1").unwrap();
+        assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].started_at, first);
+    }
+
+    #[test]
+    fn mark_user_turn_ended_skips_turns_that_never_started() {
+        let db = test_db();
+        let (ws_id, wm) = make_workspace_with_session(&db);
+        // A row with no started_at (e.g. a never-delivered turn, or the resting
+        // Idle emitted at spawn) must not get an ended_at.
+        wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
+        wm.mark_user_turn_ended(&ws_id).unwrap();
+        assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].ended_at, None);
     }
 
     #[test]
