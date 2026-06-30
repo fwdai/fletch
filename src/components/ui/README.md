@@ -1,0 +1,27 @@
+# UI primitives
+
+Shared, presentational building blocks. **Reach for these instead of
+re-applying the underlying CSS classes by hand** — it keeps styling consistent
+and is the path of least resistance for new UI.
+
+| Primitive | Use for | Underlying class |
+|---|---|---|
+| `Badge` | Compact status pill — agent state (`new`/`err`) and PR state (`pr-open`/`pr-merged`/`pr-closed`). Non-interactive. | `.ag-badge` |
+| `IconButton` | Square icon-only button (title bar, sidebar, panels). Built-in CSS tooltip via `tip`. | `.btn-i` |
+| `Chip` | Composer footer chip with a text label (model picker, base branch, attach). | `.c-chip` |
+| `Select` | Custom `<select>` replacement (keyboard-operable dropdown of string options). | `.ui-select-*` |
+| `CopyButton` | Copy-to-clipboard affordance with copied-state feedback. | — |
+| `Scrim` | Full-screen dim/click-catcher behind popovers and overlays. | — |
+
+Tooltips are CSS-only: pass `tip="…"` (and `tipDown` where supported) — it sets
+`.tip` + `data-tip` and renders on hover. No JS tooltip library.
+
+## Conventions
+- Each primitive is a thin wrapper: a typed `Props`, a `className` passthrough,
+  and a class-join. Match that shape when adding one.
+- Import directly (`import { Badge } from "../ui/Badge"`) or via the barrel
+  (`import { Badge } from "../ui"`).
+
+## Planned
+- `Button` — text-button CTAs (`.btn-t`: ghost / outline / primary / danger).
+- `Dropdown` — shared menu shell + items (`.dd` / `.dd-item`).
