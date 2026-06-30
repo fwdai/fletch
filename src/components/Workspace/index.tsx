@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { AgentRecord } from "../../api";
 import { EMPTY_AGENTS, useAppStore } from "../../store";
 import { Icon } from "../Icon";
+import { Button } from "../ui/Button";
 import { IconButton } from "../ui/IconButton";
 import { ChatView } from "./ChatView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
@@ -77,9 +78,8 @@ function CrashBanner({ agent }: { agent: AgentRecord }) {
         <span className="crash-title">Agent stopped unexpectedly</span>
         {agent.last_error && <span className="crash-detail">{agent.last_error}</span>}
       </div>
-      <button
-        type="button"
-        className="btn-t iflex-center outline"
+      <Button
+        variant="outline"
         disabled={resuming}
         onClick={() => {
           setResuming(true);
@@ -88,7 +88,7 @@ function CrashBanner({ agent }: { agent: AgentRecord }) {
       >
         <Icon name="play" size={12} />
         {resuming ? "Resuming…" : "Resume"}
-      </button>
+      </Button>
     </div>
   );
 }

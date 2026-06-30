@@ -5,6 +5,7 @@ import { PROVIDERS, type Provider } from "../../data/providers";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
+import { Button } from "../ui/Button";
 import { BinaryPathRow } from "./BinaryPathRow";
 import { SetGroup, SetHead, SetToggle } from "./primitives";
 
@@ -145,7 +146,9 @@ function ProviderRow({
           />
           <ProvDetailRow k="Models" v={d.models} />
           <div className="set-prov-detail-actions flex-center">
-            <button className="btn-t iflex-center ghost sm-t">View logs</button>
+            <Button variant="ghost" size="sm">
+              View logs
+            </Button>
           </div>
         </div>
       )}

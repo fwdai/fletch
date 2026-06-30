@@ -2,6 +2,7 @@ import { ACCENTS } from "../../data/providers";
 import type { Density, ThemeMode } from "../../storage/preferences";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
+import { Button } from "../ui/Button";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 const SIDE_PANELS: FeatureItem[] = [
@@ -126,14 +127,10 @@ export function GeneralPane() {
           title="Logs"
           sub="Quorum writes a local log file. Reveal it to attach to a bug report."
         >
-          <button
-            type="button"
-            className="btn-t iflex-center outline"
-            onClick={() => void revealLogs()}
-          >
+          <Button variant="outline" onClick={() => void revealLogs()}>
             <Icon name="folder" size={12} />
             Reveal logs
-          </button>
+          </Button>
         </SetRow>
       </SetGroup>
     </div>

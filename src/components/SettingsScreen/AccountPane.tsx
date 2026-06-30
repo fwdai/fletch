@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useAppStore } from "../../store";
 import { accountInitials } from "../../util/format";
 import { Avatar } from "../Avatar";
+import { Button } from "../ui/Button";
 import { DevToolsStatus } from "./DevToolsStatus";
 import { SetGroup, SetHead } from "./primitives";
 
@@ -115,14 +116,9 @@ export function AccountPane() {
 
           <div className="set-form-actions flex-center">
             {savedAt && !dirty && <span className="set-saved mono text-sm">Saved</span>}
-            <button
-              type="button"
-              className="btn-t iflex-center primary"
-              disabled={!canSave}
-              onClick={onSave}
-            >
+            <Button variant="primary" disabled={!canSave} onClick={onSave}>
               {saving ? "Saving…" : "Save changes"}
-            </button>
+            </Button>
           </div>
         </div>
       </SetGroup>

@@ -4,6 +4,8 @@
 
 export type { BadgeVariant } from "./Badge";
 export { Badge } from "./Badge";
+export type { ButtonVariant } from "./Button";
+export { Button } from "./Button";
 export { Chip } from "./Chip";
 export { CopyButton } from "./CopyButton";
 export { IconButton } from "./IconButton";

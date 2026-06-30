@@ -1,5 +1,6 @@
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
+import { Button } from "../ui/Button";
 import { SetGroup, SetHead, SetRow } from "./primitives";
 
 /** Dev-only settings surface. The nav entry that routes here is gated on
@@ -22,9 +23,8 @@ export function DeveloperPane() {
           title="Welcome tour"
           sub="Replay the cinematic onboarding — the feature tour and first-project walkthrough."
         >
-          <button
-            type="button"
-            className="btn-t iflex-center outline"
+          <Button
+            variant="outline"
             onClick={() => {
               closeSettingsScreen();
               openOnboarding();
@@ -32,7 +32,7 @@ export function DeveloperPane() {
           >
             <Icon name="sparkle" size={12} />
             Replay tour
-          </button>
+          </Button>
         </SetRow>
       </SetGroup>
 
@@ -41,9 +41,8 @@ export function DeveloperPane() {
           title="Update-ready toast"
           sub="Show the “Update ready” restart toast with a fake version, without releasing a build. Restart now will actually relaunch."
         >
-          <button
-            type="button"
-            className="btn-t iflex-center outline"
+          <Button
+            variant="outline"
             onClick={() => {
               closeSettingsScreen();
               setUpdateReady("9.9.9-test");
@@ -51,7 +50,7 @@ export function DeveloperPane() {
           >
             <Icon name="sparkle" size={12} />
             Trigger toast
-          </button>
+          </Button>
         </SetRow>
       </SetGroup>
     </div>

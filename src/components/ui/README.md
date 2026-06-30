@@ -7,6 +7,7 @@ and is the path of least resistance for new UI.
 | Primitive | Use for | Underlying class |
 |---|---|---|
 | `Badge` | Compact status pill — agent state (`new`/`err`) and PR state (`pr-open`/`pr-merged`/`pr-closed`). Non-interactive. | `.ag-badge` |
+| `Button` | Text-label button — CTAs and dialog actions (Cancel / Save / Restart). Variants `ghost` / `outline` / `primary` (+ `danger`), `size="sm"`. | `.btn-t` |
 | `IconButton` | Square icon-only button (title bar, sidebar, panels). Built-in CSS tooltip via `tip`. | `.btn-i` |
 | `Chip` | Composer footer chip with a text label (model picker, base branch, attach). | `.c-chip` |
 | `Select` | Custom `<select>` replacement (keyboard-operable dropdown of string options). | `.ui-select-*` |
@@ -23,5 +24,4 @@ Tooltips are CSS-only: pass `tip="…"` (and `tipDown` where supported) — it s
   (`import { Badge } from "../ui"`).
 
 ## Planned
-- `Button` — text-button CTAs (`.btn-t`: ghost / outline / primary / danger).
 - `Dropdown` — shared menu shell + items (`.dd` / `.dd-item`).

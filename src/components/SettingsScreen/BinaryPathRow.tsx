@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { api } from "../../api";
 import { Icon } from "../Icon";
+import { Button } from "../ui/Button";
 
 /** The "Binary" detail row in a provider card. Read-only by default — showing
  *  the effective path the way it always has — but with an inline pencil that
@@ -151,13 +152,9 @@ export function BinaryPathRow({
             {broken && <span className="set-prov-bin-warn text-xs">not found</span>}
             <span className="grow" />
             {override && (
-              <button
-                className="btn-t iflex-center ghost sm-t"
-                disabled={busy}
-                onClick={() => void reset()}
-              >
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => void reset()}>
                 Reset to auto
-              </button>
+              </Button>
             )}
             <button
               className="btn-i iflex-center sm-i tip"

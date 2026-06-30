@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAppStore } from "../store";
 import { restartForUpdate } from "../util/autoUpdate";
 import { Icon } from "./Icon";
+import { Button } from "./ui/Button";
 
 /**
  * Toast shown when an update has been downloaded and staged. Offers "Restart
@@ -37,12 +38,12 @@ export function UpdateToast() {
           <span>Version {version} has been downloaded.</span>
         </div>
         <div className="update-toast-actions">
-          <button className="btn-t iflex-center ghost" onClick={dismiss} disabled={restarting}>
+          <Button variant="ghost" onClick={dismiss} disabled={restarting}>
             Skip for now
-          </button>
-          <button className="btn-t iflex-center primary" onClick={onRestart} disabled={restarting}>
+          </Button>
+          <Button variant="primary" onClick={onRestart} disabled={restarting}>
             {restarting ? "Restarting…" : "Restart now"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

@@ -3,6 +3,7 @@
 // pane and offers a reset, so the rest of the app keeps working. Keying the
 // boundary (e.g. by agent id) makes switching agents reset it automatically.
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Button } from "./ui/Button";
 
 interface Props {
   children: ReactNode;
@@ -39,9 +40,9 @@ export class ErrorBoundary extends Component<Props, State> {
             Something went wrong{this.props.label ? ` in ${this.props.label}` : ""}.
           </div>
           <div className="err-boundary-msg">{error.message || String(error)}</div>
-          <button type="button" className="btn-t iflex-center outline" onClick={this.reset}>
+          <Button variant="outline" onClick={this.reset}>
             Try again
-          </button>
+          </Button>
         </div>
       </div>
     );

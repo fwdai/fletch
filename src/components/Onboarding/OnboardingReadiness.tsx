@@ -14,6 +14,7 @@ import { PROVIDERS } from "../../data/providers";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
+import { Button } from "../ui/Button";
 
 type S = "ok" | "warn" | "bad" | "checking";
 
@@ -130,15 +131,10 @@ export function OnboardingReadiness() {
               ? `${detected} of ${agents.length} agents detected`
               : "couldn't detect agents"}
         </span>
-        <button
-          type="button"
-          className="btn-t iflex-center outline"
-          onClick={recheck}
-          disabled={checking}
-        >
+        <Button variant="outline" onClick={recheck} disabled={checking}>
           <Icon name="refresh" size={11} />
           {checking ? "checking…" : "re-check"}
-        </button>
+        </Button>
       </div>
     </div>
   );

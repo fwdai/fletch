@@ -16,6 +16,7 @@ import { PROVIDERS } from "../../data/providers";
 import { useAppStore } from "../../store";
 import { Icon } from "../Icon";
 import { ProviderIcon } from "../ProviderIcon";
+import { Button } from "../ui/Button";
 
 type RowState = "ok" | "warn" | "bad" | "checking";
 
@@ -215,15 +216,10 @@ export function ProviderReadiness() {
               ? `${detected} of ${agents.length} agents detected`
               : "Couldn't detect agents"}
         </span>
-        <button
-          type="button"
-          className="btn-t iflex-center outline"
-          onClick={recheck}
-          disabled={checking}
-        >
+        <Button variant="outline" onClick={recheck} disabled={checking}>
           <Icon name="refresh" size={12} />
           {checking ? "Checking…" : "Re-check"}
-        </button>
+        </Button>
       </div>
     </div>
   );
