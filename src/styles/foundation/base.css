@@ -17,9 +17,6 @@
  * the --fs-* tokens). An element's size lives in exactly ONE place: a .text-*
  * class here, or font-size in CSS for pseudo-elements that can't take a class.
  * Never both. */
-.text-2xs {
-  font-size: var(--fs-2xs);
-}
 .text-xs {
   font-size: var(--fs-xs);
 }

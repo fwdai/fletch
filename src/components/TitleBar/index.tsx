@@ -25,7 +25,7 @@ export function TitleBar() {
           <QMark className="tb-qmark" />
           uorum
         </span>
-        <span className="tb-badge iflex-center text-2xs">beta</span>
+        <span className="tb-badge iflex-center text-xs">beta</span>
       </div>
       <Breadcrumb entries={entries} />
       <div className="tb-right flex-center">

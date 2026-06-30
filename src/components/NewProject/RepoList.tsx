@@ -74,7 +74,7 @@ export function RepoList({ selected, onSelect }: Props) {
             <div className="np-repo-text">
               <div className="np-repo-name flex-center text-base">
                 {r.name_with_owner}
-                {r.is_private && <span className="np-priv text-2xs">Private</span>}
+                {r.is_private && <span className="np-priv text-xs">Private</span>}
               </div>
               {r.description && (
                 <div className="np-repo-desc truncate text-sm">{r.description}</div>

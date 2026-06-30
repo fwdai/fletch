@@ -185,7 +185,7 @@
 .fp-badge {
   flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   font-weight: 600;
   width: 15px;
   height: 15px;
@@ -204,7 +204,7 @@
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   font-weight: 600;
   border-radius: var(--r-xs);
   --badge-color: var(--warn);

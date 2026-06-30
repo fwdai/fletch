@@ -61,7 +61,7 @@
 }
 .dd-sect {
   padding: 7px 9px 4px;
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;

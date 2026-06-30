@@ -18,8 +18,7 @@
    * floor. Old half-pixel sizes snap to the nearest step; a one-off that
    * genuinely needs its own size gets a named token, never a literal.
    * Components migrate onto these one at a time. */
-  --fs-2xs: 10px; /* micro: badges, overlines, counts (floor) */
-  --fs-xs: 11px; /* dense chrome: sidebar meta, secondary labels */
+  --fs-xs: 11px; /* floor: micro labels, badges, overlines, counts, dense meta */
   --fs-sm: 12px; /* secondary / panel body */
   --fs-base: 14px; /* regular body — inherited from <body> */
   --fs-lg: 16px; /* emphasized body / card / dialog titles */
