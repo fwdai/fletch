@@ -266,7 +266,7 @@
   margin: 18px;
   padding: 12px;
   border-radius: var(--r-md);
-  line-height: 1.45;
+  line-height: var(--lh-snug);
   gap: 8px;
 }
 .git-banner svg {
@@ -306,7 +306,7 @@
 .git-card-title {
   font-weight: 500;
   color: var(--fg-0);
-  line-height: 1.4;
+  line-height: var(--lh-snug);
 }
 .git-card-meta {
   color: var(--fg-2);
@@ -424,7 +424,7 @@
 
 /* collapsed note (agent default) — quiet one-liner */
 .cm-note {
-  line-height: 1.55;
+  line-height: var(--lh-normal);
   color: var(--fg-3);
   text-wrap: pretty;
 }
@@ -497,7 +497,7 @@
   box-sizing: border-box;
   resize: none;
   font-family: var(--font-mono);
-  line-height: 1.5;
+  line-height: var(--lh-normal);
   color: var(--fg-0);
   padding: 9px 11px;
   border: 1px solid var(--bd);
@@ -519,7 +519,7 @@
   align-items: center;
   gap: 6px;
   margin-top: 7px;
-  line-height: 1.4;
+  line-height: var(--lh-snug);
   color: var(--fg-3);
 }
 .git-commit .cm-foot svg {
@@ -970,7 +970,7 @@
 }
 .pr-comment .pc-text {
   color: var(--fg-2);
-  line-height: 1.35;
+  line-height: var(--lh-snug);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;

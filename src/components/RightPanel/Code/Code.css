@@ -311,7 +311,7 @@
   padding: 4px 0 80px;
   background: var(--bg-0);
   font-family: var(--font-mono);
-  line-height: 1.55;
+  line-height: var(--lh-normal);
   position: relative;
 }
 .code-diff.live::before {

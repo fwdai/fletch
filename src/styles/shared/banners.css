@@ -141,7 +141,7 @@
   flex-direction: column;
   gap: 2px;
   font-size: var(--fs-base);
-  line-height: 1.4;
+  line-height: var(--lh-snug);
 }
 .update-toast-text strong {
   color: var(--fg-0);

@@ -50,7 +50,7 @@
   background: var(--bg-3);
   padding: 0 5px;
   border-radius: var(--r-xs);
-  line-height: 1;
+  line-height: var(--lh-none);
   position: relative;
   top: 1px;
 }
