@@ -245,6 +245,7 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   const { [id]: _loading, ...transcriptLoading } = state.transcriptLoading;
   const { [id]: _loaded, ...transcriptLoaded } = state.transcriptLoaded;
   const { [id]: _busy, ...managedBusy } = state.managedBusy;
+  const { [id]: _started, ...turnStartedAt } = state.turnStartedAt;
   const { [id]: _usage, ...usage } = state.usage;
   const { [id]: _git, ...gitStates } = state.gitStates;
   const { [id]: _short, ...gitShortstats } = state.gitShortstats;
@@ -266,6 +267,7 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     transcriptLoading,
     transcriptLoaded,
     managedBusy,
+    turnStartedAt,
     usage,
     gitStates,
     gitShortstats,
