@@ -70,13 +70,13 @@ export function WelcomeStep({
           <span className="mk">
             <PeaksMark />
           </span>
-          <span className="wd text-lg">QUORUM</span>
+          <span className="wd text-lg">FLETCH</span>
         </div>
         <h1 className="ob-display ob-reveal" style={{ "--d": ".16s" } as CSSProperties}>
           A new era of <em>agentic</em> engineering.
         </h1>
         <p className="ob-lede ob-reveal" style={{ "--d": ".30s" } as CSSProperties}>
-          Direct a quorum of coding agents in parallel — each in its own worktree. Review, refine,
+          Direct a fleet of coding agents in parallel — each in its own worktree. Review, refine,
           and ship from one quiet control room.
         </p>
 
@@ -103,7 +103,7 @@ export function WelcomeStep({
         </div>
 
         <p className="ob-legal ob-reveal text-xs" style={{ "--d": ".58s" } as CSSProperties}>
-          By continuing you agree to Quorum's{" "}
+          By continuing you agree to Fletch's{" "}
           <a
             href={TERMS_URL}
             onClick={(e) => {
@@ -201,7 +201,7 @@ export function IgniteStep({ onEnter }: { onEnter: () => void }) {
           )}
         </h2>
         <p className="ob-lede ob-reveal" style={{ "--d": ".28s" } as CSSProperties}>
-          Signing in connected your Quorum identity. To run agents you bring your own CLIs — here's
+          Signing in connected your Fletch identity. To run agents you bring your own CLIs — here's
           what's on your machine.
         </p>
         <div className="ob-readiness ob-reveal" style={{ "--d": ".4s" } as CSSProperties}>
@@ -212,11 +212,11 @@ export function IgniteStep({ onEnter }: { onEnter: () => void }) {
           style={{ "--d": ".56s" } as CSSProperties}
           onClick={onEnter}
         >
-          Enter Quorum
+          Enter Fletch
           <Icon name="arrowR" />
         </button>
         <p className="ob-fineprint ob-reveal text-sm" style={{ "--d": ".64s" } as CSSProperties}>
-          Quorum shares anonymous usage data to improve the app. Turn it off anytime in Settings ›
+          Fletch shares anonymous usage data to improve the app. Turn it off anytime in Settings ›
           General.
         </p>
       </div>

@@ -12,7 +12,7 @@ export interface CodeThemeDef {
 }
 
 export const CODE_THEMES: CodeThemeDef[] = [
-  { id: "quorum", label: "Quorum", dark: null, light: null },
+  { id: "quorum", label: "Fletch", dark: null, light: null },
   { id: "github", label: "GitHub", dark: "github-dark", light: "github" },
   { id: "atom-one", label: "Atom One", dark: "atom-one-dark", light: "atom-one-light" },
   { id: "tokyo-night", label: "Tokyo Night", dark: "tokyo-night-dark", light: "tokyo-night-light" },

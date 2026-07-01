@@ -40,7 +40,7 @@ export function Workspace() {
           title={!workspace ? "Loading…" : agents.length === 0 ? "No agents yet" : "Pick an agent"}
           body={
             !workspace
-              ? "Connecting to Quorum…"
+              ? "Connecting to Fletch…"
               : agents.length === 0
                 ? "Click the + button on a project to spawn one, or add a repo from the sidebar."
                 : "Choose an agent from the sidebar to attach."
