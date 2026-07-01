@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn ensure_mailbox_creates_both_subdirs() {
         let td = tempfile::tempdir().unwrap();
-        let dir = td.path().join(".quorum-rpc");
+        let dir = td.path().join(".fletch-rpc");
         ensure_mailbox(&dir).unwrap();
         assert!(dir.join("requests").is_dir());
         assert!(dir.join("responses").is_dir());
@@ -296,7 +296,7 @@ mod tests {
     #[tokio::test]
     async fn ping_round_trips_to_a_response_file() {
         let td = tempfile::tempdir().unwrap();
-        let rpc_dir = td.path().join(".quorum-rpc");
+        let rpc_dir = td.path().join(".fletch-rpc");
         ensure_mailbox(&rpc_dir).unwrap();
         write_request(
             &rpc_dir.join("requests"),
@@ -320,7 +320,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_op_is_rejected() {
         let td = tempfile::tempdir().unwrap();
-        let rpc_dir = td.path().join(".quorum-rpc");
+        let rpc_dir = td.path().join(".fletch-rpc");
         ensure_mailbox(&rpc_dir).unwrap();
         write_request(
             &rpc_dir.join("requests"),
@@ -340,7 +340,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_unparseable_request_is_left_for_retry() {
         let td = tempfile::tempdir().unwrap();
-        let rpc_dir = td.path().join(".quorum-rpc");
+        let rpc_dir = td.path().join(".fletch-rpc");
         ensure_mailbox(&rpc_dir).unwrap();
         write_request(&rpc_dir.join("requests"), "req-3.json", "{ not json");
 

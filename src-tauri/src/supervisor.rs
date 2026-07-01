@@ -3153,7 +3153,7 @@ mod tests {
         // configured projects dir is.
         let cfg = tempfile::tempdir().unwrap();
         let projects = cfg.path().join("projects");
-        let slug = projects.join("-Users-alex--quorum-worktrees-transylvania-quorum");
+        let slug = projects.join("-Users-alex--fletch-worktrees-transylvania-fletch");
         std::fs::create_dir_all(&slug).unwrap();
         let sid = "f90f9c57-6dd1-45a0-9b69-5b5963979d5b";
         let jsonl = slug.join(format!("{sid}.jsonl"));
