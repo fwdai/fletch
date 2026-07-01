@@ -37,7 +37,7 @@ use crate::workspace::WorkspaceManager;
 
 type DbState = Arc<Mutex<Connection>>;
 
-/// Quorum's on-disk data directory — `~/Library/Application Support/
+/// Fletch's on-disk data directory — `~/Library/Application Support/
 /// com.quorum.desktop` (with a `dev` subfolder under debug builds), matching
 /// what `app.path().app_data_dir()` resolves to in `setup`. Computed without
 /// an `AppHandle` so logging can be initialized before the Tauri app is built,

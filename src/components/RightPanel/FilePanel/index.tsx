@@ -12,7 +12,7 @@
 // through the editor — notably `pendingDirs`, which tracks freshly-created
 // empty folders that git wouldn't otherwise list.
 //
-// Faithful port of the design (quorum v2 files.jsx), wired to the real
+// Faithful port of the design (fletch v2 files.jsx), wired to the real
 // worktree via the `*_worktree_*` Tauri commands.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type AgentRecord, api, type WorktreeFile } from "../../../api";

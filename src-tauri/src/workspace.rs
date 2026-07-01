@@ -155,7 +155,7 @@ pub struct AgentRecord {
     #[serde(default)]
     pub model: Option<String>,
     /// A custom agent's standing instructions, snapshotted at spawn and
-    /// re-injected on every process spawn/resume (after Quorum's global system
+    /// re-injected on every process spawn/resume (after Fletch's global system
     /// prompt). `None` for a plain built-in spawn. Snapshotting (rather than
     /// re-resolving from `custom_agents`) keeps a running agent's brief stable
     /// even if the custom agent is later edited or deleted.
@@ -262,7 +262,7 @@ pub struct SessionRecord {
     pub body: serde_json::Value,
 }
 
-/// One Quorum-origin outgoing user message (the `session_user_turns` table).
+/// One Fletch-origin outgoing user message (the `session_user_turns` table).
 /// Carries the attachment metadata the transcript doesn't, plus a `native_id`
 /// link to the canonical `session_records` row once matched at turn-end.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -407,7 +407,7 @@ impl WorkspaceManager {
         // unless a directory still lingers on disk (cleanup failed, or it
         // belongs to another running instance such as a dev build, which shares
         // this same worktrees root). The on-disk listing closes that gap: it's
-        // the only namespace shared across every Quorum process on the machine,
+        // the only namespace shared across every Fletch process on the machine,
         // so a collision there is what actually breaks `git worktree add`.
         let mut stmt =
             conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
@@ -1521,7 +1521,7 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
 }
 
 /// Absolute path to the root holding every agent's worktrees:
-/// `~/.quorum/worktrees/`. Shared by *all* Quorum processes on the machine
+/// `~/.quorum/worktrees/`. Shared by *all* Fletch processes on the machine
 /// (release and dev builds alike — only the database is namespaced per build),
 /// which is why name allocation has to consult it directly.
 pub fn worktrees_root() -> Result<PathBuf> {

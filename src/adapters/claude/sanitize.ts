@@ -76,7 +76,7 @@ export function sanitizeUserText(raw: string): SanitizeResult {
     text = cursorQuery[1];
   }
 
-  // Strip the Quorum-injected instruction block at the data layer (not just at
+  // Strip the Fletch-injected instruction block at the data layer (not just at
   // render) so the stored text equals what the user typed — this lets dedup
   // merge the agent's echoed turn with the optimistic one. No-op when absent.
   text = stripInjectedInstructions(text);

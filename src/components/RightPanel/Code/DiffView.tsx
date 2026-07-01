@@ -53,18 +53,18 @@ export function useFileDiff(agentId: string, path: string | null, dep?: string) 
 export function DiffBody({
   hunks,
   lang,
-  isQuorum,
+  isBuiltInTheme,
   live = false,
   freshKeys,
 }: {
   hunks: DiffHunk[];
   lang: string;
-  isQuorum: boolean;
+  isBuiltInTheme: boolean;
   live?: boolean;
   freshKeys?: Set<string>;
 }) {
   return (
-    <div className={`code-diff text-sm ${isQuorum ? "cq" : ""} ${live ? "live" : ""}`}>
+    <div className={`code-diff text-sm ${isBuiltInTheme ? "cq" : ""} ${live ? "live" : ""}`}>
       {hunks.map((h, i) => (
         <div key={i}>
           <div className="code-hunk-h text-xs">{h.header}</div>
@@ -104,12 +104,12 @@ export function FileDiff({
   agentId,
   path,
   lang,
-  isQuorum,
+  isBuiltInTheme,
 }: {
   agentId: string;
   path: string;
   lang: string;
-  isQuorum: boolean;
+  isBuiltInTheme: boolean;
 }) {
   const { hunks, error, loaded } = useFileDiff(agentId, path);
 
@@ -136,5 +136,5 @@ export function FileDiff({
       </div>
     );
   }
-  return <DiffBody hunks={hunks} lang={lang} isQuorum={isQuorum} />;
+  return <DiffBody hunks={hunks} lang={lang} isBuiltInTheme={isBuiltInTheme} />;
 }

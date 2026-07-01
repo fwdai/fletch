@@ -1,6 +1,6 @@
-# Releasing Quorum
+# Releasing Fletch
 
-Quorum ships as a signed + notarized **universal** macOS app, distributed via
+Fletch ships as a signed + notarized **universal** macOS app, distributed via
 GitHub Releases, with a silent in-app auto-updater. This doc covers the one-time
 setup and the per-release procedure.
 
@@ -16,7 +16,7 @@ bump version → run Release workflow (manual) → CI builds/signs/notarizes
 - **Sign:** Developer ID Application cert (Team `UFBL3F444A`).
 - **Notarize + staple:** handled automatically by `tauri-apps/tauri-action`.
 - **Update artifacts:** `createUpdaterArtifacts: true` emits `<app>.app.tar.gz`
-  and a `.sig` signed with the Quorum minisign key.
+  and a `.sig` signed with the Fletch minisign key.
 
 ## One-time setup
 
@@ -25,7 +25,7 @@ bump version → run Release workflow (manual) → CI builds/signs/notarizes
 A minisign keypair signs every update artifact; the app verifies it with the
 public key embedded in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
 
-A keypair was generated for Quorum and the **public** key is already committed.
+A keypair was generated for Fletch and the **public** key is already committed.
 The **private** key lives outside the repo at `~/.tauri/quorum.key`. To
 regenerate (e.g. to set a password), run:
 
@@ -93,7 +93,7 @@ the app verifies against the embedded pubkey — the proxy can't forge an update
    - `src-tauri/Cargo.toml` → `version`
 2. Merge that to `main`.
 3. Run the **Release** workflow: GitHub → Actions → *Release* → *Run workflow*.
-4. Wait for it to finish. It creates a **draft** release `Quorum v<version>`
+4. Wait for it to finish. It creates a **draft** release `Fletch v<version>`
    with the `.dmg`, `.app.tar.gz`, `.app.tar.gz.sig`, and `latest.json`.
 5. Review the draft, then **Publish** it. Once published, the endpoint serves
    the new `latest.json` and installed apps pick it up on next launch.

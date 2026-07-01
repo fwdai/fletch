@@ -533,7 +533,7 @@ export interface SessionRecord {
   body: Record<string, unknown> & { type?: string };
 }
 
-/** One Quorum-origin outgoing user message (session_user_turns). Carries the
+/** One Fletch-origin outgoing user message (session_user_turns). Carries the
  *  attachment metadata the transcript lacks; `native_id` links it to the
  *  canonical session_records user-message once matched at turn-end (null =
  *  pending or failed — rendered standalone for retry). */

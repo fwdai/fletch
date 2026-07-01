@@ -1,4 +1,4 @@
-// Onboarding — a cinematic, native-feeling entry into Quorum. Full-screen
+// Onboarding — a cinematic, native-feeling entry into Fletch. Full-screen
 // overlay shown to new users on first launch and re-openable from Settings ›
 // General. Ported from the design prototype (onboarding/app.jsx): ambient
 // stage, step sequence, cinematic transitions, progress rail, keyboard nav.

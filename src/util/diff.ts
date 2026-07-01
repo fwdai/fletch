@@ -1,5 +1,5 @@
 // Parse `git diff` unified output into hunks the Code/Live panel can render.
-// Mirrors the prototype's hunk shape (quorum v2 data.jsx CODE_CHANGES):
+// Mirrors the prototype's hunk shape (fletch v2 data.jsx CODE_CHANGES):
 //   { header, lines: [{ op, o, n, t }] }
 // where `op` is context / addition / removal, `o`/`n` are the old/new 1-indexed
 // line numbers (null on the side the line doesn't exist), and `t` is the line

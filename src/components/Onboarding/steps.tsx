@@ -12,7 +12,7 @@ import { OnboardingReadiness } from "./OnboardingReadiness";
 const TERMS_URL = "https://quorum.fwdai.org/terms";
 const PRIVACY_URL = "https://quorum.fwdai.org/privacy";
 
-// ── brand mark: the Quorum triple-peak ──────────────────────────────
+// ── brand mark: the Fletch triple-peak ──────────────────────────────
 export function PeaksMark() {
   return (
     <svg
@@ -173,8 +173,8 @@ export function Beat({ beat }: { beat: BeatDef }) {
 
 // ── Step · finale / handoff + readiness ─────────────────────────────
 // The closer doubles as the real setup screen: signing in only connected the
-// user's Quorum identity — agents are their own CLIs, so this is where we show
-// what's actually installed. Non-blocking: "Enter Quorum" is always enabled.
+// user's Fletch identity — agents are their own CLIs, so this is where we show
+// what's actually installed. Non-blocking: "Enter Fletch" is always enabled.
 export function IgniteStep({ onEnter }: { onEnter: () => void }) {
   const providerPaths = useAppStore((s) => s.providerPaths);
   const providersProbed = useAppStore((s) => s.providersProbed);

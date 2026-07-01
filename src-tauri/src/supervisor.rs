@@ -1162,7 +1162,7 @@ impl Supervisor {
     /// retries via `sendWhenAgentReady`, reusing the same `turn_id` → one row).
     /// On reload a never-delivered turn renders standalone so the user can retry.
     ///
-    /// This row carries Quorum-origin metadata (text + attachments) that the
+    /// This row carries Fletch-origin metadata (text + attachments) that the
     /// transcript can't; it lives outside `session_records`, which stays a pure
     /// 1:1 mirror of the agent's jsonl. At turn-end `sync_session_records`
     /// matches the row to its canonical transcript user-message and fills in
@@ -2451,7 +2451,7 @@ fn mark_user_turn_started(
     }
     // Stamp the turn's run start with a single timestamp shared by the persisted
     // row and the `turn:started` event, so the live timer and the footer measure
-    // from the identical instant. Native PTY turns have no quorum-origin row (no
+    // from the identical instant. Native PTY turns have no fletch-origin row (no
     // turn_id), so they carry no persisted timing — but still emit the event so
     // their live timer has an anchor.
     let started_at = chrono::Utc::now().timestamp_millis();

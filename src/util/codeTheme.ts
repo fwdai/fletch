@@ -41,7 +41,7 @@ const THEME_URLS: Record<string, string> = {
 const LINK_ID = "hljs-code-theme";
 
 /** Sync the highlight.js theme stylesheet with the chosen family + app theme.
- *  Returns true when the built-in Quorum palette should drive token colors
+ *  Returns true when the built-in Fletch palette should drive token colors
  *  (so the caller can tag the editor with the gating class). */
 export function useHljsTheme(): boolean {
   const codeTheme = useAppStore((s) => s.codeTheme);

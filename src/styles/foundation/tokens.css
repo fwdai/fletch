@@ -1,4 +1,4 @@
-/* Quorum — quiet & editorial. Ported from the Quorum v2 prototype.
+/* Fletch — quiet & editorial. Ported from the Fletch v2 prototype.
  * Color tokens are OKLCH; theme via `.theme-dark` / `.theme-light` on <html>;
  * density via `.density-comfortable` / `.density-compact`; accent vars are
  * overridden at runtime by App.tsx based on the selected palette.

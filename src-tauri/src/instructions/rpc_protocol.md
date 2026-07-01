@@ -1,4 +1,4 @@
-## Quorum app RPC
+## Fletch app RPC
 
 Your writes are confined to your worktree. When an agent needs the app to do
 something it cannot do itself, send a JSON request through the mailbox at
@@ -58,7 +58,7 @@ jq -n --arg id "$ID" --arg msg "$MSG" '{id:$id,op:"echo",args:{message:$msg}}' \
 mv "$QUORUM_RPC_DIR/requests/$ID.json.tmp" "$QUORUM_RPC_DIR/requests/$ID.json"
 ```
 
-The exact op names are feature-specific. Quorum currently uses this same
+The exact op names are feature-specific. Fletch currently uses this same
 transport for Git actions, and the Git dispatcher also exposes `echo` as a
 simple round-trip check. Future app features can define their own ops on top of
 the same mailbox.

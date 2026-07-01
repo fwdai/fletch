@@ -25,9 +25,9 @@ pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace
     supervisor.current_workspace()
 }
 
-/// Reveal Quorum's log folder in the OS file manager so a user can attach
+/// Reveal Fletch's log folder in the OS file manager so a user can attach
 /// logs to a bug report. Creates the folder if no session has written to it
-/// yet. Quorum ships macOS-only (sandbox-exec), but the CI build runs on
+/// yet. Fletch ships macOS-only (sandbox-exec), but the CI build runs on
 /// Linux, so the opener binary is chosen per-platform rather than hard-coding
 /// `open`.
 #[tauri::command]

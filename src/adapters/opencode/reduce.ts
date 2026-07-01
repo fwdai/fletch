@@ -63,7 +63,7 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
     case "step_start":
       return prev;
 
-    // The user's prompt. Never emitted live (Quorum injects the provider-
+    // The user's prompt. Never emitted live (Fletch injects the provider-
     // agnostic user_message there); normalizeTranscript synthesizes it from a
     // user message's text part during transcript replay.
     case "user_message": {

@@ -4,7 +4,7 @@ import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
 import { Breadcrumb, type CrumbEntry } from "./Breadcrumb";
 
-/** Top-of-window bar. Houses the breadcrumb (Quorum / repo / agent)
+/** Top-of-window bar. Houses the breadcrumb (Fletch / repo / agent)
  *  and the settings toggle. Drag + native double-click-to-zoom is
  *  handled by Tauri via the `data-tauri-drag-region` attribute — any
  *  click whose target carries that attribute is processed by the
@@ -38,7 +38,7 @@ export function TitleBar() {
   );
 }
 
-/** Derive the breadcrumb from active draft / agent. Quorum > repo > agent. */
+/** Derive the breadcrumb from active draft / agent. Fletch > repo > agent. */
 function useCrumb(): CrumbEntry[] {
   const workspace = useAppStore((s) => s.workspace);
   const selectedId = useAppStore((s) => s.selectedAgentId);

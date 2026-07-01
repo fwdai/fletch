@@ -1,5 +1,5 @@
 //! Per-agent macOS sandbox profile — the single, unified isolation layer for
-//! every agent Quorum runs.
+//! every agent Fletch runs.
 //!
 //! The app launches each agent (Claude *and* the per-turn agents — codex,
 //! cursor, opencode, pi, antigravity) under `sandbox-exec` with this profile,
