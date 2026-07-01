@@ -212,7 +212,7 @@ mod tests {
         std::fs::create_dir_all(&bin_dir).unwrap();
         // A name that won't exist on PATH or via the login shell, so resolution
         // can only succeed through the common-dir fallback.
-        let name = "quorum-fake-cli-xyz";
+        let name = "fletch-fake-cli-xyz";
         write_executable(&bin_dir.join(name));
 
         assert_eq!(
@@ -229,7 +229,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let bin_dir = home.path().join(".local/bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
-        let name = "quorum-fake-cli-nonexec";
+        let name = "fletch-fake-cli-nonexec";
         let file = bin_dir.join(name);
         std::fs::write(&file, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -245,7 +245,7 @@ mod tests {
     fn returns_none_when_binary_is_nowhere() {
         let home = tempfile::tempdir().unwrap();
         assert_eq!(
-            resolve_bin("quorum-definitely-not-installed-zzz", home.path()),
+            resolve_bin("fletch-definitely-not-installed-zzz", home.path()),
             None,
         );
     }

@@ -306,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn git_status_runs_a_real_command() {
         let td = tempfile::tempdir().unwrap();
-        let rpc_dir = td.path().join(".quorum-rpc");
+        let rpc_dir = td.path().join(".fletch-rpc");
         ensure_mailbox(&rpc_dir).unwrap();
         write_request(
             &rpc_dir.join("requests"),
@@ -327,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn echo_round_trips_free_text() {
         let td = tempfile::tempdir().unwrap();
-        let rpc_dir = td.path().join(".quorum-rpc");
+        let rpc_dir = td.path().join(".fletch-rpc");
         ensure_mailbox(&rpc_dir).unwrap();
         write_request(
             &rpc_dir.join("requests"),

@@ -1912,7 +1912,7 @@ mod tests {
             repos: vec![ArchivedRepoSnapshot {
                 repo_path: PathBuf::from("/some/repo"),
                 subdir: "repo".into(),
-                branch_name: Some("quorum/do-the-thing".into()),
+                branch_name: Some("feat/do-the-thing".into()),
                 branch_tip_sha: Some("deadbeef".into()),
                 parent_branch: Some("main".into()),
                 parent_branch_sha: Some("cafebabe".into()),
@@ -1947,7 +1947,7 @@ mod tests {
         let restored = vec![TrackedRepo {
             repo_path: PathBuf::from("/some/repo"),
             subdir: "repo".into(),
-            branch: Some("quorum/do-the-thing".into()),
+            branch: Some("feat/do-the-thing".into()),
             parent_branch: Some("main".into()),
             base_sha: None,
             pr_number: None,
