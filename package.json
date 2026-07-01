@@ -1,7 +1,7 @@
 {
   "name": "quorum",
   "private": true,
-  "version": "0.6.4",
+  "version": "0.6.5",
   "license": "AGPL-3.0-only",
   "author": "Alex Chaplinsky and fwdai.org",
   "type": "module",
