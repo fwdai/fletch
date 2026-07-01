@@ -16,28 +16,40 @@
 }
 .tb-logo {
   margin-left: 12px;
-  gap: 8px;
-  font-weight: 600;
-  letter-spacing: 0.005em;
+  /* the lockup scales from one font-size: mark sizes in em, wordmark inherits */
+  font-size: var(--fs-lg);
+  gap: 5px;
   color: var(--fg-0);
   user-select: none;
   pointer-events: none;
 }
+.tb-mark {
+  width: 1.15em;
+  height: 1.15em;
+  flex-shrink: 0;
+}
 .tb-wordmark {
   font-family: var(--font-geist);
+  font-weight: 600;
+  /* tight tracking so the mark + wordmark read as one crafted lockup */
+  letter-spacing: -0.015em;
 }
 .tb-badge {
-  height: 16px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
+  height: 13px;
+  /* intentionally below the --fs-xs floor: a decorative micro-tag, not text */
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--fg-2);
   background: var(--bg-3);
-  padding: 0 5px;
+  padding: 0 3px;
   border-radius: var(--r-xs);
   line-height: var(--lh-none);
-  position: relative;
-  top: 1px;
+  /* nudge up so it reads as a superscript tag against the wordmark */
+  align-self: flex-start;
+  margin-top: 1px;
+  margin-left: 1px;
 }
 .tb-crumb {
   position: absolute;
