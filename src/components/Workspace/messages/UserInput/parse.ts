@@ -4,7 +4,7 @@
 // into the `tool_result` text we feed to Claude's stdin to unblock the turn.
 //
 // Only Claude surfaces these in the custom-view JSON stream today; every other
-// provider Quorum drives runs fully auto-approved (see the adapter map). The
+// provider Fletch drives runs fully auto-approved (see the adapter map). The
 // model is provider-agnostic, so any tool reported under these names renders
 // the widget without per-adapter branching.
 

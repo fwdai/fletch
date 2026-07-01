@@ -1,4 +1,4 @@
-// Onboarding exhibits — small, real-feeling fragments of the Quorum UI,
+// Onboarding exhibits — small, real-feeling fragments of the Fletch UI,
 // framed inside each feature beat. Built from the same visual language as the
 // app so the tour previews the actual product. Ported from the design
 // prototype (onboarding/exhibits.jsx).

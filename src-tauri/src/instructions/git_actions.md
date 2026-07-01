@@ -1,4 +1,4 @@
-## Quorum app git actions
+## Fletch app git actions
 
 When the user clicks a git action in the app, the app sends a one-line request on their behalf:
 

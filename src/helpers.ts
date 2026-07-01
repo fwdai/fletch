@@ -56,7 +56,7 @@ export function reduceRecords(provider: string | undefined, records: SessionReco
   return items;
 }
 
-/** Overlay Quorum-origin outgoing-turn metadata (attachments) onto the
+/** Overlay Fletch-origin outgoing-turn metadata (attachments) onto the
  *  transcript-rendered conversation. Additive only — never replaces transcript
  *  content (which stays the canonical, re-ingestable history):
  *  - Matched turns (`native_id` set) hang their attachments on the rendered

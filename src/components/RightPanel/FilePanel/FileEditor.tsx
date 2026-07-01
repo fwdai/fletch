@@ -36,7 +36,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
 
   // Syntax theme: "quorum" uses our palette (gated by the `cq` class); other
   // families load a highlight.js stylesheet that follows the app's dark/light.
-  const isQuorum = useHljsTheme();
+  const isBuiltInTheme = useHljsTheme();
   const codeTheme = useAppStore((s) => s.codeTheme);
   const setCodeTheme = useAppStore((s) => s.setCodeTheme);
   const setLastError = useAppStore((s) => s.setLastError);
@@ -217,7 +217,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
       />
 
       {diffView ? (
-        <FileDiff agentId={agent.id} path={path} lang={file.lang} isQuorum={isQuorum} />
+        <FileDiff agentId={agent.id} path={path} lang={file.lang} isBuiltInTheme={isBuiltInTheme} />
       ) : (
         <>
           {isDeleted && (
@@ -248,7 +248,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
               </div>
             </div>
             <div className="fp-edit-main">
-              <pre className={`fp-hl ${isQuorum ? "cq" : ""}`} ref={hlRef} aria-hidden="true">
+              <pre className={`fp-hl ${isBuiltInTheme ? "cq" : ""}`} ref={hlRef} aria-hidden="true">
                 <code dangerouslySetInnerHTML={{ __html: html }} />
               </pre>
               <textarea

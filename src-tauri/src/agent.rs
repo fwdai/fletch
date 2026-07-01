@@ -73,7 +73,7 @@ pub struct PerTurnSpec {
     /// Session-level model override. `None` keeps the provider CLI default.
     pub model: Option<String>,
     /// A custom agent's standing instructions, snapshotted on the session and
-    /// injected into every turn (appended after Quorum's global system prompt).
+    /// injected into every turn (appended after Fletch's global system prompt).
     /// `None` for a plain built-in spawn.
     pub instructions: Option<String>,
     /// The agent's RPC mailbox dir, exposed to the child as `QUORUM_RPC_DIR`.
@@ -758,7 +758,7 @@ pub struct SpawnSpec<'a> {
     pub effort: Option<&'a str>,
     /// Session-level model override. `None` keeps the provider CLI default.
     pub model: Option<&'a str>,
-    /// A custom agent's standing instructions, injected after Quorum's global
+    /// A custom agent's standing instructions, injected after Fletch's global
     /// system prompt on every spawn/resume. `None` for a plain built-in spawn.
     pub instructions: Option<&'a str>,
     /// The agent's RPC mailbox dir, exposed to the child as `QUORUM_RPC_DIR`.
@@ -767,7 +767,7 @@ pub struct SpawnSpec<'a> {
     pub rows: u16,
 }
 
-/// The environment Quorum injects into every agent child: the absolute path to
+/// The environment Fletch injects into every agent child: the absolute path to
 /// its file-mailbox RPC dir. The agent posts requests there for the app to
 /// execute (see `rpc.rs`). Layered on top of the inherited environment.
 fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
@@ -845,7 +845,7 @@ impl Agent {
         let agent_args = (desc.pty_args)(session, spec.model, spec.instructions);
         let env = rpc_env(&spec.rpc_dir);
 
-        // Unified sandbox: run the agent's TUI under sandbox-exec with Quorum's
+        // Unified sandbox: run the agent's TUI under sandbox-exec with Fletch's
         // profile (the agent's own sandbox is disabled in its arg builder), so
         // per-turn agents are confined exactly like claude. argv becomes
         // `sandbox-exec -f <profile> <agent-bin> <agent-args…>`.
@@ -989,7 +989,7 @@ impl Agent {
         H: Fn(ExecExit) + Send + Sync + 'static,
     {
         // Unified sandbox: wrap each turn's process in sandbox-exec with
-        // Quorum's profile. The agent binary moves into `prefix_args`
+        // Fletch's profile. The agent binary moves into `prefix_args`
         // (`sandbox-exec -f <profile> <agent-bin>`), and the profile tempfile
         // rides on the ExecSession so it outlives the per-turn respawns.
         let home = dirs::home_dir()
@@ -1118,7 +1118,7 @@ fn prepare_sandbox(
     home: &Path,
 ) -> Result<tempfile::NamedTempFile> {
     // The agent inherits the app's env, so the CLAUDE_CONFIG_DIR it'll write to
-    // is whatever this process sees (quorum doesn't override it). Grant it.
+    // is whatever this process sees (fletch doesn't override it). Grant it.
     let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
     let profile_text =
         sandbox::build_profile(writable_root, rpc_dir, home, claude_config_dir.as_deref())?;
@@ -1267,7 +1267,7 @@ fn resolve_claude(home: &Path) -> Result<String> {
 
 /// Codex: `codex exec [resume <id>] --json …`. Approvals off and codex's own
 /// sandbox set to `danger-full-access` via `-c` (works on both `exec` and
-/// `exec resume`, unlike the `-s`/`-a` flags). Quorum now runs codex under
+/// `exec resume`, unlike the `-s`/`-a` flags). Fletch now runs codex under
 /// sandbox-exec like every other agent, so codex's own confinement is disabled
 /// to leave a single boundary — and so codex can reach its RPC mailbox, which
 /// lives outside the worktree that `workspace-write` would have confined it to.
@@ -1412,7 +1412,7 @@ fn pi_session_id(event: &Value) -> Option<String> {
 // cursor-agent 2026.06, opencode 1.15, pi 0.74+.
 
 /// Codex: bare `codex` launches the interactive TUI;
-/// `--dangerously-bypass-approvals-and-sandbox` runs it unattended (Quorum
+/// `--dangerously-bypass-approvals-and-sandbox` runs it unattended (Fletch
 /// already isolates the worktree). `resume <id>` continues a prior session.
 fn codex_pty_args(session_id: Option<&str>, model: Option<&str>, extra: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["--dangerously-bypass-approvals-and-sandbox".into()];
@@ -1946,7 +1946,7 @@ mod tests {
 
     #[test]
     fn codex_args_disable_codex_own_sandbox() {
-        // Quorum now wraps codex in sandbox-exec, so codex's own confinement is
+        // Fletch now wraps codex in sandbox-exec, so codex's own confinement is
         // turned fully off — otherwise its workspace-write sandbox would block
         // the RPC mailbox, which lives outside the worktree.
         let args = codex_build_args("hi", None, None, None, None);

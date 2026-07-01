@@ -58,7 +58,7 @@ export function CodeLivePanel({
   const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
   // Match the editor's syntax theme: the "quorum" palette is gated by `cq`;
   // other families color `.hljs-*` globally via a loaded stylesheet.
-  const isQuorum = useHljsTheme();
+  const isBuiltInTheme = useHljsTheme();
 
   // Reuse the same 1s git poll the Git tab uses; only one right-rail tab is
   // mounted at a time, so this never double-polls.
@@ -277,7 +277,7 @@ export function CodeLivePanel({
         <DiffBody
           hunks={hunks}
           lang={lang}
-          isQuorum={isQuorum}
+          isBuiltInTheme={isBuiltInTheme}
           live={follow && busy && displayPath === liveFile}
           freshKeys={freshKeys}
         />

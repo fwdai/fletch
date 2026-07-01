@@ -6,7 +6,7 @@ export interface CodeThemeDef {
   id: string;
   label: string;
   /** highlight.js style stem for the app's dark / light mode; null for the
-   *  built-in Quorum palette. */
+   *  built-in Fletch palette. */
   dark: string | null;
   light: string | null;
 }

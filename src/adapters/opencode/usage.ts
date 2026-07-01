@@ -3,7 +3,7 @@
 // OpenCode reports usage in three shapes depending on the source:
 //   - LIVE `run --format json` stream — the per-step delta nested under `.part`:
 //       {"type":"step_finish","part":{"tokens":{…},"cost":0,"modelID":"…"}}
-//     This is the only path that fires for Quorum: `opencode run` never writes
+//     This is the only path that fires for Fletch: `opencode run` never writes
 //     the on-disk blob store, so usage is captured live (persistLiveUsage) and
 //     stored into session_records.
 //   - ON-DISK assistant message blob (when a transcript is read):

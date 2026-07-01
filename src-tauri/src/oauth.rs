@@ -222,7 +222,7 @@ pub async fn oauth_device_login(
 ) -> Result<OAuthProfile, String> {
     let cfg = provider_cfg(&provider)?;
     let http = reqwest::Client::builder()
-        .user_agent("Quorum")
+        .user_agent("Fletch")
         .build()
         .map_err(|e| e.to_string())?;
 

@@ -1,10 +1,10 @@
 //! Agent instruction injection.
 //!
-//! A single source of truth for the system-prompt-level instructions Quorum
+//! A single source of truth for the system-prompt-level instructions Fletch
 //! injects into every agent — edit `instructions/system_prompt.md` and every
 //! agent picks it up on its next spawn. There is no other copy.
 //!
-//! Quorum drives heterogeneous agent CLIs, and they expose different slots for
+//! Fletch drives heterogeneous agent CLIs, and they expose different slots for
 //! app-supplied guidance, so the *delivery* is per-agent while the *text* is
 //! shared:
 //!
@@ -18,9 +18,9 @@
 //!   accumulating copies).
 //!
 //! The injected text has three layers: editable general guidance
-//! (`instructions/system_prompt.md`), a Quorum-managed protocol block
+//! (`instructions/system_prompt.md`), a Fletch-managed protocol block
 //! (`instructions/rpc_protocol.md`) that documents the file-RPC transport the
-//! app exposes (see `rpc.rs`), and Quorum-managed feature playbooks (for
+//! app exposes (see `rpc.rs`), and Fletch-managed feature playbooks (for
 //! example `instructions/git_actions.md`) behind the panel's `[app-action]`
 //! triggers. The managed blocks are code-managed because they must stay in
 //! sync with the op allowlist / trigger names; the general layer is yours to
@@ -30,10 +30,10 @@
 /// Editable general guidance. Edit the file, not this constant.
 const SYSTEM_PROMPT: &str = include_str!("instructions/system_prompt.md");
 
-/// Quorum-managed RPC protocol block, appended after the general guidance.
+/// Fletch-managed RPC protocol block, appended after the general guidance.
 const RPC_INSTRUCTIONS: &str = include_str!("instructions/rpc_protocol.md");
 
-/// Quorum-managed git-action playbooks. The panel sends a short
+/// Fletch-managed git-action playbooks. The panel sends a short
 /// `[app-action] <name>` trigger; the full per-action instructions live here
 /// so the chat transcript stays free of boilerplate. Code-managed: must stay
 /// in sync with the trigger names the frontend sends (see
@@ -106,7 +106,7 @@ pub fn prepend_to_prompt(prompt: &str, session_id: Option<&str>, extra: Option<&
     }
     // Wrap in a namespaced tag so the UI can strip this block from the user
     // bubble (these agents echo the prompt back into the transcript). The tag
-    // is Quorum-specific to avoid colliding with real user content.
+    // is Fletch-specific to avoid colliding with real user content.
     format!("<quorum-system>\n{text}\n</quorum-system>\n\n{prompt}")
 }
 

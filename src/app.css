@@ -1,4 +1,4 @@
-/* Quorum styles — split from the original monolithic app.css.
+/* Fletch styles — split from the original monolithic app.css.
  * This file is an ORDERED import manifest: imports are listed in the exact
  * source order of the original stylesheet so the cascade is byte-identical.
  * Foundation → shared primitives → components, each block in original order.

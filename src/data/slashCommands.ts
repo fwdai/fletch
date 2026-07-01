@@ -7,7 +7,7 @@
 //    skills, and a handful of built-ins implemented as skills. Picking
 //    one inserts `/<name> ` into the input; the user then sends.
 //
-//  - `local` — handled by Quorum itself. The text never reaches the
+//  - `local` — handled by Fletch itself. The text never reaches the
 //    agent. Pick triggers the action identified by `action`. We don't
 //    define any yet, but the type slot is here so adding (e.g.) a
 //    `/clear` that wipes the transcript view is a one-liner later.
@@ -16,7 +16,7 @@
 // `/resume`, `/agents`, `/mcp`, `/doctor`) are intentionally absent —
 // they don't resolve over Claude's stream-json input and produce
 // "/foo isn't available in this environment" if proxied. If we want
-// them, they need a `local` entry with Quorum-side implementations.
+// them, they need a `local` entry with Fletch-side implementations.
 
 import type { ProviderId } from "./providers";
 
