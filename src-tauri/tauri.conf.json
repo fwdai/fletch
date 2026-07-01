@@ -3,7 +3,7 @@
   "productName": "Fletch",
   "mainBinaryName": "Fletch",
   "version": "0.6.5",
-  "identifier": "com.quorum.desktop",
+  "identifier": "com.fletch.desktop",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",

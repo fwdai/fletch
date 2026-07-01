@@ -38,14 +38,14 @@ use crate::workspace::WorkspaceManager;
 type DbState = Arc<Mutex<Connection>>;
 
 /// Fletch's on-disk data directory — `~/Library/Application Support/
-/// com.quorum.desktop` (with a `dev` subfolder under debug builds), matching
+/// com.fletch.desktop` (with a `dev` subfolder under debug builds), matching
 /// what `app.path().app_data_dir()` resolves to in `setup`. Computed without
 /// an `AppHandle` so logging can be initialized before the Tauri app is built,
 /// and reused by the `reveal_logs` command.
 pub(crate) fn data_dir() -> PathBuf {
     let base = dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("com.quorum.desktop");
+        .join("com.fletch.desktop");
     if cfg!(debug_assertions) {
         base.join("dev")
     } else {
@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn data_dir_is_under_the_bundle_id_and_logs_nest_within() {
         let dir = data_dir();
-        assert!(dir.to_string_lossy().contains("com.quorum.desktop"));
+        assert!(dir.to_string_lossy().contains("com.fletch.desktop"));
         // Tests build in debug, so the dev sandbox subfolder is used.
         assert_eq!(dir.file_name().unwrap(), "dev");
         assert!(logs_dir().starts_with(&dir));
