@@ -1,5 +1,6 @@
 import { useAppStore } from "../../store";
 import { basename, hueFromString } from "../../util/format";
+import { FletchMark } from "../FletchMark";
 import { Icon } from "../Icon";
 import { IconButton } from "../ui/IconButton";
 import { Breadcrumb, type CrumbEntry } from "./Breadcrumb";
@@ -19,11 +20,12 @@ export function TitleBar() {
   return (
     <div className="tb flex-center" data-tauri-drag-region>
       <div className="tb-lights-gutter" data-tauri-drag-region />
-      <div className="tb-logo iflex-center text-lg" data-tauri-drag-region aria-label="Fletch">
+      <div className="tb-logo iflex-center" data-tauri-drag-region aria-label="Fletch">
+        <FletchMark className="tb-mark" />
         <span className="tb-wordmark" aria-hidden="true">
-          Fletch
+          fletch
         </span>
-        <span className="tb-badge iflex-center text-xs">beta</span>
+        <span className="tb-badge iflex-center">beta</span>
       </div>
       <Breadcrumb entries={entries} />
       <div className="tb-right flex-center">

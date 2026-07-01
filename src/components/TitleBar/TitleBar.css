@@ -16,28 +16,49 @@
 }
 .tb-logo {
   margin-left: 12px;
-  gap: 8px;
-  font-weight: 600;
-  letter-spacing: 0.005em;
+  /* the lockup scales from one font-size: mark sizes in em, wordmark inherits.
+   * Spacing is deliberately uneven — the mark + wordmark are one tight unit,
+   * the beta tag is a separate meta element with more air (set per element,
+   * not a uniform gap). */
+  font-size: var(--fs-lg);
   color: var(--fg-0);
   user-select: none;
   pointer-events: none;
 }
+.tb-mark {
+  width: 1.12em;
+  height: 1.12em;
+  flex-shrink: 0;
+  margin-right: 6px;
+  /* the wordmark has ascenders but no descenders, so its ink sits above the
+   * line-box center; lift the mark half a pixel onto that optical center */
+  position: relative;
+  top: -0.5px;
+}
 .tb-wordmark {
   font-family: var(--font-geist);
+  font-weight: 600;
+  /* tight tracking so the mark + wordmark read as one crafted lockup */
+  letter-spacing: -0.015em;
 }
 .tb-badge {
-  height: 16px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
+  height: 13px;
+  /* intentionally below the --fs-xs floor: a decorative micro-tag, not text */
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--fg-2);
   background: var(--bg-3);
-  padding: 0 5px;
+  /* uppercase tracking adds a sliver of space after the last letter; trim the
+   * right padding so the pill still reads optically centered */
+  padding: 0 3px 0 3.5px;
   border-radius: var(--r-xs);
   line-height: var(--lh-none);
+  margin-left: 7px;
+  align-self: center;
   position: relative;
-  top: 1px;
+  top: -0.5px;
 }
 .tb-crumb {
   position: absolute;
