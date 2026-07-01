@@ -123,7 +123,7 @@ export function ExhibitParallel() {
   return (
     <div className="ob-exhibit-wrap ob-reveal" style={{ "--d": ".25s" } as React.CSSProperties}>
       <div className="ob-exhibit">
-        <ExBar title="quorum — worktrees" />
+        <ExBar title="fletch — worktrees" />
         <div className="ex-side">
           <div className="proj">
             <div className="proj-h flex-center open">
@@ -161,7 +161,7 @@ export function ExhibitProviders() {
   return (
     <div className="ob-exhibit-wrap ob-reveal" style={{ "--d": ".25s" } as React.CSSProperties}>
       <div className="ob-exhibit">
-        <ExBar title="quorum — providers" />
+        <ExBar title="fletch — providers" />
         <div className="ex-providers">
           {list.map((p, i) => (
             <div key={p.id} className={`ex-prov ${i < lit ? "on" : ""}`}>
@@ -249,12 +249,12 @@ export function ExhibitRoom() {
   return (
     <div className="ob-exhibit-wrap ob-reveal" style={{ "--d": ".25s" } as React.CSSProperties}>
       <div className="ob-exhibit">
-        <ExBar title="quorum — home" />
+        <ExBar title="fletch — home" />
         <div className="ex-room">
           <div className="ex-room-head">
             <div className="ex-room-mark">
               <span className="d" />
-              QUORUM
+              FLETCH
             </div>
             <div className="ex-room-when">
               Thu, Jun 4<span className="sep">·</span>9:24 AM
@@ -332,7 +332,7 @@ export function ExhibitCode() {
   return (
     <div className="ob-exhibit-wrap ob-reveal" style={{ "--d": ".25s" } as React.CSSProperties}>
       <div className="ob-exhibit">
-        <ExBar title="quorum — code" />
+        <ExBar title="fletch — code" />
         <div className="ex-code">
           <div className="ex-code-tabs">
             <span className="ex-ctab active">

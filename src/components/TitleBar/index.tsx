@@ -1,7 +1,6 @@
 import { useAppStore } from "../../store";
 import { basename, hueFromString } from "../../util/format";
 import { Icon } from "../Icon";
-import { QMark } from "../QMark";
 import { IconButton } from "../ui/IconButton";
 import { Breadcrumb, type CrumbEntry } from "./Breadcrumb";
 
@@ -20,10 +19,9 @@ export function TitleBar() {
   return (
     <div className="tb flex-center" data-tauri-drag-region>
       <div className="tb-lights-gutter" data-tauri-drag-region />
-      <div className="tb-logo iflex-center text-lg" data-tauri-drag-region aria-label="Quorum">
+      <div className="tb-logo iflex-center text-lg" data-tauri-drag-region aria-label="Fletch">
         <span className="tb-wordmark" aria-hidden="true">
-          <QMark className="tb-qmark" />
-          uorum
+          Fletch
         </span>
         <span className="tb-badge iflex-center text-xs">beta</span>
       </div>

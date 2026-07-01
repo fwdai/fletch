@@ -15,7 +15,7 @@ export function DeveloperPane() {
       <SetHead
         eyebrow="Settings · Developer"
         title="Developer"
-        desc="Tools for working on Quorum itself. Only available in development builds."
+        desc="Tools for working on Fletch itself. Only available in development builds."
       />
 
       <SetGroup label="Onboarding">

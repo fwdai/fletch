@@ -61,7 +61,7 @@ export function GeneralPane() {
       <SetHead
         eyebrow="Settings · General"
         title="General"
-        desc="Tune how Quorum looks and which surfaces appear while you work. Changes apply instantly across every agent."
+        desc="Tune how Fletch looks and which surfaces appear while you work. Changes apply instantly across every agent."
       />
 
       <SetGroup label="Appearance">
@@ -119,13 +119,13 @@ export function GeneralPane() {
       <SetGroup label="Diagnostics" last>
         <SetRow
           title="Usage analytics"
-          sub="Share anonymous usage events (app opens, agents spawned, PRs opened) to help improve Quorum. No code, file paths, repo names, or prompts are ever sent."
+          sub="Share anonymous usage events (app opens, agents spawned, PRs opened) to help improve Fletch. No code, file paths, repo names, or prompts are ever sent."
         >
           <SetToggle on={telemetryEnabled} onClick={() => setTelemetryEnabled(!telemetryEnabled)} />
         </SetRow>
         <SetRow
           title="Logs"
-          sub="Quorum writes a local log file. Reveal it to attach to a bug report."
+          sub="Fletch writes a local log file. Reveal it to attach to a bug report."
         >
           <Button variant="outline" onClick={() => void revealLogs()}>
             <Icon name="folder" size={12} />

@@ -191,7 +191,7 @@ export function Onboarding() {
         <div className="ob-tb-gutter" data-tauri-drag-region />
         <div className="ob-tb-mark text-xs">
           <span className="d" />
-          <span>QUORUM</span>
+          <span>FLETCH</span>
         </div>
         <div className="ob-tb-right">
           {step.kind !== "ignite" && (

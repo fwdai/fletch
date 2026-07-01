@@ -55,7 +55,7 @@ const BEAT_PROVIDERS: BeatDef = {
   ),
   lede: (
     <>
-      Point Quorum at the agents you already pay for. Switch per task, compare side by side —{" "}
+      Point Fletch at the agents you already pay for. Switch per task, compare side by side —{" "}
       <b>no lock-in, ever.</b>
     </>
   ),
@@ -88,7 +88,7 @@ const BEAT_ROOM: BeatDef = {
   lede: (
     <>
       Home shows you what's running, what's waiting, and what needs you — across every project.{" "}
-      <b>The whole quorum, one room.</b>
+      <b>The whole fleet, one room.</b>
     </>
   ),
   points: [

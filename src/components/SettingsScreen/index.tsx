@@ -75,7 +75,7 @@ export function SettingsScreen() {
           ))}
         </div>
         <div className="set-nav-foot text-xs">
-          <span className="mono">Quorum</span>
+          <span className="mono">Fletch</span>
           <span className="mono dim">v{pkg.version}</span>
         </div>
       </nav>
