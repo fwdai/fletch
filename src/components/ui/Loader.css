@@ -1,4 +1,6 @@
 .ui-loader {
+  --ui-loader-opacity-rest: 0.35;
+  --ui-loader-opacity-peak: 1;
   display: inline-flex;
   gap: var(--ui-loader-gap, 3px);
   flex-shrink: 0;
@@ -8,7 +10,7 @@
   height: var(--ui-loader-dot, 4px);
   border-radius: 50%;
   background: var(--ui-loader-color, var(--accent));
-  animation: ui-loader-bounce 1.2s var(--ease) infinite;
+  animation: ui-loader-bounce var(--ui-loader-duration, 1.2s) var(--ease) infinite;
 }
 .ui-loader i:nth-child(2) {
   animation-delay: 0.15s;
@@ -22,6 +24,9 @@
 }
 .ui-loader.muted {
   --ui-loader-color: var(--fg-2);
+  --ui-loader-opacity-rest: 0.45;
+  --ui-loader-opacity-peak: 0.9;
+  --ui-loader-duration: 1.3s;
 }
 .ui-loader.inherit {
   --ui-loader-color: currentColor;
@@ -41,11 +46,11 @@
   60%,
   100% {
     transform: translateY(0);
-    opacity: 0.35;
+    opacity: var(--ui-loader-opacity-rest);
   }
   30% {
     transform: translateY(-3px);
-    opacity: 1;
+    opacity: var(--ui-loader-opacity-peak);
   }
 }
 
