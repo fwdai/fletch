@@ -87,7 +87,7 @@ fn init_logging() {
     use tracing_subscriber::prelude::*;
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,quorum_lib=debug"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,fletch_lib=debug"));
 
     let dir = logs_dir();
     let appender = std::fs::create_dir_all(&dir)
@@ -95,7 +95,7 @@ fn init_logging() {
         .and_then(|()| {
             tracing_appender::rolling::Builder::new()
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
-                .filename_prefix("quorum")
+                .filename_prefix("fletch")
                 .filename_suffix("log")
                 .max_log_files(LOG_RETENTION_FILES)
                 .build(&dir)
@@ -535,7 +535,7 @@ pub fn run() {
             commands::reveal_logs,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building quorum")
+        .expect("error while building fletch")
         .run(|app, event| {
             // On quit, explicitly kill every live agent/shell/run child.
             // tauri-managed state isn't reliably dropped on macOS app
