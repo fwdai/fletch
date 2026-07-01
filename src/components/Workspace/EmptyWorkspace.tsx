@@ -75,7 +75,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
         <p className="empty-sub text-base">
           A worktree and sandbox will be created at{" "}
           <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
-            ~/.quorum/worktrees/{draft.name}
+            ~/.fletch/worktrees/{draft.name}
           </span>
         </p>
 

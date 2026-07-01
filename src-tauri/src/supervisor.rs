@@ -730,7 +730,7 @@ impl Supervisor {
     }
 
     /// Bring a second (or third…) repo into a live agent. Creates a
-    /// detached worktree at `~/.quorum/worktrees/<agent-id>/<subdir>/`
+    /// detached worktree at `~/.fletch/worktrees/<agent-id>/<subdir>/`
     /// and appends a TrackedRepo entry. The worktree stays detached until
     /// its first push, consistent with the primary repo.
     pub async fn add_repo_to_agent(

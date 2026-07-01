@@ -6,7 +6,7 @@
 //! rather than relying on each CLI's own sandbox. `sandbox-exec` is just the
 //! process wrapper around the PTY/exec child, so terminal streaming and startup
 //! timing are unchanged while *writes* are constrained to the agent's parent dir
-//! (under `~/.quorum/worktrees/<id>/`) plus standard state/cache locations and
+//! (under `~/.fletch/worktrees/<id>/`) plus standard state/cache locations and
 //! each agent's own on-disk session store. The agent's per-repo worktrees live
 //! as subdirs of that parent, so each inherits the writable allowance.
 //!
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 
 /// Build the SBPL profile. `writable_root` is the agent's parent dir;
-/// `rpc_dir` is its private file-mailbox (`~/.quorum/rpc/<id>/`), which lives
+/// `rpc_dir` is its private file-mailbox (`~/.fletch/rpc/<id>/`), which lives
 /// outside the worktree tree and so needs its own allow entry.
 /// `claude_config_dir` is the value of `CLAUDE_CONFIG_DIR` the agent runs with
 /// (`None` = default `~/.claude`); when set elsewhere the agent writes its

@@ -104,11 +104,11 @@ impl Response {
     }
 }
 
-/// `~/.quorum/rpc/<agent-id>/` — the agent's private mailbox root.
+/// `~/.fletch/rpc/<agent-id>/` — the agent's private mailbox root.
 pub fn mailbox_dir(agent_id: &str) -> Result<PathBuf> {
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    Ok(home.join(".quorum").join("rpc").join(agent_id))
+    Ok(home.join(".fletch").join("rpc").join(agent_id))
 }
 
 /// Create the mailbox and its `requests/`/`responses/` subdirs. Idempotent;
