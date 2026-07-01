@@ -1521,13 +1521,13 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
 }
 
 /// Absolute path to the root holding every agent's worktrees:
-/// `~/.quorum/worktrees/`. Shared by *all* Fletch processes on the machine
+/// `~/.fletch/worktrees/`. Shared by *all* Fletch processes on the machine
 /// (release and dev builds alike — only the database is namespaced per build),
 /// which is why name allocation has to consult it directly.
 pub fn worktrees_root() -> Result<PathBuf> {
     let home = dirs::home_dir()
         .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    Ok(home.join(".quorum").join("worktrees"))
+    Ok(home.join(".fletch").join("worktrees"))
 }
 
 /// The set of agent-id directories that physically exist under the worktrees
@@ -1553,13 +1553,13 @@ fn occupied_worktree_dirs_in(root: &Path) -> HashSet<String> {
 }
 
 /// Absolute path to the dir holding all of one agent's worktrees:
-/// `~/.quorum/worktrees/<agent-id>/`.
+/// `~/.fletch/worktrees/<agent-id>/`.
 pub fn agent_parent_dir(agent_id: &str) -> Result<PathBuf> {
     Ok(worktrees_root()?.join(agent_id))
 }
 
 /// Absolute path to one tracked repo's worktree:
-/// `~/.quorum/worktrees/<agent-id>/<subdir>/`.
+/// `~/.fletch/worktrees/<agent-id>/<subdir>/`.
 pub fn repo_worktree_path(agent_id: &str, subdir: &str) -> Result<PathBuf> {
     Ok(agent_parent_dir(agent_id)?.join(subdir))
 }

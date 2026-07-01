@@ -1774,8 +1774,8 @@ mod tests {
         );
         // Dots are preserved (unlike Cursor) — only slashes are replaced.
         assert_eq!(
-            pi_session_slug(Path::new("/Users/alex/.quorum/worktrees/balkhash/agent")),
-            "--Users-alex-.quorum-worktrees-balkhash-agent--"
+            pi_session_slug(Path::new("/Users/alex/.fletch/worktrees/balkhash/agent")),
+            "--Users-alex-.fletch-worktrees-balkhash-agent--"
         );
     }
 
