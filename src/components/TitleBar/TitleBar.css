@@ -35,15 +35,15 @@
   letter-spacing: -0.015em;
 }
 .tb-badge {
-  height: 13px;
+  height: 12px;
   /* intentionally below the --fs-xs floor: a decorative micro-tag, not text */
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--fg-2);
   background: var(--bg-3);
-  padding: 0 3px;
+  padding: 0 2.5px;
   border-radius: var(--r-xs);
   line-height: var(--lh-none);
   /* nudge up so it reads as a superscript tag against the wordmark */

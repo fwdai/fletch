@@ -20,7 +20,7 @@ export function FletchMark({ className }: { className?: string }) {
         strokeLinejoin="round"
       />
       <path
-        d="M12 6L18 12L12 18"
+        d="M14 6L20 12L14 18"
         style={{ stroke: "var(--accent)" }}
         strokeWidth="3"
         strokeLinecap="round"
