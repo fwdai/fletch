@@ -1,5 +1,5 @@
 [package]
-name = "quorum"
+name = "fletch"
 version = "0.6.5"
 description = "Spawn coding agents in isolated sandboxes"
 authors = ["Alex Chaplinsky", "fwdai.org"]
@@ -8,7 +8,7 @@ edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "quorum_lib"
+name = "fletch_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

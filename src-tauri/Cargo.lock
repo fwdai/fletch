@@ -986,6 +986,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "fletch"
+version = "0.6.5"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "dirs 5.0.1",
+ "nix 0.29.0",
+ "parking_lot",
+ "portable-pty",
+ "reqwest 0.13.3",
+ "rusqlite",
+ "rusqlite_migration",
+ "sentry",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-process",
+ "tauri-plugin-sentry",
+ "tauri-plugin-shell",
+ "tauri-plugin-updater",
+ "tauri-plugin-window-state",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3101,39 +3134,6 @@ dependencies = [
  "socket2",
  "tracing",
  "windows-sys 0.60.2",
-]
-
-[[package]]
-name = "quorum"
-version = "0.6.5"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "dirs 5.0.1",
- "nix 0.29.0",
- "parking_lot",
- "portable-pty",
- "reqwest 0.13.3",
- "rusqlite",
- "rusqlite_migration",
- "sentry",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-process",
- "tauri-plugin-sentry",
- "tauri-plugin-shell",
- "tauri-plugin-updater",
- "tauri-plugin-window-state",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
