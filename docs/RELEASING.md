@@ -62,7 +62,7 @@ as a secret and proxies `latest.json` + asset downloads, rewriting the manifest
 URLs to point back at itself. `tauri.conf.json` already points at it:
 
 ```json
-"endpoints": ["https://updater.quorum.fwdai.org/latest.json"]
+"endpoints": ["https://updater.fletch.sh/latest.json"]
 ```
 
 Deploy it once:
@@ -74,7 +74,7 @@ wrangler secret put GITHUB_TOKEN   # fine-grained PAT, Contents: read on fwdai/q
 wrangler deploy
 ```
 
-The domain `updater.quorum.fwdai.org` must be on your Cloudflare account (Wrangler
+The domain `updater.fletch.sh` must be on your Cloudflare account (Wrangler
 provisions the custom-domain route). If you use a different host, change both
 `cloudflare-worker/wrangler.toml` and `tauri.conf.json`. See
 `cloudflare-worker/README.md` for endpoint details.

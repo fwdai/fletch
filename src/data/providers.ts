@@ -68,7 +68,7 @@ export const DEFAULT_PROVIDER_ID = "claude";
  *  re-uploaded — no app release. The webview's disk cache serves it offline
  *  after the first load; consumers fall back to the abbreviation monogram when
  *  the image is missing or hasn't loaded yet. */
-export const agentIconUrl = (slug: string) => `https://quorum.fwdai.org/agents/${slug}.svg`;
+export const agentIconUrl = (slug: string) => `https://fletch.sh/agents/${slug}.svg`;
 
 /** Human-readable name for a provider id (e.g. "claude" → "Claude Code").
  *  Falls back to the raw id when unknown so we never render an empty label. */

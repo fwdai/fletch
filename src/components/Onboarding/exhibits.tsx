@@ -128,7 +128,7 @@ export function ExhibitParallel() {
           <div className="proj">
             <div className="proj-h flex-center open">
               <Icon name="chevR" size={10} className="chev" />
-              <span className="pname">quorum-core</span>
+              <span className="pname">fletch-core</span>
               <span className="pcount">4</span>
             </div>
             <div className="agents">
