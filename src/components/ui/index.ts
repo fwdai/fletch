@@ -10,6 +10,8 @@ export { Chip } from "./Chip";
 export { CopyButton } from "./CopyButton";
 export { DropdownItem, DropdownMenu, DropdownSection, DropdownSeparator } from "./Dropdown";
 export { IconButton } from "./IconButton";
+export type { LoaderSize, LoaderVariant } from "./Loader";
+export { Loader } from "./Loader";
 export { Scrim } from "./Scrim";
 export type { SelectOption } from "./Select";
 export { Select } from "./Select";

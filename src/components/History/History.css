@@ -231,23 +231,6 @@
   opacity: 1;
   pointer-events: none;
 }
-.hr-goto .dots {
-  display: inline-flex;
-  gap: 3px;
-}
-.hr-goto .dots i {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: bounce 1.2s var(--ease) infinite;
-}
-.hr-goto .dots i:nth-child(2) {
-  animation-delay: 0.15s;
-}
-.hr-goto .dots i:nth-child(3) {
-  animation-delay: 0.3s;
-}
 
 /* foot hint */
 .history-foot {
