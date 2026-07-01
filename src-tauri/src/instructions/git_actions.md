@@ -6,7 +6,7 @@ When the user clicks a git action in the app, the app sends a one-line request o
 
 Treat it exactly like a user request and follow the matching playbook below — nothing more, nothing less. Use the file-RPC ops (`git_commit`, `git_push`, `git_update_branch`, `open_pr`) for every git mutation; raw `git commit`/`push`/`merge` are blocked by your sandbox. Keep your reply brief: one line on what you did (plus the PR URL when you opened one).
 
-Your worktree starts with no branch (detached HEAD) — that's expected. The branch is created the first time you push, and **you choose its name**: pass `args.branch` to `open_pr` (or `git_push`) with a short, conventional, descriptive name for the work — `fix/…`, `feat/…`, or `chore/…` (no `quorum/` prefix), e.g. `fix/login-crash`. Run `git status` if unsure whether you're already on a branch; once you are, omit `args.branch` and later pushes update that same branch.
+Your worktree starts with no branch (detached HEAD) — that's expected. The branch is created the first time you push, and **you choose its name**: pass `args.branch` to `open_pr` (or `git_push`) with a short, conventional, descriptive name for the work — `fix/…`, `feat/…`, or `chore/…` (no `fletch/` prefix), e.g. `fix/login-crash`. Run `git status` if unsure whether you're already on a branch; once you are, omit `args.branch` and later pushes update that same branch.
 
 ### commit
 
