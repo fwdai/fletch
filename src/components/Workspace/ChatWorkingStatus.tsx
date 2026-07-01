@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../Icon";
+import { Loader } from "../ui/Loader";
 import { LiveTimer } from "./RunTimer";
 
 const DURATION_MS = 130;
@@ -46,11 +47,7 @@ export function ChatWorkingStatus({
 
   return (
     <div className={`chat-status${open ? " is-open" : ""}`} role="status" aria-live="polite">
-      <span className="dots">
-        <i />
-        <i />
-        <i />
-      </span>
+      <Loader variant="accent" />
       <span className="chat-status-label">{label}</span>
       {startedAt != null && (
         <>

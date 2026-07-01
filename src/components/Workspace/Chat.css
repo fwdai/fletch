@@ -43,24 +43,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-status .dots {
-  display: inline-flex;
-  gap: 3px;
-  flex-shrink: 0;
-}
-.chat-status .dots i {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: bounce 1.2s var(--ease) infinite;
-}
-.chat-status .dots i:nth-child(2) {
-  animation-delay: 0.15s;
-}
-.chat-status .dots i:nth-child(3) {
-  animation-delay: 0.3s;
-}
 /* Live timer riding the working strip — the one moving numeric value. */
 .chat-status-sep {
   flex-shrink: 0;
@@ -138,35 +120,6 @@
   border-left: 1px solid var(--bd);
   animation: chat-pending-in 220ms ease-out;
 }
-.chat-pending .dots {
-  display: inline-flex;
-  gap: 4px;
-}
-.chat-pending .dots i {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--fg-2);
-  animation: chat-pending-bounce 1.3s var(--ease) infinite;
-}
-.chat-pending .dots i:nth-child(2) {
-  animation-delay: 0.15s;
-}
-.chat-pending .dots i:nth-child(3) {
-  animation-delay: 0.3s;
-}
-@keyframes chat-pending-bounce {
-  0%,
-  60%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.45;
-  }
-  30% {
-    transform: translateY(-3px);
-    opacity: 0.9;
-  }
-}
 @keyframes chat-pending-in {
   from {
     opacity: 0;
@@ -181,13 +134,7 @@
   .chat-status {
     transition: none;
   }
-  .chat-status .dots i {
-    animation: none;
-  }
   .chat-pending {
-    animation: none;
-  }
-  .chat-pending .dots i {
     animation: none;
   }
 }

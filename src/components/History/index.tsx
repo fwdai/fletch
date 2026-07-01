@@ -3,6 +3,7 @@ import type { AgentRecord } from "../../api";
 import { useAppStore } from "../../store";
 import { basename, firstLine } from "../../util/format";
 import { Icon } from "../Icon";
+import { Loader } from "../ui/Loader";
 
 export function History() {
   const workspace = useAppStore((s) => s.workspace);
@@ -183,11 +184,7 @@ export function History() {
                         >
                           {isRestoring ? (
                             <>
-                              <span className="dots">
-                                <i />
-                                <i />
-                                <i />
-                              </span>
+                              <Loader variant="inherit" />
                               Restoring…
                             </>
                           ) : (

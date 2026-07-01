@@ -36,4 +36,5 @@
 @import "./styles/shared/error-boundary.css";
 @import "./components/ProviderReadiness/ProviderReadiness.css";
 @import "./components/SettingsScreen/CustomAgents/CustomAgents.css";
+@import "./components/ui/Loader.css";
 @import "./components/ui/Select.css";

@@ -9,6 +9,7 @@ and is the path of least resistance for new UI.
 | `Badge` | Compact status pill — agent state (`new`/`err`) and PR state (`pr-open`/`pr-merged`/`pr-closed`). Non-interactive. | `.ag-badge` |
 | `Button` | Text-label button — CTAs and dialog actions (Cancel / Save / Restart). Variants `ghost` / `outline` / `primary` (+ `danger`), `size="sm"`. | `.btn-t` |
 | `IconButton` | Square icon-only button (title bar, sidebar, panels). Built-in CSS tooltip via `tip`. | `.btn-i` |
+| `Loader` | Three-dot bounce loader — working / pending / restoring states. Variants `accent` / `muted` / `inherit`, `size="sm"` / `"md"`. | `.ui-loader` |
 | `Chip` | Composer footer chip with a text label (model picker, base branch, attach). | `.c-chip` |
 | `Select` | Custom `<select>` replacement (keyboard-operable dropdown of string options). | `.ui-select-*` |
 | `DropdownMenu` / `DropdownItem` / `DropdownSection` / `DropdownSeparator` | Presentational menu shell + rows. Owns structure + state classes (`active`/`disabled`/`danger`); **caller owns behavior** (open/close, positioning via `style`, dismissal, keyboard). | `.dd` / `.dd-item` |

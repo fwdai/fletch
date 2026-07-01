@@ -5,6 +5,7 @@ import { providerLabel } from "../../data/providers";
 import { useAppStore } from "../../store";
 import { stripInjectedInstructions } from "../../util/instructions";
 import { Composer } from "../Composer";
+import { Loader } from "../ui/Loader";
 import { APP_ACTION_PREFIX } from "../RightPanel/delegation";
 import { ChatNav } from "./ChatNav";
 import { ChatSearch } from "./ChatSearch";
@@ -263,11 +264,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           <div className="chat-inner fade-in" key={agent.id}>
             {transcriptLoading && items.length === 0 ? (
               <div className="writing flex-center">
-                <span className="dots">
-                  <i />
-                  <i />
-                  <i />
-                </span>
+                <Loader variant="accent" />
                 <span>Loading transcript…</span>
               </div>
             ) : items.length === 0 && hasPriorConversation && !busy ? (
@@ -292,11 +289,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
             )}
             {turnPending && (
               <div className="chat-pending" aria-hidden="true">
-                <span className="dots">
-                  <i />
-                  <i />
-                  <i />
-                </span>
+                <Loader variant="muted" size="md" />
               </div>
             )}
           </div>

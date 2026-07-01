@@ -1,0 +1,56 @@
+.ui-loader {
+  display: inline-flex;
+  gap: var(--ui-loader-gap, 3px);
+  flex-shrink: 0;
+}
+.ui-loader i {
+  width: var(--ui-loader-dot, 4px);
+  height: var(--ui-loader-dot, 4px);
+  border-radius: 50%;
+  background: var(--ui-loader-color, var(--accent));
+  animation: ui-loader-bounce 1.2s var(--ease) infinite;
+}
+.ui-loader i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.ui-loader i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.ui-loader.accent {
+  --ui-loader-color: var(--accent);
+}
+.ui-loader.muted {
+  --ui-loader-color: var(--fg-2);
+}
+.ui-loader.inherit {
+  --ui-loader-color: currentColor;
+}
+
+.ui-loader.sm {
+  --ui-loader-dot: 4px;
+  --ui-loader-gap: 3px;
+}
+.ui-loader.md {
+  --ui-loader-dot: 5px;
+  --ui-loader-gap: 4px;
+}
+
+@keyframes ui-loader-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-loader i {
+    animation: none;
+  }
+}
