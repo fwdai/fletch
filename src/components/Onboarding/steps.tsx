@@ -9,8 +9,8 @@ import { Icon } from "../Icon";
 import type { BeatDef } from "./beats";
 import { OnboardingReadiness } from "./OnboardingReadiness";
 
-const TERMS_URL = "https://quorum.fwdai.org/terms";
-const PRIVACY_URL = "https://quorum.fwdai.org/privacy";
+const TERMS_URL = "https://fletch.sh/terms";
+const PRIVACY_URL = "https://fletch.sh/privacy";
 
 // ── brand mark: the Fletch triple-peak ──────────────────────────────
 export function PeaksMark() {

@@ -9,7 +9,7 @@
 
 Fletch is an open-source macOS app for running and managing multiple AI coding agents at once — Claude Code, Codex, Cursor, OpenCode, and more — against a single repository, without them stepping on each other.
 
-[![Download for macOS](https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon%20%26%20Intel-111?style=for-the-badge&logo=apple)](https://quorum.fwdai.org)
+[![Download for macOS](https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon%20%26%20Intel-111?style=for-the-badge&logo=apple)](https://fletch.sh)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 ![Platform: macOS 13+](https://img.shields.io/badge/Platform-macOS%2013%2B-lightgrey.svg)
@@ -52,7 +52,7 @@ You install and authenticate the agent CLIs you want to use; Fletch detects them
 
 ## Download
 
-**[Download Fletch for macOS →](https://quorum.fwdai.org)** (universal — Apple Silicon & Intel)
+**[Download Fletch for macOS →](https://fletch.sh)** (universal — Apple Silicon & Intel)
 
 The app is signed, notarized, and updates itself in the background.
 

@@ -28,7 +28,7 @@ function sanitizeSvg(svg: string): string {
 
 /**
  * A provider's brand icon shown inside a hue-tinted chip. The SVG is fetched
- * from the website CDN (https://quorum.fwdai.org/agents/<slug>.svg) and
+ * from the website CDN (see `agentIconUrl` in `data/providers.ts`) and
  * inlined, so icons authored with `fill="currentColor"` inherit the chip's
  * theme-aware color (dark in light mode, light in dark mode) while full-color
  * logos keep their own fills. If the icon is missing or hasn't loaded —
