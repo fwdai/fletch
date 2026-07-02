@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SessionRecord } from "./api";
-import { reduceRecords } from "./helpers";
+import type { SessionRecord } from "@/api";
+import { reduceRecords } from "@/helpers";
 
 // Canonical session_records hold verbatim per-provider transcript bodies.
 // reduceRecords renders them the same way on-disk replay does:

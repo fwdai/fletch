@@ -4,11 +4,11 @@
 // on the store only for its type shape (AppState/DraftAgent) — a type-only
 // import, erased at compile time, so there's no runtime cycle.
 
-import { type ChatItem, getAdapter, type RawEvent } from "./adapters";
-import { hasUsage, usageFromRecords } from "./adapters/usage";
-import { api, type SessionRecord, type UserTurn, type Workspace } from "./api";
-import { commandsFor } from "./data/slashCommands";
-import type { AppState, DraftAgent } from "./store";
+import { type ChatItem, getAdapter, type RawEvent } from "../adapters";
+import { hasUsage, usageFromRecords } from "../adapters/usage";
+import { api, type SessionRecord, type UserTurn, type Workspace } from "../api";
+import { commandsFor } from "../data/slashCommands";
+import type { AppState, DraftAgent } from "../store";
 
 export function providerFor(state: AppState, agentId: string): string | undefined {
   return state.workspace?.agents.find((a) => a.id === agentId)?.provider;
