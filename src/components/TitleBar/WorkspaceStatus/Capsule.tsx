@@ -56,7 +56,6 @@ export function Capsule({ agent, projectName, projectHue }: Props) {
       </div>
       <Popover
         agent={agent}
-        projectName={projectName}
         status={status}
         git={gitState}
         pr={prState}

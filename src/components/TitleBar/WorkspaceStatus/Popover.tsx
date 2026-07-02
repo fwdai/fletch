@@ -7,7 +7,6 @@ import { StatusDot } from "./StatusDot";
 
 interface Props {
   agent: AgentRecord;
-  projectName: string;
   status: DotStatus;
   git: GitState | null;
   pr: PrState | null;
