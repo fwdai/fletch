@@ -184,11 +184,11 @@
   min-width: 0;
 }
 .user-info .un {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   color: var(--fg-0);
   font-weight: 500;
 }
 .user-info .ue {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--fg-3);
 }
