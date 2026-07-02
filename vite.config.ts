@@ -2,6 +2,7 @@ import { cpSync, existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import tsconfigPaths from "vite-tsconfig-paths";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -21,7 +22,7 @@ function copyFileIcons(): Plugin {
 }
 
 export default defineConfig(async () => ({
-  plugins: [react(), copyFileIcons()],
+  plugins: [tsconfigPaths(), react(), copyFileIcons()],
   clearScreen: false,
   server: {
     port: 1420,
