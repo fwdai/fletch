@@ -60,29 +60,16 @@
   position: relative;
   top: -0.5px;
 }
-.tb-crumb {
+/* center slot holds the workspace-status capsule, absolutely centered so it
+ * never shifts as the left/right chrome changes width */
+.tb-center {
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  gap: 8px;
-  color: var(--fg-2);
-  pointer-events: none;
-  white-space: nowrap;
-}
-.tb-crumb .sep {
-  color: var(--fg-3);
-}
-.tb-crumb .mono {
-  font-family: var(--font-mono);
-}
-.tb-crumb .active {
-  color: var(--fg-0);
-}
-.tb-crumb .swatch {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  max-width: min(52vw, 620px);
 }
 .tb-right {
   margin-left: auto;

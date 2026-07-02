@@ -9,6 +9,7 @@
 @import "./styles/shared/type.css";
 @import "./styles/foundation/app-frame.css";
 @import "./components/TitleBar/TitleBar.css";
+@import "./components/TitleBar/WorkspaceStatus/WorkspaceStatus.css";
 @import "./styles/shared/icon-button.css";
 @import "./styles/shared/tooltip.css";
 @import "./styles/foundation/main-split.css";
