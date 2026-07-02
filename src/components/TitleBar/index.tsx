@@ -2,6 +2,7 @@ import { FletchMark } from "@/components/FletchMark";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
+import { OpenInEditor } from "./OpenInEditor";
 import { WorkspaceStatus } from "./WorkspaceStatus";
 
 /** Top-of-window bar. Houses the workspace-status capsule (center) and the
@@ -29,6 +30,7 @@ export function TitleBar() {
         <WorkspaceStatus />
       </div>
       <div className="tb-right flex-center">
+        <OpenInEditor />
         <IconButton tip="History" active={historyOpen} onClick={() => toggleHistory()}>
           <Icon name="history" />
         </IconButton>

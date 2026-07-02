@@ -76,3 +76,9 @@
   gap: 2px;
   -webkit-app-region: no-drag;
 }
+.tb-vdiv {
+  width: 1px;
+  height: 16px;
+  margin: 0 6px;
+  background: var(--bd-soft);
+}

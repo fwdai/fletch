@@ -342,9 +342,20 @@ export interface GhRepoSummary {
   updated_at: string;
 }
 
+/** A code editor detected on the user's machine (title-bar launcher). */
+export interface DetectedEditor {
+  id: string;
+  label: string;
+}
+
 export const api = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
   revealLogs: () => invoke<void>("reveal_logs"),
+  /** Editors installed on this machine, in picker order. */
+  detectEditors: () => invoke<DetectedEditor[]>("detect_editors"),
+  /** Open an agent's worktree in the chosen editor. */
+  openInEditor: (agentId: string, editorId: string) =>
+    invoke<void>("open_in_editor", { agentId, editorId }),
   // Anonymous usage telemetry. Persists the opt-out flag and toggles the live
   // pipeline (events themselves are emitted from the backend).
   setTelemetryEnabled: (enabled: boolean) => invoke<void>("set_telemetry_enabled", { enabled }),
