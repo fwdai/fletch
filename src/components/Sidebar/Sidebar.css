@@ -103,40 +103,41 @@
   transform: rotate(90deg);
 }
 .proj-h .pname {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* count sits next to the name (middot-separated) and its auto margin pushes
+ * the action buttons to the far right. */
 .proj-h .pcount {
-  width: 22px;
-  text-align: center;
+  flex-shrink: 0;
+  margin-right: auto;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   color: var(--fg-3);
+}
+.proj-h .pcount::before {
+  content: "·";
+  margin-right: 4px;
 }
 .proj-h .padd {
   width: 22px;
   height: 22px;
   border-radius: 4px;
-  display: none;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--fg-2);
+  background: var(--bd-soft);
   transition: var(--transition-ui);
 }
-.proj-h:hover .padd {
-  display: inline-flex;
-}
-.proj-h:hover .pcount {
-  display: none;
-}
 .proj-h .padd:hover {
-  background: var(--selected);
+  background: var(--accent-soft);
   color: var(--accent);
 }
-.proj-h .padd[data-tip="New agent"] svg {
+.proj-h .padd[aria-label="New agent"] svg {
   width: 15px;
   height: 15px;
   flex-shrink: 0;
@@ -178,10 +179,10 @@
   cursor: default;
 }
 .agent:hover {
-  background: var(--hover);
+  background: color-mix(in oklch, var(--bd-soft) 50%, transparent);
 }
 .agent.active {
-  background: var(--selected);
+  background: var(--bd-soft);
   color: var(--fg-0);
 }
 
