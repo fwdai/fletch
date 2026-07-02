@@ -33,6 +33,10 @@ export interface AppSlice {
   /** Version string of an update that's been downloaded + staged and is
    *  waiting for a restart to take effect. `null` = none pending. */
   updateReadyVersion: string | null;
+  /** Transient status of a *manual* "Check for Updates…" run (menu-triggered),
+   *  driving the feedback toast. `null` = idle. A found update transitions to
+   *  `updateReadyVersion` instead. */
+  updateCheckStatus: "checking" | "uptodate" | "error" | null;
 
   init: () => Promise<void>;
   clearError: () => void;
@@ -43,6 +47,9 @@ export interface AppSlice {
   setUpdateReady: (version: string) => void;
   /** Dismiss the restart toast. The staged update still applies on next launch. */
   dismissUpdate: () => void;
+  /** Run an on-demand update check (from the "Check for Updates…" menu),
+   *  driving `updateCheckStatus` for feedback and staging any update found. */
+  runUpdateCheck: () => Promise<void>;
 }
 
 export interface WorkspaceSlice {

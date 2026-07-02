@@ -42,6 +42,7 @@ import {
   type WorkspaceView,
 } from "@/storage/preferences";
 import { getAllSettings } from "@/storage/settings";
+import { checkForUpdate } from "@/util/autoUpdate";
 import { playAgentDone } from "@/util/sound";
 import { interruptedAgents } from "./interrupted";
 import type { AppSlice, SliceCreator } from "./types";
@@ -384,6 +385,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
   busy: false,
   lastError: null,
   updateReadyVersion: null,
+  updateCheckStatus: null,
   initialized: false,
 
   init: async () => {
@@ -415,4 +417,26 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
 
   setUpdateReady: (version) => set({ updateReadyVersion: version }),
   dismissUpdate: () => set({ updateReadyVersion: null }),
+
+  runUpdateCheck: async () => {
+    // Ignore repeat clicks while a check is already in flight.
+    if (get().updateCheckStatus === "checking") return;
+    set({ updateCheckStatus: "checking" });
+
+    const result = await checkForUpdate();
+    if (result.kind === "staged") {
+      // Hand off to the restart toast; the transient status is done.
+      set({ updateCheckStatus: null, updateReadyVersion: result.version });
+      return;
+    }
+
+    const status = result.kind === "uptodate" ? "uptodate" : "error";
+    set({ updateCheckStatus: status });
+    // Auto-dismiss the feedback, but only if nothing has changed since — a new
+    // check (or a staged update) may have superseded this one.
+    const clearAfter = status === "uptodate" ? 4000 : 6000;
+    setTimeout(() => {
+      if (get().updateCheckStatus === status) set({ updateCheckStatus: null });
+    }, clearAfter);
+  },
 });
