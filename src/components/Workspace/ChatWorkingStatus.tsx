@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Icon } from "../Icon";
-import { Loader } from "../ui/Loader";
+import { Icon } from "@/components/Icon";
+import { Loader } from "@/components/ui/Loader";
 import { LiveTimer } from "./RunTimer";
 
 const DURATION_MS = 130;

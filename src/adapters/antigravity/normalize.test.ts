@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatItem, RawEvent } from "../types";
+import type { ChatItem, RawEvent } from "@/adapters/types";
 import { antigravityAdapter } from "./index";
 
 function render(lines: unknown[]): ChatItem[] {

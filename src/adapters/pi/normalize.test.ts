@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatItem, RawEvent } from "../types";
+import type { ChatItem, RawEvent } from "@/adapters/types";
 import { piAdapter } from "./index";
 
 // Renders the on-disk transcript the way re-attach will: normalizeTranscript

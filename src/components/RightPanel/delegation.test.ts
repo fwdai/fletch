@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { GitState, PrChecks, PrState } from "../../api";
+import type { GitState, PrChecks, PrState } from "@/api";
 import {
   APP_ACTION_PREFIX,
   appActionMessage,

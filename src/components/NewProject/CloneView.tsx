@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useAppStore } from "../../store";
-import { parseRepoSpec } from "../../util/repoSpec";
-import { Icon } from "../Icon";
+import { Icon } from "@/components/Icon";
+import { useAppStore } from "@/store";
+import { parseRepoSpec } from "@/util/repoSpec";
 import { RepoList } from "./RepoList";
 import { DestRow, GhGate, type NewProjectShared } from "./shared";
 

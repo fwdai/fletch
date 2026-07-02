@@ -1,4 +1,4 @@
-import type { DisplayPolicy } from "../types";
+import type { DisplayPolicy } from "@/adapters/types";
 
 /** Display policy shared by every adapter whose stream surfaces the same set
  *  of notice kinds: turn-end and hook output stay hidden, everything else

@@ -1,7 +1,11 @@
 import { useEffect } from "react";
-import type { AgentRecord, GitState, PrChecks, PrState } from "../../../../api";
-import { useAppStore } from "../../../../store";
-import { delegationDone, delegationResolved, delegationStep } from "../../delegation";
+import type { AgentRecord, GitState, PrChecks, PrState } from "@/api";
+import {
+  delegationDone,
+  delegationResolved,
+  delegationStep,
+} from "@/components/RightPanel/delegation";
+import { useAppStore } from "@/store";
 
 /** Delegation lifecycle: while the agent holds control, watch the polled
  *  git/PR/check state for the transition that marks the action done. The step

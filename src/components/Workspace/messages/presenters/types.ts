@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { ChatItem } from "../../../../store";
-import type { IconName } from "../../../Icon";
+import type { IconName } from "@/components/Icon";
+import type { ChatItem } from "@/store";
 
 export type ToolCall = Extract<ChatItem, { kind: "tool_call" }>;
 export type ToolResult = Extract<ChatItem, { kind: "tool_result" }>;

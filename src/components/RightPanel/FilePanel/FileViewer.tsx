@@ -2,8 +2,8 @@
 // preview" message for binary / too-large / unreadable files, a loading
 // state, or the editable FileEditor.
 import { useEffect, useState } from "react";
-import { type AgentRecord, api, type WorktreeFileContents } from "../../../api";
-import { basename, parentDir } from "../../../util/format";
+import { type AgentRecord, api, type WorktreeFileContents } from "@/api";
+import { basename, parentDir } from "@/util/format";
 import { FileEditor } from "./FileEditor";
 import { ViewerHeader } from "./ViewerHeader";
 

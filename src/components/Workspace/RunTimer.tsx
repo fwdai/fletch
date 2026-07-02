@@ -3,8 +3,8 @@
 // every completed turn. See the Run Timer component spec.
 
 import { useEffect, useState } from "react";
-import { Icon } from "../Icon";
-import { CopyButton } from "../ui/CopyButton";
+import { Icon } from "@/components/Icon";
+import { CopyButton } from "@/components/ui/CopyButton";
 
 /** Whole seconds under a minute; `{m}m {ss}s` (zero-padded seconds) at a
  *  minute or more. Never a leading `0m`, never decimals or an hours field. */

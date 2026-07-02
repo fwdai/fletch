@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { ChatItem, RawEvent } from "../types";
+import type { ChatItem, RawEvent } from "@/adapters/types";
 import { piAdapter } from "./index";
 
 // Fixtures are real `pi -p --mode json` output captured from pi 0.74.2

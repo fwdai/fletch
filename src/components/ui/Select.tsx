@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { Icon } from "../Icon";
+import { Icon } from "@/components/Icon";
 import { Scrim } from "./Scrim";
 
 export interface SelectOption<T extends string> {

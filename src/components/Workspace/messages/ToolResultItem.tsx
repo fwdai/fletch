@@ -1,6 +1,6 @@
 import { useState } from "react";
-import type { ChatItem } from "../../../store";
-import { firstLine } from "../../../util/format";
+import type { ChatItem } from "@/store";
+import { firstLine } from "@/util/format";
 
 /** Companion to ToolUseItem — shows the tool's textual output,
  *  collapsed by default. Error results get a red tinge. */

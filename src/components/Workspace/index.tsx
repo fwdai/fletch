@@ -1,9 +1,9 @@
 import { useState } from "react";
-import type { AgentRecord } from "../../api";
-import { EMPTY_AGENTS, useAppStore } from "../../store";
-import { Icon } from "../Icon";
-import { Button } from "../ui/Button";
-import { IconButton } from "../ui/IconButton";
+import type { AgentRecord } from "@/api";
+import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
+import { EMPTY_AGENTS, useAppStore } from "@/store";
 import { ChatView } from "./ChatView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
 import { NativeView } from "./NativeView";

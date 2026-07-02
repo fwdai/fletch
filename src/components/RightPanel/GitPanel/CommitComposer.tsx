@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { Icon } from "../../Icon";
+import { Icon } from "@/components/Icon";
 
 // ── Commit message composer ───────────────────────────────────────
 // Lives in one fixed slot directly above the status + action. By default

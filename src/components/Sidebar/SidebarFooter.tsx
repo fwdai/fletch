@@ -1,8 +1,8 @@
-import { useAppStore } from "../../store";
-import { accountInitials } from "../../util/format";
-import { Avatar } from "../Avatar";
-import { Icon } from "../Icon";
-import { IconButton } from "../ui/IconButton";
+import { Avatar } from "@/components/Avatar";
+import { Icon } from "@/components/Icon";
+import { IconButton } from "@/components/ui/IconButton";
+import { useAppStore } from "@/store";
+import { accountInitials } from "@/util/format";
 
 export function SidebarFooter() {
   const theme = useAppStore((s) => s.theme);

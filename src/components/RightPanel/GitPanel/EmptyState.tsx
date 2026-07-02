@@ -1,4 +1,4 @@
-import type { GitPanelState } from "../primaryActions";
+import type { GitPanelState } from "@/components/RightPanel/primaryActions";
 
 /** The centered title + blurb shown for the non-list panel states. Returns
  *  null for states that render their own card/list instead. */

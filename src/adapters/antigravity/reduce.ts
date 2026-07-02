@@ -4,8 +4,8 @@
 // (its turn runner is plaintext); the structured render comes entirely from the
 // transcript replayed through here.
 
-import { upsertToolCall } from "../shared/reducer-helpers";
-import type { ChatItem, RawEvent } from "../types";
+import { upsertToolCall } from "@/adapters/shared/reducer-helpers";
+import type { ChatItem, RawEvent } from "@/adapters/types";
 
 export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   switch (ev.type) {

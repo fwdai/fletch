@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatItem } from "../../../store";
+import type { ChatItem } from "@/store";
 import { pairToolItems } from "./pair";
 
 const call = (id: string, name = "Bash", input: unknown = ""): ChatItem => ({

@@ -1,8 +1,8 @@
-import { useAppStore } from "../../store";
-import { basename, hueFromString } from "../../util/format";
-import { FletchMark } from "../FletchMark";
-import { Icon } from "../Icon";
-import { IconButton } from "../ui/IconButton";
+import { FletchMark } from "@/components/FletchMark";
+import { Icon } from "@/components/Icon";
+import { IconButton } from "@/components/ui/IconButton";
+import { useAppStore } from "@/store";
+import { basename, hueFromString } from "@/util/format";
 import { Breadcrumb, type CrumbEntry } from "./Breadcrumb";
 
 /** Top-of-window bar. Houses the breadcrumb (Fletch / repo / agent)

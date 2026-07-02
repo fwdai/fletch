@@ -11,8 +11,8 @@
 // toolResult-role messages). So we translate the on-disk shape into those two
 // events and drop everything else.
 
-import { asRecord } from "../shared/json";
-import type { RawEvent } from "../types";
+import { asRecord } from "@/adapters/shared/json";
+import type { RawEvent } from "@/adapters/types";
 
 export function normalizeTranscript(lines: unknown[]): RawEvent[] {
   const out: RawEvent[] = [];

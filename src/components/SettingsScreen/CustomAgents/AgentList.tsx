@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { PROVIDERS } from "../../../data/providers";
-import type { CustomAgent } from "../../../storage/customAgents";
-import { useAppStore } from "../../../store";
-import { Icon } from "../../Icon";
-import { Button } from "../../ui/Button";
-import { SetHead } from "../primitives";
+import { Icon } from "@/components/Icon";
+import { SetHead } from "@/components/SettingsScreen/primitives";
+import { Button } from "@/components/ui/Button";
+import { PROVIDERS } from "@/data/providers";
+import type { CustomAgent } from "@/storage/customAgents";
+import { useAppStore } from "@/store";
 import { Mono } from "./Mono";
 
 export function AgentList({

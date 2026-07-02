@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DirListing } from "../../../../api";
-import { filterDirEntries, filterFiles, isFsPath, joinTypedDir, splitFsPath } from "../../mentions";
-import type { AcPick, AcSource } from "../types";
+import type { DirListing } from "@/api";
+import type { AcPick, AcSource } from "@/components/Composer/autocomplete/types";
+import {
+  filterDirEntries,
+  filterFiles,
+  isFsPath,
+  joinTypedDir,
+  splitFsPath,
+} from "@/components/Composer/mentions";
 
 interface Args {
   query: string | null;

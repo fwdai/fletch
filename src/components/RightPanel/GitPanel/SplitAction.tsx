@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Icon, type IconName } from "../../Icon";
-import { DropdownItem, DropdownMenu } from "../../ui/Dropdown";
-import type { ActionTone } from "../primaryActions";
+import { Icon, type IconName } from "@/components/Icon";
+import type { ActionTone } from "@/components/RightPanel/primaryActions";
+import { DropdownItem, DropdownMenu } from "@/components/ui/Dropdown";
 import { Spinner } from "./shared";
 
 /** One action as presented by the split button — the unified shape the main

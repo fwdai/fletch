@@ -1,6 +1,6 @@
 import type { StateCreator } from "zustand";
-import type { ChatItem } from "../adapters";
-import type { AgentUsage } from "../adapters/usage";
+import type { ChatItem } from "@/adapters";
+import type { AgentUsage } from "@/adapters/usage";
 import type {
   AgentRecord,
   AgentView,
@@ -10,12 +10,12 @@ import type {
   PrState,
   ShortStats,
   Workspace,
-} from "../api";
-import type { GitDelegation, GitDelegationKind } from "../components/RightPanel/delegation";
-import type { GitCommitAction } from "../components/RightPanel/primaryActions";
-import type { ModelMeta, SlimCatalog } from "../data/modelCatalog";
-import type { AccountProfile } from "../storage/accounts";
-import type { CustomAgent, NewCustomAgent } from "../storage/customAgents";
+} from "@/api";
+import type { GitDelegation, GitDelegationKind } from "@/components/RightPanel/delegation";
+import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
+import type { ModelMeta, SlimCatalog } from "@/data/modelCatalog";
+import type { AccountProfile } from "@/storage/accounts";
+import type { CustomAgent, NewCustomAgent } from "@/storage/customAgents";
 import type {
   Density,
   FeatureFlags,
@@ -23,7 +23,7 @@ import type {
   SettingsSection,
   ThemeMode,
   WorkspaceView,
-} from "../storage/preferences";
+} from "@/storage/preferences";
 import type { DraftAgent } from "./drafts";
 
 export interface AppSlice {

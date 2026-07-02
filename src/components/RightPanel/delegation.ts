@@ -1,4 +1,4 @@
-import type { AgentStatus, GitState, PrChecks, PrState } from "../../api";
+import type { AgentStatus, GitState, PrChecks, PrState } from "@/api";
 
 /** One agent-delegated git action: the user clicked a panel action whose
  *  judgment part (message, description, conflict edits) belongs to the

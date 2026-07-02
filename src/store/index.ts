@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AgentRecord } from "../api"; // for EMPTY_AGENTS
+import type { AgentRecord } from "@/api"; // for EMPTY_AGENTS
 import { createAccountSlice } from "./account";
 import { createAppSlice } from "./app";
 import { createAppearanceSlice } from "./appearance";
@@ -29,7 +29,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createCustomAgentsSlice(...a),
 }));
 
-export type { ChatItem } from "../adapters";
-export type { AgentUsage } from "../adapters/usage";
+export type { ChatItem } from "@/adapters";
+export type { AgentUsage } from "@/adapters/usage";
 export type { DraftAgent } from "./drafts";
 export type { AppState } from "./types";

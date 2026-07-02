@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PrSummary } from "../../../../api";
-import type { AcPick, AcSource } from "../types";
+import type { PrSummary } from "@/api";
+import type { AcPick, AcSource } from "@/components/Composer/autocomplete/types";
 
 /** How long a fetched PR list stays fresh before the next open refetches —
  *  long enough to absorb rapid open/close cycling, short enough to pick up

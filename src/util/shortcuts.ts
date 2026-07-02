@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useAppStore } from "../store";
+import { useAppStore } from "@/store";
 
 /** Global keyboard shortcuts: ⌘B sidebar, ⌘/ right panel, ⌘,
  *  settings, ⌘⇧L theme flip, ⌘N new agent in active project, ⌘K focus

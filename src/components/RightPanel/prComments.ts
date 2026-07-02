@@ -1,4 +1,4 @@
-import type { PrComment } from "../../api";
+import type { PrComment } from "@/api";
 
 /** Where a comment is anchored, as a `path:line` / `path` suffix — empty when
  *  the thread has no file anchor (line deleted, etc.). */

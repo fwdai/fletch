@@ -1,4 +1,4 @@
-import { useAppStore } from "../../store";
+import { useAppStore } from "@/store";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
 
 const EXPERIMENTS: FeatureItem[] = [

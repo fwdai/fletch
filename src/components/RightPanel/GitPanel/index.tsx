@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { AgentRecord } from "../../../api";
-import { delegationLabel } from "../delegation";
+import type { AgentRecord } from "@/api";
+import { delegationLabel } from "@/components/RightPanel/delegation";
 import { ActionBar } from "./ActionBar";
 import { ChangesList } from "./ChangesList";
 import { CommitComposer } from "./CommitComposer";

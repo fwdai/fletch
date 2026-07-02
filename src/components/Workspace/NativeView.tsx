@@ -1,6 +1,6 @@
-import { type AgentRecord, api } from "../../api";
-import { getOutputBuffer, registerOutputSink } from "../../pty/buffers";
-import { useXterm } from "../../util/useXterm";
+import { type AgentRecord, api } from "@/api";
+import { getOutputBuffer, registerOutputSink } from "@/pty/buffers";
+import { useXterm } from "@/util/useXterm";
 
 /** Fixed dark background for the native TUI view — used by both the xterm
  *  theme and the host slot so they never drift out of sync. */

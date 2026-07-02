@@ -1,4 +1,4 @@
-import type { MergeState } from "../../api";
+import type { MergeState } from "@/api";
 
 // ── Merge-gate semantics: the single source of truth ──────────────────────
 // GitHub's combined merge gate (`mergeStateStatus`, spec §6) feeds three

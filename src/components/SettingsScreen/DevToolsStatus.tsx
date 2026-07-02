@@ -1,8 +1,8 @@
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { api, type GhStatus, type ToolStatus } from "../../api";
-import { Icon } from "../Icon";
-import { Button } from "../ui/Button";
+import { api, type GhStatus, type ToolStatus } from "@/api";
+import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
 
 type S = "ok" | "warn" | "bad" | "checking";
 

@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
-import type { GitState, MergeState, PrChecks, PrState } from "../../../../api";
-import { useAppStore } from "../../../../store";
-import { describeMergeGate } from "../../mergeGate";
+import type { GitState, MergeState, PrChecks, PrState } from "@/api";
+import type { SplitActionItem } from "@/components/RightPanel/GitPanel/SplitAction";
+import { describeMergeGate } from "@/components/RightPanel/mergeGate";
 import {
   type ActionTone,
   type GitPanelState,
   isCommitAction,
   primaryFor,
   secondaryFor,
-} from "../../primaryActions";
-import type { SplitActionItem } from "../SplitAction";
+} from "@/components/RightPanel/primaryActions";
+import { useAppStore } from "@/store";
 
 /** Builds the split-button model for the current state: the action counts, the
  *  primary/secondary actions, the menu `items`, and the selection bookkeeping

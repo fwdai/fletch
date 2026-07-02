@@ -1,4 +1,4 @@
-import { api } from "../api";
+import { api } from "@/api";
 import type { ReposSlice, SliceCreator } from "./types";
 
 export const createReposSlice: SliceCreator<ReposSlice> = (set) => ({

@@ -1,7 +1,7 @@
-import { api } from "../api";
-import { gitActionProvesKind } from "../components/RightPanel/delegation";
-import type { GitCommitAction } from "../components/RightPanel/primaryActions";
-import { setSetting } from "../storage/settings";
+import { api } from "@/api";
+import { gitActionProvesKind } from "@/components/RightPanel/delegation";
+import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
+import { setSetting } from "@/storage/settings";
 import type { GitSlice, SliceCreator } from "./types";
 
 type GitSet = Parameters<SliceCreator<GitSlice>>[0];

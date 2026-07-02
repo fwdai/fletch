@@ -1,6 +1,6 @@
 // Tree model + pure helpers for the Files panel explorer.
-import type { WorktreeFile } from "../../../api";
-import { basename, joinPath, parentDir } from "../../../util/format";
+import type { WorktreeFile } from "@/api";
+import { basename, joinPath, parentDir } from "@/util/format";
 
 // ── tree model ──────────────────────────────────────────────────────────
 export type DirNode = {

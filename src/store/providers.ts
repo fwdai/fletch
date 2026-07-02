@@ -1,6 +1,6 @@
-import { api } from "../api";
-import { isCatalogStale, loadCachedCatalog, rebuildCatalog } from "../data/modelCatalog";
-import { setSetting } from "../storage/settings";
+import { api } from "@/api";
+import { isCatalogStale, loadCachedCatalog, rebuildCatalog } from "@/data/modelCatalog";
+import { setSetting } from "@/storage/settings";
 import type { ProvidersSlice, SliceCreator } from "./types";
 
 // Seed the catalog from the localStorage cache once (read + parse), then split

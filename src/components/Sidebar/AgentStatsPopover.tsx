@@ -1,4 +1,4 @@
-import { formatCost, formatTokens } from "../../util/format";
+import { formatCost, formatTokens } from "@/util/format";
 
 export interface AgentStats {
   launched: string;

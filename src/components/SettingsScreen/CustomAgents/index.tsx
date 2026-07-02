@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { DEFAULT_PROVIDER_ID } from "../../../data/providers";
-import type { CustomAgent, NewCustomAgent } from "../../../storage/customAgents";
-import { useAppStore } from "../../../store";
+import { DEFAULT_PROVIDER_ID } from "@/data/providers";
+import type { CustomAgent, NewCustomAgent } from "@/storage/customAgents";
+import { useAppStore } from "@/store";
 import { AgentEditor } from "./AgentEditor";
 import { AgentList } from "./AgentList";
 import { CA_HUES } from "./shared";

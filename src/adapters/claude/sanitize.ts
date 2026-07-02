@@ -3,8 +3,8 @@
 // claude CLI before passing the prompt to the model — they aren't
 // user-authored content and shouldn't render as user bubbles.
 
-import { stripInjectedInstructions } from "../../util/instructions";
-import type { ChatItem } from "../types";
+import type { ChatItem } from "@/adapters/types";
+import { stripInjectedInstructions } from "@/util/instructions";
 
 type NoticeItem = Extract<ChatItem, { kind: "notice" }>;
 
