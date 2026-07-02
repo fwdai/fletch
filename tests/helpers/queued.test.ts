@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ChatItem } from "./adapters";
-import { carryForwardQueued } from "./helpers";
+import type { ChatItem } from "@/adapters";
+import { carryForwardQueued } from "@/helpers";
 
 const userMsg = (text: string, attachments?: string[]): ChatItem =>
   attachments ? { kind: "user_message", text, attachments } : { kind: "user_message", text };

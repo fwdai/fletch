@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { ChatItem } from "./adapters";
-import type { UserTurn } from "./api";
-import { applyUserTurns } from "./helpers";
+import type { ChatItem } from "@/adapters";
+import type { UserTurn } from "@/api";
+import { applyUserTurns } from "@/helpers";
 
 function turn(over: Partial<UserTurn>): UserTurn {
   return {
