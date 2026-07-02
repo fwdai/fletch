@@ -4,8 +4,8 @@
 
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import type { CSSProperties } from "react";
-import { useAppStore } from "../../store";
-import { Icon } from "../Icon";
+import { Icon } from "@/components/Icon";
+import { useAppStore } from "@/store";
 import type { BeatDef } from "./beats";
 import { OnboardingReadiness } from "./OnboardingReadiness";
 

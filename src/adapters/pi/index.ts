@@ -1,4 +1,4 @@
-import type { ChatAdapter } from "../types";
+import type { ChatAdapter } from "@/adapters/types";
 import { normalizeTranscript } from "./normalize";
 import { piPolicy } from "./policy";
 import { reduce } from "./reduce";

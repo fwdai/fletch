@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { Icon, type IconName } from "../../Icon";
+import { Icon, type IconName } from "@/components/Icon";
 
 /** Shared chrome for every tool presenter: icon, name, one-line summary,
  *  click-to-expand. Presenters supply the summary and expanded bodies. */

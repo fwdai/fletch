@@ -1,7 +1,7 @@
 import { open } from "@tauri-apps/plugin-shell";
-import type { PrChecks, PrComment, PrComments, PrState } from "../../../../api";
-import { Icon } from "../../../Icon";
-import { describeMergeGate, type MergeGateSituation } from "../../mergeGate";
+import type { PrChecks, PrComment, PrComments, PrState } from "@/api";
+import { Icon } from "@/components/Icon";
+import { describeMergeGate, type MergeGateSituation } from "@/components/RightPanel/mergeGate";
 import { ChecksSection } from "./ChecksSection";
 import { CommentsSection } from "./CommentsSection";
 

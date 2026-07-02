@@ -3,14 +3,14 @@
 // Edit, ⌘S to save, Revert to restore the agent's version. The "Diff" toggle
 // swaps the editor for a read-only unified diff of the agent's changes.
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { type AgentRecord, api, type WorktreeFileContents } from "../../../api";
-import { CODE_THEMES } from "../../../data/codeThemes";
-import { langLabel } from "../../../data/languages";
-import { useAppStore } from "../../../store";
-import { useHljsTheme } from "../../../util/codeTheme";
-import { highlightToHtml } from "../../../util/highlight";
-import { Icon } from "../../Icon";
-import { FileDiff } from "../Code/DiffView";
+import { type AgentRecord, api, type WorktreeFileContents } from "@/api";
+import { Icon } from "@/components/Icon";
+import { FileDiff } from "@/components/RightPanel/Code/DiffView";
+import { CODE_THEMES } from "@/data/codeThemes";
+import { langLabel } from "@/data/languages";
+import { useAppStore } from "@/store";
+import { useHljsTheme } from "@/util/codeTheme";
+import { highlightToHtml } from "@/util/highlight";
 import { ViewerHeader } from "./ViewerHeader";
 
 interface FileEditorProps {

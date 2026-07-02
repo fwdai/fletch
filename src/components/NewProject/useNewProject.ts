@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
-import { api, type GhStatus } from "../../api";
+import { api, type GhStatus } from "@/api";
 
 // The last parent folder a project was created in, pre-filled next time.
 const PARENT_KEY = "q2:newProjectParent";

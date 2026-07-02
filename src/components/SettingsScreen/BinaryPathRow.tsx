@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
-import { api } from "../../api";
-import { Icon } from "../Icon";
-import { Button } from "../ui/Button";
+import { api } from "@/api";
+import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
 
 /** The "Binary" detail row in a provider card. Read-only by default — showing
  *  the effective path the way it always has — but with an inline pencil that

@@ -15,10 +15,10 @@
 // Faithful port of the design (fletch v2 files.jsx), wired to the real
 // worktree via the `*_worktree_*` Tauri commands.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { type AgentRecord, api, type WorktreeFile } from "../../../api";
-import { joinPath, parentDir } from "../../../util/format";
-import { usePoll } from "../../../util/hooks";
-import { type ContextMenuEntry, FileContextMenu } from "../FileContextMenu";
+import { type AgentRecord, api, type WorktreeFile } from "@/api";
+import { type ContextMenuEntry, FileContextMenu } from "@/components/RightPanel/FileContextMenu";
+import { joinPath, parentDir } from "@/util/format";
+import { usePoll } from "@/util/hooks";
 import { FileViewer } from "./FileViewer";
 import { TreeBrowser } from "./TreeBrowser";
 import {

@@ -1,7 +1,7 @@
-import { api } from "../api";
-import { DEFAULT_PROVIDER_ID, PROVIDERS } from "../data/providers";
-import { sendWhenAgentReady, usedNames } from "../helpers";
-import { setSetting } from "../storage/settings";
+import { api } from "@/api";
+import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
+import { sendWhenAgentReady, usedNames } from "@/helpers";
+import { setSetting } from "@/storage/settings";
 import type { AppState, DraftsSlice, SliceCreator } from "./types";
 
 // ---- Drafts ----------------------------------------------------------------

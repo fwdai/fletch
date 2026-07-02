@@ -7,14 +7,14 @@
 
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useCallback, useEffect, useState } from "react";
-import { hasAdapter } from "../../adapters";
-import { api, type GhStatus, type ToolStatus } from "../../api";
-import { PROVIDER_DETAIL } from "../../data/providerDetail";
-import { PROVIDERS } from "../../data/providers";
-import { useAppStore } from "../../store";
-import { Icon } from "../Icon";
-import { ProviderIcon } from "../ProviderIcon";
-import { Button } from "../ui/Button";
+import { hasAdapter } from "@/adapters";
+import { api, type GhStatus, type ToolStatus } from "@/api";
+import { Icon } from "@/components/Icon";
+import { ProviderIcon } from "@/components/ProviderIcon";
+import { Button } from "@/components/ui/Button";
+import { PROVIDER_DETAIL } from "@/data/providerDetail";
+import { PROVIDERS } from "@/data/providers";
+import { useAppStore } from "@/store";
 
 type S = "ok" | "warn" | "bad" | "checking";
 

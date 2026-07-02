@@ -1,6 +1,6 @@
-import type { FileStatus } from "../../../api";
-import { Icon } from "../../Icon";
-import { IconButton } from "../../ui/IconButton";
+import type { FileStatus } from "@/api";
+import { Icon } from "@/components/Icon";
+import { IconButton } from "@/components/ui/IconButton";
 
 /** Status letter for the file badge — matches CSS `.gs.<kind>` selectors. */
 function kindLabel(kind: FileStatus["kind"]): string {

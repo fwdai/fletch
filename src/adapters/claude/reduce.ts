@@ -5,15 +5,15 @@
 // addition of the sanitizer pass on user-message text and the resulting
 // slash_command / hook_output notices.
 
-import { asBlockList, asRecord } from "../shared/json";
+import { asBlockList, asRecord } from "@/adapters/shared/json";
 import {
   appendToolInputDelta,
   dedupAgainstLast,
   extendLastAssistant,
   finalizeStreamingItems,
   upsertToolCall,
-} from "../shared/reducer-helpers";
-import type { ChatItem, RawEvent } from "../types";
+} from "@/adapters/shared/reducer-helpers";
+import type { ChatItem, RawEvent } from "@/adapters/types";
 import { contentText } from "./content";
 import { sanitizeUserText } from "./sanitize";
 

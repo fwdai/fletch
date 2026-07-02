@@ -1,16 +1,16 @@
 import type { KeyboardEvent, MouseEvent } from "react";
 import { useState } from "react";
-import type { AgentRecord, AgentStatus, PrState, ShortStats } from "../../api";
-import { lookupModel } from "../../data/modelCatalog";
-import { providerChip, providerLabel } from "../../data/providers";
-import type { DraftAgent } from "../../store";
-import { useAppStore } from "../../store";
-import { formatAge } from "../../util/format";
-import { useMinuteClock } from "../../util/hooks";
-import { Icon } from "../Icon";
-import { ProviderIcon } from "../ProviderIcon";
-import { Mono } from "../SettingsScreen/CustomAgents/Mono";
-import { Badge } from "../ui/Badge";
+import type { AgentRecord, AgentStatus, PrState, ShortStats } from "@/api";
+import { Icon } from "@/components/Icon";
+import { ProviderIcon } from "@/components/ProviderIcon";
+import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
+import { Badge } from "@/components/ui/Badge";
+import { lookupModel } from "@/data/modelCatalog";
+import { providerChip, providerLabel } from "@/data/providers";
+import type { DraftAgent } from "@/store";
+import { useAppStore } from "@/store";
+import { formatAge } from "@/util/format";
+import { useMinuteClock } from "@/util/hooks";
 import { type AgentStats, AgentStatsPopover } from "./AgentStatsPopover";
 
 /** The agent rows carry nested buttons (stop/archive/discard), so they can't be

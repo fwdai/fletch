@@ -1,4 +1,4 @@
-import { DEFAULT_PROVIDER_ID } from "../data/providers";
+import { DEFAULT_PROVIDER_ID } from "@/data/providers";
 
 // Typed app-preference parsers: turn the flat string→string settings blob read
 // by ./settings.ts into the structured values the store holds. Kept out of the

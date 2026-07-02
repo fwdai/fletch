@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import type { AgentRecord } from "../../api";
-import type { DraftAgent } from "../../store";
-import { useAppStore } from "../../store";
-import { basename } from "../../util/format";
-import { Icon } from "../Icon";
-import { NewProject, type NewProjectMode } from "../NewProject";
+import type { AgentRecord } from "@/api";
+import { Icon } from "@/components/Icon";
+import { NewProject, type NewProjectMode } from "@/components/NewProject";
+import type { DraftAgent } from "@/store";
+import { useAppStore } from "@/store";
+import { basename } from "@/util/format";
 import { NewProjectPopover } from "./NewProjectPopover";
 import { ProjectGroup } from "./ProjectGroup";
 import { SidebarFooter } from "./SidebarFooter";

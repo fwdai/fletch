@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { useAppStore } from "../../store";
-import { isValidRepoName } from "../../util/repoSpec";
-import { Icon } from "../Icon";
-import { Segmented } from "../Settings/Segmented";
+import { Icon } from "@/components/Icon";
+import { Segmented } from "@/components/Settings/Segmented";
+import { useAppStore } from "@/store";
+import { isValidRepoName } from "@/util/repoSpec";
 import { DestRow, GhGate, type NewProjectShared } from "./shared";
 
 /** Create a brand-new repo locally and publish it to GitHub. */

@@ -7,10 +7,10 @@
 // cross-links work: the editor's "Diff" button jumps to Live on that file, and
 // Live's "Edit" button opens the file back in Files mode.
 import { useEffect, useState } from "react";
-import type { AgentRecord } from "../../../api";
-import { useAppStore } from "../../../store";
-import { Icon } from "../../Icon";
-import { FilePanel } from "../FilePanel";
+import type { AgentRecord } from "@/api";
+import { Icon } from "@/components/Icon";
+import { FilePanel } from "@/components/RightPanel/FilePanel";
+import { useAppStore } from "@/store";
 import { CodeLivePanel } from "./CodeLivePanel";
 
 type Mode = "files" | "live";

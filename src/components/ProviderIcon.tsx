@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { agentIconUrl } from "../data/providers";
+import { agentIconUrl } from "@/data/providers";
 
 interface ProviderIconProps {
   /** Provider/agent slug; builds the icon URL and identifies the agent. */

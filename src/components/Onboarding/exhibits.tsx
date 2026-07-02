@@ -4,11 +4,11 @@
 // prototype (onboarding/exhibits.jsx).
 
 import { useEffect, useState } from "react";
-import type { ProviderId } from "../../data/providers";
-import { PROVIDERS, providerChip } from "../../data/providers";
-import { Icon, LandmarkGlyph } from "../Icon";
-import { ProviderIcon } from "../ProviderIcon";
-import { Badge } from "../ui/Badge";
+import { Icon, LandmarkGlyph } from "@/components/Icon";
+import { ProviderIcon } from "@/components/ProviderIcon";
+import { Badge } from "@/components/ui/Badge";
+import type { ProviderId } from "@/data/providers";
+import { PROVIDERS, providerChip } from "@/data/providers";
 
 // ── tiny faux window chrome for an exhibit ──────────────────────────
 function ExBar({ title }: { title: string }) {

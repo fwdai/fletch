@@ -1,4 +1,4 @@
-import type { ProviderId } from "../data/providers";
+import type { ProviderId } from "@/data/providers";
 import { antigravityAdapter } from "./antigravity";
 import { claudeAdapter } from "./claude";
 import { codexAdapter } from "./codex";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PrSummary } from "../../../../api";
+import type { PrSummary } from "@/api";
 import { filterPrs } from "./prs";
 
 const pr = (number: number, title = `PR ${number}`): PrSummary => ({

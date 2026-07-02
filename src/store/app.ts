@@ -1,6 +1,6 @@
-import type { RawEvent } from "../adapters";
-import { hasUsage, usageFromRecords } from "../adapters/usage";
-import type { AgentRecord, Workspace } from "../api";
+import type { RawEvent } from "@/adapters";
+import { hasUsage, usageFromRecords } from "@/adapters/usage";
+import type { AgentRecord, Workspace } from "@/api";
 import {
   api,
   onAgentBranch,
@@ -16,8 +16,8 @@ import {
   onShellOutput,
   onTurnStarted,
   onWorkspaceChanged,
-} from "../api";
-import { isCommitAction } from "../components/RightPanel/primaryActions";
+} from "@/api";
+import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import {
   applyEvent,
   applyUserTurns,
@@ -26,9 +26,9 @@ import {
   persistLiveUsage,
   providerFor,
   reduceRecords,
-} from "../helpers";
-import { pushAgentOutput, pushShellOutput } from "../pty/buffers";
-import { getOrCreateAccount, toProfile } from "../storage/accounts";
+} from "@/helpers";
+import { pushAgentOutput, pushShellOutput } from "@/pty/buffers";
+import { getOrCreateAccount, toProfile } from "@/storage/accounts";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
@@ -40,9 +40,9 @@ import {
   parseProviderPathOverrides,
   type ThemeMode,
   type WorkspaceView,
-} from "../storage/preferences";
-import { getAllSettings } from "../storage/settings";
-import { playAgentDone } from "../util/sound";
+} from "@/storage/preferences";
+import { getAllSettings } from "@/storage/settings";
+import { playAgentDone } from "@/util/sound";
 import { interruptedAgents } from "./interrupted";
 import type { AppSlice, SliceCreator } from "./types";
 

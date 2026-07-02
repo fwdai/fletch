@@ -1,5 +1,5 @@
-import type { FileStatus } from "../../../../api";
-import { Icon } from "../../../Icon";
+import type { FileStatus } from "@/api";
+import { Icon } from "@/components/Icon";
 
 export function ConflictCard({ files }: { files: FileStatus[] }) {
   const conflicted = files.filter((f) => f.kind === "conflicted");

@@ -5,7 +5,7 @@ import {
   updateCustomAgent as dbUpdate,
   listCustomAgents,
   type NewCustomAgent,
-} from "../storage/customAgents";
+} from "@/storage/customAgents";
 import type { CustomAgentsSlice, SliceCreator } from "./types";
 
 // Store slice for custom agents. The list mirrors the `custom_agents` table and

@@ -7,8 +7,8 @@
 // arms the item (swapping in the confirm label + danger styling), the second
 // runs it. Used to guard destructive actions like deleting a folder.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Icon, type IconName } from "../Icon";
-import { DropdownItem, DropdownMenu, DropdownSeparator } from "../ui/Dropdown";
+import { Icon, type IconName } from "@/components/Icon";
+import { DropdownItem, DropdownMenu, DropdownSeparator } from "@/components/ui/Dropdown";
 
 export interface ContextMenuItem {
   icon: IconName;

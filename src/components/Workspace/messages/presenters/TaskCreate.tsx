@@ -1,4 +1,4 @@
-import { Markdown } from "../../../Markdown";
+import { Markdown } from "@/components/Markdown";
 import type { ToolPresenter } from "./types";
 import { getStringField, renderToolResult, ToolBlock } from "./util";
 

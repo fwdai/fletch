@@ -20,8 +20,8 @@ import stackoverflowLight from "highlight.js/styles/stackoverflow-light.css?url"
 import tokyoNightDark from "highlight.js/styles/tokyo-night-dark.css?url";
 import tokyoNightLight from "highlight.js/styles/tokyo-night-light.css?url";
 import { useEffect } from "react";
-import { CODE_THEMES } from "../data/codeThemes";
-import { useAppStore } from "../store";
+import { CODE_THEMES } from "@/data/codeThemes";
+import { useAppStore } from "@/store";
 
 const THEME_URLS: Record<string, string> = {
   "github-dark": githubDark,

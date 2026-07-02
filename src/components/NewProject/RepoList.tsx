@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type GhRepoSummary } from "../../api";
-import { Icon } from "../Icon";
+import { api, type GhRepoSummary } from "@/api";
+import { Icon } from "@/components/Icon";
 
 interface Props {
   selected: string | null;

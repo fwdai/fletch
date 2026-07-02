@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { applyPolicy } from "../policy";
-import type { ChatItem, RawEvent } from "../types";
+import { applyPolicy } from "@/adapters/policy";
+import type { ChatItem, RawEvent } from "@/adapters/types";
 import { codexAdapter } from "./index";
 
 // Fixtures are real `codex exec --json` output captured from

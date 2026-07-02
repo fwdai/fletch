@@ -1,10 +1,10 @@
-import { api } from "../api";
+import { api } from "@/api";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
   type SettingsSection,
-} from "../storage/preferences";
-import { setSetting } from "../storage/settings";
+} from "@/storage/preferences";
+import { setSetting } from "@/storage/settings";
 import type { SliceCreator, UiSlice } from "./types";
 
 export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({

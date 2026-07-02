@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { GitPanelState } from "../../primaryActions";
+import type { GitPanelState } from "@/components/RightPanel/primaryActions";
 
 /** Commit-message authorship (agent mode). By default the agent writes the
  *  message + PR (the field is collapsed). `override` = the user opened the

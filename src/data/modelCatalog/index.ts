@@ -6,7 +6,7 @@
 // in localStorage with a 24h TTL and rebuilt in the background on expiry, so a
 // newly-released model shows up automatically without an app release.
 
-import { api } from "../../api";
+import { api } from "@/api";
 import { buildCatalog } from "./build";
 import { fetchModelsDevIndex } from "./modelsDev";
 import type { UnifiedCatalog } from "./types";

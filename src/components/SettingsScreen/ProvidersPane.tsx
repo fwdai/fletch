@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { hasAdapter } from "../../adapters";
-import { PROVIDER_DETAIL } from "../../data/providerDetail";
-import { PROVIDERS, type Provider } from "../../data/providers";
-import { useAppStore } from "../../store";
-import { Icon } from "../Icon";
-import { ProviderIcon } from "../ProviderIcon";
-import { Button } from "../ui/Button";
+import { hasAdapter } from "@/adapters";
+import { Icon } from "@/components/Icon";
+import { ProviderIcon } from "@/components/ProviderIcon";
+import { Button } from "@/components/ui/Button";
+import { PROVIDER_DETAIL } from "@/data/providerDetail";
+import { PROVIDERS, type Provider } from "@/data/providers";
+import { useAppStore } from "@/store";
 import { BinaryPathRow } from "./BinaryPathRow";
 import { SetGroup, SetHead, SetToggle } from "./primitives";
 

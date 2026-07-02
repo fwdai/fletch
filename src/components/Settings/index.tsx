@@ -1,9 +1,9 @@
-import { ACCENTS, PROVIDERS } from "../../data/providers";
-import type { Density, FeatureFlags, ThemeMode } from "../../storage/preferences";
-import { useAppStore } from "../../store";
-import { Icon } from "../Icon";
-import { IconButton } from "../ui/IconButton";
-import { Scrim } from "../ui/Scrim";
+import { Icon } from "@/components/Icon";
+import { IconButton } from "@/components/ui/IconButton";
+import { Scrim } from "@/components/ui/Scrim";
+import { ACCENTS, PROVIDERS } from "@/data/providers";
+import type { Density, FeatureFlags, ThemeMode } from "@/storage/preferences";
+import { useAppStore } from "@/store";
 import { Segmented } from "./Segmented";
 import { SettingsRow, SettingsSection } from "./SettingsRow";
 import { Toggle } from "./Toggle";

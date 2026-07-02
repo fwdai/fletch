@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Icon } from "../Icon";
+import { Icon } from "@/components/Icon";
 
 /** Search input that filters the agent list. The filter itself is
  *  applied in `Sidebar` — this component only owns the input. */

@@ -1,12 +1,12 @@
 import { lazy, Suspense } from "react";
-import pkg from "../../../package.json";
+import { Icon, type IconName } from "@/components/Icon";
 // Extension seam: settings panes contributed by whichever extensions are
 // present in this build (see src/extensions/registry.ts). Empty in a stock
 // public build that has no extensions on disk.
-import { settingsPanes as extSettingsPanes } from "../../extensions/registry";
-import type { SettingsSection } from "../../storage/preferences";
-import { useAppStore } from "../../store";
-import { Icon, type IconName } from "../Icon";
+import { settingsPanes as extSettingsPanes } from "@/extensions/registry";
+import type { SettingsSection } from "@/storage/preferences";
+import { useAppStore } from "@/store";
+import pkg from "../../../package.json";
 import { AccountPane } from "./AccountPane";
 import { CustomAgentsPane } from "./CustomAgents";
 import { ExperimentalPane } from "./ExperimentalPane";

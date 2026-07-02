@@ -19,15 +19,15 @@
 // `step_finish:tool-calls`, and the final step ends with `step_finish:stop`,
 // which is the end-of-turn signal.
 
-import { asRecord } from "../shared/json";
+import { asRecord } from "@/adapters/shared/json";
 import {
   aliasToolInput,
   dedupAgainstLast,
   endTurn,
   finalizeStreamingItems,
   upsertToolCall,
-} from "../shared/reducer-helpers";
-import type { ChatItem, RawEvent } from "../types";
+} from "@/adapters/shared/reducer-helpers";
+import type { ChatItem, RawEvent } from "@/adapters/types";
 
 /** OpenCode uses camelCase file fields (`filePath`/`oldString`/`newString`)
  *  while the shared tool presenters read Claude's snake_case names. Alias

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Icon } from "../Icon";
-import { Button } from "../ui/Button";
+import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
 
 export interface SetupRow {
   id: string;

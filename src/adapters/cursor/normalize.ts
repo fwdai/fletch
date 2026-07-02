@@ -10,8 +10,8 @@
 // stable id per tool_use so multiple calls don't collapse in upsertToolCall;
 // tool calls therefore render without results, which is expected for Cursor.
 
-import { asBlockList, asRecord } from "../shared/json";
-import type { RawEvent } from "../types";
+import { asBlockList, asRecord } from "@/adapters/shared/json";
+import type { RawEvent } from "@/adapters/types";
 
 export function normalizeTranscript(lines: unknown[]): RawEvent[] {
   const out: RawEvent[] = [];

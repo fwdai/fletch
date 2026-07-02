@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionRecord } from "../api";
+import type { SessionRecord } from "@/api";
 import { antigravityAdapter } from "./antigravity";
 import { claudeAdapter } from "./claude";
 import { codexAdapter } from "./codex";

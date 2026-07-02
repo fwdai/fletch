@@ -12,8 +12,8 @@
 // Tool calls and their results share no id on disk, so we pair them by order:
 // each result claims the oldest unmatched call id (FIFO).
 
-import { asRecord } from "../shared/json";
-import type { RawEvent } from "../types";
+import { asRecord } from "@/adapters/shared/json";
+import type { RawEvent } from "@/adapters/types";
 
 const FIXED = new Set(["USER_INPUT", "CONVERSATION_HISTORY", "PLANNER_RESPONSE"]);
 

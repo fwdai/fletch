@@ -1,10 +1,10 @@
 import { useEffect, useRef } from "react";
-import type { AgentRecord, AgentStatus, DiffStats } from "../../api";
-import { useAppStore } from "../../store";
-import { formatAge } from "../../util/format";
-import { useMinuteClock } from "../../util/hooks";
-import { Icon } from "../Icon";
-import { IconButton } from "../ui/IconButton";
+import type { AgentRecord, AgentStatus, DiffStats } from "@/api";
+import { Icon } from "@/components/Icon";
+import { IconButton } from "@/components/ui/IconButton";
+import { useAppStore } from "@/store";
+import { formatAge } from "@/util/format";
+import { useMinuteClock } from "@/util/hooks";
 import { ViewToggle } from "./ViewToggle";
 
 /** Header strip above the workspace body. Houses the left-sidebar

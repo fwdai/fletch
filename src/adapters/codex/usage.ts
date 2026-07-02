@@ -14,8 +14,8 @@
 // `last_token_usage.input_tokens` (the live window size), against
 // `model_context_window`.
 
-import { asNumber, asRecord } from "../shared/json";
-import type { RawEvent, TurnUsage } from "../types";
+import { asNumber, asRecord } from "@/adapters/shared/json";
+import type { RawEvent, TurnUsage } from "@/adapters/types";
 
 export function extractUsage(body: RawEvent): TurnUsage | undefined {
   if (body.type !== "event_msg") return undefined;

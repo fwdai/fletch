@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PrComment } from "../../api";
+import type { PrComment } from "@/api";
 import { commentLocation, formatCommentForChat } from "./prComments";
 
 const base: PrComment = {

@@ -2,7 +2,7 @@
 // Ported from the design prototype (onboarding/steps.jsx).
 
 import type { ReactNode } from "react";
-import type { IconName } from "../Icon";
+import type { IconName } from "@/components/Icon";
 import { ExhibitCode, ExhibitParallel, ExhibitProviders, ExhibitRoom } from "./exhibits";
 
 export interface BeatPoint {

@@ -1,9 +1,9 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
-import type { PrChecks, PrComment } from "../../../../api";
-import { useAppStore } from "../../../../store";
-import { appActionMessage, type GitDelegationKind } from "../../delegation";
-import { formatCommentForChat } from "../../prComments";
+import type { PrChecks, PrComment } from "@/api";
+import { appActionMessage, type GitDelegationKind } from "@/components/RightPanel/delegation";
+import { formatCommentForChat } from "@/components/RightPanel/prComments";
+import { useAppStore } from "@/store";
 
 interface GitActionsCtx {
   agentId: string;

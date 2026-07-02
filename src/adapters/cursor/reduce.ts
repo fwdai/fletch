@@ -16,10 +16,10 @@
 //      `text`) terminated by `subtype:"completed"`, instead of a thinking
 //      content block on the `assistant` event.
 
-import { reduce as claudeReduce } from "../claude/reduce";
-import { asRecord } from "../shared/json";
-import { aliasToolInput, upsertToolCall } from "../shared/reducer-helpers";
-import type { ChatItem, RawEvent } from "../types";
+import { reduce as claudeReduce } from "@/adapters/claude/reduce";
+import { asRecord } from "@/adapters/shared/json";
+import { aliasToolInput, upsertToolCall } from "@/adapters/shared/reducer-helpers";
+import type { ChatItem, RawEvent } from "@/adapters/types";
 
 /** Cursor names its file-tool fields differently from Claude — glob uses
  *  `globPattern`/`targetDirectory`, read/edit use `path`, edit carries the new

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Icon } from "../../Icon";
+import { Icon } from "@/components/Icon";
 import { useChatSearch } from "./useChatSearch";
 
 /** Floating "find in conversation" bar, opened with ⌘F over the chat log.

@@ -7,12 +7,12 @@
 // and fetches each file's diff via `get_file_diff`. True edit-streaming (a
 // typing cursor per keystroke) is a deferred follow-up.
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentRecord, FileStatus } from "../../../api";
-import { useAppStore } from "../../../store";
-import { useHljsTheme } from "../../../util/codeTheme";
-import type { DiffLine } from "../../../util/diff";
-import { usePoll } from "../../../util/hooks";
-import { Icon } from "../../Icon";
+import type { AgentRecord, FileStatus } from "@/api";
+import { Icon } from "@/components/Icon";
+import { useAppStore } from "@/store";
+import { useHljsTheme } from "@/util/codeTheme";
+import type { DiffLine } from "@/util/diff";
+import { usePoll } from "@/util/hooks";
 import { DiffBody, extOf, useFileDiff } from "./DiffView";
 
 interface CodeLivePanelProps {

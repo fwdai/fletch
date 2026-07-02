@@ -1,5 +1,5 @@
-import { Icon } from "../Icon";
-import { Scrim } from "../ui/Scrim";
+import { Icon } from "@/components/Icon";
+import { Scrim } from "@/components/ui/Scrim";
 import { CloneView } from "./CloneView";
 import { CreateView } from "./CreateView";
 import { useNewProject } from "./useNewProject";

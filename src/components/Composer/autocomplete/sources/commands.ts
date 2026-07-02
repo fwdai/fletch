@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import { filterCommands } from "../../../../data/slashCommands";
-import type { AcPick, AcSource } from "../types";
+import type { AcPick, AcSource } from "@/components/Composer/autocomplete/types";
+import { filterCommands } from "@/data/slashCommands";
 
 interface Args {
   query: string | null;

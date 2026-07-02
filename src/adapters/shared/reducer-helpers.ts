@@ -1,4 +1,4 @@
-import type { ChatItem } from "../types";
+import type { ChatItem } from "@/adapters/types";
 import { asRecord } from "./json";
 
 // Walk from the end since the items we care about (latest streaming

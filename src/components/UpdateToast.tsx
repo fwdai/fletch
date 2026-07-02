@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useAppStore } from "../store";
-import { restartForUpdate } from "../util/autoUpdate";
+import { useAppStore } from "@/store";
+import { restartForUpdate } from "@/util/autoUpdate";
 import { Icon } from "./Icon";
 import { Button } from "./ui/Button";
 

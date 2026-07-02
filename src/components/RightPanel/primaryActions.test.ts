@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { GitState, PrState } from "../../api";
+import type { GitState, PrState } from "@/api";
 import { deriveState, primaryFor, secondaryFor } from "./primaryActions";
 
 const base = { prNumber: 7, base: "main" };
