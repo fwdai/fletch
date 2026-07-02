@@ -248,7 +248,7 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
           <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={14} />
         </span>
         <span className="ag-slot iflex-center">
-          <span className="ag-meta">
+          <span className="ag-meta wide">
             <Badge variant="new">new</Badge>
           </span>
           <span className="ag-actions">

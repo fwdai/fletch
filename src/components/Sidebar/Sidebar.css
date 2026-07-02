@@ -284,7 +284,7 @@
 /* meta and actions occupy the SAME right-anchored 21px box and cross-fade in
  * place: a single indicator (loader / hand / unseen dot) is centered on the
  * exact spot the action-button icon lands, so any swap looks like a morph, not
- * a jump. The error badge is text, not an icon, so it opts out via `.wide`. */
+ * a jump. Text badges (error, draft "new") opt out of the box via `.wide`. */
 .ag-slot .ag-meta,
 .ag-slot .ag-actions {
   position: absolute;
