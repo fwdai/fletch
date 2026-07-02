@@ -167,10 +167,18 @@ function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
 
 function handleUser(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const message = asRecord(ev.message);
+  // The CLI stamps `isMeta` on user-role events it injected itself — skill
+  // bodies (SKILL.md expanded via the Skill tool), the local-command caveat,
+  // "Continue from where you left off" resume prompts, /insights context dumps.
+  // None were typed by the user, so their text must not render as a user
+  // bubble. Real prompts and slash commands are isMeta:false and unaffected.
+  // tool_result blocks (below) are still processed — meta events rarely carry
+  // them, but dropping one would orphan its tool_call.
+  const isMeta = ev.isMeta === true;
   const rawText = contentText(message.content);
 
   let items = prev;
-  if (rawText) {
+  if (rawText && !isMeta) {
     const { text, notices } = sanitizeUserText(rawText);
     if (text) {
       items = dedupAgainstLast(items, { kind: "user_message", text });

@@ -83,6 +83,55 @@ describe("claudeAdapter — transcript replay", () => {
   });
 });
 
+describe("claudeAdapter.reduce — injected meta user events", () => {
+  it("does not render an isMeta user event (e.g. a skill body) as a user bubble", () => {
+    // Shape mirrors a real Skill-tool injection: a user-role event whose text
+    // block holds the SKILL.md body, flagged isMeta:true by the CLI.
+    const items = reduceAll([
+      {
+        type: "user",
+        isMeta: true,
+        sourceToolUseID: "toolu_skill",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Base directory for this skill: /x\n\n# gstack" }],
+        },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([]);
+  });
+
+  it("still renders a normal (non-meta) user event as a bubble", () => {
+    const items = reduceAll([
+      {
+        type: "user",
+        message: { role: "user", content: [{ type: "text", text: "real prompt" }] },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([{ kind: "user_message", text: "real prompt" }]);
+  });
+
+  it("keeps a tool_result carried on a meta user event", () => {
+    // Defensive: the meta flag suppresses stray text, not tool plumbing.
+    const items = reduceAll([
+      {
+        type: "user",
+        isMeta: true,
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "injected preamble" },
+            { type: "tool_result", tool_use_id: "toolu_1", content: "ok" },
+          ],
+        },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([
+      { kind: "tool_result", tool_use_id: "toolu_1", content: "ok", is_error: false },
+    ]);
+  });
+});
+
 describe("claudeAdapter.reduce — error result", () => {
   it("emits a notice with is_error=true", () => {
     const items = reduceAll([
