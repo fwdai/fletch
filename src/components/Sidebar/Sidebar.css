@@ -188,9 +188,9 @@
 /* status rail — the left spine; colored by status, faint grey when idle */
 .ag-rail {
   position: absolute;
-  left: 0;
-  top: 6px;
-  bottom: 6px;
+  left: 1px;
+  top: 4px;
+  bottom: 4px;
   width: 3px;
   border-radius: 0 3px 3px 0;
   background: var(--bd-soft);
