@@ -41,6 +41,25 @@
 .r-tab.active .count {
   color: var(--accent);
 }
+/* "Live" dot on the Run tab while the project's app is up — mirrors the Code
+   panel's cms-live-dot.on so a running app is visible from any tab. */
+.r-tab-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: 1px;
+  background: var(--success);
+  animation: r-tab-live 1.6s ease-in-out infinite;
+}
+@keyframes r-tab-live {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--success), transparent 35%);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in oklch, var(--success), transparent 88%);
+  }
+}
 
 .right-body {
   flex: 1;

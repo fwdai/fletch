@@ -12,6 +12,7 @@ import {
   onAgentTask,
   onAgentView,
   onPrStateChanged,
+  onRunState,
   onSessionRecordsAppended,
   onShellOutput,
   onTurnStarted,
@@ -338,6 +339,13 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
 
   await onPrStateChanged((e) => {
     set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
+  });
+
+  // App-wide run-phase tracking. The RunPanel unmounts when its tab isn't
+  // active, so its own subscription can't keep the Run tab's "app is running"
+  // dot lit from another tab — this always-on listener owns `runPhases`.
+  await onRunState((e) => {
+    set((s) => ({ runPhases: { ...s.runPhases, [e.agent_id]: e.phase } }));
   });
 };
 

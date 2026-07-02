@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { type AgentRecord, api, onRunOutput, onRunState, type RunPhase } from "@/api";
+import { type AgentRecord, api, onRunOutput, onRunState } from "@/api";
 import { Icon } from "@/components/Icon";
+import { useAppStore } from "@/store";
 import {
   deleteProjectSetting,
   getProjectSettings,
@@ -31,7 +32,11 @@ const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
 
 export function RunPanel({ agent }: { agent: AgentRecord }) {
-  const [phase, setPhase] = useState<RunPhase>("idle");
+  // Phase is owned by the store (fed by an app-wide `run:state` subscription) so
+  // the Run tab's running dot survives this panel unmounting on a tab switch.
+  const phase = useAppStore((s) => s.runPhases[agent.id] ?? "idle");
+  const setRunPhase = useAppStore((s) => s.setRunPhase);
+  const setRunPort = useAppStore((s) => s.setRunPort);
   const [lastError, setLastError] = useState<string | null>(null);
   const [log, setLog] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -117,7 +122,9 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
 
     api.runState(agent.id).then((snap) => {
       if (cancelled) return;
-      setPhase(snap.phase);
+      // Rehydrate the store phase too, so a running app opened after an app
+      // reload lights the tab dot even before the next live event arrives.
+      setRunPhase(agent.id, snap.phase);
       setLastError(snap.last_error);
       // Snapshot is a one-shot buffer — decode it without streaming
       // mode using its own decoder so it doesn't pollute the live
@@ -140,7 +147,8 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
 
     onRunState((e) => {
       if (e.agent_id !== agent.id) return;
-      setPhase(e.phase);
+      // Phase flows through the store via the app-wide listener; this local
+      // subscription only mirrors last_error, which the store doesn't track.
       setLastError(e.last_error);
     }).then((un) => {
       if (cancelled) {
@@ -155,7 +163,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       unlistenOutput?.();
       unlistenState?.();
     };
-  }, [agent.id]);
+  }, [agent.id, setRunPhase]);
 
   // Auto-scroll to bottom on log append.
   useEffect(() => {
@@ -173,6 +181,13 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   const port = fieldValue("port");
   const isActive = phase === "setup" || phase === "running";
   const linkLive = phase === "running";
+
+  // Publish the resolved port to the store so the sidebar's running indicator
+  // can show `:port`. The port isn't on the `run:state` event, so the panel —
+  // which already resolves detected value + overrides — is the source.
+  useEffect(() => {
+    if (port) setRunPort(agent.id, port);
+  }, [agent.id, port, setRunPort]);
 
   const onPlay = () => {
     if (isActive) {

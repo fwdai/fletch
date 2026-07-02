@@ -8,6 +8,7 @@ import type {
   PrChecks,
   PrComments,
   PrState,
+  RunPhase,
   ShortStats,
   Workspace,
 } from "@/api";
@@ -93,6 +94,17 @@ export interface WorkspaceSlice {
    *  agent_id; absent until the agent's first turn lands. Empty for agents that
    *  don't persist usage on disk (cursor, antigravity). See adapters/usage.ts. */
   usage: Record<string, AgentUsage>;
+  /** Live run phase per agent, keyed by agent_id, from the `run:state` event
+   *  stream. Absent = never started (read as "idle"). Fed by an app-wide
+   *  subscription (not the RunPanel, which unmounts on tab switch) so the Run
+   *  tab's "app is running" green dot stays lit from any tab. Single source of
+   *  truth for phase — the RunPanel reads it rather than holding its own copy. */
+  runPhases: Record<string, RunPhase>;
+  /** Dev-server port per agent, keyed by agent_id. Written by the RunPanel when
+   *  it resolves the run config (detected value + overrides), so the sidebar's
+   *  running indicator can show `:port`. Absent until that agent's Run panel has
+   *  been opened this session (the port isn't on the `run:state` event yet). */
+  runPorts: Record<string, string>;
 
   selectAgent: (id: string | null) => void;
   spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
@@ -116,6 +128,12 @@ export interface WorkspaceSlice {
     message?: string,
   ) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
+  /** Record an agent's run phase (from a `run:state` event or a RunPanel
+   *  snapshot rehydrate). Drives the Run tab's running indicator. */
+  setRunPhase: (id: string, phase: RunPhase) => void;
+  /** Record an agent's resolved dev-server port (from the RunPanel), for the
+   *  sidebar's `:port` running indicator. */
+  setRunPort: (id: string, port: string) => void;
   resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;

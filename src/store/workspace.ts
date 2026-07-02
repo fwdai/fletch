@@ -36,6 +36,8 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   switchInFlight: {},
   unseenResults: {},
   usage: {},
+  runPhases: {},
+  runPorts: {},
 
   selectAgent: (id) =>
     set((state) => {
@@ -191,6 +193,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       }));
     }
   },
+
+  setRunPhase: (id, phase) =>
+    set((state) => ({ runPhases: { ...state.runPhases, [id]: phase } })),
+
+  setRunPort: (id, port) =>
+    set((state) =>
+      state.runPorts[id] === port ? state : { runPorts: { ...state.runPorts, [id]: port } },
+    ),
 
   resume: async (id) => {
     clearOutputBuffer(id);

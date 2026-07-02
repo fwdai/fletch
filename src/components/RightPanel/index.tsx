@@ -13,6 +13,9 @@ interface Tab {
   label: string;
   icon: IconName;
   count?: number;
+  /** Show a pulsing green "live" dot on the tab (e.g. the Run tab while the
+   *  project's app is up), so activity is visible from any other tab. */
+  live?: boolean;
 }
 
 /** Right rail: tabs for Code / Git / Run / Terminal (each feature-flagged in
@@ -27,11 +30,17 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
   const gitFiles = useAppStore(
     (s) => s.gitStates[agent.id]?.files.length ?? s.gitShortstats[agent.id]?.file_count ?? 0,
   );
+  // Live run state (setup or running) → the Run tab shows a green dot, matching
+  // the Code panel's "Live" indicator, so a running app is visible from any tab.
+  const runActive = useAppStore((s) => {
+    const phase = s.runPhases[agent.id];
+    return phase === "setup" || phase === "running";
+  });
 
   const tabs: Tab[] = [
     features.code && { id: "code", label: "Code", icon: "code" },
     features.git && { id: "git", label: "Git", icon: "branch", count: gitFiles },
-    features.run && { id: "run", label: "Run", icon: "play" },
+    features.run && { id: "run", label: "Run", icon: "play", live: runActive },
     features.terminal && { id: "term", label: "Terminal", icon: "terminal" },
   ].filter(Boolean) as Tab[];
 
@@ -73,6 +82,7 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
               <Icon name={t.icon} />
               {t.label}
               {t.count != null && t.count > 0 && <span className="count text-xs">{t.count}</span>}
+              {t.live && <span className="r-tab-live-dot" />}
             </button>
           ))}
         </div>

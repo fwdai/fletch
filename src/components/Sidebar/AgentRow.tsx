@@ -54,6 +54,17 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const prState = useAppStore((s) => s.prStates[agent.id] ?? null);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
+  // Dev-server state for this worktree — orthogonal to the agent's turn status,
+  // so it shows as its own play chip beside the identity chip, not among the
+  // activity cues (rail / loader / shimmer). Fed by the app-wide `run:state`
+  // subscription (see store/app.ts), so it stays correct from any tab.
+  const runLive = useAppStore((s) => {
+    const phase = s.runPhases[agent.id];
+    return phase === "setup" || phase === "running";
+  });
+  // Dev-server port, if the RunPanel has resolved it this session — surfaced in
+  // the running chip's tooltip (":port"). Absent until then.
+  const runPort = useAppStore((s) => s.runPorts[agent.id]);
   const pending = useAppStore((s) => s.pendingToolUse[agent.id]);
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
@@ -156,6 +167,15 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={14} />
           )}
         </span>
+        {runLive && (
+          <span
+            className="ag-run tip"
+            data-tip={runPort ? `Dev server running on :${runPort}` : "Dev server running"}
+            aria-label={runPort ? `Dev server running on port ${runPort}` : "Dev server running"}
+          >
+            <Icon name="play" size={9} />
+          </span>
+        )}
         <span className="ag-slot iflex-center">
           <span className={`ag-meta ${agent.status === "error" ? "wide" : ""}`}>
             {awaiting ? (
