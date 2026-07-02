@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 /// glyph fallback) in the picker.
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum Kind {
+pub(crate) enum Kind {
     Editor,
     Terminal,
 }
