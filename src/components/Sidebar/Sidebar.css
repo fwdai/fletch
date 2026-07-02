@@ -270,6 +270,38 @@
   display: inline-flex;
   align-items: center;
 }
+/* dev-server "running" indicator — a green play mark in a tinted, bordered
+ * circle beside the identity chip. Signals the worktree's app is up, distinct
+ * from the agent's turn status (rail / loader / shimmer). The slow breathing
+ * halo reads as a live "heartbeat" — sleek, not an alarm. */
+.agent-row .ag-run {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  color: var(--success);
+  background: color-mix(in oklch, var(--success), transparent 88%);
+  border: 1px solid color-mix(in oklch, var(--success), transparent 58%);
+  animation: agRun 2.6s var(--ease) infinite;
+}
+/* optical-center the play triangle within its circle */
+.agent-row .ag-run svg {
+  margin-left: 1px;
+}
+@keyframes agRun {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--success), transparent 80%);
+    border-color: color-mix(in oklch, var(--success), transparent 62%);
+  }
+  50% {
+    box-shadow: 0 0 7px 0 color-mix(in oklch, var(--success), transparent 42%);
+    border-color: color-mix(in oklch, var(--success), transparent 34%);
+  }
+}
 
 /* right slot — meta and actions share one fixed space, cross-fading on
  * hover so the row never reflows (no height jump). */
