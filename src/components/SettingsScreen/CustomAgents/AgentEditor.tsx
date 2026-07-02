@@ -7,7 +7,8 @@ import { Select } from "@/components/ui/Select";
 import { PROVIDERS } from "@/data/providers";
 import type { NewCustomAgent } from "@/storage/customAgents";
 import { useAppStore } from "@/store";
-import { CA_HUES, INJECTION_HINT, shortFor } from "./shared";
+import { Mono } from "./Mono";
+import { CA_HUES, INJECTION_HINT } from "./shared";
 
 /** Mutable editor form state. `model`/`effort` use "" as the "provider default"
  *  sentinel so the <select> has a concrete value; converted to null on save. */
@@ -92,12 +93,7 @@ export function AgentEditor({
 
         {/* identity */}
         <div className="ca-ed-head flex-center">
-          <span
-            className="ca-mono iflex-center ca-ed-mono text-lg"
-            style={{ ["--h" as string]: form.color }}
-          >
-            {shortFor(form.name)}
-          </span>
+          <Mono name={form.name} hue={form.color} size={46} />
           <input
             className="ca-ed-name text-xl"
             placeholder="Name this agent…"

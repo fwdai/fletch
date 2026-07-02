@@ -119,11 +119,6 @@
 .ca-ed-head {
   gap: 14px;
 }
-.ca-ed-mono {
-  width: 46px;
-  height: 46px;
-  border-radius: 11px;
-}
 .ca-ed-name {
   flex: 1;
   min-width: 0;
