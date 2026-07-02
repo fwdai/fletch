@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { useAppStore } from "./store";
+import { setupAppMenu } from "./util/appMenu";
 import { runStartupUpdateCheck } from "./util/autoUpdate";
 import { revealAppWindow } from "./util/window";
 import "@fontsource/geist-sans/400.css";
@@ -26,3 +27,7 @@ revealAppWindow();
 void runStartupUpdateCheck((version) => {
   useAppStore.getState().setUpdateReady(version);
 });
+
+// Install the native menu (adds "Check for Updates…"). Fire-and-forget; never
+// blocks launch.
+void setupAppMenu();
