@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { type AgentRecord, api, onRunOutput, onRunState } from "@/api";
 import { Icon } from "@/components/Icon";
-import { useAppStore } from "@/store";
 import {
   deleteProjectSetting,
   getProjectSettings,
   setProjectSetting,
 } from "@/storage/projectSettings";
+import { useAppStore } from "@/store";
 import { RunSettingsSheet, type SetupRow } from "./RunSettingsSheet";
 import { reconcileOverrides } from "./reconcileOverrides";
 

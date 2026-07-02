@@ -194,8 +194,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  setRunPhase: (id, phase) =>
-    set((state) => ({ runPhases: { ...state.runPhases, [id]: phase } })),
+  setRunPhase: (id, phase) => set((state) => ({ runPhases: { ...state.runPhases, [id]: phase } })),
 
   setRunPort: (id, port) =>
     set((state) =>
