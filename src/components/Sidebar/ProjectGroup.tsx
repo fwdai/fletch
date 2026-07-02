@@ -61,7 +61,13 @@ export function ProjectGroup({
         <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
-        <button className="padd tip" data-tip="New agent" data-tip-down="" onClick={onAddAgent}>
+        <button
+          className="padd tip"
+          data-tip="New agent  ⌘N"
+          data-tip-down=""
+          onClick={onAddAgent}
+          aria-label="New agent"
+        >
           <Icon name="plus" size={11} />
         </button>
         {removable && (
@@ -78,10 +84,6 @@ export function ProjectGroup({
       </div>
 
       <div className={`agents ${open ? "" : "closed"}`}>
-        <button className="agent-new flex-center" onClick={onAddAgent}>
-          <Icon name="plus" size={11} />
-          <span>New agent</span>
-        </button>
         {drafts.map((d) => (
           <AgentRow
             key={d.id}

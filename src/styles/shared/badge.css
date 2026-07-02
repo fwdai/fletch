@@ -133,25 +133,6 @@
   transition: width 0.25s var(--ease);
 }
 
-.agent-new {
-  gap: 8px;
-  padding: 8px 8px;
-  margin-bottom: 6px;
-  border-radius: var(--r-sm);
-  font-size: var(--fs-sm);
-  color: var(--fg-3);
-  width: 100%;
-  text-align: left;
-}
-.agent-new:hover {
-  background: var(--hover);
-  color: var(--fg-1);
-}
-.agent-new svg {
-  width: 15px;
-  height: 15px;
-}
-
 .side-foot {
   height: 52px;
   padding: 0 12px;
