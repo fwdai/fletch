@@ -206,6 +206,10 @@
 .ag-rail.run {
   background: var(--success);
 }
+/* paused on a question — amber says the turn is the user's */
+.ag-rail.wait {
+  background: var(--warn);
+}
 /* a single lighter sheen sweeps the solid rail and resets off-screen (no blink) */
 .ag-rail.run::after {
   content: "";
@@ -272,17 +276,17 @@
 .ag-slot {
   position: relative;
   margin-left: auto;
-  justify-content: flex-end;
   flex-shrink: 0;
   min-height: 21px;
-  min-width: 18px;
+  /* reserve exactly one action-button's width so meta and actions stack in
+   * the same footprint (see below) — the row never reflows on hover */
+  min-width: 21px;
 }
-.ag-slot .ag-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  transition: opacity 0.12s;
-}
+/* meta and actions occupy the SAME right-anchored 21px box and cross-fade in
+ * place: a single indicator (loader / hand / unseen dot) is centered on the
+ * exact spot the action-button icon lands, so any swap looks like a morph, not
+ * a jump. Text badges (error, draft "new") opt out of the box via `.wide`. */
+.ag-slot .ag-meta,
 .ag-slot .ag-actions {
   position: absolute;
   right: 0;
@@ -290,10 +294,20 @@
   transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  transition: opacity 0.12s;
+}
+.ag-slot .ag-meta {
+  width: 21px;
+}
+.ag-slot .ag-meta.wide {
+  width: auto;
+  justify-content: flex-end;
+}
+.ag-slot .ag-actions {
   gap: 2px;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s;
 }
 .agent:hover .ag-slot .ag-meta {
   opacity: 0;
@@ -301,6 +315,15 @@
 .agent:hover .ag-slot .ag-actions {
   opacity: 1;
   pointer-events: auto;
+}
+/* an agent paused on a question keeps its hand (and tooltip) on hover instead
+ * of swapping to Stop — the turn is the user's, stopping isn't the next move */
+.agent.awaiting:hover .ag-slot .ag-meta {
+  opacity: 1;
+}
+.agent.awaiting:hover .ag-slot .ag-actions {
+  opacity: 0;
+  pointer-events: none;
 }
 .ag-act {
   justify-content: center;
@@ -323,6 +346,35 @@
   left: auto;
   right: 0;
   transform: none;
+}
+
+/* waiting-for-input indicator — amber hand, a soft breathing pulse so it
+ * reads as an ask, not a dead icon */
+.ag-waiting {
+  display: inline-flex;
+  align-items: center;
+  color: var(--warn);
+}
+/* pulse only the glyph — animating the wrapper's opacity would drag its
+ * `::after` tooltip along with it */
+.ag-waiting svg {
+  animation: agWaiting 2s var(--ease) infinite;
+}
+/* pinned to the row's right edge like the action buttons — anchor the tooltip
+ * right so it never spills past the sidebar */
+.ag-waiting.tip[data-tip]:hover::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+@keyframes agWaiting {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 /* working indicator — three grey dots, smooth bounce + fade, synced */
