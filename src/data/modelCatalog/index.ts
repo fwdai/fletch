@@ -3,7 +3,7 @@
 // Pipeline: ask each agent CLI which models it supports (Rust discovery) →
 // enrich those ids against models.dev → assemble a UnifiedCatalog (id→meta for
 // the usage gauge, per-agent lists for the future picker). The result is cached
-// in localStorage with a 24h TTL and rebuilt in the background on expiry, so a
+// in localStorage with a 1h TTL and rebuilt in the background on expiry, so a
 // newly-released model shows up automatically without an app release.
 
 import { api } from "@/api";
@@ -14,8 +14,8 @@ import type { UnifiedCatalog } from "./types";
 export { lookupModel } from "./normalize";
 export type { ModelMeta, SlimCatalog } from "./types";
 
-const CACHE_KEY = "modelCatalog.cache.v12";
-const TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const CACHE_KEY = "modelCatalog.cache.v13";
+const TTL_MS = 60 * 60 * 1000; // 1h
 
 const EMPTY: UnifiedCatalog = { byId: {}, byAgent: {} };
 

@@ -22,11 +22,14 @@ export function prettyModelLabel(id: string): string {
   // Drop a trailing date snapshot (`claude-haiku-4-5-20251001`).
   const base = raw.replace(/-\d{8}$/, "");
 
-  // Claude: claude-<tier>-<major>-<minor> → "Claude Opus 4.7".
-  let m = base.match(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)$/);
+  // Claude: claude-<tier>-<major>-<minor> → "Claude Opus 4.7". The tier is any
+  // family token (opus/sonnet/haiku/fable/…) so a new family labels correctly
+  // without a code change; the `[a-z]+` never matches the legacy `claude-3-5-…`
+  // shape (its first token is a digit), which falls through to raw.
+  let m = base.match(/^claude-([a-z]+)-(\d+)-(\d+)$/);
   if (m) return `Claude ${cap(m[1])} ${m[2]}.${m[3]}`;
-  // Claude without a minor: claude-opus-4 → "Claude Opus 4".
-  m = base.match(/^claude-(opus|sonnet|haiku)-(\d+)$/);
+  // Claude without a minor: claude-fable-5 → "Claude Fable 5".
+  m = base.match(/^claude-([a-z]+)-(\d+)$/);
   if (m) return `Claude ${cap(m[1])} ${m[2]}`;
 
   // GPT: gpt-5.2-codex → "GPT-5.2 Codex"; gpt-5.5 → "GPT-5.5".
