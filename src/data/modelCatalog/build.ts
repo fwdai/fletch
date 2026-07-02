@@ -58,19 +58,23 @@ export function dedupeBest(
 }
 
 /** Keep at most `caps[group]` models per group, in the order given. An
- *  unclassifiable model (null group) is dropped. Feed a release-desc list to
- *  keep the newest N per group. */
+ *  unclassifiable model (null group) is dropped. A group with no entry in `caps`
+ *  uses `defaultCap` if given, and is otherwise left uncapped. Feed a
+ *  release-desc list to keep the newest N per group. */
 export function capPerGroup<G extends string>(
   models: ModelMeta[],
   groupFn: (meta: ModelMeta) => G | null,
   caps: Record<G, number>,
+  defaultCap?: number,
 ): ModelMeta[] {
   const counts = {} as Record<G, number>;
   return models.filter((meta) => {
     const group = groupFn(meta);
     if (group === null) return false;
+    const cap = caps[group] ?? defaultCap;
+    if (cap === undefined) return true;
     const used = counts[group] ?? 0;
-    if (used >= caps[group]) return false;
+    if (used >= cap) return false;
     counts[group] = used + 1;
     return true;
   });
@@ -126,7 +130,22 @@ function lookupEnrichedModel(index: ModelsDevIndex, id: string): ModelMeta | und
   return undefined;
 }
 
-function claudeFamily(meta: ModelMeta): "opus" | "sonnet" | "haiku" | null {
+// Curated display order for the Claude families we know how to rank. Families
+// absent here (a brand-new tier like "fable") are still shown — they just sort
+// ahead of the ranked ones (see claudeFamilyRank) so a new flagship isn't buried.
+const CLAUDE_FAMILY_ORDER: Record<string, number> = { opus: 0, sonnet: 1, haiku: 2 };
+
+/** How many models to keep for a Claude family without a curated cap above. */
+const CLAUDE_DEFAULT_FAMILY_CAP = 2;
+
+/** The Claude family a model belongs to, e.g. "opus" / "fable". Prefers the
+ *  authoritative models.dev `family` ("claude-<family>"), so new families flow
+ *  through without a code change; falls back to name matching for CLI-only ids
+ *  models.dev doesn't know. Returns null for non-Claude models (their own
+ *  `family`, e.g. "gpt-5", must not be mistaken for a Claude family). */
+function claudeFamily(meta: ModelMeta): string | null {
+  const family = meta.family?.toLowerCase();
+  if (family?.startsWith("claude-")) return family.slice("claude-".length);
   const haystack = `${meta.id} ${meta.name}`.toLowerCase();
   if (haystack.includes("opus")) return "opus";
   if (haystack.includes("sonnet")) return "sonnet";
@@ -136,15 +155,8 @@ function claudeFamily(meta: ModelMeta): "opus" | "sonnet" | "haiku" | null {
 
 function claudeFamilyRank(meta: ModelMeta): number {
   const family = claudeFamily(meta);
-  if (family === "opus") return 0;
-  if (family === "sonnet") return 1;
-  if (family === "haiku") return 2;
-  return 3;
-}
-
-function claudeMajor(meta: ModelMeta): number {
-  const m = `${meta.id} ${meta.name}`.match(/(?:claude[ -])?(?:opus|sonnet|haiku)[ -](\d+)/i);
-  return m ? Number(m[1]) : 0;
+  if (family && family in CLAUDE_FAMILY_ORDER) return CLAUDE_FAMILY_ORDER[family];
+  return -1;
 }
 
 function claudeDedupeKey(meta: ModelMeta): string {
@@ -169,11 +181,14 @@ function preferClaudeRelease(candidate: ModelMeta, current: ModelMeta): boolean 
 function curateClaudeModels(models: ModelMeta[]): ModelMeta[] {
   const caps = { opus: 3, sonnet: 2, haiku: 1 };
 
+  // Keep only Claude-family models; the per-family caps below (newest first)
+  // drop older generations without needing a hardcoded version gate.
   const deduped = dedupeBest(models, claudeDedupeKey, preferClaudeRelease).filter(
-    (meta) => claudeFamily(meta) !== null && claudeMajor(meta) >= 4,
+    (meta) => claudeFamily(meta) !== null,
   );
 
-  return capPerGroup(deduped, claudeFamily, caps).sort((a, b) => {
+  // New families we don't have a curated cap for get CLAUDE_DEFAULT_FAMILY_CAP.
+  return capPerGroup(deduped, claudeFamily, caps, CLAUDE_DEFAULT_FAMILY_CAP).sort((a, b) => {
     const byFamily = claudeFamilyRank(a) - claudeFamilyRank(b);
     return byFamily || releaseRank(b) - releaseRank(a);
   });
@@ -313,6 +328,7 @@ function metaFor(d: DiscoveredModel, index: ModelsDevIndex): ModelMeta {
     name: dev?.name ?? d.name ?? d.id,
     contextWindow: dev?.contextWindow || d.contextWindow || 0,
     reasoning: dev?.reasoning ?? d.reasoning ?? false,
+    ...(dev?.family ? { family: dev.family } : {}),
     ...(dev?.releaseDate ? { releaseDate: dev.releaseDate } : {}),
   };
 }

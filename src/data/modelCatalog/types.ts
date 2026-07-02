@@ -16,6 +16,9 @@ export interface ModelMeta {
   contextWindow: number;
   /** Whether the model supports reasoning / extended thinking. */
   reasoning: boolean;
+  /** Model family from models.dev (e.g. "claude-opus", "claude-fable"), when
+   *  known. Used to group/curate a provider's lineage without hardcoding names. */
+  family?: string;
   /** Model release date from models.dev (`YYYY-MM-DD`), when known. */
   releaseDate?: string;
 }

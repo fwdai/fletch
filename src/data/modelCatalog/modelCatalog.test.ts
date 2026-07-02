@@ -493,6 +493,65 @@ describe("buildCatalog", () => {
   });
 });
 
+describe("buildCatalog — data-driven Claude families", () => {
+  // Faithful to models.dev: every model carries a `family` (e.g. "claude-fable"),
+  // including a family the name-based classifier would never recognize.
+  const FAMILY_API = {
+    anthropic: {
+      models: {
+        "claude-opus-4-8": {
+          name: "Claude Opus 4.8",
+          family: "claude-opus",
+          reasoning: true,
+          release_date: "2026-05-28",
+          limit: { context: 1_000_000 },
+        },
+        "claude-fable-5": {
+          name: "Claude Fable 5",
+          family: "claude-fable",
+          reasoning: true,
+          release_date: "2026-06-09",
+          limit: { context: 1_000_000 },
+        },
+      },
+    },
+    openai: {
+      models: {
+        "gpt-5.5": {
+          name: "GPT-5.5",
+          family: "gpt-5",
+          reasoning: true,
+          release_date: "2025-12-11",
+          limit: { context: 400_000 },
+        },
+      },
+    },
+  };
+  const idx = indexModelsDev(FAMILY_API as never);
+
+  it("surfaces a new Claude family (Fable) via the models.dev family field", () => {
+    const agents: AgentModels[] = [{ agent: "claude", providerHint: "anthropic", models: [] }];
+    const ids = buildCatalog(agents, idx).byAgent.claude.map((m) => m.id);
+
+    // Fable's name/id contain no opus/sonnet/haiku, so it's recognized only by
+    // the family field — and a new flagship family sorts ahead, not buried.
+    expect(ids).toContain("claude-fable-5");
+    expect(ids[0]).toBe("claude-fable-5");
+  });
+
+  it("does not misclassify a non-Claude family as Claude in Pi curation", () => {
+    // gpt-5.5 has a family field too; it must stay after the Claude models,
+    // not get grouped as a Claude family.
+    const agents: AgentModels[] = [
+      { agent: "pi", models: [{ id: "claude-opus-4-8" }, { id: "gpt-5.5" }] },
+    ];
+    expect(buildCatalog(agents, idx).byAgent.pi.map((m) => m.id)).toEqual([
+      "claude-opus-4-8",
+      "gpt-5.5",
+    ]);
+  });
+});
+
 describe("modelIdCandidates", () => {
   it("strips provider prefix and date suffix, in priority order", () => {
     expect(modelIdCandidates("anthropic/claude-opus-4-20250514")).toEqual([
