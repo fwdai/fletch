@@ -28,6 +28,7 @@ import {
   GitCommitHorizontal,
   GitMerge,
   GitPullRequest,
+  Hand,
   History,
   Inbox,
   Layers,
@@ -148,6 +149,7 @@ const ICON_COMPONENTS = {
   sun: Sun,
   zap: Zap,
   clock: Clock,
+  hand: Hand,
 } satisfies Record<string, ComponentType<IconComponentProps>>;
 
 // Originally rendered with fill="currentColor". Setting fill on the root SVG

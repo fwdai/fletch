@@ -54,6 +54,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const prState = useAppStore((s) => s.prStates[agent.id] ?? null);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
+  const pending = useAppStore((s) => s.pendingToolUse[agent.id]);
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
   // The custom agent this session was spawned from, if any (and still present).
@@ -70,6 +71,11 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const age = formatAge(agent.created_at, now);
   // spawning is the start of a run — show it as "working" too, not a dead row
   const working = agent.status === "running" || agent.status === "spawning";
+  // The agent has paused on a question/plan tool and is waiting for a human
+  // answer (AskUserQuestion / ExitPlanMode). Status stays `running`, so this
+  // separate signal is what distinguishes "the ball's in your court" from
+  // "still thinking". Mirrors ChatView's `awaitingInput`.
+  const awaiting = working && !!pending && Object.keys(pending).length > 0;
 
   const catalog = useAppStore((s) => s.modelCatalog);
   const hasUsage = !!usage && usage.contextTokens > 0;
@@ -101,13 +107,16 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
 
   // The status rail doubles as the left spine: colored for live/terminal
   // states, a merged PR claims purple, everything else is a faint grey.
-  const railClass = working
-    ? "run"
-    : agent.status === "error"
-      ? "err"
-      : prState?.state === "merged"
-        ? "merged"
-        : "idle";
+  // A pending question outranks the plain running green — amber says "you".
+  const railClass = awaiting
+    ? "wait"
+    : working
+      ? "run"
+      : agent.status === "error"
+        ? "err"
+        : prState?.state === "merged"
+          ? "merged"
+          : "idle";
 
   const hasChanges = !!shortstats && (shortstats.additions > 0 || shortstats.deletions > 0);
 
@@ -122,7 +131,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
 
   return (
     <div
-      className={`agent ${active ? "active" : ""}`}
+      className={`agent ${active ? "active" : ""} ${awaiting ? "awaiting" : ""}`}
       role="button"
       tabIndex={0}
       aria-current={active ? "page" : undefined}
@@ -131,7 +140,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
     >
       <span className={`ag-rail ${railClass}`} />
       <div className="agent-row flex-center">
-        <span className={`ag-name ${working ? "shimmer" : ""}`}>{agent.name}</span>
+        <span className={`ag-name ${working && !awaiting ? "shimmer" : ""}`}>{agent.name}</span>
         <span
           className="ag-prov-chip tip"
           data-tip={
@@ -148,8 +157,18 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
           )}
         </span>
         <span className="ag-slot iflex-center">
-          <span className="ag-meta">
-            {working && <span className="ag-loader" aria-label="Working" />}
+          <span className={`ag-meta ${agent.status === "error" ? "wide" : ""}`}>
+            {awaiting ? (
+              <span
+                className="ag-waiting tip"
+                data-tip="Waiting for user input"
+                aria-label="Waiting for user input"
+              >
+                <Icon name="hand" size={12} />
+              </span>
+            ) : (
+              working && <span className="ag-loader" aria-label="Working" />
+            )}
             {agent.status === "idle" && !active && unseen && (
               <span
                 className="ag-unseen tip"
@@ -160,7 +179,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             {agent.status === "error" && <Badge variant="err">error</Badge>}
           </span>
           <span className="ag-actions">
-            {stoppable && (
+            {stoppable && !awaiting && (
               <button
                 className="ag-act iflex-center tip"
                 data-tip="Stop"
