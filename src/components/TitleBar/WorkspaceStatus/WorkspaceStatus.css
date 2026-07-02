@@ -1,0 +1,566 @@
+/* ═══ workspace status capsule ═══════════════════════════════════════
+ * The functional center of the title bar. Adapted from the title-bar spec:
+ * a hoverable pill (status dot + project/agent + git/PR badge) that reveals a
+ * details popover on hover/focus. Plain/home variants share the tokens. */
+.ws-cap-wrap {
+  position: relative;
+  -webkit-app-region: no-drag;
+  display: flex;
+}
+
+/* the visible pill */
+.ws-cap {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 26px;
+  padding: 0 4px 0 9px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  color: var(--fg-2);
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    background 0.14s var(--ease),
+    border-color 0.14s var(--ease),
+    box-shadow 0.14s var(--ease);
+}
+.ws-cap:not(.static):hover,
+.ws-cap-wrap:focus-within .ws-cap:not(.static) {
+  background: var(--bg-1);
+  border-color: var(--bd-soft);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+
+.ws-ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.ws-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2.5px;
+  flex-shrink: 0;
+}
+.ws-proj-name {
+  font-size: 12px;
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-slash {
+  color: var(--fg-3);
+  font-size: 12px;
+}
+.ws-agent-name {
+  color: var(--fg-0);
+  font-weight: 550;
+  letter-spacing: -0.1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* status dot */
+.ws-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  position: relative;
+  background: var(--fg-3);
+}
+.ws-dot.big {
+  width: 10px;
+  height: 10px;
+}
+.ws-dot.running {
+  background: var(--success);
+}
+.ws-dot.running::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1.5px solid var(--success);
+  animation: ws-ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes ws-ping {
+  0% {
+    transform: scale(0.55);
+    opacity: 0.7;
+  }
+  80%,
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+.ws-dot.waiting {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--warn), transparent 84%);
+}
+.ws-dot.error {
+  background: var(--danger);
+}
+.ws-dot.idle {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px var(--fg-3);
+  opacity: 0.6;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-dot.running::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* inline git / PR badge */
+.ws-cap-git {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ws-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--bg-2);
+  color: var(--fg-2);
+  border: 1px solid var(--bd-soft);
+}
+.ws-badge svg {
+  opacity: 0.9;
+}
+.ws-badge.diff {
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 0 6px;
+}
+.ws-badge.diff .add {
+  color: var(--success);
+}
+.ws-badge.diff .rem {
+  color: var(--danger);
+}
+.ws-badge.quiet {
+  color: var(--fg-3);
+  font-size: 10.5px;
+}
+.ws-badge.clean {
+  gap: 4px;
+  color: color-mix(in oklch, var(--success), var(--fg-2) 48%);
+}
+.ws-badge.pr-open {
+  color: var(--success);
+  border-color: color-mix(in oklch, var(--success), transparent 65%);
+  background: color-mix(in oklch, var(--success), transparent 90%);
+}
+.ws-badge.pr-draft {
+  color: var(--fg-2);
+}
+.ws-badge.pr-conflicts {
+  color: var(--warn);
+  border-color: color-mix(in oklch, var(--warn), transparent 60%);
+  background: color-mix(in oklch, var(--warn), transparent 88%);
+}
+.ws-badge.pr-merged {
+  color: oklch(0.68 0.16 295);
+  border-color: color-mix(in oklch, oklch(0.68 0.16 295), transparent 60%);
+  background: color-mix(in oklch, oklch(0.68 0.16 295), transparent 90%);
+}
+.theme-light .ws-badge.pr-merged {
+  color: oklch(0.45 0.16 295);
+}
+
+/* check summary chip */
+.ws-checks {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ws-checks.ok {
+  color: var(--success);
+  background: color-mix(in oklch, var(--success), transparent 88%);
+}
+.ws-checks.bad {
+  color: var(--danger);
+  background: color-mix(in oklch, var(--danger), transparent 86%);
+}
+.ws-checks.pend {
+  color: var(--warn);
+  background: color-mix(in oklch, var(--warn), transparent 86%);
+}
+.ws-spin {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in oklch, var(--warn), transparent 55%);
+  border-top-color: var(--warn);
+  animation: ws-spin 0.8s linear infinite;
+}
+.ws-spin.sm {
+  width: 8px;
+  height: 8px;
+  border-width: 1.4px;
+}
+@keyframes ws-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-spin {
+    animation: none;
+  }
+}
+
+.ws-caret {
+  color: var(--fg-3);
+  margin-left: 1px;
+  transition:
+    transform 0.14s var(--ease),
+    color 0.14s;
+}
+.ws-cap-wrap:hover .ws-caret {
+  color: var(--fg-2);
+  transform: translateY(1px);
+}
+
+/* ── the details popover ── */
+.ws-pop {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px);
+  width: 340px;
+  padding: 12px;
+  background: var(--bg-0);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  box-shadow:
+    0 12px 34px -8px rgba(0, 0, 0, 0.42),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.16s var(--ease),
+    transform 0.16s var(--ease),
+    visibility 0.16s;
+  z-index: 400;
+}
+/* invisible hover bridge so the gap doesn't drop the hover */
+.ws-pop::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -9px;
+  height: 9px;
+}
+.ws-cap-wrap:hover .ws-pop,
+.ws-cap-wrap:focus-within .ws-pop,
+.ws-pop:hover {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+  transition-delay: 0.05s;
+}
+
+.ws-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ws-pop-head .ws-dot {
+  margin: 0 1px;
+}
+.ws-pop-id {
+  min-width: 0;
+  flex: 1;
+}
+.ws-pop-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg-0);
+  letter-spacing: -0.1px;
+}
+.ws-pop-sub {
+  font-size: 11px;
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.ws-pop-head .chip-mono {
+  flex-shrink: 0;
+}
+
+.ws-pop-div {
+  height: 1px;
+  background: var(--bd-soft);
+  margin: 11px 0;
+}
+
+.ws-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg-1);
+  min-height: 20px;
+}
+.ws-pop-row + .ws-pop-row {
+  margin-top: 7px;
+}
+.ws-pop-row > svg {
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.ws-pop-branch {
+  color: var(--fg-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-pop-base {
+  color: var(--fg-3);
+  font-size: 10.5px;
+  flex-shrink: 0;
+}
+.ws-pop-ab {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.ws-pop-ab .up,
+.ws-pop-ab .dn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--fg-2);
+}
+.ws-pop-ab svg {
+  color: var(--fg-3);
+}
+.ws-pop-diff {
+  display: inline-flex;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+/* qualified with the .ws-pop ancestor so specificity matches the .ws-badge.diff
+ * .add/.rem rules above — otherwise this later, lower-specificity selector reads
+ * as descending (noDescendingSpecificity) even though it targets other nodes. */
+.ws-pop .ws-pop-diff .add {
+  color: var(--success);
+}
+.ws-pop .ws-pop-diff .rem {
+  color: var(--danger);
+}
+.ws-pop-dim {
+  color: var(--fg-3);
+  font-size: 10.5px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* PR block */
+.ws-pop-pr {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ws-pr-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.ws-pr-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.ws-pr-tag.pr-open {
+  color: var(--success);
+  background: color-mix(in oklch, var(--success), transparent 88%);
+}
+.ws-pr-tag.pr-draft {
+  color: var(--fg-2);
+  background: var(--bg-2);
+}
+.ws-pr-tag.pr-conflicts {
+  color: var(--warn);
+  background: color-mix(in oklch, var(--warn), transparent 86%);
+}
+.ws-pr-tag.pr-merged {
+  color: oklch(0.68 0.16 295);
+  background: color-mix(in oklch, oklch(0.68 0.16 295), transparent 88%);
+}
+.theme-light .ws-pr-tag.pr-merged {
+  color: oklch(0.45 0.16 295);
+}
+.ws-pr-num {
+  color: var(--fg-2);
+  font-size: 11px;
+}
+.ws-pop-repo {
+  color: var(--fg-3);
+  font-size: 10.5px;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-pr-title {
+  font-size: 12px;
+  color: var(--fg-0);
+  line-height: 1.35;
+}
+
+.ws-checkblock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ws-checkbar {
+  display: flex;
+  gap: 2px;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+.ws-checkbar i {
+  display: block;
+  border-radius: 2px;
+  min-width: 3px;
+}
+.ws-checkbar i.p {
+  background: var(--success);
+}
+.ws-checkbar i.f {
+  background: var(--danger);
+}
+.ws-checkbar i.w {
+  background: var(--warn);
+}
+.ws-checkcounts {
+  display: flex;
+  gap: 12px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.ws-checkcounts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ws-checkcounts .ok {
+  color: var(--success);
+}
+.ws-checkcounts .bad {
+  color: var(--danger);
+}
+.ws-checkcounts .pend {
+  color: var(--warn);
+}
+
+.ws-pop-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 11px;
+}
+.ws-act {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 550;
+  border: 1px solid var(--bd);
+  color: var(--fg-1);
+  background: var(--bg-1);
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    color 0.12s;
+}
+.ws-act:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.ws-act.primary {
+  flex: 1.6;
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.ws-act.primary:hover {
+  background: color-mix(in oklch, var(--accent), transparent 82%);
+}
+.ws-act svg {
+  opacity: 0.85;
+}
+
+/* ── plain / home crumb states ── */
+.ws-plain {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+.ws-plain-btn {
+  color: var(--fg-2);
+  transition: color 0.12s;
+}
+.ws-plain-btn:hover {
+  color: var(--fg-0);
+}
+.ws-plain-sep {
+  color: var(--fg-3);
+}
+.ws-plain-active {
+  color: var(--fg-0);
+}
+.ws-home-title {
+  color: var(--fg-1);
+  font-weight: 550;
+}
+.ws-home-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+}

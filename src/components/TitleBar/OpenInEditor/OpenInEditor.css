@@ -1,0 +1,132 @@
+/* ═══ open-in editor launcher ═══════════════════════════════════════
+ * Right-side split control: a tile of the last-used editor (opens the active
+ * agent's worktree) + a caret that picks among the editors detected on this
+ * machine. Adapted from the title-bar spec. */
+.oe {
+  position: relative;
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 3px 0 4px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.oe:hover,
+.oe.open {
+  background: var(--bg-1);
+  border-color: var(--bd-soft);
+}
+.oe-main {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+}
+.oe-main:hover {
+  background: var(--hover);
+}
+.oe-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 26px;
+  padding: 0;
+  color: var(--fg-2);
+  border-radius: 6px;
+  transition: color 0.12s;
+}
+.oe-caret:hover,
+.oe.open .oe-caret {
+  color: var(--fg-0);
+}
+
+/* One premium tile for every editor — a dark, softly-lit "app icon" surface
+ * with a white glyph, consistent across editors and themes (no per-editor
+ * color). The top sheen + inner hairline + drop shadow give it depth. */
+.oe-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  background: linear-gradient(180deg, oklch(0.34 0.006 264), oklch(0.26 0.006 264));
+  box-shadow:
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 0 0.5px rgba(0, 0, 0, 0.45),
+    0 1px 2px rgba(0, 0, 0, 0.3);
+  flex-shrink: 0;
+}
+
+.oe-menu {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  width: 208px;
+  padding: 5px;
+  background: var(--bg-0);
+  border: 1px solid var(--bd);
+  border-radius: 11px;
+  box-shadow:
+    0 12px 34px -8px rgba(0, 0, 0, 0.42),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+  z-index: 400;
+  animation: oe-drop 0.14s var(--ease);
+  /* the list can get long once many editors are detected — cap it and scroll */
+  max-height: min(70vh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+@keyframes oe-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.oe-menu-h {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-3);
+  padding: 6px 8px 5px;
+}
+/* a touch more air above the second group's header (Editors → Terminals) */
+.oe-group + .oe-group .oe-menu-h {
+  padding-top: 9px;
+}
+.oe-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--fg-1);
+  text-align: left;
+  transition: background 0.1s;
+}
+.oe-item:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.oe-item.on {
+  color: var(--fg-0);
+}
+.oe-item-label {
+  flex: 1;
+}
+.oe-check {
+  color: var(--accent);
+}

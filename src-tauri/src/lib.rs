@@ -3,6 +3,7 @@ mod agent;
 mod bin_resolve;
 mod commands;
 mod database;
+mod editors;
 mod error;
 mod exec_session;
 mod extensions;
@@ -533,6 +534,8 @@ pub fn run() {
             commands::validate_agent_bin,
             commands::discover_supported_models,
             commands::reveal_logs,
+            commands::detect_editors,
+            commands::open_in_editor,
         ])
         .build(tauri::generate_context!())
         .expect("error while building fletch")

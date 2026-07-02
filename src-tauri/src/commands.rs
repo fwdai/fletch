@@ -48,6 +48,24 @@ pub fn reveal_logs() -> Result<()> {
     Ok(())
 }
 
+/// The code editors installed on this machine, for the title-bar
+/// "Open in editor" launcher. Detected live (see `editors::detect`).
+#[tauri::command]
+pub fn detect_editors() -> Vec<crate::editors::DetectedEditor> {
+    crate::editors::detect()
+}
+
+/// Open an agent's primary worktree in the chosen editor.
+#[tauri::command]
+pub fn open_in_editor(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    editor_id: String,
+) -> Result<()> {
+    let (_, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
+    crate::editors::open(&editor_id, &worktree)
+}
+
 /// The ref a worktree's *committed* changes are diffed against: the immutable
 /// fork-point SHA captured at spawn when known, else the parent branch name
 /// (pre-migration agents), which may have drifted from the actual fork point.
