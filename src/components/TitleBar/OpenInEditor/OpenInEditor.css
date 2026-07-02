@@ -26,6 +26,7 @@
   justify-content: center;
   width: 26px;
   height: 26px;
+  padding: 0;
   border-radius: 6px;
 }
 .oe-main:hover {
@@ -37,6 +38,7 @@
   justify-content: center;
   width: 16px;
   height: 26px;
+  padding: 0;
   color: var(--fg-2);
   border-radius: 6px;
   transition: color 0.12s;
