@@ -55,7 +55,7 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
     await get().refreshProviderVersions();
   },
   refreshModelCatalog: async () => {
-    // Cache holds for 24h; the init seed already reflects it when fresh.
+    // Cache holds for 1h; the init seed already reflects it when fresh.
     if (!isCatalogStale()) return;
     const catalog = await rebuildCatalog();
     if (catalog) set({ modelCatalog: catalog.byId, modelsByAgent: catalog.byAgent });

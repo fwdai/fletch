@@ -10,6 +10,18 @@ describe("prettyModelLabel", () => {
     expect(prettyModelLabel("claude-opus-4-8")).toBe("Claude Opus 4.8");
   });
 
+  it("labels new Claude families without a code change", () => {
+    // The tier match is derived, not an opus/sonnet/haiku allowlist, so a
+    // newly-released family labels correctly. Regression guard for Fable.
+    expect(prettyModelLabel("claude-fable-5")).toBe("Claude Fable 5");
+    expect(prettyModelLabel("claude-mythos-5")).toBe("Claude Mythos 5");
+  });
+
+  it("leaves the legacy claude-3-5-sonnet id shape unchanged", () => {
+    // First token is a digit, so the derived tier match can't misfire on it.
+    expect(prettyModelLabel("claude-3-5-sonnet-20241022")).toBe("claude-3-5-sonnet-20241022");
+  });
+
   it("drops a trailing date snapshot", () => {
     expect(prettyModelLabel("claude-haiku-4-5-20251001")).toBe("Claude Haiku 4.5");
   });
