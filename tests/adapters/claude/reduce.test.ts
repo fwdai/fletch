@@ -101,6 +101,29 @@ describe("claudeAdapter.reduce — injected meta user events", () => {
     expect(items).toEqual([]);
   });
 
+  it("does not render an isSynthetic user event (live skill body) as a user bubble", () => {
+    // The live stream-json wire flags the SAME injected event as `isSynthetic`
+    // rather than `isMeta` (which appears only in the persisted transcript).
+    // Shape captured verbatim from `claude -p --output-format stream-json` when
+    // a skill loads. Honoring only isMeta let this bubble through live (#296
+    // regression, reported in maldives).
+    const items = reduceAll([
+      {
+        type: "user",
+        isSynthetic: true,
+        parent_tool_use_id: null,
+        session_id: "s1",
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "Base directory for this skill: /x\n\n# Greeter Skill\nhello" },
+          ],
+        },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([]);
+  });
+
   it("still renders a normal (non-meta) user event as a bubble", () => {
     const items = reduceAll([
       {
