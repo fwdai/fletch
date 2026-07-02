@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAppStore } from "@/store";
+import type { AppSlice } from "@/store/types";
 import { restartForUpdate } from "@/util/autoUpdate";
 import { Icon, type IconName } from "./Icon";
 import { Button } from "./ui/Button";
@@ -57,7 +58,8 @@ function UpdateReadyToast({ version }: { version: string }) {
   );
 }
 
-type CheckStatus = "checking" | "uptodate" | "error";
+// Derived from the store so a new variant on `updateCheckStatus` can't drift.
+type CheckStatus = NonNullable<AppSlice["updateCheckStatus"]>;
 
 const STATUS_COPY: Record<CheckStatus, { icon: IconName; title: string; detail: string }> = {
   checking: {
@@ -71,7 +73,7 @@ const STATUS_COPY: Record<CheckStatus, { icon: IconName; title: string; detail: 
     detail: "Fletch is running the latest version.",
   },
   error: {
-    icon: "download",
+    icon: "close",
     title: "Update check failed",
     detail: "Couldn't reach the update server.",
   },
