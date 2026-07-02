@@ -1,11 +1,12 @@
+import type { DetectedEditor } from "@/api";
 import { Icon } from "@/components/Icon";
 import { editorFace } from "./editors";
 
-/** The little editor tile — the brand mark, a glyph for the terminal, or a
- *  monogram fallback, all on the one premium tile surface (see the CSS).
- *  Always renders, so the launcher never shows an empty square. */
-export function EditorTile({ id, size = 18 }: { id: string; size?: number }) {
-  const face = editorFace(id);
+/** The little tool tile — the brand mark, a terminal glyph, or a monogram
+ *  fallback, all on the one premium tile surface (see the CSS). Always renders,
+ *  so the launcher never shows an empty square. */
+export function EditorTile({ editor, size = 18 }: { editor: DetectedEditor; size?: number }) {
+  const face = editorFace(editor);
   const box = { width: size, height: size };
   if (face.logo) {
     return (

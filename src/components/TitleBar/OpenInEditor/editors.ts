@@ -2,31 +2,31 @@ import { api, type DetectedEditor } from "@/api";
 import type { IconName } from "@/components/Icon";
 import { EDITOR_LOGOS } from "./logos";
 
-/** What a detected editor's tile shows: its brand logo, a glyph (terminal), or
- *  a monogram fallback. All render on the one premium tile surface, so there's
- *  no per-editor color here — this is glyph selection only. Labels come from
- *  the backend. */
+/** What a tool's tile shows: its brand logo, a terminal glyph, or a monogram —
+ *  all on the one premium tile surface, so there's no per-editor color here.
+ *  This is glyph selection only; labels come from the backend. */
 export interface EditorFace {
-  mono: string;
+  mono?: string;
   icon?: IconName;
   /** Single-path brand glyph (viewBox 0 0 24 24), rendered white on the tile. */
   logo?: string;
 }
 
-const FACES: Record<string, EditorFace> = {
-  cursor: { mono: "Cu" },
-  vscode: { mono: "VS" },
-  windsurf: { mono: "W" },
-  zed: { mono: "Z" },
-  sublime: { mono: "S" },
-  terminal: { mono: "", icon: "terminal" },
-};
+/** Face for a detected tool: brand logo if we have one, else a terminal glyph
+ *  for terminals, else a monogram from the label so any tool still renders. */
+export function editorFace(editor: DetectedEditor): EditorFace {
+  const logo = EDITOR_LOGOS[editor.id];
+  if (logo) return { logo };
+  if (editor.kind === "terminal") return { icon: "terminal" };
+  return { mono: monogram(editor.label) };
+}
 
-/** Face for an editor id, with a monogram fallback for unknown ids so a
- *  newly-detected editor still renders a tile. */
-export function editorFace(id: string): EditorFace {
-  const base = FACES[id] ?? { mono: id.slice(0, 2).toUpperCase() };
-  return { ...base, logo: EDITOR_LOGOS[id] };
+/** Up-to-two-letter monogram from a label: initials of the first two words, or
+ *  the first two letters of a single word ("Nova" → "NO"). */
+function monogram(label: string): string {
+  const words = label.split(/\s+/).filter(Boolean);
+  const letters = words.length > 1 ? words.map((w) => w[0]).join("") : label;
+  return letters.slice(0, 2).toUpperCase();
 }
 
 // Detection scans PATH + the Applications folders — do it once per session and

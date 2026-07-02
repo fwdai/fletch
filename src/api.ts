@@ -342,10 +342,11 @@ export interface GhRepoSummary {
   updated_at: string;
 }
 
-/** A code editor detected on the user's machine (title-bar launcher). */
+/** An editor or terminal detected on the user's machine (title-bar launcher). */
 export interface DetectedEditor {
   id: string;
   label: string;
+  kind: "editor" | "terminal";
 }
 
 export const api = {

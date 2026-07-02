@@ -82,6 +82,10 @@
     0 2px 8px rgba(0, 0, 0, 0.2);
   z-index: 400;
   animation: oe-drop 0.14s var(--ease);
+  /* the list can get long once many editors are detected — cap it and scroll */
+  max-height: min(70vh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 @keyframes oe-drop {
   from {
@@ -96,6 +100,10 @@
   letter-spacing: 0.06em;
   color: var(--fg-3);
   padding: 6px 8px 5px;
+}
+/* a touch more air above the second group's header (Editors → Terminals) */
+.oe-group + .oe-group .oe-menu-h {
+  padding-top: 9px;
 }
 .oe-item {
   display: flex;

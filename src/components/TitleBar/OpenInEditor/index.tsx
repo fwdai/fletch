@@ -46,7 +46,7 @@ export function OpenInEditor() {
           data-tip={`Open in ${current.label}`}
           onClick={() => openIn(current.id)}
         >
-          <EditorTile id={current.id} />
+          <EditorTile editor={current} />
         </button>
         <button
           type="button"
@@ -56,27 +56,51 @@ export function OpenInEditor() {
         >
           <Icon name="chevD" size={13} />
         </button>
-        {open && (
-          <div className="oe-menu" role="menu">
-            <div className="oe-menu-h">Open in</div>
-            {editors.map((e) => (
-              <button
-                key={e.id}
-                type="button"
-                className={`oe-item ${e.id === current.id ? "on" : ""}`}
-                role="menuitem"
-                onClick={() => pick(e.id)}
-              >
-                <EditorTile id={e.id} size={20} />
-                <span className="oe-item-label">{e.label}</span>
-                {e.id === current.id && <Icon name="check" size={12} className="oe-check" />}
-              </button>
-            ))}
-          </div>
-        )}
+        {open && <Menu editors={editors} currentId={current.id} onPick={pick} />}
       </div>
       <span className="tb-vdiv" />
     </>
+  );
+}
+
+/** The editor picker, split into "Editors" and "Terminals" groups (only the
+ *  headers show when both kinds are present — a flat list otherwise). */
+function Menu({
+  editors,
+  currentId,
+  onPick,
+}: {
+  editors: DetectedEditor[];
+  currentId: string;
+  onPick: (id: string) => void;
+}) {
+  const groups = [
+    { heading: "Editors", items: editors.filter((e) => e.kind === "editor") },
+    { heading: "Terminals", items: editors.filter((e) => e.kind === "terminal") },
+  ].filter((g) => g.items.length > 0);
+  const showHeadings = groups.length > 1;
+
+  return (
+    <div className="oe-menu" role="menu">
+      {groups.map((g) => (
+        <div key={g.heading} className="oe-group">
+          <div className="oe-menu-h">{showHeadings ? g.heading : "Open in"}</div>
+          {g.items.map((e) => (
+            <button
+              key={e.id}
+              type="button"
+              className={`oe-item ${e.id === currentId ? "on" : ""}`}
+              role="menuitem"
+              onClick={() => onPick(e.id)}
+            >
+              <EditorTile editor={e} size={20} />
+              <span className="oe-item-label">{e.label}</span>
+              {e.id === currentId && <Icon name="check" size={12} className="oe-check" />}
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
   );
 }
 

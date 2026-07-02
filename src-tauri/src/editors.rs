@@ -1,7 +1,7 @@
-//! Detecting the code editors installed on the user's machine and opening an
-//! agent's worktree in one. Detection is real — we resolve each editor's CLI on
-//! the login-shell PATH and, on macOS, look for its `.app` bundle — so the
-//! launcher only ever offers editors that are actually present.
+//! Detecting the code editors and terminals installed on the user's machine and
+//! opening an agent's worktree in one. Detection is real — we resolve each
+//! tool's CLI on the login-shell PATH and, on macOS, look for its `.app` bundle
+//! — so the launcher only ever offers tools that are actually present.
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -10,41 +10,79 @@ use std::process::Command;
 use crate::bin_resolve;
 use crate::error::{Error, Result};
 
-/// A known editor plus how to find and launch it.
+/// Whether an entry is a code editor or a terminal — drives grouping (and the
+/// glyph fallback) in the picker.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Kind {
+    Editor,
+    Terminal,
+}
+
+/// A known tool plus how to find and launch it.
 struct KnownEditor {
     /// Stable id shared with the frontend (drives the launcher tile).
     id: &'static str,
     label: &'static str,
+    kind: Kind,
     /// CLI launcher names to try on PATH, first match wins (e.g. `code`).
     clis: &'static [&'static str],
-    /// macOS `.app` name (without the extension) for the LaunchServices
-    /// `open -a` fallback when the CLI isn't installed.
+    /// macOS `.app` name (without the extension), used both to detect the app
+    /// and to launch it by name via LaunchServices.
     mac_app: Option<&'static str>,
 }
 
-/// The editors we know how to detect + open, in the order the picker shows
-/// them. Terminal is appended separately (it's always available on macOS).
+const fn editor(
+    id: &'static str,
+    label: &'static str,
+    clis: &'static [&'static str],
+    mac_app: &'static str,
+) -> KnownEditor {
+    KnownEditor { id, label, kind: Kind::Editor, clis, mac_app: Some(mac_app) }
+}
+
+const fn terminal(
+    id: &'static str,
+    label: &'static str,
+    clis: &'static [&'static str],
+    mac_app: &'static str,
+) -> KnownEditor {
+    KnownEditor { id, label, kind: Kind::Terminal, clis, mac_app: Some(mac_app) }
+}
+
+/// The tools we know how to detect + open, in picker order (editors first,
+/// then terminals). Detection filters this to what's actually installed.
 const KNOWN: &[KnownEditor] = &[
-    KnownEditor { id: "cursor", label: "Cursor", clis: &["cursor"], mac_app: Some("Cursor") },
-    KnownEditor {
-        id: "vscode",
-        label: "VS Code",
-        clis: &["code"],
-        mac_app: Some("Visual Studio Code"),
-    },
-    KnownEditor {
-        id: "windsurf",
-        label: "Windsurf",
-        clis: &["windsurf"],
-        mac_app: Some("Windsurf"),
-    },
-    KnownEditor { id: "zed", label: "Zed", clis: &["zed"], mac_app: Some("Zed") },
-    KnownEditor {
-        id: "sublime",
-        label: "Sublime Text",
-        clis: &["subl"],
-        mac_app: Some("Sublime Text"),
-    },
+    // ── editors ──
+    editor("cursor", "Cursor", &["cursor"], "Cursor"),
+    editor("vscode", "VS Code", &["code"], "Visual Studio Code"),
+    editor("vscode-insiders", "VS Code Insiders", &["code-insiders"], "Visual Studio Code - Insiders"),
+    editor("vscodium", "VSCodium", &["codium"], "VSCodium"),
+    editor("windsurf", "Windsurf", &["windsurf"], "Windsurf"),
+    editor("zed", "Zed", &["zed"], "Zed"),
+    editor("sublime", "Sublime Text", &["subl"], "Sublime Text"),
+    editor("nova", "Nova", &["nova"], "Nova"),
+    editor("bbedit", "BBEdit", &["bbedit"], "BBEdit"),
+    editor("textmate", "TextMate", &["mate"], "TextMate"),
+    editor("macvim", "MacVim", &["mvim"], "MacVim"),
+    editor("neovide", "Neovide", &["neovide"], "Neovide"),
+    editor("xcode", "Xcode", &["xed"], "Xcode"),
+    editor("intellij", "IntelliJ IDEA", &["idea"], "IntelliJ IDEA"),
+    editor("webstorm", "WebStorm", &["webstorm"], "WebStorm"),
+    editor("pycharm", "PyCharm", &["pycharm"], "PyCharm"),
+    editor("goland", "GoLand", &["goland"], "GoLand"),
+    editor("phpstorm", "PhpStorm", &["phpstorm"], "PhpStorm"),
+    editor("rubymine", "RubyMine", &["rubymine"], "RubyMine"),
+    editor("clion", "CLion", &["clion"], "CLion"),
+    editor("rider", "Rider", &["rider"], "Rider"),
+    editor("androidstudio", "Android Studio", &["studio"], "Android Studio"),
+    // ── terminals ── (all open a worktree folder via `open -a`)
+    terminal("terminal", "Terminal", &[], "Terminal"),
+    terminal("iterm", "iTerm", &[], "iTerm"),
+    terminal("warp", "Warp", &[], "Warp"),
+    terminal("ghostty", "Ghostty", &[], "Ghostty"),
+    terminal("wezterm", "WezTerm", &["wezterm"], "WezTerm"),
+    terminal("kitty", "kitty", &["kitty"], "kitty"),
 ];
 
 const TERMINAL_ID: &str = "terminal";
@@ -53,36 +91,59 @@ const TERMINAL_ID: &str = "terminal";
 pub struct DetectedEditor {
     pub id: String,
     pub label: String,
+    pub kind: Kind,
 }
 
-/// Editors installed on this machine, in picker order. On macOS the system
-/// Terminal is always included last, so the launcher is never empty there.
+/// Editors + terminals installed on this machine, in picker order. On macOS the
+/// system Terminal is guaranteed present so the launcher is never empty there.
 pub fn detect() -> Vec<DetectedEditor> {
     let home = dirs::home_dir();
     let mut found: Vec<DetectedEditor> = KNOWN
         .iter()
         .filter(|ed| is_available(ed, home.as_deref()))
-        .map(|ed| DetectedEditor { id: ed.id.into(), label: ed.label.into() })
+        .map(DetectedEditor::from)
         .collect();
-    if cfg!(target_os = "macos") {
-        found.push(DetectedEditor { id: TERMINAL_ID.into(), label: "Terminal".into() });
+    if cfg!(target_os = "macos") && !found.iter().any(|e| e.id == TERMINAL_ID) {
+        found.push(DetectedEditor { id: TERMINAL_ID.into(), label: "Terminal".into(), kind: Kind::Terminal });
     }
     found
 }
 
-/// Open `worktree` in the editor identified by `editor_id`. Prefers the CLI
-/// launcher (opens the folder as a workspace); on macOS falls back to launching
-/// the `.app` via LaunchServices when only the app — not its CLI — is present.
-pub fn open(editor_id: &str, worktree: &Path) -> Result<()> {
-    if editor_id == TERMINAL_ID {
-        return open_terminal(worktree);
+impl From<&KnownEditor> for DetectedEditor {
+    fn from(ed: &KnownEditor) -> Self {
+        DetectedEditor { id: ed.id.into(), label: ed.label.into(), kind: ed.kind }
     }
+}
+
+/// Open `worktree` in the tool identified by `editor_id`.
+///
+/// On macOS we launch the specific `.app` by name via LaunchServices — an
+/// unambiguous target, so a shared/hijacked CLI can't open the wrong editor
+/// (Cursor, a VS Code fork, symlinks its own binary onto the `code` command;
+/// launching VS Code through that CLI would open Cursor). The CLI is only a
+/// fallback: when the app-launch fails, or off macOS.
+pub fn open(editor_id: &str, worktree: &Path) -> Result<()> {
     let ed = KNOWN
         .iter()
         .find(|e| e.id == editor_id)
         .ok_or_else(|| Error::Other(format!("unknown editor: {editor_id}")))?;
-    let home = dirs::home_dir();
 
+    #[cfg(target_os = "macos")]
+    if let Some(app) = ed.mac_app {
+        // `-a <app>` targets that exact app; `open` exits nonzero if it isn't
+        // registered, in which case we fall through to the CLI.
+        let launched = Command::new("open")
+            .args(["-a", app])
+            .arg(worktree)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if launched {
+            return Ok(());
+        }
+    }
+
+    let home = dirs::home_dir();
     if let Some(cli) = home
         .as_deref()
         .and_then(|h| ed.clis.iter().find_map(|c| bin_resolve::resolve_bin(c, h)))
@@ -93,18 +154,11 @@ pub fn open(editor_id: &str, worktree: &Path) -> Result<()> {
         return spawn(cmd, ed.label);
     }
 
-    #[cfg(target_os = "macos")]
-    if let Some(app) = ed.mac_app {
-        let mut cmd = Command::new("open");
-        cmd.args(["-a", app]).arg(worktree);
-        return spawn(cmd, ed.label);
-    }
-
     Err(Error::Other(format!("{} is not available", ed.label)))
 }
 
-/// Whether an editor is installed: its CLI resolves on PATH, or (macOS) its
-/// `.app` sits in one of the standard Applications folders.
+/// Whether a tool is installed: its CLI resolves on PATH, or (macOS) its `.app`
+/// sits in one of the standard Applications folders.
 fn is_available(ed: &KnownEditor, home: Option<&Path>) -> bool {
     let cli = home.is_some_and(|h| ed.clis.iter().any(|c| bin_resolve::resolve_bin(c, h).is_some()));
     cli || mac_app_installed(ed, home)
@@ -114,7 +168,14 @@ fn is_available(ed: &KnownEditor, home: Option<&Path>) -> bool {
 fn mac_app_installed(ed: &KnownEditor, home: Option<&Path>) -> bool {
     let Some(app) = ed.mac_app else { return false };
     let bundle = format!("{app}.app");
-    let mut dirs = vec![PathBuf::from("/Applications"), PathBuf::from("/System/Applications")];
+    // Cover the GUI-app locations plus Utilities (where the system Terminal
+    // lives) — modern macOS keeps built-ins under /System/Applications.
+    let mut dirs = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/Applications/Utilities"),
+        PathBuf::from("/System/Applications"),
+        PathBuf::from("/System/Applications/Utilities"),
+    ];
     if let Some(h) = home {
         dirs.push(h.join("Applications"));
     }
@@ -124,21 +185,6 @@ fn mac_app_installed(ed: &KnownEditor, home: Option<&Path>) -> bool {
 #[cfg(not(target_os = "macos"))]
 fn mac_app_installed(_ed: &KnownEditor, _home: Option<&Path>) -> bool {
     false
-}
-
-/// Open the worktree in the system terminal.
-fn open_terminal(worktree: &Path) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut cmd = Command::new("open");
-        cmd.args(["-a", "Terminal"]).arg(worktree);
-        return spawn(cmd, "Terminal");
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = worktree;
-        Err(Error::Other("opening a terminal is only supported on macOS".into()))
-    }
 }
 
 fn spawn(mut cmd: Command, label: &str) -> Result<()> {
@@ -158,16 +204,25 @@ mod tests {
     }
 
     #[test]
-    fn every_known_editor_has_a_launch_path() {
+    fn every_known_tool_has_a_launch_path() {
         // A registry entry the launcher can never open (no CLI and, on macOS,
         // no .app) would be a silent dead end — guard against that.
         for ed in KNOWN {
             assert!(
                 !ed.clis.is_empty() || ed.mac_app.is_some(),
-                "editor {} has no way to be launched",
+                "{} has no way to be launched",
                 ed.id,
             );
         }
+    }
+
+    #[test]
+    fn editor_ids_are_unique() {
+        let mut ids: Vec<&str> = KNOWN.iter().map(|e| e.id).collect();
+        ids.sort_unstable();
+        let count = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "duplicate editor id in KNOWN");
     }
 
     #[cfg(target_os = "macos")]
