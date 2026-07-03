@@ -414,6 +414,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
   busy: false,
   lastError: null,
   updateReadyVersion: null,
+  updateReadyNotes: null,
   updateCheckStatus: null,
   initialized: false,
 
@@ -444,8 +445,8 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
   clearError: () => set({ lastError: null }),
   setLastError: (message) => set({ lastError: message }),
 
-  setUpdateReady: (version) => set({ updateReadyVersion: version }),
-  dismissUpdate: () => set({ updateReadyVersion: null }),
+  setUpdateReady: (version, notes) => set({ updateReadyVersion: version, updateReadyNotes: notes }),
+  dismissUpdate: () => set({ updateReadyVersion: null, updateReadyNotes: null }),
 
   runUpdateCheck: async () => {
     // Ignore repeat clicks while a check is already in flight.
@@ -455,7 +456,11 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     const result = await checkForUpdate();
     if (result.kind === "staged") {
       // Hand off to the restart toast; the transient status is done.
-      set({ updateCheckStatus: null, updateReadyVersion: result.version });
+      set({
+        updateCheckStatus: null,
+        updateReadyVersion: result.version,
+        updateReadyNotes: result.notes,
+      });
       return;
     }
 
