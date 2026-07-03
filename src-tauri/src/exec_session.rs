@@ -16,16 +16,15 @@
 //!     capture it from the first turn and reuse it to resume.
 
 use parking_lot::Mutex;
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
-use std::thread;
 use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::child_io;
 use crate::error::{Error, Result};
 
 type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
@@ -215,108 +214,58 @@ impl ExecSession {
             self.sigint_child();
         }
 
-        let on_event = self.on_event.clone();
-        let on_session_id = self.on_session_id.clone();
-        let extract_session_id = self.extract_session_id.clone();
-        let session_id = self.session_id.clone();
-        let stdout_is_json = self.stdout_is_json;
-        thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(l) if l.trim().is_empty() => continue,
-                    // Plaintext turn runner (e.g. agy): drain stdout without
-                    // parsing — there are no events; history comes from the
-                    // on-disk transcript ingested at turn-end.
-                    Ok(_) if !stdout_is_json => continue,
-                    Ok(l) => match serde_json::from_str::<Value>(&l) {
-                        Ok(v) => {
-                            maybe_capture_session_id(
-                                &v,
-                                &extract_session_id,
-                                &session_id,
-                                &on_session_id,
-                            );
-                            on_event(v);
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, raw = %l, "agent: bad json line");
-                        }
-                    },
-                    Err(e) => {
-                        tracing::warn!(error = %e, "agent: stdout read error");
-                        break;
-                    }
-                }
-            }
-            tracing::debug!("agent: turn stdout closed");
-        });
+        if self.stdout_is_json {
+            let on_event = self.on_event.clone();
+            let on_session_id = self.on_session_id.clone();
+            let extract_session_id = self.extract_session_id.clone();
+            let session_id = self.session_id.clone();
+            child_io::spawn_json_reader(stdout, "agent", tracing::Level::DEBUG, move |v| {
+                maybe_capture_session_id(&v, &extract_session_id, &session_id, &on_session_id);
+                on_event(v);
+            });
+        } else {
+            // Plaintext turn runner (e.g. agy): no events — history comes from
+            // the on-disk transcript ingested at turn-end. Just drain stdout.
+            child_io::spawn_drain(stdout, "agent");
+        }
 
         let (stderr_tx, stderr_rx) = mpsc::channel::<Option<String>>();
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(std::result::Result::ok) {
-                tracing::warn!(stderr = %line, "agent: stderr");
-                let _ = stderr_tx.send(Some(line));
-            }
-            let _ = stderr_tx.send(None);
+        child_io::spawn_stderr_reader(stderr, "agent", move |line| {
+            let _ = stderr_tx.send(line);
         });
 
         // Reap the per-turn child when it exits, and report the exit so the
         // supervisor can end the turn — covering turns that exit without an
         // in-band turn-end event (interrupt, crash). The agent stays alive.
-        let child_for_wait = self.child.clone();
         let turn_seq = self.turn_seq.clone();
         let on_exit = self.on_exit.clone();
         let interrupted = self.interrupted.clone();
-        thread::spawn(move || loop {
-            let exited_status = {
-                let mut guard = child_for_wait.lock();
-                let Some(c) = guard.as_mut() else {
-                    // Slot emptied by a newer turn (kill+take) — that turn
-                    // owns the lifecycle now; stay quiet.
-                    return;
-                };
-                match c.try_wait() {
-                    Ok(Some(status)) => {
-                        let _ = guard.take();
-                        tracing::debug!(status = %status, "agent: turn exited");
-                        Some(Ok(status))
-                    }
-                    Ok(None) => None,
-                    Err(e) => {
-                        let _ = guard.take();
-                        tracing::warn!(error = %e, "agent: wait failed");
-                        Some(Err(format!("wait failed: {e}")))
+        child_io::spawn_reaper(self.child.clone(), "agent", move |status| {
+            let interrupted = interrupted.load(Ordering::SeqCst);
+            let exit = match status {
+                Ok(status) => {
+                    let stderr = drain_stderr(&stderr_rx).join("\n");
+                    ExecExit {
+                        success: status.success(),
+                        interrupted,
+                        message: if stderr.is_empty() {
+                            status.to_string()
+                        } else {
+                            format!("{status}: {stderr}")
+                        },
                     }
                 }
+                Err(e) => ExecExit {
+                    success: false,
+                    interrupted,
+                    message: format!("wait failed: {e}"),
+                },
             };
-            if let Some(exited_status) = exited_status {
-                let exit = match exited_status {
-                    Ok(status) => {
-                        let stderr = drain_stderr(&stderr_rx).join("\n");
-                        ExecExit {
-                            success: status.success(),
-                            interrupted: interrupted.load(Ordering::SeqCst),
-                            message: if stderr.is_empty() {
-                                status.to_string()
-                            } else {
-                                format!("{status}: {stderr}")
-                            },
-                        }
-                    }
-                    Err(message) => ExecExit {
-                        success: false,
-                        interrupted: interrupted.load(Ordering::SeqCst),
-                        message,
-                    },
-                };
-                if turn_seq.load(Ordering::SeqCst) == seq {
-                    on_exit(exit);
-                }
-                return;
+            // Only the latest turn reports; a superseded turn's late exit is
+            // dropped so it can't flip the status of the turn that replaced it.
+            if turn_seq.load(Ordering::SeqCst) == seq {
+                on_exit(exit);
             }
-            thread::sleep(Duration::from_millis(50));
         });
 
         Ok(())
