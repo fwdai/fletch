@@ -141,6 +141,25 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
     })
 }
 
+/// Slim projection for the app-wide bulk poll. Where `query` spawns ~7 git
+/// subprocesses to assemble a full `GitState`, this reads only what the
+/// shortstats badge needs: `git status` for the file count and `git diff
+/// --numstat` for the line totals. The two run concurrently, so latency is a
+/// single git invocation. Failures degrade to zeroes rather than dropping the
+/// agent, matching the badge's "no news is zero" contract.
+pub async fn shortstats(worktree_path: &Path) -> ShortStats {
+    let (status, numstat) = tokio::join!(run_status(worktree_path), run_numstat(worktree_path));
+    let file_count = status.map(|o| parse_porcelain(&o).len() as u32).unwrap_or(0);
+    let (additions, deletions) = numstat
+        .map(|o| {
+            parse_numstat(&o)
+                .values()
+                .fold((0, 0), |(a, d), &(adds, dels)| (a + adds, d + dels))
+        })
+        .unwrap_or((0, 0));
+    ShortStats { additions, deletions, file_count }
+}
+
 /// HEAD commit SHA, or `None` when it can't be read.
 async fn query_head_sha(worktree_path: &Path) -> Option<String> {
     let out = Command::new("git")

@@ -691,13 +691,15 @@ pub async fn get_git_state(
 /// every live agent's primary repo, keyed by agent id. Used by the
 /// app-wide background poll that powers per-agent shortstats in the
 /// sidebar and the right-rail file-count badge. The focused panel calls
-/// `get_git_state` separately for its own full state. Agents whose
-/// state can't be queried (missing repo, archived, git error) are omitted.
+/// `get_git_state` separately for its own full state. Archived agents and
+/// agents with no resolvable repo are omitted; a git error degrades to zeroes.
 ///
-/// Queries run in parallel so total latency is bounded by the slowest
-/// agent's git invocation, not the sum. The reply contains only the
-/// three numbers per agent — no file list — to keep the IPC payload
-/// flat as the agent count grows.
+/// Each agent's stats come from `git_state::shortstats`, which spawns just the
+/// two git processes the badge reads (status + numstat) rather than the ~7 a
+/// full `GitState` needs. Agents are queried in parallel, so total latency is
+/// bounded by the slowest agent's git invocation, not the sum. The reply
+/// carries only the three numbers per agent — no file list — to keep the IPC
+/// payload flat as the agent count grows.
 #[tauri::command]
 pub async fn get_all_shortstats(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -713,23 +715,12 @@ pub async fn get_all_shortstats(
         }
         let Some(repo) = agent.repos.first() else { continue };
         let Ok(worktree) = repo_worktree_path(&agent.id, &repo.subdir) else { continue };
-        let parent = repo.parent_branch.clone().unwrap_or_else(|| "main".to_string());
         let agent_id = agent.id.clone();
-        set.spawn(async move {
-            let state = git_state::query(&worktree, &parent).await.ok()?;
-            Some((
-                agent_id,
-                ShortStats {
-                    additions: state.additions,
-                    deletions: state.deletions,
-                    file_count: state.files.len() as u32,
-                },
-            ))
-        });
+        set.spawn(async move { (agent_id, git_state::shortstats(&worktree).await) });
     }
     let mut out = std::collections::HashMap::new();
     while let Some(res) = set.join_next().await {
-        if let Ok(Some((id, stats))) = res {
+        if let Ok((id, stats)) = res {
             out.insert(id, stats);
         }
     }
