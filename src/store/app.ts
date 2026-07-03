@@ -425,8 +425,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
   clearError: () => set({ lastError: null }),
   setLastError: (message) => set({ lastError: message }),
 
-  setUpdateReady: (version, notes) =>
-    set({ updateReadyVersion: version, updateReadyNotes: notes }),
+  setUpdateReady: (version, notes) => set({ updateReadyVersion: version, updateReadyNotes: notes }),
   dismissUpdate: () => set({ updateReadyVersion: null, updateReadyNotes: null }),
 
   runUpdateCheck: async () => {
