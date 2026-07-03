@@ -9,6 +9,8 @@ mod run;
 mod session_sync;
 mod shell;
 
+pub use lifecycle::SpawnRequest;
+
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -23,8 +25,6 @@ use crate::native_input::NativeInputTracker;
 use crate::pty_session::PtySession;
 use crate::run_session::RunSession;
 use crate::workspace::{AgentRecord, AgentStatus, ClosedTurn, Workspace, WorkspaceManager};
-
-pub use lifecycle::SpawnRequest;
 
 use events::emit_status;
 use messaging::{drain_message_queue, drain_pending_bin_respawn};

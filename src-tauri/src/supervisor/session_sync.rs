@@ -2,12 +2,12 @@
 //! fetch/emit for an agent's primary repo.
 
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::agent::per_turn_descriptor;
 use crate::workspace::{repo_worktree_path, AgentRecord, AgentView, WorkspaceManager};
 
-use super::events::{PrStateChangedPayload, SessionRecordsAppendedPayload};
+use super::events::{emit_pr_state, emit_session_records_appended};
 use super::Supervisor;
 
 impl Supervisor {
@@ -53,10 +53,7 @@ impl Supervisor {
                 }
             }
             if poll.should_emit() {
-                let _ = app.emit(
-                    "session:records-appended",
-                    SessionRecordsAppendedPayload { agent_id },
-                );
+                emit_session_records_appended(&app, &agent_id);
             } else if poll.reader_ingested_nothing() {
                 tracing::warn!(
                     agent_id,
@@ -118,10 +115,7 @@ impl Supervisor {
                     _ => None,
                 }
             };
-            let _ = app.emit(
-                "pr:state_changed",
-                PrStateChangedPayload { agent_id, state },
-            );
+            emit_pr_state(&app, &agent_id, state);
         });
     }
 }

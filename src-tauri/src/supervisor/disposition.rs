@@ -3,7 +3,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 use crate::git;
@@ -12,6 +12,7 @@ use crate::workspace::{
     DiffStats, TrackedRepo,
 };
 
+use super::events::emit_workspace_changed;
 use super::lifecycle::{arm_spawn_timeout, fail_spawn};
 use super::Supervisor;
 
@@ -58,7 +59,7 @@ impl Supervisor {
         // archive is structurally a deeper change, so we re-emit the
         // workspace via a tiny event. Frontend already reloads on this
         // signal via `get_workspace`.
-        let _ = app.emit("workspace:changed", ());
+        emit_workspace_changed(&app);
         Ok(())
     }
 
@@ -149,7 +150,7 @@ impl Supervisor {
 
         self.workspace.restore_agent(agent_id, restored)?;
         self.set_status(&app, agent_id, AgentStatus::Spawning, None);
-        let _ = app.emit("workspace:changed", ());
+        emit_workspace_changed(&app);
 
         // Restore is an explicit user action, so bring the process up now
         // (set_status(Spawning) above lets start_process promote to Idle).

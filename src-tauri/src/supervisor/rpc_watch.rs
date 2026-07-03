@@ -4,11 +4,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::rpc;
 
-use super::events::{AgentBranchPayload, AgentGitActionPayload};
+use super::events::{emit_branch, emit_git_action};
 use super::Supervisor;
 
 /// How often the per-agent RPC watcher scans its mailbox for new requests.
@@ -68,14 +68,7 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                             "git_push/open_pr: failed to persist branch name"
                         );
                     } else {
-                        let _ = app.emit(
-                            "agent:branch",
-                            AgentBranchPayload {
-                                agent_id: agent_id.to_string(),
-                                subdir: repo.subdir.clone(),
-                                branch: branch.to_string(),
-                            },
-                        );
+                        emit_branch(app, agent_id, &repo.subdir, branch);
                     }
                 }
             }
@@ -116,15 +109,7 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            if let Err(e) = app.emit(
-                "agent:git-action",
-                AgentGitActionPayload {
-                    agent_id: agent_id.to_string(),
-                    op,
-                },
-            ) {
-                tracing::warn!(error = %e, agent_id = %agent_id, "emit agent:git-action failed");
-            }
+            emit_git_action(app, agent_id, op);
         }
         rpc::RpcEvent::Named { name, payload } => {
             tracing::debug!(event = %name, payload = %payload, "rpc: unhandled event");

@@ -2,7 +2,7 @@
 //! follow-up queue drained at turn boundaries.
 
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::agent::{injection_mode, Agent};
 use crate::error::{Error, Result};
@@ -10,7 +10,7 @@ use crate::managed_session::ToolUseBehavior;
 use crate::message_queue::{decide_delivery, Delivery, PendingMsg};
 use crate::workspace::AgentStatus;
 
-use super::events::{AgentTaskPayload, TurnStartedPayload};
+use super::events::{emit_task, emit_turn_started};
 use super::{transition_active, Supervisor};
 
 impl Supervisor {
@@ -20,6 +20,7 @@ impl Supervisor {
     /// - idle, queue full    → flush the leftovers + this message, coalesced,
     /// - busy, claude live    → inject into the running turn over stdin,
     /// - busy, per-turn / tool-gated → queue for the next turn boundary.
+    ///
     /// Returns `true` when the message is *held* for a later turn boundary
     /// rather than delivered now — a busy enqueue, or a flush whose delivery
     /// failed and re-queued it (raced with teardown/respawn). The frontend uses
@@ -194,13 +195,7 @@ pub(super) fn on_first_user_message(
 
     match sup.workspace.set_agent_task_if_empty(&agent_id, &trimmed) {
         Ok(true) => {
-            let _ = app.emit(
-                "agent:task",
-                AgentTaskPayload {
-                    agent_id: agent_id.clone(),
-                    task: trimmed.clone(),
-                },
-            );
+            emit_task(&app, &agent_id, trimmed.clone());
         }
         Ok(false) => {} // task already set
         Err(e) => {
@@ -232,13 +227,7 @@ pub(super) fn mark_user_turn_started(
             tracing::warn!(error = %e, agent_id, "stamp user turn start failed");
         }
     }
-    let _ = app.emit(
-        "turn:started",
-        TurnStartedPayload {
-            agent_id: agent_id.to_string(),
-            started_at,
-        },
-    );
+    emit_turn_started(app, agent_id, started_at);
     transition_active(sup, app, agent_id, AgentStatus::Running);
 }
 

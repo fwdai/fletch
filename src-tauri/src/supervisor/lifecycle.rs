@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
 use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnSpec};
@@ -17,9 +17,7 @@ use crate::workspace::{
     repo_worktree_path, AgentRecord, AgentStatus, AgentView, TrackedRepo,
 };
 
-use super::events::{
-    AgentEventPayload, AgentOutputPayload, AgentRepoAddedPayload, AgentViewPayload,
-};
+use super::events::{emit_agent_event, emit_agent_output, emit_repo_added, emit_view};
 use super::messaging::{
     drain_message_queue, flush_queued, mark_user_turn_started, on_first_user_message,
 };
@@ -279,13 +277,7 @@ impl Supervisor {
             pr_number: None,
         };
         self.workspace.append_tracked_repo(agent_id, repo.clone())?;
-        let _ = app.emit(
-            "agent:repo_added",
-            AgentRepoAddedPayload {
-                agent_id: agent_id.to_string(),
-                repo: repo.clone(),
-            },
-        );
+        emit_repo_added(&app, agent_id, repo.clone());
 
         // No branch is created here — the new repo's worktree stays detached
         // until its first push, when the agent names its branch (same as the
@@ -626,13 +618,7 @@ impl Supervisor {
         self.native_inputs.lock().remove(agent_id);
 
         self.workspace.update_agent_view(agent_id, new_view)?;
-        let _ = app.emit(
-            "agent:view",
-            AgentViewPayload {
-                agent_id: agent_id.to_string(),
-                view: new_view,
-            },
-        );
+        emit_view(&app, agent_id, new_view);
         self.set_status(&app, agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
 
@@ -798,15 +784,7 @@ fn make_output_handler(
             activity.observe_bytes(&bytes);
         }
 
-        if let Err(e) = app.emit(
-            "agent:output",
-            AgentOutputPayload {
-                agent_id: agent_id.clone(),
-                bytes,
-            },
-        ) {
-            tracing::warn!(error = %e, agent_id = %agent_id, "emit agent:output failed");
-        }
+        emit_agent_output(&app, &agent_id, bytes);
     }
 }
 
@@ -822,15 +800,7 @@ fn make_event_handler(
             activity.observe_event(&event);
         }
 
-        if let Err(e) = app.emit(
-            "agent:event",
-            AgentEventPayload {
-                agent_id: agent_id.clone(),
-                event,
-            },
-        ) {
-            tracing::warn!(error = %e, agent_id = %agent_id, "emit agent:event failed");
-        }
+        emit_agent_event(&app, &agent_id, event);
     }
 }
 

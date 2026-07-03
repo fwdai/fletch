@@ -1,13 +1,13 @@
 //! Interactive per-agent shell PTYs: open, close, write, resize.
 
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 use crate::pty_session::{PtySession, PtySpawn};
 use crate::workspace::repo_worktree_path;
 
-use super::events::ShellOutputPayload;
+use super::events::emit_shell_output;
 use super::Supervisor;
 
 impl Supervisor {
@@ -43,15 +43,7 @@ impl Supervisor {
                 rows: 32,
             },
             move |bytes| {
-                if let Err(e) = app.emit(
-                    "shell:output",
-                    ShellOutputPayload {
-                        agent_id: agent_id_out.clone(),
-                        bytes,
-                    },
-                ) {
-                    tracing::warn!(error = %e, agent_id = %agent_id_out, "emit shell:output failed");
-                }
+                emit_shell_output(&app, &agent_id_out, bytes);
             },
             move |exit| {
                 tracing::info!(
