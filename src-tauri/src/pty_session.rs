@@ -6,8 +6,10 @@
 use parking_lot::Mutex;
 use portable_pty::{ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize};
 use std::io::{Read, Write};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
 
@@ -99,6 +101,10 @@ impl PtySession {
         let master = Arc::new(Mutex::new(pair.master));
         let writer = Arc::new(Mutex::new(writer));
 
+        // Reader thread keeps a tight blocking-read loop so the PTY drains
+        // promptly, handing each chunk to the coalescer over a channel. Batching
+        // the emits happens downstream, not here.
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
         thread::spawn({
             let mut reader = reader;
             move || {
@@ -112,8 +118,9 @@ impl PtySession {
                         }
                         Ok(n) => {
                             total += n;
-                            tracing::trace!(bytes = n, total = total, "pty reader: chunk");
-                            on_output(buf[..n].to_vec());
+                            if tx.send(buf[..n].to_vec()).is_err() {
+                                break; // coalescer gone; nothing left to feed
+                            }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(e) => {
@@ -122,8 +129,10 @@ impl PtySession {
                         }
                     }
                 }
+                // tx drops here → coalescer sees Disconnected and flushes the tail.
             }
         });
+        thread::spawn(move || coalesce_output(rx, on_output));
 
         thread::spawn(move || match child.wait() {
             Ok(status) => {
@@ -181,6 +190,48 @@ impl PtySession {
             .lock()
             .kill()
             .map_err(|e| Error::Other(format!("pty kill: {e}")))
+    }
+}
+
+/// Batch bursty PTY reads into fewer, larger `on_output` calls. A single 4 KB
+/// read per emit means hundreds of IPC events/sec under heavy output; here we
+/// accumulate until the batch reaches `MAX_BATCH` or `FLUSH_INTERVAL` elapses
+/// since the batch's first byte, bounding added latency to one frame while
+/// collapsing the event count. Byte order and content are preserved exactly.
+fn coalesce_output<F: Fn(Vec<u8>)>(rx: mpsc::Receiver<Vec<u8>>, on_output: F) {
+    const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+    const MAX_BATCH: usize = 64 * 1024;
+
+    let mut batch: Vec<u8> = Vec::new();
+    let mut deadline: Option<Instant> = None;
+    loop {
+        let timeout = deadline
+            .map(|d| d.saturating_duration_since(Instant::now()))
+            .unwrap_or(FLUSH_INTERVAL);
+        match rx.recv_timeout(timeout) {
+            Ok(chunk) => {
+                if batch.is_empty() {
+                    deadline = Some(Instant::now() + FLUSH_INTERVAL);
+                }
+                batch.extend_from_slice(&chunk);
+                if batch.len() >= MAX_BATCH {
+                    on_output(std::mem::take(&mut batch));
+                    deadline = None;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if !batch.is_empty() {
+                    on_output(std::mem::take(&mut batch));
+                    deadline = None;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                if !batch.is_empty() {
+                    on_output(batch);
+                }
+                break;
+            }
+        }
     }
 }
 

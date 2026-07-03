@@ -29,6 +29,7 @@ import {
   reduceRecords,
 } from "@/helpers";
 import { pushAgentOutput, pushShellOutput } from "@/pty/buffers";
+import { decodeBase64 } from "@/pty/decode";
 import { getOrCreateAccount, toProfile } from "@/storage/accounts";
 import {
   DEFAULT_LEFT_WIDTH,
@@ -128,11 +129,11 @@ const hydrateAccount = async (set: AppSet) => {
 // Subscribe to every backend event stream, folding each into store state.
 const registerEventListeners = async (set: AppSet, get: AppGet) => {
   await onAgentOutput((e) => {
-    pushAgentOutput(e.agent_id, new Uint8Array(e.bytes));
+    pushAgentOutput(e.agent_id, decodeBase64(e.bytes));
   });
 
   await onShellOutput((e) => {
-    pushShellOutput(e.agent_id, new Uint8Array(e.bytes));
+    pushShellOutput(e.agent_id, decodeBase64(e.bytes));
   });
 
   await onAgentEvent((e) => {
