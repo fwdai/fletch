@@ -14,7 +14,6 @@
 //!   spawns a fresh `codex exec [resume <id>]` (see `codex_session`).
 //!   Codex sandboxes itself rather than running under sandbox-exec.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -28,8 +27,7 @@ use crate::instructions;
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
-
-const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+use crate::sandbox::SANDBOX_EXEC;
 
 pub enum Agent {
     Pty(PtyAgent),
@@ -1122,18 +1120,7 @@ fn prepare_sandbox(
     let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
     let profile_text =
         sandbox::build_profile(writable_root, rpc_dir, home, claude_config_dir.as_deref())?;
-    let mut profile_file = tempfile::Builder::new()
-        .prefix("quorum-sandbox-")
-        .suffix(".sb")
-        .tempfile()
-        .map_err(|e| Error::Other(format!("create sandbox profile tmp: {e}")))?;
-    profile_file
-        .write_all(profile_text.as_bytes())
-        .map_err(|e| Error::Other(format!("write sandbox profile: {e}")))?;
-    profile_file
-        .flush()
-        .map_err(|e| Error::Other(format!("flush sandbox profile: {e}")))?;
-    Ok(profile_file)
+    sandbox::profile_tempfile(&profile_text)
 }
 
 /// Claude's session-level effort flag (`--effort <level>`), shared by the

@@ -26,6 +26,106 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
+/// The macOS sandbox wrapper. Every confined process (agents *and* the Run
+/// panel) is launched as `sandbox-exec -f <profile> <program> …`.
+pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+/// PTY / device write rules shared by every profile — terminal programs need
+/// these ttys and null/zero devices regardless of what else they may write.
+const DEVICE_WRITE_RULES: &str = r#";; PTYs and basic device files are required for terminal programs.
+(allow file-write* (literal "/dev/null") (literal "/dev/zero"))
+(allow file-write*
+  (regex #"^/dev/tty[^/]*$")
+  (regex #"^/dev/ptmx$")
+  (regex #"^/dev/pts/[0-9]+$"))"#;
+
+/// Per-user cache/state dirs that both agents and Run processes must be able to
+/// write: package-manager caches and XDG + macOS-native app state. Returned as
+/// sbpl-quoted `subpath` argument strings (without the enclosing `(subpath …)`).
+fn standard_state_dirs(home_s: &str) -> Vec<String> {
+    [
+        ".npm",
+        ".cache",
+        ".config",
+        ".local",
+        "Library/Caches",
+        "Library/Application Support",
+    ]
+    .iter()
+    .map(|d| sbpl_string(&format!("{home_s}/{d}")))
+    .collect()
+}
+
+/// Toolchain state dirs the Run panel additionally grants so real project
+/// builds succeed. These hold package caches, downloaded toolchains, and —
+/// for some — PATH-resolved binaries (`~/.cargo/bin`, `~/go/bin`,
+/// `~/.rbenv/shims`). That last part is a residual hijack surface, which is
+/// why this superset is **Run-only** and deliberately kept off the agent
+/// profile: a running project legitimately needs its toolchain to write here,
+/// whereas an agent editing source does not.
+const RUN_TOOLCHAIN_DIRS: &[&str] = &[
+    ".cargo",          // Rust: registry, git checkouts, installed bins
+    ".rustup",         // Rust: downloaded toolchains (rust-toolchain.toml)
+    "go",              // Go: GOPATH — module cache (pkg/mod) + installed bins
+    ".bun",            // Bun: global install cache
+    "Library/pnpm",    // pnpm: content-addressable store (macOS default)
+    ".bundle",         // Bundler: config + cache
+    ".gem",            // RubyGems: default gem home
+    ".rbenv",          // rbenv: shims + installed Ruby versions
+    ".rvm",            // rvm: alternative Ruby version manager
+    "Library/Python",  // pip --user / no-venv user site-packages
+];
+
+/// Build the SBPL profile for a **Run-panel** process (setup/dev command).
+///
+/// Same shape as [`build_profile`] — reads and network stay open (`allow
+/// default`); only *writes* are confined — but tuned for arbitrary project
+/// build toolchains rather than agent CLIs. `writable_root` is the repo
+/// worktree the command runs in (build artifacts, `node_modules`, `.venv`,
+/// `target` all live inside it). On top of the worktree and the shared cache
+/// dirs, it grants [`RUN_TOOLCHAIN_DIRS`] so cargo/go/bundler/pnpm/bun runs
+/// don't fail-closed on their out-of-tree writes.
+///
+/// Unlike the agent profile it needs no rpc mailbox or agent state dirs — a
+/// Run process neither speaks RPC nor persists agent transcripts.
+pub fn build_run_profile(writable_root: &Path, home: &Path) -> Result<String> {
+    let writable_root = canonical(writable_root)?;
+    let home = canonical(home)?;
+    let writable_root_s = sbpl_string(&writable_root.to_string_lossy());
+    let home_s = home.to_string_lossy();
+
+    let mut subpaths = vec![
+        writable_root_s,
+        sbpl_string("/private/tmp"),
+        sbpl_string("/private/var/folders"),
+        sbpl_string("/private/var/tmp"),
+    ];
+    subpaths.extend(standard_state_dirs(&home_s));
+    subpaths.extend(
+        RUN_TOOLCHAIN_DIRS
+            .iter()
+            .map(|d| sbpl_string(&format!("{home_s}/{d}"))),
+    );
+    let writable_block = subpaths
+        .iter()
+        .map(|s| format!("(subpath {s})"))
+        .collect::<Vec<_>>()
+        .join("\n  ");
+
+    Ok(format!(
+        r#"(version 1)
+(allow default)
+
+;; Block writes everywhere by default, then re-allow specific subpaths.
+(deny file-write*)
+(allow file-write*
+  {writable_block})
+
+{DEVICE_WRITE_RULES}
+"#
+    ))
+}
+
 /// Build the SBPL profile. `writable_root` is the agent's parent dir;
 /// `rpc_dir` is its private file-mailbox (`~/.fletch/rpc/<id>/`), which lives
 /// outside the worktree tree and so needs its own allow entry.
@@ -104,14 +204,26 @@ pub fn build_profile(
   (subpath {gemini_state})
   (subpath {pi_state}))
 
-;; PTYs and basic device files are required for terminal programs.
-(allow file-write* (literal "/dev/null") (literal "/dev/zero"))
-(allow file-write*
-  (regex #"^/dev/tty[^/]*$")
-  (regex #"^/dev/ptmx$")
-  (regex #"^/dev/pts/[0-9]+$"))
+{DEVICE_WRITE_RULES}
 "#
     ))
+}
+
+/// Write an SBPL profile to a private `.sb` tempfile. `sandbox-exec -f <path>`
+/// reads it at launch, so it must live at least until the child execs; the
+/// caller keeps the returned handle alive and dropping it unlinks the file.
+pub fn profile_tempfile(text: &str) -> Result<tempfile::NamedTempFile> {
+    use std::io::Write;
+    let mut f = tempfile::Builder::new()
+        .prefix("quorum-sandbox-")
+        .suffix(".sb")
+        .tempfile()
+        .map_err(|e| Error::Other(format!("create sandbox profile tmp: {e}")))?;
+    f.write_all(text.as_bytes())
+        .map_err(|e| Error::Other(format!("write sandbox profile: {e}")))?;
+    f.flush()
+        .map_err(|e| Error::Other(format!("flush sandbox profile: {e}")))?;
+    Ok(f)
 }
 
 fn sbpl_string(s: &str) -> String {
@@ -252,5 +364,53 @@ mod tests {
     #[test]
     fn escapes_quotes_in_paths() {
         assert_eq!(sbpl_string(r#"/path/with"quote"#), r#""/path/with\"quote""#);
+    }
+
+    #[test]
+    fn run_profile_confines_writes_to_worktree_and_toolchains() {
+        let td = tempfile::tempdir().unwrap();
+        let worktree = td.path().join("repo-worktree");
+        let home = td.path().join("home");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+
+        let profile = build_run_profile(&worktree, &home).unwrap();
+        let canonical_worktree = std::fs::canonicalize(&worktree).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+
+        // Same deny-by-default posture as the agent profile.
+        assert!(profile.contains("(allow default)"));
+        assert!(profile.contains("(deny file-write*)"));
+        // The run command writes freely inside its worktree.
+        assert!(profile.contains(&format!("\"{}\"", canonical_worktree.display())));
+        // Toolchain dirs the default detected commands need (cargo/go/pnpm/bundler).
+        for dir in [".cargo", "go", "Library/pnpm", ".bundle", ".rustup", ".bun"] {
+            let expected = format!("(subpath \"{}/{dir}\")", canonical_home.display());
+            assert!(
+                profile.contains(&expected),
+                "run profile should grant {dir}: missing {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_profile_omits_agent_only_state_dirs() {
+        // A Run process neither speaks RPC nor persists agent transcripts, so
+        // the agent-CLI state dirs must not be on its write allow-list.
+        let td = tempfile::tempdir().unwrap();
+        let worktree = td.path().join("repo-worktree");
+        let home = td.path().join("home");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+
+        let profile = build_run_profile(&worktree, &home).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        for dir in [".claude", ".codex", ".cursor", ".gemini", ".pi"] {
+            let unexpected = format!("(subpath \"{}/{dir}\")", canonical_home.display());
+            assert!(
+                !profile.contains(&unexpected),
+                "run profile should not grant agent state dir {dir}"
+            );
+        }
     }
 }
