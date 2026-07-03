@@ -9,18 +9,22 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 
-// null = not yet asked; resolved to a boolean after the first request so we
+// null = not yet asked; resolves to a boolean after the first request so we
 // don't re-prompt (or re-hit the plugin) on every subsequent notification.
-let granted: boolean | null = null;
+// Caching the Promise (not the result) closes the race between concurrent
+// notify() calls that both see null before the first resolution.
+let permissionPromise: Promise<boolean> | null = null;
 
 async function ensurePermission(): Promise<boolean> {
-  if (granted !== null) return granted;
-  try {
-    granted = (await isPermissionGranted()) || (await requestPermission()) === "granted";
-  } catch {
-    granted = false;
-  }
-  return granted;
+  if (permissionPromise !== null) return permissionPromise;
+  permissionPromise = (async () => {
+    try {
+      return (await isPermissionGranted()) || (await requestPermission()) === "granted";
+    } catch {
+      return false;
+    }
+  })();
+  return permissionPromise;
 }
 
 /** Fire a native notification. No-op (silently) without OS permission or when
