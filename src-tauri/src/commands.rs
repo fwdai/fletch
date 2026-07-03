@@ -788,8 +788,11 @@ pub async fn refresh_all_pr_states(
 /// sidebar can tint each PR pill pass/fail without opening the Git panel. Mirror
 /// of `refresh_all_pr_states`: skips archived agents and any without a PR so we
 /// never fan a `gh` call out needlessly, and runs the per-agent `pr_checks`
-/// queries in parallel via a `JoinSet`. Each entry is best-effort — a failing
-/// `gh` call maps to `None` (checks unavailable) rather than dropping the agent.
+/// queries in parallel via a `JoinSet`. Best-effort per agent: only *definitive*
+/// results land in the map — `Ok(Some)` (checks) and `Ok(None)` (no PR / none
+/// configured). A transient `gh` failure (network, rate-limit, missing binary)
+/// is omitted entirely, so the frontend's merge keeps that agent's last-known
+/// tint instead of wiping it — matching `fetchPrAux`'s per-agent contract.
 #[tauri::command]
 pub async fn refresh_all_pr_checks(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -808,14 +811,13 @@ pub async fn refresh_all_pr_checks(
         }
         let Ok(worktree) = repo_worktree_path(&agent.id, &repo.subdir) else { continue };
         let agent_id = agent.id.clone();
-        set.spawn(async move {
-            let checks = gh::pr_checks(&worktree).await.unwrap_or(None);
-            (agent_id, checks)
-        });
+        set.spawn(async move { (agent_id, gh::pr_checks(&worktree).await) });
     }
     let mut out = std::collections::HashMap::new();
     while let Some(res) = set.join_next().await {
-        if let Ok((id, checks)) = res {
+        // Record only definitive outcomes; drop errored agents so their prior
+        // value survives the frontend merge.
+        if let Ok((id, Ok(checks))) = res {
             out.insert(id, checks);
         }
     }
