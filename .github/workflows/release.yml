@@ -39,7 +39,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Updater artifact signing (minisign keypair generated for Quorum).
+          # Updater artifact signing (minisign keypair generated for Fletch).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # macOS code signing (Developer ID Application cert) + notarization.
@@ -64,7 +64,7 @@ jobs:
           QUORUM_POSTHOG_KEY: ${{ secrets.QUORUM_POSTHOG_KEY }}
         with:
           tagName: v__VERSION__
-          releaseName: Quorum v__VERSION__
+          releaseName: Fletch v__VERSION__
           releaseBody: See the assets to download and install this version.
           releaseDraft: false
           prerelease: false

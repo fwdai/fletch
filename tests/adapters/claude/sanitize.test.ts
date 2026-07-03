@@ -86,11 +86,16 @@ describe("sanitizeUserText", () => {
     expect(sanitizeUserText(raw).text).toBe("Hey");
   });
 
-  it("strips an injected quorum-system block, even nested in the envelope", () => {
+  it("strips an injected fletch-system block, even nested in the envelope", () => {
     const raw =
-      "<timestamp>Tue, Jun 9, 2026</timestamp>\n<user_query>\n<quorum-system>\nfollow the rules\n</quorum-system>\n\nHey\n</user_query>";
+      "<timestamp>Tue, Jun 9, 2026</timestamp>\n<user_query>\n<fletch-system>\nfollow the rules\n</fletch-system>\n\nHey\n</user_query>";
     // Cleaned to exactly what the user typed, so it dedups against the
     // optimistic turn and renders as a single clean bubble.
+    expect(sanitizeUserText(raw).text).toBe("Hey");
+  });
+
+  it("still strips the legacy quorum-system block from pre-rebrand transcripts", () => {
+    const raw = "<quorum-system>\nfollow the rules\n</quorum-system>\n\nHey";
     expect(sanitizeUserText(raw).text).toBe("Hey");
   });
 });

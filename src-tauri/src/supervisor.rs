@@ -852,7 +852,7 @@ impl Supervisor {
         let sandbox_root = agent_parent_dir(agent_id)?;
 
         // The agent's file-mailbox RPC dir, created before spawn so the watcher
-        // (and the agent's `QUORUM_RPC_DIR`) have a target from turn one.
+        // (and the agent's `FLETCH_RPC_DIR`) have a target from turn one.
         let rpc_dir = rpc::mailbox_dir(agent_id)?;
         rpc::ensure_mailbox(&rpc_dir)?;
         // Base branch for the git dispatcher — the branch the agent was

@@ -77,7 +77,7 @@ impl PtySession {
         // to a line-buffered mode that doesn't match what the user expects.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        // Caller-supplied overrides (e.g. QUORUM_RPC_DIR) last, so they win.
+        // Caller-supplied overrides (e.g. FLETCH_RPC_DIR) last, so they win.
         for (k, v) in spec.env {
             cmd.env(k, v);
         }
