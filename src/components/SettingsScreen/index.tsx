@@ -1,9 +1,5 @@
 import { lazy, Suspense } from "react";
 import { Icon, type IconName } from "@/components/Icon";
-// Extension seam: settings panes contributed by whichever extensions are
-// present in this build (see src/extensions/registry.ts). Empty in a stock
-// public build that has no extensions on disk.
-import { settingsPanes as extSettingsPanes } from "@/extensions/registry";
 import type { SettingsSection } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import pkg from "../../../package.json";
@@ -34,12 +30,6 @@ const NAV: NavItem[] = [
   ...(DeveloperPane
     ? [{ id: "developer" as const, label: "Developer", icon: "wrench" as const, order: 60 }]
     : []),
-  // Extension-contributed panes (empty when no extensions are present). An
-  // extension positions itself via `order`; unset defaults to 100 (after the
-  // built-ins).
-  ...extSettingsPanes.map(
-    (p): NavItem => ({ id: p.id, label: p.label, icon: p.icon, order: p.order ?? 100 }),
-  ),
 ];
 // Stable sort by weight keeps contribution order on ties.
 NAV.sort((a, b) => a.order - b.order);
@@ -51,9 +41,6 @@ export function SettingsScreen() {
   const section = useAppStore((s) => s.settingsSection);
   const setSection = useAppStore((s) => s.setSettingsSection);
   const close = useAppStore((s) => s.closeSettingsScreen);
-
-  // An extension pane can opt into a wider content column (e.g. a builder).
-  const wide = extSettingsPanes.some((p) => p.id === section && p.wide);
 
   return (
     <div className="set-screen">
@@ -81,12 +68,11 @@ export function SettingsScreen() {
       </nav>
 
       <div className="set-main">
-        <div className={`set-content ${wide ? "is-wide" : ""}`}>
+        <div className="set-content">
           {section === "account" && <AccountPane />}
           {section === "providers" && <ProvidersPane />}
           {section === "agents" && <CustomAgentsPane />}
           {section === "experimental" && <ExperimentalPane />}
-          {extSettingsPanes.map((p) => section === p.id && <p.Component key={p.id} />)}
           {section === "developer" && DeveloperPane && (
             <Suspense fallback={null}>
               <DeveloperPane />
