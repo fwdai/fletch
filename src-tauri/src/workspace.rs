@@ -2282,11 +2282,15 @@ mod tests {
         assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].ended_at, None);
 
         let closed = wm.mark_user_turn_ended(&ws_id).unwrap().expect("open turn closed");
-        assert!(closed.duration_ms >= 0, "non-negative duration");
-        assert_eq!(closed.record_count, 0, "no records ingested in this test");
         let turn = wm.read_user_turns(&ws_id).unwrap().remove(0);
         assert_eq!(turn.started_at, started, "start clock not reset by end");
         assert!(turn.ended_at >= turn.started_at, "ended_at after started_at");
+        assert_eq!(
+            closed.duration_ms,
+            turn.ended_at.unwrap() - turn.started_at.unwrap(),
+            "duration_ms matches stored ended_at − started_at"
+        );
+        assert_eq!(closed.record_count, 0, "no records ingested in this test");
     }
 
     #[test]
