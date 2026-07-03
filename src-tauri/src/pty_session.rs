@@ -226,8 +226,14 @@ impl PtySession {
 /// HUP and the poll returns in a tick; each grace window is a worst case.
 /// SIGKILL is polled too, so the quit path doesn't return before the kernel
 /// has torn the group down and released its ports.
+///
+/// Returns `Ok` only with positive evidence the group is gone (a probe or a
+/// send seeing `ESRCH`). `EPERM` (can't signal — e.g. a reused pgid now owned
+/// by another user) or a group that outlives `SIGKILL` yields `Err`, so we
+/// never report a reap we couldn't confirm.
 #[cfg(unix)]
 fn kill_process_group(pgid: nix::unistd::Pid) -> Result<()> {
+    use nix::errno::Errno;
     use nix::sys::signal::Signal::{SIGHUP, SIGKILL, SIGTERM};
 
     for (sig, grace) in [
@@ -237,15 +243,22 @@ fn kill_process_group(pgid: nix::unistd::Pid) -> Result<()> {
     ] {
         match nix::sys::signal::killpg(pgid, sig) {
             Ok(()) => {}
-            // ESRCH: group already gone. EPERM/other: we can't signal it and
-            // escalating won't change that — either way, stop.
-            Err(_) => break,
+            Err(Errno::ESRCH) => return Ok(()), // already empty — nothing to reap
+            Err(e) => {
+                return Err(Error::Other(format!(
+                    "killpg({}, {sig:?}): {e}",
+                    pgid.as_raw()
+                )))
+            }
         }
         if group_gone_within(pgid, grace) {
-            break;
+            return Ok(());
         }
     }
-    Ok(())
+    Err(Error::Other(format!(
+        "process group {} survived SIGKILL",
+        pgid.as_raw()
+    )))
 }
 
 /// Poll (signal-0 probe) until the group has no members or `budget` elapses.
