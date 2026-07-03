@@ -408,6 +408,15 @@ impl Supervisor {
         self.statuses.lock().get(agent_id).cloned()
     }
 
+    /// Whether the agent is mid-turn (spawning or running), i.e. a new message
+    /// can't start a fresh turn right now.
+    fn is_busy(&self, agent_id: &str) -> bool {
+        matches!(
+            self.live_status(agent_id),
+            Some(AgentStatus::Spawning | AgentStatus::Running)
+        )
+    }
+
     /// The status to report for an agent: the live in-memory value when
     /// present, otherwise the DB-derived at-rest status on the record.
     fn effective_status(&self, agent_id: &str, record: &AgentRecord) -> AgentStatus {
@@ -1155,10 +1164,7 @@ impl Supervisor {
         thinking: Option<&str>,
     ) -> Result<bool> {
         let mode = injection_mode(&self.workspace.agent(agent_id)?.provider);
-        let busy = matches!(
-            self.live_status(agent_id),
-            Some(AgentStatus::Spawning | AgentStatus::Running)
-        );
+        let busy = self.is_busy(agent_id);
         let tool_gated = self
             .agents
             .lock()
@@ -1174,11 +1180,18 @@ impl Supervisor {
         };
 
         let delivery = decide_delivery(busy, mode, tool_gated, queue_nonempty);
-        match delivery {
-            Delivery::DeliverNow => deliver_as_turn(&self, app, agent_id, &msg)?,
+        // Returns whether the message was genuinely held for a later boundary.
+        // Every delivering path returns `false`; only a still-busy `Enqueue`
+        // returns `true`.
+        let queued = match delivery {
+            Delivery::DeliverNow => {
+                deliver_as_turn(&self, app, agent_id, &msg)?;
+                false
+            }
             Delivery::FlushNow => {
                 self.message_queue.lock().enqueue(agent_id, msg);
                 flush_queued(&self, app, agent_id)?;
+                false
             }
             Delivery::WriteLive => {
                 if let Err(e) = self.inject_live(agent_id, &msg) {
@@ -1192,12 +1205,26 @@ impl Supervisor {
                     self.message_queue.lock().enqueue(agent_id, msg);
                     flush_queued(&self, app, agent_id)?;
                 }
+                false
             }
-            Delivery::Enqueue => self.message_queue.lock().enqueue(agent_id, msg),
-        }
-        // Only `Enqueue` holds the message back; every other path delivered it
-        // now (WriteLive's fallback still delivers as a fresh turn).
-        Ok(matches!(delivery, Delivery::Enqueue))
+            Delivery::Enqueue => {
+                self.message_queue.lock().enqueue(agent_id, msg);
+                // Same TOCTOU as WriteLive's fallback (CQ3-B): the turn may
+                // have ended between the busy check above and this enqueue, so
+                // the turn-end Idle drain already ran against an empty queue.
+                // If the agent is no longer busy, flush now rather than let the
+                // message sit until the user types again. `flush_queued` drains
+                // under the queue lock, so if the drain did win the race this is
+                // a harmless no-op — never a double send.
+                if self.is_busy(agent_id) {
+                    true
+                } else {
+                    flush_queued(&self, app, agent_id)?;
+                    false
+                }
+            }
+        };
+        Ok(queued)
     }
 
     /// Inject a message into the running turn over the managed agent's open
