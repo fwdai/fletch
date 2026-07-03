@@ -226,7 +226,7 @@ fn spawn_run_phase(
     // config), so a malicious agent could otherwise plant a script that runs
     // unsandboxed with full user privilege the moment the user clicks ▶. Reads
     // and network stay open (dev servers need them); only writes are fenced.
-    let (program, args, profile_file) = sandboxed_run_command(&cwd, &cmd)?;
+    let (program, args, env, profile_file) = sandboxed_run_command(&cwd, &cmd)?;
 
     let session_out = session.clone();
     let app_out = app.clone();
@@ -242,6 +242,7 @@ fn spawn_run_phase(
         &program,
         &args,
         &cwd,
+        &env,
         move |bytes| {
             session_out.append_log(&bytes);
             emit_run_output(&app_out, &id_out, bytes);
@@ -274,7 +275,7 @@ fn spawn_run_phase(
 fn sandboxed_run_command(
     cwd: &Path,
     cmd: &str,
-) -> Result<(PathBuf, Vec<String>, tempfile::NamedTempFile)> {
+) -> Result<(PathBuf, Vec<String>, Vec<(String, String)>, tempfile::NamedTempFile)> {
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     let profile_text = crate::sandbox::build_run_profile(cwd, &home)?;
@@ -292,9 +293,19 @@ fn sandboxed_run_command(
     // sandbox-exec -f <profile> <shell> -lic <cmd>
     let mut args = vec!["-f".to_string(), profile_path, shell_str];
     args.extend(shell_args(cmd));
+    // A nested Fletch (dogfooding) can't reach the host's `~/.fletch/rpc` under
+    // this profile; steer its mailboxes to a sandbox-writable root. Harmless for
+    // any other Run target — nothing but Fletch reads `FLETCH_RPC_ROOT`.
+    let env = vec![(
+        crate::rpc::RPC_ROOT_ENV.to_string(),
+        crate::sandbox::nested_rpc_root(cwd)
+            .to_string_lossy()
+            .into_owned(),
+    )];
     Ok((
         PathBuf::from(crate::sandbox::SANDBOX_EXEC),
         args,
+        env,
         profile_file,
     ))
 }

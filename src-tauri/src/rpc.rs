@@ -104,11 +104,27 @@ impl Response {
     }
 }
 
-/// `~/.fletch/rpc/<agent-id>/` — the agent's private mailbox root.
+/// Env var overriding the mailbox root (default `~/.fletch/rpc`). The Run
+/// sandbox forbids writes to the host's `~/.fletch/rpc`, so a nested Fletch
+/// launched as a Run process (dogfooding: Fletch running Fletch) is pointed at
+/// a sandbox-writable root instead — see `sandbox::nested_rpc_root`.
+pub const RPC_ROOT_ENV: &str = "FLETCH_RPC_ROOT";
+
+/// `<root>/<agent-id>/` — the agent's private mailbox root. `<root>` is
+/// `$FLETCH_RPC_ROOT` when set and non-empty, else `~/.fletch/rpc`.
 pub fn mailbox_dir(agent_id: &str) -> Result<PathBuf> {
-    let home =
-        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    Ok(home.join(".fletch").join("rpc").join(agent_id))
+    Ok(rpc_root()?.join(agent_id))
+}
+
+fn rpc_root() -> Result<PathBuf> {
+    match std::env::var_os(RPC_ROOT_ENV).filter(|v| !v.is_empty()) {
+        Some(root) => Ok(PathBuf::from(root)),
+        None => {
+            let home = dirs::home_dir()
+                .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+            Ok(home.join(".fletch").join("rpc"))
+        }
+    }
 }
 
 /// Create the mailbox and its `requests/`/`responses/` subdirs. Idempotent;

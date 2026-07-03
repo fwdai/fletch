@@ -189,6 +189,7 @@ pub fn spawn_command<F, G>(
     program: &Path,
     args: &[String],
     cwd: &Path,
+    env: &[(String, String)],
     on_output: F,
     on_exit: G,
 ) -> Result<PtySession>
@@ -201,7 +202,7 @@ where
             program,
             args,
             cwd,
-            env: &[],
+            env,
             cols: 120,
             rows: 32,
         },
