@@ -436,6 +436,9 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     // Load custom agent presets (async, non-blocking). Empty until loaded — the
     // composer picker and settings pane just show the built-ins meanwhile.
     void get().loadCustomAgents();
+    // Probe the GitHub connection once (async, non-blocking) so push/PR/clone
+    // affordances know whether to act or prompt to connect.
+    void get().refreshGithub();
 
     await registerEventListeners(set, get);
     setupResync(set);

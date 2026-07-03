@@ -3,16 +3,13 @@
 // General. Ported from the design prototype (onboarding/app.jsx): ambient
 // stage, step sequence, cinematic transitions, progress rail, keyboard nav.
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { open as openExternal } from "@tauri-apps/plugin-shell";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
-import { getOrCreateAccount, linkOAuthAccount, type OAuthProfile } from "@/storage/accounts";
 import { useAppStore } from "@/store";
+import { useGithubConnect } from "@/util/useGithubConnect";
 import { Ambient } from "./Ambient";
 import { BEATS } from "./beats";
-import { DeviceCode, type DeviceCodeInfo } from "./DeviceCode";
+import { DeviceCode } from "./DeviceCode";
 import { Beat, IgniteStep, WelcomeStep } from "./steps";
 import "./onboarding.css";
 
@@ -30,20 +27,10 @@ const RAIL_LEN = 4; // welcome..last beat (finale excluded)
 
 export function Onboarding() {
   const closeOnboarding = useAppStore((s) => s.closeOnboarding);
-  const refreshAccount = useAppStore((s) => s.refreshAccount);
 
   const [idx, setIdx] = useState(0);
   const [phase, setPhase] = useState<"in" | "out">("in");
   const [ready, setReady] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
-
-  const [device, setDevice] = useState<DeviceCodeInfo | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
-  // Monotonic id for the active sign-in. Bumping it (on cancel or a new
-  // attempt) invalidates any in-flight oauth_device_login so its late result
-  // is ignored — the backend poll keeps running until it expires, but its
-  // outcome no longer touches the UI or the DB.
-  const authRunRef = useRef(0);
 
   const step = STEPS[idx];
 
@@ -72,74 +59,16 @@ export function Onboarding() {
   const next = useCallback(() => go(idx + 1), [go, idx]);
   const back = useCallback(() => go(idx - 1), [go, idx]);
 
-  const onAuth = useCallback(
-    async (provider: string) => {
-      if (busy) return;
-      const runId = ++authRunRef.current;
-      const stale = () => authRunRef.current !== runId;
-      setBusy(provider);
-      setAuthError(null);
-      setDevice(null);
-      // Default to a no-op so the finally can always call it — listen() lives
-      // inside the try so an IPC failure is caught and surfaced, not thrown
-      // unhandled (which would strand the cancel-less loading panel).
-      let unlisten: () => void = () => {};
-      try {
-        // The backend emits the user code once the provider issues it; show it
-        // and open the verification page in the user's browser.
-        unlisten = await listen<{
-          provider: string;
-          user_code: string;
-          verification_uri: string;
-        }>("oauth:device-code", (e) => {
-          if (stale()) return;
-          setDevice({
-            provider: e.payload.provider,
-            userCode: e.payload.user_code,
-            verificationUri: e.payload.verification_uri,
-          });
-          void openExternal(e.payload.verification_uri).catch(() => {});
-        });
-        const profile = await invoke<OAuthProfile>("oauth_device_login", {
-          provider,
-        });
-        if (stale()) return; // cancelled or superseded — drop the result
-        const account = await getOrCreateAccount();
-        await linkOAuthAccount(account.id, profile);
-        await refreshAccount();
-        if (stale()) return;
-        // Keep the device panel visible through the transition-out — clearing
-        // `device`/`busy` here would flash the welcome buttons mid-fade. The
-        // step-change effect below tears them down once we've left welcome.
-        go(1);
-      } catch (err) {
-        if (stale()) return;
-        setAuthError(String(err));
-        setBusy(null);
-      } finally {
-        unlisten();
-      }
-    },
-    [busy, go, refreshAccount],
-  );
-
-  const cancelAuth = useCallback(() => {
-    authRunRef.current++; // invalidate any in-flight sign-in
-    setDevice(null);
-    setAuthError(null);
-    setBusy(null);
-  }, []);
-
-  // Once we leave the welcome step, tear down any auth/device state so the
-  // panel fades out cleanly and a later return to welcome shows the sign-in
-  // buttons, not a stale code panel.
-  useEffect(() => {
-    if (step.kind !== "welcome") {
-      setBusy(null);
-      setDevice(null);
-      setAuthError(null);
-    }
-  }, [step.kind]);
+  // Shared device-flow sign-in. On success advance off the welcome step; the
+  // hook persists the profile and refreshes the account + GitHub connection.
+  const {
+    connect,
+    cancel: cancelAuth,
+    device,
+    error: authError,
+    busy,
+  } = useGithubConnect(useCallback(() => go(1), [go]));
+  const onAuth = useCallback((provider: string) => void connect(provider), [connect]);
 
   // Finale handoff: just drop into the real app. Its empty state prompts the
   // user to add their first repo from the sidebar — no auto-picker.
@@ -172,8 +101,11 @@ export function Onboarding() {
 
   let content = null;
   if (step.kind === "welcome")
+    // The only way off welcome is a successful sign-in (go(1)), so during its
+    // fade-out (`phase === "out"`) keep the device panel up rather than
+    // flashing the sign-in buttons as the hook clears its state.
     content =
-      busy || device || authError ? (
+      busy || device || authError || phase === "out" ? (
         <DeviceCode info={device} error={authError} onCancel={cancelAuth} />
       ) : (
         <WelcomeStep onAuth={onAuth} busy={busy} />

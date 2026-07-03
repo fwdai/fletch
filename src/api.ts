@@ -151,6 +151,9 @@ export interface GitState {
    *  when origin is missing / not a github.com remote. Lets the panel link to
    *  a commit or compare view. */
   remote_url?: string | null;
+  /** Whether an `origin` remote exists at all (GitHub or not). False = a
+   *  local-only repo: push/PR give way to "Publish to GitHub". */
+  has_origin: boolean;
   /** HEAD commit SHA, for a single-commit link when one commit is ahead. */
   head_sha?: string | null;
 }
@@ -375,13 +378,23 @@ export const api = {
   ghRepoList: () => invoke<GhRepoSummary[]>("gh_repo_list"),
   cloneRepo: (spec: string, destParent: string) =>
     invoke<Workspace>("clone_repo", { spec, destParent }),
-  createRepo: (name: string, destParent: string, isPrivate: boolean, description?: string) =>
+  createRepo: (
+    name: string,
+    destParent: string,
+    isPrivate: boolean,
+    description?: string,
+    publish?: boolean,
+  ) =>
     invoke<Workspace>("create_repo", {
       name,
       destParent,
       private: isPrivate,
       description: description ?? null,
+      publish: publish ?? true,
     }),
+  publishAgent: (agentId: string, isPrivate: boolean) =>
+    invoke<string>("publish_agent", { agentId, private: isPrivate }),
+  githubDisconnect: () => invoke<void>("github_disconnect"),
   spawnAgent: (
     view: AgentView,
     repoPath: string,

@@ -419,6 +419,37 @@
   pointer-events: none;
 }
 
+/* ── GITHUB CONNECTION ───────────────────────────────────────────────── */
+.set-gh {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.set-gh-row {
+  gap: 10px;
+}
+.set-gh-status {
+  flex: 1;
+  color: var(--fg-1);
+}
+.set-gh-hint,
+.set-gh-lede {
+  color: var(--fg-2);
+  line-height: var(--lh-normal);
+}
+.set-gh-err {
+  color: var(--danger);
+}
+.set-gh-code {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--fg-0);
+  font-variant-numeric: tabular-nums;
+}
+.set-gh-uri {
+  color: var(--fg-2);
+}
+
 /* ── PROVIDERS ───────────────────────────────────────────────────────── */
 .set-checked {
   color: var(--fg-3);

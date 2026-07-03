@@ -95,13 +95,51 @@ pub async fn clone(spec: &str, dest_parent: &Path) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// Create a new local repo at `dest_parent/<name>` (seeded with a README and an
-/// initial commit), publish it to GitHub, and return the local path.
+/// Ensure the folder at `path` is a git repository so agents can operate in
+/// worktrees, commit, and track history — the progressive-disclosure ramp for
+/// users who've never heard of git. A plain folder is initialized with an
+/// initial commit (worktrees can't fork a repo with no HEAD); a folder nested
+/// inside an existing repository is rejected with a pointer to the actual
+/// root, since silently initializing a nested repo would split its history.
+pub async fn ensure_git_repo(path: &Path) -> Result<()> {
+    if path.join(".git").exists() {
+        return Ok(());
+    }
+    if let Some(root) = git_toplevel(path).await {
+        return Err(Error::InvalidPath(format!(
+            "{} is inside the git repository at {root} — add that folder instead",
+            path.display(),
+        )));
+    }
+    git::init_repo(path).await?;
+    git::commit_initial(path).await
+}
+
+/// The repository root containing `path`, or `None` when `path` is not inside
+/// any git repository (the normal case for a folder we're about to init).
+async fn git_toplevel(path: &Path) -> Option<String> {
+    let out = crate::git_dist::command(path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!root.is_empty()).then_some(root)
+}
+
+/// Create a new local repo at `dest_parent/<name>` (seeded with a README and
+/// an initial commit) and return the local path. With `publish` it is also
+/// created on GitHub and pushed; without (no GitHub connection yet) it stays
+/// local — the git panel offers "Publish to GitHub" later.
 pub async fn create(
     name: &str,
     dest_parent: &Path,
     private: bool,
     description: Option<&str>,
+    publish: bool,
 ) -> Result<PathBuf> {
     let name = name.trim();
     validate_new_name(name)?;
@@ -122,7 +160,9 @@ pub async fn create(
         std::fs::write(&readme, body)?;
 
         git::commit_all(&target, "Initial commit").await?;
-        gh::repo_create_and_push(&target, name, private, description).await?;
+        if publish {
+            gh::repo_create_and_push(&target, name, private, description).await?;
+        }
         Ok::<(), Error>(())
     }
     .await;
@@ -180,6 +220,57 @@ mod tests {
     fn name_rejects_illegal_chars() {
         // A spec whose tail contains spaces is not a legal repo name.
         assert!(repo_name_from_spec("owner/bad name").is_err());
+    }
+
+    /// The GitHub-unaware path: an empty non-repo folder becomes a repo WITH
+    /// a HEAD (worktrees can't fork without one), and adopting it again is a
+    /// no-op rather than an error.
+    #[tokio::test]
+    async fn ensure_git_repo_initializes_folder_and_is_idempotent() {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path().join("my-notes");
+        std::fs::create_dir(&dir).unwrap();
+
+        ensure_git_repo(&dir).await.unwrap();
+
+        assert!(dir.join(".git").exists());
+        let head = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(
+            head.status.success(),
+            "an adopted folder must have a HEAD commit: {}",
+            String::from_utf8_lossy(&head.stderr),
+        );
+
+        ensure_git_repo(&dir).await.unwrap();
+    }
+
+    /// A folder nested inside an existing repository must be rejected with a
+    /// pointer to the real root — silently initializing a nested repo would
+    /// split its history.
+    #[tokio::test]
+    async fn ensure_git_repo_rejects_folder_inside_existing_repo() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        assert!(std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        let nested = repo.join("src");
+        std::fs::create_dir(&nested).unwrap();
+
+        let err = ensure_git_repo(&nested).await.unwrap_err().to_string();
+        assert!(
+            err.contains("inside the git repository"),
+            "unexpected error: {err}",
+        );
+        assert!(!nested.join(".git").exists());
     }
 
     #[test]

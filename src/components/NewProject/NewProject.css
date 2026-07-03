@@ -344,3 +344,13 @@
   font-size: var(--fs-sm);
   color: var(--fg-0);
 }
+/* Device-flow user code shown while connecting from the New Project gate. */
+.np-gate-code {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--fg-0);
+  font-variant-numeric: tabular-nums;
+}
+.np-gate .np-primary {
+  margin-top: 8px;
+}

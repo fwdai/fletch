@@ -4,6 +4,7 @@ import type { AgentUsage } from "@/adapters/usage";
 import type {
   AgentRecord,
   AgentView,
+  GhStatus,
   GitState,
   PrChecks,
   PrComments,
@@ -161,6 +162,8 @@ export interface ReposSlice {
     destParent: string,
     isPrivate: boolean,
     description?: string,
+    /** Also create + push to GitHub. False = local-only (no connection yet). */
+    publish?: boolean,
   ) => Promise<void>;
 }
 
@@ -235,6 +238,10 @@ export interface GitSlice {
   deleteBranch: (agentId: string) => Promise<void>;
   createPr: (agentId: string, title: string, body: string) => Promise<PrState | null>;
   mergePr: (agentId: string) => Promise<void>;
+  /** Publish a local-only project (no origin) to GitHub, then refresh git
+   *  state so the panel switches out of the no-origin affordances. Resolves
+   *  the repo web URL on success, null on error. */
+  publishAgent: (agentId: string, isPrivate: boolean) => Promise<string | null>;
 }
 
 export interface ComposerSlice {
@@ -318,11 +325,19 @@ export interface AccountSlice {
   account: AccountProfile | null;
   /** Anonymous usage telemetry consent. Opt-out: defaults on. */
   telemetryEnabled: boolean;
+  /** GitHub connection: null until the first probe, then the live status.
+   *  `authenticated` gates push/PR/clone affordances app-wide. */
+  github: GhStatus | null;
 
   saveAccount: (patch: Pick<AccountProfile, "firstName" | "lastName" | "email">) => Promise<void>;
   /** Re-read the local account row into the store — e.g. after an OAuth
    *  sign-in writes the provider profile to SQLite. */
   refreshAccount: () => Promise<void>;
+  /** Re-probe the GitHub connection into `github` (after sign-in/disconnect,
+   *  and once on init). */
+  refreshGithub: () => Promise<void>;
+  /** Drop the stored GitHub token and return to local-only mode. */
+  disconnectGithub: () => Promise<void>;
   setTelemetryEnabled: (enabled: boolean) => void;
 }
 

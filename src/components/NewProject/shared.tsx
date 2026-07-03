@@ -1,5 +1,6 @@
 import type { GhStatus } from "@/api";
 import { Icon } from "@/components/Icon";
+import { useGithubConnect } from "@/util/useGithubConnect";
 
 /** Shared state passed from the modal shell to each view. */
 export interface NewProjectShared {
@@ -46,19 +47,56 @@ export function DestRow({
   );
 }
 
-/** Shown when the app has no GitHub connection — both flows need one.
- *  (`gh.installed` is always true now that GitHub goes through the API; the
- *  only gate left is authentication.) */
-export function GhGate(_props: { gh: GhStatus }) {
+/** Connect-GitHub prompt for a flow that genuinely needs it (cloning). Runs
+ *  the device flow inline: on success the store's `github` flips and the
+ *  parent view re-renders to the real form — no dialog reopen. */
+export function ConnectGitHub({ what }: { what: string }) {
+  const { connect, cancel, device, error, busy } = useGithubConnect();
   return (
     <div className="np-body">
       <div className="np-gate flex-center">
         <Icon name="github" size={22} />
-        <div className="np-gate-t text-base">Not connected to GitHub</div>
-        <div className="np-gate-s text-sm">
-          Sign in with GitHub from Settings → Account (or the onboarding tour), then reopen this
-          dialog.
-        </div>
+        {device ? (
+          <>
+            <div className="np-gate-t text-base">Finish signing in in your browser</div>
+            <div className="np-gate-code text-2xl">{device.userCode}</div>
+            <div className="np-gate-s text-sm">{device.verificationUri}</div>
+            <button className="np-link text-sm" onClick={cancel}>
+              Cancel
+            </button>
+          </>
+        ) : error ? (
+          <>
+            <div className="np-gate-t text-base">Sign-in failed</div>
+            <div className="np-gate-s text-sm">{error}</div>
+            <button className="np-primary flex-center text-base" onClick={() => void connect()}>
+              Try again
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="np-gate-t text-base">Connect GitHub to {what}</div>
+            <div className="np-gate-s text-sm">
+              Fletch works fully offline for local projects. Connect GitHub when you want to clone,
+              push, or open pull requests.
+            </div>
+            <button
+              className="np-primary flex-center text-base"
+              disabled={!!busy}
+              onClick={() => void connect()}
+            >
+              {busy ? (
+                <>
+                  <Icon name="refresh" size={13} /> Connecting…
+                </>
+              ) : (
+                <>
+                  <Icon name="github" size={14} /> Connect GitHub
+                </>
+              )}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

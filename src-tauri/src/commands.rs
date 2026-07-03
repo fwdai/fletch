@@ -122,12 +122,19 @@ pub fn allocate_draft_name(used: Vec<String>) -> String {
     names::allocate(&reserved)
 }
 
+/// Pin a folder as a workspace project. A folder that isn't a git repository
+/// yet is initialized (with an initial commit) first, so users who've never
+/// heard of git can still point the app at any project folder and get working
+/// agents, worktrees, and history.
 #[tauri::command]
-pub fn add_workspace_repo(
+pub async fn add_workspace_repo(
     supervisor: State<'_, Arc<Supervisor>>,
     repo_path: String,
 ) -> Result<Workspace> {
-    supervisor.add_workspace_repo(PathBuf::from(repo_path))
+    let sup = supervisor.inner().clone();
+    let path = PathBuf::from(repo_path);
+    new_project::ensure_git_repo(&path).await?;
+    sup.add_workspace_repo(path)
 }
 
 #[tauri::command]
@@ -172,15 +179,49 @@ pub async fn create_repo(
     dest_parent: String,
     private: bool,
     description: Option<String>,
+    publish: Option<bool>,
 ) -> Result<Workspace> {
     let target = new_project::create(
         &name,
         Path::new(&dest_parent),
         private,
         description.as_deref(),
+        // Default true: an older frontend that doesn't pass the flag keeps
+        // the original create-and-publish behavior.
+        publish.unwrap_or(true),
     )
     .await?;
     supervisor.add_workspace_repo(target)
+}
+
+/// Publish a local-only project to GitHub: create the remote repo from the
+/// project's *root* (so its default branch — e.g. `main` — becomes the GitHub
+/// default, not the agent's working branch), wire `origin`, and push. The
+/// worktree shares the new remote, so the agent can push its branch afterward.
+/// The repo name is the project directory's basename. Returns the web URL.
+#[tauri::command]
+pub async fn publish_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    private: bool,
+) -> Result<String> {
+    let repo = primary_repo(&supervisor, &agent_id)?;
+    let name = repo
+        .repo_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::InvalidPath("project folder has no name".into()))?
+        .to_string();
+    new_project::validate_new_name(&name)?;
+    gh::repo_create_and_push(&repo.repo_path, &name, private, None).await
+}
+
+/// Drop the stored GitHub token — the app returns to local-only mode.
+#[tauri::command]
+pub fn github_disconnect(db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>) -> Result<()> {
+    crate::database::set_setting(&db.lock(), gh::TOKEN_SETTING, "")?;
+    gh::set_token(None);
+    Ok(())
 }
 
 #[tauri::command]

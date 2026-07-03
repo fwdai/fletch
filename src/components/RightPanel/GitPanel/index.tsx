@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AgentRecord } from "@/api";
 import { delegationLabel } from "@/components/RightPanel/delegation";
+import { useAppStore } from "@/store";
 import { ActionBar } from "./ActionBar";
 import { ChangesList } from "./ChangesList";
 import { CommitComposer } from "./CommitComposer";
@@ -65,6 +66,9 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
     });
   }, [gitState]);
 
+  const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
+  const hasOrigin = gitState?.has_origin ?? true;
+
   const branch = gitState?.branch || agent.repos[0]?.branch || "(no branch yet)";
   const base = gitState?.parent_branch || agent.repos[0]?.parent_branch || "main";
   // The worktree is detached until its first push; a branch is only born from
@@ -81,6 +85,8 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
     msg,
     checks,
     prUrl: prState?.url,
+    githubConnected,
+    hasOrigin,
     runBusy,
     showNotice,
     openOverride,
@@ -99,6 +105,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
     base,
     customActive,
     delegationActive: delegation != null,
+    githubConnected,
   });
 
   // Pushed state: link the commit count out to GitHub — a single commit when

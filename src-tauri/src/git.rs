@@ -782,6 +782,27 @@ pub async fn merge_abort(worktree: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Stage everything and create the repo's first commit. `--allow-empty` so an
+/// empty folder still gets a HEAD — worktrees can't fork without one. Uses the
+/// identity fallback like every other commit-creating op.
+pub async fn commit_initial(repo: &Path) -> Result<()> {
+    run_git(repo, &["add", "-A"], "add -A").await?;
+    let env = identity_env(repo).await;
+    let out = git_output_env(
+        repo,
+        &["commit", "--allow-empty", "-m", "Initial commit"],
+        &env,
+    )
+    .await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "initial commit failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 /// Add a remote. Used when publishing a fresh local repo to GitHub.
 pub async fn remote_add(worktree: &Path, name: &str, url: &str) -> Result<()> {
     run_git(worktree, &["remote", "add", name, url], &format!("remote add {name}")).await?;

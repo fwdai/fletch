@@ -5,6 +5,7 @@ import type { AccountSlice, SliceCreator } from "./types";
 export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   account: null,
   telemetryEnabled: true,
+  github: null,
 
   saveAccount: async (patch) => {
     const current = get().account;
@@ -20,6 +21,27 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
     try {
       const row = await getAccount();
       if (row) set({ account: toProfile(row) });
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+  refreshGithub: async () => {
+    try {
+      set({ github: await api.ghStatus() });
+    } catch {
+      // A failed probe means we can't confirm a connection — treat as
+      // not-connected so gated UI shows "connect" rather than a spinner.
+      set({ github: { installed: true, authenticated: false, login: null } });
+    }
+  },
+  disconnectGithub: async () => {
+    try {
+      await api.githubDisconnect();
+      // Only reflect disconnected once the backend actually cleared the token.
+      // If the write failed the token is still stored, so leaving `github`
+      // as-is keeps the UI honest instead of showing a phantom disconnect
+      // that a later refresh silently reverses.
+      set({ github: { installed: true, authenticated: false, login: null } });
     } catch (e) {
       set({ lastError: String(e) });
     }

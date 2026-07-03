@@ -3,20 +3,21 @@ import { Icon } from "@/components/Icon";
 import { Segmented } from "@/components/Settings/Segmented";
 import { useAppStore } from "@/store";
 import { isValidRepoName } from "@/util/repoSpec";
-import { DestRow, GhGate, type NewProjectShared } from "./shared";
+import { DestRow, type NewProjectShared } from "./shared";
 
-/** Create a brand-new repo locally and publish it to GitHub. */
+/** Create a brand-new local repo. When GitHub is connected it's also published
+ *  (repo created + pushed); otherwise it stays local and the git panel offers
+ *  "Publish to GitHub" later — so a GitHub-unaware user is never blocked. */
 export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDone: () => void }) {
   const createRepo = useAppStore((s) => s.createRepo);
   const { parent, pickParent, gh } = shared;
+  const connected = !!gh?.authenticated;
 
   const [name, setName] = useState("");
   const [visibility, setVisibility] = useState<"private" | "public">("private");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  if (gh && (!gh.installed || !gh.authenticated)) return <GhGate gh={gh} />;
 
   const nameOk = isValidRepoName(name);
   const showNameError = name.trim().length > 0 && !nameOk;
@@ -32,6 +33,7 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
         parent,
         visibility === "private",
         description.trim() || undefined,
+        connected,
       );
       onDone();
     } catch (e) {
@@ -55,17 +57,26 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
         )}
       </div>
 
-      <div className="np-field">
-        <label>Visibility</label>
-        <Segmented
-          value={visibility}
-          onChange={setVisibility}
-          options={[
-            { value: "private", label: "Private" },
-            { value: "public", label: "Public" },
-          ]}
-        />
-      </div>
+      {connected ? (
+        <div className="np-field">
+          <label>Visibility</label>
+          <Segmented
+            value={visibility}
+            onChange={setVisibility}
+            options={[
+              { value: "private", label: "Private" },
+              { value: "public", label: "Public" },
+            ]}
+          />
+        </div>
+      ) : (
+        <div className="np-field">
+          <div className="np-hint text-sm">
+            Creating a local project. Connect GitHub later to publish it — you can keep working with
+            agents, commits, and history offline until then.
+          </div>
+        </div>
+      )}
 
       <div className="np-field">
         <label>
@@ -92,6 +103,8 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
             <>
               <Icon name="refresh" size={13} /> Creating…
             </>
+          ) : connected ? (
+            "Create & publish"
           ) : (
             "Create project"
           )}

@@ -595,6 +595,8 @@ pub fn run() {
             commands::gh_repo_list,
             commands::clone_repo,
             commands::create_repo,
+            commands::publish_agent,
+            commands::github_disconnect,
             commands::spawn_agent,
             commands::write_to_agent,
             commands::send_user_message,

@@ -29,6 +29,9 @@ pub struct GitState {
     /// or `None` when origin is missing or isn't a github.com remote. Lets the
     /// UI link out to a commit / compare view. Stable across a branch's life.
     pub remote_url: Option<String>,
+    /// Whether an `origin` remote exists at all (GitHub or not). `false` means
+    /// a local-only repo — push/PR affordances are replaced by "publish".
+    pub has_origin: bool,
     /// HEAD commit SHA, used to build a single-commit link when exactly one
     /// commit is ahead. `None` on an empty repo / detached read failure.
     pub head_sha: Option<String>,
@@ -86,6 +89,7 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
                 additions: 0,
                 deletions: 0,
                 remote_url: None,
+                has_origin: false,
                 head_sha: None,
             });
         }
@@ -123,7 +127,7 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
     // 5. Link targets — the origin web base (for commit / compare links) and the
     //    HEAD sha (for a single-commit link). Both are cheap reads; failures are
     //    non-fatal (the UI just omits the link).
-    let remote_url = query_remote_web_url(worktree_path).await;
+    let (has_origin, remote_url) = query_origin(worktree_path).await;
     let head_sha = query_head_sha(worktree_path).await;
 
     Ok(GitState {
@@ -136,6 +140,7 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
         additions,
         deletions,
         remote_url,
+        has_origin,
         head_sha,
     })
 }
@@ -173,18 +178,21 @@ async fn query_head_sha(worktree_path: &Path) -> Option<String> {
     (!sha.is_empty()).then_some(sha)
 }
 
-/// The `origin` remote, normalized to a GitHub web base. `None` when there is no
-/// origin or it isn't a github.com remote.
-async fn query_remote_web_url(worktree_path: &Path) -> Option<String> {
-    let out = crate::git_dist::command(worktree_path)
+/// The `origin` remote: whether one exists at all, and its GitHub web base
+/// (`None` when missing or not a github.com remote).
+async fn query_origin(worktree_path: &Path) -> (bool, Option<String>) {
+    let out = match crate::git_dist::command(worktree_path)
         .args(["remote", "get-url", "origin"])
         .output()
         .await
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    github_web_url(String::from_utf8_lossy(&out.stdout).trim())
+    {
+        Ok(out) if out.status.success() => out,
+        _ => return (false, None),
+    };
+    (
+        true,
+        github_web_url(String::from_utf8_lossy(&out.stdout).trim()),
+    )
 }
 
 /// Normalize a git remote URL to its GitHub web base (`https://github.com/
