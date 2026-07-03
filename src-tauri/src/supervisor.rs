@@ -536,17 +536,27 @@ impl Supervisor {
         emit_run_state(&app, agent_id, plan.first_phase, None);
         write_header(&app, agent_id, &session, &plan.first_cmd);
 
-        spawn_run_phase(
+        // begin_phase already flipped the session active. If the spawn fails we
+        // must reset to Stopped — otherwise is_active() stays true and every
+        // later ▶ click no-ops on the idempotency guard. Mirrors the chained
+        // run-phase failure path in handle_run_phase_exit.
+        if let Err(e) = spawn_run_phase(
             self.clone(),
-            app,
+            app.clone(),
             agent_id.to_string(),
-            session,
+            session.clone(),
             gen,
             cwd,
             plan.first_phase,
             plan.first_cmd,
             plan.chained_run_cmd,
-        )
+        ) {
+            let msg = format!("Failed to start command: {e}");
+            session.mark_stopped(Some(msg.clone()));
+            emit_run_state(&app, agent_id, RunPhase::Stopped, Some(msg));
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Stop the Run-panel process for an agent. Idempotent.
