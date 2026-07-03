@@ -128,21 +128,31 @@ fn map_migration_error(e: rusqlite_migration::Error) -> Error {
     }
 }
 
-/// Copy the DB aside before applying migrations, but only when an existing
+/// Snapshot the DB aside before applying migrations, but only when an existing
 /// schema is genuinely being upgraded: a fresh DB (`user_version == 0`) has
 /// nothing to lose, and an already-current or schema-ahead DB isn't migrated.
-/// WAL is checkpointed first so the copy captures every committed page. Gives
-/// the user a restore point if a forward migration goes wrong or they later
-/// downgrade.
+/// Gives the user a restore point if a forward migration goes wrong or they
+/// later downgrade.
 fn backup_before_upgrade(conn: &Connection, db_path: &Path) -> Result<()> {
     let applied: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if applied <= 0 || applied as usize >= MIGRATIONS.len() {
         return Ok(());
     }
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     let backup = db_path.with_extension(format!("db.bak-v{applied}-{}", now_millis()));
-    std::fs::copy(db_path, &backup)?;
+    snapshot_to(conn, &backup)?;
     tracing::info!(backup = %backup.display(), "backed up DB before schema upgrade");
+    Ok(())
+}
+
+/// Write a consistent snapshot of `conn` to `dest` via SQLite's online backup
+/// API. Unlike checkpoint-then-`fs::copy`, this reads *through* the connection,
+/// so it always captures committed WAL frames — a plain copy would silently
+/// omit them whenever an external reader (Spotlight, Time Machine, a backup
+/// agent) holds the WAL and leaves the checkpoint incomplete (`busy != 0`).
+fn snapshot_to(conn: &Connection, dest: &Path) -> Result<()> {
+    let mut dst = Connection::open(dest)?;
+    let backup = rusqlite::backup::Backup::new(conn, &mut dst)?;
+    backup.run_to_completion(100, std::time::Duration::from_millis(50), None)?;
     Ok(())
 }
 
@@ -523,7 +533,17 @@ mod tests {
         get_migrations().to_version(&mut conn, 1).unwrap(); // valid schema at v1
         drop(conn);
         init(dir.path()).unwrap(); // v1 -> latest, must back up first
-        assert_eq!(backup_files(dir.path()).len(), 1);
+
+        let backups = backup_files(dir.path());
+        assert_eq!(backups.len(), 1);
+        // The snapshot must be a complete, readable DB frozen at the pre-upgrade
+        // version — proving the online backup captured real content, not a
+        // truncated copy.
+        let backup = Connection::open(dir.path().join(&backups[0])).unwrap();
+        let version: i64 = backup
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
     }
 
     #[test]

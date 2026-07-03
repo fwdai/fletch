@@ -161,19 +161,21 @@ enum DbErrorChoice {
 /// Recover from a failed `database::init` instead of panicking into a launch
 /// crash loop (the schema-too-new downgrade case, most often). Shows a native
 /// dialog and loops on the user's choice: move the DB aside and start fresh,
-/// reveal the logs and re-prompt, or quit. Runs in `setup` on the main thread —
-/// hence rfd's synchronous dialog, not the tauri plugin's, which needs the
-/// not-yet-running event loop.
-fn recover_from_db_init_failure(
-    data_dir: &std::path::Path,
-    err: &crate::error::Error,
-) -> crate::error::Result<DbState> {
-    tracing::error!(error = %err, "database init failed; prompting for recovery");
+/// reveal the logs and re-prompt, or quit. If the move-aside recovery itself
+/// fails, we re-prompt with that error rather than quitting silently — the user
+/// asked to recover and deserves to see why it didn't work. Only ever resolves
+/// by returning a live DB or exiting, so it's total. Runs in `setup` on the
+/// main thread — hence rfd's synchronous dialog, not the tauri plugin's, which
+/// needs the not-yet-running event loop.
+fn recover_from_db_init_failure(data_dir: &std::path::Path, mut err: crate::error::Error) -> DbState {
     loop {
-        match show_db_error_dialog(err) {
+        tracing::error!(error = %err, "database init failed; prompting for recovery");
+        match show_db_error_dialog(&err) {
             DbErrorChoice::MoveAside => {
-                move_db_aside(data_dir)?;
-                return database::init(data_dir);
+                match move_db_aside(data_dir).and_then(|()| database::init(data_dir)) {
+                    Ok(db) => return db,
+                    Err(e) => err = e, // recovery failed — loop and re-prompt with why
+                }
             }
             DbErrorChoice::RevealLogs => {
                 let _ = commands::reveal_logs();
@@ -450,7 +452,7 @@ pub fn run() {
 
             let db = match database::init(&data_dir) {
                 Ok(db) => db,
-                Err(e) => recover_from_db_init_failure(&data_dir, &e)?,
+                Err(e) => recover_from_db_init_failure(&data_dir, e),
             };
 
             // Seed the in-memory agent binary override registry so binary
