@@ -130,15 +130,27 @@ pub fn build_run_profile(writable_root: &Path, home: &Path) -> Result<String> {
 /// process. The Run profile denies writes to the host's `~/.fletch/rpc`, so a
 /// nested instance can't create its agents' mailboxes there. Redirect it under
 /// the system temp dir, which [`build_run_profile`] already grants (macOS
-/// `$TMPDIR` resolves under `/private/var/folders`). Keyed by the worktree path
-/// so two nested instances never collide on a shared agent id, and kept off the
-/// host's real mailbox root so nested traffic can't touch host channels.
+/// `$TMPDIR` resolves under `/private/var/folders`). Keyed by a hash of the
+/// worktree path so two nested instances never collide on a shared agent id,
+/// and kept off the host's real mailbox root so nested traffic can't touch host
+/// channels.
 pub fn nested_rpc_root(writable_root: &Path) -> PathBuf {
-    let key: String = writable_root
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
+    // Hash the full path, not a char-sanitized form: sanitizing collides
+    // (`my-app` vs `my.app` both → `my-app`). A readable last-component prefix
+    // keeps the dir eyeball-able when debugging.
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    writable_root.to_string_lossy().hash(&mut hasher);
+    let name: String = writable_root
+        .file_name()
+        .map(|n| {
+            n.to_string_lossy()
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect()
+        })
+        .unwrap_or_default();
+    let key = format!("{name}-{:016x}", hasher.finish());
     std::env::temp_dir().join("fletch-rpc").join(key)
 }
 
@@ -444,5 +456,11 @@ mod tests {
         assert_ne!(a, b);
         let key = a.file_name().unwrap().to_string_lossy();
         assert!(!key.contains('/') && !key.contains('.'));
+
+        // Paths differing only in non-alphanumeric chars must not collide — a
+        // char-sanitized key would map both to the same root.
+        let c = nested_rpc_root(Path::new("/Users/alice/projects/my-app"));
+        let d = nested_rpc_root(Path::new("/Users/alice/projects/my.app"));
+        assert_ne!(c, d);
     }
 }
