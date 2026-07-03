@@ -221,37 +221,44 @@ impl PtySession {
     }
 }
 
-/// Reap a process group with escalating signals, stopping as soon as the
-/// group empties. Each grace window is a worst case: a well-behaved child
-/// dies on the first HUP and the poll returns in a tick.
+/// Reap a process group with escalating signals, polling after each so we
+/// stop the instant the group empties. A well-behaved child dies on the first
+/// HUP and the poll returns in a tick; each grace window is a worst case.
+/// SIGKILL is polled too, so the quit path doesn't return before the kernel
+/// has torn the group down and released its ports.
 #[cfg(unix)]
 fn kill_process_group(pgid: nix::unistd::Pid) -> Result<()> {
     use nix::sys::signal::Signal::{SIGHUP, SIGKILL, SIGTERM};
 
-    if signal_group(pgid, SIGHUP) && !group_gone_within(pgid, Duration::from_millis(200)) {
-        signal_group(pgid, SIGTERM);
-        if !group_gone_within(pgid, Duration::from_millis(300)) {
-            signal_group(pgid, SIGKILL);
+    for (sig, grace) in [
+        (SIGHUP, Duration::from_millis(200)),
+        (SIGTERM, Duration::from_millis(300)),
+        (SIGKILL, Duration::from_millis(200)),
+    ] {
+        match nix::sys::signal::killpg(pgid, sig) {
+            Ok(()) => {}
+            // ESRCH: group already gone. EPERM/other: we can't signal it and
+            // escalating won't change that — either way, stop.
+            Err(_) => break,
+        }
+        if group_gone_within(pgid, grace) {
+            break;
         }
     }
     Ok(())
 }
 
-/// Send `sig` to every process in the group. Returns false if the group no
-/// longer exists (ESRCH), so callers can stop escalating.
-#[cfg(unix)]
-fn signal_group(pgid: nix::unistd::Pid, sig: nix::sys::signal::Signal) -> bool {
-    nix::sys::signal::killpg(pgid, sig).is_ok()
-}
-
 /// Poll (signal-0 probe) until the group has no members or `budget` elapses.
-/// Returns true once the group is gone.
+/// Only `ESRCH` proves the group is gone; `EPERM` means it may still exist but
+/// we can't signal it, so we must not report it reaped.
 #[cfg(unix)]
 fn group_gone_within(pgid: nix::unistd::Pid, budget: Duration) -> bool {
     let deadline = Instant::now() + budget;
     loop {
-        if nix::sys::signal::killpg(pgid, None).is_err() {
-            return true; // ESRCH: nothing left in the group
+        match nix::sys::signal::killpg(pgid, None) {
+            Err(nix::errno::Errno::ESRCH) => return true, // nothing left in the group
+            Err(_) => return false,                       // EPERM/other: can't confirm gone
+            Ok(_) => {}
         }
         if Instant::now() >= deadline {
             return false;
