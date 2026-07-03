@@ -1,5 +1,5 @@
 import { useAppStore } from "@/store";
-import { basename, hueFromString } from "@/util/format";
+import { basename } from "@/util/format";
 import { Capsule } from "./Capsule";
 import { StatusDot } from "./StatusDot";
 
@@ -23,11 +23,7 @@ export function WorkspaceStatus() {
   if (agent) {
     const repoPath = agent.repos[0]?.repo_path;
     return (
-      <Capsule
-        agent={agent}
-        projectName={repoPath ? basename(repoPath) : agent.name}
-        projectHue={repoPath ? hueFromString(repoPath) : undefined}
-      />
+      <Capsule agent={agent} projectName={repoPath ? basename(repoPath) : agent.name} />
     );
   }
 
