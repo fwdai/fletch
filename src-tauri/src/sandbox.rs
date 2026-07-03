@@ -204,12 +204,7 @@ pub fn build_profile(
   (subpath {gemini_state})
   (subpath {pi_state}))
 
-;; PTYs and basic device files are required for terminal programs.
-(allow file-write* (literal "/dev/null") (literal "/dev/zero"))
-(allow file-write*
-  (regex #"^/dev/tty[^/]*$")
-  (regex #"^/dev/ptmx$")
-  (regex #"^/dev/pts/[0-9]+$"))
+{DEVICE_WRITE_RULES}
 "#
     ))
 }
