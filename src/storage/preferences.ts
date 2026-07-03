@@ -28,7 +28,6 @@ export interface FeatureFlags {
   run: boolean;
   terminal: boolean;
   thinkingBudget: boolean;
-  autoEdit: boolean;
   /** Show the context-window usage meter in the composer foot. */
   tokenUsage: boolean;
   /** Experimental: expose the Custom/Native view switcher so agents can be
@@ -43,7 +42,6 @@ export const DEFAULT_FEATURES: FeatureFlags = {
   run: false,
   terminal: false,
   thinkingBudget: true,
-  autoEdit: false,
   tokenUsage: true,
   nativeView: false,
 };
@@ -57,6 +55,8 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
       diff?: boolean;
       // removed in this version; its presence marks a pre-migration blob
       statusBar?: boolean;
+      // removed feature; drop any stored value on read
+      autoEdit?: boolean;
     };
     // The old "Files" and "Diff" tabs were merged into the Code panel; honor a
     // saved preference for either when migrating an existing settings blob.
@@ -70,10 +70,17 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
     // Drop its stored `tokenUsage` so the new default (meter on, matching the
     // old always-visible behavior) applies; honor the value for newer blobs.
     const preMigration = saved.statusBar !== undefined;
-    const { files: _files, diff: _diff, statusBar: _statusBar, ...rest } = saved;
+    const {
+      files: _files,
+      diff: _diff,
+      statusBar: _statusBar,
+      autoEdit: _autoEdit,
+      ...rest
+    } = saved;
     void _files;
     void _diff;
     void _statusBar;
+    void _autoEdit;
     if (preMigration) delete rest.tokenUsage;
     return {
       ...DEFAULT_FEATURES,

@@ -371,12 +371,6 @@ export function Composer({
               <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
             </Chip>
           ))}
-        {features.autoEdit && (
-          <Chip tip="Auto-approve writes">
-            <Icon name="check" size={11} />
-            <span>Auto-edit</span>
-          </Chip>
-        )}
         <Chip tip="Attach" onClick={browse}>
           <Icon name="attach" size={11} />
         </Chip>

@@ -29,7 +29,6 @@ const FEATURE_GROUPS: { label: string; items: FeatureItem[] }[] = [
     label: "Composer",
     items: [
       { key: "thinkingBudget", title: "Thinking budget", sub: "Low / medium / high cap" },
-      { key: "autoEdit", title: "Auto-edit", sub: "Skip approval for write tools" },
       { key: "tokenUsage", title: "Token usage", sub: "Context window % meter in the composer" },
     ],
   },

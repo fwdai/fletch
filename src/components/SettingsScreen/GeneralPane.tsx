@@ -23,11 +23,6 @@ const COMPOSER: FeatureItem[] = [
     sub: "Show a low / medium / high reasoning cap in the composer.",
   },
   {
-    key: "autoEdit",
-    title: "Auto-edit",
-    sub: "Let agents apply write tools without per-tool approval.",
-  },
-  {
     key: "tokenUsage",
     title: "Token usage",
     sub: "Show the context-window % meter in the composer.",
