@@ -11,7 +11,7 @@ import { ChatNav } from "./ChatNav";
 import { ChatSearch } from "./ChatSearch";
 import { ChatWorkingStatus } from "./ChatWorkingStatus";
 import { MessageItem } from "./messages/MessageItem";
-import { pairToolItems, rowKey } from "./messages/pair";
+import { type PairCache, pairToolItems, rowKey } from "./messages/pair";
 import { isTurnPending } from "./messages/turnPending";
 import { isUserInputTool } from "./messages/UserInput/parse";
 import { TurnFooter } from "./RunTimer";
@@ -133,10 +133,15 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     el.scrollTop = el.scrollHeight;
   }, [log, transcriptLoading]);
 
+  // Persist tool_pair wrapper identity across renders so memoized rows survive
+  // streaming deltas (see PairCache). Self-evicts stale ids each pass, so it
+  // needs no reset when switching agents (tool-use ids never collide).
+  const pairCache = useRef<PairCache>(new Map());
+
   const items = useMemo(() => {
     const adapter = getAdapter(agent.provider);
     const visible = applyPolicy(log ?? [], adapter.policy);
-    return pairToolItems(visible);
+    return pairToolItems(visible, pairCache.current);
   }, [log, agent.provider]);
 
   // Navigable turns = the real user prompts (git-action chips excluded). Each

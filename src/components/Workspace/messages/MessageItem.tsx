@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { applyPolicy, getAdapter } from "@/adapters";
 import { AttachmentList } from "@/components/Composer/AttachmentList";
 import { Markdown } from "@/components/Markdown";
@@ -18,7 +18,11 @@ import { isUserInputTool } from "./UserInput/parse";
  *  agent's adapter id down so nested subagent threads filter/pair their
  *  rows with the same display policy as the main log. `agentId` lets the
  *  user-input widget route its answer back to this agent's stdin. */
-export function MessageItem({
+/** Memoized: ChatView re-renders on every streaming delta, but the reducer
+ *  preserves item identity for settled rows and ChatView caches tool_pair
+ *  wrappers, so shallow-prop memo skips re-rendering (and re-parsing markdown
+ *  for) everything except the row that actually changed this tick. */
+export const MessageItem = memo(function MessageItem({
   item,
   provider,
   agentId,
@@ -114,7 +118,7 @@ export function MessageItem({
     case "notice":
       return <NoticeView item={item} />;
   }
-}
+});
 
 /** The user-prompt bubble, shared by the canonical `user_message` and the
  *  optimistic `queued_message` (a mid-turn follow-up not yet in the transcript)
