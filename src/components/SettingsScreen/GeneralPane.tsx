@@ -45,6 +45,8 @@ export function GeneralPane() {
   const setFeature = useAppStore((s) => s.setFeature);
   const soundEnabled = useAppStore((s) => s.soundEnabled);
   const setSoundEnabled = useAppStore((s) => s.setSoundEnabled);
+  const notifyEnabled = useAppStore((s) => s.notifyEnabled);
+  const setNotifyEnabled = useAppStore((s) => s.setNotifyEnabled);
   const telemetryEnabled = useAppStore((s) => s.telemetryEnabled);
   const setTelemetryEnabled = useAppStore((s) => s.setTelemetryEnabled);
   const revealLogs = useAppStore((s) => s.revealLogs);
@@ -121,9 +123,15 @@ export function GeneralPane() {
       <SetGroup label="Notifications">
         <SetRow
           title="Sound"
-          sub="Play a chime when an agent finishes a turn or needs your input while you're looking elsewhere. Native notifications fire either way."
+          sub="Play a chime when an agent finishes a turn or needs your input while you're looking elsewhere."
         >
           <SetToggle on={soundEnabled} onClick={() => setSoundEnabled(!soundEnabled)} />
+        </SetRow>
+        <SetRow
+          title="Native notifications"
+          sub="Show a desktop notification when an agent finishes a turn or needs your input while you're looking elsewhere."
+        >
+          <SetToggle on={notifyEnabled} onClick={() => setNotifyEnabled(!notifyEnabled)} />
         </SetRow>
       </SetGroup>
 

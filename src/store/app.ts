@@ -62,12 +62,12 @@ const watchingChat = (get: AppGet, agentId: string) =>
 const agentName = (get: AppGet, agentId: string) =>
   get().workspace?.agents.find((a) => a.id === agentId)?.name ?? "Agent";
 
-// Signal an out-of-app event for an agent the user isn't watching: a native
-// notification always, plus the chime unless it's been muted in settings.
+// Signal an out-of-app event for an agent the user isn't watching: a chime and
+// a native notification, each unless muted in settings.
 const signalAway = (get: AppGet, agentId: string, title: string) => {
   if (watchingChat(get, agentId)) return;
   if (get().soundEnabled) playAgentDone();
-  notify(title, agentName(get, agentId));
+  if (get().notifyEnabled) notify(title, agentName(get, agentId));
 };
 
 type AgentPatch = Partial<AgentRecord> | ((a: AgentRecord) => Partial<AgentRecord>);
@@ -106,6 +106,8 @@ const hydrateSettings = async (set: AppSet) => {
       features: parseFeatures(s.features),
       // Opt-out chime: only an explicit "false" mutes it.
       soundEnabled: s.soundEnabled !== "false",
+      // Opt-out native notifications: only an explicit "false" disables them.
+      notifyEnabled: s.notifyEnabled !== "false",
       providerFlags: parseProviderFlags(s.providers),
       providerPathOverrides: parseProviderPathOverrides(s),
       newDraftProvider,
