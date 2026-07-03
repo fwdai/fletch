@@ -462,6 +462,7 @@ export const api = {
   getAllShortstats: () => invoke<Record<string, ShortStats>>("get_all_shortstats"),
   getPrState: (agentId: string) => invoke<PrState | null>("get_pr_state", { agentId }),
   refreshAllPrStates: () => invoke<Record<string, PrState | null>>("refresh_all_pr_states"),
+  refreshAllPrChecks: () => invoke<Record<string, PrChecks | null>>("refresh_all_pr_checks"),
   getPrChecks: (agentId: string) => invoke<PrChecks | null>("get_pr_checks", { agentId }),
   getPrComments: (agentId: string) => invoke<PrComments | null>("get_pr_comments", { agentId }),
   pushAgent: (agentId: string) => invoke<string>("push_agent", { agentId }),

@@ -20,6 +20,7 @@ export function App() {
   const init = useAppStore((s) => s.init);
   const fetchAllShortstats = useAppStore((s) => s.fetchAllShortstats);
   const refreshAllPrStates = useAppStore((s) => s.refreshAllPrStates);
+  const refreshAllPrChecks = useAppStore((s) => s.refreshAllPrChecks);
 
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
@@ -69,6 +70,12 @@ export function App() {
   // the local shortstats poll, and the backend only touches agents that
   // actually have a PR.
   usePoll(refreshAllPrStates, 45000, [refreshAllPrStates]);
+
+  // App-wide poll for CI checks so each sidebar PR pill can be tinted pass/fail
+  // at a glance. One `gh` call per open PR, so this rides an even gentler
+  // cadence than PR state — checks flip over minutes, not seconds, and the
+  // focused Git panel keeps its own faster per-agent checks poll.
+  usePoll(refreshAllPrChecks, 60000, [refreshAllPrChecks]);
 
   // Apply theme + density via html classes; accent via CSS vars.
   useEffect(() => {

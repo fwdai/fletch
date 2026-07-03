@@ -786,6 +786,46 @@ pub async fn refresh_all_pr_states(
     Ok(out)
 }
 
+/// Refresh CI checks for every agent with an open PR in one round-trip, so the
+/// sidebar can tint each PR pill pass/fail without opening the Git panel. Mirror
+/// of `refresh_all_pr_states`: skips archived agents and any without a PR so we
+/// never fan a `gh` call out needlessly, and runs the per-agent `pr_checks`
+/// queries in parallel via a `JoinSet`. Best-effort per agent: only *definitive*
+/// results land in the map — `Ok(Some)` (checks) and `Ok(None)` (no PR / none
+/// configured). A transient `gh` failure (network, rate-limit, missing binary)
+/// is omitted entirely, so the frontend's merge keeps that agent's last-known
+/// tint instead of wiping it — matching `fetchPrAux`'s per-agent contract.
+#[tauri::command]
+pub async fn refresh_all_pr_checks(
+    supervisor: State<'_, Arc<Supervisor>>,
+) -> Result<std::collections::HashMap<String, Option<gh::PrChecks>>> {
+    let Some(workspace) = supervisor.workspace.current() else {
+        return Ok(Default::default());
+    };
+    let mut set = tokio::task::JoinSet::new();
+    for agent in workspace.agents {
+        if agent.archive.is_some() {
+            continue;
+        }
+        let Some(repo) = agent.repos.first() else { continue };
+        if repo.branch.is_none() || repo.pr_number.is_none() {
+            continue;
+        }
+        let Ok(worktree) = repo_worktree_path(&agent.id, &repo.subdir) else { continue };
+        let agent_id = agent.id.clone();
+        set.spawn(async move { (agent_id, gh::pr_checks(&worktree).await) });
+    }
+    let mut out = std::collections::HashMap::new();
+    while let Some(res) = set.join_next().await {
+        // Record only definitive outcomes; drop errored agents so their prior
+        // value survives the frontend merge.
+        if let Ok((id, Ok(checks))) = res {
+            out.insert(id, checks);
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // File panel — browse the worktree, view & edit file contents.
 // ---------------------------------------------------------------------------

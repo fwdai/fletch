@@ -18,12 +18,22 @@
 .ag-badge.pr-open,
 .ag-badge.pr-merged,
 .ag-badge.pr-closed,
+.ag-badge.pr-pass,
+.ag-badge.pr-fail,
 .ag-badge.err {
   background: color-mix(in oklch, var(--badge-color), transparent 86%);
   color: var(--badge-color);
 }
 .ag-badge.pr-open {
   --badge-color: var(--info);
+}
+/* open-PR CI tint: green when checks pass, red when they fail. Pending / no
+ * checks keep the neutral pr-open blue. */
+.ag-badge.pr-pass {
+  --badge-color: var(--success);
+}
+.ag-badge.pr-fail {
+  --badge-color: var(--danger);
 }
 .ag-badge.pr-merged {
   --badge-color: var(--purple);

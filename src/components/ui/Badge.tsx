@@ -1,6 +1,14 @@
 import type { ReactNode } from "react";
 
-export type BadgeVariant = "neutral" | "new" | "err" | "pr-open" | "pr-merged" | "pr-closed";
+export type BadgeVariant =
+  | "neutral"
+  | "new"
+  | "err"
+  | "pr-open"
+  | "pr-merged"
+  | "pr-closed"
+  | "pr-pass"
+  | "pr-fail";
 
 interface Props {
   children: ReactNode;
