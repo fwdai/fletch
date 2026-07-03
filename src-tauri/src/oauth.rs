@@ -1,6 +1,10 @@
-//! Identity-only OAuth via the Device Authorization Grant (RFC 8628).
-//! GitHub and Google are both supported. We never persist the access token —
-//! it is used once to read the profile, then dropped.
+//! OAuth via the Device Authorization Grant (RFC 8628). GitHub and Google
+//! are both supported.
+//!
+//! Google is identity-only: its token reads the profile once, then drops.
+//! GitHub requests the `repo` scope and its token is persisted (settings
+//! table + the in-process registry) — it powers the GitHub API client and
+//! git's https auth, replacing the `gh` CLI dependency.
 
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -57,7 +61,9 @@ fn provider_cfg(provider: &str) -> Result<ProviderCfg, String> {
         "github" => Ok(ProviderCfg {
             device_code_url: "https://github.com/login/device/code",
             token_url: "https://github.com/login/oauth/access_token",
-            scope: "read:user user:email",
+            // `repo` powers PR/clone/push via the API + git https auth; the
+            // read scopes cover the profile (name, primary email).
+            scope: "repo read:user user:email",
             client_id: config_value!("QUORUM_GITHUB_CLIENT_ID")
                 .ok_or_else(|| "GitHub sign-in is not configured".to_string())?,
             client_secret: None,
@@ -213,11 +219,13 @@ pub fn classify_token_response(v: &serde_json::Value) -> PollOutcome {
     }
 }
 
-/// Drive the full device flow and return a normalized profile. The access
-/// token never leaves this function — it is read once and dropped.
+/// Drive the full device flow and return a normalized profile. A GitHub
+/// token is persisted for the API client (see module docs); Google's is read
+/// once and dropped.
 #[tauri::command]
 pub async fn oauth_device_login(
     app: AppHandle,
+    db: tauri::State<'_, std::sync::Arc<parking_lot::Mutex<rusqlite::Connection>>>,
     provider: String,
 ) -> Result<OAuthProfile, String> {
     let cfg = provider_cfg(&provider)?;
@@ -302,7 +310,19 @@ pub async fn oauth_device_login(
         }
     };
 
-    // 4. Read the profile, then let the token drop out of scope.
+    // Persist the GitHub token — it authenticates the API client and git's
+    // https transport from now on. A failed write isn't fatal to sign-in
+    // (the in-process registry still has it until quit), but say so loudly.
+    if provider == "github" {
+        if let Err(e) =
+            crate::database::set_setting(&db.lock(), crate::github::TOKEN_SETTING, &access_token)
+        {
+            tracing::warn!(error = %e, "failed to persist GitHub token");
+        }
+        crate::github::set_token(Some(access_token.clone()));
+    }
+
+    // 4. Read the profile (Google's token drops out of scope after this).
     let profile = match provider.as_str() {
         "github" => {
             let user: serde_json::Value = http

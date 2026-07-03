@@ -1524,12 +1524,19 @@ pub struct ToolStatus {
     pub installed: bool,
     pub version: Option<String>,
     pub path: Option<String>,
+    /// `"system"` or `"portable"` for git (see `git_dist`); `None` for plain
+    /// PATH-resolved tools.
+    pub source: Option<String>,
 }
 
-/// Resolve a plain CLI on PATH (e.g. `git`) and probe its `--version`. Used by
-/// the first-run readiness check for required tools that aren't agent
-/// providers. Binary presence only — no auth/config check.
+/// Resolve a plain CLI on PATH and probe its `--version`. Used by the
+/// first-run readiness check for required tools that aren't agent providers.
+/// `git` goes through `git_dist` instead: presence isn't enough there (the
+/// macOS CLT shim exists but doesn't run) and a portable install counts.
 pub fn check_cli(name: &str) -> ToolStatus {
+    if name == "git" {
+        return crate::git_dist::tool_status();
+    }
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     let path = crate::bin_resolve::resolve_bin(name, &home);
     let version = path.as_deref().and_then(probe_version);
@@ -1537,6 +1544,7 @@ pub fn check_cli(name: &str) -> ToolStatus {
         installed: path.is_some(),
         version,
         path,
+        source: None,
     }
 }
 
@@ -1593,7 +1601,7 @@ fn probe_version(bin: &str) -> Option<String> {
 /// Extract the first `N.N[.N[.N]]` token from arbitrary version output.
 /// Strips a leading `v` from each word before testing so `v1.0.42` and
 /// `1.0.42` both match. Returns the token with a `v` prefix.
-fn parse_semver(s: &str) -> Option<String> {
+pub(crate) fn parse_semver(s: &str) -> Option<String> {
     for word in s.split_whitespace() {
         let word = word.trim_start_matches('v');
         // Accept anything that is purely digit-and-dot with at least one dot.

@@ -2,13 +2,13 @@
 //! locally and on GitHub. Both terminate by handing a local path to
 //! `WorkspaceManager::add_workspace_repo` (done by the command layer).
 //!
-//! All GitHub work goes through the `gh` CLI (see `gh.rs`) — the same trusted
-//! path the PR flow already uses.
+//! All GitHub work goes through the API client (see `github/`) — the same
+//! trusted path the PR flow already uses.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::{gh, git};
+use crate::{git, github as gh};
 
 /// Derive the repository name from a clone spec. Accepts:
 ///   - `owner/repo`

@@ -46,28 +46,19 @@ export function DestRow({
   );
 }
 
-/** Shown when `gh` is missing or logged out — both flows need it. */
-export function GhGate({ gh }: { gh: GhStatus }) {
+/** Shown when the app has no GitHub connection — both flows need one.
+ *  (`gh.installed` is always true now that GitHub goes through the API; the
+ *  only gate left is authentication.) */
+export function GhGate(_props: { gh: GhStatus }) {
   return (
     <div className="np-body">
       <div className="np-gate flex-center">
         <Icon name="github" size={22} />
-        {!gh.installed ? (
-          <>
-            <div className="np-gate-t text-base">GitHub CLI not found</div>
-            <div className="np-gate-s text-sm">
-              Install the <code>gh</code> CLI to clone and create GitHub repositories, then reopen
-              this dialog.
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="np-gate-t text-base">Not signed in to GitHub</div>
-            <div className="np-gate-s text-sm">
-              Run <code>gh auth login</code> in your terminal, then reopen this dialog.
-            </div>
-          </>
-        )}
+        <div className="np-gate-t text-base">Not connected to GitHub</div>
+        <div className="np-gate-s text-sm">
+          Sign in with GitHub from Settings → Account (or the onboarding tour), then reopen this
+          dialog.
+        </div>
       </div>
     </div>
   );

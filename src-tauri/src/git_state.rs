@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use tokio::process::Command;
 
 use crate::error::Result;
 
@@ -162,8 +161,7 @@ pub async fn shortstats(worktree_path: &Path) -> ShortStats {
 
 /// HEAD commit SHA, or `None` when it can't be read.
 async fn query_head_sha(worktree_path: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .current_dir(worktree_path)
+    let out = crate::git_dist::command(worktree_path)
         .args(["rev-parse", "HEAD"])
         .output()
         .await
@@ -178,8 +176,7 @@ async fn query_head_sha(worktree_path: &Path) -> Option<String> {
 /// The `origin` remote, normalized to a GitHub web base. `None` when there is no
 /// origin or it isn't a github.com remote.
 async fn query_remote_web_url(worktree_path: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .current_dir(worktree_path)
+    let out = crate::git_dist::command(worktree_path)
         .args(["remote", "get-url", "origin"])
         .output()
         .await
@@ -195,7 +192,7 @@ async fn query_remote_web_url(worktree_path: &Path) -> Option<String> {
 /// `git@github.com:` forms, with optional `.git` suffix / trailing slash.
 /// Returns `None` for non-github.com remotes or anything not of the shape
 /// `owner/repo`, so callers only ever build valid GitHub links.
-fn github_web_url(remote: &str) -> Option<String> {
+pub(crate) fn github_web_url(remote: &str) -> Option<String> {
     let r = remote.trim();
     let owner_repo = r
         .strip_prefix("git@github.com:")
@@ -224,8 +221,7 @@ fn github_web_url(remote: &str) -> Option<String> {
 /// there is no upstream configured (branch never pushed), so the caller can
 /// fall back appropriately.
 async fn query_unpushed(worktree_path: &Path) -> Option<u32> {
-    let out = Command::new("git")
-        .current_dir(worktree_path)
+    let out = crate::git_dist::command(worktree_path)
         .args(["rev-list", "--count", "@{upstream}..HEAD"])
         .output()
         .await
@@ -238,8 +234,7 @@ async fn query_unpushed(worktree_path: &Path) -> Option<u32> {
 }
 
 async fn query_ahead_behind(worktree_path: &Path, parent_branch: &str) -> (u32, u32) {
-    let out = Command::new("git")
-        .current_dir(worktree_path)
+    let out = crate::git_dist::command(worktree_path)
         .args(["rev-list", "--left-right", "--count", &format!("HEAD...{parent_branch}")])
         .output()
         .await;
@@ -253,8 +248,7 @@ async fn query_ahead_behind(worktree_path: &Path, parent_branch: &str) -> (u32, 
 }
 
 async fn run_status(worktree_path: &Path) -> Result<String> {
-    let out = Command::new("git")
-        .current_dir(worktree_path)
+    let out = crate::git_dist::command(worktree_path)
         .args(["status", "--porcelain=v1"])
         .output()
         .await?;
@@ -266,8 +260,7 @@ async fn run_status(worktree_path: &Path) -> Result<String> {
 }
 
 async fn run_numstat(worktree_path: &Path) -> Result<String> {
-    let out = Command::new("git")
-        .current_dir(worktree_path)
+    let out = crate::git_dist::command(worktree_path)
         .args(["diff", "--numstat", "HEAD"])
         .output()
         .await?;

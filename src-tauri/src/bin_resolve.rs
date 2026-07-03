@@ -101,6 +101,38 @@ pub fn resolve_bin(name: &str, home: &Path) -> Option<String> {
         .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
+/// Every executable candidate for `name` across the same sources `resolve_bin`
+/// searches, deduped, in discovery order. For callers that must validate a
+/// candidate beyond executability (git's `/usr/bin` CLT shim on macOS looks
+/// installed but doesn't run) and fall through to the next one — a single
+/// first-match answer would hide a working install further down the PATH.
+pub fn resolve_bin_candidates(name: &str, home: &Path) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut push = |candidate: PathBuf| {
+        if is_executable(&candidate) {
+            let s = candidate.to_string_lossy().into_owned();
+            if seen.insert(s.clone()) {
+                out.push(s);
+            }
+        }
+    };
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            push(dir.join(name));
+        }
+    }
+    if let Some(path) = login_shell_path() {
+        for dir in std::env::split_paths(&path) {
+            push(dir.join(name));
+        }
+    }
+    for candidate in common_bin_paths(name, home) {
+        push(candidate);
+    }
+    out
+}
+
 /// Exported environment as seen by the user's login shell, cached once per app
 /// process. Finder/Dock-launched GUI apps inherit launchd's sparse environment;
 /// agent CLIs usually expect the richer shell environment where version

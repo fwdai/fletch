@@ -8,7 +8,7 @@ use tauri::{AppHandle, State};
 
 use crate::agent::{BinValidation, ProviderProbe, ToolStatus};
 use crate::error::{Error, Result};
-use crate::gh::{self, GhRepoSummary, GhStatus, PrState};
+use crate::github::{self as gh, GhRepoSummary, GhStatus, PrState};
 use crate::git;
 use crate::new_project;
 use crate::git_state::{self, FileStatus, GitState, ShortStats, StatusKind};
@@ -138,8 +138,8 @@ pub fn remove_workspace_repo(
     supervisor.remove_workspace_repo(PathBuf::from(repo_path))
 }
 
-/// Whether the `gh` CLI is installed and authenticated — drives the New
-/// Project flow's gating (clone and create both require `gh`).
+/// Whether the app has a working GitHub connection — drives the New Project
+/// flow's gating (clone and create both need the API).
 #[tauri::command]
 pub async fn gh_status() -> Result<GhStatus> {
     gh::auth_status().await
@@ -1256,8 +1256,9 @@ pub async fn probe_provider_versions() -> Vec<ProviderProbe> {
     crate::agent::probe_all_providers().await
 }
 
-/// Resolve a plain required CLI (e.g. `git`) and probe its `--version`. Drives
-/// the first-run readiness check. Binary presence only — no auth check.
+/// Resolve a required CLI and probe its `--version`. Drives the first-run
+/// readiness check. For `git` this reflects unified resolution (system or the
+/// portable dist — see `git_dist`); other tools are presence-only.
 #[tauri::command]
 pub async fn check_cli(name: String) -> ToolStatus {
     tokio::task::spawn_blocking(move || crate::agent::check_cli(&name))
@@ -1266,6 +1267,7 @@ pub async fn check_cli(name: String) -> ToolStatus {
             installed: false,
             version: None,
             path: None,
+            source: None,
         })
 }
 

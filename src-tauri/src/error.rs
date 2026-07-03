@@ -6,7 +6,7 @@ pub enum Error {
     #[error("git command failed: {0}")]
     Git(String),
 
-    #[error("gh command failed: {0}")]
+    #[error("github: {0}")]
     Gh(String),
 
     #[error("agent not found: {0}")]

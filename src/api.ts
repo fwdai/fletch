@@ -318,6 +318,9 @@ export interface ToolStatus {
   installed: boolean;
   version: string | null;
   path: string | null;
+  /** Which git resolution chose: the user's own install or the portable dist
+   *  the app downloaded. Null for plain PATH-resolved tools. */
+  source: "system" | "portable" | null;
 }
 
 /** Result of pre-flighting a custom agent binary path before saving it as an

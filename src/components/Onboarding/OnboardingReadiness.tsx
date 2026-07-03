@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/Button";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { useGitDist } from "@/util/useGitDist";
 
 type S = "ok" | "warn" | "bad" | "checking";
 
@@ -41,18 +42,24 @@ export function OnboardingReadiness() {
     recheck();
   }, [recheck]);
 
+  // While the app is downloading its portable git (no usable system git),
+  // show that instead of a false "not found"; re-check once it settles.
+  const gitDist = useGitDist(recheck);
+  const gitDownloading = !git?.installed && gitDist.phase === "downloading";
+
   const agents = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
   const detected = agents.filter((p) => !!providerPaths[p.id]).length;
 
-  const gitState: S = git ? (git.installed ? "ok" : "bad") : checking ? "checking" : "warn";
-  const ghState: S = gh
-    ? gh.installed && gh.authenticated
-      ? "ok"
-      : "warn"
-    : checking
-      ? "checking"
-      : "warn";
-  const ghFix = gh?.installed && !gh.authenticated ? "gh auth login" : undefined;
+  const gitState: S = gitDownloading
+    ? "checking"
+    : git
+      ? git.installed
+        ? "ok"
+        : "bad"
+      : checking
+        ? "checking"
+        : "warn";
+  const ghState: S = gh ? (gh.authenticated ? "ok" : "warn") : checking ? "checking" : "warn";
 
   return (
     <div className="ob-rdy">
@@ -63,34 +70,32 @@ export function OnboardingReadiness() {
           name="Git"
           state={gitState}
           status={
-            git
-              ? git.installed
-                ? (git.version ?? "installed")
-                : "not found"
-              : checking
-                ? "checking…"
-                : "couldn't check"
+            gitDownloading
+              ? "downloading…"
+              : git
+                ? git.installed
+                  ? `${git.version ?? "installed"}${git.source === "portable" ? " · bundled" : ""}`
+                  : "not found"
+                : checking
+                  ? "checking…"
+                  : "couldn't check"
           }
           fix={gitState === "bad" ? "xcode-select --install" : undefined}
           docs="https://git-scm.com/downloads"
         />
         <CheckRow
           icon={<Icon name="github" size={13} />}
-          name="GitHub CLI"
+          name="GitHub"
           state={ghState}
           status={
             gh
-              ? !gh.installed
-                ? "not found"
-                : !gh.authenticated
-                  ? "not signed in"
-                  : `signed in${gh.login ? ` · ${gh.login}` : ""}`
+              ? gh.authenticated
+                ? `connected${gh.login ? ` · ${gh.login}` : ""}`
+                : "not connected — sign in with GitHub to enable clone & PRs"
               : checking
                 ? "checking…"
                 : "couldn't check"
           }
-          fix={ghFix}
-          docs={!gh?.installed ? "https://cli.github.com" : undefined}
         />
       </div>
 

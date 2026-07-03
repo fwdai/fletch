@@ -61,8 +61,21 @@ const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// 0/1) use this and check `status`, while `run_git` layers the
 /// success-or-`Error::Git` check on top.
 async fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(dir).args(args).kill_on_drop(true);
+    git_output_env(dir, args, &[]).await
+}
+
+/// `git_output` with extra env vars — the commit-creating ops pass the
+/// fallback identity through here (see `identity_env`).
+async fn git_output_env(
+    dir: &Path,
+    args: &[&str],
+    env: &[(String, String)],
+) -> Result<std::process::Output> {
+    let mut cmd = crate::git_dist::command(dir);
+    cmd.args(args).kill_on_drop(true);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     tokio::time::timeout(LOCAL_TIMEOUT, cmd.output())
         .await
         .map_err(|_| {
@@ -89,6 +102,49 @@ async fn run_git(dir: &Path, args: &[&str], label: &str) -> Result<std::process:
         )));
     }
     Ok(out)
+}
+
+/// GitHub token auth for git's https transport, applied to every network op
+/// (push/pull/fetch). No-op without a token; scoped to github.com https, so
+/// SSH remotes and other hosts are untouched (see `github::git_auth_env`).
+fn apply_github_auth(cmd: &mut Command) {
+    for (k, v) in crate::github::git_auth_env() {
+        cmd.env(k, v);
+    }
+}
+
+/// Env vars that guarantee commit-creating commands (commit, merge via pull,
+/// rebase) an author/committer identity. Empty when the repo already resolves
+/// both `user.name` and `user.email` — the env would otherwise *override*
+/// config, and a user's own identity must always win. Only the missing half
+/// is filled, from the signed-in profile (or a neutral default), so a
+/// non-engineer's first commit never dies with "Please tell me who you are".
+pub(crate) async fn identity_env(dir: &Path) -> Vec<(String, String)> {
+    let (mut has_name, mut has_email) = (false, false);
+    // Exits 1 with empty stdout when nothing matches — not an error here.
+    if let Ok(out) = git_output(dir, &["config", "--get-regexp", r"^user\.(name|email)$"]).await {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            match line.split_once(' ') {
+                Some(("user.name", v)) if !v.trim().is_empty() => has_name = true,
+                Some(("user.email", v)) if !v.trim().is_empty() => has_email = true,
+                _ => {}
+            }
+        }
+    }
+    if has_name && has_email {
+        return Vec::new();
+    }
+    let (name, email) = crate::git_dist::fallback_identity();
+    let mut env = Vec::new();
+    if !has_name {
+        env.push(("GIT_AUTHOR_NAME".to_string(), name.clone()));
+        env.push(("GIT_COMMITTER_NAME".to_string(), name));
+    }
+    if !has_email {
+        env.push(("GIT_AUTHOR_EMAIL".to_string(), email.clone()));
+        env.push(("GIT_COMMITTER_EMAIL".to_string(), email));
+    }
+    env
 }
 
 /// Create a worktree on detached HEAD (no branch yet). The worktree
@@ -199,15 +255,12 @@ pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
     // `kill_on_drop` so a timeout actually tears down the hung git process
     // (and its SSH child) rather than orphaning it to keep blocking on the
     // dead connection.
-    let fetched = tokio::time::timeout(
-        FETCH_TIMEOUT,
-        Command::new("git")
-            .current_dir(repo)
-            .args(["fetch", "origin", branch])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
+    let mut fetch_cmd = crate::git_dist::command(repo);
+    fetch_cmd
+        .args(["fetch", "origin", branch])
+        .kill_on_drop(true);
+    apply_github_auth(&mut fetch_cmd);
+    let fetched = tokio::time::timeout(FETCH_TIMEOUT, fetch_cmd.output()).await;
     // Timed out, failed to spawn, or non-zero exit → fall back to local HEAD.
     match fetched {
         Ok(Ok(out)) if out.status.success() => {}
@@ -285,7 +338,9 @@ pub async fn checkout_new_unique_branch(worktree: &Path, desired: &str) -> Resul
 /// `git init` a fresh repository at `path` (created if absent). Used by the
 /// New Project "create" flow before seeding an initial commit.
 pub async fn init_repo(path: &Path) -> Result<()> {
-    let out = Command::new("git")
+    // No `current_dir` — the target may not exist yet (`git init` creates it),
+    // and spawning with a missing cwd fails before git ever runs.
+    let out = crate::git_dist::bare_command()
         .args([
             "init",
             path.to_str().ok_or_else(|| {
@@ -303,13 +358,14 @@ pub async fn init_repo(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Stage everything and create a commit in `repo`. Relies on the user's
-/// global git identity (`user.name` / `user.email`); a missing identity
-/// surfaces as a `git commit` error.
+/// Stage everything and create a commit in `repo`. Uses the user's git
+/// identity when configured; otherwise falls back to the signed-in profile
+/// (see `identity_env`) so a machine with no `.gitconfig` can still commit.
 pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
     run_git(repo, &["add", "-A"], "add -A").await?;
 
-    let out = git_output(repo, &["commit", "-m", message]).await?;
+    let env = identity_env(repo).await;
+    let out = git_output_env(repo, &["commit", "-m", message], &env).await?;
     if !out.status.success() {
         // `git commit` writes the common "nothing to commit, working tree
         // clean" diagnostic to *stdout*, not stderr — so report both, else a
@@ -618,8 +674,9 @@ pub async fn worktree_add_branch(
 /// push), otherwise `"pushed"`. Lets the UI confirm the outcome instead of
 /// silently doing nothing when there was nothing to send.
 pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(worktree).args(["push", "-u", "origin", branch]);
+    let mut cmd = crate::git_dist::command(worktree);
+    cmd.args(["push", "-u", "origin", branch]);
+    apply_github_auth(&mut cmd);
     let out = output_timed(&mut cmd, "git push").await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
@@ -643,8 +700,13 @@ pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
 /// Pull latest from the tracking remote branch.
 /// Requires `push -u` to have been called first to establish an upstream.
 pub async fn pull(worktree: &Path) -> Result<()> {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(worktree).args(["pull"]);
+    let mut cmd = crate::git_dist::command(worktree);
+    cmd.args(["pull"]);
+    apply_github_auth(&mut cmd);
+    // A pull may create a merge commit, which needs an author/committer.
+    for (k, v) in identity_env(worktree).await {
+        cmd.env(k, v);
+    }
     let out = output_timed(&mut cmd, "git pull").await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
@@ -660,7 +722,9 @@ pub async fn pull(worktree: &Path) -> Result<()> {
 /// base has moved ahead. Aborts the rebase on conflict so the worktree is never
 /// left mid-rebase — the caller surfaces the error.
 pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
-    let out = git_output(worktree, &["rebase", base]).await?;
+    // Rebasing rewrites commits, which needs a committer identity.
+    let env = identity_env(worktree).await;
+    let out = git_output_env(worktree, &["rebase", base], &env).await?;
     if !out.status.success() {
         let conflict = String::from_utf8_lossy(&out.stderr).trim().to_string();
         // Don't leave the worktree mid-rebase. If the abort *itself* fails or
@@ -685,7 +749,14 @@ pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
 /// Errors if there is nothing to commit or if git is unhappy.
 pub async fn commit(worktree: &Path, message: &str) -> Result<()> {
     run_git(worktree, &["add", "-A"], "add -A").await?;
-    run_git(worktree, &["commit", "-m", message], "commit").await?;
+    let env = identity_env(worktree).await;
+    let out = git_output_env(worktree, &["commit", "-m", message], &env).await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "commit failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
     Ok(())
 }
 
@@ -709,6 +780,24 @@ pub async fn stash_push(worktree: &Path) -> Result<()> {
 pub async fn merge_abort(worktree: &Path) -> Result<()> {
     run_git(worktree, &["merge", "--abort"], "merge --abort").await?;
     Ok(())
+}
+
+/// Add a remote. Used when publishing a fresh local repo to GitHub.
+pub async fn remote_add(worktree: &Path, name: &str, url: &str) -> Result<()> {
+    run_git(worktree, &["remote", "add", name, url], &format!("remote add {name}")).await?;
+    Ok(())
+}
+
+/// Subject and body of the worktree's last commit — the source for a PR's
+/// title/body when the caller didn't supply one (what `gh pr create --fill`
+/// did).
+pub async fn last_commit_message(worktree: &Path) -> Result<(String, String)> {
+    let out = run_git(worktree, &["log", "-1", "--format=%s%n%b"], "log -1").await?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let subject = lines.next().unwrap_or("").trim().to_string();
+    let body = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+    Ok((subject, body))
 }
 
 /// Force-delete a local branch. Returns Ok even if the branch never

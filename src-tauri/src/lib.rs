@@ -7,9 +7,10 @@ mod database;
 mod editors;
 mod error;
 mod exec_session;
-mod gh;
 mod git;
+mod git_dist;
 mod git_state;
+mod github;
 mod instructions;
 mod managed_session;
 mod message_queue;
@@ -462,6 +463,29 @@ pub fn run() {
             // resolution (deep in spawn/probe paths, with no DB handle) can
             // honor user-set custom paths without touching the DB each time.
             bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&db.lock()));
+
+            // Unified git resolution: point the portable-install root at app
+            // data, wire the fallback commit identity to the signed-in
+            // profile, and kick off resolve-or-download in the background —
+            // at launch, not at the onboarding readiness screen, so a
+            // git-less machine is usually ready before the user gets there.
+            git_dist::init(data_dir.join("git-dist"));
+            // Seed the in-process GitHub token so API calls and git network
+            // auth work without a DB handle (updated on sign-in).
+            github::set_token(database::get_setting(&db.lock(), github::TOKEN_SETTING));
+            {
+                let db = db.clone();
+                git_dist::set_identity_source(Box::new(move || {
+                    database::get_account_identity(&db.lock())
+                }));
+            }
+            {
+                use tauri::Emitter;
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(git_dist::startup(move |payload| {
+                    let _ = handle.emit("git-dist:state", payload);
+                }));
+            }
 
             // Anonymous product telemetry. Mint (or read) the install's random
             // distinct id, read the opt-out consent flag, and detect a version

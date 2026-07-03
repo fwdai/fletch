@@ -6,7 +6,7 @@
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
-use crate::gh::PrState;
+use crate::github::PrState;
 use crate::run_session::RunPhase;
 use crate::workspace::{AgentStatus, AgentView, TrackedRepo};
 
