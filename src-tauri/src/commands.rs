@@ -784,6 +784,44 @@ pub async fn refresh_all_pr_states(
     Ok(out)
 }
 
+/// Refresh CI checks for every agent with an open PR in one round-trip, so the
+/// sidebar can tint each PR pill pass/fail without opening the Git panel. Mirror
+/// of `refresh_all_pr_states`: skips archived agents and any without a PR so we
+/// never fan a `gh` call out needlessly, and runs the per-agent `pr_checks`
+/// queries in parallel via a `JoinSet`. Each entry is best-effort — a failing
+/// `gh` call maps to `None` (checks unavailable) rather than dropping the agent.
+#[tauri::command]
+pub async fn refresh_all_pr_checks(
+    supervisor: State<'_, Arc<Supervisor>>,
+) -> Result<std::collections::HashMap<String, Option<gh::PrChecks>>> {
+    let Some(workspace) = supervisor.workspace.current() else {
+        return Ok(Default::default());
+    };
+    let mut set = tokio::task::JoinSet::new();
+    for agent in workspace.agents {
+        if agent.archive.is_some() {
+            continue;
+        }
+        let Some(repo) = agent.repos.first() else { continue };
+        if repo.branch.is_none() || repo.pr_number.is_none() {
+            continue;
+        }
+        let Ok(worktree) = repo_worktree_path(&agent.id, &repo.subdir) else { continue };
+        let agent_id = agent.id.clone();
+        set.spawn(async move {
+            let checks = gh::pr_checks(&worktree).await.unwrap_or(None);
+            (agent_id, checks)
+        });
+    }
+    let mut out = std::collections::HashMap::new();
+    while let Some(res) = set.join_next().await {
+        if let Ok((id, checks)) = res {
+            out.insert(id, checks);
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // File panel — browse the worktree, view & edit file contents.
 // ---------------------------------------------------------------------------

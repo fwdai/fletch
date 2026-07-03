@@ -1,10 +1,10 @@
 import type { KeyboardEvent, MouseEvent } from "react";
 import { useState } from "react";
-import type { AgentRecord, AgentStatus, PrState, ShortStats } from "@/api";
+import type { AgentRecord, AgentStatus, PrChecks, PrState, ShortStats } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
-import { Badge } from "@/components/ui/Badge";
+import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { lookupModel } from "@/data/modelCatalog";
 import { providerChip, providerLabel } from "@/data/providers";
 import type { DraftAgent } from "@/store";
@@ -52,6 +52,10 @@ export function AgentRow(props: Props) {
 function RealRow({ agent, active, onClick }: RealRowProps) {
   const usage = useAppStore((s) => s.usage[agent.id]);
   const prState = useAppStore((s) => s.prStates[agent.id] ?? null);
+  // CI rollup for this agent's PR, fed by the app-wide refreshAllPrChecks poll
+  // (see App.tsx) — lets the PR pill tint pass/fail across every row, not just
+  // the focused one. Null until the first poll lands or when there's no PR.
+  const prChecks = useAppStore((s) => s.prChecks[agent.id] ?? null);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
   // Dev-server state for this worktree — orthogonal to the agent's turn status,
@@ -224,7 +228,11 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
       </div>
       <div className="agent-sub flex-center">
         <span className="a-task">{taskOrBranch}</span>
-        {prState ? <PrBadge pr={prState} /> : hasChanges ? <DiffStat stats={shortstats} /> : null}
+        {prState ? (
+          <PrBadge pr={prState} checks={prChecks} />
+        ) : hasChanges ? (
+          <DiffStat stats={shortstats} />
+        ) : null}
         <span
           className="a-time"
           onMouseEnter={() => setStatsOpen(true)}
@@ -292,9 +300,10 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
 
 // ── pieces ─────────────────────────────────────────────────────────────────
 
-/** Compact PR pill mirroring the git-panel status. Note: CI/checks state is
- *  not yet in PrState, so an open PR shows a neutral pill (no pass/fail tint). */
-function PrBadge({ pr }: { pr: PrState }) {
+/** Compact PR pill mirroring the git-panel status. An open PR is tinted by its
+ *  CI rollup (green pass / red fail) once `checks` land from the app-wide poll;
+ *  merged / closed / pending / no-checks keep their own neutral tones. */
+function PrBadge({ pr, checks }: { pr: PrState; checks: PrChecks | null }) {
   if (pr.state === "merged") {
     return (
       <Badge variant="pr-merged" tip={`PR #${pr.number} · merged`}>
@@ -302,13 +311,37 @@ function PrBadge({ pr }: { pr: PrState }) {
       </Badge>
     );
   }
-  const variant = pr.state === "closed" ? "pr-closed" : "pr-open";
+  if (pr.state === "closed") {
+    return (
+      <Badge variant="pr-closed" tip={`PR #${pr.number} · closed`}>
+        <Icon name="pr" size={10} />
+        PR
+      </Badge>
+    );
+  }
+  const ci = ciTint(checks);
   return (
-    <Badge variant={variant} tip={`PR #${pr.number} · ${pr.state}`}>
+    <Badge variant={ci.variant} tip={`PR #${pr.number} · open${ci.tip}`}>
       <Icon name="pr" size={10} />
       PR
     </Badge>
   );
+}
+
+/** Map an open PR's CI rollup to a pill variant + tooltip suffix. Pending and
+ *  "no checks configured" stay on the neutral pr-open blue — only a settled
+ *  pass/fail earns a color. */
+function ciTint(checks: PrChecks | null): { variant: BadgeVariant; tip: string } {
+  switch (checks?.rollup) {
+    case "passing":
+      return { variant: "pr-pass", tip: ` · checks passing (${checks.passed}/${checks.total})` };
+    case "failing":
+      return { variant: "pr-fail", tip: ` · checks failing (${checks.failed} failed)` };
+    case "pending":
+      return { variant: "pr-open", tip: ` · checks running (${checks.pending} pending)` };
+    default:
+      return { variant: "pr-open", tip: "" };
+  }
 }
 
 function DiffStat({ stats }: { stats: ShortStats }) {
