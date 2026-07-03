@@ -408,6 +408,15 @@ impl Supervisor {
         self.statuses.lock().get(agent_id).cloned()
     }
 
+    /// Whether the agent is mid-turn (spawning or running), i.e. a new message
+    /// can't start a fresh turn right now.
+    fn is_busy(&self, agent_id: &str) -> bool {
+        matches!(
+            self.live_status(agent_id),
+            Some(AgentStatus::Spawning | AgentStatus::Running)
+        )
+    }
+
     /// The status to report for an agent: the live in-memory value when
     /// present, otherwise the DB-derived at-rest status on the record.
     fn effective_status(&self, agent_id: &str, record: &AgentRecord) -> AgentStatus {
@@ -1150,11 +1159,11 @@ impl Supervisor {
     /// - idle, queue full    → flush the leftovers + this message, coalesced,
     /// - busy, claude live    → inject into the running turn over stdin,
     /// - busy, per-turn / tool-gated → queue for the next turn boundary.
-    /// Returns `true` when the message was *enqueued* (held for a later turn
-    /// boundary) rather than delivered now — the frontend uses this to badge the
-    /// optimistic bubble as "queued" only while it genuinely is. Any variant that
-    /// delivers now (including a `WriteLive` that falls back to a fresh turn)
-    /// returns `false`.
+    /// Returns `true` when the message is *held* for a later turn boundary
+    /// rather than delivered now — a busy enqueue, or a flush whose delivery
+    /// failed and re-queued it (raced with teardown/respawn). The frontend uses
+    /// this to badge the optimistic bubble as "queued" only while it genuinely
+    /// is; any variant that actually delivers returns `false`.
     pub fn send_user_message(
         self: Arc<Self>,
         app: &AppHandle,
@@ -1165,10 +1174,7 @@ impl Supervisor {
         thinking: Option<&str>,
     ) -> Result<bool> {
         let mode = injection_mode(&self.workspace.agent(agent_id)?.provider);
-        let busy = matches!(
-            self.live_status(agent_id),
-            Some(AgentStatus::Spawning | AgentStatus::Running)
-        );
+        let busy = self.is_busy(agent_id);
         let tool_gated = self
             .agents
             .lock()
@@ -1184,11 +1190,18 @@ impl Supervisor {
         };
 
         let delivery = decide_delivery(busy, mode, tool_gated, queue_nonempty);
-        match delivery {
-            Delivery::DeliverNow => deliver_as_turn(&self, app, agent_id, &msg)?,
+        // Whether the message is genuinely held for a later boundary. A path
+        // that delivers now returns `false`; a still-busy `Enqueue` returns
+        // `true`; a flush whose delivery failed and re-queued the follow-ups
+        // also returns `true` (they await the next retry boundary).
+        let queued = match delivery {
+            Delivery::DeliverNow => {
+                deliver_as_turn(&self, app, agent_id, &msg)?;
+                false
+            }
             Delivery::FlushNow => {
                 self.message_queue.lock().enqueue(agent_id, msg);
-                flush_queued(&self, app, agent_id)?;
+                flush_queued(&self, app, agent_id)?
             }
             Delivery::WriteLive => {
                 if let Err(e) = self.inject_live(agent_id, &msg) {
@@ -1200,14 +1213,24 @@ impl Supervisor {
                     // user message (CQ3-A).
                     tracing::warn!(error = %e, agent_id, "live inject failed; delivering as a new turn");
                     self.message_queue.lock().enqueue(agent_id, msg);
-                    flush_queued(&self, app, agent_id)?;
+                    flush_queued(&self, app, agent_id)?
+                } else {
+                    false
                 }
             }
-            Delivery::Enqueue => self.message_queue.lock().enqueue(agent_id, msg),
-        }
-        // Only `Enqueue` holds the message back; every other path delivered it
-        // now (WriteLive's fallback still delivers as a fresh turn).
-        Ok(matches!(delivery, Delivery::Enqueue))
+            Delivery::Enqueue => {
+                self.message_queue.lock().enqueue(agent_id, msg);
+                // Same TOCTOU as WriteLive's fallback (CQ3-B): the turn may
+                // have ended between the busy check above and this enqueue, so
+                // the turn-end Idle drain already ran against an empty queue.
+                // If the agent is no longer busy, flush now rather than let the
+                // message sit until the user types again. `flush_queued` drains
+                // under the queue lock, so if the drain did win the race this is
+                // a harmless no-op — never a double send.
+                self.is_busy(agent_id) || flush_queued(&self, app, agent_id)?
+            }
+        };
+        Ok(queued)
     }
 
     /// Inject a message into the running turn over the managed agent's open
@@ -2575,10 +2598,15 @@ fn deliver_as_turn(
 /// as the next turn. No-op if the queue is empty. Persists a single
 /// `session_user_turns` row (the coalesced message's `turn_id`), so the matcher
 /// stays 1→1 with the one transcript record the turn produces.
-fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &str) -> Result<()> {
+///
+/// Returns `true` only when delivery failed and the follow-ups were re-queued
+/// (still held for a later boundary); `false` when they were delivered as a
+/// turn or the queue was already empty (drained elsewhere). Callers reporting a
+/// "queued" state to the frontend key off this so the badge tracks reality.
+fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &str) -> Result<bool> {
     let count = sup.message_queue.lock().len(agent_id);
     let Some(coalesced) = sup.message_queue.lock().drain_coalesced(agent_id) else {
-        return Ok(());
+        return Ok(false);
     };
     if count > 1 {
         tracing::debug!(agent_id, count, "flushing coalesced follow-up messages as one turn");
@@ -2589,8 +2617,9 @@ fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &str) -> Resul
         // post-respawn flush retries. Re-queue at the front to preserve order.
         tracing::warn!(error = %e, agent_id, "flush delivery failed; re-queueing follow-ups");
         sup.message_queue.lock().requeue_front(agent_id, coalesced);
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// At a turn-end Idle transition, flush any queued follow-up messages as the
