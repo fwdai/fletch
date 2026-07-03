@@ -443,7 +443,11 @@ async fn download_verified(
 /// `libexec/`, …) at the archive root, but a single wrapping top-level dir is
 /// tolerated in case a future release adds one.
 fn extract_dist(tarball: &Path, dest: &Path) -> Result<(), String> {
-    let staging = dest.with_extension("partial");
+    // Appended, not `with_extension` — the version dir name contains dots
+    // (`v2.53.0-3`), which with_extension would truncate at.
+    let mut staging = dest.as_os_str().to_owned();
+    staging.push(".partial");
+    let staging = PathBuf::from(staging);
     let result = (|| {
         if staging.exists() {
             std::fs::remove_dir_all(&staging).map_err(|e| format!("clear staging: {e}"))?;
@@ -559,10 +563,8 @@ mod tests {
         assert!(dest.join("bin/git").is_file());
         assert!(dest.join("libexec/git-core/git-remote-https").is_file());
         assert!(!tarball.exists(), "tarball must be cleaned up");
-        assert!(
-            !dest.with_extension("partial").exists(),
-            "staging dir must be cleaned up",
-        );
+        let staging = PathBuf::from(format!("{}.partial", dest.display()));
+        assert!(!staging.exists(), "staging dir must be cleaned up");
     }
 
     /// A future dist that wraps everything in one top-level dir still installs.
@@ -601,6 +603,54 @@ mod tests {
         assert!(keys.contains(&"GIT_EXEC_PATH"));
         assert!(!keys.contains(&"GIT_TEMPLATE_DIR"));
         assert!(!keys.contains(&"GIT_SSL_CAINFO"));
+    }
+
+    /// End-to-end check against a real dugite-native tarball: the tar/flate2
+    /// extraction path must preserve exec bits and hardlinks well enough that
+    /// the installed git actually runs with the relocation env. Ignored by
+    /// default (needs a local artifact + network to fetch one); run it when
+    /// bumping `DIST_TAG`:
+    ///
+    ///   curl -sLo /tmp/dugite.tar.gz <release asset for this platform>
+    ///   FLETCH_DIST_TARBALL=/tmp/dugite.tar.gz cargo test extract_real_dist -- --ignored
+    #[test]
+    #[ignore]
+    fn extract_real_dist_produces_runnable_git() {
+        let tarball_src = std::env::var("FLETCH_DIST_TARBALL")
+            .expect("set FLETCH_DIST_TARBALL to a downloaded dugite-native tar.gz");
+        let td = tempfile::tempdir().unwrap();
+        // extract_dist consumes (deletes) the tarball — work on a copy.
+        let tarball = td.path().join("dist.tar.gz");
+        std::fs::copy(&tarball_src, &tarball).unwrap();
+        let dest = td.path().join(DIST_TAG);
+
+        extract_dist(&tarball, &dest).unwrap();
+
+        let git = dest.join("bin").join(GIT_BIN_NAME);
+        let mut cmd = StdCommand::new(&git);
+        cmd.arg("--version").env_clear();
+        for (k, v) in portable_env(&dest) {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().expect("installed git must spawn");
+        assert!(
+            out.status.success(),
+            "installed git must run: {}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+        // The relocation env must point exec-path INTO the install — a bad
+        // GIT_EXEC_PATH surfaces as remote helpers (https) not being found.
+        let exec = StdCommand::new(&git)
+            .arg("--exec-path")
+            .env_clear()
+            .envs(portable_env(&dest))
+            .output()
+            .unwrap();
+        let exec_path = String::from_utf8_lossy(&exec.stdout).trim().to_string();
+        assert!(
+            Path::new(&exec_path).join("git-remote-https").is_file(),
+            "exec-path must contain the https remote helper, got: {exec_path}",
+        );
     }
 
     /// Identity falls back field-by-field: a profile with only a name still
