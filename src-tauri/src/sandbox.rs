@@ -151,7 +151,20 @@ pub fn nested_rpc_root(writable_root: &Path) -> PathBuf {
         })
         .unwrap_or_default();
     let key = format!("{name}-{:016x}", hasher.finish());
-    std::env::temp_dir().join("fletch-rpc").join(key)
+    nested_rpc_base().join(key)
+}
+
+/// Parent dir holding every per-worktree nested mailbox root.
+fn nested_rpc_base() -> PathBuf {
+    std::env::temp_dir().join("fletch-rpc")
+}
+
+/// Best-effort removal of all nested mailbox roots. Call once at app startup:
+/// no nested Run process outlives the host it was launched under, so every
+/// entry here is a leftover from a prior session — including crashes and
+/// force-quits, which no per-run exit hook would catch.
+pub fn cleanup_nested_rpc_roots() {
+    let _ = std::fs::remove_dir_all(nested_rpc_base());
 }
 
 /// Build the SBPL profile. `writable_root` is the agent's parent dir;

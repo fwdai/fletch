@@ -512,6 +512,10 @@ pub fn run() {
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
 
+            // Sweep nested-Fletch RPC mailbox roots left in the temp dir by a
+            // prior session (dogfooding runs; none survive their host).
+            crate::sandbox::cleanup_nested_rpc_roots();
+
             // Quitting normally goes through `RunEvent::ExitRequested` (below),
             // but a SIGINT (Ctrl-C under `tauri dev`) or SIGTERM (sent by the
             // OS on logout/restart/shutdown) bypasses it. Catch both via an
