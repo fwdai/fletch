@@ -337,13 +337,6 @@ impl WorkspaceManager {
         Self { db }
     }
 
-    /// Direct access to the connection — used by supervisor pieces
-    /// (e.g. Run panel's project-settings lookup) that don't have a
-    /// dedicated typed method on this manager yet.
-    pub fn db_handle(&self) -> Arc<Mutex<Connection>> {
-        self.db.clone()
-    }
-
     pub fn current(&self) -> Option<Workspace> {
         let conn = self.db.lock();
 
@@ -708,6 +701,18 @@ impl WorkspaceManager {
             )
             .map_err(|_| Error::AgentNotFound(id.to_string()))?;
         Ok(value.is_some())
+    }
+
+    /// A single project-scoped setting value (e.g. the Run panel's
+    /// `run.install` / `run.dev` overrides). `None` when unset.
+    pub fn project_setting(&self, project_id: &str, key: &str) -> Option<String> {
+        let conn = self.db.lock();
+        conn.query_row(
+            "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
+            rusqlite::params![project_id, key],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
     }
 
     /// Stamp the setup command as having succeeded. Idempotent.
