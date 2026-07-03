@@ -102,13 +102,14 @@ describe("offline / local-only gating", () => {
     expect(keys).toContain("discard");
   });
 
-  it("offers Publish when connected but the repo has no origin", () => {
+  it("offers both Publish visibilities when connected but the repo has no origin", () => {
     const keys = secondaryFor("changes", {
       files: 2,
       githubConnected: true,
       hasOrigin: false,
     }).map((s) => s.key);
-    expect(keys).toContain("publish");
+    expect(keys).toContain("publish"); // private (default)
+    expect(keys).toContain("publish-public");
     expect(keys).not.toContain("connect-github");
   });
 

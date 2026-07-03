@@ -5,6 +5,20 @@ import { appActionMessage, type GitDelegationKind } from "@/components/RightPane
 import { formatCommentForChat } from "@/components/RightPanel/prComments";
 import { useAppStore } from "@/store";
 
+// Actions that push to / read from GitHub. In local/offline mode these are
+// intercepted in `runAction` and replaced with connect-or-publish, so none of
+// them reaches the backend only to fail. A compile-time constant — defined at
+// module scope so it isn't reallocated on every render.
+const NEEDS_GITHUB = new Set([
+  "agent-commit-push",
+  "agent-commit-pr",
+  "agent-open-pr",
+  "open-pr",
+  "commit-pr-direct",
+  "push",
+  "merge",
+]);
+
 interface GitActionsCtx {
   agentId: string;
   base: string;
@@ -84,19 +98,6 @@ export function useGitActions(ctx: GitActionsCtx) {
     [agentId, seedComposer, showNotice],
   );
 
-  // Actions that push to / read from GitHub. In local/offline mode these are
-  // intercepted below and replaced with connect-or-publish, so none of them
-  // reaches the backend only to fail.
-  const NEEDS_GITHUB = new Set([
-    "agent-commit-push",
-    "agent-commit-pr",
-    "agent-open-pr",
-    "open-pr",
-    "commit-pr-direct",
-    "push",
-    "merge",
-  ]);
-
   // Single dispatch table for every action a state can offer — the split
   // button's main click and its menu both route through here by key.
   function runAction(key: string) {
@@ -113,11 +114,14 @@ export function useGitActions(ctx: GitActionsCtx) {
         showNotice("Connect GitHub to push & open pull requests");
         break;
       case "publish":
+      case "publish-public": {
+        const isPrivate = key === "publish";
         void runBusy("Publishing to GitHub…", async () => {
-          const url = await publishAgent(agentId, true);
-          if (url) showNotice("Published to GitHub");
+          const url = await publishAgent(agentId, isPrivate);
+          if (url) showNotice(`Published ${isPrivate ? "private" : "public"} repo to GitHub`);
         });
         break;
+      }
       // ── delegated to the coding agent (agent mode) ──
       // Each click sends a short `[app-action]` trigger; the full playbook
       // lives in the agent's injected instructions (git_actions.md), keeping

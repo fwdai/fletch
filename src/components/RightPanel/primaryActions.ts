@@ -354,10 +354,18 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
   } = counts ?? {};
   // In local/offline mode, offer the connect-or-publish action in the states
   // where the user would reach for GitHub, so it's always one click away.
+  // Publishing offers both visibilities: the primary/first item publishes
+  // private (the safe default, matching New Project), with a public variant
+  // right beneath it so users don't have to change it on GitHub afterward.
   const unblock = githubUnblockAction(counts);
-  const unblockItem: SecondaryAction[] = unblock
-    ? [{ key: unblock.key, label: unblock.label, icon: unblock.icon }]
-    : [];
+  const unblockItem: SecondaryAction[] = !unblock
+    ? []
+    : unblock.key === "publish"
+      ? [
+          { key: "publish", label: "Publish (private)", icon: "github" },
+          { key: "publish-public", label: "Publish (public)", icon: "github" },
+        ]
+      : [{ key: unblock.key, label: unblock.label, icon: unblock.icon }];
   // "Push more commits" only makes sense when there's something unpushed.
   const pushItem: SecondaryAction[] =
     unpushed > 0 ? [{ key: "push", label: "Push more commits", icon: "push" }] : [];

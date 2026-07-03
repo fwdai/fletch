@@ -37,10 +37,14 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   disconnectGithub: async () => {
     try {
       await api.githubDisconnect();
+      // Only reflect disconnected once the backend actually cleared the token.
+      // If the write failed the token is still stored, so leaving `github`
+      // as-is keeps the UI honest instead of showing a phantom disconnect
+      // that a later refresh silently reverses.
+      set({ github: { installed: true, authenticated: false, login: null } });
     } catch (e) {
       set({ lastError: String(e) });
     }
-    set({ github: { installed: true, authenticated: false, login: null } });
   },
   setTelemetryEnabled: (enabled) => {
     set({ telemetryEnabled: enabled });
