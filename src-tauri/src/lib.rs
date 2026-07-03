@@ -6,7 +6,6 @@ mod database;
 mod editors;
 mod error;
 mod exec_session;
-mod extensions;
 mod gh;
 mod git;
 mod git_state;
@@ -357,12 +356,6 @@ pub fn run() {
             let db = database::init(&data_dir)
                 .expect("failed to initialize database");
 
-            // Apply migrations declared by any extensions present in this
-            // build, tracked separately from the core schema (see
-            // extensions::apply_extension_migrations). No-op when none exist.
-            extensions::apply_extension_migrations(&db.lock())
-                .expect("failed to apply extension migrations");
-
             // Seed the in-memory agent binary override registry so binary
             // resolution (deep in spawn/probe paths, with no DB handle) can
             // honor user-set custom paths without touching the DB each time.
@@ -415,10 +408,6 @@ pub fn run() {
 
             app.manage(db.clone());
 
-            // Build the extension command registry once from the generated
-            // glue and share it as state for `ext_invoke` to dispatch against.
-            app.manage(Arc::new(extensions::build_api()));
-
             let workspace = Arc::new(WorkspaceManager::new(db));
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
@@ -466,7 +455,6 @@ pub fn run() {
             set_agent_bin_override,
             set_telemetry_enabled,
             track_app_opened,
-            extensions::ext_invoke,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::get_agent_diff_stats,
