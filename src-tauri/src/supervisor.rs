@@ -22,7 +22,7 @@ use crate::run_session::{
 use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir, is_per_turn_provider, new_agent_record,
     repo_worktree_path, AgentRecord, AgentStatus, AgentView, ArchiveMetadata, ArchivedRepoSnapshot,
-    DiffStats, TrackedRepo, Workspace, WorkspaceManager,
+    ClosedTurn, DiffStats, TrackedRepo, Workspace, WorkspaceManager,
 };
 
 /// Serialize raw PTY bytes as a base64 string rather than serde's default
@@ -368,14 +368,38 @@ impl Supervisor {
         }
         // Close the in-flight turn's timer on any terminal state. Idle covers
         // the in-band turn-end and clean process exit; Error covers a crash.
-        // No-op when no turn is open (resting Idle at spawn, native turns), so
-        // it's safe to run unconditionally on these transitions.
+        // A closed turn (started, not native, not the resting Idle at spawn)
+        // yields stats we report as `turn_completed`.
         if matches!(status, AgentStatus::Idle | AgentStatus::Error) {
-            if let Err(e) = self.workspace.mark_user_turn_ended(agent_id) {
-                tracing::warn!(error = %e, agent_id, "stamp user turn end failed");
+            match self.workspace.mark_user_turn_ended(agent_id) {
+                Ok(Some(turn)) => self.track_turn_completed(agent_id, &status, turn),
+                Ok(None) => {}
+                Err(e) => tracing::warn!(error = %e, agent_id, "stamp user turn end failed"),
             }
         }
         emit_status(app, agent_id, status, last_error);
+    }
+
+    /// Report a completed turn to product telemetry: usage-weighted provider
+    /// mix (unlike `agent_spawned`, which only counts starts) plus turn shape
+    /// (duration, size, whether it errored). All properties are categorical or
+    /// numeric aggregates — no prompt content. No-op unless consent is on.
+    fn track_turn_completed(&self, agent_id: &str, status: &AgentStatus, turn: ClosedTurn) {
+        let (provider, model) = self
+            .workspace
+            .agent(agent_id)
+            .map(|r| (r.provider, r.model))
+            .unwrap_or_else(|_| ("unknown".into(), None));
+        crate::telemetry::track(
+            "turn_completed",
+            serde_json::json!({
+                "provider": provider,
+                "model": model,
+                "duration_ms": turn.duration_ms,
+                "record_count": turn.record_count,
+                "errored": matches!(status, AgentStatus::Error),
+            }),
+        );
     }
 
     /// The live (in-memory) runtime status, if the supervisor is tracking
