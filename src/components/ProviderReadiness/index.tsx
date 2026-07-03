@@ -124,7 +124,13 @@ export function ProviderReadiness() {
   // probe that finished without a result is "couldn't detect" (warn), never a
   // false "not installed".
   const gitState: RowState = git ? (git.installed ? "ok" : "bad") : checking ? "checking" : "warn";
-  const ghState: RowState = gh ? (gh.authenticated ? "ok" : "warn") : checking ? "checking" : "warn";
+  const ghState: RowState = gh
+    ? gh.authenticated
+      ? "ok"
+      : "warn"
+    : checking
+      ? "checking"
+      : "warn";
 
   return (
     <div className="readiness">
