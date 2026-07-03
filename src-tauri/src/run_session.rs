@@ -54,6 +54,10 @@ struct RunSessionInner {
     last_error: Option<String>,
     log: LogBuffer,
     pty: Option<PtySession>,
+    /// The `sandbox-exec` profile file the live PTY was launched under. Kept
+    /// alive alongside the PTY so the tempfile isn't unlinked out from under a
+    /// long-running dev server; dropped when the process is stopped/replaced.
+    profile: Option<tempfile::NamedTempFile>,
     /// Bumped on every `start` and `stop`. The PTY exit handler
     /// captures the generation it was spawned under; if that
     /// generation no longer matches, the exit is from a process the
@@ -69,6 +73,7 @@ impl RunSession {
                 last_error: None,
                 log: LogBuffer::new(LOG_BUFFER_CAP),
                 pty: None,
+                profile: None,
                 generation: 0,
             }),
         }
@@ -108,6 +113,7 @@ impl RunSession {
         if let Some(pty) = inner.pty.take() {
             let _ = pty.kill();
         }
+        inner.profile = None;
         inner.generation = inner.generation.wrapping_add(1);
         inner.phase = RunPhase::Stopped;
         inner.last_error = None;
@@ -136,11 +142,15 @@ impl RunSession {
         inner.generation
     }
 
-    pub fn attach_pty(&self, pty: PtySession) {
+    /// Attach a freshly spawned PTY together with the `sandbox-exec` profile
+    /// file it was launched under. The profile must outlive the process, so it
+    /// rides on the session alongside the PTY.
+    pub fn attach_pty(&self, pty: PtySession, profile: tempfile::NamedTempFile) {
         let mut inner = self.inner.lock();
-        // Replace and drop any stale handle. (Shouldn't happen — the
-        // supervisor's stop() drops it first — but defensive.)
+        // Replace and drop any stale handles. (Shouldn't happen — the
+        // supervisor's stop() drops them first — but defensive.)
         inner.pty = Some(pty);
+        inner.profile = Some(profile);
     }
 
     /// Returns true if the given generation is still the current one,
@@ -154,6 +164,7 @@ impl RunSession {
     pub fn mark_stopped(&self, error: Option<String>) {
         let mut inner = self.inner.lock();
         inner.pty = None;
+        inner.profile = None;
         inner.phase = RunPhase::Stopped;
         inner.last_error = error;
     }

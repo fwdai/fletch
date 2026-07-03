@@ -2927,8 +2927,12 @@ fn spawn_run_phase(
     cmd: String,
     chain_run_cmd: Option<String>,
 ) -> Result<()> {
-    let shell = user_shell();
-    let args = shell_args(&cmd);
+    // Confine the run command to the worktree + toolchain caches. The command
+    // string is repo-derived (package.json scripts, postinstall, dev-server
+    // config), so a malicious agent could otherwise plant a script that runs
+    // unsandboxed with full user privilege the moment the user clicks ▶. Reads
+    // and network stay open (dev servers need them); only writes are fenced.
+    let (program, args, profile_file) = sandboxed_run_command(&cwd, &cmd)?;
 
     let session_out = session.clone();
     let app_out = app.clone();
@@ -2941,7 +2945,7 @@ fn spawn_run_phase(
     let cwd_exit = cwd.clone();
 
     let pty = run_session::spawn_command(
-        &shell,
+        &program,
         &args,
         &cwd,
         move |bytes| {
@@ -2963,8 +2967,41 @@ fn spawn_run_phase(
         },
     )?;
 
-    session.attach_pty(pty);
+    session.attach_pty(pty, profile_file);
     Ok(())
+}
+
+/// Build the `sandbox-exec`-wrapped invocation for a Run-panel command:
+/// `sandbox-exec -f <profile> <shell> -lic <cmd>`. Returns the program, argv,
+/// and the profile tempfile — which the caller must keep alive (via
+/// `RunSession::attach_pty`) for the process's lifetime, since `sandbox-exec`
+/// reads it at launch.
+fn sandboxed_run_command(
+    cwd: &Path,
+    cmd: &str,
+) -> Result<(PathBuf, Vec<String>, tempfile::NamedTempFile)> {
+    let home =
+        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+    let profile_text = crate::sandbox::build_run_profile(cwd, &home)?;
+    let profile_file = crate::sandbox::profile_tempfile(&profile_text)?;
+    let profile_path = profile_file
+        .path()
+        .to_str()
+        .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
+        .to_string();
+    let shell = user_shell();
+    let shell_str = shell
+        .to_str()
+        .ok_or_else(|| Error::Other("shell path not utf-8".into()))?
+        .to_string();
+    // sandbox-exec -f <profile> <shell> -lic <cmd>
+    let mut args = vec!["-f".to_string(), profile_path, shell_str];
+    args.extend(shell_args(cmd));
+    Ok((
+        PathBuf::from(crate::sandbox::SANDBOX_EXEC),
+        args,
+        profile_file,
+    ))
 }
 
 fn handle_run_phase_exit(
