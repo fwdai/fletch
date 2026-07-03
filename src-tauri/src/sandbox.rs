@@ -126,6 +126,22 @@ pub fn build_run_profile(writable_root: &Path, home: &Path) -> Result<String> {
     ))
 }
 
+/// Mailbox root (`$FLETCH_RPC_ROOT`) for a **nested** Fletch launched as a Run
+/// process. The Run profile denies writes to the host's `~/.fletch/rpc`, so a
+/// nested instance can't create its agents' mailboxes there. Redirect it under
+/// the system temp dir, which [`build_run_profile`] already grants (macOS
+/// `$TMPDIR` resolves under `/private/var/folders`). Keyed by the worktree path
+/// so two nested instances never collide on a shared agent id, and kept off the
+/// host's real mailbox root so nested traffic can't touch host channels.
+pub fn nested_rpc_root(writable_root: &Path) -> PathBuf {
+    let key: String = writable_root
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    std::env::temp_dir().join("fletch-rpc").join(key)
+}
+
 /// Build the SBPL profile. `writable_root` is the agent's parent dir;
 /// `rpc_dir` is its private file-mailbox (`~/.fletch/rpc/<id>/`), which lives
 /// outside the worktree tree and so needs its own allow entry.
@@ -412,5 +428,21 @@ mod tests {
                 "run profile should not grant agent state dir {dir}"
             );
         }
+    }
+
+    #[test]
+    fn nested_rpc_root_is_temp_scoped_and_keyed_by_worktree() {
+        let a = nested_rpc_root(Path::new("/Users/x/.fletch/worktrees/taklamakan/repo"));
+        let b = nested_rpc_root(Path::new("/Users/x/.fletch/worktrees/rhone/repo"));
+
+        // Under the system temp root, which the Run profile grants — so a nested
+        // Fletch can actually create its mailboxes there.
+        let tmp = std::env::temp_dir().join("fletch-rpc");
+        assert!(a.starts_with(&tmp) && b.starts_with(&tmp));
+        // Distinct worktrees never share a root (no agent-id collisions), and
+        // the key carries no path separators.
+        assert_ne!(a, b);
+        let key = a.file_name().unwrap().to_string_lossy();
+        assert!(!key.contains('/') && !key.contains('.'));
     }
 }
