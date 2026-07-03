@@ -46,8 +46,11 @@ rusqlite_migration = "1"
 # directly (not via tauri-plugin-dialog) because it runs on the calling thread
 # and so works inside `setup`, before the Tauri event loop that the plugin's
 # blocking dialog depends on. `common-controls-v6` enables custom buttons on
-# Windows. Already compiled in as a transitive dep of tauri-plugin-dialog.
-rfd = { version = "0.16", features = ["common-controls-v6"] }
+# Windows. `default-features = false` matches tauri-plugin-dialog's own rfd dep:
+# rfd's defaults pull in the `async-std` backend, which clashes on Linux with
+# the plugin's `tokio` backend (macOS gates that path out — hence local-only
+# green). Already compiled in as a transitive dep of tauri-plugin-dialog.
+rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 base64 = "0.22"
 
