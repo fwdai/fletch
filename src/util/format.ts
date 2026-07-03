@@ -16,14 +16,6 @@ export function joinPath(dir: string, name: string): string {
   return dir ? `${dir}/${name}` : name;
 }
 
-/** Stable hue (0–360) derived from a string — used to color a project
- *  swatch consistently across reloads. */
-export function hueFromString(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return h % 360;
-}
-
 export function firstLine(s: string, max = 56): string {
   const idx = s.indexOf("\n");
   const head = idx === -1 ? s : s.slice(0, idx);

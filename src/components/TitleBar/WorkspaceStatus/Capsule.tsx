@@ -12,12 +12,11 @@ import { useCapsuleData } from "./useCapsuleData";
 interface Props {
   agent: AgentRecord;
   projectName: string;
-  projectHue?: number;
 }
 
 /** The full hoverable capsule for the active agent: status dot + project/agent
  *  names + git badge (+ checks), with the details popover on hover/focus. */
-export function Capsule({ agent, projectName, projectHue }: Props) {
+export function Capsule({ agent, projectName }: Props) {
   const pending = useAppStore((s) => s.pendingToolUse[agent.id]);
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
   const toggleRight = useAppStore((s) => s.toggleRight);
@@ -41,9 +40,6 @@ export function Capsule({ agent, projectName, projectHue }: Props) {
       <div className="ws-cap" tabIndex={0}>
         <span className="ws-ctx">
           <StatusDot status={status} />
-          {projectHue != null && (
-            <span className="ws-swatch" style={{ background: `oklch(0.5 0.08 ${projectHue})` }} />
-          )}
           <span className="ws-proj-name">{projectName}</span>
           <span className="ws-slash">/</span>
           <span className="ws-agent-name">{agent.name}</span>
