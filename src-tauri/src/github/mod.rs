@@ -770,15 +770,16 @@ pub async fn repo_clone(spec: &str, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create a GitHub repo from the existing git repo at `target` and push the
-/// initial commit. `target` must already be a git repo with at least one
-/// commit (see `new_project::create`).
+/// Create a GitHub repo from the existing git repo at `target` and push its
+/// current branch. `target` must already be a git repo with at least one
+/// commit. Serves both the New Project create flow and the git panel's
+/// "Publish to GitHub" for a local-only project. Returns the repo's web URL.
 pub async fn repo_create_and_push(
     target: &Path,
     name: &str,
     private: bool,
     description: Option<&str>,
-) -> Result<()> {
+) -> Result<String> {
     let client = client::Client::new()?;
     let mut body = json!({ "name": name, "private": private });
     if let Some(desc) = description.filter(|d| !d.is_empty()) {
@@ -801,7 +802,7 @@ pub async fn repo_create_and_push(
         .await?;
     let branch = require_current_branch(target, "publish").await?;
     crate::git::push(target, &branch).await?;
-    Ok(())
+    Ok(format!("https://github.com/{full_name}"))
 }
 
 // ---------------------------------------------------------------------------

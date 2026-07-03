@@ -26,6 +26,7 @@ export function useActionBarModel(input: {
   base: string;
   customActive: boolean;
   delegationActive: boolean;
+  githubConnected: boolean;
 }) {
   const {
     agentId,
@@ -38,6 +39,7 @@ export function useActionBarModel(input: {
     base,
     customActive,
     delegationActive,
+    githubConnected,
   } = input;
 
   const gitCommitAction = useAppStore((s) => s.gitCommitAction);
@@ -59,6 +61,11 @@ export function useActionBarModel(input: {
     checksFailed: checks?.failed ?? 0,
     commitAction: gitCommitAction,
     prOpen,
+    githubConnected,
+    // A local-only repo (no origin) can't push/PR until published. GitState is
+    // null while loading — assume an origin then so the CTA doesn't flicker to
+    // "Publish" before the first read lands.
+    hasOrigin: gitState?.has_origin ?? true,
   };
   const primary = primaryFor(panelState, counts);
   const secondary = secondaryFor(panelState, counts);

@@ -277,4 +277,17 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       set({ lastError: String(e) });
     }
   },
+
+  publishAgent: async (agentId, isPrivate) => {
+    try {
+      const url = await api.publishAgent(agentId, isPrivate);
+      // Origin now exists — refresh so the panel drops the no-origin
+      // affordances and shows normal push/PR against the new remote.
+      await get().fetchGitState(agentId);
+      return url;
+    } catch (e) {
+      set({ lastError: String(e) });
+      return null;
+    }
+  },
 });

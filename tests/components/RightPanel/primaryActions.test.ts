@@ -14,6 +14,7 @@ function git(over: Partial<GitState> = {}): GitState {
     files: [],
     additions: 0,
     deletions: 0,
+    has_origin: true,
     ...over,
   };
 }
@@ -68,6 +69,53 @@ describe("changes-state sticky commit action", () => {
     const openKeys = secondaryFor("changes", { files: 2, prOpen: true }).map((s) => s.key);
     expect(openKeys).toContain("merge");
     expect(openKeys).not.toContain("agent-commit-pr"); // meaningless with a PR open
+  });
+});
+
+describe("offline / local-only gating", () => {
+  it("keeps local Commit as the changes primary when not connected", () => {
+    // Even with the sticky mode set to push/PR, an unconnected repo commits
+    // locally rather than showing a button that would fail.
+    const p = primaryFor("changes", {
+      files: 2,
+      commitAction: "agent-commit-pr",
+      githubConnected: false,
+    });
+    expect(p.key).toBe("agent-commit");
+  });
+
+  it("does not downgrade the primary when the mode is plain local Commit", () => {
+    const p = primaryFor("changes", {
+      files: 2,
+      commitAction: "agent-commit",
+      githubConnected: false,
+    });
+    expect(p.key).toBe("agent-commit");
+  });
+
+  it("offers Connect GitHub in the changes menu when not connected", () => {
+    const keys = secondaryFor("changes", { files: 2, githubConnected: false }).map((s) => s.key);
+    expect(keys).toContain("connect-github");
+    expect(keys).not.toContain("agent-commit-push");
+    // Local actions remain reachable.
+    expect(keys).toContain("stash");
+    expect(keys).toContain("discard");
+  });
+
+  it("offers Publish when connected but the repo has no origin", () => {
+    const keys = secondaryFor("changes", {
+      files: 2,
+      githubConnected: true,
+      hasOrigin: false,
+    }).map((s) => s.key);
+    expect(keys).toContain("publish");
+    expect(keys).not.toContain("connect-github");
+  });
+
+  it("replaces the pushed-state Open PR primary with Connect when offline", () => {
+    expect(primaryFor("pushed", { ahead: 1, githubConnected: false }).key).toBe("connect-github");
+    // Connected with an origin, it's the normal PR action.
+    expect(primaryFor("pushed", { ahead: 1 }).key).toBe("agent-open-pr");
   });
 });
 

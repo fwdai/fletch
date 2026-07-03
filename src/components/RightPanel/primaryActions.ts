@@ -92,6 +92,47 @@ export interface ActionCounts {
   /** Changes state: a PR is already open for this branch — "open PR" is
    *  meaningless (push updates it) and Merge belongs in the menu. */
   prOpen?: boolean;
+  /** Whether GitHub is connected (a valid app token). When false, any
+   *  push/PR action is replaced by "Connect GitHub" — local work still runs. */
+  githubConnected?: boolean;
+  /** Whether the repo has an `origin` remote. When false (a local-only repo)
+   *  push/PR give way to "Publish to GitHub". */
+  hasOrigin?: boolean;
+}
+
+/** Does this commit mode need a GitHub remote (push / open PR)? Plain local
+ *  "Commit" does not, so it stays available with no connection. */
+function commitModeNeedsRemote(mode: GitCommitAction): boolean {
+  return mode === "agent-commit-push" || mode === "agent-commit-pr";
+}
+
+/** The action that unblocks GitHub for a repo that can't push yet: connect
+ *  first (no token), else publish (no origin remote). `null` when neither is
+ *  needed. Shared by the "changes"/"pushed"/"clean" states so the GitHub path
+ *  is always one honest, correctly-labelled click away. */
+export function githubUnblockAction(counts?: ActionCounts): PrimaryAction | null {
+  const { githubConnected = true, hasOrigin = true } = counts ?? {};
+  if (!githubConnected) {
+    return {
+      key: "connect-github",
+      label: "Connect GitHub",
+      icon: "github",
+      statusLabel: "connect GitHub to push & open PRs",
+      statusKind: "info",
+      tone: "ghost",
+    };
+  }
+  if (!hasOrigin) {
+    return {
+      key: "publish",
+      label: "Publish to GitHub",
+      icon: "github",
+      statusLabel: "local project — publish to push & open PRs",
+      statusKind: "info",
+      tone: "ghost",
+    };
+  }
+  return null;
 }
 
 /** Maps a git panel state to the panel's primary call-to-action.
@@ -137,6 +178,19 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
       // updates the existing PR.
       const effective: GitCommitAction =
         prOpen && commitAction === "agent-commit-pr" ? "agent-commit-push" : commitAction;
+      // Offline / local-only: a push/PR mode can't run, so the primary becomes
+      // plain local Commit (still fully functional) and the GitHub path is
+      // offered in the menu — never a button that fails on click.
+      if (commitModeNeedsRemote(effective) && githubUnblockAction(counts)) {
+        return {
+          key: "agent-commit",
+          label: "Commit",
+          icon: "commit",
+          statusLabel: "Ready to commit",
+          statusKind: "warn",
+          statusExtra: `${files} ${files === 1 ? "file" : "files"}`,
+        };
+      }
       const common = {
         statusLabel: "Ready to commit",
         statusKind: "warn" as StatusKind,
@@ -151,7 +205,11 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
           return { key: "agent-commit-pr", label: "Commit & open PR", icon: "pr", ...common };
       }
     }
-    case "pushed":
+    case "pushed": {
+      // Opening a PR needs GitHub — if the token was cleared since the push,
+      // offer Connect instead of a PR button that would fail.
+      const unblock = githubUnblockAction(counts);
+      if (unblock) return unblock;
       // The PR description is the agent's job by default (it has the full
       // context of the branch); the direct gh --fill PR stays in the menu.
       return {
@@ -162,6 +220,7 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
           ahead === 1 ? "1 commit pushed, no PR yet" : `${ahead} commits pushed, no PR yet`,
         statusKind: "info",
       };
+    }
     case "pr-open": {
       // Gate semantics (which MergeState means what, in which tone) live in
       // describeMergeGate; here we only pick the action + status phrasing.
@@ -293,6 +352,12 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
     checksFailed = 0,
     prOpen = false,
   } = counts ?? {};
+  // In local/offline mode, offer the connect-or-publish action in the states
+  // where the user would reach for GitHub, so it's always one click away.
+  const unblock = githubUnblockAction(counts);
+  const unblockItem: SecondaryAction[] = unblock
+    ? [{ key: unblock.key, label: unblock.label, icon: unblock.icon }]
+    : [];
   // "Push more commits" only makes sense when there's something unpushed.
   const pushItem: SecondaryAction[] =
     unpushed > 0 ? [{ key: "push", label: "Push more commits", icon: "push" }] : [];
@@ -300,28 +365,41 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
     case "changes":
       // Override active → primary is direct "Commit"; offer a direct
       // "Commit & open PR" (your message + agent-written PR) as the alternate.
+      // Offline, the push/PR alternates give way to connect-or-publish.
       if (customActive) {
         return [
-          { key: "commit-pr-direct", label: "Commit & open PR", icon: "pr" },
-          { key: "push", label: "Push only", icon: "push" },
+          ...(unblock
+            ? unblockItem
+            : [
+                { key: "commit-pr-direct", label: "Commit & open PR", icon: "pr" as IconName },
+                { key: "push", label: "Push only", icon: "push" as IconName },
+              ]),
           { key: "stash", label: "Stash changes", icon: "inbox" },
           { key: "discard", label: "Discard all", icon: "trash" },
         ];
       }
       // Default (agent): every commit mode is a candidate — the panel drops
       // whichever is the sticky primary. With a PR open, "open PR" is
-      // meaningless (push updates it) and Merge joins the menu.
+      // meaningless (push updates it) and Merge joins the menu. Offline, the
+      // push/PR items give way to the single connect-or-publish action.
       return [
         { key: "agent-commit", label: "Commit", icon: "commit" },
-        { key: "agent-commit-push", label: "Commit & push", icon: "push" },
-        ...(prOpen
-          ? [{ key: "merge", label: "Merge PR without changes", icon: "merge" as IconName }]
-          : [{ key: "agent-commit-pr", label: "Commit & open PR", icon: "pr" as IconName }]),
-        { key: "push", label: "Push only", icon: "push" },
+        ...(unblock
+          ? unblockItem
+          : [
+              { key: "agent-commit-push", label: "Commit & push", icon: "push" as IconName },
+              ...(prOpen
+                ? [{ key: "merge", label: "Merge PR without changes", icon: "merge" as IconName }]
+                : [{ key: "agent-commit-pr", label: "Commit & open PR", icon: "pr" as IconName }]),
+              { key: "push", label: "Push only", icon: "push" as IconName },
+            ]),
         { key: "stash", label: "Stash changes", icon: "inbox" },
         { key: "discard", label: "Discard all", icon: "trash" },
       ];
     case "pushed":
+      // Offline, the PR/push items give way to connect-or-publish; the local
+      // Pull stays available either way.
+      if (unblock) return [...unblockItem, { key: "pull", label: "Pull", icon: "inbox" }];
       // Primary is the agent-written PR; the direct gh --fill PR stays one
       // click away for users who don't want to wait on the agent.
       return [

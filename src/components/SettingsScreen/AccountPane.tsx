@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { accountInitials } from "@/util/format";
 import { DevToolsStatus } from "./DevToolsStatus";
+import { GithubConnection } from "./GithubConnection";
 import { SetGroup, SetHead } from "./primitives";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -121,6 +122,10 @@ export function AccountPane() {
             </Button>
           </div>
         </div>
+      </SetGroup>
+
+      <SetGroup label="GitHub">
+        <GithubConnection />
       </SetGroup>
 
       <SetGroup label="Developer tools" last>

@@ -21,6 +21,9 @@ export function App() {
   const fetchAllShortstats = useAppStore((s) => s.fetchAllShortstats);
   const refreshAllPrStates = useAppStore((s) => s.refreshAllPrStates);
   const refreshAllPrChecks = useAppStore((s) => s.refreshAllPrChecks);
+  // PR polls hit the GitHub API — skip them entirely in local-only mode
+  // (no connection) so a GitHub-unaware user generates zero network chatter.
+  const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
 
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
@@ -69,13 +72,25 @@ export function App() {
   // refresh is a `gh` network call, so this runs at a far gentler cadence than
   // the local shortstats poll, and the backend only touches agents that
   // actually have a PR.
-  usePoll(refreshAllPrStates, 45000, [refreshAllPrStates]);
+  usePoll(
+    async () => {
+      if (githubConnected) await refreshAllPrStates();
+    },
+    45000,
+    [refreshAllPrStates, githubConnected],
+  );
 
   // App-wide poll for CI checks so each sidebar PR pill can be tinted pass/fail
   // at a glance. One `gh` call per open PR, so this rides an even gentler
   // cadence than PR state — checks flip over minutes, not seconds, and the
   // focused Git panel keeps its own faster per-agent checks poll.
-  usePoll(refreshAllPrChecks, 60000, [refreshAllPrChecks]);
+  usePoll(
+    async () => {
+      if (githubConnected) await refreshAllPrChecks();
+    },
+    60000,
+    [refreshAllPrChecks, githubConnected],
+  );
 
   // Apply theme + density via html classes; accent via CSS vars.
   useEffect(() => {

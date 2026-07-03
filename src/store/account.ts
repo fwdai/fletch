@@ -5,6 +5,7 @@ import type { AccountSlice, SliceCreator } from "./types";
 export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   account: null,
   telemetryEnabled: true,
+  github: null,
 
   saveAccount: async (patch) => {
     const current = get().account;
@@ -23,6 +24,23 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
     } catch (e) {
       set({ lastError: String(e) });
     }
+  },
+  refreshGithub: async () => {
+    try {
+      set({ github: await api.ghStatus() });
+    } catch {
+      // A failed probe means we can't confirm a connection — treat as
+      // not-connected so gated UI shows "connect" rather than a spinner.
+      set({ github: { installed: true, authenticated: false, login: null } });
+    }
+  },
+  disconnectGithub: async () => {
+    try {
+      await api.githubDisconnect();
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+    set({ github: { installed: true, authenticated: false, login: null } });
   },
   setTelemetryEnabled: (enabled) => {
     set({ telemetryEnabled: enabled });

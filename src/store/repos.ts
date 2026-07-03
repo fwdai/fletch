@@ -38,8 +38,8 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set) => ({
     set({ workspace: ws });
   },
 
-  createRepo: async (name, destParent, isPrivate, description) => {
-    const ws = await api.createRepo(name, destParent, isPrivate, description);
+  createRepo: async (name, destParent, isPrivate, description, publish) => {
+    const ws = await api.createRepo(name, destParent, isPrivate, description, publish);
     set({ workspace: ws });
   },
 });

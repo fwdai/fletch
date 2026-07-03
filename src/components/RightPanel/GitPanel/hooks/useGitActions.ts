@@ -13,6 +13,10 @@ interface GitActionsCtx {
   msg: string;
   checks: PrChecks | null;
   prUrl: string | undefined;
+  /** GitHub connection + origin presence — gate push/PR actions to a connect
+   *  or publish prompt so nothing fails on click in local/offline mode. */
+  githubConnected: boolean;
+  hasOrigin: boolean;
   runBusy: (label: string, fn: () => Promise<unknown>) => Promise<unknown>;
   showNotice: (m: string) => void;
   openOverride: () => void;
@@ -33,6 +37,8 @@ export function useGitActions(ctx: GitActionsCtx) {
     msg,
     checks,
     prUrl,
+    githubConnected,
+    hasOrigin,
     runBusy,
     showNotice,
     openOverride,
@@ -45,6 +51,7 @@ export function useGitActions(ctx: GitActionsCtx) {
   const rebaseAgent = useAppStore((s) => s.rebaseAgent);
   const createPr = useAppStore((s) => s.createPr);
   const mergePr = useAppStore((s) => s.mergePr);
+  const publishAgent = useAppStore((s) => s.publishAgent);
   const archive = useAppStore((s) => s.archive);
   const commitChanges = useAppStore((s) => s.commitChanges);
   const commitAndOpenPr = useAppStore((s) => s.commitAndOpenPr);
@@ -54,6 +61,7 @@ export function useGitActions(ctx: GitActionsCtx) {
   const deleteBranch = useAppStore((s) => s.deleteBranch);
   const delegateGitAction = useAppStore((s) => s.delegateGitAction);
   const seedComposer = useAppStore((s) => s.seedComposer);
+  const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
 
   // Hand control to the coding agent: it writes the judgment part (message /
   // description / conflict edits) and executes the mutation through the app's
@@ -76,10 +84,40 @@ export function useGitActions(ctx: GitActionsCtx) {
     [agentId, seedComposer, showNotice],
   );
 
+  // Actions that push to / read from GitHub. In local/offline mode these are
+  // intercepted below and replaced with connect-or-publish, so none of them
+  // reaches the backend only to fail.
+  const NEEDS_GITHUB = new Set([
+    "agent-commit-push",
+    "agent-commit-pr",
+    "agent-open-pr",
+    "open-pr",
+    "commit-pr-direct",
+    "push",
+    "merge",
+  ]);
+
   // Single dispatch table for every action a state can offer — the split
   // button's main click and its menu both route through here by key.
   function runAction(key: string) {
+    // Backstop: if a GitHub action is somehow selected while offline (e.g. a
+    // sticky mode from when we were connected), route to the unblock path
+    // instead of dispatching a call that would error.
+    if (NEEDS_GITHUB.has(key) && !githubConnected) key = "connect-github";
+    else if (NEEDS_GITHUB.has(key) && !hasOrigin) key = "publish";
+
     switch (key) {
+      case "connect-github":
+        // The device flow lives in Settings → Account; take the user there.
+        openSettingsScreen("account");
+        showNotice("Connect GitHub to push & open pull requests");
+        break;
+      case "publish":
+        void runBusy("Publishing to GitHub…", async () => {
+          const url = await publishAgent(agentId, true);
+          if (url) showNotice("Published to GitHub");
+        });
+        break;
       // ── delegated to the coding agent (agent mode) ──
       // Each click sends a short `[app-action]` trigger; the full playbook
       // lives in the agent's injected instructions (git_actions.md), keeping

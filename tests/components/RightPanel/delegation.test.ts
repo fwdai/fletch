@@ -34,6 +34,7 @@ function git(over: Partial<GitState> = {}): GitState {
     files: [],
     additions: 0,
     deletions: 0,
+    has_origin: true,
     ...over,
   };
 }

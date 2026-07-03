@@ -3,7 +3,7 @@ import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { parseRepoSpec } from "@/util/repoSpec";
 import { RepoList } from "./RepoList";
-import { DestRow, GhGate, type NewProjectShared } from "./shared";
+import { ConnectGitHub, DestRow, type NewProjectShared } from "./shared";
 
 /** Clone an existing GitHub repo — pick from the user's repos or paste a
  *  URL / owner-repo spec. */
@@ -17,7 +17,9 @@ export function CloneView({ shared, onDone }: { shared: NewProjectShared; onDone
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (gh && (!gh.installed || !gh.authenticated)) return <GhGate gh={gh} />;
+  // Cloning genuinely needs GitHub — prompt to connect in place. Once
+  // connected, `gh.authenticated` flips and this view renders the picker.
+  if (!gh?.authenticated) return <ConnectGitHub what="clone a repository" />;
 
   // The active spec is the pasted URL (when in paste mode) or the selected repo.
   const spec = pasteMode ? url.trim() : (selected ?? "");
