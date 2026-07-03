@@ -14,6 +14,7 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   density: "comfortable" as Density,
   features: DEFAULT_FEATURES,
   soundEnabled: true,
+  notifyEnabled: true,
   viewMode: "custom" as WorkspaceView,
 
   // ── appearance ──────────────────────────────────────────────────────────────
@@ -42,6 +43,10 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   setSoundEnabled: (on) => {
     set({ soundEnabled: on });
     setSetting("soundEnabled", String(on));
+  },
+  setNotifyEnabled: (on) => {
+    set({ notifyEnabled: on });
+    setSetting("notifyEnabled", String(on));
   },
   setViewMode: (v) => {
     set({ viewMode: v });
