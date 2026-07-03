@@ -25,10 +25,17 @@ let loading: Promise<void> | null = null;
 const listeners = new Set<() => void>();
 
 function loadManifest(): Promise<void> {
-  loading ??= import("material-icon-theme/dist/material-icons.json").then((mod) => {
-    manifest = mod.default as unknown as Manifest;
-    for (const notify of listeners) notify();
-  });
+  loading ??= import("material-icon-theme/dist/material-icons.json")
+    .then((mod) => {
+      manifest = mod.default as unknown as Manifest;
+      for (const notify of listeners) notify();
+    })
+    .catch((err) => {
+      // Drop the rejected promise so a later mount can retry, rather than
+      // caching the failure and leaving every icon a placeholder for good.
+      loading = null;
+      console.error("FileIcon: failed to load icon manifest", err);
+    });
   return loading;
 }
 
