@@ -146,6 +146,100 @@ fn install_panic_logging() {
     }));
 }
 
+/// Labels for the fatal DB-init dialog's three buttons. Kept as constants so
+/// rendering and result-matching share one source of truth.
+const DB_ERR_MOVE_ASIDE: &str = "Move Database Aside";
+const DB_ERR_REVEAL_LOGS: &str = "Reveal Logs";
+const DB_ERR_QUIT: &str = "Quit";
+
+enum DbErrorChoice {
+    MoveAside,
+    RevealLogs,
+    Quit,
+}
+
+/// Recover from a failed `database::init` instead of panicking into a launch
+/// crash loop (the schema-too-new downgrade case, most often). Shows a native
+/// dialog and loops on the user's choice: move the DB aside and start fresh,
+/// reveal the logs and re-prompt, or quit. Runs in `setup` on the main thread —
+/// hence rfd's synchronous dialog, not the tauri plugin's, which needs the
+/// not-yet-running event loop.
+fn recover_from_db_init_failure(
+    data_dir: &std::path::Path,
+    err: &crate::error::Error,
+) -> crate::error::Result<DbState> {
+    tracing::error!(error = %err, "database init failed; prompting for recovery");
+    loop {
+        match show_db_error_dialog(err) {
+            DbErrorChoice::MoveAside => {
+                move_db_aside(data_dir)?;
+                return database::init(data_dir);
+            }
+            DbErrorChoice::RevealLogs => {
+                let _ = commands::reveal_logs();
+            }
+            DbErrorChoice::Quit => std::process::exit(1),
+        }
+    }
+}
+
+fn show_db_error_dialog(err: &crate::error::Error) -> DbErrorChoice {
+    let (title, body) = db_error_message(err);
+    let result = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title(title)
+        .set_description(body)
+        .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+            DB_ERR_MOVE_ASIDE.into(),
+            DB_ERR_REVEAL_LOGS.into(),
+            DB_ERR_QUIT.into(),
+        ))
+        .show();
+    match result {
+        rfd::MessageDialogResult::Custom(l) if l == DB_ERR_MOVE_ASIDE => DbErrorChoice::MoveAside,
+        rfd::MessageDialogResult::Custom(l) if l == DB_ERR_REVEAL_LOGS => DbErrorChoice::RevealLogs,
+        _ => DbErrorChoice::Quit,
+    }
+}
+
+fn db_error_message(err: &crate::error::Error) -> (&'static str, String) {
+    let title = "Fletch can't open its database";
+    let body = match err {
+        crate::error::Error::SchemaTooNew => "This database was created by a newer version of \
+            Fletch, so this version can't read it — usually a sign the app was downgraded.\n\n\
+            • Move Database Aside — start fresh now; your current database is kept as a backup \
+            file you can restore later.\n\
+            • Reveal Logs — open the log folder to investigate.\n\
+            • Quit — exit so you can reinstall the newer version."
+            .to_string(),
+        other => format!(
+            "Fletch couldn't initialize its database and can't continue:\n\n{other}\n\n\
+             • Move Database Aside — start fresh; the existing database is kept as a backup.\n\
+             • Reveal Logs — open the log folder.\n\
+             • Quit — exit."
+        ),
+    };
+    (title, body)
+}
+
+/// Rename the database and its WAL/SHM sidecars out of the way so a fresh one
+/// can be created, preserving the old files as timestamped backups. We suffix,
+/// never delete — the user's data is always recoverable.
+fn move_db_aside(data_dir: &std::path::Path) -> crate::error::Result<()> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    for name in ["quorum.db", "quorum.db-wal", "quorum.db-shm"] {
+        let src = data_dir.join(name);
+        if src.exists() {
+            std::fs::rename(&src, data_dir.join(format!("{name}.moved-{stamp}")))?;
+        }
+    }
+    tracing::warn!("moved database aside; starting fresh");
+    Ok(())
+}
+
 #[tauri::command]
 async fn db_insert(
     table: String,
@@ -354,8 +448,10 @@ pub fn run() {
             };
             std::fs::create_dir_all(&data_dir)?;
 
-            let db = database::init(&data_dir)
-                .expect("failed to initialize database");
+            let db = match database::init(&data_dir) {
+                Ok(db) => db,
+                Err(e) => recover_from_db_init_failure(&data_dir, &e)?,
+            };
 
             // Seed the in-memory agent binary override registry so binary
             // resolution (deep in spawn/probe paths, with no DB handle) can

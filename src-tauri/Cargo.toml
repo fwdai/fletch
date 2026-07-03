@@ -42,6 +42,12 @@ chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 rusqlite = { version = "0.31", features = ["bundled"] }
 rusqlite_migration = "1"
+# Native, synchronous message dialog for the fatal DB-init failure path. Used
+# directly (not via tauri-plugin-dialog) because it runs on the calling thread
+# and so works inside `setup`, before the Tauri event loop that the plugin's
+# blocking dialog depends on. `common-controls-v6` enables custom buttons on
+# Windows. Already compiled in as a transitive dep of tauri-plugin-dialog.
+rfd = { version = "0.16", features = ["common-controls-v6"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 base64 = "0.22"
 

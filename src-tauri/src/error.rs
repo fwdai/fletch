@@ -24,6 +24,9 @@ pub enum Error {
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
 
+    #[error("database schema is newer than this app version")]
+    SchemaTooNew,
+
     #[error("{0}")]
     Other(String),
 }
