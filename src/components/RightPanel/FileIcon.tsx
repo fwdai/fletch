@@ -3,9 +3,11 @@
 // file names / extensions / folder names to icon ids.
 //
 // The SVGs are served as static assets from /file-icons (copied into public/
-// by a Vite plugin, see vite.config.ts), so resolution is synchronous and the
-// 1200+ icon set adds no per-icon chunks to the bundle.
-import manifest from "material-icon-theme/dist/material-icons.json";
+// by a Vite plugin, see vite.config.ts). The manifest itself is ~450 KB, so
+// it's loaded lazily — the first FileIcon mount kicks off a dynamic import
+// (splitting it out of the startup bundle); every icon shares that one promise
+// and re-renders via `useSyncExternalStore` once it resolves.
+import { useSyncExternalStore } from "react";
 
 interface Manifest {
   iconDefinitions: Record<string, { iconPath: string }>;
@@ -17,15 +19,44 @@ interface Manifest {
   folder: string;
   folderExpanded: string;
 }
-const m = manifest as unknown as Manifest;
+
+let manifest: Manifest | null = null;
+let loading: Promise<void> | null = null;
+const listeners = new Set<() => void>();
+
+function loadManifest(): Promise<void> {
+  loading ??= import("material-icon-theme/dist/material-icons.json")
+    .then((mod) => {
+      manifest = mod.default as unknown as Manifest;
+      for (const notify of listeners) notify();
+    })
+    .catch((err) => {
+      // Drop the rejected promise so a later mount can retry, rather than
+      // caching the failure and leaving every icon a placeholder for good.
+      loading = null;
+      console.error("FileIcon: failed to load icon manifest", err);
+    });
+  return loading;
+}
+
+function useManifest(): Manifest | null {
+  return useSyncExternalStore(
+    (notify) => {
+      listeners.add(notify);
+      void loadManifest();
+      return () => listeners.delete(notify);
+    },
+    () => manifest,
+  );
+}
 
 /** icon id → svg basename, e.g. "typescript" → "typescript.svg"
  *  (most match by name, but ~72 point at a differently-named file). */
-function basenameForId(id: string): string {
+function basenameForId(m: Manifest, id: string): string {
   return m.iconDefinitions[id]?.iconPath.split("/").pop() ?? `${id}.svg`;
 }
 
-function fileBasename(name: string): string {
+function fileBasename(m: Manifest, name: string): string {
   const lower = name.toLowerCase();
   let id: string | undefined = m.fileNames[lower];
   if (!id) {
@@ -39,12 +70,12 @@ function fileBasename(name: string): string {
       }
     }
   }
-  return basenameForId(id || m.file);
+  return basenameForId(m, id || m.file);
 }
 
-function folderBasename(name: string, open: boolean): string {
+function folderBasename(m: Manifest, name: string, open: boolean): string {
   const named = (open ? m.folderNamesExpanded : m.folderNames)[name.toLowerCase()];
-  return basenameForId(named || (open ? m.folderExpanded : m.folder));
+  return basenameForId(m, named || (open ? m.folderExpanded : m.folder));
 }
 
 interface FileIconProps {
@@ -55,6 +86,10 @@ interface FileIconProps {
 
 /** Material file/folder icon for the File panel. */
 export function FileIcon({ name, folder, open }: FileIconProps) {
-  const base = folder ? folderBasename(name, !!open) : fileBasename(name);
+  const m = useManifest();
+  // No src while the manifest loads: reserves the icon's box without a
+  // broken-image glyph or a stray request.
+  if (!m) return <img className="fp-ico-img" alt="" draggable={false} />;
+  const base = folder ? folderBasename(m, name, !!open) : fileBasename(m, name);
   return <img className="fp-ico-img" src={`/file-icons/${base}`} alt="" draggable={false} />;
 }

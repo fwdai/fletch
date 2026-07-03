@@ -31,6 +31,17 @@ const GROUP_LABEL: Record<string, string> = {
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
 
+// Cap the in-memory log so a long-running dev server can't grow React state
+// without bound. Keep the tail — what a terminal would show — and trim from
+// the front on a line boundary so a half-line never gets rendered.
+const MAX_LOG_CHARS = 256 * 1024;
+const capLog = (s: string): string => {
+  if (s.length <= MAX_LOG_CHARS) return s;
+  const tail = s.slice(s.length - MAX_LOG_CHARS);
+  const nl = tail.indexOf("\n");
+  return nl === -1 ? tail : tail.slice(nl + 1);
+};
+
 export function RunPanel({ agent }: { agent: AgentRecord }) {
   // Phase is owned by the store (fed by an app-wide `run:state` subscription) so
   // the Run tab's running dot survives this panel unmounting on a tab switch.
@@ -130,13 +141,13 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       // mode using its own decoder so it doesn't pollute the live
       // stream decoder.
       const snapDecoder = new TextDecoder("utf-8", { fatal: false });
-      setLog(stripAnsi(snapDecoder.decode(new Uint8Array(snap.log))));
+      setLog(capLog(stripAnsi(snapDecoder.decode(new Uint8Array(snap.log)))));
     });
 
     onRunOutput((e) => {
       if (e.agent_id !== agent.id) return;
       const chunk = stripAnsi(decoder.decode(new Uint8Array(e.bytes), { stream: true }));
-      setLog((prev) => prev + chunk);
+      setLog((prev) => capLog(prev + chunk));
     }).then((un) => {
       if (cancelled) {
         un();
