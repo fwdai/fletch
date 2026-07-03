@@ -115,5 +115,3 @@ Issues and pull requests welcome. Planning a larger change? Open an issue first 
 ## License
 
 [AGPL-3.0](LICENSE). See [NOTICE](NOTICE) for attribution.
-</content>
-</invoke>
