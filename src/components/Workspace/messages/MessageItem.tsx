@@ -46,10 +46,11 @@ export function MessageItem({
       }
       return <UserBubble text={item.text} attachments={item.attachments} turnId={turnId} />;
     case "queued_message":
-      // Same bubble, marked queued: a follow-up the user sent mid-turn that the
-      // transcript hasn't caught up to yet. Reconciled away in app.ts once it
-      // lands canonically.
-      return <UserBubble text={item.text} attachments={item.attachments} queued />;
+      // A follow-up the user sent mid-turn. Badged "queued" only while it's
+      // genuinely held for a later turn boundary (item.queued); once delivered/
+      // injected it renders as a plain bubble at its injection point. Either way
+      // it's reconciled away once the transcript catches up (app.ts).
+      return <UserBubble text={item.text} attachments={item.attachments} queued={item.queued} />;
     case "agent_message":
       // Copy isn't offered here: it lives in the turn footer (see TurnFooter),
       // right-aligned on the seam, so the message itself reserves no extra
@@ -140,7 +141,7 @@ function UserBubble({
         )}
         {queued && <span className="m-user__queued-tag text-xs">queued</span>}
       </div>
-      {/* A queued follow-up isn't canonical yet, so skip its copy affordance. */}
+      {/* A still-queued follow-up isn't canonical yet, so skip its copy affordance. */}
       {!queued && (
         <div className="m-actions">
           <CopyButton text={display} />

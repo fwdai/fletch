@@ -5,6 +5,7 @@ import { carryForwardQueued } from "@/helpers";
 const userMsg = (text: string, attachments?: string[]): ChatItem =>
   attachments ? { kind: "user_message", text, attachments } : { kind: "user_message", text };
 const agentMsg = (text: string): ChatItem => ({ kind: "agent_message", text });
+const toolCall = (id: string): ChatItem => ({ kind: "tool_call", id, name: "Bash", input: "" });
 const queued = (text: string, attachments?: string[]): ChatItem =>
   attachments ? { kind: "queued_message", text, attachments } : { kind: "queued_message", text };
 
@@ -55,5 +56,53 @@ describe("carryForwardQueued", () => {
   it("is a no-op when there are no queued items", () => {
     const rebuilt = [userMsg("hi"), agentMsg("ok")];
     expect(carryForwardQueued(rebuilt, rebuilt)).toEqual(rebuilt);
+  });
+
+  it("keeps an unreconciled mid-turn follow-up at its injection point, not the end", () => {
+    // claude live-injects mid-turn but never persists the message as its own
+    // transcript record, so the rebuilt log lacks it. It must stay where it was
+    // injected (after the tool call, before the answer it prompted) rather than
+    // jump below the answer.
+    const rebuilt = [userMsg("start"), toolCall("t1"), agentMsg("after")];
+    const prev = [userMsg("start"), toolCall("t1"), queued("mid"), agentMsg("after")];
+    const out = carryForwardQueued(rebuilt, prev);
+    expect(out).toEqual([userMsg("start"), toolCall("t1"), queued("mid"), agentMsg("after")]);
+  });
+
+  it("anchors a follow-up to the preceding agent message when there's no tool call", () => {
+    const rebuilt = [userMsg("start"), agentMsg("thinking"), agentMsg("done")];
+    const prev = [userMsg("start"), agentMsg("thinking"), queued("mid"), agentMsg("done")];
+    const out = carryForwardQueued(rebuilt, prev);
+    expect(out).toEqual([userMsg("start"), agentMsg("thinking"), queued("mid"), agentMsg("done")]);
+  });
+
+  it("anchors to the occurrence at the injection point when the same text repeats", () => {
+    // Two identical "ok" acks in the turn. The follow-up was injected after the
+    // FIRST one, so it must land there — not after the second (which a
+    // last-match scan would wrongly pick).
+    const rebuilt = [
+      userMsg("start"),
+      agentMsg("ok"),
+      toolCall("t1"),
+      agentMsg("ok"),
+      agentMsg("done"),
+    ];
+    const prev = [
+      userMsg("start"),
+      agentMsg("ok"),
+      queued("mid"),
+      toolCall("t1"),
+      agentMsg("ok"),
+      agentMsg("done"),
+    ];
+    const out = carryForwardQueued(rebuilt, prev);
+    expect(out).toEqual([
+      userMsg("start"),
+      agentMsg("ok"),
+      queued("mid"),
+      toolCall("t1"),
+      agentMsg("ok"),
+      agentMsg("done"),
+    ]);
   });
 });

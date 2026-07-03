@@ -95,10 +95,13 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       set((state) => {
         const slashName = wasBusy ? null : passthroughSlashName(providerFor(state, id), text);
+        // Optimistic mid-turn follow-up: default to no badge (the common case is
+        // immediate live injection). If the backend reports it was enqueued, we
+        // flip `queued` on below — carried by `turnId` so we can find it again.
         const entry: ChatItem = wasBusy
           ? attachments.length > 0
-            ? { kind: "queued_message", text, attachments }
-            : { kind: "queued_message", text }
+            ? { kind: "queued_message", text, attachments, turnId }
+            : { kind: "queued_message", text, turnId }
           : slashName
             ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
             : attachments.length > 0
@@ -122,11 +125,24 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         };
       });
       try {
-        await api.sendUserMessage(id, turnId, text, attachments, thinking);
+        const enqueued = await api.sendUserMessage(id, turnId, text, attachments, thinking);
+        // Only a genuinely-held message wears the badge; a delivered one stays a
+        // plain bubble. Match by turnId — agent output may have appended since.
+        if (wasBusy && enqueued) {
+          set((state) => ({
+            managedLogs: {
+              ...state.managedLogs,
+              [id]: (state.managedLogs[id] ?? []).map((it) =>
+                it.kind === "queued_message" && it.turnId === turnId ? { ...it, queued: true } : it,
+              ),
+            },
+          }));
+        }
       } catch (e) {
         if (String(e).includes("agent not found")) {
           // Dead idle agent (finished its prior task) — resume the
           // process in --resume mode, then deliver the message once ready.
+          // Not busy, so it lands as a new turn (never queued) — no badge.
           await api.resumeAgent(id);
           await sendWhenAgentReady(() =>
             api.sendUserMessage(id, turnId, text, attachments, thinking),

@@ -465,8 +465,9 @@
   scroll-margin-top: 24px;
 }
 
-/* A mid-turn follow-up not yet in the transcript: same bubble, dimmed, with a
-   small "queued" tag. Reconciled to a normal user_message once it lands. */
+/* A mid-turn follow-up still held for a later turn boundary: same bubble,
+   dimmed, with a small "queued" tag. Cleared to a plain bubble once delivered,
+   then reconciled to a canonical user_message once the transcript lands. */
 .m-user--queued {
   opacity: 0.7;
   border-style: dashed;
