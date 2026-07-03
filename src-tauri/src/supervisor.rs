@@ -2973,9 +2973,10 @@ fn spawn_run_phase(
 
 /// Build the `sandbox-exec`-wrapped invocation for a Run-panel command:
 /// `sandbox-exec -f <profile> <shell> -lic <cmd>`. Returns the program, argv,
-/// and the profile tempfile — which the caller must keep alive (via
-/// `RunSession::attach_pty`) for the process's lifetime, since `sandbox-exec`
-/// reads it at launch.
+/// and the profile tempfile. `sandbox-exec` reads the profile once, at the
+/// child's `exec`, so the tempfile must survive until then; the caller parks it
+/// on the `RunSession` (via `attach_pty`), which conservatively keeps it for the
+/// process's lifetime.
 fn sandboxed_run_command(
     cwd: &Path,
     cmd: &str,

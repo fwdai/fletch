@@ -54,9 +54,12 @@ struct RunSessionInner {
     last_error: Option<String>,
     log: LogBuffer,
     pty: Option<PtySession>,
-    /// The `sandbox-exec` profile file the live PTY was launched under. Kept
-    /// alive alongside the PTY so the tempfile isn't unlinked out from under a
-    /// long-running dev server; dropped when the process is stopped/replaced.
+    /// The `sandbox-exec` profile file the live PTY was launched under. The
+    /// kernel compiles the SBPL into the child at `exec` and never consults the
+    /// file again, so it only needs to exist until the child has spawned. We
+    /// nonetheless hold it for the PTY's lifetime — a conservative simplification
+    /// that ties cleanup to the process (dropped on stop/replace) rather than
+    /// racing to unlink right after spawn.
     profile: Option<tempfile::NamedTempFile>,
     /// Bumped on every `start` and `stop`. The PTY exit handler
     /// captures the generation it was spawned under; if that
@@ -143,8 +146,9 @@ impl RunSession {
     }
 
     /// Attach a freshly spawned PTY together with the `sandbox-exec` profile
-    /// file it was launched under. The profile must outlive the process, so it
-    /// rides on the session alongside the PTY.
+    /// file it was launched under. The profile only needs to exist through the
+    /// child's `exec`, but we let it ride on the session alongside the PTY so
+    /// its cleanup is tied to the process lifecycle (see the field comment).
     pub fn attach_pty(&self, pty: PtySession, profile: tempfile::NamedTempFile) {
         let mut inner = self.inner.lock();
         // Replace and drop any stale handles. (Shouldn't happen — the
