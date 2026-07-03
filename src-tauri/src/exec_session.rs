@@ -219,7 +219,7 @@ impl ExecSession {
             let on_session_id = self.on_session_id.clone();
             let extract_session_id = self.extract_session_id.clone();
             let session_id = self.session_id.clone();
-            child_io::spawn_json_reader(stdout, "agent", move |v| {
+            child_io::spawn_json_reader(stdout, "agent", tracing::Level::DEBUG, move |v| {
                 maybe_capture_session_id(&v, &extract_session_id, &session_id, &on_session_id);
                 on_event(v);
             });

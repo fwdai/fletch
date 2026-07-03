@@ -121,7 +121,7 @@ impl ManagedSession {
 
         let stdin_for_reader = stdin_arc.clone();
         let pending_for_reader = pending.clone();
-        child_io::spawn_json_reader(stdout, "managed", move |v| {
+        child_io::spawn_json_reader(stdout, "managed", tracing::Level::INFO, move |v| {
             match v.get("type").and_then(Value::as_str) {
                 // Permission gate from the CLI: respond on stdin.
                 Some("control_request") => {

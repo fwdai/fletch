@@ -19,8 +19,18 @@ use serde_json::Value;
 /// Read newline-delimited JSON off a child's stdout, calling `on_value` for
 /// each parsed object. Blank lines are skipped, unparseable lines logged and
 /// skipped, and a read error ends the loop. Runs on its own thread.
-pub fn spawn_json_reader<R>(stdout: R, name: &'static str, on_value: impl Fn(Value) + Send + 'static)
-where
+///
+/// `closed_level` is the level for the terminal "stdout closed" line — pass
+/// `INFO` for a long-lived process whose pipe closing is a lifecycle event
+/// worth seeing in production, `DEBUG` for chatty per-turn readers. It can
+/// precede the process exit (e.g. a crash before the reaper's `try_wait`
+/// fires), so it isn't always redundant with the exit log.
+pub fn spawn_json_reader<R>(
+    stdout: R,
+    name: &'static str,
+    closed_level: tracing::Level,
+    on_value: impl Fn(Value) + Send + 'static,
+) where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
@@ -37,8 +47,17 @@ where
                 }
             }
         }
-        tracing::debug!(name, "stdout closed");
+        log_stdout_closed(name, closed_level);
     });
+}
+
+/// Emit the "stdout closed" line at a caller-chosen level. The `tracing` macros
+/// bake the level in at compile time, so a runtime level needs this dispatch.
+fn log_stdout_closed(name: &'static str, level: tracing::Level) {
+    match level {
+        tracing::Level::INFO => tracing::info!(name, "stdout closed"),
+        _ => tracing::debug!(name, "stdout closed"),
+    }
 }
 
 /// Drain a child's stdout to EOF without parsing — for agents whose stdout is
@@ -147,7 +166,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut child = spawn(&dir.path(), "echo '{\"a\":1}'\necho ''\necho 'not json'\necho '{\"a\":2}'\n");
         let (tx, rx) = mpsc::channel();
-        spawn_json_reader(child.stdout.take().unwrap(), "t", move |v| {
+        spawn_json_reader(child.stdout.take().unwrap(), "t", tracing::Level::DEBUG, move |v| {
             let _ = tx.send(v);
         });
         let first = rx.recv_timeout(Duration::from_secs(2)).unwrap();
