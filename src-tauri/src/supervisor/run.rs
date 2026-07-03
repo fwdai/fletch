@@ -1,0 +1,429 @@
+//! Run-panel process management: setup/dev phase planning, spawning, and
+//! phase-exit chaining.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tauri::AppHandle;
+
+use crate::error::{Error, Result};
+use crate::run_session::{self, shell_args, user_shell, RunPhase, RunSession, RunStateSnapshot};
+use crate::workspace::repo_worktree_path;
+
+use super::events::{emit_run_output, emit_run_state};
+use super::Supervisor;
+
+impl Supervisor {
+    /// Start the Run-panel process for an agent.
+    ///
+    /// If the agent has never completed setup before, runs the setup
+    /// command first; on exit 0 marks setup complete and chains into
+    /// the run command. On setup failure → does NOT proceed to run.
+    /// If setup is already complete, starts the run command directly.
+    ///
+    /// No-op if a run is already in progress for this agent.
+    pub fn run_start(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+        let record = self.workspace.agent(agent_id)?;
+        if record.archive.is_some() {
+            return Err(Error::Other("agent is archived".into()));
+        }
+        let primary = record
+            .repos
+            .first()
+            .ok_or_else(|| Error::Other("agent has no repos".into()))?;
+        let cwd = repo_worktree_path(agent_id, &primary.subdir)?;
+
+        let (setup_cmd, run_cmd) = self.read_run_commands(&record.project_id, &cwd);
+        let setup_done = self.workspace.is_setup_completed(agent_id)?;
+
+        let session = {
+            let mut runs = self.runs.lock();
+            runs.entry(agent_id.to_string())
+                .or_insert_with(|| Arc::new(RunSession::new()))
+                .clone()
+        };
+
+        if session.is_active() {
+            return Ok(()); // already running, idempotent
+        }
+
+        // Nothing to run (unrecognized ecosystem with no install/dev) —
+        // leave the button Idle rather than spawning an empty command.
+        let Some(plan) = plan_run_phases(setup_done, &setup_cmd, &run_cmd) else {
+            return Ok(());
+        };
+
+        let gen = session.begin_phase(plan.first_phase);
+        emit_run_state(&app, agent_id, plan.first_phase, None);
+        write_header(&app, agent_id, &session, &plan.first_cmd);
+
+        // begin_phase already flipped the session active. If the spawn fails we
+        // must reset to Stopped — otherwise is_active() stays true and every
+        // later ▶ click no-ops on the idempotency guard. Mirrors the chained
+        // run-phase failure path in handle_run_phase_exit.
+        if let Err(e) = spawn_run_phase(
+            self.clone(),
+            app.clone(),
+            agent_id.to_string(),
+            session.clone(),
+            gen,
+            cwd,
+            plan.first_phase,
+            plan.first_cmd,
+            plan.chained_run_cmd,
+        ) {
+            let msg = format!("Failed to start command: {e}");
+            session.mark_stopped(Some(msg.clone()));
+            emit_run_state(&app, agent_id, RunPhase::Stopped, Some(msg));
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Stop the Run-panel process for an agent. Idempotent.
+    pub fn run_stop(&self, app: AppHandle, agent_id: &str) -> Result<()> {
+        let session = {
+            let runs = self.runs.lock();
+            runs.get(agent_id).cloned()
+        };
+        let Some(session) = session else {
+            return Ok(());
+        };
+        let prior = session.stop();
+        if matches!(prior, RunPhase::Setup | RunPhase::Running) {
+            emit_run_state(&app, agent_id, RunPhase::Stopped, None);
+        }
+        Ok(())
+    }
+
+    /// Snapshot of the current state and accumulated log for the
+    /// panel to rehydrate on mount.
+    pub fn run_state(&self, agent_id: &str) -> RunStateSnapshot {
+        let session = {
+            let runs = self.runs.lock();
+            runs.get(agent_id).cloned()
+        };
+        match session {
+            Some(s) => s.snapshot(),
+            None => RunStateSnapshot {
+                phase: RunPhase::Idle,
+                last_error: None,
+                log: Vec::new(),
+            },
+        }
+    }
+
+    /// Read the setup + run commands for an agent. The detector provides
+    /// the baseline (same values the panel shows), and any persisted
+    /// `run.install` / `run.dev` overrides in project_settings take
+    /// precedence. One detector feeds both the panel and the runner, so
+    /// there is no hardcoded default to keep in sync.
+    fn read_run_commands(&self, project_id: &str, worktree: &Path) -> (String, String) {
+        let configs = crate::run_detect::detect_all(worktree);
+        let detected = |id: &str| -> String {
+            configs
+                .first()
+                .and_then(|c| c.rows.iter().find(|r| r.id == id))
+                .map(|r| r.value.clone())
+                .unwrap_or_default()
+        };
+        let install_default = detected("install");
+        let dev_default = detected("dev");
+        if project_id.is_empty() {
+            return (install_default, dev_default);
+        }
+        (
+            self.workspace
+                .project_setting(project_id, "run.install")
+                .unwrap_or(install_default),
+            self.workspace
+                .project_setting(project_id, "run.dev")
+                .unwrap_or(dev_default),
+        )
+    }
+
+    /// Detect the run configuration for an agent's primary repo,
+    /// ranked by confidence. The panel renders the first (highest
+    /// confidence) entry; the rest are returned for future
+    /// multi-ecosystem selection.
+    pub fn detect_run_config(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<crate::run_detect::DetectedConfig>> {
+        let record = self.workspace.agent(agent_id)?;
+        let primary = record
+            .repos
+            .first()
+            .ok_or_else(|| Error::Other("agent has no repos".into()))?;
+        let worktree = repo_worktree_path(agent_id, &primary.subdir)?;
+        Ok(crate::run_detect::detect_all(&worktree))
+    }
+}
+
+/// Inject a "$ <cmd>" header line into the log so each phase has a
+/// visible boundary, then emit it like any other PTY output.
+fn write_header(app: &AppHandle, agent_id: &str, session: &Arc<RunSession>, cmd: &str) {
+    // Dim ANSI for the prompt — the frontend strips ANSI for v1,
+    // so the line still reads fine without color support.
+    let line = format!("\x1b[2m$ {cmd}\x1b[0m\r\n");
+    let bytes = line.into_bytes();
+    session.append_log(&bytes);
+    emit_run_output(app, agent_id, bytes);
+}
+
+/// The phases to spawn for a single `run_start`, derived from the
+/// resolved commands and whether setup has already completed.
+#[derive(Debug)]
+struct RunPlan {
+    first_phase: RunPhase,
+    first_cmd: String,
+    /// Run command to chain after a successful setup phase. `None` when
+    /// the first phase is already the run, or when there is no run
+    /// command to chain (so we never spawn an empty command).
+    chained_run_cmd: Option<String>,
+}
+
+/// Decide what to spawn. Returns `None` when there is nothing to run —
+/// neither a setup nor a run command — so the caller can leave the
+/// button Idle instead of spawning an empty command that would exit 0
+/// and flash the panel to Stopped with no explanation.
+fn plan_run_phases(setup_done: bool, setup_cmd: &str, run_cmd: &str) -> Option<RunPlan> {
+    let needs_setup = !setup_done && !setup_cmd.trim().is_empty();
+    let has_run_cmd = !run_cmd.trim().is_empty();
+    if needs_setup {
+        Some(RunPlan {
+            first_phase: RunPhase::Setup,
+            first_cmd: setup_cmd.to_string(),
+            chained_run_cmd: has_run_cmd.then(|| run_cmd.to_string()),
+        })
+    } else if has_run_cmd {
+        Some(RunPlan {
+            first_phase: RunPhase::Running,
+            first_cmd: run_cmd.to_string(),
+            chained_run_cmd: None,
+        })
+    } else {
+        None
+    }
+}
+
+/// Spawn one phase's PTY (setup or run). Wires up output streaming
+/// and the exit handler that chains setup→run or transitions to
+/// Stopped on natural exit. Out-of-band stops are handled via the
+/// generation check.
+fn spawn_run_phase(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+    session: Arc<RunSession>,
+    gen: u64,
+    cwd: std::path::PathBuf,
+    phase: RunPhase,
+    cmd: String,
+    chain_run_cmd: Option<String>,
+) -> Result<()> {
+    // Confine the run command to the worktree + toolchain caches. The command
+    // string is repo-derived (package.json scripts, postinstall, dev-server
+    // config), so a malicious agent could otherwise plant a script that runs
+    // unsandboxed with full user privilege the moment the user clicks ▶. Reads
+    // and network stay open (dev servers need them); only writes are fenced.
+    let (program, args, profile_file) = sandboxed_run_command(&cwd, &cmd)?;
+
+    let session_out = session.clone();
+    let app_out = app.clone();
+    let id_out = agent_id.clone();
+
+    let sup_exit = sup.clone();
+    let app_exit = app.clone();
+    let id_exit = agent_id.clone();
+    let session_exit = session.clone();
+    let cwd_exit = cwd.clone();
+
+    let pty = run_session::spawn_command(
+        &program,
+        &args,
+        &cwd,
+        move |bytes| {
+            session_out.append_log(&bytes);
+            emit_run_output(&app_out, &id_out, bytes);
+        },
+        move |exit| {
+            handle_run_phase_exit(
+                sup_exit.clone(),
+                app_exit.clone(),
+                id_exit.clone(),
+                session_exit.clone(),
+                gen,
+                phase,
+                exit,
+                cwd_exit.clone(),
+                chain_run_cmd.clone(),
+            );
+        },
+    )?;
+
+    session.attach_pty(pty, profile_file);
+    Ok(())
+}
+
+/// Build the `sandbox-exec`-wrapped invocation for a Run-panel command:
+/// `sandbox-exec -f <profile> <shell> -lic <cmd>`. Returns the program, argv,
+/// and the profile tempfile. `sandbox-exec` reads the profile once, at the
+/// child's `exec`, so the tempfile must survive until then; the caller parks it
+/// on the `RunSession` (via `attach_pty`), which conservatively keeps it for the
+/// process's lifetime.
+fn sandboxed_run_command(
+    cwd: &Path,
+    cmd: &str,
+) -> Result<(PathBuf, Vec<String>, tempfile::NamedTempFile)> {
+    let home =
+        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+    let profile_text = crate::sandbox::build_run_profile(cwd, &home)?;
+    let profile_file = crate::sandbox::profile_tempfile(&profile_text)?;
+    let profile_path = profile_file
+        .path()
+        .to_str()
+        .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
+        .to_string();
+    let shell = user_shell();
+    let shell_str = shell
+        .to_str()
+        .ok_or_else(|| Error::Other("shell path not utf-8".into()))?
+        .to_string();
+    // sandbox-exec -f <profile> <shell> -lic <cmd>
+    let mut args = vec!["-f".to_string(), profile_path, shell_str];
+    args.extend(shell_args(cmd));
+    Ok((
+        PathBuf::from(crate::sandbox::SANDBOX_EXEC),
+        args,
+        profile_file,
+    ))
+}
+
+fn handle_run_phase_exit(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+    session: Arc<RunSession>,
+    gen: u64,
+    phase: RunPhase,
+    exit: crate::pty_session::PtyExit,
+    cwd: std::path::PathBuf,
+    chain_run_cmd: Option<String>,
+) {
+    // If the user clicked Stop (or started a fresh run), our
+    // generation is stale — just drop this event.
+    if !session.is_current_generation(gen) {
+        tracing::debug!(
+            agent_id = %agent_id,
+            phase = ?phase,
+            "ignoring stale run-phase exit"
+        );
+        return;
+    }
+
+    if matches!(phase, RunPhase::Setup) && exit.success {
+        // Setup finished cleanly — persist the flag and chain into
+        // the run command (if we have one).
+        if let Err(e) = sup.workspace.mark_setup_completed(&agent_id) {
+            tracing::warn!(error = %e, agent_id = %agent_id, "mark_setup_completed failed");
+        }
+        if let Some(run_cmd) = chain_run_cmd {
+            session.transition_phase(RunPhase::Running);
+            emit_run_state(&app, &agent_id, RunPhase::Running, None);
+            write_header(&app, &agent_id, &session, &run_cmd);
+            if let Err(e) = spawn_run_phase(
+                sup,
+                app.clone(),
+                agent_id.clone(),
+                session.clone(),
+                gen,
+                cwd,
+                RunPhase::Running,
+                run_cmd,
+                None,
+            ) {
+                let msg = format!("Failed to start run command: {e}");
+                session.mark_stopped(Some(msg.clone()));
+                emit_run_state(&app, &agent_id, RunPhase::Stopped, Some(msg));
+            }
+            return;
+        }
+        // No run command to chain into — treat as clean stop.
+        session.mark_stopped(None);
+        emit_run_state(&app, &agent_id, RunPhase::Stopped, None);
+        return;
+    }
+
+    // Setup failed → do NOT proceed to run. Surface the error.
+    if matches!(phase, RunPhase::Setup) && !exit.success {
+        let msg = format!("Setup failed: {}", exit.message);
+        session.mark_stopped(Some(msg.clone()));
+        emit_run_state(&app, &agent_id, RunPhase::Stopped, Some(msg));
+        return;
+    }
+
+    // Run-phase exit — natural end or crash. Either way → Stopped.
+    let err = if exit.success {
+        None
+    } else {
+        Some(format!("Run exited: {}", exit.message))
+    };
+    session.mark_stopped(err.clone());
+    emit_run_state(&app, &agent_id, RunPhase::Stopped, err);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── plan_run_phases ───────────────────────────────────────────────────
+
+    #[test]
+    fn plan_runs_dev_directly_when_setup_done() {
+        let plan = plan_run_phases(true, "pnpm install", "pnpm dev").unwrap();
+        assert_eq!(plan.first_phase, RunPhase::Running);
+        assert_eq!(plan.first_cmd, "pnpm dev");
+        assert_eq!(plan.chained_run_cmd, None);
+    }
+
+    #[test]
+    fn plan_runs_setup_then_chains_dev() {
+        let plan = plan_run_phases(false, "pnpm install", "pnpm dev").unwrap();
+        assert_eq!(plan.first_phase, RunPhase::Setup);
+        assert_eq!(plan.first_cmd, "pnpm install");
+        assert_eq!(plan.chained_run_cmd.as_deref(), Some("pnpm dev"));
+    }
+
+    #[test]
+    fn plan_does_not_chain_into_empty_run_cmd() {
+        // Setup needed but no dev command (e.g. a plain Python project with
+        // an install but no recognized run). Setup runs alone — no empty
+        // command chained after it.
+        let plan = plan_run_phases(false, "pip install -r requirements.txt", "").unwrap();
+        assert_eq!(plan.first_phase, RunPhase::Setup);
+        assert_eq!(plan.chained_run_cmd, None);
+    }
+
+    #[test]
+    fn plan_is_none_when_nothing_to_run() {
+        // Wholly unrecognized ecosystem: no setup, no run. Nothing should
+        // be spawned — the button stays Idle instead of flashing Stopped.
+        assert!(plan_run_phases(true, "", "").is_none());
+        assert!(plan_run_phases(false, "", "").is_none());
+        assert!(plan_run_phases(false, "   ", "  ").is_none());
+    }
+
+    #[test]
+    fn plan_skips_completed_setup_even_if_run_empty() {
+        // Setup already done and no run command → nothing to do.
+        assert!(plan_run_phases(true, "pnpm install", "").is_none());
+    }
+
+    #[test]
+    fn plan_runs_only_run_cmd_when_no_setup_needed() {
+        let plan = plan_run_phases(true, "", "cargo run").unwrap();
+        assert_eq!(plan.first_phase, RunPhase::Running);
+        assert_eq!(plan.first_cmd, "cargo run");
+        assert_eq!(plan.chained_run_cmd, None);
+    }
+}
