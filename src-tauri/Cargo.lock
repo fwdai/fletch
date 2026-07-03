@@ -996,6 +996,7 @@ dependencies = [
  "parking_lot",
  "portable-pty",
  "reqwest 0.13.3",
+ "rfd",
  "rusqlite",
  "rusqlite_migration",
  "sentry",

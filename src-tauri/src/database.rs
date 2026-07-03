@@ -72,28 +72,40 @@ fn validate_column(col: &str) -> Result<()> {
     }
 }
 
+/// Embedded schema migrations, applied in order. SQLite's `user_version` tracks
+/// how many have run, so the length here doubles as the target version: below
+/// it means an upgrade is pending, above it means the DB was written by a newer
+/// build (a downgrade — see `map_migration_error`).
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_initial_schema.sql"),
+    include_str!("../migrations/0002_session_records.sql"),
+    include_str!("../migrations/0003_retire_session_events.sql"),
+    include_str!("../migrations/0004_session_user_turns.sql"),
+    include_str!("../migrations/0005_session_ingest_offset.sql"),
+    include_str!("../migrations/0006_session_effort.sql"),
+    include_str!("../migrations/0007_account_oauth.sql"),
+    include_str!("../migrations/0008_worktree_base_sha.sql"),
+    include_str!("../migrations/0009_session_model.sql"),
+    include_str!("../migrations/0010_worktree_pr_number.sql"),
+    include_str!("../migrations/0011_custom_agents.sql"),
+    include_str!("../migrations/0012_user_turn_timing.sql"),
+];
+
 fn get_migrations() -> Migrations<'static> {
-    Migrations::new(vec![
-        M::up(include_str!("../migrations/0001_initial_schema.sql")),
-        M::up(include_str!("../migrations/0002_session_records.sql")),
-        M::up(include_str!("../migrations/0003_retire_session_events.sql")),
-        M::up(include_str!("../migrations/0004_session_user_turns.sql")),
-        M::up(include_str!("../migrations/0005_session_ingest_offset.sql")),
-        M::up(include_str!("../migrations/0006_session_effort.sql")),
-        M::up(include_str!("../migrations/0007_account_oauth.sql")),
-        M::up(include_str!("../migrations/0008_worktree_base_sha.sql")),
-        M::up(include_str!("../migrations/0009_session_model.sql")),
-        M::up(include_str!("../migrations/0010_worktree_pr_number.sql")),
-        M::up(include_str!("../migrations/0011_custom_agents.sql")),
-        M::up(include_str!("../migrations/0012_user_turn_timing.sql")),
-    ])
+    Migrations::new(MIGRATIONS.iter().map(|&sql| M::up(sql)).collect())
 }
 
 pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
     std::fs::create_dir_all(data_dir)?;
     let db_path = data_dir.join("quorum.db");
-    let mut conn = Connection::open(&db_path)?;
+    let mut conn = open_db(&db_path)?;
+    backup_before_upgrade(&conn, &db_path)?;
+    get_migrations().to_latest(&mut conn).map_err(map_migration_error)?;
+    Ok(Arc::new(Mutex::new(conn)))
+}
 
+fn open_db(db_path: &Path) -> Result<Connection> {
+    let conn = Connection::open(db_path)?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
@@ -101,19 +113,57 @@ pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
          PRAGMA foreign_keys = ON;
          PRAGMA busy_timeout = 5000;",
     )?;
-
-    get_migrations()
-        .to_latest(&mut conn)
-        .map_err(|e| Error::Other(format!("migration failed: {e}")))?;
-
-    Ok(Arc::new(Mutex::new(conn)))
+    Ok(conn)
 }
 
+/// A migration failure where the DB's `user_version` exceeds our migration count
+/// means the schema was written by a newer build — almost always an app
+/// downgrade. Surface it as the typed `SchemaTooNew` so startup can offer
+/// recovery instead of crash-looping; everything else stays a generic error.
+fn map_migration_error(e: rusqlite_migration::Error) -> Error {
+    use rusqlite_migration::{Error as ME, MigrationDefinitionError as MDE};
+    match e {
+        ME::MigrationDefinition(MDE::DatabaseTooFarAhead) => Error::SchemaTooNew,
+        other => Error::Other(format!("migration failed: {other}")),
+    }
+}
+
+/// Snapshot the DB aside before applying migrations, but only when an existing
+/// schema is genuinely being upgraded: a fresh DB (`user_version == 0`) has
+/// nothing to lose, and an already-current or schema-ahead DB isn't migrated.
+/// Gives the user a restore point if a forward migration goes wrong or they
+/// later downgrade.
+fn backup_before_upgrade(conn: &Connection, db_path: &Path) -> Result<()> {
+    let applied: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if applied <= 0 || applied as usize >= MIGRATIONS.len() {
+        return Ok(());
+    }
+    let backup = db_path.with_extension(format!("db.bak-v{applied}-{}", now_millis()));
+    snapshot_to(conn, &backup)?;
+    tracing::info!(backup = %backup.display(), "backed up DB before schema upgrade");
+    Ok(())
+}
+
+/// Write a consistent snapshot of `conn` to `dest` via SQLite's online backup
+/// API. Unlike checkpoint-then-`fs::copy`, this reads *through* the connection,
+/// so it always captures committed WAL frames — a plain copy would silently
+/// omit them whenever an external reader (Spotlight, Time Machine, a backup
+/// agent) holds the WAL and leaves the checkpoint incomplete (`busy != 0`).
+fn snapshot_to(conn: &Connection, dest: &Path) -> Result<()> {
+    let mut dst = Connection::open(dest)?;
+    let backup = rusqlite::backup::Backup::new(conn, &mut dst)?;
+    backup.run_to_completion(100, std::time::Duration::from_millis(50), None)?;
+    Ok(())
+}
+
+/// Milliseconds since the Unix epoch, or 0 if the system clock is set before
+/// 1970. Degrades rather than panicking so a backwards clock can't turn the
+/// backup-then-migrate path (or any timestamped insert) into a hard crash.
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn json_to_sql(value: &Value) -> Result<Box<dyn rusqlite::ToSql>> {
@@ -455,6 +505,55 @@ mod tests {
     fn test_db() -> Arc<Mutex<Connection>> {
         let dir = tempfile::tempdir().unwrap();
         init(dir.path()).unwrap()
+    }
+
+    fn backup_files(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".db.bak-"))
+            .collect()
+    }
+
+    #[test]
+    fn init_errors_when_schema_is_from_a_newer_build() {
+        let dir = tempfile::tempdir().unwrap();
+        init(dir.path()).unwrap();
+        // Simulate an app downgrade: a newer build left user_version ahead of
+        // the migrations this binary knows about.
+        let conn = Connection::open(dir.path().join("quorum.db")).unwrap();
+        conn.pragma_update(None, "user_version", (MIGRATIONS.len() + 5) as i64)
+            .unwrap();
+        drop(conn);
+        assert!(matches!(init(dir.path()), Err(Error::SchemaTooNew)));
+    }
+
+    #[test]
+    fn upgrading_an_older_schema_backs_it_up_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("quorum.db")).unwrap();
+        get_migrations().to_version(&mut conn, 1).unwrap(); // valid schema at v1
+        drop(conn);
+        init(dir.path()).unwrap(); // v1 -> latest, must back up first
+
+        let backups = backup_files(dir.path());
+        assert_eq!(backups.len(), 1);
+        // The snapshot must be a complete, readable DB frozen at the pre-upgrade
+        // version — proving the online backup captured real content, not a
+        // truncated copy.
+        let backup = Connection::open(dir.path().join(&backups[0])).unwrap();
+        let version: i64 = backup
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn fresh_init_creates_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        init(dir.path()).unwrap();
+        assert!(backup_files(dir.path()).is_empty());
     }
 
     fn make_project(conn: &Connection) -> String {
