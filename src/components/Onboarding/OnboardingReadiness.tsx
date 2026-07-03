@@ -7,7 +7,6 @@
 
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useCallback, useEffect, useState } from "react";
-import { hasAdapter } from "@/adapters";
 import { api, type GhStatus, type ToolStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -42,7 +41,7 @@ export function OnboardingReadiness() {
     recheck();
   }, [recheck]);
 
-  const agents = PROVIDERS.filter((p) => hasAdapter(p.id) && providerFlags[p.id] !== false);
+  const agents = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
   const detected = agents.filter((p) => !!providerPaths[p.id]).length;
 
   const gitState: S = git ? (git.installed ? "ok" : "bad") : checking ? "checking" : "warn";

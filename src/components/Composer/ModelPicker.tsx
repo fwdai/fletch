@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { hasAdapter } from "@/adapters";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
@@ -173,36 +172,34 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                 <span className="model-sect-line" />
               </div>
               {enabled.map((p) => {
-                const wired = hasAdapter(p.id);
                 // Fail open: only gate on the path once a probe has actually
                 // succeeded (`providersProbed`). While probing, or if the probe
                 // failed, treat as installed so a transient detection error
                 // never disables an agent the user really has.
                 const installed = !providersProbed || !!providerPaths[p.id];
-                const usable = wired && installed;
-                const missing = wired && providersProbed && !installed;
+                const missing = providersProbed && !installed;
                 const isSelected = p.id === provider && !customAgentId;
                 const isOpen = hovered === p.id;
                 return (
                   <button
                     key={p.id}
                     type="button"
-                    disabled={!usable}
+                    disabled={!installed}
                     className={`model-agent-row flex-center ${isSelected ? "active" : ""} ${isOpen ? "hot" : ""}`}
                     title={
                       missing
                         ? "Not installed — see Settings › Providers"
                         : "Click to use the default model · hover to choose a model"
                     }
-                    onMouseEnter={() => usable && setHovered(p.id)}
-                    onClick={() => usable && pickModel(p.id, undefined)}
+                    onMouseEnter={() => installed && setHovered(p.id)}
+                    onClick={() => installed && pickModel(p.id, undefined)}
                   >
                     <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={26} />
                     <span className="model-agent-name truncate text-base">{p.label}</span>
                     <span className="model-agent-ver text-xs">
                       {missing ? "Not installed" : (providerVersions[p.id] ?? p.version)}
                     </span>
-                    {usable && <Icon name="chevR" size={12} />}
+                    {installed && <Icon name="chevR" size={12} />}
                   </button>
                 );
               })}
