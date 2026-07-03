@@ -15,6 +15,7 @@ mod managed_session;
 mod message_queue;
 mod model_catalog;
 mod names;
+mod native_input;
 mod new_project;
 mod oauth;
 mod pty_session;
@@ -24,6 +25,7 @@ mod run_session;
 mod sandbox;
 mod supervisor;
 mod telemetry;
+mod transcripts;
 mod workspace;
 
 use parking_lot::Mutex;

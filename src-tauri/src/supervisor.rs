@@ -14,6 +14,7 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::managed_session::ToolUseBehavior;
 use crate::message_queue::{decide_delivery, Delivery, MessageQueue, PendingMsg};
+use crate::native_input::NativeInputTracker;
 use crate::pty_session::{PtySession, PtySpawn};
 use crate::rpc;
 use crate::run_session::{
@@ -146,7 +147,9 @@ pub struct Supervisor {
     /// dispositions, so a resting record loaded from it derives `Idle`;
     /// this map carries the real current status while an agent is live.
     pub statuses: Mutex<HashMap<String, AgentStatus>>,
-    pub native_input_lines: Mutex<HashMap<String, String>>,
+    /// Per-agent native-view input trackers, reconstructing submitted lines
+    /// from raw keystroke bytes (see `native_input`).
+    pub native_inputs: Mutex<HashMap<String, NativeInputTracker>>,
     pub shells: Mutex<HashMap<String, PtySession>>,
     /// Per-agent run-panel processes (dev server + setup). Reused
     /// across start/stop cycles so the log buffer survives.
@@ -238,7 +241,7 @@ impl Supervisor {
             generations: Mutex::new(HashMap::new()),
             activities: Mutex::new(HashMap::new()),
             statuses: Mutex::new(HashMap::new()),
-            native_input_lines: Mutex::new(HashMap::new()),
+            native_inputs: Mutex::new(HashMap::new()),
             shells: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
             respawn_pending: Mutex::new(HashSet::new()),
@@ -620,19 +623,13 @@ impl Supervisor {
         if project_id.is_empty() {
             return (install_default, dev_default);
         }
-        let conn = self.workspace.db_handle();
-        let read = |key: &str| -> Option<String> {
-            let conn = conn.lock();
-            conn.query_row(
-                "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
-                rusqlite::params![project_id, key],
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
-        };
         (
-            read("run.install").unwrap_or(install_default),
-            read("run.dev").unwrap_or(dev_default),
+            self.workspace
+                .project_setting(project_id, "run.install")
+                .unwrap_or(install_default),
+            self.workspace
+                .project_setting(project_id, "run.dev")
+                .unwrap_or(dev_default),
         )
     }
 
@@ -1146,7 +1143,13 @@ impl Supervisor {
                 .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
             agent.write_pty(bytes)?;
         }
-        for submitted in observe_native_input(&self, agent_id, bytes) {
+        let submitted = self
+            .native_inputs
+            .lock()
+            .entry(agent_id.to_string())
+            .or_default()
+            .observe(bytes);
+        for submitted in submitted {
             mark_user_turn_started(&self, app, agent_id, None);
             on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), submitted);
         }
@@ -1356,7 +1359,7 @@ impl Supervisor {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
-        self.native_input_lines.lock().remove(agent_id);
+        self.native_inputs.lock().remove(agent_id);
 
         self.workspace.update_agent_view(agent_id, new_view)?;
         let _ = app.emit(
@@ -1455,7 +1458,7 @@ impl Supervisor {
         self.respawn_pending.lock().remove(agent_id);
         let _ = agent.shutdown();
         self.activities.lock().remove(agent_id);
-        self.native_input_lines.lock().remove(agent_id);
+        self.native_inputs.lock().remove(agent_id);
 
         self.set_status(app, agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
@@ -1601,21 +1604,8 @@ impl Supervisor {
                 // The agent had pushed a branch → recreate it at the tip,
                 // resolving name collisions with a -restored suffix.
                 Some(desired_name) => {
-                    let mut chosen = desired_name.clone();
-                    let mut bumps = 0;
-                    loop {
-                        let exists =
-                            git::branch_exists(&snap.repo_path, &chosen).await.unwrap_or(false);
-                        if !exists {
-                            break;
-                        }
-                        bumps += 1;
-                        chosen = if bumps == 1 {
-                            format!("{desired_name}-restored")
-                        } else {
-                            format!("{desired_name}-restored-{bumps}")
-                        };
-                    }
+                    let chosen =
+                        choose_restore_branch_name(&snap.repo_path, desired_name).await;
                     git::branch_create_at(&snap.repo_path, &chosen, tip_sha).await?;
                     git::worktree_add_branch(&snap.repo_path, &worktree, &chosen).await?;
                     Some(chosen)
@@ -1801,7 +1791,7 @@ impl Supervisor {
         }
         self.activities.lock().remove(agent_id);
         self.statuses.lock().remove(agent_id);
-        self.native_input_lines.lock().remove(agent_id);
+        self.native_inputs.lock().remove(agent_id);
         self.message_queue.lock().clear(agent_id);
         self.interrupted.lock().remove(agent_id);
         self.shells.lock().remove(agent_id);
@@ -1876,6 +1866,25 @@ async fn capture_repo_snapshots(
             deletions: total_dels,
         },
     )
+}
+
+/// Pick a free branch name for a restored agent: the archived name if it's
+/// still free, otherwise `-restored` / `-restored-N` suffixed until one is.
+async fn choose_restore_branch_name(repo_path: &Path, desired: &str) -> String {
+    let mut chosen = desired.to_string();
+    let mut bumps = 0;
+    loop {
+        let exists = git::branch_exists(repo_path, &chosen).await.unwrap_or(false);
+        if !exists {
+            return chosen;
+        }
+        bumps += 1;
+        chosen = if bumps == 1 {
+            format!("{desired}-restored")
+        } else {
+            format!("{desired}-restored-{bumps}")
+        };
+    }
 }
 
 /// Best-effort teardown of every tracked repo's worktree + branch, plus the
@@ -1998,10 +2007,6 @@ impl SyncPoll {
     }
 }
 
-/// Locate the claude session JSONL by scanning the candidate `projects/*/`
-/// dirs (see [`claude_projects_dirs`]) for `<session-id>.jsonl`. Claude's
-/// path-encoding scheme isn't part of its public API, so we glob instead of
-/// recomputing the encoded directory name from the worktree path.
 /// Ingest the agent's on-disk transcript into `session_records`, idempotent per
 /// `native_id`. `None` = no transcript reader for this provider (skip, don't
 /// retry); `Some(n)` = reader ran, `n` new records inserted (`0` = nothing yet:
@@ -2100,131 +2105,6 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
     }
 
     Some(inserted)
-}
-
-pub(crate) fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
-    find_session_jsonl_in(&claude_projects_dirs(), session_id)
-}
-
-/// Candidate `projects` directories Claude may have written transcripts to.
-/// Honors `CLAUDE_CONFIG_DIR` (Claude CLI's own config-dir override) and always
-/// also includes the default `~/.claude`, so a transcript is located regardless
-/// of which config dir was active when the agent was spawned. Mirrors the way
-/// `find_codex_rollouts` honors `CODEX_HOME` — without this, an agent spawned
-/// with `CLAUDE_CONFIG_DIR` set wrote its transcript somewhere we never scanned,
-/// so it was never ingested into `session_records` and was lost when that dir
-/// moved.
-fn claude_projects_dirs() -> Vec<PathBuf> {
-    projects_dirs_from(
-        std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
-        dirs::home_dir(),
-    )
-}
-
-/// Pure core of [`claude_projects_dirs`]: configured dir first (if any), then
-/// the default `~/.claude`, deduped so an explicit `CLAUDE_CONFIG_DIR=~/.claude`
-/// doesn't double-scan.
-fn projects_dirs_from(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    let mut push = |base: PathBuf| {
-        let p = base.join("projects");
-        if !out.contains(&p) {
-            out.push(p);
-        }
-    };
-    if let Some(cfg) = config_dir {
-        push(cfg);
-    }
-    if let Some(home) = home {
-        push(home.join(".claude"));
-    }
-    out
-}
-
-/// Scan the given `projects` dirs for `<session-id>.jsonl`, returning the first
-/// match. A missing/unreadable candidate dir is skipped, not fatal, so a later
-/// candidate is still searched.
-fn find_session_jsonl_in(projects_dirs: &[PathBuf], session_id: &str) -> Option<PathBuf> {
-    let filename = format!("{session_id}.jsonl");
-    for projects in projects_dirs {
-        let Ok(entries) = std::fs::read_dir(projects) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path().join(&filename);
-            if path.exists() {
-                return Some(path);
-            }
-        }
-    }
-    None
-}
-
-/// All of codex's rollout files for a thread id, ordered (filenames are
-/// timestamp-prefixed, so lexical sort == chronological). Codex stores sessions
-/// at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
-/// defaults to `~/.codex`); the id suffix is the thread id we captured. Resume
-/// normally keeps one file per session, but returning all is correct if it splits.
-pub(crate) fn find_codex_rollouts(session_id: &str) -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
-    else {
-        return Vec::new();
-    };
-    // Anchor on the `-<id>.jsonl` boundary (filenames are
-    // `rollout-<ts>-<id>.jsonl`) so one thread id can't match another whose
-    // name merely ends with the same characters.
-    let suffix = format!("-{session_id}.jsonl");
-    // Walk the YYYY/MM/DD tree (three dir levels) and match the suffix.
-    fn dirs_in(p: &Path) -> Vec<PathBuf> {
-        std::fs::read_dir(p)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect()
-    }
-    let sessions = home.join("sessions");
-    let mut out = Vec::new();
-    for year in dirs_in(&sessions) {
-        for month in dirs_in(&year) {
-            for day in dirs_in(&month) {
-                for entry in std::fs::read_dir(&day).into_iter().flatten().flatten() {
-                    let path = entry.path();
-                    if path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.ends_with(&suffix))
-                    {
-                        out.push(path);
-                    }
-                }
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// Read a JSONL file into a vec of parsed values, skipping blank or
-/// unparseable lines.
-pub(crate) fn read_jsonl_values(path: &Path) -> Result<Vec<Value>> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path)
-        .map_err(|e| Error::Other(format!("open transcript: {e}")))?;
-    let reader = std::io::BufReader::new(file);
-    let mut out = Vec::new();
-    for line in reader.lines().map_while(std::result::Result::ok) {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<Value>(&line) {
-            out.push(v);
-        }
-    }
-    Ok(out)
 }
 
 /// Process-exit outcomes that feed `apply_exit_if_current`. `PtyExit` and
@@ -2405,7 +2285,7 @@ fn spawn_per_turn_agent(
         } else {
             sup_for_exit.agents.lock().remove(&id_for_exit);
             sup_for_exit.activities.lock().remove(&id_for_exit);
-            sup_for_exit.native_input_lines.lock().remove(&id_for_exit);
+            sup_for_exit.native_inputs.lock().remove(&id_for_exit);
             sup_for_exit.trigger_session_sync(app_for_exit.clone(), id_for_exit.clone());
             sup_for_exit.set_status(
                 &app_for_exit,
@@ -2420,89 +2300,6 @@ fn spawn_per_turn_agent(
         Error::Other(format!("unknown per-turn agent provider: {provider}"))
     })?;
     Agent::spawn_per_turn(desc, spec, on_event, on_session_id, on_turn_exit)
-}
-
-fn observe_native_input(sup: &Supervisor, agent_id: &str, bytes: &[u8]) -> Vec<String> {
-    let mut submitted = Vec::new();
-    let mut lines = sup.native_input_lines.lock();
-    let line = lines.entry(agent_id.to_string()).or_default();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\r' | b'\n' => {
-                let trimmed = line.trim().to_string();
-                line.clear();
-                if !trimmed.is_empty() {
-                    submitted.push(trimmed);
-                }
-                i += 1;
-            }
-            0x7f | 0x08 => {
-                line.pop();
-                i += 1;
-            }
-            0x03 | 0x15 => {
-                line.clear();
-                i += 1;
-            }
-            0x1b => {
-                i = skip_escape_sequence(bytes, i);
-            }
-            b if b < 0x20 => {
-                i += 1;
-            }
-            _ => match std::str::from_utf8(&bytes[i..]) {
-                Ok(rest) => {
-                    if let Some(ch) = rest.chars().next() {
-                        line.push(ch);
-                        i += ch.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    let valid = e.valid_up_to();
-                    if valid > 0 {
-                        if let Ok(s) = std::str::from_utf8(&bytes[i..i + valid]) {
-                            if let Some(ch) = s.chars().next() {
-                                line.push(ch);
-                                i += ch.len_utf8();
-                            } else {
-                                i += valid;
-                            }
-                        } else {
-                            i += valid;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-            },
-        }
-    }
-
-    submitted
-}
-
-fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
-    let mut i = start + 1;
-    if i < bytes.len() && bytes[i] == b'[' {
-        i += 1;
-        while i < bytes.len() {
-            let b = bytes[i];
-            i += 1;
-            if (0x40..=0x7e).contains(&b) {
-                break;
-            }
-        }
-        return i;
-    }
-    if i < bytes.len() {
-        i + 1
-    } else {
-        i
-    }
 }
 
 /// Fire-and-forget handler for the user's first message: persists it
@@ -2928,7 +2725,7 @@ fn apply_exit_if_current(
 
     sup.agents.lock().remove(agent_id);
     sup.activities.lock().remove(agent_id);
-    sup.native_input_lines.lock().remove(agent_id);
+    sup.native_inputs.lock().remove(agent_id);
 
     let (status, err) = if success {
         // Clean exit means the agent is resumable — keep it Idle so the
@@ -3261,75 +3058,6 @@ mod tests {
         assert_eq!(plan.first_phase, RunPhase::Running);
         assert_eq!(plan.first_cmd, "cargo run");
         assert_eq!(plan.chained_run_cmd, None);
-    }
-
-    // ── claude transcript location (CLAUDE_CONFIG_DIR) ────────────────────────
-
-    #[test]
-    fn projects_dirs_prefers_config_dir_then_default_home() {
-        let dirs = projects_dirs_from(
-            Some(PathBuf::from("/home/u/.claude-eve")),
-            Some(PathBuf::from("/home/u")),
-        );
-        assert_eq!(
-            dirs,
-            vec![
-                PathBuf::from("/home/u/.claude-eve/projects"),
-                PathBuf::from("/home/u/.claude/projects"),
-            ],
-        );
-    }
-
-    #[test]
-    fn projects_dirs_dedups_when_config_is_default() {
-        // CLAUDE_CONFIG_DIR explicitly set to ~/.claude must not double-scan.
-        let dirs = projects_dirs_from(
-            Some(PathBuf::from("/home/u/.claude")),
-            Some(PathBuf::from("/home/u")),
-        );
-        assert_eq!(dirs, vec![PathBuf::from("/home/u/.claude/projects")]);
-    }
-
-    #[test]
-    fn projects_dirs_falls_back_to_home_when_config_unset() {
-        let dirs = projects_dirs_from(None, Some(PathBuf::from("/home/u")));
-        assert_eq!(dirs, vec![PathBuf::from("/home/u/.claude/projects")]);
-    }
-
-    #[test]
-    fn find_session_jsonl_locates_transcript_in_relocated_config_dir() {
-        // Regression: the locator used to hardcode `~/.claude/projects`, so an
-        // agent spawned with CLAUDE_CONFIG_DIR pointing elsewhere wrote its
-        // transcript to a dir we never scanned — it was never ingested and was
-        // lost when that dir moved. The transcript must be found wherever the
-        // configured projects dir is.
-        let cfg = tempfile::tempdir().unwrap();
-        let projects = cfg.path().join("projects");
-        let slug = projects.join("-Users-alex--fletch-worktrees-transylvania-fletch");
-        std::fs::create_dir_all(&slug).unwrap();
-        let sid = "f90f9c57-6dd1-45a0-9b69-5b5963979d5b";
-        let jsonl = slug.join(format!("{sid}.jsonl"));
-        std::fs::write(&jsonl, b"{}\n").unwrap();
-
-        let found = find_session_jsonl_in(&[projects], sid);
-        assert_eq!(found.as_deref(), Some(jsonl.as_path()));
-    }
-
-    #[test]
-    fn find_session_jsonl_skips_missing_dir_and_scans_the_next() {
-        // A non-existent candidate dir (e.g. the default ~/.claude when only the
-        // relocated config dir has the file) must not short-circuit the scan.
-        let cfg = tempfile::tempdir().unwrap();
-        let projects = cfg.path().join("projects");
-        let slug = projects.join("slug");
-        std::fs::create_dir_all(&slug).unwrap();
-        let sid = "abc";
-        let jsonl = slug.join(format!("{sid}.jsonl"));
-        std::fs::write(&jsonl, b"{}\n").unwrap();
-
-        let missing = cfg.path().join("does-not-exist");
-        let found = find_session_jsonl_in(&[missing, projects], sid);
-        assert_eq!(found.as_deref(), Some(jsonl.as_path()));
     }
 
     fn test_supervisor() -> Supervisor {

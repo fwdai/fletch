@@ -459,7 +459,7 @@ fn pi_locate(session_id: &str, cwd: &Path) -> Vec<PathBuf> {
 fn pi_read(paths: &[PathBuf]) -> Vec<RawRecord> {
     let values: Vec<Value> = paths
         .iter()
-        .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
+        .flat_map(|p| crate::transcripts::read_jsonl_values(p).unwrap_or_default())
         .collect();
     // Pi's JSONL lines carry a stable `id`.
     records_with_id(values, Some("id"))
@@ -474,7 +474,7 @@ fn pi_read(paths: &[PathBuf]) -> Vec<RawRecord> {
 // `uuid`; metadata lines (mode/permission-mode/…) don't → positional fallback.
 
 fn claude_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
-    crate::supervisor::find_session_jsonl(session_id)
+    crate::transcripts::find_session_jsonl(session_id)
         .into_iter()
         .collect()
 }
@@ -482,7 +482,7 @@ fn claude_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
 fn claude_read(paths: &[PathBuf]) -> Vec<RawRecord> {
     let values: Vec<Value> = paths
         .iter()
-        .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
+        .flat_map(|p| crate::transcripts::read_jsonl_values(p).unwrap_or_default())
         .collect();
     records_with_id(values, Some("uuid"))
 }
@@ -498,13 +498,13 @@ static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
 // Lines are `{timestamp,type,payload}` dual-channel with no stable per-line id,
 // so records key positionally. The codex frontend adapter already normalizes.
 fn codex_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
-    crate::supervisor::find_codex_rollouts(session_id)
+    crate::transcripts::find_codex_rollouts(session_id)
 }
 
 fn codex_read(paths: &[PathBuf]) -> Vec<RawRecord> {
     let values: Vec<Value> = paths
         .iter()
-        .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
+        .flat_map(|p| crate::transcripts::read_jsonl_values(p).unwrap_or_default())
         .collect();
     records_with_id(values, None)
 }
@@ -536,7 +536,7 @@ fn cursor_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
 fn cursor_read(paths: &[PathBuf]) -> Vec<RawRecord> {
     let values: Vec<Value> = paths
         .iter()
-        .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
+        .flat_map(|p| crate::transcripts::read_jsonl_values(p).unwrap_or_default())
         .collect();
     records_with_id(values, None)
 }
@@ -695,7 +695,7 @@ fn antigravity_locate(session_id: &str, cwd: &Path) -> Vec<PathBuf> {
 fn antigravity_read(paths: &[PathBuf]) -> Vec<RawRecord> {
     paths
         .iter()
-        .flat_map(|p| crate::supervisor::read_jsonl_values(p).unwrap_or_default())
+        .flat_map(|p| crate::transcripts::read_jsonl_values(p).unwrap_or_default())
         .enumerate()
         .map(|(i, body)| {
             // `step_index` is a stable, monotonic per-conversation key.
