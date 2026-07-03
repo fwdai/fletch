@@ -13,6 +13,7 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   accent: "copper",
   density: "comfortable" as Density,
   features: DEFAULT_FEATURES,
+  soundEnabled: true,
   viewMode: "custom" as WorkspaceView,
 
   // ── appearance ──────────────────────────────────────────────────────────────
@@ -38,6 +39,10 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
       setSetting("features", next);
       return { features: next };
     }),
+  setSoundEnabled: (on) => {
+    set({ soundEnabled: on });
+    setSetting("soundEnabled", String(on));
+  },
   setViewMode: (v) => {
     set({ viewMode: v });
     setSetting("viewMode", v);

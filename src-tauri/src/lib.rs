@@ -326,7 +326,8 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init());
 
     // Persist window size/position/maximized state across restarts. Desktop
     // only — the plugin isn't available on mobile targets. VISIBLE is excluded
