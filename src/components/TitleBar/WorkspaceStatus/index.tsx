@@ -22,9 +22,7 @@ export function WorkspaceStatus() {
   const agent = selectedId ? workspace?.agents.find((a) => a.id === selectedId) : null;
   if (agent) {
     const repoPath = agent.repos[0]?.repo_path;
-    return (
-      <Capsule agent={agent} projectName={repoPath ? basename(repoPath) : agent.name} />
-    );
+    return <Capsule agent={agent} projectName={repoPath ? basename(repoPath) : agent.name} />;
   }
 
   return <HomeSummary />;
