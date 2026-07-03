@@ -22,16 +22,15 @@
 
 use parking_lot::Mutex;
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::child_io;
 use crate::error::{Error, Result};
 
 /// Tools whose `can_use_tool` request we hold open for a human answer instead
@@ -122,92 +121,35 @@ impl ManagedSession {
 
         let stdin_for_reader = stdin_arc.clone();
         let pending_for_reader = pending.clone();
-        thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(l) if l.trim().is_empty() => continue,
-                    Ok(l) => match serde_json::from_str::<Value>(&l) {
-                        Ok(v) => {
-                            match v.get("type").and_then(Value::as_str) {
-                                // Permission gate from the CLI: respond on stdin.
-                                Some("control_request") => handle_control_request(
-                                    &stdin_for_reader,
-                                    &pending_for_reader,
-                                    &on_event,
-                                    v,
-                                ),
-                                // Reply to a request we sent (e.g. initialize) —
-                                // control plane, never a transcript event.
-                                Some("control_response") => {}
-                                _ => on_event(v),
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, raw = %l, "managed: bad json line");
-                        }
-                    },
-                    Err(e) => {
-                        tracing::warn!(error = %e, "managed: stdout read error");
-                        break;
-                    }
+        child_io::spawn_json_reader(stdout, "managed", move |v| {
+            match v.get("type").and_then(Value::as_str) {
+                // Permission gate from the CLI: respond on stdin.
+                Some("control_request") => {
+                    handle_control_request(&stdin_for_reader, &pending_for_reader, &on_event, v)
                 }
-            }
-            tracing::info!("managed: stdout closed");
-        });
-
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                match line {
-                    Ok(l) => tracing::warn!(stderr = %l, "managed: stderr"),
-                    Err(_) => break,
-                }
+                // Reply to a request we sent (e.g. initialize) — control plane,
+                // never a transcript event.
+                Some("control_response") => {}
+                _ => on_event(v),
             }
         });
 
-        {
-            let child_for_wait = child_arc.clone();
-            thread::spawn(move || {
-                let exit = loop {
-                    let status = {
-                        let mut guard = child_for_wait.lock();
-                        let Some(child) = guard.as_mut() else {
-                            return;
-                        };
-                        match child.try_wait() {
-                            Ok(Some(status)) => {
-                                let _ = guard.take();
-                                Some(Ok(status))
-                            }
-                            Ok(None) => None,
-                            Err(e) => {
-                                let _ = guard.take();
-                                Some(Err(e))
-                            }
-                        }
-                    };
+        child_io::spawn_stderr_reader(stderr, "managed", |_| {});
 
-                    match status {
-                        Some(Ok(status)) => {
-                            break ManagedExit {
-                                success: status.success(),
-                                message: format!("{status}"),
-                            };
-                        }
-                        Some(Err(e)) => {
-                            break ManagedExit {
-                                success: false,
-                                message: format!("wait failed: {e}"),
-                            };
-                        }
-                        None => thread::sleep(Duration::from_millis(50)),
-                    }
-                };
-                tracing::info!(success = exit.success, message = %exit.message, "managed: exited");
-                on_exit(exit);
-            });
-        }
+        child_io::spawn_reaper(child_arc.clone(), "managed", move |status| {
+            let exit = match status {
+                Ok(status) => ManagedExit {
+                    success: status.success(),
+                    message: format!("{status}"),
+                },
+                Err(e) => ManagedExit {
+                    success: false,
+                    message: format!("wait failed: {e}"),
+                },
+            };
+            tracing::info!(success = exit.success, message = %exit.message, "managed: exited");
+            on_exit(exit);
+        });
 
         Ok(Self {
             child: child_arc,
