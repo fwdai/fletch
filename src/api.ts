@@ -72,7 +72,8 @@ export interface Workspace {
 
 export interface AgentOutputEvent {
   agent_id: string;
-  bytes: number[];
+  /** Raw PTY bytes, base64-encoded over IPC. Decode with `decodeBase64`. */
+  bytes: string;
 }
 
 /** Raw stream-json event from claude in custom view. Shape varies by
@@ -525,7 +526,8 @@ export function onAgentOutput(cb: (e: AgentOutputEvent) => void): Promise<Unlist
 
 export interface ShellOutputEvent {
   agent_id: string;
-  bytes: number[];
+  /** Raw PTY bytes, base64-encoded over IPC. Decode with `decodeBase64`. */
+  bytes: string;
 }
 
 export function onShellOutput(cb: (e: ShellOutputEvent) => void): Promise<UnlistenFn> {

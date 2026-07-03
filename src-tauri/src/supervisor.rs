@@ -25,9 +25,21 @@ use crate::workspace::{
     DiffStats, TrackedRepo, Workspace, WorkspaceManager,
 };
 
+/// Serialize raw PTY bytes as a base64 string rather than serde's default
+/// JSON number array (`[27,91,...]`), which inflates the payload ~3.5×. The
+/// frontend base64-decodes back to the identical byte stream.
+fn serialize_bytes_b64<S: serde::Serializer>(
+    bytes: &[u8],
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    use base64::Engine;
+    s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 #[derive(Clone, serde::Serialize)]
 pub struct AgentOutputPayload {
     pub agent_id: String,
+    #[serde(serialize_with = "serialize_bytes_b64")]
     pub bytes: Vec<u8>,
 }
 
@@ -96,6 +108,7 @@ pub struct AgentGitActionPayload {
 #[derive(Clone, serde::Serialize)]
 pub struct ShellOutputPayload {
     pub agent_id: String,
+    #[serde(serialize_with = "serialize_bytes_b64")]
     pub bytes: Vec<u8>,
 }
 
