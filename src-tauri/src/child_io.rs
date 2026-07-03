@@ -153,12 +153,25 @@ mod tests {
     }
 
     fn spawn(dir: &std::path::Path, body: &str) -> Child {
-        Command::new(script(dir, body))
-            .current_dir(dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap()
+        let path = script(dir, body);
+        // Retry on ETXTBSY (errno 26): a sibling test thread's fork can briefly
+        // inherit a write-fd to a just-written executable, making our execve
+        // race. The window is tiny, so a few short retries clears it.
+        for attempt in 0.. {
+            match Command::new(&path)
+                .current_dir(dir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => return child,
+                Err(e) if e.raw_os_error() == Some(26) && attempt < 10 => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => panic!("spawn failed: {e}"),
+            }
+        }
+        unreachable!()
     }
 
     #[test]

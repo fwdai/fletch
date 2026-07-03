@@ -45,7 +45,10 @@ export function DeveloperPane() {
             variant="outline"
             onClick={() => {
               closeSettingsScreen();
-              setUpdateReady("9.9.9-test");
+              setUpdateReady(
+                "9.9.9-test",
+                "• Faster startup\n• Fixed a crash when opening large diffs\n• Polished the update toast",
+              );
             }}
           >
             <Icon name="sparkle" size={12} />
