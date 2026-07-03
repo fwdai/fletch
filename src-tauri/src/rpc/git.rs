@@ -149,7 +149,7 @@ impl GitDispatcher {
                 effects,
             );
         }
-        match crate::gh::pr_create(&self.cwd, title, body, &self.base_branch).await {
+        match crate::github::pr_create(&self.cwd, title, body, &self.base_branch).await {
             Ok(pr) => {
                 crate::telemetry::track("pr_opened", json!({ "source": "agent_rpc" }));
                 effects.push(RpcEvent::named(
@@ -201,7 +201,8 @@ impl GitDispatcher {
     }
 
     async fn git_update_branch(&self, id: &str) -> Response {
-        let fetch = run_git_command(id, &self.cwd, &["fetch", "origin", &self.base_branch], &[])
+        let auth = crate::github::git_auth_env();
+        let fetch = run_git_command(id, &self.cwd, &["fetch", "origin", &self.base_branch], &auth)
             .await;
         if !fetch.ok || fetch.exit_code != Some(0) {
             return fetch;

@@ -59,14 +59,7 @@ export function OnboardingReadiness() {
       : checking
         ? "checking"
         : "warn";
-  const ghState: S = gh
-    ? gh.installed && gh.authenticated
-      ? "ok"
-      : "warn"
-    : checking
-      ? "checking"
-      : "warn";
-  const ghFix = gh?.installed && !gh.authenticated ? "gh auth login" : undefined;
+  const ghState: S = gh ? (gh.authenticated ? "ok" : "warn") : checking ? "checking" : "warn";
 
   return (
     <div className="ob-rdy">
@@ -92,21 +85,17 @@ export function OnboardingReadiness() {
         />
         <CheckRow
           icon={<Icon name="github" size={13} />}
-          name="GitHub CLI"
+          name="GitHub"
           state={ghState}
           status={
             gh
-              ? !gh.installed
-                ? "not found"
-                : !gh.authenticated
-                  ? "not signed in"
-                  : `signed in${gh.login ? ` · ${gh.login}` : ""}`
+              ? gh.authenticated
+                ? `connected${gh.login ? ` · ${gh.login}` : ""}`
+                : "not connected — sign in with GitHub to enable clone & PRs"
               : checking
                 ? "checking…"
                 : "couldn't check"
           }
-          fix={ghFix}
-          docs={!gh?.installed ? "https://cli.github.com" : undefined}
         />
       </div>
 

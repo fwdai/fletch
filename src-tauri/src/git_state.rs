@@ -192,7 +192,7 @@ async fn query_remote_web_url(worktree_path: &Path) -> Option<String> {
 /// `git@github.com:` forms, with optional `.git` suffix / trailing slash.
 /// Returns `None` for non-github.com remotes or anything not of the shape
 /// `owner/repo`, so callers only ever build valid GitHub links.
-fn github_web_url(remote: &str) -> Option<String> {
+pub(crate) fn github_web_url(remote: &str) -> Option<String> {
     let r = remote.trim();
     let owner_repo = r
         .strip_prefix("git@github.com:")

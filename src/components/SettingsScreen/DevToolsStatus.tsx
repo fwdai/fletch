@@ -37,14 +37,7 @@ export function DevToolsStatus() {
       : checking
         ? "checking"
         : "warn";
-  const ghState: S = gh
-    ? gh.installed && gh.authenticated
-      ? "ok"
-      : "warn"
-    : checking
-      ? "checking"
-      : "warn";
-  const ghFix = gh?.installed && !gh.authenticated ? "gh auth login" : undefined;
+  const ghState: S = gh ? (gh.authenticated ? "ok" : "warn") : checking ? "checking" : "warn";
 
   return (
     <div className="readiness">
@@ -70,21 +63,17 @@ export function DevToolsStatus() {
       />
       <ToolRow
         icon={<Icon name="github" size={15} />}
-        name="GitHub CLI"
+        name="GitHub"
         state={ghState}
         statusText={
           gh
-            ? !gh.installed
-              ? "Not found — needed for clone & PRs"
-              : !gh.authenticated
-                ? "Installed — not signed in"
-                : `Signed in${gh.login ? ` as ${gh.login}` : ""}`
+            ? gh.authenticated
+              ? `Connected${gh.login ? ` as ${gh.login}` : ""}`
+              : "Not connected — sign in with GitHub (Account tab) for clone & PRs"
             : checking
               ? "Checking…"
               : "Couldn't check"
         }
-        fix={ghFix}
-        docs={!gh?.installed ? "https://cli.github.com" : undefined}
       />
       <div className="rdy-foot flex-center">
         <span className="rdy-count" />

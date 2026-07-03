@@ -7,10 +7,10 @@ mod database;
 mod editors;
 mod error;
 mod exec_session;
-mod gh;
 mod git;
 mod git_dist;
 mod git_state;
+mod github;
 mod instructions;
 mod managed_session;
 mod message_queue;
@@ -470,6 +470,9 @@ pub fn run() {
             // at launch, not at the onboarding readiness screen, so a
             // git-less machine is usually ready before the user gets there.
             git_dist::init(data_dir.join("git-dist"));
+            // Seed the in-process GitHub token so API calls and git network
+            // auth work without a DB handle (updated on sign-in).
+            github::set_token(database::get_setting(&db.lock(), github::TOKEN_SETTING));
             {
                 let db = db.clone();
                 git_dist::set_identity_source(Box::new(move || {

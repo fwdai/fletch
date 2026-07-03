@@ -8,7 +8,7 @@ use tauri::{AppHandle, State};
 
 use crate::agent::{BinValidation, ProviderProbe, ToolStatus};
 use crate::error::{Error, Result};
-use crate::gh::{self, GhRepoSummary, GhStatus, PrState};
+use crate::github::{self as gh, GhRepoSummary, GhStatus, PrState};
 use crate::git;
 use crate::new_project;
 use crate::git_state::{self, FileStatus, GitState, ShortStats, StatusKind};
@@ -138,8 +138,8 @@ pub fn remove_workspace_repo(
     supervisor.remove_workspace_repo(PathBuf::from(repo_path))
 }
 
-/// Whether the `gh` CLI is installed and authenticated — drives the New
-/// Project flow's gating (clone and create both require `gh`).
+/// Whether the app has a working GitHub connection — drives the New Project
+/// flow's gating (clone and create both need the API).
 #[tauri::command]
 pub async fn gh_status() -> Result<GhStatus> {
     gh::auth_status().await

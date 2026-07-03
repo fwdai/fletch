@@ -89,7 +89,7 @@ impl Supervisor {
                 // Known PR: fetch by number, never by branch. This is what keeps
                 // PR identity bound to the agent rather than the recyclable
                 // branch name.
-                crate::gh::pr_view_number(&worktree, number as u32)
+                crate::github::pr_view_number(&worktree, number as u32)
                     .await
                     .unwrap_or(None)
             } else {
@@ -98,8 +98,8 @@ impl Supervisor {
                 // it if it's OPEN — a stale merged/closed PR sitting on a recycled
                 // branch must not be claimed as this agent's. Once adopted we
                 // persist the number so all later lookups go by number.
-                match crate::gh::pr_view(&worktree).await.unwrap_or(None) {
-                    Some(pr) if matches!(pr.state, crate::gh::PrStatus::Open) => {
+                match crate::github::pr_view(&worktree).await.unwrap_or(None) {
+                    Some(pr) if matches!(pr.state, crate::github::PrStatus::Open) => {
                         if let Err(e) =
                             workspace.set_repo_pr_number(&agent_id, &subdir, pr.number as i64)
                         {

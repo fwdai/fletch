@@ -104,6 +104,15 @@ async fn run_git(dir: &Path, args: &[&str], label: &str) -> Result<std::process:
     Ok(out)
 }
 
+/// GitHub token auth for git's https transport, applied to every network op
+/// (push/pull/fetch). No-op without a token; scoped to github.com https, so
+/// SSH remotes and other hosts are untouched (see `github::git_auth_env`).
+fn apply_github_auth(cmd: &mut Command) {
+    for (k, v) in crate::github::git_auth_env() {
+        cmd.env(k, v);
+    }
+}
+
 /// Env vars that guarantee commit-creating commands (commit, merge via pull,
 /// rebase) an author/committer identity. Empty when the repo already resolves
 /// both `user.name` and `user.email` — the env would otherwise *override*
@@ -246,14 +255,12 @@ pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
     // `kill_on_drop` so a timeout actually tears down the hung git process
     // (and its SSH child) rather than orphaning it to keep blocking on the
     // dead connection.
-    let fetched = tokio::time::timeout(
-        FETCH_TIMEOUT,
-        crate::git_dist::command(repo)
-            .args(["fetch", "origin", branch])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
+    let mut fetch_cmd = crate::git_dist::command(repo);
+    fetch_cmd
+        .args(["fetch", "origin", branch])
+        .kill_on_drop(true);
+    apply_github_auth(&mut fetch_cmd);
+    let fetched = tokio::time::timeout(FETCH_TIMEOUT, fetch_cmd.output()).await;
     // Timed out, failed to spawn, or non-zero exit → fall back to local HEAD.
     match fetched {
         Ok(Ok(out)) if out.status.success() => {}
@@ -669,6 +676,7 @@ pub async fn worktree_add_branch(
 pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
     let mut cmd = crate::git_dist::command(worktree);
     cmd.args(["push", "-u", "origin", branch]);
+    apply_github_auth(&mut cmd);
     let out = output_timed(&mut cmd, "git push").await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
@@ -694,6 +702,7 @@ pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
 pub async fn pull(worktree: &Path) -> Result<()> {
     let mut cmd = crate::git_dist::command(worktree);
     cmd.args(["pull"]);
+    apply_github_auth(&mut cmd);
     // A pull may create a merge commit, which needs an author/committer.
     for (k, v) in identity_env(worktree).await {
         cmd.env(k, v);
@@ -771,6 +780,24 @@ pub async fn stash_push(worktree: &Path) -> Result<()> {
 pub async fn merge_abort(worktree: &Path) -> Result<()> {
     run_git(worktree, &["merge", "--abort"], "merge --abort").await?;
     Ok(())
+}
+
+/// Add a remote. Used when publishing a fresh local repo to GitHub.
+pub async fn remote_add(worktree: &Path, name: &str, url: &str) -> Result<()> {
+    run_git(worktree, &["remote", "add", name, url], &format!("remote add {name}")).await?;
+    Ok(())
+}
+
+/// Subject and body of the worktree's last commit — the source for a PR's
+/// title/body when the caller didn't supply one (what `gh pr create --fill`
+/// did).
+pub async fn last_commit_message(worktree: &Path) -> Result<(String, String)> {
+    let out = run_git(worktree, &["log", "-1", "--format=%s%n%b"], "log -1").await?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let subject = lines.next().unwrap_or("").trim().to_string();
+    let body = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+    Ok((subject, body))
 }
 
 /// Force-delete a local branch. Returns Ok even if the branch never
