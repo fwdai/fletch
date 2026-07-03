@@ -9,7 +9,7 @@
  *  their own envelope, leaving our block mid-string rather than at the start.
  *  The legacy `<quorum-system>` tag is still matched so transcripts recorded
  *  before the rebrand keep stripping cleanly. No-op on messages without it. */
-const SYSTEM_BLOCK = /\s*<(?:fletch|quorum)-system>[\s\S]*?<\/(?:fletch|quorum)-system>\s*/g;
+const SYSTEM_BLOCK = /\s*<(fletch|quorum)-system>[\s\S]*?<\/\1-system>\s*/g;
 
 export function stripInjectedInstructions(text: string): string {
   return text.replace(SYSTEM_BLOCK, "").trim();
