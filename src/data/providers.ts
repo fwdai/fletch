@@ -5,9 +5,9 @@
 // against it, so adding/removing an agent surfaces as a compile error
 // anywhere it isn't kept in sync.
 //
-// "Wired" (runnable) === has an entry in the frontend `ADAPTERS` registry
-// plus a backend runner. Agents without an adapter (e.g. antigravity) still
-// appear here but are gated as "coming soon" in the picker (see ModelPicker).
+// Every agent here is wired: it has an entry in the frontend `ADAPTERS`
+// registry (a full Record<ProviderId, …>) plus a backend runner, so a
+// ProviderId without an adapter is a compile error.
 
 export type ProviderId = "claude" | "codex" | "cursor" | "antigravity" | "opencode" | "pi";
 

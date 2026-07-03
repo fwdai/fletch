@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { hasAdapter } from "@/adapters";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/Button";
@@ -20,8 +19,7 @@ export function ProvidersPane() {
   const refreshProviderVersions = useAppStore((s) => s.refreshProviderVersions);
   const [scanning, setScanning] = useState(false);
 
-  const installed = PROVIDERS.filter((p) => hasAdapter(p.id));
-  const enabledCount = installed.filter((p) => providerFlags[p.id] !== false).length;
+  const enabledCount = PROVIDERS.filter((p) => providerFlags[p.id] !== false).length;
 
   const rescan = async () => {
     if (scanning) return;
@@ -38,13 +36,10 @@ export function ProvidersPane() {
       <SetHead
         eyebrow="Settings · Providers"
         title="Providers"
-        desc={`${enabledCount} of ${installed.length} agents enabled. Toggle an agent off to hide it from the composer's model picker without signing out.`}
+        desc={`${enabledCount} of ${PROVIDERS.length} agents enabled. Toggle an agent off to hide it from the composer's model picker without signing out.`}
         actions={
           <>
             {scanning && <span className="set-checked mono text-xs">Scanning…</span>}
-            <IconButton tipDown tip="Coming soon" aria-label="Add provider" disabled>
-              <Icon name="plus" />
-            </IconButton>
             <IconButton
               tipDown
               tip="Re-scan system"
@@ -60,7 +55,7 @@ export function ProvidersPane() {
 
       <SetGroup label="Installed on this system" last>
         <div className="set-prov-list">
-          {installed.map((p) => (
+          {PROVIDERS.map((p) => (
             <ProviderRow
               key={p.id}
               provider={p}

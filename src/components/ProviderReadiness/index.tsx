@@ -9,7 +9,6 @@
 
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { hasAdapter } from "@/adapters";
 import { api, type GhStatus, type ToolStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -115,9 +114,8 @@ export function ProviderReadiness() {
     recheck();
   }, [recheck]);
 
-  // Only agents with a wired runner are worth checking; antigravity etc. are
-  // gated "coming soon" and never spawnable.
-  const agents = PROVIDERS.filter((p) => hasAdapter(p.id) && providerFlags[p.id] !== false);
+  // Skip agents the user has toggled off; the rest are all runnable.
+  const agents = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
   const detected = agents.filter((p) => !!providerPaths[p.id]).length;
 
   // git/gh come from local state (null until their probe resolves); agents come
