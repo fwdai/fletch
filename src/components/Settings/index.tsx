@@ -1,6 +1,7 @@
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { Scrim } from "@/components/ui/Scrim";
+import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { ACCENTS, PROVIDERS } from "@/data/providers";
 import type { Density, FeatureFlags, ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
@@ -57,6 +58,7 @@ function Popover({ onClose }: { onClose: () => void }) {
   const setAccent = useAppStore((s) => s.setAccent);
   const density = useAppStore((s) => s.density);
   const setDensity = useAppStore((s) => s.setDensity);
+  const providerVersions = useAppStore((s) => s.providerVersions);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
 
   return (
@@ -117,14 +119,22 @@ function Popover({ onClose }: { onClose: () => void }) {
       ))}
 
       <SettingsSection title="Providers">
-        {PROVIDERS.map((p) => (
-          <SettingsRow key={p.id} label={p.label} description={`${p.sub} · ${p.version}`}>
-            <Toggle
-              value={providerFlags[p.id] !== false}
-              onChange={(v) => setProviderEnabled(p.id, v)}
-            />
-          </SettingsRow>
-        ))}
+        {PROVIDERS.map((p) => {
+          // Honest, non-user-specific model routing, plus the live-probed
+          // version when the backend has resolved it — never a fabricated plan
+          // name or version string.
+          const version = providerVersions[p.id];
+          const models = PROVIDER_DETAIL[p.id].models;
+          const description = [models, version].filter(Boolean).join(" · ");
+          return (
+            <SettingsRow key={p.id} label={p.label} description={description}>
+              <Toggle
+                value={providerFlags[p.id] !== false}
+                onChange={(v) => setProviderEnabled(p.id, v)}
+              />
+            </SettingsRow>
+          );
+        })}
       </SettingsSection>
 
       <button className="sp-allbtn flex-center" onClick={() => openSettingsScreen("general")}>

@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Badge } from "@/components/ui/Badge";
+import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
 import { PROVIDERS, providerChip } from "@/data/providers";
 
@@ -168,7 +169,7 @@ export function ExhibitProviders() {
               <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={30} />
               <span className="meta">
                 <span className="pl">{p.label}</span>
-                <span className="ps">{p.sub}</span>
+                <span className="ps">{PROVIDER_DETAIL[p.id].models}</span>
               </span>
               <span className="chk">
                 <Icon name="check" size={11} strokeWidth={2} />

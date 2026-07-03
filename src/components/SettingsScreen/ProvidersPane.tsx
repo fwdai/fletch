@@ -110,7 +110,7 @@ function ProviderRow({
         <div className="set-prov-id">
           <div className="set-prov-name flex-center text-base">
             {provider.label}
-            <span className="set-prov-ver mono text-xs">{liveVersion ?? provider.version}</span>
+            <span className="set-prov-ver mono text-xs">{liveVersion}</span>
           </div>
           <div className="set-prov-sub flex-center truncate mono text-sm">{effectivePath}</div>
         </div>

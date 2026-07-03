@@ -15,50 +15,22 @@ export interface Provider {
   id: ProviderId;
   label: string;
   short: string;
-  version: string;
   hue: number;
-  sub: string;
   /** Agent manages its own model and ignores a per-session selection, so the
    *  picker offers no model choice (e.g. antigravity's `agy --print` runner). */
   fixedModel?: boolean;
 }
 
+// Versions and per-account status are never hardcoded here: the backend probes
+// real versions into the store (`providerVersions`, see refreshProviderVersions),
+// and honest, non-user-specific model routing lives in PROVIDER_DETAIL.
 export const PROVIDERS: Provider[] = [
-  {
-    id: "claude",
-    label: "Claude Code",
-    short: "CC",
-    version: "v1.0.42",
-    hue: 28,
-    sub: "Opus 4.7 · Sonnet 4.6",
-  },
-  { id: "codex", label: "Codex", short: "CX", version: "v0.133.0", hue: 145, sub: "ChatGPT Plus" },
-  {
-    id: "cursor",
-    label: "Cursor Agent",
-    short: "CR",
-    version: "v2026.05.24",
-    hue: 215,
-    sub: "Pro Subscription",
-  },
-  {
-    id: "antigravity",
-    label: "Antigravity",
-    short: "AG",
-    version: "v1.0",
-    hue: 260,
-    sub: "Gemini 3 Pro",
-    fixedModel: true,
-  },
-  {
-    id: "opencode",
-    label: "OpenCode",
-    short: "OC",
-    version: "v1.15.12",
-    hue: 195,
-    sub: "1 upstream connected",
-  },
-  { id: "pi", label: "Pi", short: "PI", version: "v0.4", hue: 320, sub: "Pi · experimental" },
+  { id: "claude", label: "Claude Code", short: "CC", hue: 28 },
+  { id: "codex", label: "Codex", short: "CX", hue: 145 },
+  { id: "cursor", label: "Cursor Agent", short: "CR", hue: 215 },
+  { id: "antigravity", label: "Antigravity", short: "AG", hue: 260, fixedModel: true },
+  { id: "opencode", label: "OpenCode", short: "OC", hue: 195 },
+  { id: "pi", label: "Pi", short: "PI", hue: 320 },
 ];
 
 export const DEFAULT_PROVIDER_ID = "claude";
