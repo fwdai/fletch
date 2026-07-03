@@ -49,7 +49,12 @@ where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
-        for _ in BufReader::new(stdout).lines().map_while(Result::ok) {}
+        for line in BufReader::new(stdout).lines() {
+            if let Err(e) = line {
+                tracing::warn!(name, error = %e, "stdout read error (drain)");
+                break;
+            }
+        }
         tracing::debug!(name, "stdout closed");
     });
 }
