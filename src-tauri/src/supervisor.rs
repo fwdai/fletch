@@ -191,6 +191,32 @@ fn build_activity(record: &AgentRecord, effective_fresh: bool) -> Box<dyn Activi
     activity
 }
 
+/// Everything a caller supplies to spawn a fresh agent. Bundled so the (single)
+/// call site reads as named fields rather than nine positional arguments.
+pub struct SpawnRequest {
+    /// Requested view; downgraded to `Custom` for providers without a native view.
+    pub view: AgentView,
+    /// Primary repo the agent forks its worktree from.
+    pub repo_path: PathBuf,
+    /// Provider id (e.g. `"claude"`, `"codex"`).
+    pub provider: String,
+    /// Pre-allocated agent id from the draft; `None`/blank allocates a fresh one.
+    pub name: Option<String>,
+    /// Session-level effort (claude `--effort`), reapplied on every spawn.
+    pub effort: Option<String>,
+    /// Session-level model override; `None` keeps the provider CLI default.
+    pub model: Option<String>,
+    /// Custom agent's standing brief, re-injected on every spawn/resume.
+    pub instructions: Option<String>,
+    /// Custom agent identity; `None` for a plain built-in spawn.
+    pub custom_agent_id: Option<String>,
+    /// Explicit fork point (a commit-ish). When set — e.g. a workflow step
+    /// forking from the previous step's HEAD — the worktree is cut from this
+    /// commit instead of the parent branch's remote fork-point. `None` keeps the
+    /// default behavior.
+    pub fork_base: Option<String>,
+}
+
 impl Supervisor {
     pub fn new(workspace: Arc<WorkspaceManager>) -> Self {
         Self {
@@ -590,20 +616,19 @@ impl Supervisor {
     pub async fn spawn_agent(
         self: Arc<Self>,
         app: AppHandle,
-        view: AgentView,
-        repo_path: PathBuf,
-        provider: String,
-        name: Option<String>,
-        effort: Option<String>,
-        model: Option<String>,
-        instructions: Option<String>,
-        custom_agent_id: Option<String>,
-        // Explicit fork point (a commit-ish). When set — e.g. a workflow step
-        // forking from the previous step's HEAD — the worktree is cut from this
-        // commit instead of the parent branch's remote fork-point. None keeps the
-        // default behavior.
-        fork_base: Option<String>,
+        req: SpawnRequest,
     ) -> Result<AgentRecord> {
+        let SpawnRequest {
+            view,
+            repo_path,
+            provider,
+            name,
+            effort,
+            model,
+            instructions,
+            custom_agent_id,
+            fork_base,
+        } = req;
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
                 "not a git repository: {}",
