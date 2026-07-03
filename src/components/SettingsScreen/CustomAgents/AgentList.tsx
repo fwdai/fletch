@@ -102,7 +102,13 @@ export function AgentList({
                   >
                     <Icon name="copy" />
                   </IconButton>
-                  <IconButton size="sm" tipDown tip="Edit" aria-label="Edit" onClick={() => onEdit(a)}>
+                  <IconButton
+                    size="sm"
+                    tipDown
+                    tip="Edit"
+                    aria-label="Edit"
+                    onClick={() => onEdit(a)}
+                  >
                     <Icon name="edit" />
                   </IconButton>
                   <IconButton

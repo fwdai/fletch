@@ -82,12 +82,7 @@ export function TreeBrowser({
           Changed
           <span className="fp-filter-count text-xs">{changedCount}</span>
         </button>
-        <IconButton
-          size="xs"
-          tip="New file"
-          tipDown
-          onClick={() => onBeginCreate("newFile", "")}
-        >
+        <IconButton size="xs" tip="New file" tipDown onClick={() => onBeginCreate("newFile", "")}>
           <Icon name="file" />
         </IconButton>
         <IconButton
