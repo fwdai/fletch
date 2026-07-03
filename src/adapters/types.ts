@@ -21,7 +21,19 @@ export type ChatItem =
   // turn boundary (per-turn agents). Store-inserted only — never produced by an
   // adapter's reduce(). Reconciled away once the canonical transcript catches
   // up (see app.ts onSessionRecordsAppended). Renders with the user bubble.
-  | { kind: "queued_message"; text: string; attachments?: string[] }
+  | {
+      kind: "queued_message";
+      text: string;
+      attachments?: string[];
+      /** True only while the message is genuinely held for a later turn
+       *  boundary (per-turn agents, or claude paused on a tool gate). A message
+       *  injected/delivered now clears this and renders as a plain bubble. Set
+       *  from the send's delivery outcome. */
+      queued?: boolean;
+      /** Client turn id, used to locate this optimistic item and flip `queued`
+       *  once the backend reports the delivery outcome. */
+      turnId?: string;
+    }
   | {
       kind: "agent_message";
       text: string;

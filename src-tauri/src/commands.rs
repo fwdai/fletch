@@ -224,6 +224,8 @@ pub fn write_to_agent(
     sup.write_to_agent(&app, &agent_id, data.as_bytes())
 }
 
+/// Returns `true` when the follow-up was enqueued for a later turn boundary
+/// rather than delivered now (see `Supervisor::send_user_message`).
 #[tauri::command]
 pub fn send_user_message(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -233,7 +235,7 @@ pub fn send_user_message(
     text: String,
     attachments: Vec<String>,
     thinking: Option<String>,
-) -> Result<()> {
+) -> Result<bool> {
     let sup = supervisor.inner().clone();
     sup.send_user_message(
         &app,

@@ -113,25 +113,76 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
   return result;
 }
 
+/** Locate a `prev` item within the freshly-rebuilt transcript so a carried-over
+ *  follow-up can be re-anchored next to it. Tool calls match on their stable id;
+ *  user/agent messages on exact text (most-recent occurrence wins). Other kinds
+ *  aren't reliable anchors. Returns -1 when not found. */
+function locateAnchor(rebuilt: ChatItem[], item: ChatItem): number {
+  if (item.kind === "tool_call") {
+    return rebuilt.findIndex((r) => r.kind === "tool_call" && r.id === item.id);
+  }
+  if (item.kind === "user_message" || item.kind === "agent_message") {
+    const textOf = (r: ChatItem): string | undefined =>
+      r.kind === "user_message" || r.kind === "agent_message" ? r.text : undefined;
+    for (let i = rebuilt.length - 1; i >= 0; i -= 1) {
+      if (rebuilt[i].kind === item.kind && textOf(rebuilt[i]) === item.text) return i;
+    }
+  }
+  return -1;
+}
+
 /** Carry forward optimistic mid-turn follow-ups (`queued_message`) onto a log
  *  just rebuilt from canonical records, so they don't blink out before the
  *  transcript catches up. Drops any the rebuilt conversation already accounts
  *  for — its text (or first attachment path) now appears in a user message,
  *  whether the follow-up was delivered live (claude) or coalesced (per-turn) —
- *  mirroring the backend matcher's substring association. An attachment-only
- *  follow-up with no needle is kept until it can be matched. */
+ *  mirroring the backend matcher's substring association.
+ *
+ *  A follow-up that isn't in the transcript is re-inserted at its injection
+ *  point: right after the nearest preceding item we can still locate in the
+ *  rebuilt log. This keeps a live-injected message (which claude does not
+ *  persist as its own mid-turn record) in its place within the turn instead of
+ *  jumping to the bottom below the answer it prompted. Follow-ups with no
+ *  locatable anchor (e.g. an attachment-only one with no needle) fall to the
+ *  end, held there until they can be matched. */
 export function carryForwardQueued(rebuilt: ChatItem[], prev: ChatItem[]): ChatItem[] {
-  const stillQueued = prev.filter((it) => {
-    if (it.kind !== "queued_message") return false;
-    const needle = it.text || it.attachments?.[0];
-    if (!needle) return true;
-    return !rebuilt.some(
+  const matched = (q: Extract<ChatItem, { kind: "queued_message" }>): boolean => {
+    const needle = q.text || q.attachments?.[0];
+    if (!needle) return false;
+    return rebuilt.some(
       (r) =>
         r.kind === "user_message" &&
         (r.text.includes(needle) || (r.attachments?.includes(needle) ?? false)),
     );
+  };
+
+  // Walk prev, tracking the rebuilt-index of the most recent locatable item.
+  // Each unmatched follow-up is bucketed to insert after that anchor; -1 means
+  // no anchor was found yet, so it falls to the end.
+  const insertAfter = new Map<number, ChatItem[]>();
+  let anchor = -1;
+  for (const it of prev) {
+    if (it.kind === "queued_message") {
+      if (matched(it)) continue;
+      const bucket = insertAfter.get(anchor) ?? [];
+      bucket.push(it);
+      insertAfter.set(anchor, bucket);
+    } else {
+      const idx = locateAnchor(rebuilt, it);
+      if (idx >= 0) anchor = idx;
+    }
+  }
+  if (insertAfter.size === 0) return rebuilt;
+
+  const result: ChatItem[] = [];
+  rebuilt.forEach((r, i) => {
+    result.push(r);
+    const add = insertAfter.get(i);
+    if (add) result.push(...add);
   });
-  return [...rebuilt, ...stillQueued];
+  const tail = insertAfter.get(-1);
+  if (tail) result.push(...tail);
+  return result;
 }
 
 /** Apply one raw event to an agent's log via its provider adapter. Pure: it
@@ -284,7 +335,7 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function sendWhenAgentReady(send: () => Promise<void>) {
+export async function sendWhenAgentReady(send: () => Promise<unknown>) {
   let lastError: unknown;
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {

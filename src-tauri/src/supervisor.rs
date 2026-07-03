@@ -1078,6 +1078,11 @@ impl Supervisor {
     /// - idle, queue full    → flush the leftovers + this message, coalesced,
     /// - busy, claude live    → inject into the running turn over stdin,
     /// - busy, per-turn / tool-gated → queue for the next turn boundary.
+    /// Returns `true` when the message was *enqueued* (held for a later turn
+    /// boundary) rather than delivered now — the frontend uses this to badge the
+    /// optimistic bubble as "queued" only while it genuinely is. Any variant that
+    /// delivers now (including a `WriteLive` that falls back to a fresh turn)
+    /// returns `false`.
     pub fn send_user_message(
         self: Arc<Self>,
         app: &AppHandle,
@@ -1086,7 +1091,7 @@ impl Supervisor {
         text: &str,
         attachments: &[String],
         thinking: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mode = injection_mode(&self.workspace.agent(agent_id)?.provider);
         let busy = matches!(
             self.live_status(agent_id),
@@ -1106,7 +1111,8 @@ impl Supervisor {
             thinking: thinking.map(str::to_string),
         };
 
-        match decide_delivery(busy, mode, tool_gated, queue_nonempty) {
+        let delivery = decide_delivery(busy, mode, tool_gated, queue_nonempty);
+        match delivery {
             Delivery::DeliverNow => deliver_as_turn(&self, app, agent_id, &msg)?,
             Delivery::FlushNow => {
                 self.message_queue.lock().enqueue(agent_id, msg);
@@ -1127,7 +1133,9 @@ impl Supervisor {
             }
             Delivery::Enqueue => self.message_queue.lock().enqueue(agent_id, msg),
         }
-        Ok(())
+        // Only `Enqueue` holds the message back; every other path delivered it
+        // now (WriteLive's fallback still delivers as a fresh turn).
+        Ok(matches!(delivery, Delivery::Enqueue))
     }
 
     /// Inject a message into the running turn over the managed agent's open
