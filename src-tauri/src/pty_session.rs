@@ -214,7 +214,11 @@ fn coalesce_output<F: Fn(Vec<u8>)>(rx: mpsc::Receiver<Vec<u8>>, on_output: F) {
                     deadline = Some(Instant::now() + FLUSH_INTERVAL);
                 }
                 batch.extend_from_slice(&chunk);
-                if batch.len() >= MAX_BATCH {
+                // Flush on size, or once the frame elapses — checked here too so a
+                // continuously-ready channel (recv_timeout never times out) can't
+                // stretch the batch past one frame while waiting to hit MAX_BATCH.
+                let expired = deadline.is_some_and(|d| Instant::now() >= d);
+                if batch.len() >= MAX_BATCH || expired {
                     on_output(std::mem::take(&mut batch));
                     deadline = None;
                 }
