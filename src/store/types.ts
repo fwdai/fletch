@@ -34,6 +34,9 @@ export interface AppSlice {
   /** Version string of an update that's been downloaded + staged and is
    *  waiting for a restart to take effect. `null` = none pending. */
   updateReadyVersion: string | null;
+  /** Release notes for the staged update (the manifest's `notes` field), shown
+   *  in the restart toast. `null` when the manifest carried none. */
+  updateReadyNotes: string | null;
   /** Transient status of a *manual* "Check for Updates…" run (menu-triggered),
    *  driving the feedback toast. `null` = idle. A found update transitions to
    *  `updateReadyVersion` instead. */
@@ -45,7 +48,7 @@ export interface AppSlice {
    *  call `set`) to report a failure they'd otherwise have to swallow. */
   setLastError: (message: string) => void;
   /** Record that an update has been staged (drives the restart toast). */
-  setUpdateReady: (version: string) => void;
+  setUpdateReady: (version: string, notes: string | null) => void;
   /** Dismiss the restart toast. The staged update still applies on next launch. */
   dismissUpdate: () => void;
   /** Run an on-demand update check (from the "Check for Updates…" menu),

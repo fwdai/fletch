@@ -24,8 +24,8 @@ revealAppWindow();
 // Check for and download updates on launch (no-op in dev). Fire-and-forget so
 // it never delays first paint; once an update is staged it surfaces a toast
 // (via the store) letting the user restart now or skip for now.
-void runStartupUpdateCheck((version) => {
-  useAppStore.getState().setUpdateReady(version);
+void runStartupUpdateCheck((version, notes) => {
+  useAppStore.getState().setUpdateReady(version, notes);
 });
 
 // Install the native menu (adds "Check for Updates…"). Fire-and-forget; never

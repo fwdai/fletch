@@ -15,7 +15,7 @@ import { check } from "@tauri-apps/plugin-updater";
 
 /** Outcome of a single update check. */
 export type UpdateCheckResult =
-  | { kind: "staged"; version: string }
+  | { kind: "staged"; version: string; notes: string | null }
   | { kind: "uptodate" }
   | { kind: "error"; message: string };
 
@@ -34,7 +34,9 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
       `Update available: ${update.version} (current ${update.currentVersion}); downloading…`,
     );
     await update.downloadAndInstall();
-    return { kind: "staged", version: update.version };
+    // `body` carries the manifest's `notes` field (release notes); absent or
+    // whitespace-only manifests collapse to null so the UI can skip the section.
+    return { kind: "staged", version: update.version, notes: update.body?.trim() || null };
   } catch (err) {
     console.warn("Update check failed:", err);
     return { kind: "error", message: String(err) };
@@ -47,11 +49,13 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
  * update was actually staged — in which case `onStaged` fires with the new
  * version so the app can offer a restart.
  */
-export async function runStartupUpdateCheck(onStaged: (version: string) => void): Promise<void> {
+export async function runStartupUpdateCheck(
+  onStaged: (version: string, notes: string | null) => void,
+): Promise<void> {
   if (import.meta.env.DEV) return;
 
   const result = await checkForUpdate();
-  if (result.kind === "staged") onStaged(result.version);
+  if (result.kind === "staged") onStaged(result.version, result.notes);
 }
 
 /** Relaunch the app to run a previously-staged update. */

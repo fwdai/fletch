@@ -150,6 +150,17 @@
 .update-toast-text span {
   color: var(--fg-2);
 }
+/* Release notes from the manifest. Multi-line, so preserve line breaks and
+   cap the height with a scroll for long changelogs. */
+.update-toast-notes {
+  margin: 0;
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-line;
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
 .update-toast-actions {
   display: flex;
   gap: 6px;

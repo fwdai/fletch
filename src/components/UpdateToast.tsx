@@ -13,15 +13,16 @@ import { Button } from "./ui/Button";
  */
 export function UpdateToast() {
   const version = useAppStore((s) => s.updateReadyVersion);
+  const notes = useAppStore((s) => s.updateReadyNotes);
   const status = useAppStore((s) => s.updateCheckStatus);
 
-  if (version) return <UpdateReadyToast version={version} />;
+  if (version) return <UpdateReadyToast version={version} notes={notes} />;
   if (status) return <UpdateStatusToast status={status} />;
   return null;
 }
 
 /** Update downloaded + staged: offer "Restart now" or "Skip for now". */
-function UpdateReadyToast({ version }: { version: string }) {
+function UpdateReadyToast({ version, notes }: { version: string; notes: string | null }) {
   const dismiss = useAppStore((s) => s.dismissUpdate);
   const [restarting, setRestarting] = useState(false);
 
@@ -45,6 +46,7 @@ function UpdateReadyToast({ version }: { version: string }) {
           <strong>Update ready</strong>
           <span>Version {version} has been downloaded.</span>
         </div>
+        {notes && <p className="update-toast-notes">{notes}</p>}
         <div className="update-toast-actions">
           <Button variant="ghost" onClick={dismiss} disabled={restarting}>
             Skip for now
