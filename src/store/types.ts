@@ -346,7 +346,7 @@ export interface AppearanceSlice {
 export interface ProvidersSlice {
   providerFlags: Record<string, boolean>;
   /** Live-probed version strings keyed by provider id. Populated async on
-   *  init; falls back to hardcoded defaults in PROVIDERS when missing. */
+   *  init; absent until a probe resolves (never a hardcoded default). */
   providerVersions: Record<string, string>;
   /** Resolved binary paths keyed by provider id, from the version probe. */
   providerPaths: Record<string, string>;

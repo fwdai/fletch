@@ -200,7 +200,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                     <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={26} />
                     <span className="model-agent-name truncate text-base">{p.label}</span>
                     <span className="model-agent-ver text-xs">
-                      {missing ? "Not installed" : (providerVersions[p.id] ?? p.version)}
+                      {missing ? "Not installed" : providerVersions[p.id]}
                     </span>
                     {usable && <Icon name="chevR" size={12} />}
                   </button>
