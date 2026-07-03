@@ -1,11 +1,12 @@
 // First-run / settings readiness check. Reusable surface that shows whether
 // the tools needed to actually run agents are present on this machine — git
-// (required), each wired agent CLI, and the GitHub CLI (optional, for
+// (required), each wired agent CLI, and the GitHub connection (optional, for
 // clone/PRs) — with copy-paste fixes. Used in the onboarding finale and in
 // Settings → Providers.
 //
-// We detect *binary presence* (and gh auth, which we can read), not agent
-// auth (varies per CLI), so installed rows still nudge the user to sign in.
+// We detect *binary presence* (and the GitHub API connection, which we can
+// read), not agent auth (varies per CLI), so installed rows still nudge the
+// user to sign in.
 
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
@@ -123,16 +124,7 @@ export function ProviderReadiness() {
   // probe that finished without a result is "couldn't detect" (warn), never a
   // false "not installed".
   const gitState: RowState = git ? (git.installed ? "ok" : "bad") : checking ? "checking" : "warn";
-  const ghState: RowState = gh
-    ? gh.installed && gh.authenticated
-      ? "ok"
-      : "warn"
-    : checking
-      ? "checking"
-      : "warn";
-  // gh sign-in is universal; install is not — rely on the cross-platform docs
-  // link rather than a Homebrew-only `brew install gh`.
-  const ghFix = gh?.installed && !gh.authenticated ? "gh auth login" : undefined;
+  const ghState: RowState = gh ? (gh.authenticated ? "ok" : "warn") : checking ? "checking" : "warn";
 
   return (
     <div className="readiness">
@@ -189,21 +181,17 @@ export function ProviderReadiness() {
 
       <Row
         icon={<Icon name="github" size={15} />}
-        name="GitHub CLI · optional"
+        name="GitHub · optional"
         state={ghState}
         statusText={
           gh
-            ? !gh.installed
-              ? "Not found — needed for clone & PRs"
-              : !gh.authenticated
-                ? "Installed — not signed in"
-                : `Signed in${gh.login ? ` as ${gh.login}` : ""}`
+            ? gh.authenticated
+              ? `Connected${gh.login ? ` as ${gh.login}` : ""}`
+              : "Not connected — sign in with GitHub (Account tab) for clone & PRs"
             : checking
               ? "Checking…"
               : "Couldn't check"
         }
-        fix={ghFix}
-        docs={!gh?.installed ? "https://cli.github.com" : undefined}
       />
 
       <div className="rdy-foot flex-center">

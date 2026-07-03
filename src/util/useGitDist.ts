@@ -26,8 +26,14 @@ export function useGitDist(onSettled?: () => void): GitDistState {
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     void listen<GitDistState>("git-dist:state", (e) => {
-      const settled = e.payload.phase === "ready" || e.payload.phase === "failed";
-      if (settled && phaseRef.current === "downloading") {
+      const isSettled = (p: GitDistState["phase"]) => p === "ready" || p === "failed";
+      // Fire on the first transition into a settled phase. This covers the
+      // normal "downloading" -> "ready"/"failed" path and the race where we
+      // mount mid-download and only ever observe the final settled event (the
+      // "downloading" progress having been emitted before the listener
+      // attached, so phaseRef is still "unknown"). When the bootstrap settled
+      // *before* mount no event arrives at all, so this never fires spuriously.
+      if (isSettled(e.payload.phase) && !isSettled(phaseRef.current)) {
         onSettledRef.current?.();
       }
       phaseRef.current = e.payload.phase;

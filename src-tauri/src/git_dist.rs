@@ -120,11 +120,19 @@ pub fn set_identity_source(f: IdentitySource) {
 /// user.email: the signed-in profile when available, else a neutral default
 /// (so a first commit never dies with git's "Please tell me who you are").
 pub fn fallback_identity() -> (String, String) {
-    let profile = identity_source()
-        .read()
-        .unwrap()
-        .as_ref()
-        .and_then(|f| f());
+    resolve_identity(
+        identity_source()
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|f| f()),
+    )
+}
+
+/// Field-by-field identity resolution (pure): a profile with only a name still
+/// gets the default email, and blank strings don't count as set. Split out from
+/// [`fallback_identity`] so it's testable without touching the global source.
+fn resolve_identity(profile: Option<(Option<String>, Option<String>)>) -> (String, String) {
     let (name, email) = profile.unwrap_or((None, None));
     (
         name.filter(|s| !s.trim().is_empty())
@@ -423,7 +431,10 @@ async fn download_verified(
             on_progress(received, total);
         }
     }
-    file.flush().await.map_err(|e| e.to_string())?;
+    if let Err(e) = file.flush().await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(format!("flush {}: {e}", tmp_path.display()));
+    }
     drop(file);
     on_progress(received, total);
 
@@ -654,17 +665,17 @@ mod tests {
     }
 
     /// Identity falls back field-by-field: a profile with only a name still
-    /// gets the default email, and blank strings don't count as set.
+    /// gets the default email, and blank strings don't count as set. Exercises
+    /// the pure resolver directly so it never mutates the global source (which
+    /// other tests may read concurrently under the multi-threaded runner).
     #[test]
     fn fallback_identity_fills_missing_fields() {
-        set_identity_source(Box::new(|| Some((Some("Ada".into()), Some("  ".into())))));
         assert_eq!(
-            fallback_identity(),
+            resolve_identity(Some((Some("Ada".into()), Some("  ".into())))),
             ("Ada".to_string(), "fletch@localhost".to_string()),
         );
-        *identity_source().write().unwrap() = None;
         assert_eq!(
-            fallback_identity(),
+            resolve_identity(None),
             ("Fletch".to_string(), "fletch@localhost".to_string()),
         );
     }
