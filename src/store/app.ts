@@ -45,12 +45,30 @@ import {
 } from "@/storage/preferences";
 import { getAllSettings } from "@/storage/settings";
 import { checkForUpdate } from "@/util/autoUpdate";
+import { notify } from "@/util/notify";
 import { playAgentDone } from "@/util/sound";
 import { interruptedAgents } from "./interrupted";
 import type { AppSlice, SliceCreator } from "./types";
 
 type AppSet = Parameters<SliceCreator<AppSlice>>[0];
 type AppGet = Parameters<SliceCreator<AppSlice>>[1];
+
+// "Watching" an agent means its window holds focus AND its chat is on screen.
+// Out-of-app signals (chime + native notification) fire only when you're NOT
+// watching — otherwise you already see the update.
+const watchingChat = (get: AppGet, agentId: string) =>
+  document.hasFocus() && get().selectedAgentId === agentId;
+
+const agentName = (get: AppGet, agentId: string) =>
+  get().workspace?.agents.find((a) => a.id === agentId)?.name ?? "Agent";
+
+// Signal an out-of-app event for an agent the user isn't watching: a native
+// notification always, plus the chime unless it's been muted in settings.
+const signalAway = (get: AppGet, agentId: string, title: string) => {
+  if (watchingChat(get, agentId)) return;
+  if (get().soundEnabled) playAgentDone();
+  notify(title, agentName(get, agentId));
+};
 
 type AgentPatch = Partial<AgentRecord> | ((a: AgentRecord) => Partial<AgentRecord>);
 
@@ -86,6 +104,8 @@ const hydrateSettings = async (set: AppSet) => {
       accent: s.accent || "copper",
       density: (s.density as Density) || "comfortable",
       features: parseFeatures(s.features),
+      // Opt-out chime: only an explicit "false" mutes it.
+      soundEnabled: s.soundEnabled !== "false",
       providerFlags: parseProviderFlags(s.providers),
       providerPathOverrides: parseProviderPathOverrides(s),
       newDraftProvider,
@@ -148,6 +168,10 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
       const requestId = (ev as { request_id?: string }).request_id;
       const toolUseId = req?.tool_use_id;
       if (req?.subtype === "can_use_tool" && typeof toolUseId === "string" && requestId) {
+        // Only signal on the transition into "blocked": a turn can forward
+        // several prompts at once (parallel tool calls), and one notification
+        // for the batch beats one per prompt.
+        const wasIdle = !Object.keys(get().pendingToolUse[e.agent_id] ?? {}).length;
         set((state) => ({
           pendingToolUse: {
             ...state.pendingToolUse,
@@ -157,6 +181,8 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
             },
           },
         }));
+        // The only out-of-app signal this widget has ever had.
+        if (wasIdle) signalAway(get, e.agent_id, "Needs your input");
       }
       return;
     }
@@ -185,15 +211,9 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
       // flag once and gate both the chime and the unseen-results marker on
       // a genuine completion (a manual stop is neither).
       if (!interruptedAgents.delete(e.agent_id)) {
-        // The chime exists to notify you when you're NOT watching this
-        // agent — so skip it when you already are. "Watching" means the
-        // window holds focus AND this is the chat on screen; if either is
-        // false (other app focused, window minimized, or a different chat
-        // selected) the sound still fires.
-        const watchingThisChat = document.hasFocus() && get().selectedAgentId === e.agent_id;
-        if (!watchingThisChat) {
-          playAgentDone();
-        }
+        // Notify (chime + native) when you're NOT watching this agent —
+        // skipped when you already are, see signalAway.
+        signalAway(get, e.agent_id, "Turn complete");
         // Flag results for review on any agent the user isn't currently
         // looking at — this is the only signal for research-only turns that
         // leave no diff behind. Cleared when the agent is selected.

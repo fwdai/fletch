@@ -12,6 +12,7 @@
     "core:window:allow-toggle-maximize",
     "core:event:default",
     "dialog:default",
+    "notification:default",
     "shell:default",
     "updater:default",
     "process:allow-restart",

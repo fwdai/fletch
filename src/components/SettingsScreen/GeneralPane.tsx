@@ -43,6 +43,8 @@ export function GeneralPane() {
   const setDensity = useAppStore((s) => s.setDensity);
   const features = useAppStore((s) => s.features);
   const setFeature = useAppStore((s) => s.setFeature);
+  const soundEnabled = useAppStore((s) => s.soundEnabled);
+  const setSoundEnabled = useAppStore((s) => s.setSoundEnabled);
   const telemetryEnabled = useAppStore((s) => s.telemetryEnabled);
   const setTelemetryEnabled = useAppStore((s) => s.setTelemetryEnabled);
   const revealLogs = useAppStore((s) => s.revealLogs);
@@ -114,6 +116,15 @@ export function GeneralPane() {
         {COMPOSER.map((it) => (
           <FeatureRow key={it.key} item={it} />
         ))}
+      </SetGroup>
+
+      <SetGroup label="Notifications">
+        <SetRow
+          title="Sound"
+          sub="Play a chime when an agent finishes a turn or needs your input while you're looking elsewhere. Native notifications fire either way."
+        >
+          <SetToggle on={soundEnabled} onClick={() => setSoundEnabled(!soundEnabled)} />
+        </SetRow>
       </SetGroup>
 
       <SetGroup label="Diagnostics" last>

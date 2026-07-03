@@ -329,6 +329,9 @@ export interface AppearanceSlice {
   accent: string;
   density: Density;
   features: FeatureFlags;
+  /** Play the chime when an agent turn finishes or needs input while you're
+   *  not watching that chat. Native notifications fire regardless. Opt-out. */
+  soundEnabled: boolean;
   /** View mode preference for the workspace pane. Persisted; falls
    *  back to the agent's own `view` field for native vs. custom
    *  switching. */
@@ -340,6 +343,7 @@ export interface AppearanceSlice {
   setAccent: (a: string) => void;
   setDensity: (d: Density) => void;
   setFeature: <K extends keyof FeatureFlags>(k: K, v: FeatureFlags[K]) => void;
+  setSoundEnabled: (on: boolean) => void;
   setViewMode: (v: WorkspaceView) => void;
 }
 
