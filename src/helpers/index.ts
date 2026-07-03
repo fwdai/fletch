@@ -114,18 +114,25 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
 }
 
 /** Locate a `prev` item within the freshly-rebuilt transcript so a carried-over
- *  follow-up can be re-anchored next to it. Tool calls match on their stable id;
- *  user/agent messages on exact text (most-recent occurrence wins). Other kinds
- *  aren't reliable anchors. Returns -1 when not found. */
-function locateAnchor(rebuilt: ChatItem[], item: ChatItem): number {
-  if (item.kind === "tool_call") {
-    return rebuilt.findIndex((r) => r.kind === "tool_call" && r.id === item.id);
+ *  follow-up can be re-anchored next to it. Scans forward from `from` and
+ *  returns the FIRST match, so callers advancing `from` in step with a forward
+ *  walk through `prev` get a monotonically-advancing anchor: duplicate text
+ *  (e.g. repeated "OK" acknowledgements) then resolves to the occurrence at this
+ *  point in the turn rather than the last one in the log. Tool calls match on
+ *  their stable id; user/agent messages on exact text; other kinds aren't
+ *  reliable anchors. Returns -1 when not found at or after `from`. */
+function locateAnchor(rebuilt: ChatItem[], item: ChatItem, from: number): number {
+  if (item.kind !== "tool_call" && item.kind !== "user_message" && item.kind !== "agent_message") {
+    return -1;
   }
-  if (item.kind === "user_message" || item.kind === "agent_message") {
-    const textOf = (r: ChatItem): string | undefined =>
-      r.kind === "user_message" || r.kind === "agent_message" ? r.text : undefined;
-    for (let i = rebuilt.length - 1; i >= 0; i -= 1) {
-      if (rebuilt[i].kind === item.kind && textOf(rebuilt[i]) === item.text) return i;
+  const textOf = (r: ChatItem): string | undefined =>
+    r.kind === "user_message" || r.kind === "agent_message" ? r.text : undefined;
+  for (let i = Math.max(from, 0); i < rebuilt.length; i += 1) {
+    const r = rebuilt[i];
+    if (item.kind === "tool_call") {
+      if (r.kind === "tool_call" && r.id === item.id) return i;
+    } else if (r.kind === item.kind && textOf(r) === item.text) {
+      return i;
     }
   }
   return -1;
@@ -158,7 +165,9 @@ export function carryForwardQueued(rebuilt: ChatItem[], prev: ChatItem[]): ChatI
 
   // Walk prev, tracking the rebuilt-index of the most recent locatable item.
   // Each unmatched follow-up is bucketed to insert after that anchor; -1 means
-  // no anchor was found yet, so it falls to the end.
+  // no anchor was found yet, so it falls to the end. Searching forward from
+  // `anchor + 1` keeps the anchor advancing in lockstep with the walk, so
+  // repeated text resolves to the right occurrence.
   const insertAfter = new Map<number, ChatItem[]>();
   let anchor = -1;
   for (const it of prev) {
@@ -168,7 +177,7 @@ export function carryForwardQueued(rebuilt: ChatItem[], prev: ChatItem[]): ChatI
       bucket.push(it);
       insertAfter.set(anchor, bucket);
     } else {
-      const idx = locateAnchor(rebuilt, it);
+      const idx = locateAnchor(rebuilt, it, anchor + 1);
       if (idx >= 0) anchor = idx;
     }
   }

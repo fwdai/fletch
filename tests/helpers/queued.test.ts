@@ -75,4 +75,34 @@ describe("carryForwardQueued", () => {
     const out = carryForwardQueued(rebuilt, prev);
     expect(out).toEqual([userMsg("start"), agentMsg("thinking"), queued("mid"), agentMsg("done")]);
   });
+
+  it("anchors to the occurrence at the injection point when the same text repeats", () => {
+    // Two identical "ok" acks in the turn. The follow-up was injected after the
+    // FIRST one, so it must land there — not after the second (which a
+    // last-match scan would wrongly pick).
+    const rebuilt = [
+      userMsg("start"),
+      agentMsg("ok"),
+      toolCall("t1"),
+      agentMsg("ok"),
+      agentMsg("done"),
+    ];
+    const prev = [
+      userMsg("start"),
+      agentMsg("ok"),
+      queued("mid"),
+      toolCall("t1"),
+      agentMsg("ok"),
+      agentMsg("done"),
+    ];
+    const out = carryForwardQueued(rebuilt, prev);
+    expect(out).toEqual([
+      userMsg("start"),
+      agentMsg("ok"),
+      queued("mid"),
+      toolCall("t1"),
+      agentMsg("ok"),
+      agentMsg("done"),
+    ]);
+  });
 });
