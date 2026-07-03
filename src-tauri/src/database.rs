@@ -156,11 +156,14 @@ fn snapshot_to(conn: &Connection, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Milliseconds since the Unix epoch, or 0 if the system clock is set before
+/// 1970. Degrades rather than panicking so a backwards clock can't turn the
+/// backup-then-migrate path (or any timestamped insert) into a hard crash.
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn json_to_sql(value: &Value) -> Result<Box<dyn rusqlite::ToSql>> {
