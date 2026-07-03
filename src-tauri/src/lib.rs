@@ -512,8 +512,9 @@ pub fn run() {
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
 
-            // Sweep nested-Fletch RPC mailbox roots left in the temp dir by a
-            // prior session (dogfooding runs; none survive their host).
+            // Reclaim nested-Fletch RPC mailbox roots left in the temp dir by
+            // dead instances (dogfooding runs). Live instances' roots are pid-
+            // keyed and skipped, so a side-by-side Fletch is left untouched.
             crate::sandbox::cleanup_nested_rpc_roots();
 
             // Quitting normally goes through `RunEvent::ExitRequested` (below),

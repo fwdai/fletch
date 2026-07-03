@@ -151,20 +151,56 @@ pub fn nested_rpc_root(writable_root: &Path) -> PathBuf {
         })
         .unwrap_or_default();
     let key = format!("{name}-{:016x}", hasher.finish());
-    nested_rpc_base().join(key)
+    // Scope by host pid so a concurrently-running Fletch (or the nested Fletch
+    // itself, which runs the same startup sweep) can tell our live roots from a
+    // dead instance's leftovers — see `cleanup_nested_rpc_roots`.
+    nested_rpc_base()
+        .join(std::process::id().to_string())
+        .join(key)
 }
 
-/// Parent dir holding every per-worktree nested mailbox root.
+/// Parent dir holding every host instance's nested mailbox roots (one subdir
+/// per host pid).
 fn nested_rpc_base() -> PathBuf {
     std::env::temp_dir().join("fletch-rpc")
 }
 
-/// Best-effort removal of all nested mailbox roots. Call once at app startup:
-/// no nested Run process outlives the host it was launched under, so every
-/// entry here is a leftover from a prior session — including crashes and
-/// force-quits, which no per-run exit hook would catch.
+/// Best-effort sweep of nested mailbox roots left by *dead* host instances.
+/// Call at app startup. Roots live under `<base>/<host-pid>/`, so we remove
+/// only pid-subdirs whose owner is gone — never a live instance's (a second
+/// Fletch open side-by-side, or our own), which would break its running nested
+/// Fletch mid-read.
 pub fn cleanup_nested_rpc_roots() {
-    let _ = std::fs::remove_dir_all(nested_rpc_base());
+    cleanup_nested_rpc_roots_in(&nested_rpc_base());
+}
+
+fn cleanup_nested_rpc_roots_in(base: &Path) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let dead = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<i32>().ok())
+            .is_some_and(|pid| !pid_alive(pid));
+        if dead {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Whether a process with `pid` currently exists — a signal-0 `kill` probe.
+/// `Err` (ESRCH, or EPERM on a reused pid we don't own) is treated as gone,
+/// which only ever under-reclaims; a live Fletch we own always probes `Ok`.
+#[cfg(unix)]
+fn pid_alive(pid: i32) -> bool {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+}
+
+#[cfg(not(unix))]
+fn pid_alive(_pid: i32) -> bool {
+    true // can't probe — never reclaim
 }
 
 /// Build the SBPL profile. `writable_root` is the agent's parent dir;
@@ -475,5 +511,24 @@ mod tests {
         let c = nested_rpc_root(Path::new("/Users/alice/projects/my-app"));
         let d = nested_rpc_root(Path::new("/Users/alice/projects/my.app"));
         assert_ne!(c, d);
+    }
+
+    #[test]
+    fn cleanup_removes_only_dead_instance_roots() {
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path();
+        let live = std::process::id().to_string();
+        let dead = i32::MAX.to_string(); // out of pid range → never alive
+        for pid in [&live, &dead] {
+            std::fs::create_dir_all(base.join(pid).join("agent")).unwrap();
+        }
+        // A non-numeric entry isn't ours to reason about — leave it alone.
+        std::fs::create_dir_all(base.join("scratch")).unwrap();
+
+        cleanup_nested_rpc_roots_in(base);
+
+        assert!(base.join(&live).exists(), "live instance root kept");
+        assert!(!base.join(&dead).exists(), "dead instance root removed");
+        assert!(base.join("scratch").exists(), "non-pid entry left alone");
     }
 }
