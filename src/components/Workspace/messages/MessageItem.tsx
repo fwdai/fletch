@@ -17,8 +17,9 @@ import { isUserInputTool } from "./UserInput/parse";
  *  the derived `tool_pair` from pairToolItems(). `provider` carries the
  *  agent's adapter id down so nested subagent threads filter/pair their
  *  rows with the same display policy as the main log. `agentId` lets the
- *  user-input widget route its answer back to this agent's stdin. */
-/** Memoized: ChatView re-renders on every streaming delta, but the reducer
+ *  user-input widget route its answer back to this agent's stdin.
+ *
+ *  Memoized: ChatView re-renders on every streaming delta, but the reducer
  *  preserves item identity for settled rows and ChatView caches tool_pair
  *  wrappers, so shallow-prop memo skips re-rendering (and re-parsing markdown
  *  for) everything except the row that actually changed this tick. */
