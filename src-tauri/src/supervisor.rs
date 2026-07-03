@@ -2892,6 +2892,11 @@ fn apply_exit_if_current(
         return;
     }
 
+    // The process is gone and we don't restart here (a clean exit stays Idle/
+    // resumable). Invalidate this generation so the gen-guarded turn watchdog
+    // and RPC watcher stop polling instead of spinning for the app's lifetime.
+    sup.bump_generation(agent_id);
+
     sup.agents.lock().remove(agent_id);
     sup.activities.lock().remove(agent_id);
     sup.native_input_lines.lock().remove(agent_id);
