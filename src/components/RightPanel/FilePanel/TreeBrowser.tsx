@@ -5,6 +5,7 @@
 import { useEffect, useRef } from "react";
 import { Icon } from "@/components/Icon";
 import { FileIcon } from "@/components/RightPanel/FileIcon";
+import { IconButton } from "@/components/ui/IconButton";
 import type { EditState, TreeNode } from "./tree";
 
 interface TreeBrowserProps {
@@ -81,23 +82,20 @@ export function TreeBrowser({
           Changed
           <span className="fp-filter-count text-xs">{changedCount}</span>
         </button>
-        <button
-          className="btn-i iflex-center xs"
-          title="New file"
-          onClick={() => onBeginCreate("newFile", "")}
-        >
+        <IconButton size="xs" tip="New file" tipDown onClick={() => onBeginCreate("newFile", "")}>
           <Icon name="file" />
-        </button>
-        <button
-          className="btn-i iflex-center xs"
-          title="New folder"
+        </IconButton>
+        <IconButton
+          size="xs"
+          tip="New folder"
+          tipDown
           onClick={() => onBeginCreate("newFolder", "")}
         >
           <Icon name="folder" />
-        </button>
-        <button className="btn-i iflex-center xs" title="Collapse all" onClick={onCollapseAll}>
+        </IconButton>
+        <IconButton size="xs" tip="Collapse all" tipDown onClick={onCollapseAll}>
           <Icon name="shrink" />
-        </button>
+        </IconButton>
       </div>
 
       {opError && (

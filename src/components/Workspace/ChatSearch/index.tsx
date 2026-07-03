@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Icon } from "@/components/Icon";
+import { IconButton } from "@/components/ui/IconButton";
 import { useChatSearch } from "./useChatSearch";
 
 /** Floating "find in conversation" bar, opened with ⌘F over the chat log.
@@ -56,25 +57,15 @@ export function ChatSearch({
         {query ? `${current}/${total}` : ""}
       </span>
       <div className="chat-search-actions flex-center">
-        <button
-          className="btn-i iflex-center sm tip"
-          data-tip="Previous (⇧⏎)"
-          disabled={total === 0}
-          onClick={prev}
-        >
+        <IconButton size="sm" tip="Previous (⇧⏎)" disabled={total === 0} onClick={prev}>
           <Icon name="chevU" />
-        </button>
-        <button
-          className="btn-i iflex-center sm tip"
-          data-tip="Next (⏎)"
-          disabled={total === 0}
-          onClick={next}
-        >
+        </IconButton>
+        <IconButton size="sm" tip="Next (⏎)" disabled={total === 0} onClick={next}>
           <Icon name="chevD" />
-        </button>
-        <button className="btn-i iflex-center sm tip" data-tip="Close (Esc)" onClick={onClose}>
+        </IconButton>
+        <IconButton size="sm" tip="Close (Esc)" onClick={onClose}>
           <Icon name="close" />
-        </button>
+        </IconButton>
       </div>
     </div>
   );

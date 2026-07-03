@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { SetHead } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
 import { PROVIDERS } from "@/data/providers";
 import type { CustomAgent } from "@/storage/customAgents";
 import { useAppStore } from "@/store";
@@ -92,28 +93,29 @@ export function AgentList({
                   </div>
                 </div>
                 <div className="ca-acts flex-center" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    className="btn-i iflex-center sm tip"
-                    data-tip-down
-                    data-tip="Duplicate"
+                  <IconButton
+                    size="sm"
+                    tipDown
+                    tip="Duplicate"
                     aria-label="Duplicate"
                     onClick={() => onDuplicate(a)}
                   >
                     <Icon name="copy" />
-                  </button>
-                  <button
-                    className="btn-i iflex-center sm tip"
-                    data-tip-down
-                    data-tip="Edit"
+                  </IconButton>
+                  <IconButton
+                    size="sm"
+                    tipDown
+                    tip="Edit"
                     aria-label="Edit"
                     onClick={() => onEdit(a)}
                   >
                     <Icon name="edit" />
-                  </button>
-                  <button
-                    className={`btn-i iflex-center sm tip ${armedDeleteId === a.id ? "danger" : ""}`}
-                    data-tip-down
-                    data-tip={armedDeleteId === a.id ? "Click again to delete" : "Delete"}
+                  </IconButton>
+                  <IconButton
+                    size="sm"
+                    className={armedDeleteId === a.id ? "danger" : undefined}
+                    tipDown
+                    tip={armedDeleteId === a.id ? "Click again to delete" : "Delete"}
                     aria-label={armedDeleteId === a.id ? "Confirm delete" : "Delete"}
                     onClick={() => {
                       if (armedDeleteId === a.id) {
@@ -125,7 +127,7 @@ export function AgentList({
                     }}
                   >
                     <Icon name={armedDeleteId === a.id ? "check" : "trash"} />
-                  </button>
+                  </IconButton>
                 </div>
               </div>
             );

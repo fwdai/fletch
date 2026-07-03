@@ -1,4 +1,30 @@
-import { type DependencyList, useEffect, useState } from "react";
+import { type DependencyList, type RefObject, useEffect, useState } from "react";
+
+/** Dismiss a popover/menu on an outside pointer press or Escape, while `active`.
+ *  Listens in the capture phase so it still fires when an inner handler stops
+ *  propagation. `onDismiss` may be a fresh closure each render — the listeners
+ *  re-subscribe, which is cheap. */
+export function useDismiss(
+  ref: RefObject<HTMLElement | null>,
+  active: boolean,
+  onDismiss: () => void,
+) {
+  useEffect(() => {
+    if (!active) return;
+    const onDown = (e: PointerEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onDismiss();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onDismiss();
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [active, ref, onDismiss]);
+}
 
 /** Re-render once a minute so age strings ("5m", "2h") stay fresh. */
 export function useMinuteClock(): number {
