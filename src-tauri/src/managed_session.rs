@@ -58,7 +58,7 @@ pub struct ManagedSpawn<'a> {
     pub program: &'a Path,
     pub args: &'a [String],
     pub cwd: &'a Path,
-    /// Extra environment variables (e.g. `QUORUM_RPC_DIR`). `Command` inherits
+    /// Extra environment variables (e.g. `FLETCH_RPC_DIR`). `Command` inherits
     /// the parent environment by default; these are layered on top.
     pub env: &'a [(String, String)],
 }

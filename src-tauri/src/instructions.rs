@@ -107,7 +107,7 @@ pub fn prepend_to_prompt(prompt: &str, session_id: Option<&str>, extra: Option<&
     // Wrap in a namespaced tag so the UI can strip this block from the user
     // bubble (these agents echo the prompt back into the transcript). The tag
     // is Fletch-specific to avoid colliding with real user content.
-    format!("<quorum-system>\n{text}\n</quorum-system>\n\n{prompt}")
+    format!("<fletch-system>\n{text}\n</fletch-system>\n\n{prompt}")
 }
 
 /// Encode `s` as a TOML basic string (double-quoted, with escapes), so it can
@@ -168,9 +168,9 @@ mod tests {
     #[test]
     fn prepend_only_on_first_turn() {
         let first = prepend_to_prompt("do the thing", None, None);
-        assert!(first.starts_with("<quorum-system>"));
+        assert!(first.starts_with("<fletch-system>"));
         assert!(first.contains(text().as_str()));
-        assert!(first.contains("</quorum-system>"));
+        assert!(first.contains("</fletch-system>"));
         assert!(first.ends_with("do the thing"));
 
         // Resumed turn: untouched (the text is already in history).

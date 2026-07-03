@@ -54,7 +54,7 @@ pub struct ExecSpawn {
     /// parsing (no events emitted). History for such agents comes from their
     /// on-disk transcript, and the session id from the filesystem.
     pub stdout_is_json: bool,
-    /// Extra environment variables (e.g. `QUORUM_RPC_DIR`) set on every turn's
+    /// Extra environment variables (e.g. `FLETCH_RPC_DIR`) set on every turn's
     /// child process, layered on top of the inherited environment.
     pub env: Vec<(String, String)>,
 }

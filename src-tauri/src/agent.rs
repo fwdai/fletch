@@ -74,7 +74,7 @@ pub struct PerTurnSpec {
     /// injected into every turn (appended after Fletch's global system prompt).
     /// `None` for a plain built-in spawn.
     pub instructions: Option<String>,
-    /// The agent's RPC mailbox dir, exposed to the child as `QUORUM_RPC_DIR`.
+    /// The agent's RPC mailbox dir, exposed to the child as `FLETCH_RPC_DIR`.
     pub rpc_dir: PathBuf,
 }
 
@@ -759,7 +759,7 @@ pub struct SpawnSpec<'a> {
     /// A custom agent's standing instructions, injected after Fletch's global
     /// system prompt on every spawn/resume. `None` for a plain built-in spawn.
     pub instructions: Option<&'a str>,
-    /// The agent's RPC mailbox dir, exposed to the child as `QUORUM_RPC_DIR`.
+    /// The agent's RPC mailbox dir, exposed to the child as `FLETCH_RPC_DIR`.
     pub rpc_dir: PathBuf,
     pub cols: u16,
     pub rows: u16,
@@ -770,7 +770,7 @@ pub struct SpawnSpec<'a> {
 /// execute (see `rpc.rs`). Layered on top of the inherited environment.
 fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
     vec![(
-        "QUORUM_RPC_DIR".to_string(),
+        "FLETCH_RPC_DIR".to_string(),
         rpc_dir.to_string_lossy().into_owned(),
     )]
 }
