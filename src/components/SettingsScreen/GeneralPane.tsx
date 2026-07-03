@@ -119,7 +119,7 @@ export function GeneralPane() {
       <SetGroup label="Diagnostics" last>
         <SetRow
           title="Usage analytics"
-          sub="Share anonymous usage events (app opens, agents spawned, PRs opened) to help improve Fletch. No code, file paths, repo names, or prompts are ever sent."
+          sub="Share anonymous usage events (app opens, agents spawned, turns completed, PRs opened) to help improve Fletch. No code, file paths, repo names, or prompts are ever sent."
         >
           <SetToggle on={telemetryEnabled} onClick={() => setTelemetryEnabled(!telemetryEnabled)} />
         </SetRow>

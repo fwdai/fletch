@@ -282,6 +282,17 @@ pub struct UserTurn {
     pub ended_at: Option<i64>,
 }
 
+/// Stats for a turn that `mark_user_turn_ended` just closed, returned so the
+/// caller can emit per-turn telemetry. `None` from that call means no open turn
+/// existed (resting Idle at spawn, or a native turn with no timing row).
+pub struct ClosedTurn {
+    /// Wall-clock run duration (`ended_at - started_at`).
+    pub duration_ms: i64,
+    /// Transcript records ingested during the turn window — a proxy for how
+    /// much the agent produced this turn.
+    pub record_count: i64,
+}
+
 pub struct WorkspaceManager {
     db: Arc<Mutex<Connection>>,
 }
@@ -934,22 +945,44 @@ impl WorkspaceManager {
     }
 
     /// Close the in-flight turn at turn end by stamping `ended_at` on the open
-    /// turn (started, not yet ended) of the workspace's current session. No-op
-    /// when none is open — e.g. the resting Idle emitted at spawn, or a native
-    /// turn with no timing row. At most one turn is ever open per session
-    /// (each end closes the open turn before the next one starts), but the
-    /// `WHERE` would safely close all open turns if one were ever stranded.
-    pub fn mark_user_turn_ended(&self, workspace_id: &str) -> Result<()> {
+    /// turn (started, not yet ended) of the workspace's current session, and
+    /// return its stats for telemetry. `None` when none is open — e.g. the
+    /// resting Idle emitted at spawn, or a native turn with no timing row. At
+    /// most one turn is ever open per session (each end closes the open turn
+    /// before the next one starts), but the `WHERE` would safely close all open
+    /// turns if one were ever stranded; duration then anchors on the earliest.
+    pub fn mark_user_turn_ended(&self, workspace_id: &str) -> Result<Option<ClosedTurn>> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
-            return Ok(());
+            return Ok(None);
         };
+        let started_at: Option<i64> = conn.query_row(
+            "SELECT MIN(started_at) FROM session_user_turns
+             WHERE session_id = ?1 AND started_at IS NOT NULL AND ended_at IS NULL",
+            [&sid],
+            |r| r.get(0),
+        )?;
+        let Some(started_at) = started_at else {
+            return Ok(None);
+        };
+        let now = now_millis();
         conn.execute(
             "UPDATE session_user_turns SET ended_at = ?1
              WHERE session_id = ?2 AND started_at IS NOT NULL AND ended_at IS NULL",
-            rusqlite::params![now_millis(), sid],
+            rusqlite::params![now, sid],
         )?;
-        Ok(())
+        // Records land before the terminal event that trips turn-end detection,
+        // so the window is complete by the time we get here.
+        let record_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM session_records
+             WHERE session_id = ?1 AND created_at BETWEEN ?2 AND ?3",
+            rusqlite::params![sid, started_at, now],
+            |r| r.get(0),
+        )?;
+        Ok(Some(ClosedTurn {
+            duration_ms: now - started_at,
+            record_count,
+        }))
     }
 
     /// All outgoing user turns for the workspace's current session, in seq order.
@@ -2248,7 +2281,9 @@ mod tests {
         assert_eq!(started, Some(1000));
         assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].ended_at, None);
 
-        wm.mark_user_turn_ended(&ws_id).unwrap();
+        let closed = wm.mark_user_turn_ended(&ws_id).unwrap().expect("open turn closed");
+        assert!(closed.duration_ms >= 0, "non-negative duration");
+        assert_eq!(closed.record_count, 0, "no records ingested in this test");
         let turn = wm.read_user_turns(&ws_id).unwrap().remove(0);
         assert_eq!(turn.started_at, started, "start clock not reset by end");
         assert!(turn.ended_at >= turn.started_at, "ended_at after started_at");
@@ -2274,7 +2309,10 @@ mod tests {
         // A row with no started_at (e.g. a never-delivered turn, or the resting
         // Idle emitted at spawn) must not get an ended_at.
         wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
-        wm.mark_user_turn_ended(&ws_id).unwrap();
+        assert!(
+            wm.mark_user_turn_ended(&ws_id).unwrap().is_none(),
+            "no open turn to close"
+        );
         assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].ended_at, None);
     }
 
