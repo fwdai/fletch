@@ -1256,8 +1256,9 @@ pub async fn probe_provider_versions() -> Vec<ProviderProbe> {
     crate::agent::probe_all_providers().await
 }
 
-/// Resolve a plain required CLI (e.g. `git`) and probe its `--version`. Drives
-/// the first-run readiness check. Binary presence only — no auth check.
+/// Resolve a required CLI and probe its `--version`. Drives the first-run
+/// readiness check. For `git` this reflects unified resolution (system or the
+/// portable dist — see `git_dist`); other tools are presence-only.
 #[tauri::command]
 pub async fn check_cli(name: String) -> ToolStatus {
     tokio::task::spawn_blocking(move || crate::agent::check_cli(&name))
@@ -1266,6 +1267,7 @@ pub async fn check_cli(name: String) -> ToolStatus {
             installed: false,
             version: None,
             path: None,
+            source: None,
         })
 }
 

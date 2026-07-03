@@ -5,7 +5,6 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::process::Command;
 
 use super::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
@@ -61,11 +60,11 @@ impl GitDispatcher {
             "echo" => (self.echo(id, args).await, Vec::new()),
             "ping" => (Response::ok(id, 0, "pong".to_string(), String::new()), Vec::new()),
             "git_status" => (
-                run_command(
+                run_git_command(
                     id,
                     &self.cwd,
-                    "git",
                     &["status", "--porcelain=v1", "--branch"],
+                    &[],
                 )
                 .await,
                 Vec::new(),
@@ -202,18 +201,15 @@ impl GitDispatcher {
     }
 
     async fn git_update_branch(&self, id: &str) -> Response {
-        let fetch = run_command(
-            id,
-            &self.cwd,
-            "git",
-            &["fetch", "origin", &self.base_branch],
-        )
-        .await;
+        let fetch = run_git_command(id, &self.cwd, &["fetch", "origin", &self.base_branch], &[])
+            .await;
         if !fetch.ok || fetch.exit_code != Some(0) {
             return fetch;
         }
+        // A clean merge creates a merge commit, which needs an identity.
+        let env = crate::git::identity_env(&self.cwd).await;
         let target = format!("origin/{}", self.base_branch);
-        run_command(id, &self.cwd, "git", &["merge", "--no-edit", &target]).await
+        run_git_command(id, &self.cwd, &["merge", "--no-edit", &target], &env).await
     }
 }
 
@@ -251,18 +247,20 @@ fn fallback_branch(title: &str) -> String {
     }
 }
 
-async fn run_command(id: &str, cwd: &Path, program: &str, args: &[&str]) -> Response {
-    let mut cmd = Command::new(program);
+async fn run_git_command(id: &str, cwd: &Path, args: &[&str], env: &[(String, String)]) -> Response {
+    let mut cmd = crate::git_dist::command(cwd);
     cmd.args(args)
-        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
 
     let child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return Response::err(id, format!("spawn {program}: {e}")),
+        Err(e) => return Response::err(id, format!("spawn git: {e}")),
     };
 
     match tokio::time::timeout(OP_TIMEOUT, child.wait_with_output()).await {
@@ -272,7 +270,7 @@ async fn run_command(id: &str, cwd: &Path, program: &str, args: &[&str]) -> Resp
             String::from_utf8_lossy(&out.stdout).into_owned(),
             String::from_utf8_lossy(&out.stderr).into_owned(),
         ),
-        Ok(Err(e)) => Response::err(id, format!("run {program}: {e}")),
+        Ok(Err(e)) => Response::err(id, format!("run git: {e}")),
         Err(_) => Response::err(id, format!("op timed out after {}s", OP_TIMEOUT.as_secs())),
     }
 }

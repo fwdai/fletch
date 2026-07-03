@@ -54,6 +54,11 @@ rusqlite_migration = "1"
 rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 base64 = "0.22"
+# Portable git distribution (git_dist.rs): checksum-verify and unpack the
+# pinned dugite-native tarball downloaded when no usable system git exists.
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
 
 # Window state (size/position/maximized) persistence — desktop only.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

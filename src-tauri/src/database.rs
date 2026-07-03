@@ -56,6 +56,19 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// The signed-in profile's display name and email from the single `accounts`
+/// row — the fallback commit identity for repos with no `user.name` /
+/// `user.email` configured (see `git_dist::fallback_identity`). Either field
+/// may be absent; `None` when there is no account row at all.
+pub fn get_account_identity(conn: &Connection) -> Option<(Option<String>, Option<String>)> {
+    let row = db_select(conn, "accounts", json!({}))
+        .ok()?
+        .into_iter()
+        .next()?;
+    let field = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_string);
+    Some((field("name"), field("email")))
+}
+
 fn validate_table(table: &str) -> Result<()> {
     if ALLOWED_TABLES.contains(&table) {
         Ok(())

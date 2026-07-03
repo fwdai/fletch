@@ -164,6 +164,11 @@ impl ExecSession {
         cmd.args(&args);
         cmd.current_dir(&self.cwd);
         crate::bin_resolve::apply_login_shell_env(&mut cmd);
+        // Portable-git PATH/env so the child's own `git` calls work on a
+        // machine with no usable system git. No-op on system git.
+        for (k, v) in crate::git_dist::child_env() {
+            cmd.env(k, v);
+        }
         for (k, v) in &self.env {
             cmd.env(k, v);
         }

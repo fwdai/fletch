@@ -78,6 +78,12 @@ impl PtySession {
                 cmd.env(k, v);
             }
         }
+        // When the app runs on portable git (no usable system git), the
+        // child's own `git` calls must find it too — this prepends its bin
+        // dir to the child's PATH.
+        for (k, v) in crate::git_dist::child_env() {
+            cmd.env(k, v);
+        }
         // Explicit terminal type — claude code uses ink which checks TERM
         // for capability lookups. Without this, input handling falls back
         // to a line-buffered mode that doesn't match what the user expects.

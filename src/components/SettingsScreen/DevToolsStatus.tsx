@@ -3,6 +3,7 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { api, type GhStatus, type ToolStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
+import { useGitDist } from "@/util/useGitDist";
 
 type S = "ok" | "warn" | "bad" | "checking";
 
@@ -22,7 +23,20 @@ export function DevToolsStatus() {
     recheck();
   }, [recheck]);
 
-  const gitState: S = git ? (git.installed ? "ok" : "bad") : checking ? "checking" : "warn";
+  // While the app is downloading its portable git (no usable system git),
+  // show that instead of a false "not found"; re-check once it settles.
+  const gitDist = useGitDist(recheck);
+  const gitDownloading = !git?.installed && gitDist.phase === "downloading";
+
+  const gitState: S = gitDownloading
+    ? "checking"
+    : git
+      ? git.installed
+        ? "ok"
+        : "bad"
+      : checking
+        ? "checking"
+        : "warn";
   const ghState: S = gh
     ? gh.installed && gh.authenticated
       ? "ok"
@@ -39,13 +53,17 @@ export function DevToolsStatus() {
         name="Git"
         state={gitState}
         statusText={
-          git
-            ? git.installed
-              ? (git.version ?? "Installed")
-              : "Not found — required to run any agent"
-            : checking
-              ? "Checking…"
-              : "Couldn't check"
+          gitDownloading
+            ? "Downloading portable Git…"
+            : git
+              ? git.installed
+                ? git.source === "portable"
+                  ? `${git.version ?? "Installed"} — bundled with Fletch`
+                  : (git.version ?? "Installed")
+                : "Not found — required to run any agent"
+              : checking
+                ? "Checking…"
+                : "Couldn't check"
         }
         fix={gitState === "bad" ? "xcode-select --install" : undefined}
         docs="https://git-scm.com/downloads"
