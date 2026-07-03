@@ -3,8 +3,9 @@
 // index it two ways: by bare model id (to enrich a discovered id) and by
 // provider (to expand the provider hints for agents with no list command).
 //
-// CORS is open on models.dev and the Tauri webview CSP is null, so the frontend
-// fetches it directly — no backend round-trip.
+// CORS is open on models.dev and the Tauri webview CSP allow-lists
+// https://models.dev in connect-src, so the frontend fetches it directly — no
+// backend round-trip.
 
 import type { ModelMeta } from "./types";
 
