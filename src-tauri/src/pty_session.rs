@@ -17,6 +17,12 @@ pub struct PtySession {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    /// The child's process-group id. portable-pty makes the child a `setsid`
+    /// session leader, so its pid *is* the pgid, and every descendant that
+    /// stays in the group shares it. We keep it to signal the whole group on
+    /// kill (see `kill`) rather than just the leader.
+    #[cfg(unix)]
+    pgid: Option<nix::unistd::Pid>,
 }
 
 pub struct PtySpawn<'a> {
@@ -87,6 +93,10 @@ impl PtySession {
             .spawn_command(cmd)
             .map_err(|e| Error::Other(format!("pty spawn: {e}")))?;
         let killer = child.clone_killer();
+        #[cfg(unix)]
+        let pgid = child
+            .process_id()
+            .map(|pid| nix::unistd::Pid::from_raw(pid as i32));
         drop(pair.slave); // host side only needs master from here on
 
         let reader = pair
@@ -157,6 +167,8 @@ impl PtySession {
             master,
             writer,
             killer: Mutex::new(killer),
+            #[cfg(unix)]
+            pgid,
         })
     }
 
@@ -185,11 +197,66 @@ impl PtySession {
             .map_err(|e| Error::Other(format!("pty resize: {e}")))
     }
 
+    /// Terminate the child and everything running in its process group.
+    ///
+    /// portable-pty's own kill sends a lone `SIGHUP` to the leader's pid, so
+    /// anything that ignores HUP or daemonizes into its own group (a dev
+    /// server, a docker/compose invocation, a backgrounded script) is
+    /// orphaned and keeps holding its port. We instead signal the whole
+    /// group and escalate HUP → TERM → KILL, giving well-behaved processes a
+    /// window to shut down before we force it.
+    ///
+    /// Blocks until the group is gone (or KILL is delivered): quit reaps
+    /// synchronously, so the app can't exit and leak an orphan. Callers that
+    /// hold a lock should drop it first (see `RunSession::stop`).
     pub fn kill(&self) -> Result<()> {
+        #[cfg(unix)]
+        if let Some(pgid) = self.pgid {
+            return kill_process_group(pgid);
+        }
         self.killer
             .lock()
             .kill()
             .map_err(|e| Error::Other(format!("pty kill: {e}")))
+    }
+}
+
+/// Reap a process group with escalating signals, stopping as soon as the
+/// group empties. Each grace window is a worst case: a well-behaved child
+/// dies on the first HUP and the poll returns in a tick.
+#[cfg(unix)]
+fn kill_process_group(pgid: nix::unistd::Pid) -> Result<()> {
+    use nix::sys::signal::Signal::{SIGHUP, SIGKILL, SIGTERM};
+
+    if signal_group(pgid, SIGHUP) && !group_gone_within(pgid, Duration::from_millis(200)) {
+        signal_group(pgid, SIGTERM);
+        if !group_gone_within(pgid, Duration::from_millis(300)) {
+            signal_group(pgid, SIGKILL);
+        }
+    }
+    Ok(())
+}
+
+/// Send `sig` to every process in the group. Returns false if the group no
+/// longer exists (ESRCH), so callers can stop escalating.
+#[cfg(unix)]
+fn signal_group(pgid: nix::unistd::Pid, sig: nix::sys::signal::Signal) -> bool {
+    nix::sys::signal::killpg(pgid, sig).is_ok()
+}
+
+/// Poll (signal-0 probe) until the group has no members or `budget` elapses.
+/// Returns true once the group is gone.
+#[cfg(unix)]
+fn group_gone_within(pgid: nix::unistd::Pid, budget: Duration) -> bool {
+    let deadline = Instant::now() + budget;
+    loop {
+        if nix::sys::signal::killpg(pgid, None).is_err() {
+            return true; // ESRCH: nothing left in the group
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -290,5 +357,61 @@ mod tests {
 
         let exit = exit_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(exit.success, "unexpected PTY exit: {exit:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_reaps_backgrounded_group_child() {
+        use std::time::Instant;
+
+        fn alive(pid: i32) -> bool {
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+        }
+
+        let td = tempfile::tempdir().unwrap();
+        let pidfile = td.path().join("child.pid");
+        // The shell backgrounds a `sleep` (same group, no job control) then
+        // blocks on `wait` — the stand-in for a dev server. portable-pty's
+        // lone SIGHUP to the shell's pid never reaches the child; only a
+        // group-wide signal does, so this proves killpg reaps it.
+        let script = format!("sleep 1000 & echo $! > '{}'; wait", pidfile.display());
+        let pty = PtySession::spawn(
+            PtySpawn {
+                program: std::path::Path::new("/bin/sh"),
+                args: &["-c".to_string(), script],
+                cwd: td.path(),
+                env: &[],
+                cols: 80,
+                rows: 24,
+            },
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+
+        let start = Instant::now();
+        let child = loop {
+            if let Ok(pid) = std::fs::read_to_string(&pidfile)
+                .unwrap_or_default()
+                .trim()
+                .parse::<i32>()
+            {
+                break pid;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5), "child never started");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(alive(child), "backgrounded child should be running");
+
+        pty.kill().unwrap();
+
+        let start = Instant::now();
+        while alive(child) && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !alive(child),
+            "backgrounded child survived kill (pid {child}) — orphaned"
+        );
     }
 }

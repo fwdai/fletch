@@ -111,15 +111,22 @@ impl RunSession {
     /// Returns the prior phase so callers can decide whether to emit
     /// state change.
     pub fn stop(&self) -> RunPhase {
-        let mut inner = self.inner.lock();
-        let prior = inner.phase;
-        if let Some(pty) = inner.pty.take() {
+        // Take the PTY and update state under the lock, but run the (blocking)
+        // group kill after releasing it — a stubborn child mustn't stall
+        // snapshot()/phase() reads from the Run panel.
+        let (prior, pty) = {
+            let mut inner = self.inner.lock();
+            let prior = inner.phase;
+            let pty = inner.pty.take();
+            inner.profile = None;
+            inner.generation = inner.generation.wrapping_add(1);
+            inner.phase = RunPhase::Stopped;
+            inner.last_error = None;
+            (prior, pty)
+        };
+        if let Some(pty) = pty {
             let _ = pty.kill();
         }
-        inner.profile = None;
-        inner.generation = inner.generation.wrapping_add(1);
-        inner.phase = RunPhase::Stopped;
-        inner.last_error = None;
         prior
     }
 
@@ -215,8 +222,14 @@ pub fn user_shell() -> PathBuf {
 /// (PATH); interactive pulls .zshrc (where most users put pnpm /
 /// nvm shims). Single `-c` argument means the shell exits as soon
 /// as the command completes.
+///
+/// `set +m` disables job control. Interactive shells otherwise run each job
+/// in its own process group, so the dev command and anything it backgrounds
+/// escape the shell's group — and stop() could only reap the group, leaving
+/// them orphaned on the port. With job control off the whole tree stays in
+/// the shell's (session-leader) group, so one killpg takes it all down.
 pub fn shell_args(cmd: &str) -> Vec<String> {
-    vec!["-lic".to_string(), cmd.to_string()]
+    vec!["-lic".to_string(), format!("set +m; {cmd}")]
 }
 
 // ── Log buffer ───────────────────────────────────────────────────────────────
