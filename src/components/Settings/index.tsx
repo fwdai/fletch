@@ -124,7 +124,7 @@ function Popover({ onClose }: { onClose: () => void }) {
           // version when the backend has resolved it — never a fabricated plan
           // name or version string.
           const version = providerVersions[p.id];
-          const models = PROVIDER_DETAIL[p.id]?.models;
+          const models = PROVIDER_DETAIL[p.id].models;
           const description = [models, version].filter(Boolean).join(" · ");
           return (
             <SettingsRow key={p.id} label={p.label} description={description}>
