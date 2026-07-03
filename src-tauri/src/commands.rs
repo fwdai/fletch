@@ -15,7 +15,7 @@ use crate::git_state::{self, FileStatus, GitState, ShortStats, StatusKind};
 use crate::managed_session::ToolUseBehavior;
 use crate::names;
 use crate::run_session::RunStateSnapshot;
-use crate::supervisor::Supervisor;
+use crate::supervisor::{SpawnRequest, Supervisor};
 use crate::workspace::{
     repo_worktree_path, AgentRecord, AgentView, DiffStats, TrackedRepo, Workspace,
 };
@@ -200,15 +200,17 @@ pub async fn spawn_agent(
     let sup = supervisor.inner().clone();
     sup.spawn_agent(
         app,
-        view.unwrap_or_default(),
-        PathBuf::from(repo_path),
-        provider.unwrap_or_else(|| "claude".to_string()),
-        name,
-        effort,
-        model,
-        instructions,
-        custom_agent_id,
-        fork_base,
+        SpawnRequest {
+            view: view.unwrap_or_default(),
+            repo_path: PathBuf::from(repo_path),
+            provider: provider.unwrap_or_else(|| "claude".to_string()),
+            name,
+            effort,
+            model,
+            instructions,
+            custom_agent_id,
+            fork_base,
+        },
     )
     .await
 }

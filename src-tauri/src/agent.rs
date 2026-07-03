@@ -78,6 +78,24 @@ pub struct PerTurnSpec {
     pub rpc_dir: PathBuf,
 }
 
+/// The per-turn inputs a `*_build_args` builder turns into CLI argv. Bundled
+/// so builders and their call sites read as named fields instead of a row of
+/// positional `Option<&str>`s. `Default` (all-`None`, empty prompt) keeps test
+/// call sites terse: `TurnArgs { prompt: "hi", ..Default::default() }`.
+#[derive(Clone, Copy, Default)]
+pub struct TurnArgs<'a> {
+    /// The user's message for this turn (positional in most agents' argv).
+    pub prompt: &'a str,
+    /// Resume target: `None` starts a fresh session, `Some(id)` resumes it.
+    pub session_id: Option<&'a str>,
+    /// Reasoning-effort level, for agents that expose one.
+    pub thinking: Option<&'a str>,
+    /// Session-level model override; `None` keeps the provider CLI default.
+    pub model: Option<&'a str>,
+    /// A custom agent's standing brief, injected into the turn.
+    pub extra: Option<&'a str>,
+}
+
 /// Everything that varies between per-turn agents. The runner lifecycle —
 /// one fresh process per turn via `ExecSession` — is identical for all of
 /// them; only the binary, CLI args, session-id extraction, and turn-end
@@ -91,9 +109,8 @@ pub struct PerTurnDescriptor {
     bin: &'static str,
     /// Human-facing product name, used only in the not-found error.
     label: &'static str,
-    /// Builds the CLI args for a turn:
-    /// `(prompt, resume_session_id, thinking_effort, model, custom_instructions)`.
-    build_args: fn(&str, Option<&str>, Option<&str>, Option<&str>, Option<&str>) -> Vec<String>,
+    /// Builds the CLI args for one turn from the turn's [`TurnArgs`].
+    build_args: fn(&TurnArgs) -> Vec<String>,
     /// Builds the args to launch this agent's interactive TUI in the native
     /// (PTY) view: `(session [None = fresh], model, custom_instructions)`.
     pty_args: fn(Option<&str>, Option<&str>, Option<&str>) -> Vec<String>,
@@ -610,7 +627,8 @@ fn opencode_read(message_paths: &[PathBuf]) -> Vec<RawRecord> {
 // `_model` is intentionally unused: agy's `--print` runner ignores model
 // selection (the `--model` flag is inert in print mode), so the picker offers
 // no selectable models for antigravity (see `model_catalog::discover_one`).
-fn antigravity_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>, _model: Option<&str>, extra: Option<&str>) -> Vec<String> {
+fn antigravity_build_args(turn: &TurnArgs) -> Vec<String> {
+    let &TurnArgs { prompt, session_id, extra, .. } = turn;
     // `--print` takes the prompt as its *value* (i.e. `--print <prompt>`), so the
     // prompt must come last, directly after `--print`. Putting another flag
     // between them makes that flag the prompt (agy then "answers" the flag name).
@@ -952,8 +970,8 @@ impl Agent {
         Self::spawn_exec(
             program,
             spec,
-            move |prompt, sid, thinking, model| {
-                build_args(prompt, sid, thinking, model, extra.as_deref())
+            move |prompt, session_id, thinking, model| {
+                build_args(&TurnArgs { prompt, session_id, thinking, model, extra: extra.as_deref() })
             },
             desc.session_id,
             !desc.plaintext,
@@ -1258,7 +1276,8 @@ fn resolve_claude(home: &Path) -> Result<String> {
 /// sandbox-exec like every other agent, so codex's own confinement is disabled
 /// to leave a single boundary — and so codex can reach its RPC mailbox, which
 /// lives outside the worktree that `workspace-write` would have confined it to.
-fn codex_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>, model: Option<&str>, extra: Option<&str>) -> Vec<String> {
+fn codex_build_args(turn: &TurnArgs) -> Vec<String> {
+    let &TurnArgs { prompt, session_id, thinking, model, extra } = turn;
     let mut args: Vec<String> = vec!["exec".into()];
     push_opt(&mut args, "resume", session_id);
     args.push("--json".into());
@@ -1309,7 +1328,8 @@ fn codex_session_id(event: &Value) -> Option<String> {
 /// `--force` runs commands without approval prompts; `--trust` trusts the
 /// workspace in headless mode. Cursor's own sandbox applies; cwd comes from
 /// the child process working directory.
-fn cursor_build_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>, model: Option<&str>, extra: Option<&str>) -> Vec<String> {
+fn cursor_build_args(turn: &TurnArgs) -> Vec<String> {
+    let &TurnArgs { prompt, session_id, model, extra, .. } = turn;
     let mut args: Vec<String> = vec![
         "-p".into(),
         "--output-format".into(),
@@ -1336,7 +1356,8 @@ fn cursor_session_id(event: &Value) -> Option<String> {
 /// 1.15.12. OpenCode runs in the child's cwd (no `--dir` needed) and assigns
 /// its own session id on the first turn. The prompt is positional and must
 /// come after the flags.
-fn opencode_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>, model: Option<&str>, extra: Option<&str>) -> Vec<String> {
+fn opencode_build_args(turn: &TurnArgs) -> Vec<String> {
+    let &TurnArgs { prompt, session_id, thinking, model, extra } = turn;
     let mut args: Vec<String> = vec![
         "run".into(),
         "--format".into(),
@@ -1371,7 +1392,8 @@ fn opencode_session_id(event: &Value) -> Option<String> {
 /// it's the resume flag common to the versions we target — 0.74.x lacks
 /// `--session-id` entirely. Verified end-to-end against pi 0.74.2. Pi runs in
 /// the child's cwd; the prompt is positional and must come after the flags.
-fn pi_build_args(prompt: &str, session_id: Option<&str>, thinking: Option<&str>, model: Option<&str>, extra: Option<&str>) -> Vec<String> {
+fn pi_build_args(turn: &TurnArgs) -> Vec<String> {
+    let &TurnArgs { prompt, session_id, thinking, model, extra } = turn;
     let mut args: Vec<String> = vec!["-p".into(), "--mode".into(), "json".into()];
     args.extend(model_args(model));
     if let Some(level) = thinking {
@@ -1828,7 +1850,7 @@ mod tests {
     #[test]
     fn opencode_args_request_thinking() {
         // Without --thinking, opencode emits no `reasoning` events at all.
-        let args = opencode_build_args("hi", None, None, None, None);
+        let args = opencode_build_args(&TurnArgs { prompt: "hi", ..Default::default() });
         assert!(args.contains(&"--thinking".to_string()));
         assert!(args.contains(&"--format".to_string()));
         // Prompt is positional and last (possibly prefixed with injected
@@ -1920,14 +1942,14 @@ mod tests {
 
     #[test]
     fn opencode_args_variant_when_thinking_set() {
-        let args = opencode_build_args("hi", None, Some("max"), None, None);
+        let args = opencode_build_args(&TurnArgs { prompt: "hi", thinking: Some("max"), ..Default::default() });
         assert!(args.contains(&"--variant".to_string()));
         assert!(args.contains(&"max".to_string()));
     }
 
     #[test]
     fn codex_args_reasoning_effort_when_thinking_set() {
-        let args = codex_build_args("hi", None, Some("high"), None, None);
+        let args = codex_build_args(&TurnArgs { prompt: "hi", thinking: Some("high"), ..Default::default() });
         assert!(args.contains(&"reasoning_effort=\"high\"".to_string()));
     }
 
@@ -1936,7 +1958,7 @@ mod tests {
         // Fletch now wraps codex in sandbox-exec, so codex's own confinement is
         // turned fully off — otherwise its workspace-write sandbox would block
         // the RPC mailbox, which lives outside the worktree.
-        let args = codex_build_args("hi", None, None, None, None);
+        let args = codex_build_args(&TurnArgs { prompt: "hi", ..Default::default() });
         assert!(args.contains(&"sandbox_mode=\"danger-full-access\"".to_string()));
         assert!(!args.iter().any(|a| a.contains("workspace-write")));
         assert!(args.contains(&"approval_policy=\"never\"".to_string()));
@@ -1944,7 +1966,7 @@ mod tests {
 
     #[test]
     fn pi_args_thinking_when_set() {
-        let args = pi_build_args("hi", None, Some("xhigh"), None, None);
+        let args = pi_build_args(&TurnArgs { prompt: "hi", thinking: Some("xhigh"), ..Default::default() });
         assert!(args.contains(&"--thinking".to_string()));
         assert!(args.contains(&"xhigh".to_string()));
     }
@@ -1964,8 +1986,8 @@ mod tests {
 
     #[test]
     fn cursor_args_ignores_thinking() {
-        let with_none = cursor_build_args("hi", None, None, None, None);
-        let with_some = cursor_build_args("hi", None, Some("high"), None, None);
+        let with_none = cursor_build_args(&TurnArgs { prompt: "hi", ..Default::default() });
+        let with_some = cursor_build_args(&TurnArgs { prompt: "hi", thinking: Some("high"), ..Default::default() });
         assert_eq!(with_none, with_some);
     }
 
