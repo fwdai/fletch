@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/Button";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { useGitDist } from "@/util/useGitDist";
 
 type RowState = "ok" | "warn" | "bad" | "checking";
 
@@ -115,6 +116,11 @@ export function ProviderReadiness() {
     recheck();
   }, [recheck]);
 
+  // While the app is downloading its portable git (no usable system git),
+  // show that instead of a false "not found"; re-check once it settles.
+  const gitDist = useGitDist(recheck);
+  const gitDownloading = !git?.installed && gitDist.phase === "downloading";
+
   // Skip agents the user has toggled off; the rest are all runnable.
   const agents = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
   const detected = agents.filter((p) => !!providerPaths[p.id]).length;
@@ -123,7 +129,15 @@ export function ProviderReadiness() {
   // from the store's `providersProbed` (= a probe succeeded). In all three, a
   // probe that finished without a result is "couldn't detect" (warn), never a
   // false "not installed".
-  const gitState: RowState = git ? (git.installed ? "ok" : "bad") : checking ? "checking" : "warn";
+  const gitState: RowState = gitDownloading
+    ? "checking"
+    : git
+      ? git.installed
+        ? "ok"
+        : "bad"
+      : checking
+        ? "checking"
+        : "warn";
   const ghState: RowState = gh
     ? gh.authenticated
       ? "ok"
@@ -139,13 +153,17 @@ export function ProviderReadiness() {
         name="Git"
         state={gitState}
         statusText={
-          git
-            ? git.installed
-              ? (git.version ?? "Installed")
-              : "Not found — required to run any agent"
-            : checking
-              ? "Checking…"
-              : "Couldn't check"
+          gitDownloading
+            ? "Downloading portable Git…"
+            : git
+              ? git.installed
+                ? git.source === "portable"
+                  ? `${git.version ?? "Installed"} — bundled with Fletch`
+                  : (git.version ?? "Installed")
+                : "Not found — required to run any agent"
+              : checking
+                ? "Checking…"
+                : "Couldn't check"
         }
         fix={gitState === "bad" ? "xcode-select --install" : undefined}
         docs="https://git-scm.com/downloads"
