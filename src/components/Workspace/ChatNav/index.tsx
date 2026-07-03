@@ -1,4 +1,5 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { useDismiss } from "@/util/hooks";
 
 /** One navigable turn: `id` matches the `data-chat-turn` attribute on the
  *  rendered user bubble; `text` is the prompt preview shown in the outline. */
@@ -108,21 +109,7 @@ export function ChatNav({
   }, [goPrev, goNext]);
 
   // Dismiss the outline on outside click or Escape.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("pointerdown", onDown);
-    window.addEventListener("keydown", onEsc);
-    return () => {
-      window.removeEventListener("pointerdown", onDown);
-      window.removeEventListener("keydown", onEsc);
-    };
-  }, [open]);
+  useDismiss(rootRef, open, () => setOpen(false));
 
   if (turns.length < 2) return null;
 

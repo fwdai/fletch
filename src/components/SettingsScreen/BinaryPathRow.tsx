@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { api } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
 
 /** The "Binary" detail row in a provider card. Read-only by default — showing
  *  the effective path the way it always has — but with an inline pencil that
@@ -115,26 +116,26 @@ export function BinaryPathRow({
                 else if (e.key === "Escape") cancel();
               }}
             />
-            <button
-              className="btn-i iflex-center sm-i tip"
-              data-tip-down
-              data-tip="Save"
+            <IconButton
+              className="sm-i"
+              tipDown
+              tip="Save"
               aria-label="Save path"
               disabled={busy}
               onClick={() => void commit()}
             >
               <Icon name="check" size={14} />
-            </button>
-            <button
-              className="btn-i iflex-center sm-i tip"
-              data-tip-down
-              data-tip="Cancel"
+            </IconButton>
+            <IconButton
+              className="sm-i"
+              tipDown
+              tip="Cancel"
               aria-label="Cancel"
               disabled={busy}
               onClick={cancel}
             >
               <Icon name="close" size={14} />
-            </button>
+            </IconButton>
           </div>
           {error ? (
             <div className="set-prov-bin-err text-xs">{error}</div>
@@ -156,15 +157,15 @@ export function BinaryPathRow({
                 Reset to auto
               </Button>
             )}
-            <button
-              className="btn-i iflex-center sm-i tip"
-              data-tip-down
-              data-tip="Edit path"
+            <IconButton
+              className="sm-i"
+              tipDown
+              tip="Edit path"
               aria-label="Edit binary path"
               onClick={beginEdit}
             >
               <Icon name="edit" size={13} />
-            </button>
+            </IconButton>
           </div>
           {error && <div className="set-prov-bin-err text-xs">{error}</div>}
         </div>

@@ -5,6 +5,7 @@ import type { ITheme, Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import { type AgentRecord, api } from "@/api";
 import { Icon } from "@/components/Icon";
+import { IconButton } from "@/components/ui/IconButton";
 import { getShellBuffer, registerShellSink } from "@/pty/buffers";
 import { useXterm } from "@/util/useXterm";
 
@@ -168,27 +169,19 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
               if (e.key === "Escape") closeSearch();
             }}
           />
-          <button
-            className="btn-i iflex-center sm tip"
-            data-tip="Previous (Shift+Enter)"
+          <IconButton
+            size="sm"
+            tip="Previous (Shift+Enter)"
             onClick={() => runSearch(searchQuery, "prev")}
           >
             <Icon name="chevU" />
-          </button>
-          <button
-            className="btn-i iflex-center sm tip"
-            data-tip="Next (Enter)"
-            onClick={() => runSearch(searchQuery, "next")}
-          >
+          </IconButton>
+          <IconButton size="sm" tip="Next (Enter)" onClick={() => runSearch(searchQuery, "next")}>
             <Icon name="chevD" />
-          </button>
-          <button
-            className="btn-i iflex-center sm tip"
-            data-tip="Close (Esc)"
-            onClick={closeSearch}
-          >
+          </IconButton>
+          <IconButton size="sm" tip="Close (Esc)" onClick={closeSearch}>
             <Icon name="close" />
-          </button>
+          </IconButton>
         </div>
       )}
       <div className="xterm-slot">

@@ -3,6 +3,7 @@ import type { DetectedEditor } from "@/api";
 import { api } from "@/api";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
+import { useDismiss } from "@/util/hooks";
 import { EditorTile } from "./EditorTile";
 import { detectEditors, EDITOR_PREF_KEY } from "./editors";
 
@@ -21,7 +22,7 @@ export function OpenInEditor() {
   useEffect(() => {
     detectEditors().then(setEditors);
   }, []);
-  useOutsideClose(ref, open, () => setOpen(false));
+  useDismiss(ref, open, () => setOpen(false));
 
   if (!agentId || editors.length === 0) return null;
   const current = editors.find((e) => e.id === selectedId) ?? editors[0];
@@ -113,27 +114,4 @@ function useActiveAgentId(): string | null {
   const agent = useAppStore((s) => s.workspace?.agents.find((a) => a.id === selectedId));
   if (activeDraftId || settingsScreenOpen || !agent) return null;
   return agent.id;
-}
-
-/** Close the menu on an outside mousedown or Escape while it's open. */
-function useOutsideClose(
-  ref: React.RefObject<HTMLElement | null>,
-  active: boolean,
-  close: () => void,
-) {
-  useEffect(() => {
-    if (!active) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) close();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [active, ref, close]);
 }

@@ -9,6 +9,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { DropdownItem, DropdownMenu, DropdownSeparator } from "@/components/ui/Dropdown";
+import { useDismiss } from "@/util/hooks";
 
 export interface ContextMenuItem {
   icon: IconName;
@@ -60,20 +61,12 @@ export function FileContextMenu({ x, y, entries, onClose }: Props) {
     setPos({ x: Math.max(8, nx), y: Math.max(8, ny) });
   }, [x, y]);
 
+  useDismiss(ref, true, onClose);
+  // Also bail if the viewport shifts under the (fixed-positioned) menu.
   useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("mousedown", onDown, true);
-    window.addEventListener("keydown", onKey, true);
     window.addEventListener("resize", onClose);
     window.addEventListener("blur", onClose);
     return () => {
-      window.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("resize", onClose);
       window.removeEventListener("blur", onClose);
     };

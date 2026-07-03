@@ -3,6 +3,7 @@ import { hasAdapter } from "@/adapters";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS, type Provider } from "@/data/providers";
 import { useAppStore } from "@/store";
@@ -41,25 +42,18 @@ export function ProvidersPane() {
         actions={
           <>
             {scanning && <span className="set-checked mono text-xs">Scanning…</span>}
-            <button
-              className="btn-i iflex-center tip"
-              data-tip-down
-              data-tip="Coming soon"
-              aria-label="Add provider"
-              disabled
-            >
+            <IconButton tipDown tip="Coming soon" aria-label="Add provider" disabled>
               <Icon name="plus" />
-            </button>
-            <button
-              className="btn-i iflex-center tip"
-              data-tip-down
-              data-tip="Re-scan system"
+            </IconButton>
+            <IconButton
+              tipDown
+              tip="Re-scan system"
               aria-label="Re-scan system"
               onClick={rescan}
               disabled={scanning}
             >
               <Icon name="refresh" />
-            </button>
+            </IconButton>
           </>
         }
       />
