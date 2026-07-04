@@ -71,18 +71,31 @@ export function GeneralPane() {
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Resolver for the in-flight retry sleep, so cleanup (or a superseding run)
+    // can wake it immediately — clearing the timeout alone would leave poll()
+    // awaiting a Promise that never settles, stranding its closure until GC.
+    let wakeSleep: (() => void) | undefined;
     // Bumped on each poll start so a fresh focus supersedes any in-flight loop
     // instead of running several concurrent probe loops.
     let runId = 0;
 
+    const wake = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      wakeSleep?.();
+      wakeSleep = undefined;
+    };
+
     const poll = async () => {
       const myRun = ++runId;
+      wake(); // retire any sleep left by the run this one supersedes
       const deadline = Date.now() + PROBE_RETRY_WINDOW_MS;
       while (!cancelled && runId === myRun) {
         const probe = await refreshDockerProbe();
         if (cancelled || runId !== myRun) return;
         if (probe.status === "available" || Date.now() >= deadline) return;
         await new Promise<void>((resolve) => {
+          wakeSleep = resolve;
           timer = setTimeout(resolve, PROBE_RETRY_INTERVAL_MS);
         });
       }
@@ -93,7 +106,7 @@ export function GeneralPane() {
     window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
-      if (timer) clearTimeout(timer);
+      wake(); // resolve the pending sleep so poll() unwinds instead of hanging
       window.removeEventListener("focus", onFocus);
     };
   }, [refreshDockerProbe]);
