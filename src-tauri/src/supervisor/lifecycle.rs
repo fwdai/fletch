@@ -12,6 +12,7 @@ use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnS
 use crate::error::{Error, Result};
 use crate::git;
 use crate::rpc;
+use crate::sandbox::{self, EngineKind};
 use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir, is_per_turn_provider, new_agent_record,
     repo_worktree_path, AgentRecord, AgentStatus, AgentView, TrackedRepo,
@@ -168,6 +169,11 @@ impl Supervisor {
         // built-in spawn. The brief is re-injected on every spawn/resume.
         record.instructions = instructions;
         record.custom_agent_id = custom_agent_id;
+        // Stamp the sandbox engine at creation: the agent keeps this engine
+        // for life (respawn, view-switch, restore), so a later settings change
+        // never re-engines it — see `spawn_agent_process`, which reuses the
+        // stored value instead of the live setting.
+        record.sandbox_engine = Some(sandbox::selected_engine_kind().as_setting().to_string());
         let parent_dir = agent_parent_dir(&agent_id)?;
         let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
 
@@ -432,6 +438,15 @@ impl Supervisor {
         } = launch;
         let agent_id_str = agent_id.to_string();
 
+        // The engine stamped at creation. Records from before engine selection
+        // existed (NULL) always ran under sandbox-exec, so that stays their
+        // permanent kind — never re-derive from the live setting here.
+        let engine = record
+            .sandbox_engine
+            .as_deref()
+            .and_then(EngineKind::from_setting)
+            .unwrap_or(EngineKind::SandboxExec);
+
         if per_turn {
             match record.view {
                 // Native view: launch the agent's interactive TUI in a PTY,
@@ -458,6 +473,7 @@ impl Supervisor {
                         rpc_dir,
                         cols: 120,
                         rows: 32,
+                        engine,
                     };
                     spawn_pty_per_turn_agent(
                         spec,
@@ -481,6 +497,7 @@ impl Supervisor {
                         model: record.model.clone(),
                         instructions: record.instructions.clone(),
                         rpc_dir,
+                        engine,
                     },
                     app.clone(),
                     agent_id_str.clone(),
@@ -506,6 +523,7 @@ impl Supervisor {
                 rpc_dir,
                 cols: 120,
                 rows: 32,
+                engine,
             };
             match record.view {
                 AgentView::Native => spawn_pty_agent(

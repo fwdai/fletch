@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentModels } from "./data/modelCatalog/types";
+import type { SandboxEngine } from "./storage/preferences";
 
 export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
@@ -62,6 +63,10 @@ export interface AgentRecord {
   /** The custom agent this session was spawned from (null for a built-in
    *  spawn). Used to show the custom agent's name/color in the sidebar. */
   custom_agent_id?: string | null;
+  /** Sandbox engine stamped at creation ("sandbox-exec" | "docker") and kept
+   *  for the agent's life — a settings change never re-engines it. Null for
+   *  agents created before engine selection existed (they run sandbox-exec). */
+  sandbox_engine?: string | null;
 }
 
 export interface Workspace {
@@ -349,6 +354,13 @@ export interface GhRepoSummary {
   updated_at: string;
 }
 
+/** Result of probing the local Docker installation (Settings › General).
+ *  `version` is the daemon's server version, present only when available. */
+export interface DockerProbe {
+  status: "available" | "not-installed" | "daemon-down";
+  version?: string;
+}
+
 /** An editor or terminal detected on the user's machine (title-bar launcher). */
 export interface DetectedEditor {
   id: string;
@@ -370,6 +382,12 @@ export const api = {
   // Emit the deferred first `app_opened` once onboarding completes — i.e. after
   // the data-sharing disclosure has been shown. See `track_app_opened` (Rust).
   trackAppOpened: () => invoke<void>("track_app_opened"),
+  // Sandbox engine selection. The setting is backend-owned (snake_case
+  // `sandbox_engine`, written by `set_sandbox_engine` — which validates docker
+  // against a live daemon probe and refuses when it's unreachable).
+  getSandboxEngine: () => invoke<SandboxEngine>("get_sandbox_engine"),
+  setSandboxEngine: (engine: SandboxEngine) => invoke<void>("set_sandbox_engine", { engine }),
+  probeDockerEngine: () => invoke<DockerProbe>("probe_docker_engine"),
   getAgentDiffStats: (agentId: string) => invoke<DiffStats>("get_agent_diff_stats", { agentId }),
   addWorkspaceRepo: (repoPath: string) => invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>

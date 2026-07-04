@@ -27,7 +27,7 @@ use crate::instructions;
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
-use crate::sandbox::{AgentLaunchCtx, Keepalive, LaunchPlan};
+use crate::sandbox::{AgentLaunchCtx, EngineKind, Keepalive, LaunchPlan};
 
 pub enum Agent {
     Pty(PtyAgent),
@@ -77,6 +77,10 @@ pub struct PerTurnSpec {
     pub instructions: Option<String>,
     /// The agent's RPC mailbox dir, exposed to the child as `FLETCH_RPC_DIR`.
     pub rpc_dir: PathBuf,
+    /// Sandbox engine stamped on the agent's record at creation and reused on
+    /// every subsequent spawn, so a settings change never re-engines an
+    /// existing agent (see `supervisor::lifecycle`).
+    pub engine: EngineKind,
 }
 
 /// The per-turn inputs a `*_build_args` builder turns into CLI argv. Bundled
@@ -782,6 +786,10 @@ pub struct SpawnSpec<'a> {
     pub rpc_dir: PathBuf,
     pub cols: u16,
     pub rows: u16,
+    /// Sandbox engine stamped on the agent's record at creation and reused on
+    /// every subsequent spawn (fresh, view-switch, resume), so a settings
+    /// change never re-engines an existing agent (see `supervisor::lifecycle`).
+    pub engine: EngineKind,
 }
 
 /// The environment Fletch injects into every agent child: the absolute path to
@@ -819,7 +827,7 @@ impl Agent {
             env: launch_env,
             keepalive,
             kill,
-        } = sandbox::current_engine().launch_agent(&ctx, &claude)?;
+        } = sandbox::engine_for(spec.engine).launch_agent(&ctx, &claude)?;
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -897,7 +905,7 @@ impl Agent {
             env: launch_env,
             keepalive,
             kill,
-        } = sandbox::current_engine().launch_agent(&ctx, &bin)?;
+        } = sandbox::engine_for(spec.engine).launch_agent(&ctx, &bin)?;
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -956,7 +964,7 @@ impl Agent {
             env: launch_env,
             keepalive,
             kill,
-        } = sandbox::current_engine().launch_agent(&ctx, &claude)?;
+        } = sandbox::engine_for(spec.engine).launch_agent(&ctx, &claude)?;
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -1070,7 +1078,7 @@ impl Agent {
             env: launch_env,
             keepalive,
             kill,
-        } = sandbox::current_engine().launch_agent(&ctx, agent_bin)?;
+        } = sandbox::engine_for(spec.engine).launch_agent(&ctx, agent_bin)?;
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
 

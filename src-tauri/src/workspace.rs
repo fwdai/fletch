@@ -165,6 +165,12 @@ pub struct AgentRecord {
     /// name/color in the sidebar. `None` for a plain built-in spawn.
     #[serde(default)]
     pub custom_agent_id: Option<String>,
+    /// Sandbox engine stamped at creation (an `EngineKind::as_setting`
+    /// spelling) and reused on every process spawn, so a settings change never
+    /// re-engines an existing agent. `None` = created before engine selection
+    /// existed — such agents always ran (and keep running) under sandbox-exec.
+    #[serde(default)]
+    pub sandbox_engine: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -304,7 +310,8 @@ pub struct WorkspaceManager {
 const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
             w.stopped_at, w.archived_at,
             s.provider, s.view, s.provider_session_id, s.last_error,
-            s.effort, s.model, s.instructions, s.custom_agent_id
+            s.effort, s.model, s.instructions, s.custom_agent_id,
+            w.sandbox_engine
      FROM workspaces w
      LEFT JOIN sessions s ON s.workspace_id = w.id";
 
@@ -325,6 +332,7 @@ type AgentRow = (
     Option<String>, // s.model
     Option<String>, // s.instructions
     Option<String>, // s.custom_agent_id
+    Option<String>, // w.sandbox_engine
 );
 
 impl WorkspaceManager {
@@ -468,14 +476,15 @@ impl WorkspaceManager {
 
         // The workspace is the durable work-area (identity + task metadata).
         tx.execute(
-            "INSERT INTO workspaces (id, project_id, name, task, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO workspaces (id, project_id, name, task, created_at, sandbox_engine)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 record.id,
                 project_id,
                 record.name,
                 record.task,
                 created_millis,
+                record.sandbox_engine,
             ],
         )?;
 
@@ -1404,7 +1413,7 @@ impl WorkspaceManager {
     }
 
     /// Map a row from an [`AGENT_SELECT`] query into the raw column tuple.
-    /// Shared by `query_all_agents` and `load_agent` so the 15-column layout
+    /// Shared by `query_all_agents` and `load_agent` so the 16-column layout
     /// is decoded in exactly one place.
     fn map_agent_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRow> {
         Ok((
@@ -1423,6 +1432,7 @@ impl WorkspaceManager {
             row.get(12)?,
             row.get(13)?,
             row.get(14)?,
+            row.get(15)?,
         ))
     }
 
@@ -1446,6 +1456,7 @@ impl WorkspaceManager {
             model,
             instructions,
             custom_agent_id,
+            sandbox_engine,
         ) = row;
 
         let is_archived = archived_millis.is_some();
@@ -1481,6 +1492,7 @@ impl WorkspaceManager {
             model,
             instructions,
             custom_agent_id,
+            sandbox_engine,
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,
@@ -1530,6 +1542,10 @@ pub fn new_agent_record(
         model: None,
         instructions: None,
         custom_agent_id: None,
+        // Stamped by the spawn path (`supervisor::lifecycle::spawn_agent`)
+        // from the live setting — callers building records directly (tests)
+        // default to the pre-selection NULL, which spawns under sandbox-exec.
+        sandbox_engine: None,
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         archive: None,
@@ -1721,6 +1737,44 @@ mod tests {
         let dolomites = cur.agents.iter().find(|a| a.id == "dolomites").unwrap();
         assert_eq!(yosemite.status, AgentStatus::Idle);
         assert_eq!(dolomites.status, AgentStatus::Stopped);
+    }
+
+    #[test]
+    fn sandbox_engine_stamp_round_trips() {
+        let db = test_db();
+        seed_repo(&db, "/r");
+        seed_repo(&db, "/r2");
+        let wm = WorkspaceManager::new(db);
+
+        // A stamped engine persists verbatim and comes back on load — the
+        // stickiness contract: spawn paths reuse this, never the live setting.
+        let mut stamped = new_agent_record(
+            "yosemite".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "t".into(),
+            AgentView::Custom,
+        );
+        stamped.sandbox_engine = Some("docker".into());
+        wm.add_agent(&mut stamped).unwrap();
+        assert_eq!(
+            wm.agent("yosemite").unwrap().sandbox_engine.as_deref(),
+            Some("docker")
+        );
+
+        // An unstamped record (pre-selection agents) stays NULL, which spawn
+        // paths treat as sandbox-exec.
+        let mut legacy = new_agent_record(
+            "dolomites".into(),
+            "b".into(),
+            "claude".into(),
+            mk_repo("/r2"),
+            "t".into(),
+            AgentView::Custom,
+        );
+        wm.add_agent(&mut legacy).unwrap();
+        assert_eq!(wm.agent("dolomites").unwrap().sandbox_engine, None);
     }
 
     #[test]

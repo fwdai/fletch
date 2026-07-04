@@ -73,3 +73,10 @@
   background: var(--hover);
   box-shadow: inset 0 0 0 1px var(--accent-line);
 }
+/* Per-option disabled state (SelectOption.disabled): visible with its hint
+   explaining why, but not hoverable/selectable. */
+.ui-select-dd .dd-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: none;
+}
