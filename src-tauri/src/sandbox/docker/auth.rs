@@ -153,8 +153,14 @@ fn resolve_from(
         {
             let forwarded = SHELL_AUTH_VARS
                 .iter()
-                .filter(|var| set(var).is_some_and(|v| !v.is_empty()))
-                .map(|var| (var.to_string(), env[*var].clone()))
+                .filter_map(|var| {
+                    let value = set(var)?;
+                    if value.is_empty() {
+                        None
+                    } else {
+                        Some((var.to_string(), value.to_string()))
+                    }
+                })
                 .collect();
             return ContainerAuth::Resolved {
                 env: forwarded,
@@ -251,6 +257,23 @@ mod tests {
         let mut keys: Vec<_> = env.iter().map(|(k, _)| k.as_str()).collect();
         keys.sort_unstable();
         assert_eq!(keys, ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
+    }
+
+    #[test]
+    fn shell_values_are_trimmed_before_forwarding() {
+        // A profile that exports a padded credential must reach the container
+        // trimmed — the status check trims when deciding it's a hit, so the
+        // forwarded value has to match or Claude auth fails in-container.
+        let shell = shell_env(&[("ANTHROPIC_API_KEY", "  sk-ant-api-key\n")]);
+        let (env, source) = resolved(resolve_from(None, Some(&shell), false));
+        assert_eq!(source, AuthSource::ShellEnv);
+        assert_eq!(
+            env,
+            vec![(
+                "ANTHROPIC_API_KEY".to_string(),
+                "sk-ant-api-key".to_string()
+            )]
+        );
     }
 
     #[test]
