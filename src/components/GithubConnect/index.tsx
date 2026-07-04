@@ -16,9 +16,14 @@ export function GithubConnectModal() {
   const close = useAppStore((s) => s.closeGithubConnect);
   const { connect, cancel, device, error, busy } = useGithubConnect(close);
 
-  // Kick off the flow as soon as the modal opens (once per open). `connect`
-  // itself guards against re-entry while busy, and the ref keeps a dev-mode
-  // double-mount from starting two attempts.
+  // Kick off the flow once per open. We deliberately depend on `open` alone and
+  // reach `connect` through a ref: `connect`'s identity changes on every `busy`
+  // transition, so listing it here would re-run the effect mid-flow (e.g. right
+  // after a failure clears `busy`) — the `started` guard would still hold, but
+  // it's cleaner not to fire at all. `started` (reset only when the modal
+  // closes) also stops a dev-mode double-invoke from starting two attempts.
+  const connectRef = useRef(connect);
+  connectRef.current = connect;
   const started = useRef(false);
   useEffect(() => {
     if (!open) {
@@ -27,8 +32,8 @@ export function GithubConnectModal() {
     }
     if (started.current) return;
     started.current = true;
-    void connect();
-  }, [open, connect]);
+    void connectRef.current();
+  }, [open]);
 
   if (!open) return null;
 
