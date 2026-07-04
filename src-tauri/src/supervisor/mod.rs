@@ -303,6 +303,7 @@ fn transition_active(sup: &Supervisor, app: &AppHandle, agent_id: &str, new: Age
 mod tests {
     use super::*;
     use crate::pty_session::PtySpawn;
+    use crate::sandbox::KillHandle;
     use crate::workspace::{new_agent_record, AgentView, TrackedRepo};
     use std::path::Path;
     use std::time::Duration;
@@ -355,6 +356,7 @@ mod tests {
                 env: &[],
                 cols: 80,
                 rows: 24,
+                kill_plan: KillHandle::ProcessGroup,
             },
             |_| {},
             |_| {},
@@ -426,6 +428,7 @@ mod tests {
                 env: &[],
                 cols: 80,
                 rows: 24,
+                kill_plan: KillHandle::ProcessGroup,
             },
             |_| {},
             move |_exit| {

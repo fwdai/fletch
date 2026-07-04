@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 
 use crate::child_io;
 use crate::error::{Error, Result};
+use crate::sandbox::KillHandle;
 
 /// Tools whose `can_use_tool` request we hold open for a human answer instead
 /// of auto-approving. Everything else runs unattended.
@@ -52,6 +53,7 @@ pub struct ManagedSession {
     /// `request_id`s of `can_use_tool` prompts we're holding open, awaiting a
     /// human answer. Drained on interrupt so the turn can unwind.
     pending: Arc<Mutex<HashSet<String>>>,
+    kill_plan: KillHandle,
 }
 
 pub struct ManagedSpawn<'a> {
@@ -61,6 +63,8 @@ pub struct ManagedSpawn<'a> {
     /// Extra environment variables (e.g. `FLETCH_RPC_DIR`). `Command` inherits
     /// the parent environment by default; these are layered on top.
     pub env: &'a [(String, String)],
+    /// How to terminate the child (chosen by the sandbox engine).
+    pub kill_plan: KillHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +164,7 @@ impl ManagedSession {
             child: child_arc,
             stdin: stdin_arc,
             pending,
+            kill_plan: spec.kill_plan,
         })
     }
 
@@ -236,6 +241,7 @@ impl ManagedSession {
     }
 
     pub fn kill(&self) -> Result<()> {
+        self.kill_plan.kill()?;
         // Close stdin to signal EOF (claude exits cleanly that way),
         // then kill if it's still alive.
         let _ = self.stdin.lock().take();
@@ -364,15 +370,11 @@ mod tests {
             child: Arc::new(Mutex::new(None)),
             stdin: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashSet::new())),
+            kill_plan: KillHandle::ProcessGroup,
         };
 
         assert!(session
-            .answer_tool_use(
-                "already-drained",
-                json!({}),
-                ToolUseBehavior::Allow,
-                None,
-            )
+            .answer_tool_use("already-drained", json!({}), ToolUseBehavior::Allow, None,)
             .is_ok());
     }
 
@@ -395,7 +397,10 @@ mod tests {
         assert_eq!(v["response"]["subtype"], "success");
         assert_eq!(v["response"]["request_id"], "req-1");
         assert_eq!(v["response"]["response"]["behavior"], "allow");
-        assert_eq!(v["response"]["response"]["updatedInput"]["answers"]["q"], "a");
+        assert_eq!(
+            v["response"]["response"]["updatedInput"]["answers"]["q"],
+            "a"
+        );
     }
 
     #[test]

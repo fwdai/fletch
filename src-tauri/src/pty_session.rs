@@ -12,11 +12,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
+use crate::sandbox::KillHandle;
 
 pub struct PtySession {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    kill_plan: KillHandle,
     /// The child's process-group id. portable-pty makes the child a `setsid`
     /// session leader, so its pid *is* the pgid, and every descendant that
     /// stays in the group shares it. We keep it to signal the whole group on
@@ -37,6 +39,8 @@ pub struct PtySpawn<'a> {
     pub env: &'a [(String, String)],
     pub cols: u16,
     pub rows: u16,
+    /// How to terminate the child (chosen by the sandbox engine).
+    pub kill_plan: KillHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -173,6 +177,7 @@ impl PtySession {
             master,
             writer,
             killer: Mutex::new(killer),
+            kill_plan: spec.kill_plan,
             #[cfg(unix)]
             pgid,
         })
@@ -216,6 +221,7 @@ impl PtySession {
     /// synchronously, so the app can't exit and leak an orphan. Callers that
     /// hold a lock should drop it first (see `RunSession::stop`).
     pub fn kill(&self) -> Result<()> {
+        self.kill_plan.kill()?;
         #[cfg(unix)]
         if let Some(pgid) = self.pgid {
             return kill_process_group(pgid);
@@ -360,14 +366,12 @@ mod tests {
         let _pty = PtySession::spawn(
             PtySpawn {
                 program: std::path::Path::new("/bin/sh"),
-                args: &[
-                    "-lc".to_string(),
-                    "printf hello-from-pty".to_string(),
-                ],
+                args: &["-lc".to_string(), "printf hello-from-pty".to_string()],
                 cwd: td.path(),
                 env: &[],
                 cols: 80,
                 rows: 24,
+                kill_plan: KillHandle::ProcessGroup,
             },
             move |bytes| {
                 let _ = out_tx.send(bytes);
@@ -409,6 +413,7 @@ mod tests {
                 env: &[],
                 cols: 80,
                 rows: 24,
+                kill_plan: KillHandle::ProcessGroup,
             },
             |_| {},
             |_| {},
@@ -424,7 +429,10 @@ mod tests {
             {
                 break pid;
             }
-            assert!(start.elapsed() < Duration::from_secs(5), "child never started");
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "child never started"
+            );
             std::thread::sleep(Duration::from_millis(20));
         };
         assert!(alive(child), "backgrounded child should be running");

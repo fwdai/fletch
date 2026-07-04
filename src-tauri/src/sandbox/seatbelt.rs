@@ -24,7 +24,42 @@
 
 use std::path::{Path, PathBuf};
 
+use super::engine::{AgentLaunchCtx, EngineKind, Keepalive, KillHandle, LaunchPlan, SandboxEngine};
 use crate::error::{Error, Result};
+
+pub struct SandboxExecEngine;
+
+impl SandboxEngine for SandboxExecEngine {
+    fn kind(&self) -> EngineKind {
+        EngineKind::SandboxExec
+    }
+
+    fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
+        let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
+        let profile_text = build_profile(
+            ctx.writable_root,
+            ctx.rpc_dir,
+            ctx.home,
+            claude_config_dir.as_deref(),
+        )?;
+        let profile_file = profile_tempfile(&profile_text)?;
+        let profile_path = profile_file
+            .path()
+            .to_str()
+            .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
+            .to_string();
+        Ok(LaunchPlan {
+            program: PathBuf::from(SANDBOX_EXEC),
+            prefix_args: vec!["-f".into(), profile_path, agent_bin.to_string()],
+            env: vec![],
+            keepalive: Keepalive::Profile(profile_file),
+            // sandbox-exec is a plain process wrapper — the session's own
+            // process-group escalation tears everything down; the trait's
+            // default no-op kill/is_alive apply.
+            kill: KillHandle::ProcessGroup,
+        })
+    }
+}
 
 /// The macOS sandbox wrapper. Every confined process (agents *and* the Run
 /// panel) is launched as `sandbox-exec -f <profile> <program> …`.
@@ -64,16 +99,16 @@ fn standard_state_dirs(home_s: &str) -> Vec<String> {
 /// profile: a running project legitimately needs its toolchain to write here,
 /// whereas an agent editing source does not.
 const RUN_TOOLCHAIN_DIRS: &[&str] = &[
-    ".cargo",          // Rust: registry, git checkouts, installed bins
-    ".rustup",         // Rust: downloaded toolchains (rust-toolchain.toml)
-    "go",              // Go: GOPATH — module cache (pkg/mod) + installed bins
-    ".bun",            // Bun: global install cache
-    "Library/pnpm",    // pnpm: content-addressable store (macOS default)
-    ".bundle",         // Bundler: config + cache
-    ".gem",            // RubyGems: default gem home
-    ".rbenv",          // rbenv: shims + installed Ruby versions
-    ".rvm",            // rvm: alternative Ruby version manager
-    "Library/Python",  // pip --user / no-venv user site-packages
+    ".cargo",         // Rust: registry, git checkouts, installed bins
+    ".rustup",        // Rust: downloaded toolchains (rust-toolchain.toml)
+    "go",             // Go: GOPATH — module cache (pkg/mod) + installed bins
+    ".bun",           // Bun: global install cache
+    "Library/pnpm",   // pnpm: content-addressable store (macOS default)
+    ".bundle",        // Bundler: config + cache
+    ".gem",           // RubyGems: default gem home
+    ".rbenv",         // rbenv: shims + installed Ruby versions
+    ".rvm",           // rvm: alternative Ruby version manager
+    "Library/Python", // pip --user / no-venv user site-packages
 ];
 
 /// Build the SBPL profile for a **Run-panel** process (setup/dev command).
@@ -332,7 +367,7 @@ pub fn build_profile(
 pub fn profile_tempfile(text: &str) -> Result<tempfile::NamedTempFile> {
     use std::io::Write;
     let mut f = tempfile::Builder::new()
-        .prefix("quorum-sandbox-")
+        .prefix("fletch-sandbox-")
         .suffix(".sb")
         .tempfile()
         .map_err(|e| Error::Other(format!("create sandbox profile tmp: {e}")))?;
@@ -349,8 +384,7 @@ fn sbpl_string(s: &str) -> String {
 }
 
 fn canonical(p: &Path) -> Result<PathBuf> {
-    std::fs::canonicalize(p)
-        .map_err(|e| Error::Other(format!("canonicalize {}: {e}", p.display())))
+    std::fs::canonicalize(p).map_err(|e| Error::Other(format!("canonicalize {}: {e}", p.display())))
 }
 
 /// Resolve symlinks in the longest existing prefix of `p`, then re-append the
@@ -447,7 +481,9 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let resolved = resolve_existing_prefix(&link.join("not-created-yet"));
-        let expected = std::fs::canonicalize(&real).unwrap().join("not-created-yet");
+        let expected = std::fs::canonicalize(&real)
+            .unwrap()
+            .join("not-created-yet");
         assert_eq!(resolved, expected);
     }
 

@@ -26,11 +26,13 @@ use serde_json::Value;
 
 use crate::child_io;
 use crate::error::{Error, Result};
+use crate::sandbox::{Keepalive, KillHandle};
 
 type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
 type SessionIdCb = Arc<dyn Fn(String) + Send + Sync>;
 type ExitCb = Arc<dyn Fn(ExecExit) + Send + Sync>;
-type ArgsBuilder = Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
+type ArgsBuilder =
+    Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
 type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 
 pub struct ExecSpawn {
@@ -41,9 +43,10 @@ pub struct ExecSpawn {
     /// `["-f", <profile>, <agent_bin>]` when `program` is `sandbox-exec`. Empty
     /// when the agent runs unwrapped.
     pub prefix_args: Vec<String>,
-    /// Sandbox profile tempfile, held for the session's lifetime so the profile
-    /// path embedded in `prefix_args` stays valid across the per-turn respawns.
-    pub profile: Option<tempfile::NamedTempFile>,
+    /// Sandbox keepalive, held for the session's lifetime so any resource the
+    /// engine embedded in `prefix_args` (e.g. a profile path) stays valid across
+    /// the per-turn respawns.
+    pub keepalive: Keepalive,
     /// The agent's primary worktree — set as the child's cwd.
     pub cwd: PathBuf,
     /// Session id to resume, if one has been captured already.
@@ -57,16 +60,20 @@ pub struct ExecSpawn {
     /// Extra environment variables (e.g. `FLETCH_RPC_DIR`) set on every turn's
     /// child process, layered on top of the inherited environment.
     pub env: Vec<(String, String)>,
+    /// How to terminate a turn's child (chosen by the sandbox engine).
+    pub kill_plan: KillHandle,
 }
 
 pub struct ExecSession {
     program: PathBuf,
     prefix_args: Vec<String>,
-    /// Kept alive (not read) so the sandbox profile file outlives the session.
-    _profile: Option<tempfile::NamedTempFile>,
+    /// Kept alive (not read) so any sandbox resource outlives the session.
+    #[allow(dead_code)]
+    keepalive: Keepalive,
     cwd: PathBuf,
     stdout_is_json: bool,
     env: Vec<(String, String)>,
+    kill_plan: KillHandle,
     session_id: Arc<Mutex<Option<String>>>,
     model: Option<String>,
     child: Arc<Mutex<Option<Child>>>,
@@ -105,7 +112,10 @@ impl ExecSession {
         cb: ExecCallbacks<F, G, H>,
     ) -> Self
     where
-        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync + 'static,
+        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String>
+            + Send
+            + Sync
+            + 'static,
         I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
@@ -114,10 +124,11 @@ impl ExecSession {
         Self {
             program: spec.program,
             prefix_args: spec.prefix_args,
-            _profile: spec.profile,
+            keepalive: spec.keepalive,
             cwd: spec.cwd,
             stdout_is_json: spec.stdout_is_json,
             env: spec.env,
+            kill_plan: spec.kill_plan,
             session_id: Arc::new(Mutex::new(spec.session_id)),
             model: spec.model,
             child: Arc::new(Mutex::new(None)),
@@ -131,7 +142,12 @@ impl ExecSession {
         }
     }
 
-    pub fn send_user_message(&self, text: &str, attachments: &[String], thinking: Option<&str>) -> Result<()> {
+    pub fn send_user_message(
+        &self,
+        text: &str,
+        attachments: &[String],
+        thinking: Option<&str>,
+    ) -> Result<()> {
         // Claim this turn's sequence number first, so a superseded turn's
         // reap thread sees it's no longer current and stays quiet.
         let seq = self.turn_seq.fetch_add(1, Ordering::SeqCst) + 1;
@@ -302,6 +318,7 @@ impl ExecSession {
     }
 
     pub fn kill(&self) -> Result<()> {
+        self.kill_plan.kill()?;
         if let Some(mut child) = self.child.lock().take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -364,7 +381,12 @@ mod tests {
     }
 
     // A codex-style config: id from `thread.started`, end on `turn.completed`.
-    fn codex_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>, model: Option<&str>) -> Vec<String> {
+    fn codex_args(
+        prompt: &str,
+        session_id: Option<&str>,
+        _thinking: Option<&str>,
+        model: Option<&str>,
+    ) -> Vec<String> {
         let mut a = vec!["exec".to_string()];
         if let Some(id) = session_id {
             a.push("resume".into());
@@ -405,12 +427,13 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                profile: None,
+                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 model: None,
                 stdout_is_json: true,
                 env: vec![],
+                kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -463,12 +486,13 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                profile: None,
+                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: Some("prev-thread".into()),
                 model: Some("gpt-5.2-codex".into()),
                 stdout_is_json: true,
                 env: vec![],
+                kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -501,12 +525,13 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                profile: None,
+                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 model: None,
                 stdout_is_json: true,
                 env: vec![],
+                kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -523,7 +548,11 @@ mod tests {
         let exit = xrx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(!exit.success);
         assert!(!exit.interrupted);
-        assert!(exit.message.contains("exit status: 127"), "{}", exit.message);
+        assert!(
+            exit.message.contains("exit status: 127"),
+            "{}",
+            exit.message
+        );
         assert!(exit.message.contains("node missing"), "{}", exit.message);
     }
 
@@ -544,19 +573,23 @@ mod tests {
 
         // Holding a write fd to the script makes exec() return ETXTBSY, so the
         // spawn loop keeps retrying (child slot empty) until we drop it.
-        let busy_fd = std::fs::OpenOptions::new().write(true).open(&script).unwrap();
+        let busy_fd = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&script)
+            .unwrap();
 
         let (xtx, xrx) = mpsc::channel();
         let session = ExecSession::new(
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                profile: None,
+                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 model: None,
                 stdout_is_json: true,
                 env: vec![],
+                kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -585,6 +618,9 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("turn never reported exit — pre-spawn interrupt was dropped");
         assert!(exit.interrupted, "interrupt was not honored: {exit:?}");
-        assert!(!exit.success, "interrupted turn should not report success: {exit:?}");
+        assert!(
+            !exit.success,
+            "interrupted turn should not report success: {exit:?}"
+        );
     }
 }
