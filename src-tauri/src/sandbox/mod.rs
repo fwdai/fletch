@@ -1,4 +1,5 @@
 mod docker_probe;
+pub mod docker;
 mod engine;
 mod seatbelt;
 
