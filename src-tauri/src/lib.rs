@@ -235,8 +235,9 @@ fn move_db_aside(data_dir: &std::path::Path) -> crate::error::Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    for name in ["quorum.db", "quorum.db-wal", "quorum.db-shm"] {
-        let src = data_dir.join(name);
+    for suffix in database::DB_SIDECAR_SUFFIXES {
+        let name = format!("{}{suffix}", database::DB_FILENAME);
+        let src = data_dir.join(&name);
         if src.exists() {
             std::fs::rename(&src, data_dir.join(format!("{name}.moved-{stamp}")))?;
         }

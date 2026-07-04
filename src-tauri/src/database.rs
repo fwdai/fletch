@@ -12,6 +12,21 @@ const ALLOWED_TABLES: &[&str] = &[
     "sessions", "settings", "workspaces", "worktrees",
 ];
 
+/// Base name of the on-disk SQLite database within the app data dir. Neutral
+/// (not tied to the product name) so a future rebrand never needs another file
+/// migration. Shared by `init` and the recovery `move_db_aside` so both agree.
+pub const DB_FILENAME: &str = "data.db";
+
+/// Historical database name from before the app was renamed. Existing installs
+/// still have `LEGACY_DB_FILENAME` on disk; `migrate_legacy_db_name` renames it
+/// (and its WAL/SHM sidecars) to `DB_FILENAME` on first launch. Kept as a
+/// separate constant so the one-time migration is self-documenting.
+const LEGACY_DB_FILENAME: &str = "quorum.db";
+
+/// The SQLite database's WAL/SHM sidecar suffixes. The main file plus these
+/// three names are the complete on-disk footprint that must move together.
+pub const DB_SIDECAR_SUFFIXES: &[&str] = &["", "-wal", "-shm"];
+
 /// `settings` key prefix for per-agent custom binary path overrides. The agent
 /// id follows the prefix (e.g. `agent_bin_path_claude`); the value is the raw
 /// absolute path the user entered. Shared by the startup loader and the
@@ -110,11 +125,34 @@ fn get_migrations() -> Migrations<'static> {
 
 pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
     std::fs::create_dir_all(data_dir)?;
-    let db_path = data_dir.join("quorum.db");
+    migrate_legacy_db_name(data_dir)?;
+    let db_path = data_dir.join(DB_FILENAME);
     let mut conn = open_db(&db_path)?;
     backup_before_upgrade(&conn, &db_path)?;
     get_migrations().to_latest(&mut conn).map_err(map_migration_error)?;
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// One-time rename of the pre-rebrand `quorum.db` (and its `-wal`/`-shm`
+/// sidecars) to `DB_FILENAME`. Runs before `open_db` so existing installs keep
+/// their data instead of silently starting on a fresh empty database. Idempotent
+/// and safe: it only renames when the legacy file exists and the new one does
+/// not, so once migrated (or on a clean install) it is a no-op. We rename rather
+/// than copy — the user's data is never duplicated or deleted.
+fn migrate_legacy_db_name(data_dir: &Path) -> Result<()> {
+    let legacy_main = data_dir.join(LEGACY_DB_FILENAME);
+    let new_main = data_dir.join(DB_FILENAME);
+    if !legacy_main.exists() || new_main.exists() {
+        return Ok(());
+    }
+    for suffix in DB_SIDECAR_SUFFIXES {
+        let src = data_dir.join(format!("{LEGACY_DB_FILENAME}{suffix}"));
+        if src.exists() {
+            std::fs::rename(&src, data_dir.join(format!("{DB_FILENAME}{suffix}")))?;
+        }
+    }
+    tracing::info!("migrated legacy database {LEGACY_DB_FILENAME} -> {DB_FILENAME}");
+    Ok(())
 }
 
 fn open_db(db_path: &Path) -> Result<Connection> {
@@ -530,12 +568,45 @@ mod tests {
     }
 
     #[test]
+    fn legacy_db_is_renamed_on_init_and_data_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        // Seed a real DB under the legacy name, then write a marker row.
+        let mut conn = open_db(&dir.path().join(LEGACY_DB_FILENAME)).unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        db_insert(&conn, "projects", json!({ "name": "marker" })).unwrap();
+        drop(conn);
+
+        init(dir.path()).unwrap();
+
+        // Legacy file is gone, new file exists, and the marker row survived.
+        assert!(!dir.path().join(LEGACY_DB_FILENAME).exists());
+        assert!(dir.path().join(DB_FILENAME).exists());
+        let conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+        let rows = db_select(&conn, "projects", json!({ "name": "marker" })).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn migrate_legacy_db_name_is_noop_when_new_file_present() {
+        let dir = tempfile::tempdir().unwrap();
+        // Both files present (e.g. a stray legacy file after migration): the new
+        // one must win untouched, and the legacy file is left alone.
+        std::fs::write(dir.path().join(LEGACY_DB_FILENAME), b"legacy").unwrap();
+        std::fs::write(dir.path().join(DB_FILENAME), b"current").unwrap();
+
+        migrate_legacy_db_name(dir.path()).unwrap();
+
+        assert_eq!(std::fs::read(dir.path().join(DB_FILENAME)).unwrap(), b"current");
+        assert!(dir.path().join(LEGACY_DB_FILENAME).exists());
+    }
+
+    #[test]
     fn init_errors_when_schema_is_from_a_newer_build() {
         let dir = tempfile::tempdir().unwrap();
         init(dir.path()).unwrap();
         // Simulate an app downgrade: a newer build left user_version ahead of
         // the migrations this binary knows about.
-        let conn = Connection::open(dir.path().join("quorum.db")).unwrap();
+        let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
         conn.pragma_update(None, "user_version", (MIGRATIONS.len() + 5) as i64)
             .unwrap();
         drop(conn);
@@ -545,7 +616,7 @@ mod tests {
     #[test]
     fn upgrading_an_older_schema_backs_it_up_first() {
         let dir = tempfile::tempdir().unwrap();
-        let mut conn = open_db(&dir.path().join("quorum.db")).unwrap();
+        let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
         get_migrations().to_version(&mut conn, 1).unwrap(); // valid schema at v1
         drop(conn);
         init(dir.path()).unwrap(); // v1 -> latest, must back up first
