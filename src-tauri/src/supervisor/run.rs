@@ -326,11 +326,21 @@ fn sandboxed_run_command(
 
 /// Resolve the git *common dir* of the Run target `cwd`, canonicalized, so the
 /// Run sandbox can grant writes to it. Returns `None` when `cwd` isn't a git
-/// repo (nothing to grant) or git can't be resolved. Runs synchronously — the
-/// profile is assembled off the async runtime — via the app's resolved git
-/// binary (portable-git fallback), matching every other git call.
+/// repo (nothing to grant), git can't be resolved, or the dir can't be
+/// canonicalized (a non-real path wouldn't match the kernel's symlink-resolved
+/// check anyway). Runs synchronously — the profile is assembled off the async
+/// runtime — via the app's resolved git binary (portable-git fallback),
+/// matching every other git call.
 fn run_target_git_common_dir(cwd: &Path) -> Option<PathBuf> {
     let out = crate::git_dist::std_command(cwd)
+        // Resolve strictly from `cwd`. `std_command` inherits the outer app's
+        // environment, and an ambient GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR
+        // (set by whatever launched Fletch) would override cwd-based discovery —
+        // pointing the probe at an unrelated repo and making us grant the wrong
+        // common dir while the real one stays denied. Clear them.
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
         .args(["rev-parse", "--git-common-dir"])
         .output()
         .ok()?;
@@ -342,15 +352,19 @@ fn run_target_git_common_dir(cwd: &Path) -> Option<PathBuf> {
         return None;
     }
     // `--git-common-dir` is relative to `cwd` for a normal repo (`.git`),
-    // absolute for a linked worktree — resolve both to an absolute, canonical
-    // path so the sbpl subpath matches what the sandbox kernel checks.
+    // absolute for a linked worktree — make it absolute first.
     let path = Path::new(&raw);
     let abs = if path.is_absolute() {
         path.to_path_buf()
     } else {
         cwd.join(path)
     };
-    Some(std::fs::canonicalize(&abs).unwrap_or(abs))
+    // The sbpl subpath must be the *real* path: the sandbox kernel resolves
+    // symlinks before checking, and macOS $TMPDIR / worktree roots are commonly
+    // symlinked (`/var` -> `/private/var`). If canonicalization fails, a raw
+    // entry likely wouldn't match what the kernel checks, so grant nothing
+    // rather than a bogus subpath that gives false confidence.
+    std::fs::canonicalize(&abs).ok()
 }
 
 fn handle_run_phase_exit(
