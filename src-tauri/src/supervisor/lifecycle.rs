@@ -474,6 +474,7 @@ impl Supervisor {
                 AgentView::Custom => spawn_per_turn_agent(
                     &record.provider,
                     PerTurnSpec {
+                        agent_id: agent_id_str.clone(),
                         cwd,
                         sandbox_root,
                         session_id,

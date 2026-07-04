@@ -24,7 +24,53 @@
 
 use std::path::{Path, PathBuf};
 
+use super::engine::{AgentLaunchCtx, EngineKind, Keepalive, KillPlan, LaunchPlan, SandboxEngine};
 use crate::error::{Error, Result};
+
+pub struct SandboxExecEngine;
+
+impl SandboxEngine for SandboxExecEngine {
+    fn kind(&self) -> EngineKind {
+        EngineKind::SandboxExec
+    }
+
+    fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
+        let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
+        let profile_text = build_profile(
+            ctx.writable_root,
+            ctx.rpc_dir,
+            ctx.home,
+            claude_config_dir.as_deref(),
+        )?;
+        let profile_file = profile_tempfile(&profile_text)?;
+        let profile_path = profile_file
+            .path()
+            .to_str()
+            .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
+            .to_string();
+        Ok(LaunchPlan {
+            program: PathBuf::from(SANDBOX_EXEC),
+            prefix_args: vec!["-f".into(), profile_path, agent_bin.to_string()],
+            env: vec![],
+            keepalive: Keepalive::Profile { file: Some(profile_file) },
+            kill: KillPlan::ProcessGroup,
+        })
+    }
+
+    fn kill(&self, plan: &KillPlan) -> crate::error::Result<()> {
+        match plan {
+            KillPlan::ProcessGroup => Ok(()),
+            KillPlan::Container { .. } => unreachable!("Docker engine not yet implemented"),
+        }
+    }
+
+    fn is_alive(&self, plan: &KillPlan) -> bool {
+        match plan {
+            KillPlan::ProcessGroup => true,
+            KillPlan::Container { .. } => unreachable!("Docker engine not yet implemented"),
+        }
+    }
+}
 
 /// The macOS sandbox wrapper. Every confined process (agents *and* the Run
 /// panel) is launched as `sandbox-exec -f <profile> <program> …`.
@@ -332,7 +378,7 @@ pub fn build_profile(
 pub fn profile_tempfile(text: &str) -> Result<tempfile::NamedTempFile> {
     use std::io::Write;
     let mut f = tempfile::Builder::new()
-        .prefix("quorum-sandbox-")
+        .prefix("fletch-sandbox-")
         .suffix(".sb")
         .tempfile()
         .map_err(|e| Error::Other(format!("create sandbox profile tmp: {e}")))?;

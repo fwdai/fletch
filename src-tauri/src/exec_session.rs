@@ -26,6 +26,7 @@ use serde_json::Value;
 
 use crate::child_io;
 use crate::error::{Error, Result};
+use crate::sandbox::{Keepalive, KillPlan};
 
 type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
 type SessionIdCb = Arc<dyn Fn(String) + Send + Sync>;
@@ -41,9 +42,10 @@ pub struct ExecSpawn {
     /// `["-f", <profile>, <agent_bin>]` when `program` is `sandbox-exec`. Empty
     /// when the agent runs unwrapped.
     pub prefix_args: Vec<String>,
-    /// Sandbox profile tempfile, held for the session's lifetime so the profile
-    /// path embedded in `prefix_args` stays valid across the per-turn respawns.
-    pub profile: Option<tempfile::NamedTempFile>,
+    /// Sandbox keepalive, held for the session's lifetime so any resource the
+    /// engine embedded in `prefix_args` (e.g. a profile path) stays valid across
+    /// the per-turn respawns.
+    pub keepalive: Keepalive,
     /// The agent's primary worktree — set as the child's cwd.
     pub cwd: PathBuf,
     /// Session id to resume, if one has been captured already.
@@ -57,16 +59,20 @@ pub struct ExecSpawn {
     /// Extra environment variables (e.g. `FLETCH_RPC_DIR`) set on every turn's
     /// child process, layered on top of the inherited environment.
     pub env: Vec<(String, String)>,
+    /// How to terminate a turn's child (chosen by the sandbox engine).
+    pub kill_plan: KillPlan,
 }
 
 pub struct ExecSession {
     program: PathBuf,
     prefix_args: Vec<String>,
-    /// Kept alive (not read) so the sandbox profile file outlives the session.
-    _profile: Option<tempfile::NamedTempFile>,
+    /// Kept alive (not read) so any sandbox resource outlives the session.
+    #[allow(dead_code)]
+    keepalive: Keepalive,
     cwd: PathBuf,
     stdout_is_json: bool,
     env: Vec<(String, String)>,
+    kill_plan: KillPlan,
     session_id: Arc<Mutex<Option<String>>>,
     model: Option<String>,
     child: Arc<Mutex<Option<Child>>>,
@@ -114,10 +120,11 @@ impl ExecSession {
         Self {
             program: spec.program,
             prefix_args: spec.prefix_args,
-            _profile: spec.profile,
+            keepalive: spec.keepalive,
             cwd: spec.cwd,
             stdout_is_json: spec.stdout_is_json,
             env: spec.env,
+            kill_plan: spec.kill_plan,
             session_id: Arc::new(Mutex::new(spec.session_id)),
             model: spec.model,
             child: Arc::new(Mutex::new(None)),
@@ -302,6 +309,7 @@ impl ExecSession {
     }
 
     pub fn kill(&self) -> Result<()> {
+        crate::sandbox::current_engine().kill(&self.kill_plan)?;
         if let Some(mut child) = self.child.lock().take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -405,12 +413,13 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                profile: None,
+                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 model: None,
                 stdout_is_json: true,
                 env: vec![],
+                kill_plan: KillPlan::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -463,12 +472,13 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                profile: None,
+                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: Some("prev-thread".into()),
                 model: Some("gpt-5.2-codex".into()),
                 stdout_is_json: true,
                 env: vec![],
+                kill_plan: KillPlan::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -501,12 +511,13 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                profile: None,
+                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 model: None,
                 stdout_is_json: true,
                 env: vec![],
+                kill_plan: KillPlan::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -551,12 +562,13 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                profile: None,
+                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 model: None,
                 stdout_is_json: true,
                 env: vec![],
+                kill_plan: KillPlan::ProcessGroup,
             },
             codex_args,
             codex_id,

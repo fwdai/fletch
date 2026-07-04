@@ -41,6 +41,7 @@ impl Supervisor {
                 env: &[],
                 cols: 120,
                 rows: 32,
+                kill_plan: crate::sandbox::KillPlan::ProcessGroup,
             },
             move |bytes| {
                 emit_shell_output(&app, &agent_id_out, bytes);
