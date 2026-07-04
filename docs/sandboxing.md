@@ -234,8 +234,9 @@ pub fn teardown(mode: WorkspaceMode, spec: &CheckoutSpec) -> Result<()>;
      objects through shared inodes.
    - Rewrite `origin` to the real remote:
      `git -C <source_repo> remote get-url origin` → `git -C <dest> remote
-     set-url origin <url>` (skip if source has no `origin`; then keep the
-     local-path remote and note it in a log line).
+     set-url origin <url>` (if the source has no `origin`, remove the clone's
+     implicit local-path remote — keeping it would let `git push -u origin`
+     write branches into the user's source repo — and note it in a log line).
    - Copy `user.name`/`user.email` into the clone's local config if the source
      repo has repo-local identity (global gitconfig already applies host-side).
    - Teardown = `rm -rf dest` (it's self-contained).

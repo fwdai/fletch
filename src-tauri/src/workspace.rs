@@ -345,6 +345,13 @@ impl WorkspaceManager {
         Self { db }
     }
 
+    /// Read one key from the key-value `settings` table (`None` when unset).
+    /// Backend-side settings reads (e.g. the `workspace_mode` dev flag) go
+    /// through here so callers never need the raw connection.
+    pub fn setting(&self, key: &str) -> Option<String> {
+        crate::database::get_setting(&self.db.lock(), key)
+    }
+
     pub fn current(&self) -> Option<Workspace> {
         let conn = self.db.lock();
 

@@ -18,7 +18,11 @@ const RPC_TICK: Duration = Duration::from_millis(100);
 /// tick, execute any pending requests and write responses. Gen-guarded like
 /// `spawn_turn_watchdog`, so it exits cleanly when the agent is respawned or
 /// torn down (no explicit handle to track). Polling (no `notify` crate) mirrors
-/// the transcript-sync style already used elsewhere.
+/// the transcript-sync style already used elsewhere — and is load-bearing for
+/// sandbox engines beyond seatbelt: container-originated writes over VirtioFS
+/// don't reliably produce FSEvents, so this watcher must never be converted to
+/// an FS-event trigger without keeping an interval fallback (`process_pending`
+/// is idempotent, so extra triggers are safe).
 pub(super) fn spawn_rpc_watcher(
     sup: Arc<Supervisor>,
     app: AppHandle,
