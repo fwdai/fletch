@@ -13,7 +13,6 @@
 //!    pass an explicit timeout and get a clear "timed out" error instead.
 
 use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::error::{Error, Result};
@@ -109,9 +108,8 @@ fn forward_lines(
     }
 }
 
-/// Poll `child` until it exits or `timeout` passes; on expiry SIGKILL it so a
+/// Poll `child` until it exits or `timeout` passes; on expiry kill it so a
 /// hung docker CLI (daemon gone mid-call) doesn't outlive the error we return.
-#[allow(dead_code)] // reached via `image`, whose consumer is slice B2
 fn wait_with_deadline(
     child: &mut std::process::Child,
     timeout: Duration,
@@ -131,31 +129,35 @@ fn wait_with_deadline(
     }
 }
 
-/// Run any command to completion under `timeout`, capturing output. The child
-/// is reaped on a helper thread (`wait_with_output` drains the pipes, so a
-/// chatty child can't deadlock on a full pipe); on expiry we SIGKILL by pid —
-/// the helper thread then reaps the corpse and exits on its own.
+/// Run any command to completion under `timeout`, capturing output. Both
+/// pipes are drained on scoped threads (so a chatty child can't deadlock on
+/// a full pipe) while this thread keeps ownership of the `Child` and waits
+/// with a deadline — on expiry [`wait_with_deadline`] kills and reaps it on
+/// any platform, the pipes hit EOF, and the readers finish: nothing outlives
+/// the error we return.
 fn run_with_timeout(mut cmd: Command, timeout: Duration, what: &str) -> Result<Output> {
+    fn read_all(mut reader: impl std::io::Read) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    }
+
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = cmd.spawn()?;
-    let pid = child.id();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(out) => out.map_err(Error::from),
-        Err(_) => {
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{kill, Signal};
-                let _ = kill(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGKILL);
-            }
-            Err(timeout_error(what, timeout))
-        }
-    }
+    let mut child = cmd.spawn()?;
+    let stdout = child.stdout.take().expect("stdout piped above");
+    let stderr = child.stderr.take().expect("stderr piped above");
+    std::thread::scope(|scope| {
+        let stdout = scope.spawn(move || read_all(stdout));
+        let stderr = scope.spawn(move || read_all(stderr));
+        let status = wait_with_deadline(&mut child, timeout, what)?;
+        Ok(Output {
+            status,
+            stdout: stdout.join().expect("stdout reader panicked"),
+            stderr: stderr.join().expect("stderr reader panicked"),
+        })
+    })
 }
 
 fn timeout_error(what: &str, timeout: Duration) -> Error {

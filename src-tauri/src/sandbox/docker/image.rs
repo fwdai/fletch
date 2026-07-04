@@ -26,13 +26,16 @@ pub type Progress<'a> = &'a (dyn Fn(&str) + Send + Sync);
 /// The agent container image. Debian-slim keeps apt available for the tools
 /// claude needs at runtime (`git`, `rg`, `jq`, `procps` for /proc-based
 /// process introspection) while staying small; node 22 is claude-code's
-/// supported runtime.
+/// supported runtime. The `chmod` guarantees the entrypoint is executable
+/// regardless of the mode `COPY` picked up from the build context (context
+/// files are written at build time on the host — see [`ensure_image`]).
 pub const DOCKERFILE: &str = r#"FROM node:22-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates ripgrep jq procps \
  && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code
 COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 "#;
 
@@ -129,8 +132,10 @@ fn ensure_image_with(
     std::fs::write(ctx.path().join("Dockerfile"), dockerfile)?;
     let entrypoint_path = ctx.path().join("entrypoint.sh");
     std::fs::write(&entrypoint_path, entrypoint)?;
-    // COPY preserves the context file's mode; make sure a restrictive host
-    // umask can't produce a non-executable entrypoint.
+    // COPY preserves the context file's mode. The embedded Dockerfile's
+    // `RUN chmod +x` is what actually guarantees an executable entrypoint on
+    // every host; setting the mode here too just keeps the copied layer's
+    // metadata sane where the host supports it.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
