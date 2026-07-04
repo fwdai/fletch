@@ -467,7 +467,9 @@ kill: KillHandle::Engine { engine: <self>, plan: KillPlan::Container { name } }
   inspecting the handle's variant. Seatbelt inherits the `None` default.
 - The interim auth forward also passes `ANTHROPIC_BASE_URL` (bare `-e`, value
   on the CLI env) alongside `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN`, so
-  proxy setups work pre-D1 — matching D1's documented chain.
+  proxy setups work pre-D1 — matching D1's documented chain. **Superseded:** D1
+  has landed, so the interim `login_shell_env` forward is gone; `launch_agent`
+  now calls `auth::resolve()` (see the D1 note below).
 - Clone-forcing for docker-stamped agents covers `restore_agent`
   (`disposition.rs`) and `add_repo_to_agent` in addition to `spawn_agent`,
   all through one helper (`lifecycle::effective_workspace_mode`) — the
@@ -534,6 +536,23 @@ exist in a container; the app currently injects nothing.
 fails with the CTA → paste token → agent completes a turn. With
 `ANTHROPIC_API_KEY` exported in `~/.zshrc` instead: works with no setup. Token
 absent from argv (`ps`) and from logs.
+
+**Implementation notes (D1, as landed — deviations from the text above):**
+- **B2 swap landed** (was flagged as a follow-up): `engine::launch_agent`'s
+  single interim call site now calls `sandbox::docker::auth::resolve()` and the
+  interim `login_shell_env` forward is deleted. `Resolved.env` is folded onto
+  the docker CLI process env by `apply_container_auth`; `run_args` still forwards
+  every auth var with a bare `-e NAME`, so values never touch argv (invariant 3).
+- `AUTH_ENV_VARS` (the bare-`-e` list in `engine.rs`) is kept a superset of what
+  `auth::resolve` can emit — `ANTHROPIC_AUTH_TOKEN` was added so a resolved
+  proxy token actually reaches the container rather than sitting unused on the
+  CLI env.
+- `Unavailable` fails the launch with a typed `Error::Other` carrying one stable
+  string (`NO_CONTAINER_AUTH_MSG`, "…open Settings → General → Sandbox and
+  connect Claude for containers (claude setup-token).") that C2 keys its CTA on.
+- Launch logs the winning `AuthSource` variant (never token content) via
+  `tracing::info!(?source)`; `ContainerAuth`'s `Debug` redacts env values as a
+  backstop.
 
 ---
 
