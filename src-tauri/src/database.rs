@@ -676,6 +676,21 @@ mod tests {
     }
 
     #[test]
+    fn stray_legacy_wal_without_its_main_is_not_migrated_or_resurrected() {
+        // A crash mid-recovery can leave quorum.db-wal behind after quorum.db
+        // itself was already moved aside. With no legacy main file, migration
+        // must not fire (there is nothing to resurrect) and init opens a clean
+        // data.db rather than reviving the abandoned database.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(format!("{LEGACY_DB_FILENAME}-wal")), b"stray").unwrap();
+
+        init(dir.path()).unwrap();
+
+        assert!(dir.path().join(DB_FILENAME).exists());
+        assert!(!dir.path().join(LEGACY_DB_FILENAME).exists());
+    }
+
+    #[test]
     fn quarantine_orphaned_wal_is_noop_when_main_present() {
         // A WAL alongside its main file is normal SQLite state — leave it alone.
         let dir = tempfile::tempdir().unwrap();

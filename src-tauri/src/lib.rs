@@ -76,6 +76,17 @@ mod tests {
     }
 
     #[test]
+    fn db_basenames_lists_current_before_legacy() {
+        // move_db_aside processes DB_BASENAMES.rev() so the legacy name is moved
+        // aside FIRST — the contract that stops migrate from resurrecting the
+        // legacy db once the current one is gone. Pin the order this relies on.
+        assert_eq!(
+            database::DB_BASENAMES,
+            &[database::DB_FILENAME, database::LEGACY_DB_FILENAME]
+        );
+    }
+
+    #[test]
     fn recovery_does_not_resurrect_a_leftover_legacy_db() {
         // A stray `quorum.db` sits next to the live `data.db`. Fresh-start
         // recovery must move BOTH aside; otherwise the retried init() would
@@ -249,23 +260,32 @@ fn db_error_message(err: &crate::error::Error) -> (&'static str, String) {
 /// can be created, preserving the old files as timestamped backups. We suffix,
 /// never delete — the user's data is always recoverable.
 ///
-/// We move both the current (`data.db`) and legacy (`quorum.db`) base names
-/// aside. Otherwise a leftover legacy file would survive the fresh start and be
-/// renamed back into place by `migrate_legacy_db_name` on the retried `init`,
-/// reopening the very database recovery was meant to abandon.
+/// A sequence of per-file renames is not atomic, so a crash can interrupt it at
+/// any point. No single ordering is crash-safe on its own — but paired with
+/// `database::init`'s guards (`migrate_legacy_db_name` + `quarantine_orphaned_wal`)
+/// this order leaves every interruption point in a safe state:
 ///
-/// The main file of each base name is moved **last** (`.rev()` puts the empty
-/// suffix last), so an interruption never leaves a main file gone while its WAL
-/// lingers under the live name. Even if it did, `database::init` quarantines
-/// orphaned WAL/SHM before opening — this ordering is defense-in-depth so the
-/// dangerous state is never even transiently written.
+/// * **Legacy basename first.** `migrate_legacy_db_name` resurrects a stale db
+///   whenever `quorum.db` exists and `data.db` does not. Moving the legacy main
+///   file before `data.db` ever disappears means that trigger state is never
+///   produced, so a half-finished recovery can't rename the old db back.
+/// * **Main file first within each basename** (`DB_SIDECAR_SUFFIXES` in order —
+///   the empty suffix leads). An interruption then leaves the main file gone
+///   with its WAL still live-named, which `quarantine_orphaned_wal` sweeps aside
+///   on the next launch. The reverse order would risk "main present, WAL moved
+///   away", which no guard can detect and which silently drops committed rows.
+///
+/// (`migrate_legacy_db_name` deliberately moves its main file *last* — the
+/// opposite — because it preserves into a live db, where the legacy main name is
+/// its re-run sentinel and quarantine can't help once the main file exists.)
 fn move_db_aside(data_dir: &std::path::Path) -> crate::error::Result<()> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    for base in database::DB_BASENAMES {
-        for suffix in database::DB_SIDECAR_SUFFIXES.iter().rev() {
+    // `DB_BASENAMES` is [current, legacy]; `.rev()` processes legacy first.
+    for base in database::DB_BASENAMES.iter().rev() {
+        for suffix in database::DB_SIDECAR_SUFFIXES {
             let name = format!("{base}{suffix}");
             let src = data_dir.join(&name);
             if src.exists() {
