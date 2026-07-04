@@ -5,6 +5,7 @@ import { Select } from "@/components/ui/Select";
 import { ACCENTS } from "@/data/providers";
 import type { Density, SandboxEngine, ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { ContainerAuth } from "./ContainerAuth";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 const SIDE_PANELS: FeatureItem[] = [
@@ -176,6 +177,7 @@ export function GeneralPane() {
             onChange={(v) => void setSandboxEngine(v)}
           />
         </SetRow>
+        <ContainerAuth />
       </SetGroup>
 
       <SetGroup label="Diagnostics" last>
