@@ -29,6 +29,44 @@ use super::{transition_active, Supervisor};
 const WATCHDOG_TICK: Duration = Duration::from_millis(500);
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The engine stamped on an agent's record at creation. Records from before
+/// engine selection existed (NULL) always ran under sandbox-exec, so that
+/// stays their permanent kind — never re-derived from the live setting.
+pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
+    record
+        .sandbox_engine
+        .as_deref()
+        .and_then(EngineKind::from_setting)
+        .unwrap_or(EngineKind::SandboxExec)
+}
+
+/// The provisioning mode an agent stamped with `engine` actually gets. Docker
+/// forces `Clone` regardless of the `workspace_mode` dev flag: a linked
+/// worktree's `.git` file points into the user's real repo, and a container
+/// must never be able to reach that (sandbox plan invariant 2).
+pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>) -> WorkspaceMode {
+    match engine {
+        EngineKind::Docker => WorkspaceMode::Clone,
+        EngineKind::SandboxExec => WorkspaceMode::from_setting(setting),
+    }
+}
+
+/// Only claude runs in Docker sandboxes in v1 (the embedded image ships
+/// claude alone; per-turn CLIs haven't been ported). Checked before every
+/// spawn — fresh spawns and, via `spawn_agent_process`, resume/view-switch —
+/// so a docker-stamped record can never launch an unsupported provider.
+fn ensure_engine_supports_provider(engine: EngineKind, provider: &str) -> Result<()> {
+    if engine == EngineKind::Docker && provider != "claude" {
+        let label = per_turn_descriptor(provider)
+            .map(|d| d.label())
+            .unwrap_or(provider);
+        return Err(Error::Other(format!(
+            "{label} isn't available in Docker sandboxes yet"
+        )));
+    }
+    Ok(())
+}
+
 /// Resolved, per-spawn inputs for `spawn_agent_process` — everything that
 /// isn't already carried on the `AgentRecord` (paths, session id, and this
 /// spawn's generation number).
@@ -116,6 +154,11 @@ impl Supervisor {
             )));
         }
 
+        // The engine this agent will be stamped with, resolved once so the
+        // provider gate, the stamp, and the provisioning mode below all agree.
+        let engine_kind = sandbox::selected_engine_kind();
+        ensure_engine_supports_provider(engine_kind, &provider)?;
+
         // Only agents with a wired native (PTY/TUI) view can honor a Native
         // request; the rest fall back to the structured Custom view. Native
         // views are being rolled out per agent (see `AgentCapabilities`).
@@ -174,7 +217,7 @@ impl Supervisor {
         // for life (respawn, view-switch, restore), so a later settings change
         // never re-engines it — see `spawn_agent_process`, which reuses the
         // stored value instead of the live setting.
-        record.sandbox_engine = Some(sandbox::selected_engine_kind().as_setting().to_string());
+        record.sandbox_engine = Some(engine_kind.as_setting().to_string());
         let parent_dir = agent_parent_dir(&agent_id)?;
         let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
 
@@ -190,10 +233,11 @@ impl Supervisor {
         self.set_status(&app, &agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.clone());
 
-        // Workspace provisioning mode — a dev flag until slice C1 stamps the
-        // engine (and with it the mode) per agent. Read once, outside the
+        // Workspace provisioning mode — the `workspace_mode` dev flag under
+        // seatbelt, forced to `Clone` under docker. Read once, outside the
         // spawn task, so the whole spawn uses one consistent mode.
-        let workspace_mode = WorkspaceMode::from_setting(
+        let workspace_mode = effective_workspace_mode(
+            engine_kind,
             self.workspace
                 .setting(provision::WORKSPACE_MODE_SETTING)
                 .as_deref(),
@@ -284,7 +328,11 @@ impl Supervisor {
             Some(b) => git::fetch_fork_point(&repo_path, b).await,
             None => None,
         };
-        let workspace_mode = WorkspaceMode::from_setting(
+        // Same clone-forcing rule as the primary repo: a docker-stamped agent
+        // mounts its parent dir, so every workspace under it must be
+        // self-contained.
+        let workspace_mode = effective_workspace_mode(
+            stamped_engine(&record),
             self.workspace
                 .setting(provision::WORKSPACE_MODE_SETTING)
                 .as_deref(),
@@ -461,14 +509,10 @@ impl Supervisor {
         } = launch;
         let agent_id_str = agent_id.to_string();
 
-        // The engine stamped at creation. Records from before engine selection
-        // existed (NULL) always ran under sandbox-exec, so that stays their
-        // permanent kind — never re-derive from the live setting here.
-        let engine = record
-            .sandbox_engine
-            .as_deref()
-            .and_then(EngineKind::from_setting)
-            .unwrap_or(EngineKind::SandboxExec);
+        let engine = stamped_engine(record);
+        // Re-checked on every launch path (resume, view switch, binary-swap
+        // respawn), not just fresh spawns: only claude runs under docker.
+        ensure_engine_supports_provider(engine, &record.provider)?;
 
         if per_turn {
             match record.view {
@@ -1082,6 +1126,55 @@ fn apply_exit_if_current(
         sup.set_status(app, agent_id, status.clone(), err);
         if matches!(status, AgentStatus::Idle) {
             sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Invariant 2: a docker agent's workspace is always a self-contained
+    /// clone, whatever the `workspace_mode` dev flag says; seatbelt keeps
+    /// honoring the flag.
+    #[test]
+    fn docker_forces_clone_workspaces() {
+        for setting in [None, Some("worktree"), Some("clone"), Some("bogus")] {
+            assert_eq!(
+                effective_workspace_mode(EngineKind::Docker, setting),
+                WorkspaceMode::Clone,
+                "docker must force clone for setting {setting:?}",
+            );
+        }
+        assert_eq!(
+            effective_workspace_mode(EngineKind::SandboxExec, Some("clone")),
+            WorkspaceMode::Clone,
+        );
+        assert_eq!(
+            effective_workspace_mode(EngineKind::SandboxExec, None),
+            WorkspaceMode::Worktree,
+        );
+    }
+
+    #[test]
+    fn docker_refuses_every_provider_but_claude() {
+        assert!(ensure_engine_supports_provider(EngineKind::Docker, "claude").is_ok());
+        for provider in ["codex", "cursor", "opencode", "pi", "antigravity"] {
+            let err = ensure_engine_supports_provider(EngineKind::Docker, provider)
+                .expect_err("per-turn providers must refuse under docker");
+            assert!(
+                err.to_string()
+                    .ends_with("isn't available in Docker sandboxes yet"),
+                "unexpected refusal copy: {err}",
+            );
+        }
+        // The copy uses the human-facing product name, not the provider id.
+        let err = ensure_engine_supports_provider(EngineKind::Docker, "codex").unwrap_err();
+        assert!(err.to_string().starts_with("Codex "), "{err}");
+
+        // Seatbelt is unaffected.
+        for provider in ["claude", "codex", "cursor"] {
+            assert!(ensure_engine_supports_provider(EngineKind::SandboxExec, provider).is_ok());
         }
     }
 }

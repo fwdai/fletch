@@ -460,6 +460,20 @@ kill: KillHandle::Engine { engine: <self>, plan: KillPlan::Container { name } }
 - Stop Docker Desktop mid-turn → agent shows a clear error state, app healthy.
 - `ps aux | grep docker` during spawn: no token values visible in argv.
 
+**Implementation notes (B2, as landed — deviations from the text above):**
+- Exit-code mapping is delivered via a new defaulted trait method
+  `SandboxEngine::describe_exit(&KillPlan, code) -> Option<String>` (surfaced
+  to sessions as `KillHandle::describe_exit`), so sessions keep never
+  inspecting the handle's variant. Seatbelt inherits the `None` default.
+- The interim auth forward also passes `ANTHROPIC_BASE_URL` (bare `-e`, value
+  on the CLI env) alongside `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN`, so
+  proxy setups work pre-D1 — matching D1's documented chain.
+- Clone-forcing for docker-stamped agents covers `restore_agent`
+  (`disposition.rs`) and `add_repo_to_agent` in addition to `spawn_agent`,
+  all through one helper (`lifecycle::effective_workspace_mode`) — the
+  restore path re-derives the mode from settings and would otherwise recreate
+  a docker agent's workspace as a linked worktree (invariant 2).
+
 ---
 
 ## Slice C2 — UI surfacing

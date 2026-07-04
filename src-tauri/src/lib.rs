@@ -581,6 +581,19 @@ pub fn run() {
                 sandbox::set_selected_engine_kind(kind);
             }
 
+            // Seed the docker launch knobs (image override + resource limits)
+            // the same way — mirrored in-process for the spawn path. Slice C2
+            // adds the settings UI whose set-commands keep this in sync
+            // mid-run; until then changes apply on next launch.
+            {
+                let conn = db.lock();
+                sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
+                    image_override: database::get_setting(&conn, sandbox::docker::IMAGE_SETTING),
+                    memory: database::get_setting(&conn, sandbox::docker::MEMORY_SETTING),
+                    cpus: database::get_setting(&conn, sandbox::docker::CPUS_SETTING),
+                });
+            }
+
             // Seed the in-process container auth token (mirror of the
             // `claude_container_token` setting, same pattern as the GitHub
             // token below) so the docker auth chain — resolved at spawn time

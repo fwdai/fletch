@@ -1,4 +1,3 @@
-mod docker_probe;
 pub mod docker;
 mod engine;
 pub mod provision;
@@ -8,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 
 use parking_lot::RwLock;
 
-pub use docker_probe::{availability as docker_availability, DockerAvailability};
+pub use docker::{availability as docker_availability, DockerAvailability};
 pub use engine::{AgentLaunchCtx, EngineKind, Keepalive, KillHandle, LaunchPlan, SandboxEngine};
 pub use seatbelt::{
     build_run_profile, cleanup_nested_rpc_roots, cleanup_nested_worktrees_roots, nested_rpc_root,
@@ -41,13 +40,13 @@ pub fn selected_engine_kind() -> EngineKind {
 /// Resolve the engine for an agent stamped with `kind`, availability-checked
 /// at spawn time: docker falls back to seatbelt with a warning when the
 /// daemon is unreachable, so the agent still runs — sandboxed, just not
-/// containerized. When docker *is* reachable this returns the pre-B2 stub,
-/// whose `launch_agent` fails with a clear "not implemented yet" error.
+/// containerized. Callers pick the agent binary by the *returned* engine's
+/// `kind()`, not by `kind`, so the fallback resolves a real host binary.
 pub fn engine_for(kind: EngineKind) -> Arc<dyn SandboxEngine> {
     match kind {
         EngineKind::SandboxExec => seatbelt_engine(),
-        EngineKind::Docker => match docker_probe::availability() {
-            DockerAvailability::Available { .. } => Arc::new(docker_probe::DockerEngineStub),
+        EngineKind::Docker => match docker::availability() {
+            DockerAvailability::Available { .. } => docker::DockerEngine::shared(),
             status => {
                 tracing::warn!(
                     ?status,

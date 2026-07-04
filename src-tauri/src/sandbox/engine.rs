@@ -55,6 +55,7 @@ pub enum Keepalive {
 
 /// Engine-specific data describing how to tear down what was launched.
 #[allow(dead_code)]
+#[derive(Clone)]
 pub enum KillPlan {
     ProcessGroup,
     Container { name: String },
@@ -66,13 +67,13 @@ pub enum KillPlan {
 /// plan is captured here, NOT looked up at kill time: once engine selection is
 /// setting-driven (slice C1), a session must be torn down by the engine that
 /// launched it, regardless of what the setting says now.
+#[derive(Clone)]
 pub enum KillHandle {
     /// The session's own child-handle / process-group termination is the whole
     /// story; the sandbox adds no teardown of its own (seatbelt).
     ProcessGroup,
     /// Engine-managed teardown (e.g. `docker kill` on a container that the
     /// local CLI child merely attaches to).
-    #[allow(dead_code)]
     Engine {
         engine: Arc<dyn SandboxEngine>,
         plan: KillPlan,
@@ -101,6 +102,19 @@ impl KillHandle {
             Self::Engine { engine, plan } => engine.is_alive(plan),
         }
     }
+
+    /// A user-readable replacement for the launcher process's raw exit code,
+    /// when the engine knows what it means (docker CLI 125/126/127 —
+    /// daemon/image failures the user can act on). `None` = no special
+    /// meaning; the session reports the plain exit status. Sessions call this
+    /// when building their exit message and, as everywhere else on this type,
+    /// never inspect the variant.
+    pub fn describe_exit(&self, code: i32) -> Option<String> {
+        match self {
+            Self::ProcessGroup => None,
+            Self::Engine { engine, plan } => engine.describe_exit(plan, code),
+        }
+    }
 }
 
 pub struct LaunchPlan {
@@ -112,7 +126,6 @@ pub struct LaunchPlan {
 }
 
 pub trait SandboxEngine: Send + Sync {
-    #[allow(dead_code)]
     fn kind(&self) -> EngineKind;
 
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan>;
@@ -130,6 +143,14 @@ pub trait SandboxEngine: Send + Sync {
     /// (Docker); the default defers to the session's own child handle.
     fn is_alive(&self, _plan: &KillPlan) -> bool {
         true
+    }
+
+    /// A user-readable meaning for the launcher's exit `code`, if this engine
+    /// reserves codes of its own (the docker CLI reserves 125/126/127 for
+    /// daemon and image failures). Default: no reserved codes, sessions
+    /// report the raw exit status.
+    fn describe_exit(&self, _plan: &KillPlan, _code: i32) -> Option<String> {
+        None
     }
 }
 

@@ -261,18 +261,25 @@ impl ExecSession {
         let turn_seq = self.turn_seq.clone();
         let on_exit = self.on_exit.clone();
         let interrupted = self.interrupted.clone();
+        let kill_plan = self.kill_plan.clone();
         child_io::spawn_reaper(self.child.clone(), "agent", move |status| {
             let interrupted = interrupted.load(Ordering::SeqCst);
             let exit = match status {
                 Ok(status) => {
                     let stderr = drain_stderr(&stderr_rx).join("\n");
+                    // The engine may reserve launcher exit codes with a clearer
+                    // meaning than the raw status (docker CLI 125/126/127).
+                    let base = status
+                        .code()
+                        .and_then(|c| kill_plan.describe_exit(c))
+                        .unwrap_or_else(|| status.to_string());
                     ExecExit {
                         success: status.success(),
                         interrupted,
                         message: if stderr.is_empty() {
-                            status.to_string()
+                            base
                         } else {
-                            format!("{status}: {stderr}")
+                            format!("{base}: {stderr}")
                         },
                     }
                 }

@@ -145,11 +145,18 @@ impl ManagedSession {
 
         child_io::spawn_stderr_reader(stderr, "managed", |_| {});
 
+        let kill_plan_for_exit = spec.kill_plan.clone();
         child_io::spawn_reaper(child_arc.clone(), "managed", move |status| {
             let exit = match status {
                 Ok(status) => ManagedExit {
                     success: status.success(),
-                    message: format!("{status}"),
+                    // The engine may reserve launcher exit codes with a clearer
+                    // meaning than the raw status (docker CLI 125/126/127 —
+                    // daemon/image failures); otherwise report the status as-is.
+                    message: status
+                        .code()
+                        .and_then(|c| kill_plan_for_exit.describe_exit(c))
+                        .unwrap_or_else(|| format!("{status}")),
                 },
                 Err(e) => ManagedExit {
                     success: false,
