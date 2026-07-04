@@ -5,6 +5,10 @@ import type { SandboxSlice, SliceCreator } from "./types";
 export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   sandboxEngine: DEFAULT_SANDBOX_ENGINE,
   dockerProbe: null,
+  dockerBuild: null,
+  dockerImage: "",
+  dockerMemory: "",
+  dockerCpus: "",
 
   setSandboxEngine: async (engine) => {
     const prev = get().sandboxEngine;
@@ -57,5 +61,30 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
       set({ lastError: String(e) });
     }
     await get().refreshContainerAuth();
+  },
+
+  dismissDockerBuild: () => set({ dockerBuild: null }),
+
+  saveDockerLaunchSettings: async (image, memory, cpus) => {
+    const prev = {
+      dockerImage: get().dockerImage,
+      dockerMemory: get().dockerMemory,
+      dockerCpus: get().dockerCpus,
+    };
+    // Optimistic, reverted on backend refusal — same posture as setSandboxEngine.
+    set({ dockerImage: image, dockerMemory: memory, dockerCpus: cpus });
+    try {
+      await api.setDockerLaunchSettings(image || null, memory || null, cpus || null);
+    } catch (e) {
+      set({ ...prev, lastError: String(e) });
+    }
+  },
+
+  startDockerDesktop: async () => {
+    try {
+      await api.startDockerDesktop();
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
   },
 });

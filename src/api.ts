@@ -368,6 +368,16 @@ export interface ContainerAuthStatus {
   status: "stored-token" | "shell-env" | "credentials-file" | "none";
 }
 
+/** One image-build lifecycle event from the `docker:build-progress` stream.
+ *  The embedded agent image is built on the first docker spawn (a slow
+ *  `docker build`); these feed the build toast. `line` is set only on `"line"`,
+ *  `error` only on `"failed"`. */
+export interface DockerBuildEvent {
+  phase: "started" | "line" | "finished" | "failed";
+  line?: string;
+  error?: string;
+}
+
 /** An editor or terminal detected on the user's machine (title-bar launcher). */
 export interface DetectedEditor {
   id: string;
@@ -402,6 +412,16 @@ export const api = {
   getContainerAuthStatus: () => invoke<ContainerAuthStatus>("get_container_auth_status"),
   setContainerAuthToken: (token: string) => invoke<void>("set_container_auth_token", { token }),
   clearContainerAuthToken: () => invoke<void>("clear_container_auth_token"),
+  // Advanced docker launch knobs (image override + resource limits). Backend-
+  // owned settings (`docker_image` / `docker_memory` / `docker_cpus`): the
+  // command persists all three AND updates the spawn-path mirror. Blank clears
+  // a field (falls back to the launch defaults). Never write these via a
+  // frontend `setSetting`.
+  setDockerLaunchSettings: (image: string | null, memory: string | null, cpus: string | null) =>
+    invoke<void>("set_docker_launch_settings", { image, memory, cpus }),
+  /** Launch Docker Desktop (the daemon-down error state's action). macOS-only;
+   *  rejects elsewhere. */
+  startDockerDesktop: () => invoke<void>("start_docker_desktop"),
   getAgentDiffStats: (agentId: string) => invoke<DiffStats>("get_agent_diff_stats", { agentId }),
   addWorkspaceRepo: (repoPath: string) => invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>
@@ -678,4 +698,10 @@ export function onRunOutput(cb: (e: RunOutputEvent) => void): Promise<UnlistenFn
 
 export function onRunState(cb: (e: RunStateEvent) => void): Promise<UnlistenFn> {
   return listen<RunStateEvent>("run:state", (event) => cb(event.payload));
+}
+
+/** Fires per line (and at start/finish/failure) while the embedded docker agent
+ *  image builds on a cold first spawn — feeds the build progress toast. */
+export function onDockerBuildProgress(cb: (e: DockerBuildEvent) => void): Promise<UnlistenFn> {
+  return listen<DockerBuildEvent>("docker:build-progress", (event) => cb(event.payload));
 }

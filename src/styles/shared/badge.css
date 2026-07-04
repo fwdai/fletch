@@ -50,6 +50,14 @@
   color: var(--accent);
   background: var(--accent-soft);
 }
+/* Docker engine chip — a small info-tinted "Docker" pill on containerized
+ * agents (sidebar row + workspace header). */
+.ag-badge.docker {
+  --badge-color: var(--info);
+  background: color-mix(in oklch, var(--badge-color), transparent 86%);
+  color: var(--badge-color);
+  text-transform: none;
+}
 
 .agent-sub {
   gap: 8px;

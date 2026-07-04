@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { DockerBuildToast } from "./components/DockerBuildToast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
@@ -174,6 +175,7 @@ export function App() {
       )}
 
       <UpdateToast />
+      <DockerBuildToast />
     </div>
   );
 }

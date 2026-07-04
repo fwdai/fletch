@@ -23,6 +23,7 @@ mod cli;
 mod engine;
 mod image;
 mod probe;
+mod progress;
 
 // Label plumbing for slice C2's surfacing needs; unused until then.
 #[allow(unused_imports)]
@@ -30,10 +31,18 @@ pub use cleanup::{agent_id_label, host_pid_label, sweep_orphans, AGENT_ID_LABEL,
 pub use engine::{
     set_launch_settings, DockerEngine, LaunchSettings, CPUS_SETTING, IMAGE_SETTING, MEMORY_SETTING,
 };
-// Build progress plumbing for slice C2's UI events; unused until then.
+// Build progress plumbing: `image` emits per-line/lifecycle events through
+// `progress`, which the app forwards to a Tauri event (slice C2). The image
+// re-exports stay for the integration tests / callers that pass a raw sink.
 #[allow(unused_imports)]
 pub use image::{ensure_image, image_tag, resolve_image, Progress};
 pub use probe::{availability, DockerAvailability};
+pub use progress::set_build_sink;
+// `BuildEvent` is the sink's payload type; re-exported for API symmetry (the
+// app installs the sink via a closure whose param type is inferred, so it's
+// never named in-crate).
+#[allow(unused_imports)]
+pub use progress::BuildEvent;
 
 /// Best-effort reclamation of containers left behind by dead Fletch
 /// instances, for app startup (`lib.rs`, next to the nested-root sweeps).

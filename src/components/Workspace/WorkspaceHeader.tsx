@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { AgentRecord, AgentStatus, DiffStats } from "@/api";
 import { Icon } from "@/components/Icon";
+import { EngineBadge } from "@/components/ui/EngineBadge";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { formatAge } from "@/util/format";
@@ -66,6 +67,7 @@ export function WorkspaceHeader({ agent }: Props) {
         <div className="t-name">
           <StatusDot status={agent.status} />
           <span>{agent.name}</span>
+          <EngineBadge engine={agent.sandbox_engine} />
         </div>
         <div className="t-meta">
           {branch && <>{branch} · </>}

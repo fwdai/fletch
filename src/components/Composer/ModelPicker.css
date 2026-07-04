@@ -58,15 +58,18 @@
   text-align: left;
   transition: background 0.12s var(--ease);
 }
-.model-agent-row:not(:disabled):hover,
+.model-agent-row:not(.is-disabled):hover,
 .model-agent-row.hot {
   background: var(--hover);
 }
 .model-agent-row.active {
   background: var(--selected);
 }
-.model-agent-row:disabled {
+/* .is-disabled, not :disabled — the row uses aria-disabled so it stays
+ * hover-capable and can surface its tooltip (see ModelPicker.tsx). */
+.model-agent-row.is-disabled {
   opacity: 0.42;
+  cursor: default;
 }
 .model-agent-name {
   flex: 1;
@@ -88,7 +91,7 @@
     color 0.16s,
     opacity 0.16s;
 }
-.model-agent-row:not(:disabled):hover > svg:last-child,
+.model-agent-row:not(.is-disabled):hover > svg:last-child,
 .model-agent-row.hot > svg:last-child {
   color: var(--accent);
   opacity: 1;
