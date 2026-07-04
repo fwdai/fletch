@@ -15,8 +15,12 @@ fn main() {
     // build.rs runs with the package dir (src-tauri/) as CWD; the shared local
     // `.env` lives at the repo root, one level up.
     let dotenv = std::path::Path::new("../.env");
+    // Track the path unconditionally (even when absent), so *creating* `.env`
+    // later reruns this script — otherwise a direct `cargo`/rust-analyzer build
+    // could keep the old empty `option_env!` values until an unrelated input
+    // changes.
+    println!("cargo::rerun-if-changed=../.env");
     if dotenv.exists() {
-        println!("cargo::rerun-if-changed=../.env");
         if let Ok(contents) = std::fs::read_to_string(dotenv) {
             for (key, value) in parse_env(&contents) {
                 if CONFIG_KEYS.contains(&key.as_str()) && std::env::var_os(&key).is_none() {
