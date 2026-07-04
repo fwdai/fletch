@@ -187,8 +187,23 @@ async fn handle_request_file(
         return Vec::new();
     }
 
+    // A response for this id already exists: a previous tick answered the
+    // request but failed to remove its file, or two triggers raced on the same
+    // scan. Never re-dispatch — ops can have side effects (e.g. a git push).
+    // Just finish the cleanup.
+    if responses.join(format!("{stem}.json")).exists() {
+        remove_request_file(path);
+        return Vec::new();
+    }
+
     let raw = match std::fs::read(path) {
         Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // A concurrent trigger consumed the file between the directory
+            // scan and this read — already handled, nothing to do.
+            tracing::debug!(file = %path.display(), "rpc: request vanished before read");
+            return Vec::new();
+        }
         Err(e) => {
             tracing::warn!(error = %e, file = %path.display(), "rpc: read request failed");
             return Vec::new();
@@ -202,7 +217,7 @@ async fn handle_request_file(
                 tracing::warn!(error = %e, file = %path.display(), "rpc: malformed request, answering with error");
                 let resp = Response::err(stem, format!("malformed request JSON: {e}"));
                 if write_response_atomic(responses, stem, &resp).is_ok() {
-                    let _ = std::fs::remove_file(path);
+                    remove_request_file(path);
                 }
             } else {
                 tracing::debug!(error = %e, file = %path.display(), "rpc: unparseable request (will retry)");
@@ -218,11 +233,19 @@ async fn handle_request_file(
         return effects;
     }
 
-    if let Err(e) = std::fs::remove_file(path) {
-        tracing::warn!(error = %e, file = %path.display(), "rpc: remove request failed");
-    }
+    remove_request_file(path);
 
     effects
+}
+
+/// Delete a handled request file. NotFound is a no-op — a concurrent trigger
+/// beat us to the cleanup, which is fine now that the request is answered.
+fn remove_request_file(path: &Path) {
+    if let Err(e) = std::fs::remove_file(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(error = %e, file = %path.display(), "rpc: remove request failed");
+        }
+    }
 }
 
 fn write_response_atomic(responses: &Path, key: &str, resp: &Response) -> Result<()> {
@@ -257,6 +280,27 @@ mod tests {
     }
 
     struct MockDispatcher;
+
+    /// Like `MockDispatcher`, but counts dispatch calls so tests can assert an
+    /// already-answered request is never re-executed.
+    struct CountingDispatcher(std::sync::atomic::AtomicUsize);
+
+    impl RpcDispatcher for CountingDispatcher {
+        fn dispatch<'a>(
+            &'a self,
+            id: &'a str,
+            _op: &'a str,
+            _args: &'a Value,
+        ) -> RpcFuture<'a, (Response, Vec<RpcEvent>)> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                (
+                    Response::ok(id, 0, "pong".to_string(), String::new()),
+                    Vec::new(),
+                )
+            })
+        }
+    }
 
     impl RpcDispatcher for MockDispatcher {
         fn dispatch<'a>(
@@ -365,5 +409,92 @@ mod tests {
 
         assert!(rpc_dir.join("requests/req-3.json").exists());
         assert!(!rpc_dir.join("responses/req-3.json").exists());
+    }
+
+    #[tokio::test]
+    async fn request_with_existing_response_is_not_redispatched() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+
+        // A previous tick answered req-4 but its request file lingered
+        // (remove failed or two triggers raced on the same scan).
+        std::fs::write(
+            rpc_dir.join("responses/req-4.json"),
+            r#"{"id":"req-4","ok":true,"exit_code":0,"stdout":"first","stderr":""}"#,
+        )
+        .unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "req-4.json",
+            r#"{"id":"req-4","op":"ping"}"#,
+        );
+
+        let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
+        process_pending(&rpc_dir, &dispatcher).await;
+
+        assert_eq!(
+            dispatcher.0.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an already-answered request must never be re-dispatched"
+        );
+        assert!(!rpc_dir.join("requests/req-4.json").exists());
+        let body = std::fs::read_to_string(rpc_dir.join("responses/req-4.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["stdout"], "first", "original response must be preserved");
+    }
+
+    #[tokio::test]
+    async fn concurrently_deleted_request_is_tolerated() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+
+        // The file vanished between the directory scan and the read.
+        let gone = rpc_dir.join("requests/req-5.json");
+        let effects = handle_request_file(&gone, &rpc_dir.join("responses"), &MockDispatcher).await;
+
+        assert!(effects.is_empty());
+        assert!(!rpc_dir.join("responses/req-5.json").exists());
+    }
+
+    /// B3 acceptance: with no FS-event mechanism anywhere (this transport has
+    /// none — the watcher is a bare interval tick), a dropped request file is
+    /// answered within 1s by the poll path alone. The tick here mirrors the
+    /// spec's 500ms fallback; production polls even faster (`RPC_TICK`).
+    #[tokio::test]
+    async fn poll_tick_answers_request_within_a_second_without_fs_events() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+
+        let dir = rpc_dir.clone();
+        let poller = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                process_pending(&dir, &MockDispatcher).await;
+            }
+        });
+
+        write_request(
+            &rpc_dir.join("requests"),
+            "req-6.json",
+            r#"{"id":"req-6","op":"ping"}"#,
+        );
+
+        let response = rpc_dir.join("responses/req-6.json");
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !response.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        poller.abort();
+
+        assert!(
+            response.exists(),
+            "poll fallback did not answer the request within 1s"
+        );
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(response).unwrap()).unwrap();
+        assert_eq!(v["ok"], true);
+        assert!(!rpc_dir.join("requests/req-6.json").exists());
     }
 }
