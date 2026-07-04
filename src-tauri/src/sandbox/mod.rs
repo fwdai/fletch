@@ -1,5 +1,6 @@
 pub mod docker;
 mod engine;
+pub mod provision;
 mod seatbelt;
 
 use std::sync::{Arc, OnceLock};

@@ -12,6 +12,7 @@ use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnS
 use crate::error::{Error, Result};
 use crate::git;
 use crate::rpc;
+use crate::sandbox::provision::{self, CheckoutSpec, WorkspaceMode};
 use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir, is_per_turn_provider, new_agent_record,
     repo_worktree_path, AgentRecord, AgentStatus, AgentView, TrackedRepo,
@@ -183,6 +184,15 @@ impl Supervisor {
         self.set_status(&app, &agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.clone());
 
+        // Workspace provisioning mode — a dev flag until slice C1 stamps the
+        // engine (and with it the mode) per agent. Read once, outside the
+        // spawn task, so the whole spawn uses one consistent mode.
+        let workspace_mode = WorkspaceMode::from_setting(
+            self.workspace
+                .setting(provision::WORKSPACE_MODE_SETTING)
+                .as_deref(),
+        );
+
         let sup = self.clone();
         let app_for_task = app.clone();
         let id_for_task = agent_id.clone();
@@ -204,9 +214,12 @@ impl Supervisor {
                     None => None,
                 },
             };
-            if let Err(e) =
-                git::worktree_add_detached(&repo_path, &primary_worktree, base.as_deref()).await
-            {
+            let spec = CheckoutSpec {
+                source_repo: &repo_path,
+                base_ref: base.as_deref().unwrap_or("HEAD"),
+                dest: &primary_worktree,
+            };
+            if let Err(e) = provision::provision(workspace_mode, &spec).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                 return;
             }
@@ -223,7 +236,7 @@ impl Supervisor {
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
-                let _ = git::worktree_remove(&repo_path, &primary_worktree, true).await;
+                let _ = provision::teardown(workspace_mode, &spec).await;
                 let _ = tokio::fs::remove_dir_all(&parent_dir).await;
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
             }
@@ -265,7 +278,17 @@ impl Supervisor {
             Some(b) => git::fetch_fork_point(&repo_path, b).await,
             None => None,
         };
-        git::worktree_add_detached(&repo_path, &worktree, base.as_deref()).await?;
+        let workspace_mode = WorkspaceMode::from_setting(
+            self.workspace
+                .setting(provision::WORKSPACE_MODE_SETTING)
+                .as_deref(),
+        );
+        let spec = CheckoutSpec {
+            source_repo: &repo_path,
+            base_ref: base.as_deref().unwrap_or("HEAD"),
+            dest: &worktree,
+        };
+        provision::provision(workspace_mode, &spec).await?;
         let base_sha = git::rev_parse(&worktree, "HEAD").await.ok();
 
         let repo = TrackedRepo {
