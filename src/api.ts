@@ -361,6 +361,13 @@ export interface DockerProbe {
   version?: string;
 }
 
+/** Which step of the container auth chain (pasted token → shell env →
+ *  claude credentials file) would supply Anthropic credentials to a docker
+ *  agent right now (Settings › General › Sandbox status row). */
+export interface ContainerAuthStatus {
+  status: "stored-token" | "shell-env" | "credentials-file" | "none";
+}
+
 /** An editor or terminal detected on the user's machine (title-bar launcher). */
 export interface DetectedEditor {
   id: string;
@@ -388,6 +395,13 @@ export const api = {
   getSandboxEngine: () => invoke<SandboxEngine>("get_sandbox_engine"),
   setSandboxEngine: (engine: SandboxEngine) => invoke<void>("set_sandbox_engine", { engine }),
   probeDockerEngine: () => invoke<DockerProbe>("probe_docker_engine"),
+  // Anthropic auth for containerized agents. Docker-only: seatbelt agents keep
+  // the user's own claude login. The token setting is backend-owned
+  // (`claude_container_token`, written by the set/clear commands below — never
+  // via a frontend `setSetting`).
+  getContainerAuthStatus: () => invoke<ContainerAuthStatus>("get_container_auth_status"),
+  setContainerAuthToken: (token: string) => invoke<void>("set_container_auth_token", { token }),
+  clearContainerAuthToken: () => invoke<void>("clear_container_auth_token"),
   getAgentDiffStats: (agentId: string) => invoke<DiffStats>("get_agent_diff_stats", { agentId }),
   addWorkspaceRepo: (repoPath: string) => invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>

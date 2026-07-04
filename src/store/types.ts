@@ -4,6 +4,7 @@ import type { AgentUsage } from "@/adapters/usage";
 import type {
   AgentRecord,
   AgentView,
+  ContainerAuthStatus,
   DockerProbe,
   GhStatus,
   GitState,
@@ -357,12 +358,25 @@ export interface SandboxSlice {
   sandboxEngine: SandboxEngine;
   /** Latest Docker availability probe; `null` until the first probe lands. */
   dockerProbe: DockerProbe | null;
+  /** Which container auth chain step is active (Anthropic credentials for
+   *  docker agents); `null` until the first refresh lands. */
+  containerAuth: ContainerAuthStatus | null;
 
   /** Persist a new engine choice via the backend, which validates docker
    *  against a live daemon probe — reverts the store on refusal. */
   setSandboxEngine: (engine: SandboxEngine) => Promise<void>;
-  /** Re-probe Docker availability into `dockerProbe` (settings pane open). */
-  refreshDockerProbe: () => Promise<void>;
+  /** Re-probe Docker availability into `dockerProbe` (settings pane open).
+   *  Returns the probe result so callers can poll until the daemon answers. */
+  refreshDockerProbe: () => Promise<DockerProbe>;
+  /** Re-resolve the container auth chain into `containerAuth`. */
+  refreshContainerAuth: () => Promise<void>;
+  /** Persist a pasted `claude setup-token` for containers, then refresh the
+   *  status. Throws on backend refusal (empty token) so the connect modal
+   *  can show the error inline. */
+  setContainerAuthToken: (token: string) => Promise<void>;
+  /** Drop the stored container token, then refresh the status (a later chain
+   *  step — shell env / credentials file — may take over). */
+  clearContainerAuthToken: () => Promise<void>;
 }
 
 export interface AppearanceSlice {

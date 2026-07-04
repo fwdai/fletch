@@ -5,7 +5,15 @@ import { Select } from "@/components/ui/Select";
 import { ACCENTS } from "@/data/providers";
 import type { Density, SandboxEngine, ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { ContainerAuth } from "./ContainerAuth";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
+
+// Docker Desktop can take a few seconds to answer after it's launched, so a
+// focus/mount probe that comes back unavailable is retried every
+// PROBE_RETRY_INTERVAL_MS until the daemon answers or PROBE_RETRY_WINDOW_MS
+// elapses — long enough to cover a cold daemon start without polling forever.
+const PROBE_RETRY_INTERVAL_MS = 2_000;
+const PROBE_RETRY_WINDOW_MS = 20_000;
 
 const SIDE_PANELS: FeatureItem[] = [
   { key: "git", title: "Git", sub: "Branch, file changes, and smart commit / push / PR actions." },
@@ -55,11 +63,53 @@ export function GeneralPane() {
   // Probe Docker on open — and again whenever the window regains focus — so the
   // engine option reflects the live daemon state, including when the user starts
   // Docker Desktop (as the disabled-option hint suggests) while the pane is open.
+  //
+  // A focus event usually means the user just launched Docker Desktop from the
+  // hint, but the daemon can take several seconds to answer. A single probe
+  // would latch "daemon-down" and leave the option disabled until the next
+  // focus, so we keep re-probing on a short interval for a bounded window,
+  // stopping the moment the daemon answers.
   useEffect(() => {
-    void refreshDockerProbe();
-    const onFocus = () => void refreshDockerProbe();
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Resolver for the in-flight retry sleep, so cleanup (or a superseding run)
+    // can wake it immediately — clearing the timeout alone would leave poll()
+    // awaiting a Promise that never settles, stranding its closure until GC.
+    let wakeSleep: (() => void) | undefined;
+    // Bumped on each poll start so a fresh focus supersedes any in-flight loop
+    // instead of running several concurrent probe loops.
+    let runId = 0;
+
+    const wake = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      wakeSleep?.();
+      wakeSleep = undefined;
+    };
+
+    const poll = async () => {
+      const myRun = ++runId;
+      wake(); // retire any sleep left by the run this one supersedes
+      const deadline = Date.now() + PROBE_RETRY_WINDOW_MS;
+      while (!cancelled && runId === myRun) {
+        const probe = await refreshDockerProbe();
+        if (cancelled || runId !== myRun) return;
+        if (probe.status === "available" || Date.now() >= deadline) return;
+        await new Promise<void>((resolve) => {
+          wakeSleep = resolve;
+          timer = setTimeout(resolve, PROBE_RETRY_INTERVAL_MS);
+        });
+      }
+    };
+
+    void poll();
+    const onFocus = () => void poll();
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      wake(); // resolve the pending sleep so poll() unwinds instead of hanging
+      window.removeEventListener("focus", onFocus);
+    };
   }, [refreshDockerProbe]);
 
   // Three states for the docker option: enabled when the daemon answered the
@@ -176,6 +226,7 @@ export function GeneralPane() {
             onChange={(v) => void setSandboxEngine(v)}
           />
         </SetRow>
+        <ContainerAuth />
       </SetGroup>
 
       <SetGroup label="Diagnostics" last>

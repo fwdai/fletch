@@ -17,6 +17,7 @@
 //! - [`engine`] — `DockerEngine`, the `SandboxEngine` implementation
 //!   (one `docker run --rm --init` container per agent process).
 
+pub mod auth;
 mod cleanup;
 mod cli;
 mod engine;

@@ -1,4 +1,4 @@
-import { api } from "@/api";
+import { api, type DockerProbe } from "@/api";
 import { DEFAULT_SANDBOX_ENGINE } from "@/storage/preferences";
 import type { SandboxSlice, SliceCreator } from "./types";
 
@@ -22,12 +22,40 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     }
   },
   refreshDockerProbe: async () => {
+    let probe: DockerProbe;
     try {
-      set({ dockerProbe: await api.probeDockerEngine() });
+      probe = await api.probeDockerEngine();
     } catch {
       // A failed probe means we can't confirm docker — treat as not installed
       // so the option gates off rather than dangling enabled.
-      set({ dockerProbe: { status: "not-installed" } });
+      probe = { status: "not-installed" };
     }
+    set({ dockerProbe: probe });
+    return probe;
+  },
+
+  containerAuth: null,
+  refreshContainerAuth: async () => {
+    try {
+      set({ containerAuth: await api.getContainerAuthStatus() });
+    } catch {
+      // A failed resolution means we can't confirm any credentials — show the
+      // "Not connected" state (with its connect CTA) rather than a stale one.
+      set({ containerAuth: { status: "none" } });
+    }
+  },
+  setContainerAuthToken: async (token) => {
+    // No try/catch: the connect modal surfaces the rejection (empty token)
+    // inline next to the paste field, so the error must propagate.
+    await api.setContainerAuthToken(token);
+    await get().refreshContainerAuth();
+  },
+  clearContainerAuthToken: async () => {
+    try {
+      await api.clearContainerAuthToken();
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+    await get().refreshContainerAuth();
   },
 });

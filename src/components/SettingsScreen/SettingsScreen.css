@@ -455,6 +455,38 @@
   color: var(--fg-2);
 }
 
+/* ── CONTAINER AUTH (Sandbox › Claude auth) ──────────────────────────── */
+.set-cauth-status {
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+.set-cauth-status.connected {
+  color: var(--fg-1);
+}
+/* Modal internals; the dialog chrome reuses `.ghc-*` (GithubConnect.css). */
+.set-cauth-cmd {
+  gap: 6px;
+  padding: 4px 6px 4px 12px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+}
+.set-cauth-input {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--fg-0);
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: border-color 0.12s;
+}
+.set-cauth-input:focus {
+  border-color: var(--accent);
+}
+
 /* ── PROVIDERS ───────────────────────────────────────────────────────── */
 .set-checked {
   color: var(--fg-3);
