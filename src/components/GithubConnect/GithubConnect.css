@@ -1,0 +1,103 @@
+/* App-level GitHub connect modal (see components/GithubConnect/index.tsx).
+   Compact centered dialog matching the new-project modal's chrome. */
+.ghc-modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
+  z-index: 401;
+  animation: ghc-in 0.18s var(--ease);
+}
+@keyframes ghc-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 6px)) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+.ghc-h {
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--bd);
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.ghc-h svg {
+  color: var(--accent);
+}
+.ghc-h span {
+  flex: 1;
+}
+.ghc-close {
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  color: var(--fg-2);
+}
+.ghc-close:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+
+.ghc-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 16px 22px;
+  text-align: center;
+}
+.ghc-lede {
+  gap: 8px;
+  color: var(--fg-2);
+  line-height: 1.45;
+}
+.ghc-title {
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.ghc-code-row {
+  gap: 8px;
+}
+.ghc-code {
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--fg-0);
+}
+.ghc-uri {
+  color: var(--fg-3);
+}
+.ghc-actions {
+  gap: 8px;
+  margin-top: 4px;
+}
+.ghc-err {
+  width: 100%;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  line-height: 1.4;
+}
+.ghc-spin {
+  animation: ghc-spin 0.9s linear infinite;
+  color: var(--fg-2);
+}
+@keyframes ghc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

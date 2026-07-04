@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
 import { Onboarding } from "./components/Onboarding";
 import { RightPanel } from "./components/RightPanel";
@@ -161,6 +162,7 @@ export function App() {
       {historyOpen && <History />}
       <Settings />
       {onboardingOpen && <Onboarding />}
+      <GithubConnectModal />
 
       {lastError && (
         <div className="error-banner" role="alert">

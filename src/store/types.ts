@@ -275,6 +275,11 @@ export interface UiSlice {
    *  by the target pane on mount (e.g. open the new-custom-agent editor
    *  straight from the composer's agent picker). */
   settingsIntent: SettingsIntent | null;
+  /** GitHub connect modal: a small app-level overlay that runs the OAuth
+   *  device flow inline, so any "Connect GitHub" affordance (e.g. the Git
+   *  panel) can start signing in on the first click instead of detouring
+   *  through Settings. */
+  githubConnectOpen: boolean;
   /** First-run onboarding overlay. `onboardingComplete` is persisted (DB
    *  settings); the overlay auto-opens for new users on init and is
    *  re-openable any time from Settings › General. */
@@ -302,6 +307,9 @@ export interface UiSlice {
   setSettingsSection: (section: SettingsSection) => void;
   /** Clear a consumed `settingsIntent` so it fires only once. */
   clearSettingsIntent: () => void;
+  /** Open / close the GitHub connect modal (the device flow starts on open). */
+  openGithubConnect: () => void;
+  closeGithubConnect: () => void;
   /** Open the onboarding overlay (e.g. "Replay tour" from Settings). */
   openOnboarding: () => void;
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
