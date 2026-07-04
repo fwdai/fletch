@@ -242,17 +242,37 @@ async fn query_unpushed(worktree_path: &Path) -> Option<u32> {
 }
 
 async fn query_ahead_behind(worktree_path: &Path, parent_branch: &str) -> (u32, u32) {
-    let out = crate::git_dist::command(worktree_path)
-        .args(["rev-list", "--left-right", "--count", &format!("HEAD...{parent_branch}")])
-        .output()
-        .await;
-    match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            parse_ahead_behind(s.trim())
-        }
-        _ => (0, 0),
+    if let Some(counts) = rev_list_counts(worktree_path, parent_branch).await {
+        return counts;
     }
+    // In a clone workspace (`workspace_mode = clone`) the parent branch may
+    // exist only as a remote-tracking ref: `git clone` creates a local branch
+    // for the source's HEAD alone, and bare branch names don't resolve
+    // through `refs/remotes/origin/`. Worktrees never hit this — they share
+    // the source repo's refs.
+    if !parent_branch.starts_with("origin/") {
+        if let Some(counts) =
+            rev_list_counts(worktree_path, &format!("origin/{parent_branch}")).await
+        {
+            return counts;
+        }
+    }
+    (0, 0)
+}
+
+/// `git rev-list --left-right --count HEAD...<base>`, or `None` when the base
+/// doesn't resolve — so the caller can try an alternate ref spelling.
+async fn rev_list_counts(worktree_path: &Path, base: &str) -> Option<(u32, u32)> {
+    let out = crate::git_dist::command(worktree_path)
+        .args(["rev-list", "--left-right", "--count", &format!("HEAD...{base}")])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    Some(parse_ahead_behind(s.trim()))
 }
 
 async fn run_status(worktree_path: &Path) -> Result<String> {
@@ -506,6 +526,51 @@ mod tests {
     #[test]
     fn ahead_behind_malformed() {
         assert_eq!(parse_ahead_behind("abc\txyz"), (0, 0));
+    }
+
+    // --- query_ahead_behind ---
+
+    #[tokio::test]
+    async fn ahead_behind_falls_back_to_remote_tracking_ref() {
+        // A clone workspace only gets a local branch for the source's HEAD,
+        // so a parent branch like `main` may resolve only as `origin/main`.
+        let td = tempfile::tempdir().unwrap();
+        let run = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let source = td.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        run(&source, &["init", "-q", "-b", "main"]);
+        run(&source, &["config", "user.email", "t@example.com"]);
+        run(&source, &["config", "user.name", "Tester"]);
+        std::fs::write(source.join("a.txt"), b"one").unwrap();
+        run(&source, &["add", "-A"]);
+        run(&source, &["commit", "-q", "-m", "first"]);
+        // `dev` stays at the first commit; `main` advances past it.
+        run(&source, &["branch", "dev"]);
+        std::fs::write(source.join("b.txt"), b"two").unwrap();
+        run(&source, &["add", "-A"]);
+        run(&source, &["commit", "-q", "-m", "second"]);
+        run(&source, &["checkout", "-q", "dev"]);
+
+        // Clone while `dev` is HEAD: the clone has no local `main`.
+        let clone = td.path().join("clone");
+        run(
+            td.path(),
+            &["clone", "-q", source.to_str().unwrap(), clone.to_str().unwrap()],
+        );
+
+        // Bare `main` fails in the clone; the fallback resolves origin/main.
+        assert_eq!(query_ahead_behind(&clone, "main").await, (0, 1));
     }
 
     // --- parse_porcelain ---

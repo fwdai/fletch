@@ -7,6 +7,7 @@ use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 use crate::git;
+use crate::sandbox::provision::{self, CheckoutSpec, WorkspaceMode};
 use crate::workspace::{
     agent_parent_dir, repo_worktree_path, AgentStatus, ArchiveMetadata, ArchivedRepoSnapshot,
     DiffStats, TrackedRepo,
@@ -46,6 +47,32 @@ impl Supervisor {
         // shouldn't block archive, since the user's intent is "get rid of
         // this").
         let (snapshots, diff_stats) = capture_repo_snapshots(agent_id, &record.repos).await;
+
+        // A clone workspace's commits exist only inside the clone until they
+        // are pushed — teardown deletes unpushed ones for good (restore can
+        // refetch a pushed branch from origin, nothing else). Warn loudly so
+        // that data-loss case is diagnosable; archive itself stays
+        // best-effort by design.
+        for snap in &snapshots {
+            let Some(tip) = snap.branch_tip_sha.as_deref() else {
+                continue;
+            };
+            let Ok(wt) = repo_worktree_path(agent_id, &snap.subdir) else {
+                continue;
+            };
+            if provision::detect_mode(&wt) == Some(WorkspaceMode::Clone)
+                && git::rev_parse(&snap.repo_path, tip).await.is_err()
+            {
+                tracing::warn!(
+                    agent_id,
+                    subdir = %snap.subdir,
+                    tip,
+                    "archiving clone workspace whose tip isn't in the source repo; \
+                     restore will need the branch to have been pushed"
+                );
+            }
+        }
+
         teardown_agent_worktrees(agent_id, &record.repos, "archive").await;
 
         let archive = ArchiveMetadata {
@@ -79,9 +106,21 @@ impl Supervisor {
             ));
         }
 
-        // Pre-flight: every snapshot must have a tip SHA, and that SHA
-        // must still be reachable. We do this before any mutation so
-        // we don't leave a half-restored agent on failure.
+        // The provisioning mode is a dev flag until slice C1 stamps it per
+        // agent; restore re-reads it because the archived workspace left no
+        // on-disk trace to detect it from.
+        let workspace_mode = WorkspaceMode::from_setting(
+            self.workspace
+                .setting(provision::WORKSPACE_MODE_SETTING)
+                .as_deref(),
+        );
+
+        // Pre-flight: every snapshot must have a tip SHA, and that SHA must
+        // be recoverable. We do this before any mutation so we don't leave a
+        // half-restored agent on failure. A clone's commits live only in the
+        // (torn-down) clone and on the real remote once pushed, so under
+        // clone mode a tip that isn't in the source repo is still fine when
+        // a branch name exists — provisioning refetches it from origin.
         for snap in &archive.repos {
             let sha = snap.branch_tip_sha.as_deref().ok_or_else(|| {
                 Error::Other(format!(
@@ -89,13 +128,17 @@ impl Supervisor {
                     snap.subdir
                 ))
             })?;
-            git::rev_parse(&snap.repo_path, sha).await.map_err(|e| {
-                Error::Other(format!(
-                    "branch tip {} no longer reachable in {}: {e}",
-                    sha,
-                    snap.repo_path.display()
-                ))
-            })?;
+            if let Err(e) = git::rev_parse(&snap.repo_path, sha).await {
+                let fetchable =
+                    matches!(workspace_mode, WorkspaceMode::Clone) && snap.branch_name.is_some();
+                if !fetchable {
+                    return Err(Error::Other(format!(
+                        "branch tip {} no longer reachable in {}: {e}",
+                        sha,
+                        snap.repo_path.display()
+                    )));
+                }
+            }
         }
 
         // Ensure the agent parent dir exists.
@@ -115,19 +158,23 @@ impl Supervisor {
                     .map_err(|e| Error::Other(format!("create worktree parent: {e}")))?;
             }
 
+            let spec = CheckoutSpec {
+                source_repo: &snap.repo_path,
+                base_ref: tip_sha,
+                dest: &worktree,
+            };
             let branch = match &snap.branch_name {
                 // The agent had pushed a branch → recreate it at the tip,
                 // resolving name collisions with a -restored suffix.
                 Some(desired_name) => {
                     let chosen = choose_restore_branch_name(&snap.repo_path, desired_name).await;
-                    git::branch_create_at(&snap.repo_path, &chosen, tip_sha).await?;
-                    git::worktree_add_branch(&snap.repo_path, &worktree, &chosen).await?;
+                    provision::provision_on_branch(workspace_mode, &spec, &chosen).await?;
                     Some(chosen)
                 }
                 // Branchless agent (never pushed) → restore detached at the
                 // tip, ready to name its branch at the next push.
                 None => {
-                    git::worktree_add_detached(&snap.repo_path, &worktree, Some(tip_sha)).await?;
+                    provision::provision(workspace_mode, &spec).await?;
                     None
                 }
             };
@@ -217,9 +264,10 @@ async fn capture_repo_snapshots(
     let mut total_dels: u32 = 0;
 
     for repo in repos {
-        let branch_tip_sha = match repo_worktree_path(agent_id, &repo.subdir) {
-            Ok(wt) => git::rev_parse(&wt, "HEAD").await.ok(),
-            Err(_) => None,
+        let worktree = repo_worktree_path(agent_id, &repo.subdir).ok();
+        let branch_tip_sha = match &worktree {
+            Some(wt) => git::rev_parse(wt, "HEAD").await.ok(),
+            None => None,
         };
         // Prefer the immutable fork point; only fall back to resolving the
         // parent branch name (which may have drifted) for pre-migration
@@ -234,9 +282,12 @@ async fn capture_repo_snapshots(
 
         let mut adds = 0u32;
         let mut dels = 0u32;
-        if let (Some(from), Some(to)) = (&parent_branch_sha, &branch_tip_sha) {
+        // The diff runs inside the workspace, not the source repo: a clone's
+        // commits exist only in the clone's object store, while a worktree
+        // shares its store with the source — so the workspace resolves both.
+        if let (Some(wt), Some(from), Some(to)) = (&worktree, &parent_branch_sha, &branch_tip_sha) {
             if from != to {
-                if let Ok((a, d)) = git::diff_shortstat(&repo.repo_path, from, to).await {
+                if let Ok((a, d)) = git::diff_shortstat(wt, from, to).await {
                     adds = a;
                     dels = d;
                 }
@@ -302,9 +353,18 @@ async fn teardown_agent_worktrees(agent_id: &str, repos: &[TrackedRepo], op: &st
                 continue;
             }
         };
-        let _ = git::worktree_prune(&repo.repo_path).await;
-        if let Err(e) = git::worktree_remove(&repo.repo_path, &worktree, true).await {
-            tracing::warn!(error = %e, subdir = %repo.subdir, op, "worktree remove failed");
+        // Detect what actually sits on disk rather than re-reading the
+        // settings key: a dev-flag flip between spawn and teardown must not
+        // run the wrong arm. A missing/empty dir defaults to the worktree
+        // arm, whose prune+remove degrade to the pre-existing warnings.
+        let mode = provision::detect_mode(&worktree).unwrap_or(WorkspaceMode::Worktree);
+        let spec = CheckoutSpec {
+            source_repo: &repo.repo_path,
+            base_ref: "HEAD", // unused by teardown
+            dest: &worktree,
+        };
+        if let Err(e) = provision::teardown(mode, &spec).await {
+            tracing::warn!(error = %e, subdir = %repo.subdir, op, "workspace teardown failed");
         }
         if let Some(branch) = &repo.branch {
             if let Err(e) = git::branch_delete(&repo.repo_path, branch).await {

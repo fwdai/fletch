@@ -60,7 +60,7 @@ const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// `Output`; callers that inspect exit codes themselves (e.g. `show-ref`'s
 /// 0/1) use this and check `status`, while `run_git` layers the
 /// success-or-`Error::Git` check on top.
-async fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
+pub(crate) async fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
     git_output_env(dir, args, &[]).await
 }
 
@@ -93,7 +93,7 @@ async fn git_output_env(
 /// `Error::Git("<label> failed: <stderr>")` — `label` names the op for the
 /// message. Collapses the "spawn, check status, format stderr" trio repeated
 /// across this module into one call.
-async fn run_git(dir: &Path, args: &[&str], label: &str) -> Result<std::process::Output> {
+pub(crate) async fn run_git(dir: &Path, args: &[&str], label: &str) -> Result<std::process::Output> {
     let out = git_output(dir, args).await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
