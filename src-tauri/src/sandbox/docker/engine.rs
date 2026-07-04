@@ -149,19 +149,23 @@ impl SandboxEngine for DockerEngine {
         let name = container_name(ctx.agent_id);
         let claude_config_dir = nondefault_claude_config_dir(ctx.home);
 
-        // Make sure the mount sources exist so Docker doesn't create them with
-        // daemon-owned (root) permissions — or fail the launch outright — on a
-        // first run that never wrote them. ~/.claude stays best-effort (the
-        // home dir exists; a failure here is exotic). A non-default
-        // CLAUDE_CONFIG_DIR is user-configured and may point anywhere, so a
-        // failure to create it is fatal: mounting a missing source would let
-        // Docker recreate it root-owned and leave claude unable to read its
-        // auth/config.
-        let _ = std::fs::create_dir_all(ctx.home.join(".claude"));
+        // Make sure the mount sources exist before we hand them to `-v`. If a
+        // source can't be created (a file already sits at the path, a read-only
+        // or missing parent, permissions), mounting it anyway would let Docker
+        // recreate it root-owned or fail the bind opaquely — either way claude
+        // loses access to its auth/config. Fail the launch with the path
+        // instead of pressing on with a bad mount.
+        let claude_dir = ctx.home.join(".claude");
+        std::fs::create_dir_all(&claude_dir).map_err(|e| {
+            Error::Other(format!(
+                "preparing Docker sandbox config mount {} failed: {e}",
+                claude_dir.display()
+            ))
+        })?;
         if let Some(dir) = &claude_config_dir {
             std::fs::create_dir_all(dir).map_err(|e| {
                 Error::Other(format!(
-                    "preparing CLAUDE_CONFIG_DIR for the Docker sandbox failed at {}: {e}",
+                    "preparing Docker sandbox config mount {} failed: {e}",
                     dir.display()
                 ))
             })?;
