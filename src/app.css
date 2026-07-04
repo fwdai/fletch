@@ -29,6 +29,7 @@
 @import "./components/Workspace/Draft.css";
 @import "./components/Settings/Settings.css";
 @import "./components/NewProject/NewProject.css";
+@import "./components/GithubConnect/GithubConnect.css";
 @import "./styles/shared/banners.css";
 @import "./styles/foundation/scrollbar.css";
 @import "./styles/shared/terminal.css";

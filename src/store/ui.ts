@@ -12,6 +12,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   settingsScreenOpen: false,
   settingsSection: "general" as SettingsSection,
   settingsIntent: null,
+  githubConnectOpen: false,
   onboardingOpen: false,
   onboardingComplete: false,
   historyOpen: false,
@@ -35,6 +36,8 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   closeSettingsScreen: () => set({ settingsScreenOpen: false }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   clearSettingsIntent: () => set({ settingsIntent: null }),
+  openGithubConnect: () => set({ githubConnectOpen: true }),
+  closeGithubConnect: () => set({ githubConnectOpen: false }),
   openOnboarding: () => set({ onboardingOpen: true }),
   closeOnboarding: () => {
     const firstCompletion = !get().onboardingComplete;

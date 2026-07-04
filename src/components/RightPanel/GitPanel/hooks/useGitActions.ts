@@ -75,7 +75,7 @@ export function useGitActions(ctx: GitActionsCtx) {
   const deleteBranch = useAppStore((s) => s.deleteBranch);
   const delegateGitAction = useAppStore((s) => s.delegateGitAction);
   const seedComposer = useAppStore((s) => s.seedComposer);
-  const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
+  const openGithubConnect = useAppStore((s) => s.openGithubConnect);
 
   // Hand control to the coding agent: it writes the judgment part (message /
   // description / conflict edits) and executes the mutation through the app's
@@ -109,9 +109,9 @@ export function useGitActions(ctx: GitActionsCtx) {
 
     switch (key) {
       case "connect-github":
-        // The device flow lives in Settings → Account; take the user there.
-        openSettingsScreen("account");
-        showNotice("Connect GitHub to push & open pull requests");
+        // Start the OAuth device flow right here (in the app-level modal), so a
+        // single click begins connecting instead of detouring through Settings.
+        openGithubConnect();
         break;
       case "publish":
       case "publish-public": {
