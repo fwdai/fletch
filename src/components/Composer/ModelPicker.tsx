@@ -187,20 +187,31 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                 // Non-Claude agents can't run under Docker yet (see dockerOnly).
                 const dockerBlocked = dockerOnly && p.id !== "claude";
                 const disabled = !installed || dockerBlocked;
+                // Why disabled — dockerBlocked wins over missing (a non-Claude
+                // agent under Docker is blocked regardless of install state).
+                const disabledTip = dockerBlocked
+                  ? `${p.label} isn't available in Docker sandboxes yet`
+                  : "Not installed — see Settings › Providers";
                 const isSelected = p.id === provider && !customAgentId;
                 const isOpen = hovered === p.id;
                 return (
                   <button
                     key={p.id}
                     type="button"
-                    disabled={disabled}
-                    className={`model-agent-row flex-center ${isSelected ? "active" : ""} ${isOpen ? "hot" : ""}`}
+                    // aria-disabled, not the native `disabled` attr: a disabled
+                    // <button> swallows hover/pointer events in the WebView, so
+                    // its tooltip never shows and the user is left with only
+                    // "Docker: Claude only" and no reason. aria-disabled keeps
+                    // the row hover-capable; the guarded handlers below keep it
+                    // inert. The tooltip is the CSS `.tip`/`data-tip` one
+                    // (shows on :hover), used only for the disabled explanation.
+                    aria-disabled={disabled}
+                    className={`model-agent-row flex-center ${disabled ? "is-disabled tip" : ""} ${isSelected ? "active" : ""} ${isOpen ? "hot" : ""}`}
+                    data-tip={disabled ? disabledTip : undefined}
                     title={
-                      dockerBlocked
-                        ? `${p.label} isn't available in Docker sandboxes yet`
-                        : missing
-                          ? "Not installed — see Settings › Providers"
-                          : "Click to use the default model · hover to choose a model"
+                      disabled
+                        ? undefined
+                        : "Click to use the default model · hover to choose a model"
                     }
                     onMouseEnter={() => !disabled && setHovered(p.id)}
                     onClick={() => !disabled && pickModel(p.id, undefined)}

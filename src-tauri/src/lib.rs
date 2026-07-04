@@ -516,14 +516,22 @@ async fn set_docker_launch_settings(
     let cpus = norm(cpus);
     {
         let conn = state.lock();
+        // All three must land together. Written individually, a mid-loop
+        // failure (image commits, then memory errors) would leave a mixed
+        // config committed to the DB — one the UI never shows, since it reverts
+        // all three optimistically and we skip the mirror update on error, so a
+        // restart would silently hydrate the partial write. The transaction
+        // rolls back on any failure, keeping DB, mirror, and UI in sync.
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         for (key, value) in [
             (sandbox::docker::IMAGE_SETTING, &image),
             (sandbox::docker::MEMORY_SETTING, &memory),
             (sandbox::docker::CPUS_SETTING, &cpus),
         ] {
-            database::set_setting(&conn, key, value.as_deref().unwrap_or(""))
+            database::set_setting(&tx, key, value.as_deref().unwrap_or(""))
                 .map_err(|e| e.to_string())?;
         }
+        tx.commit().map_err(|e| e.to_string())?;
     }
     sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
         image_override: image,
