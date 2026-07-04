@@ -27,7 +27,7 @@ use crate::instructions;
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
-use crate::sandbox::{AgentLaunchCtx, EngineKind, Keepalive, LaunchPlan};
+use crate::sandbox::{AgentLaunchCtx, EngineKind, Keepalive, LaunchPlan, SandboxEngine};
 
 pub enum Agent {
     Pty(PtyAgent),
@@ -142,6 +142,14 @@ pub struct PerTurnDescriptor {
     /// ingest verbatim records into `session_records`. `None` = no readable
     /// transcript.
     pub transcript: Option<TranscriptReader>,
+}
+
+impl PerTurnDescriptor {
+    /// Human-facing product name, for error copy (e.g. the docker-sandbox
+    /// refusal in `supervisor::lifecycle`).
+    pub fn label(&self) -> &'static str {
+        self.label
+    }
 }
 
 /// One verbatim durable record from an agent's transcript: the raw body in the
@@ -810,7 +818,8 @@ impl Agent {
     {
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let claude = resolve_claude(&home)?;
+        let engine = sandbox::engine_for(spec.engine);
+        let claude = claude_bin_for(engine.as_ref(), &home)?;
         let agent_args = prepare_pty_args(&spec);
 
         let ctx = AgentLaunchCtx {
@@ -827,7 +836,7 @@ impl Agent {
             env: launch_env,
             keepalive,
             kill,
-        } = sandbox::engine_for(spec.engine).launch_agent(&ctx, &claude)?;
+        } = engine.launch_agent(&ctx, &claude)?;
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -947,7 +956,8 @@ impl Agent {
     {
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let claude = resolve_claude(&home)?;
+        let engine = sandbox::engine_for(spec.engine);
+        let claude = claude_bin_for(engine.as_ref(), &home)?;
         let agent_args = prepare_managed_args(&spec);
 
         let ctx = AgentLaunchCtx {
@@ -964,7 +974,7 @@ impl Agent {
             env: launch_env,
             keepalive,
             kill,
-        } = sandbox::engine_for(spec.engine).launch_agent(&ctx, &claude)?;
+        } = engine.launch_agent(&ctx, &claude)?;
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -1280,6 +1290,20 @@ fn prepare_managed_args(spec: &SpawnSpec<'_>) -> Vec<String> {
 
 fn resolve_claude(home: &Path) -> Result<String> {
     resolve_agent_bin("claude", "claude", "Claude Code", home)
+}
+
+/// The claude binary handed to `launch_agent`, decided by the *resolved*
+/// engine's kind: under docker it's the in-image name `claude` (the image
+/// carries its own install; a resolved host path would be meaningless — or
+/// missing — inside the container), under seatbelt the host-resolved
+/// absolute path as always. Keyed off the resolved engine rather than the
+/// stamped setting so a docker-stamped agent that fell back to seatbelt
+/// (daemon down, see `sandbox::engine_for`) still execs a real host binary.
+fn claude_bin_for(engine: &dyn SandboxEngine, home: &Path) -> Result<String> {
+    match engine.kind() {
+        EngineKind::Docker => Ok("claude".to_string()),
+        EngineKind::SandboxExec => resolve_claude(home),
+    }
 }
 
 // ── per-turn provider configs ─────────────────────────────────────────────

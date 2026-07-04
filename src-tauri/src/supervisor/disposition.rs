@@ -14,7 +14,7 @@ use crate::workspace::{
 };
 
 use super::events::emit_workspace_changed;
-use super::lifecycle::{arm_spawn_timeout, fail_spawn};
+use super::lifecycle::{arm_spawn_timeout, effective_workspace_mode, fail_spawn, stamped_engine};
 use super::Supervisor;
 
 impl Supervisor {
@@ -106,10 +106,13 @@ impl Supervisor {
             ));
         }
 
-        // The provisioning mode is a dev flag until slice C1 stamps it per
-        // agent; restore re-reads it because the archived workspace left no
-        // on-disk trace to detect it from.
-        let workspace_mode = WorkspaceMode::from_setting(
+        // Restore re-derives the provisioning mode (the archived workspace
+        // left no on-disk trace to detect it from): the `workspace_mode` dev
+        // flag under seatbelt, forced to `Clone` for a docker-stamped agent —
+        // its restored workspace gets bind-mounted, so a linked worktree
+        // would leak the real repo's `.git` into the container (invariant 2).
+        let workspace_mode = effective_workspace_mode(
+            stamped_engine(&record),
             self.workspace
                 .setting(provision::WORKSPACE_MODE_SETTING)
                 .as_deref(),

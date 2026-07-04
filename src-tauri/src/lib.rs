@@ -529,6 +529,19 @@ pub fn run() {
                 sandbox::set_selected_engine_kind(kind);
             }
 
+            // Seed the docker launch knobs (image override + resource limits)
+            // the same way — mirrored in-process for the spawn path. Slice C2
+            // adds the settings UI whose set-commands keep this in sync
+            // mid-run; until then changes apply on next launch.
+            {
+                let conn = db.lock();
+                sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
+                    image_override: database::get_setting(&conn, sandbox::docker::IMAGE_SETTING),
+                    memory: database::get_setting(&conn, sandbox::docker::MEMORY_SETTING),
+                    cpus: database::get_setting(&conn, sandbox::docker::CPUS_SETTING),
+                });
+            }
+
             // Unified git resolution: point the portable-install root at app
             // data, wire the fallback commit identity to the signed-in
             // profile, and kick off resolve-or-download in the background —

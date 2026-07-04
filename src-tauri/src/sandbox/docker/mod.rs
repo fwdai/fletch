@@ -1,12 +1,11 @@
-//! Docker engine primitives: availability probing, the agent image, and
-//! orphaned-container cleanup.
+//! The Docker sandbox engine and its primitives: availability probing, the
+//! agent image, orphaned-container cleanup, and the launch path.
 //!
-//! This module is deliberately independent of the spawn path — slice B2 wires
-//! `DockerEngine` (the `SandboxEngine` impl) on top of these pieces. Keeping
-//! the plumbing standalone means every function here must work when Docker is
-//! absent or the daemon is down: probing reports that state instead of
-//! erroring, and the startup sweep is probe-gated so an install-less machine
-//! never pays for a docker invocation.
+//! Everything here must work when Docker is absent or the daemon is down:
+//! probing reports that state instead of erroring, the startup sweep is
+//! probe-gated so an install-less machine never pays for a docker
+//! invocation, and `sandbox::engine_for` only routes launches here when the
+//! probe says the daemon is up.
 //!
 //! Layout:
 //! - [`cli`] — docker binary resolution + bounded-invocation helpers. Every
@@ -15,22 +14,24 @@
 //! - [`probe`] — cached daemon availability for UI polling.
 //! - [`image`] — the embedded agent Dockerfile and content-addressed builds.
 //! - [`cleanup`] — container labels and the dead-instance orphan sweep.
+//! - [`engine`] — `DockerEngine`, the `SandboxEngine` implementation
+//!   (one `docker run --rm --init` container per agent process).
 
 mod cleanup;
 mod cli;
-// Everything in `image` is consumed by the B2 launch path; within B1 only its
-// tests exercise it, so the whole module is dead code until then.
-#[allow(dead_code)]
+mod engine;
 mod image;
 mod probe;
 
-// Re-exported for slices B2 (engine launch path) and C1 (settings/UI probe);
-// unused within B1 itself, hence the allowances.
+// Label plumbing for slice C2's surfacing needs; unused until then.
 #[allow(unused_imports)]
 pub use cleanup::{agent_id_label, host_pid_label, sweep_orphans, AGENT_ID_LABEL, HOST_PID_LABEL};
+pub use engine::{
+    set_launch_settings, DockerEngine, LaunchSettings, CPUS_SETTING, IMAGE_SETTING, MEMORY_SETTING,
+};
+// Build progress plumbing for slice C2's UI events; unused until then.
 #[allow(unused_imports)]
 pub use image::{ensure_image, image_tag, resolve_image, Progress};
-#[allow(unused_imports)]
 pub use probe::{availability, DockerAvailability};
 
 /// Best-effort reclamation of containers left behind by dead Fletch

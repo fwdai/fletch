@@ -22,10 +22,16 @@ const CACHE_TTL: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The three states the UI distinguishes: usable now, fixable by starting
-/// Docker Desktop, or fixable only by installing it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Docker Desktop, or fixable only by installing it. Serializes to the wire
+/// shape the settings UI consumes: `{ "status": "...", "version"?: "..." }`
+/// (the `probe_docker_engine` command in `lib.rs` returns it directly).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
 pub enum DockerAvailability {
-    Available { server_version: String },
+    Available {
+        #[serde(rename = "version")]
+        server_version: String,
+    },
     NotInstalled,
     DaemonDown,
 }
@@ -86,6 +92,25 @@ fn classify_version_stdout(stdout: &str) -> DockerAvailability {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn availability_serializes_to_the_wire_shape() {
+        let available = DockerAvailability::Available {
+            server_version: "27.3.1".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(available).unwrap(),
+            serde_json::json!({ "status": "available", "version": "27.3.1" })
+        );
+        assert_eq!(
+            serde_json::to_value(DockerAvailability::NotInstalled).unwrap(),
+            serde_json::json!({ "status": "not-installed" })
+        );
+        assert_eq!(
+            serde_json::to_value(DockerAvailability::DaemonDown).unwrap(),
+            serde_json::json!({ "status": "daemon-down" })
+        );
+    }
 
     #[test]
     fn version_stdout_classification() {

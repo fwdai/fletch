@@ -154,9 +154,10 @@ impl PtySession {
         });
         thread::spawn(move || coalesce_output(rx, on_output));
 
+        let kill_plan_for_exit = spec.kill_plan.clone();
         thread::spawn(move || match child.wait() {
             Ok(status) => {
-                let exit = exit_from_status(status);
+                let exit = exit_from_status(status, &kill_plan_for_exit);
                 tracing::info!(
                     success = exit.success,
                     message = %exit.message,
@@ -338,10 +339,16 @@ fn coalesce_output<F: Fn(Vec<u8>)>(rx: mpsc::Receiver<Vec<u8>>, on_output: F) {
     }
 }
 
-fn exit_from_status(status: ExitStatus) -> PtyExit {
+/// Build the exit outcome, letting the sandbox engine translate launcher exit
+/// codes it reserves (docker CLI 125/126/127 — daemon/image failures) into
+/// user-readable messages; anything else reports the raw status.
+fn exit_from_status(status: ExitStatus, kill_plan: &KillHandle) -> PtyExit {
+    let message = kill_plan
+        .describe_exit(status.exit_code() as i32)
+        .unwrap_or_else(|| status.to_string());
     PtyExit {
         success: status.success(),
-        message: status.to_string(),
+        message,
     }
 }
 
