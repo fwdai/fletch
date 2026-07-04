@@ -12,6 +12,26 @@ const ALLOWED_TABLES: &[&str] = &[
     "sessions", "settings", "workspaces", "worktrees",
 ];
 
+/// Base name of the on-disk SQLite database within the app data dir. Neutral
+/// (not tied to the product name) so a future rebrand never needs another file
+/// migration. Shared by `init` and the recovery `move_db_aside` so both agree.
+pub const DB_FILENAME: &str = "data.db";
+
+/// Historical database name from before the app was renamed. Existing installs
+/// still have `LEGACY_DB_FILENAME` on disk; `migrate_legacy_db_name` renames it
+/// (and its WAL/SHM sidecars) to `DB_FILENAME` on first launch. Kept as a
+/// separate constant so the one-time migration is self-documenting.
+pub const LEGACY_DB_FILENAME: &str = "quorum.db";
+
+/// Every on-disk database base name the app may have used, current and legacy.
+/// Fresh-start recovery moves all of these aside so a leftover legacy file can't
+/// be resurrected by `migrate_legacy_db_name` on the retried `init`.
+pub const DB_BASENAMES: &[&str] = &[DB_FILENAME, LEGACY_DB_FILENAME];
+
+/// The SQLite database's WAL/SHM sidecar suffixes. The main file plus these
+/// three names are the complete on-disk footprint that must move together.
+pub const DB_SIDECAR_SUFFIXES: &[&str] = &["", "-wal", "-shm"];
+
 /// `settings` key prefix for per-agent custom binary path overrides. The agent
 /// id follows the prefix (e.g. `agent_bin_path_claude`); the value is the raw
 /// absolute path the user entered. Shared by the startup loader and the
@@ -110,11 +130,76 @@ fn get_migrations() -> Migrations<'static> {
 
 pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
     std::fs::create_dir_all(data_dir)?;
-    let db_path = data_dir.join("quorum.db");
+    migrate_legacy_db_name(data_dir)?;
+    quarantine_orphaned_wal(data_dir)?;
+    let db_path = data_dir.join(DB_FILENAME);
     let mut conn = open_db(&db_path)?;
     backup_before_upgrade(&conn, &db_path)?;
     get_migrations().to_latest(&mut conn).map_err(map_migration_error)?;
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// Move aside any WAL/SHM sidecars that have no companion main database file.
+/// Normal SQLite operation never produces this state — the main file is always
+/// created before its WAL — so an orphaned `data.db-wal` can only be debris from
+/// an interrupted rename (a crash mid-migration or mid fresh-start recovery).
+/// If we opened `data.db` with that WAL still in place, SQLite would recover the
+/// main file *from the orphaned WAL*, silently resurrecting committed rows the
+/// interrupted operation meant to abandon. Runs after `migrate_legacy_db_name`
+/// (which may legitimately recreate the main file) and before `open_db`. We
+/// suffix the orphans as timestamped backups rather than delete them, so nothing
+/// is ever lost irrecoverably. This is the correct-by-construction backstop for
+/// every rename path: no matter how the main file went missing, its stray WAL is
+/// never replayed into a supposedly fresh database.
+fn quarantine_orphaned_wal(data_dir: &Path) -> Result<()> {
+    if data_dir.join(DB_FILENAME).exists() {
+        return Ok(());
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    for suffix in DB_SIDECAR_SUFFIXES {
+        if suffix.is_empty() {
+            continue; // the main file itself — its absence is what we guarded on
+        }
+        let name = format!("{DB_FILENAME}{suffix}");
+        let src = data_dir.join(&name);
+        if src.exists() {
+            std::fs::rename(&src, data_dir.join(format!("{name}.orphaned-{stamp}")))?;
+            tracing::warn!("quarantined orphaned {name}; no main database present");
+        }
+    }
+    Ok(())
+}
+
+/// One-time rename of the pre-rebrand `quorum.db` (and its `-wal`/`-shm`
+/// sidecars) to `DB_FILENAME`. Runs before `open_db` so existing installs keep
+/// their data instead of silently starting on a fresh empty database. Idempotent
+/// and safe: it only renames when the legacy file exists and the new one does
+/// not, so once migrated (or on a clean install) it is a no-op. We rename rather
+/// than copy — the user's data is never duplicated or deleted.
+///
+/// The main file is moved **last** (sidecars first). The migration's guard keys
+/// off the main file's name, so if we crash mid-rename the main file is still
+/// under the legacy name and the next launch simply re-runs and finishes the
+/// remaining moves. Were the main file moved first, an interruption would leave
+/// `data.db` present (skipping the guard) but its `data.db-wal` still under the
+/// legacy name — opening it would silently drop committed WAL-only rows.
+fn migrate_legacy_db_name(data_dir: &Path) -> Result<()> {
+    let legacy_main = data_dir.join(LEGACY_DB_FILENAME);
+    let new_main = data_dir.join(DB_FILENAME);
+    if !legacy_main.exists() || new_main.exists() {
+        return Ok(());
+    }
+    for suffix in DB_SIDECAR_SUFFIXES.iter().rev() {
+        let src = data_dir.join(format!("{LEGACY_DB_FILENAME}{suffix}"));
+        if src.exists() {
+            std::fs::rename(&src, data_dir.join(format!("{DB_FILENAME}{suffix}")))?;
+        }
+    }
+    tracing::info!("migrated legacy database {LEGACY_DB_FILENAME} -> {DB_FILENAME}");
+    Ok(())
 }
 
 fn open_db(db_path: &Path) -> Result<Connection> {
@@ -530,12 +615,114 @@ mod tests {
     }
 
     #[test]
+    fn legacy_db_is_renamed_on_init_and_data_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        // Seed a real DB under the legacy name, then write a marker row.
+        let mut conn = open_db(&dir.path().join(LEGACY_DB_FILENAME)).unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        db_insert(&conn, "projects", json!({ "name": "marker" })).unwrap();
+        drop(conn);
+
+        init(dir.path()).unwrap();
+
+        // Legacy file is gone, new file exists, and the marker row survived.
+        assert!(!dir.path().join(LEGACY_DB_FILENAME).exists());
+        assert!(dir.path().join(DB_FILENAME).exists());
+        let conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+        let rows = db_select(&conn, "projects", json!({ "name": "marker" })).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn interrupted_migration_reruns_and_keeps_wal_with_its_main_file() {
+        // Simulate a crash mid-migration: the sidecar was already renamed to the
+        // new name, but the main file is still under the legacy name (the main
+        // file is moved last). The guard must still fire and finish the move,
+        // leaving `data.db` paired with the `data.db-wal` that carries the
+        // committed-but-uncheckpointed rows.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEGACY_DB_FILENAME), b"main").unwrap();
+        std::fs::write(dir.path().join(format!("{DB_FILENAME}-wal")), b"wal").unwrap();
+
+        migrate_legacy_db_name(dir.path()).unwrap();
+
+        assert!(!dir.path().join(LEGACY_DB_FILENAME).exists());
+        assert_eq!(std::fs::read(dir.path().join(DB_FILENAME)).unwrap(), b"main");
+        assert_eq!(
+            std::fs::read(dir.path().join(format!("{DB_FILENAME}-wal"))).unwrap(),
+            b"wal"
+        );
+    }
+
+    #[test]
+    fn orphaned_wal_without_main_is_quarantined_not_replayed() {
+        // WAL/SHM present with no main file — the exact debris an interrupted
+        // rename leaves behind. init() must set them aside and start fresh, never
+        // letting SQLite recover a main database from the abandoned WAL.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(format!("{DB_FILENAME}-wal")), b"orphan-wal").unwrap();
+        std::fs::write(dir.path().join(format!("{DB_FILENAME}-shm")), b"orphan-shm").unwrap();
+
+        init(dir.path()).unwrap();
+
+        // A genuinely fresh db exists and the orphans were preserved as backups.
+        assert!(dir.path().join(DB_FILENAME).exists());
+        let orphaned: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|n| n.contains(".orphaned-"))
+            .collect();
+        assert_eq!(orphaned.len(), 2);
+    }
+
+    #[test]
+    fn stray_legacy_wal_without_its_main_is_not_migrated_or_resurrected() {
+        // A crash mid-recovery can leave quorum.db-wal behind after quorum.db
+        // itself was already moved aside. With no legacy main file, migration
+        // must not fire (there is nothing to resurrect) and init opens a clean
+        // data.db rather than reviving the abandoned database.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(format!("{LEGACY_DB_FILENAME}-wal")), b"stray").unwrap();
+
+        init(dir.path()).unwrap();
+
+        assert!(dir.path().join(DB_FILENAME).exists());
+        assert!(!dir.path().join(LEGACY_DB_FILENAME).exists());
+    }
+
+    #[test]
+    fn quarantine_orphaned_wal_is_noop_when_main_present() {
+        // A WAL alongside its main file is normal SQLite state — leave it alone.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(DB_FILENAME), b"main").unwrap();
+        std::fs::write(dir.path().join(format!("{DB_FILENAME}-wal")), b"wal").unwrap();
+
+        quarantine_orphaned_wal(dir.path()).unwrap();
+
+        assert!(dir.path().join(format!("{DB_FILENAME}-wal")).exists());
+    }
+
+    #[test]
+    fn migrate_legacy_db_name_is_noop_when_new_file_present() {
+        let dir = tempfile::tempdir().unwrap();
+        // Both files present (e.g. a stray legacy file after migration): the new
+        // one must win untouched, and the legacy file is left alone.
+        std::fs::write(dir.path().join(LEGACY_DB_FILENAME), b"legacy").unwrap();
+        std::fs::write(dir.path().join(DB_FILENAME), b"current").unwrap();
+
+        migrate_legacy_db_name(dir.path()).unwrap();
+
+        assert_eq!(std::fs::read(dir.path().join(DB_FILENAME)).unwrap(), b"current");
+        assert!(dir.path().join(LEGACY_DB_FILENAME).exists());
+    }
+
+    #[test]
     fn init_errors_when_schema_is_from_a_newer_build() {
         let dir = tempfile::tempdir().unwrap();
         init(dir.path()).unwrap();
         // Simulate an app downgrade: a newer build left user_version ahead of
         // the migrations this binary knows about.
-        let conn = Connection::open(dir.path().join("quorum.db")).unwrap();
+        let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
         conn.pragma_update(None, "user_version", (MIGRATIONS.len() + 5) as i64)
             .unwrap();
         drop(conn);
@@ -545,7 +732,7 @@ mod tests {
     #[test]
     fn upgrading_an_older_schema_backs_it_up_first() {
         let dir = tempfile::tempdir().unwrap();
-        let mut conn = open_db(&dir.path().join("quorum.db")).unwrap();
+        let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
         get_migrations().to_version(&mut conn, 1).unwrap(); // valid schema at v1
         drop(conn);
         init(dir.path()).unwrap(); // v1 -> latest, must back up first

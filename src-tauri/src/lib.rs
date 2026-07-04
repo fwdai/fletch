@@ -74,6 +74,35 @@ mod tests {
         assert!(logs_dir().starts_with(&dir));
         assert_eq!(logs_dir().file_name().unwrap(), "logs");
     }
+
+    #[test]
+    fn db_basenames_lists_current_before_legacy() {
+        // move_db_aside processes DB_BASENAMES.rev() so the legacy name is moved
+        // aside FIRST — the contract that stops migrate from resurrecting the
+        // legacy db once the current one is gone. Pin the order this relies on.
+        assert_eq!(
+            database::DB_BASENAMES,
+            &[database::DB_FILENAME, database::LEGACY_DB_FILENAME]
+        );
+    }
+
+    #[test]
+    fn recovery_does_not_resurrect_a_leftover_legacy_db() {
+        // A stray `quorum.db` sits next to the live `data.db`. Fresh-start
+        // recovery must move BOTH aside; otherwise the retried init() would
+        // rename the legacy file back into place and reopen it.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(database::DB_FILENAME), b"current").unwrap();
+        std::fs::write(dir.path().join(database::LEGACY_DB_FILENAME), b"legacy").unwrap();
+
+        move_db_aside(dir.path()).unwrap();
+
+        // Neither base name survives, so init() starts truly fresh.
+        assert!(!dir.path().join(database::DB_FILENAME).exists());
+        assert!(!dir.path().join(database::LEGACY_DB_FILENAME).exists());
+        database::init(dir.path()).unwrap();
+        assert!(dir.path().join(database::DB_FILENAME).exists());
+    }
 }
 
 /// Number of daily log files to keep. The rolling appender deletes the oldest
@@ -230,15 +259,38 @@ fn db_error_message(err: &crate::error::Error) -> (&'static str, String) {
 /// Rename the database and its WAL/SHM sidecars out of the way so a fresh one
 /// can be created, preserving the old files as timestamped backups. We suffix,
 /// never delete — the user's data is always recoverable.
+///
+/// A sequence of per-file renames is not atomic, so a crash can interrupt it at
+/// any point. No single ordering is crash-safe on its own — but paired with
+/// `database::init`'s guards (`migrate_legacy_db_name` + `quarantine_orphaned_wal`)
+/// this order leaves every interruption point in a safe state:
+///
+/// * **Legacy basename first.** `migrate_legacy_db_name` resurrects a stale db
+///   whenever `quorum.db` exists and `data.db` does not. Moving the legacy main
+///   file before `data.db` ever disappears means that trigger state is never
+///   produced, so a half-finished recovery can't rename the old db back.
+/// * **Main file first within each basename** (`DB_SIDECAR_SUFFIXES` in order —
+///   the empty suffix leads). An interruption then leaves the main file gone
+///   with its WAL still live-named, which `quarantine_orphaned_wal` sweeps aside
+///   on the next launch. The reverse order would risk "main present, WAL moved
+///   away", which no guard can detect and which silently drops committed rows.
+///
+/// (`migrate_legacy_db_name` deliberately moves its main file *last* — the
+/// opposite — because it preserves into a live db, where the legacy main name is
+/// its re-run sentinel and quarantine can't help once the main file exists.)
 fn move_db_aside(data_dir: &std::path::Path) -> crate::error::Result<()> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    for name in ["quorum.db", "quorum.db-wal", "quorum.db-shm"] {
-        let src = data_dir.join(name);
-        if src.exists() {
-            std::fs::rename(&src, data_dir.join(format!("{name}.moved-{stamp}")))?;
+    // `DB_BASENAMES` is [current, legacy]; `.rev()` processes legacy first.
+    for base in database::DB_BASENAMES.iter().rev() {
+        for suffix in database::DB_SIDECAR_SUFFIXES {
+            let name = format!("{base}{suffix}");
+            let src = data_dir.join(&name);
+            if src.exists() {
+                std::fs::rename(&src, data_dir.join(format!("{name}.moved-{stamp}")))?;
+            }
         }
     }
     tracing::warn!("moved database aside; starting fresh");
