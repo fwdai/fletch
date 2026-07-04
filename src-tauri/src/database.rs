@@ -131,11 +131,46 @@ fn get_migrations() -> Migrations<'static> {
 pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
     std::fs::create_dir_all(data_dir)?;
     migrate_legacy_db_name(data_dir)?;
+    quarantine_orphaned_wal(data_dir)?;
     let db_path = data_dir.join(DB_FILENAME);
     let mut conn = open_db(&db_path)?;
     backup_before_upgrade(&conn, &db_path)?;
     get_migrations().to_latest(&mut conn).map_err(map_migration_error)?;
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// Move aside any WAL/SHM sidecars that have no companion main database file.
+/// Normal SQLite operation never produces this state — the main file is always
+/// created before its WAL — so an orphaned `data.db-wal` can only be debris from
+/// an interrupted rename (a crash mid-migration or mid fresh-start recovery).
+/// If we opened `data.db` with that WAL still in place, SQLite would recover the
+/// main file *from the orphaned WAL*, silently resurrecting committed rows the
+/// interrupted operation meant to abandon. Runs after `migrate_legacy_db_name`
+/// (which may legitimately recreate the main file) and before `open_db`. We
+/// suffix the orphans as timestamped backups rather than delete them, so nothing
+/// is ever lost irrecoverably. This is the correct-by-construction backstop for
+/// every rename path: no matter how the main file went missing, its stray WAL is
+/// never replayed into a supposedly fresh database.
+fn quarantine_orphaned_wal(data_dir: &Path) -> Result<()> {
+    if data_dir.join(DB_FILENAME).exists() {
+        return Ok(());
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    for suffix in DB_SIDECAR_SUFFIXES {
+        if suffix.is_empty() {
+            continue; // the main file itself — its absence is what we guarded on
+        }
+        let name = format!("{DB_FILENAME}{suffix}");
+        let src = data_dir.join(&name);
+        if src.exists() {
+            std::fs::rename(&src, data_dir.join(format!("{name}.orphaned-{stamp}")))?;
+            tracing::warn!("quarantined orphaned {name}; no main database present");
+        }
+    }
+    Ok(())
 }
 
 /// One-time rename of the pre-rebrand `quorum.db` (and its `-wal`/`-shm`
@@ -617,6 +652,39 @@ mod tests {
             std::fs::read(dir.path().join(format!("{DB_FILENAME}-wal"))).unwrap(),
             b"wal"
         );
+    }
+
+    #[test]
+    fn orphaned_wal_without_main_is_quarantined_not_replayed() {
+        // WAL/SHM present with no main file — the exact debris an interrupted
+        // rename leaves behind. init() must set them aside and start fresh, never
+        // letting SQLite recover a main database from the abandoned WAL.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(format!("{DB_FILENAME}-wal")), b"orphan-wal").unwrap();
+        std::fs::write(dir.path().join(format!("{DB_FILENAME}-shm")), b"orphan-shm").unwrap();
+
+        init(dir.path()).unwrap();
+
+        // A genuinely fresh db exists and the orphans were preserved as backups.
+        assert!(dir.path().join(DB_FILENAME).exists());
+        let orphaned: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|n| n.contains(".orphaned-"))
+            .collect();
+        assert_eq!(orphaned.len(), 2);
+    }
+
+    #[test]
+    fn quarantine_orphaned_wal_is_noop_when_main_present() {
+        // A WAL alongside its main file is normal SQLite state — leave it alone.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(DB_FILENAME), b"main").unwrap();
+        std::fs::write(dir.path().join(format!("{DB_FILENAME}-wal")), b"wal").unwrap();
+
+        quarantine_orphaned_wal(dir.path()).unwrap();
+
+        assert!(dir.path().join(format!("{DB_FILENAME}-wal")).exists());
     }
 
     #[test]

@@ -253,13 +253,19 @@ fn db_error_message(err: &crate::error::Error) -> (&'static str, String) {
 /// aside. Otherwise a leftover legacy file would survive the fresh start and be
 /// renamed back into place by `migrate_legacy_db_name` on the retried `init`,
 /// reopening the very database recovery was meant to abandon.
+///
+/// The main file of each base name is moved **last** (`.rev()` puts the empty
+/// suffix last), so an interruption never leaves a main file gone while its WAL
+/// lingers under the live name. Even if it did, `database::init` quarantines
+/// orphaned WAL/SHM before opening — this ordering is defense-in-depth so the
+/// dangerous state is never even transiently written.
 fn move_db_aside(data_dir: &std::path::Path) -> crate::error::Result<()> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     for base in database::DB_BASENAMES {
-        for suffix in database::DB_SIDECAR_SUFFIXES {
+        for suffix in database::DB_SIDECAR_SUFFIXES.iter().rev() {
             let name = format!("{base}{suffix}");
             let src = data_dir.join(&name);
             if src.exists() {
