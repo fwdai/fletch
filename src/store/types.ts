@@ -361,8 +361,9 @@ export interface SandboxSlice {
   /** Persist a new engine choice via the backend, which validates docker
    *  against a live daemon probe — reverts the store on refusal. */
   setSandboxEngine: (engine: SandboxEngine) => Promise<void>;
-  /** Re-probe Docker availability into `dockerProbe` (settings pane open). */
-  refreshDockerProbe: () => Promise<void>;
+  /** Re-probe Docker availability into `dockerProbe` (settings pane open).
+   *  Returns the probe result so callers can poll until the daemon answers. */
+  refreshDockerProbe: () => Promise<DockerProbe>;
 }
 
 export interface AppearanceSlice {
