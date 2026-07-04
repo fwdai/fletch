@@ -88,7 +88,20 @@ const RUN_TOOLCHAIN_DIRS: &[&str] = &[
 ///
 /// Unlike the agent profile it needs no rpc mailbox or agent state dirs — a
 /// Run process neither speaks RPC nor persists agent transcripts.
-pub fn build_run_profile(writable_root: &Path, home: &Path) -> Result<String> {
+///
+/// `extra_writable` grants additional out-of-worktree paths the specific Run
+/// target needs. The Run panel passes the target's resolved git *common dir*:
+/// a project may write its own git metadata (objects, refs, `worktrees/`
+/// admin data on `git worktree add`), and when the target is itself a linked
+/// worktree that common dir lives outside `writable_root` — so without this a
+/// nested Fletch's `git worktree add` (and later commits) fail closed. For a
+/// normal repo the common dir is already inside `writable_root`, so it's a
+/// harmless duplicate.
+pub fn build_run_profile(
+    writable_root: &Path,
+    home: &Path,
+    extra_writable: &[PathBuf],
+) -> Result<String> {
     let writable_root = canonical(writable_root)?;
     let home = canonical(home)?;
     let writable_root_s = sbpl_string(&writable_root.to_string_lossy());
@@ -105,6 +118,11 @@ pub fn build_run_profile(writable_root: &Path, home: &Path) -> Result<String> {
         RUN_TOOLCHAIN_DIRS
             .iter()
             .map(|d| sbpl_string(&format!("{home_s}/{d}"))),
+    );
+    subpaths.extend(
+        extra_writable
+            .iter()
+            .map(|p| sbpl_string(&p.to_string_lossy())),
     );
     let writable_block = subpaths
         .iter()
@@ -135,6 +153,22 @@ pub fn build_run_profile(writable_root: &Path, home: &Path) -> Result<String> {
 /// and kept off the host's real mailbox root so nested traffic can't touch host
 /// channels.
 pub fn nested_rpc_root(writable_root: &Path) -> PathBuf {
+    nested_state_root("rpc", writable_root)
+}
+
+/// Worktrees root (`$FLETCH_WORKTREES_ROOT`) for a **nested** Fletch launched as
+/// a Run process — the sibling of [`nested_rpc_root`] for the same reason: the
+/// Run profile denies writes to the host's `~/.fletch/worktrees`, so a nested
+/// instance can't create its agents' worktree checkouts there. (The worktree's
+/// git *admin* data lands in the source repo's git common dir, which the Run
+/// profile grants separately — see `build_run_profile`.)
+pub fn nested_worktrees_root(writable_root: &Path) -> PathBuf {
+    nested_state_root("worktrees", writable_root)
+}
+
+/// Shared builder for a nested instance's redirected state root of a given
+/// `kind` (`rpc`, `worktrees`): `<tmp>/fletch-<kind>/<host-pid>/<key>`.
+fn nested_state_root(kind: &str, writable_root: &Path) -> PathBuf {
     // Hash the full path, not a char-sanitized form: sanitizing collides
     // (`my-app` vs `my.app` both → `my-app`). A readable last-component prefix
     // keeps the dir eyeball-able when debugging.
@@ -153,16 +187,16 @@ pub fn nested_rpc_root(writable_root: &Path) -> PathBuf {
     let key = format!("{name}-{:016x}", hasher.finish());
     // Scope by host pid so a concurrently-running Fletch (or the nested Fletch
     // itself, which runs the same startup sweep) can tell our live roots from a
-    // dead instance's leftovers — see `cleanup_nested_rpc_roots`.
-    nested_rpc_base()
+    // dead instance's leftovers — see `cleanup_nested_state_roots`.
+    nested_state_base(kind)
         .join(std::process::id().to_string())
         .join(key)
 }
 
-/// Parent dir holding every host instance's nested mailbox roots (one subdir
+/// Parent dir holding every host instance's nested `kind` roots (one subdir
 /// per host pid).
-fn nested_rpc_base() -> PathBuf {
-    std::env::temp_dir().join("fletch-rpc")
+fn nested_state_base(kind: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("fletch-{kind}"))
 }
 
 /// Best-effort sweep of nested mailbox roots left by *dead* host instances.
@@ -171,10 +205,16 @@ fn nested_rpc_base() -> PathBuf {
 /// Fletch open side-by-side, or our own), which would break its running nested
 /// Fletch mid-read.
 pub fn cleanup_nested_rpc_roots() {
-    cleanup_nested_rpc_roots_in(&nested_rpc_base());
+    cleanup_nested_state_roots_in(&nested_state_base("rpc"));
 }
 
-fn cleanup_nested_rpc_roots_in(base: &Path) {
+/// Sibling of [`cleanup_nested_rpc_roots`] for redirected worktree roots — same
+/// pid-keyed, dead-only reclamation.
+pub fn cleanup_nested_worktrees_roots() {
+    cleanup_nested_state_roots_in(&nested_state_base("worktrees"));
+}
+
+fn cleanup_nested_state_roots_in(base: &Path) {
     let Ok(entries) = std::fs::read_dir(base) else {
         return;
     };
@@ -451,7 +491,7 @@ mod tests {
         std::fs::create_dir_all(&worktree).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_run_profile(&worktree, &home).unwrap();
+        let profile = build_run_profile(&worktree, &home, &[]).unwrap();
         let canonical_worktree = std::fs::canonicalize(&worktree).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
 
@@ -480,7 +520,7 @@ mod tests {
         std::fs::create_dir_all(&worktree).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_run_profile(&worktree, &home).unwrap();
+        let profile = build_run_profile(&worktree, &home, &[]).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         for dir in [".claude", ".codex", ".cursor", ".gemini", ".pi"] {
             let unexpected = format!("(subpath \"{}/{dir}\")", canonical_home.display());
@@ -525,10 +565,40 @@ mod tests {
         // A non-numeric entry isn't ours to reason about — leave it alone.
         std::fs::create_dir_all(base.join("scratch")).unwrap();
 
-        cleanup_nested_rpc_roots_in(base);
+        cleanup_nested_state_roots_in(base);
 
         assert!(base.join(&live).exists(), "live instance root kept");
         assert!(!base.join(&dead).exists(), "dead instance root removed");
         assert!(base.join("scratch").exists(), "non-pid entry left alone");
+    }
+
+    #[test]
+    fn nested_worktrees_root_is_temp_scoped_and_distinct_from_rpc() {
+        let wt = Path::new("/Users/x/.fletch/worktrees/rhone/repo");
+        let root = nested_worktrees_root(wt);
+        // Under the system temp root the Run profile grants, so a nested Fletch
+        // can create its worktree checkouts there.
+        assert!(root.starts_with(std::env::temp_dir().join("fletch-worktrees")));
+        // Same worktree key, different kind → different root (rpc vs worktrees
+        // never share a dir).
+        assert_ne!(root, nested_rpc_root(wt));
+    }
+
+    #[test]
+    fn run_profile_grants_extra_writable_common_dir() {
+        let td = tempfile::tempdir().unwrap();
+        let worktree = td.path().join("repo-worktree");
+        let home = td.path().join("home");
+        let common = td.path().join("source-repo/.git");
+        for p in [&worktree, &home, &common] {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        let canonical_common = std::fs::canonicalize(&common).unwrap();
+
+        let profile = build_run_profile(&worktree, &home, &[canonical_common.clone()]).unwrap();
+        assert!(
+            profile.contains(&format!("(subpath \"{}\")", canonical_common.display())),
+            "run profile should grant the target's git common dir"
+        );
     }
 }

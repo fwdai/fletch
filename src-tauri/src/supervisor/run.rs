@@ -278,7 +278,13 @@ fn sandboxed_run_command(
 ) -> Result<(PathBuf, Vec<String>, Vec<(String, String)>, tempfile::NamedTempFile)> {
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    let profile_text = crate::sandbox::build_run_profile(cwd, &home)?;
+    // Grant the target's git *common dir* so `git worktree add` (and later
+    // commits) can write worktree admin data / objects / refs. For a normal
+    // repo this is `<cwd>/.git`, already inside `writable_root`; for a linked
+    // worktree (the dogfooding case) it's the source repo's real `.git`,
+    // outside `writable_root`, which would otherwise fail closed.
+    let extra_writable: Vec<PathBuf> = run_target_git_common_dir(cwd).into_iter().collect();
+    let profile_text = crate::sandbox::build_run_profile(cwd, &home, &extra_writable)?;
     let profile_file = crate::sandbox::profile_tempfile(&profile_text)?;
     let profile_path = profile_file
         .path()
@@ -293,21 +299,72 @@ fn sandboxed_run_command(
     // sandbox-exec -f <profile> <shell> -lic <cmd>
     let mut args = vec!["-f".to_string(), profile_path, shell_str];
     args.extend(shell_args(cmd));
-    // A nested Fletch (dogfooding) can't reach the host's `~/.fletch/rpc` under
-    // this profile; steer its mailboxes to a sandbox-writable root. Harmless for
-    // any other Run target — nothing but Fletch reads `FLETCH_RPC_ROOT`.
-    let env = vec![(
-        crate::rpc::RPC_ROOT_ENV.to_string(),
-        crate::sandbox::nested_rpc_root(cwd)
-            .to_string_lossy()
-            .into_owned(),
-    )];
+    // A nested Fletch (dogfooding) can't reach the host's `~/.fletch/{rpc,
+    // worktrees}` under this profile; steer both to sandbox-writable roots.
+    // Harmless for any other Run target — nothing but Fletch reads these.
+    let env = vec![
+        (
+            crate::rpc::RPC_ROOT_ENV.to_string(),
+            crate::sandbox::nested_rpc_root(cwd)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            crate::workspace::WORKTREES_ROOT_ENV.to_string(),
+            crate::sandbox::nested_worktrees_root(cwd)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    ];
     Ok((
         PathBuf::from(crate::sandbox::SANDBOX_EXEC),
         args,
         env,
         profile_file,
     ))
+}
+
+/// Resolve the git *common dir* of the Run target `cwd`, canonicalized, so the
+/// Run sandbox can grant writes to it. Returns `None` when `cwd` isn't a git
+/// repo (nothing to grant), git can't be resolved, or the dir can't be
+/// canonicalized (a non-real path wouldn't match the kernel's symlink-resolved
+/// check anyway). Runs synchronously — the profile is assembled off the async
+/// runtime — via the app's resolved git binary (portable-git fallback),
+/// matching every other git call.
+fn run_target_git_common_dir(cwd: &Path) -> Option<PathBuf> {
+    let out = crate::git_dist::std_command(cwd)
+        // Resolve strictly from `cwd`. `std_command` inherits the outer app's
+        // environment, and an ambient GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR
+        // (set by whatever launched Fletch) would override cwd-based discovery —
+        // pointing the probe at an unrelated repo and making us grant the wrong
+        // common dir while the real one stays denied. Clear them.
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+    // `--git-common-dir` is relative to `cwd` for a normal repo (`.git`),
+    // absolute for a linked worktree — make it absolute first.
+    let path = Path::new(&raw);
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    // The sbpl subpath must be the *real* path: the sandbox kernel resolves
+    // symlinks before checking, and macOS $TMPDIR / worktree roots are commonly
+    // symlinked (`/var` -> `/private/var`). If canonicalization fails, a raw
+    // entry likely wouldn't match what the kernel checks, so grant nothing
+    // rather than a bogus subpath that gives false confidence.
+    std::fs::canonicalize(&abs).ok()
 }
 
 fn handle_run_phase_exit(

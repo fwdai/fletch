@@ -172,6 +172,25 @@ pub fn command(dir: &Path) -> tokio::process::Command {
     cmd
 }
 
+/// Synchronous sibling of [`command`] — for the rare caller outside an async
+/// context. The Run sandbox builder resolves the target's git common dir while
+/// assembling the profile (a sync path, before the PTY spawns), so it can't
+/// await. Same resolved binary + env; bare `git` fallback when nothing resolves.
+pub fn std_command(dir: &Path) -> std::process::Command {
+    let mut cmd = match resolve() {
+        Some(bin) => {
+            let mut c = std::process::Command::new(&bin.program);
+            for (k, v) in &bin.env {
+                c.env(k, v);
+            }
+            c
+        }
+        None => std::process::Command::new("git"),
+    };
+    cmd.current_dir(dir);
+    cmd
+}
+
 /// [`command`] without a cwd — for the rare op whose target dir doesn't exist
 /// yet (`git init <path>`).
 pub fn bare_command() -> tokio::process::Command {

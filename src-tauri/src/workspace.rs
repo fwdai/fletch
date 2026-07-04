@@ -1558,11 +1558,22 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
     }
 }
 
+/// Env var overriding the worktrees root (default `~/.fletch/worktrees`). The
+/// Run sandbox forbids writes to the host's `~/.fletch/worktrees`, so a nested
+/// Fletch launched as a Run process (dogfooding: Fletch running Fletch) is
+/// pointed at a sandbox-writable root instead — see
+/// `sandbox::nested_worktrees_root`. Mirrors `rpc::RPC_ROOT_ENV`.
+pub const WORKTREES_ROOT_ENV: &str = "FLETCH_WORKTREES_ROOT";
+
 /// Absolute path to the root holding every agent's worktrees:
 /// `~/.fletch/worktrees/`. Shared by *all* Fletch processes on the machine
 /// (release and dev builds alike — only the database is namespaced per build),
-/// which is why name allocation has to consult it directly.
+/// which is why name allocation has to consult it directly. `$FLETCH_WORKTREES_ROOT`
+/// overrides it when set and non-empty (nested-Fletch Run redirect).
 pub fn worktrees_root() -> Result<PathBuf> {
+    if let Some(root) = std::env::var_os(WORKTREES_ROOT_ENV).filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(root));
+    }
     let home = dirs::home_dir()
         .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     Ok(home.join(".fletch").join("worktrees"))
