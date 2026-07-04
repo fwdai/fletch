@@ -268,13 +268,15 @@ fn cleanup_nested_state_roots_in(base: &Path) {
 /// Whether a process with `pid` currently exists — a signal-0 `kill` probe.
 /// `Err` (ESRCH, or EPERM on a reused pid we don't own) is treated as gone,
 /// which only ever under-reclaims; a live Fletch we own always probes `Ok`.
+/// `pub(crate)` so the docker orphan sweep (`sandbox/docker/cleanup.rs`) can
+/// share the exact liveness semantics instead of duplicating them.
 #[cfg(unix)]
-fn pid_alive(pid: i32) -> bool {
+pub(crate) fn pid_alive(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
 }
 
 #[cfg(not(unix))]
-fn pid_alive(_pid: i32) -> bool {
+pub(crate) fn pid_alive(_pid: i32) -> bool {
     true // can't probe — never reclaim
 }
 

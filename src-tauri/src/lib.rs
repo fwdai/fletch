@@ -544,6 +544,9 @@ pub fn run() {
             // untouched.
             crate::sandbox::cleanup_nested_rpc_roots();
             crate::sandbox::cleanup_nested_worktrees_roots();
+            // Same reclamation for docker containers left by dead instances —
+            // probe-gated and on its own thread, so startup never waits on it.
+            crate::sandbox::docker::sweep_orphans_at_startup();
 
             // Quitting normally goes through `RunEvent::ExitRequested` (below),
             // but a SIGINT (Ctrl-C under `tauri dev`) or SIGTERM (sent by the
