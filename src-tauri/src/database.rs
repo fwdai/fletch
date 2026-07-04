@@ -21,7 +21,12 @@ pub const DB_FILENAME: &str = "data.db";
 /// still have `LEGACY_DB_FILENAME` on disk; `migrate_legacy_db_name` renames it
 /// (and its WAL/SHM sidecars) to `DB_FILENAME` on first launch. Kept as a
 /// separate constant so the one-time migration is self-documenting.
-const LEGACY_DB_FILENAME: &str = "quorum.db";
+pub const LEGACY_DB_FILENAME: &str = "quorum.db";
+
+/// Every on-disk database base name the app may have used, current and legacy.
+/// Fresh-start recovery moves all of these aside so a leftover legacy file can't
+/// be resurrected by `migrate_legacy_db_name` on the retried `init`.
+pub const DB_BASENAMES: &[&str] = &[DB_FILENAME, LEGACY_DB_FILENAME];
 
 /// The SQLite database's WAL/SHM sidecar suffixes. The main file plus these
 /// three names are the complete on-disk footprint that must move together.
@@ -139,13 +144,20 @@ pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
 /// and safe: it only renames when the legacy file exists and the new one does
 /// not, so once migrated (or on a clean install) it is a no-op. We rename rather
 /// than copy — the user's data is never duplicated or deleted.
+///
+/// The main file is moved **last** (sidecars first). The migration's guard keys
+/// off the main file's name, so if we crash mid-rename the main file is still
+/// under the legacy name and the next launch simply re-runs and finishes the
+/// remaining moves. Were the main file moved first, an interruption would leave
+/// `data.db` present (skipping the guard) but its `data.db-wal` still under the
+/// legacy name — opening it would silently drop committed WAL-only rows.
 fn migrate_legacy_db_name(data_dir: &Path) -> Result<()> {
     let legacy_main = data_dir.join(LEGACY_DB_FILENAME);
     let new_main = data_dir.join(DB_FILENAME);
     if !legacy_main.exists() || new_main.exists() {
         return Ok(());
     }
-    for suffix in DB_SIDECAR_SUFFIXES {
+    for suffix in DB_SIDECAR_SUFFIXES.iter().rev() {
         let src = data_dir.join(format!("{LEGACY_DB_FILENAME}{suffix}"));
         if src.exists() {
             std::fs::rename(&src, data_dir.join(format!("{DB_FILENAME}{suffix}")))?;
@@ -584,6 +596,27 @@ mod tests {
         let conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
         let rows = db_select(&conn, "projects", json!({ "name": "marker" })).unwrap();
         assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn interrupted_migration_reruns_and_keeps_wal_with_its_main_file() {
+        // Simulate a crash mid-migration: the sidecar was already renamed to the
+        // new name, but the main file is still under the legacy name (the main
+        // file is moved last). The guard must still fire and finish the move,
+        // leaving `data.db` paired with the `data.db-wal` that carries the
+        // committed-but-uncheckpointed rows.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEGACY_DB_FILENAME), b"main").unwrap();
+        std::fs::write(dir.path().join(format!("{DB_FILENAME}-wal")), b"wal").unwrap();
+
+        migrate_legacy_db_name(dir.path()).unwrap();
+
+        assert!(!dir.path().join(LEGACY_DB_FILENAME).exists());
+        assert_eq!(std::fs::read(dir.path().join(DB_FILENAME)).unwrap(), b"main");
+        assert_eq!(
+            std::fs::read(dir.path().join(format!("{DB_FILENAME}-wal"))).unwrap(),
+            b"wal"
+        );
     }
 
     #[test]

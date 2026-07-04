@@ -74,6 +74,24 @@ mod tests {
         assert!(logs_dir().starts_with(&dir));
         assert_eq!(logs_dir().file_name().unwrap(), "logs");
     }
+
+    #[test]
+    fn recovery_does_not_resurrect_a_leftover_legacy_db() {
+        // A stray `quorum.db` sits next to the live `data.db`. Fresh-start
+        // recovery must move BOTH aside; otherwise the retried init() would
+        // rename the legacy file back into place and reopen it.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(database::DB_FILENAME), b"current").unwrap();
+        std::fs::write(dir.path().join(database::LEGACY_DB_FILENAME), b"legacy").unwrap();
+
+        move_db_aside(dir.path()).unwrap();
+
+        // Neither base name survives, so init() starts truly fresh.
+        assert!(!dir.path().join(database::DB_FILENAME).exists());
+        assert!(!dir.path().join(database::LEGACY_DB_FILENAME).exists());
+        database::init(dir.path()).unwrap();
+        assert!(dir.path().join(database::DB_FILENAME).exists());
+    }
 }
 
 /// Number of daily log files to keep. The rolling appender deletes the oldest
@@ -230,16 +248,23 @@ fn db_error_message(err: &crate::error::Error) -> (&'static str, String) {
 /// Rename the database and its WAL/SHM sidecars out of the way so a fresh one
 /// can be created, preserving the old files as timestamped backups. We suffix,
 /// never delete — the user's data is always recoverable.
+///
+/// We move both the current (`data.db`) and legacy (`quorum.db`) base names
+/// aside. Otherwise a leftover legacy file would survive the fresh start and be
+/// renamed back into place by `migrate_legacy_db_name` on the retried `init`,
+/// reopening the very database recovery was meant to abandon.
 fn move_db_aside(data_dir: &std::path::Path) -> crate::error::Result<()> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    for suffix in database::DB_SIDECAR_SUFFIXES {
-        let name = format!("{}{suffix}", database::DB_FILENAME);
-        let src = data_dir.join(&name);
-        if src.exists() {
-            std::fs::rename(&src, data_dir.join(format!("{name}.moved-{stamp}")))?;
+    for base in database::DB_BASENAMES {
+        for suffix in database::DB_SIDECAR_SUFFIXES {
+            let name = format!("{base}{suffix}");
+            let src = data_dir.join(&name);
+            if src.exists() {
+                std::fs::rename(&src, data_dir.join(format!("{name}.moved-{stamp}")))?;
+            }
         }
     }
     tracing::warn!("moved database aside; starting fresh");
