@@ -40,6 +40,7 @@ import {
   parsePaneWidth,
   parseProviderFlags,
   parseProviderPathOverrides,
+  parseSandboxEngine,
   type ThemeMode,
   type WorkspaceView,
 } from "@/storage/preferences";
@@ -124,6 +125,9 @@ const hydrateSettings = async (set: AppSet) => {
       // switch a caller to `setSetting("telemetryEnabled", …)`: that's a
       // different key and the toggle would silently stop working.
       telemetryEnabled: s.telemetry_enabled !== "false",
+      // Backend-owned like telemetry_enabled (snake_case, written by the
+      // `set_sandbox_engine` Rust command) — read it, never setSetting it.
+      sandboxEngine: parseSandboxEngine(s.sandbox_engine),
       // Auto-open the welcome tour for new users (no completion flag yet).
       onboardingOpen: s.onboardingComplete !== "true",
       // Panel layout — restore the user's last splitter widths and collapse state.

@@ -3,11 +3,32 @@ use std::sync::Arc;
 
 use crate::error::Result;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineKind {
     SandboxExec,
     Docker,
+}
+
+impl EngineKind {
+    /// The `sandbox_engine` settings-value spelling for this kind. Shared with
+    /// the frontend's `SandboxEngine` type, so both sides agree on the wire
+    /// strings.
+    pub fn as_setting(self) -> &'static str {
+        match self {
+            Self::SandboxExec => "sandbox-exec",
+            Self::Docker => "docker",
+        }
+    }
+
+    /// Parse a `sandbox_engine` settings value. `None` for unknown values so
+    /// callers pick their own fallback (spawn paths default to seatbelt).
+    pub fn from_setting(value: &str) -> Option<Self> {
+        match value {
+            "sandbox-exec" => Some(Self::SandboxExec),
+            "docker" => Some(Self::Docker),
+            _ => None,
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -109,5 +130,23 @@ pub trait SandboxEngine: Send + Sync {
     /// (Docker); the default defers to the session's own child handle.
     fn is_alive(&self, _plan: &KillPlan) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EngineKind;
+
+    #[test]
+    fn engine_kind_setting_round_trips() {
+        for kind in [EngineKind::SandboxExec, EngineKind::Docker] {
+            assert_eq!(EngineKind::from_setting(kind.as_setting()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn engine_kind_rejects_unknown_setting_values() {
+        assert_eq!(EngineKind::from_setting("podman"), None);
+        assert_eq!(EngineKind::from_setting(""), None);
     }
 }

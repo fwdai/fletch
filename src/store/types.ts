@@ -4,6 +4,7 @@ import type { AgentUsage } from "@/adapters/usage";
 import type {
   AgentRecord,
   AgentView,
+  DockerProbe,
   GhStatus,
   GitState,
   PrChecks,
@@ -21,6 +22,7 @@ import type { CustomAgent, NewCustomAgent } from "@/storage/customAgents";
 import type {
   Density,
   FeatureFlags,
+  SandboxEngine,
   SettingsIntent,
   SettingsSection,
   ThemeMode,
@@ -349,6 +351,20 @@ export interface AccountSlice {
   setTelemetryEnabled: (enabled: boolean) => void;
 }
 
+export interface SandboxSlice {
+  /** Engine new agents are stamped with. Mirrors the backend-owned
+   *  `sandbox_engine` setting; existing agents keep their stamped engine. */
+  sandboxEngine: SandboxEngine;
+  /** Latest Docker availability probe; `null` until the first probe lands. */
+  dockerProbe: DockerProbe | null;
+
+  /** Persist a new engine choice via the backend, which validates docker
+   *  against a live daemon probe — reverts the store on refusal. */
+  setSandboxEngine: (engine: SandboxEngine) => Promise<void>;
+  /** Re-probe Docker availability into `dockerProbe` (settings pane open). */
+  refreshDockerProbe: () => Promise<void>;
+}
+
 export interface AppearanceSlice {
   // ── appearance & feature flags ────────────────────────────────────────────
   theme: ThemeMode;
@@ -475,6 +491,7 @@ export type AppState = AppSlice &
   AccountSlice &
   AppearanceSlice &
   ProvidersSlice &
-  CustomAgentsSlice;
+  CustomAgentsSlice &
+  SandboxSlice;
 
 export type SliceCreator<T> = StateCreator<AppState, [], [], T>;

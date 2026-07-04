@@ -387,6 +387,60 @@ fn track_app_opened() {
     telemetry::track("app_opened", json!({}));
 }
 
+/// The persisted sandbox engine selection (`"sandbox-exec"` | `"docker"`).
+/// Reads the in-memory mirror seeded at startup and kept in sync by
+/// `set_sandbox_engine`, so no DB handle is needed.
+#[tauri::command]
+fn get_sandbox_engine() -> String {
+    sandbox::selected_engine_kind().as_setting().to_string()
+}
+
+/// Change the sandbox engine stamped onto *new* agents. Docker is validated
+/// against a live daemon probe before being accepted, so a success here means
+/// the choice is actionable. Persists to `settings` and updates the in-memory
+/// mirror — like `set_agent_bin_override` keeps the DB and process state in
+/// sync. Existing agents are unaffected: each keeps the engine stamped on its
+/// record at creation.
+#[tauri::command]
+async fn set_sandbox_engine(
+    engine: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    let kind = sandbox::EngineKind::from_setting(&engine)
+        .ok_or_else(|| format!("unknown sandbox engine: {engine}"))?;
+    if kind == sandbox::EngineKind::Docker {
+        // `spawn_blocking`: the probe can block up to its 2s timeout.
+        let probe = tauri::async_runtime::spawn_blocking(sandbox::docker_availability)
+            .await
+            .map_err(|e| e.to_string())?;
+        match probe {
+            sandbox::DockerAvailability::Available { .. } => {}
+            sandbox::DockerAvailability::NotInstalled => {
+                return Err("Docker is not installed — install Docker Desktop first.".into())
+            }
+            sandbox::DockerAvailability::DaemonDown => {
+                return Err("Docker isn't running — start Docker Desktop first.".into())
+            }
+        }
+    }
+    {
+        let conn = state.lock();
+        database::set_setting(&conn, sandbox::ENGINE_SETTING, kind.as_setting())
+            .map_err(|e| e.to_string())?;
+    }
+    sandbox::set_selected_engine_kind(kind);
+    Ok(())
+}
+
+/// Probe the local Docker installation for the settings UI. Async +
+/// `spawn_blocking` because the probe can block up to its 2s timeout.
+#[tauri::command]
+async fn probe_docker_engine() -> Result<sandbox::DockerAvailability, String> {
+    tauri::async_runtime::spawn_blocking(sandbox::docker_availability)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Error/crash reporting. The DSN is baked in at build time via
@@ -463,6 +517,17 @@ pub fn run() {
             // resolution (deep in spawn/probe paths, with no DB handle) can
             // honor user-set custom paths without touching the DB each time.
             bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&db.lock()));
+
+            // Seed the in-memory sandbox engine selection (mirror of the
+            // `sandbox_engine` setting) so spawn-time engine resolution —
+            // deep in agent code with no DB handle — honors the user's
+            // choice. Missing/unknown values keep the sandbox-exec default.
+            if let Some(kind) = database::get_setting(&db.lock(), sandbox::ENGINE_SETTING)
+                .as_deref()
+                .and_then(sandbox::EngineKind::from_setting)
+            {
+                sandbox::set_selected_engine_kind(kind);
+            }
 
             // Unified git resolution: point the portable-install root at app
             // data, wire the fallback commit identity to the signed-in
@@ -591,6 +656,9 @@ pub fn run() {
             set_agent_bin_override,
             set_telemetry_enabled,
             track_app_opened,
+            get_sandbox_engine,
+            set_sandbox_engine,
+            probe_docker_engine,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::get_agent_diff_stats,
