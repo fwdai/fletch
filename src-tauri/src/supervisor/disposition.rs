@@ -361,7 +361,8 @@ async fn teardown_agent_worktrees(agent_id: &str, repos: &[TrackedRepo], op: &st
         // settings key: a dev-flag flip between spawn and teardown must not
         // run the wrong arm. A missing/empty dir defaults to the worktree
         // arm, whose prune+remove degrade to the pre-existing warnings.
-        let mode = provision::detect_mode(&worktree).unwrap_or(WorkspaceMode::Worktree);
+        let detected = provision::detect_mode(&worktree);
+        let mode = detected.unwrap_or(WorkspaceMode::Worktree);
         let spec = CheckoutSpec {
             source_repo: &repo.repo_path,
             base_ref: "HEAD", // unused by teardown
@@ -375,7 +376,14 @@ async fn teardown_agent_worktrees(agent_id: &str, repos: &[TrackedRepo], op: &st
         // in the source repo, so `branch -D` here would force-delete an
         // unrelated same-named branch in the user's source repo — losing the
         // pointer to their unpushed work.
-        if mode == WorkspaceMode::Worktree {
+        //
+        // Gate on the *positive* worktree detection, not `mode`: ambiguous
+        // disk state (`detect_mode` == `None` — the `.git` is already gone, as
+        // happens for a half-torn-down clone) falls back to the worktree arm
+        // for the harmless prune+remove, but must never reach `branch -D`. A
+        // torn-down clone would otherwise force-delete an unrelated same-named
+        // branch in the user's source repo.
+        if detected == Some(WorkspaceMode::Worktree) {
             if let Some(branch) = &repo.branch {
                 if let Err(e) = git::branch_delete(&repo.repo_path, branch).await {
                     tracing::warn!(%branch, error = %e, op, "branch delete failed");
