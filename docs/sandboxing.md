@@ -131,11 +131,20 @@ pub struct LaunchPlan {
     pub prefix_args: Vec<String>,  // seatbelt: ["-f", profile, agent_bin]; docker: run argv incl. image + agent_bin
     pub env: Vec<(String, String)>,        // set on the spawned CLI process
     pub keepalive: Keepalive,      // parked on the session struct
-    pub kill: KillPlan,
+    pub kill: KillHandle,
 }
 
 pub enum Keepalive { None, Profile(tempfile::NamedTempFile) }
 pub enum KillPlan { ProcessGroup, Container { name: String } }
+
+/// Teardown bound at launch. Sessions call kill()/is_alive() and never
+/// inspect the variant; the Engine variant captures the engine that produced
+/// the plan, so teardown never consults current_engine() — a session must be
+/// torn down by the engine that launched it even after the setting changes.
+pub enum KillHandle {
+    ProcessGroup,                                            // session pgid kill is the whole story
+    Engine { engine: Arc<dyn SandboxEngine>, plan: KillPlan }, // docker etc.
+}
 
 pub trait SandboxEngine: Send + Sync {
     fn kind(&self) -> EngineKind;
@@ -143,12 +152,18 @@ pub trait SandboxEngine: Send + Sync {
     /// docker, in-image name). Agent CLI args are appended by the caller
     /// after `prefix_args`, i.e. final argv = prefix_args ++ agent_args.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan>;
+    /// Engine-side teardown/liveness for a plan this engine produced (reached
+    /// only via KillHandle::Engine). Defaults: no-op kill, is_alive = true.
+    /// Docker overrides both in B2 — containers die independently of the host.
+    fn kill(&self, plan: &KillPlan) -> Result<()> { Ok(()) }
+    fn is_alive(&self, plan: &KillPlan) -> bool { true }
 }
 ```
 
 2. `SandboxExecEngine::launch_agent` = today's `prepare_sandbox` +
    `["-f", profile_path, agent_bin]`, `env = []`, `Keepalive::Profile`,
-   `KillPlan::ProcessGroup`. Honors `CLAUDE_CONFIG_DIR` exactly as
+   `KillHandle::ProcessGroup` (the trait's default kill/is_alive suffice —
+   seatbelt overrides neither). Honors `CLAUDE_CONFIG_DIR` exactly as
    `agent.rs prepare_sandbox` does now.
 3. Refactor `agent.rs`: `prepare_pty_args`/`prepare_managed_args` return only
    the **agent CLI args** (claude flags); `spawn_pty`, `spawn_pty_native`,
@@ -157,10 +172,12 @@ pub trait SandboxEngine: Send + Sync {
    `args = plan.prefix_args ++ agent_args`, `env = plan.env ++ rpc_env(...)`.
    Replace the `_profile_file: Option<NamedTempFile>` fields on
    `PtyAgent`/`ManagedAgent` and `ExecSpawn.profile` with `Keepalive`
-   (and store `KillPlan` next to it — used in B2, plumb it now).
-4. Sessions: add `kill_plan: KillPlan` to `PtySpawn`/`ManagedSpawn`/`ExecSpawn`
-   (default `ProcessGroup`); kill paths match on it — `ProcessGroup` arm is the
-   existing code, `Container` arm is `unreachable!` until B2 replaces it.
+   (and store the `KillHandle` next to it — used in B2, plumb it now).
+4. Sessions: add `kill_plan: KillHandle` to `PtySpawn`/`ManagedSpawn`/`ExecSpawn`;
+   kill paths call `self.kill_plan.kill()` before the existing process-group
+   escalation and never inspect the variant — adding an engine touches no
+   session code. `current_engine()` is resolved once via `OnceLock` and is
+   never consulted at kill time.
 5. Do **not** touch `supervisor/run.rs` beyond import paths.
 
 **Acceptance:**
@@ -406,7 +423,7 @@ env (on the docker CLI process): HOME, FLETCH_RPC_DIR, TERM=xterm-256color,
   COLORTERM=truecolor, plus auth vars resolved by D1 (until D1: forward
   ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN from login_shell_env if present)
 keepalive: Keepalive::None
-kill: KillPlan::Container { name }
+kill: KillHandle::Engine { engine: <self>, plan: KillPlan::Container { name } }
 ```
 
    `ensure_image` (B1) is called before first launch per app run; surface
@@ -415,11 +432,13 @@ kill: KillPlan::Container { name }
    instead of `resolve_claude()`; `CLAUDE_CONFIG_DIR`: if the host sets a
    non-default one, mount it too (same rules as seatbelt's
    `claude_config_extra`) and forward the var.
-3. Kill path (`KillPlan::Container` arms stubbed in A1): on kill, spawn
-   `docker kill -s TERM <name>`; after the existing grace period escalate
-   `docker kill <name>`; then the existing local process-group kill for the
-   docker CLI itself. On session exit (normal or killed), best-effort
-   `docker rm -f <name>` (usually a no-op with `--rm`).
+3. Kill/liveness: override the trait's `kill` and `is_alive` defaults. `kill`:
+   spawn `docker kill -s TERM <name>`; after the existing grace period
+   escalate `docker kill <name>`; then the existing local process-group kill
+   for the docker CLI itself. `is_alive`: `docker inspect -f '{{.State.Running}}'`
+   — containers die independently of the host (daemon stop, OOM), and this is
+   the health surface the UI polls. On session exit (normal or killed),
+   best-effort `docker rm -f <name>` (usually a no-op with `--rm`).
 4. Exit/error mapping: docker CLI exit code 125 (daemon error) / 126/127
    (image problems) → distinct, user-readable `PtyExit`/`ExecExit` messages
    ("Docker daemon stopped", "sandbox image missing claude"), not raw codes.

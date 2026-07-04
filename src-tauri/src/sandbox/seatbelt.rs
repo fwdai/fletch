@@ -24,7 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::engine::{AgentLaunchCtx, EngineKind, Keepalive, KillPlan, LaunchPlan, SandboxEngine};
+use super::engine::{AgentLaunchCtx, EngineKind, Keepalive, KillHandle, LaunchPlan, SandboxEngine};
 use crate::error::{Error, Result};
 
 pub struct SandboxExecEngine;
@@ -52,23 +52,12 @@ impl SandboxEngine for SandboxExecEngine {
             program: PathBuf::from(SANDBOX_EXEC),
             prefix_args: vec!["-f".into(), profile_path, agent_bin.to_string()],
             env: vec![],
-            keepalive: Keepalive::Profile { file: Some(profile_file) },
-            kill: KillPlan::ProcessGroup,
+            keepalive: Keepalive::Profile(profile_file),
+            // sandbox-exec is a plain process wrapper — the session's own
+            // process-group escalation tears everything down; the trait's
+            // default no-op kill/is_alive apply.
+            kill: KillHandle::ProcessGroup,
         })
-    }
-
-    fn kill(&self, plan: &KillPlan) -> crate::error::Result<()> {
-        match plan {
-            KillPlan::ProcessGroup => Ok(()),
-            KillPlan::Container { .. } => unreachable!("Docker engine not yet implemented"),
-        }
-    }
-
-    fn is_alive(&self, plan: &KillPlan) -> bool {
-        match plan {
-            KillPlan::ProcessGroup => true,
-            KillPlan::Container { .. } => unreachable!("Docker engine not yet implemented"),
-        }
     }
 }
 
@@ -110,16 +99,16 @@ fn standard_state_dirs(home_s: &str) -> Vec<String> {
 /// profile: a running project legitimately needs its toolchain to write here,
 /// whereas an agent editing source does not.
 const RUN_TOOLCHAIN_DIRS: &[&str] = &[
-    ".cargo",          // Rust: registry, git checkouts, installed bins
-    ".rustup",         // Rust: downloaded toolchains (rust-toolchain.toml)
-    "go",              // Go: GOPATH — module cache (pkg/mod) + installed bins
-    ".bun",            // Bun: global install cache
-    "Library/pnpm",    // pnpm: content-addressable store (macOS default)
-    ".bundle",         // Bundler: config + cache
-    ".gem",            // RubyGems: default gem home
-    ".rbenv",          // rbenv: shims + installed Ruby versions
-    ".rvm",            // rvm: alternative Ruby version manager
-    "Library/Python",  // pip --user / no-venv user site-packages
+    ".cargo",         // Rust: registry, git checkouts, installed bins
+    ".rustup",        // Rust: downloaded toolchains (rust-toolchain.toml)
+    "go",             // Go: GOPATH — module cache (pkg/mod) + installed bins
+    ".bun",           // Bun: global install cache
+    "Library/pnpm",   // pnpm: content-addressable store (macOS default)
+    ".bundle",        // Bundler: config + cache
+    ".gem",           // RubyGems: default gem home
+    ".rbenv",         // rbenv: shims + installed Ruby versions
+    ".rvm",           // rvm: alternative Ruby version manager
+    "Library/Python", // pip --user / no-venv user site-packages
 ];
 
 /// Build the SBPL profile for a **Run-panel** process (setup/dev command).
@@ -395,8 +384,7 @@ fn sbpl_string(s: &str) -> String {
 }
 
 fn canonical(p: &Path) -> Result<PathBuf> {
-    std::fs::canonicalize(p)
-        .map_err(|e| Error::Other(format!("canonicalize {}: {e}", p.display())))
+    std::fs::canonicalize(p).map_err(|e| Error::Other(format!("canonicalize {}: {e}", p.display())))
 }
 
 /// Resolve symlinks in the longest existing prefix of `p`, then re-append the
@@ -493,7 +481,9 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let resolved = resolve_existing_prefix(&link.join("not-created-yet"));
-        let expected = std::fs::canonicalize(&real).unwrap().join("not-created-yet");
+        let expected = std::fs::canonicalize(&real)
+            .unwrap()
+            .join("not-created-yet");
         assert_eq!(resolved, expected);
     }
 

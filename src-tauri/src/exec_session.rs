@@ -26,12 +26,13 @@ use serde_json::Value;
 
 use crate::child_io;
 use crate::error::{Error, Result};
-use crate::sandbox::{Keepalive, KillPlan};
+use crate::sandbox::{Keepalive, KillHandle};
 
 type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
 type SessionIdCb = Arc<dyn Fn(String) + Send + Sync>;
 type ExitCb = Arc<dyn Fn(ExecExit) + Send + Sync>;
-type ArgsBuilder = Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
+type ArgsBuilder =
+    Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
 type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 
 pub struct ExecSpawn {
@@ -60,7 +61,7 @@ pub struct ExecSpawn {
     /// child process, layered on top of the inherited environment.
     pub env: Vec<(String, String)>,
     /// How to terminate a turn's child (chosen by the sandbox engine).
-    pub kill_plan: KillPlan,
+    pub kill_plan: KillHandle,
 }
 
 pub struct ExecSession {
@@ -72,7 +73,7 @@ pub struct ExecSession {
     cwd: PathBuf,
     stdout_is_json: bool,
     env: Vec<(String, String)>,
-    kill_plan: KillPlan,
+    kill_plan: KillHandle,
     session_id: Arc<Mutex<Option<String>>>,
     model: Option<String>,
     child: Arc<Mutex<Option<Child>>>,
@@ -111,7 +112,10 @@ impl ExecSession {
         cb: ExecCallbacks<F, G, H>,
     ) -> Self
     where
-        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync + 'static,
+        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String>
+            + Send
+            + Sync
+            + 'static,
         I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
@@ -138,7 +142,12 @@ impl ExecSession {
         }
     }
 
-    pub fn send_user_message(&self, text: &str, attachments: &[String], thinking: Option<&str>) -> Result<()> {
+    pub fn send_user_message(
+        &self,
+        text: &str,
+        attachments: &[String],
+        thinking: Option<&str>,
+    ) -> Result<()> {
         // Claim this turn's sequence number first, so a superseded turn's
         // reap thread sees it's no longer current and stays quiet.
         let seq = self.turn_seq.fetch_add(1, Ordering::SeqCst) + 1;
@@ -309,7 +318,7 @@ impl ExecSession {
     }
 
     pub fn kill(&self) -> Result<()> {
-        crate::sandbox::current_engine().kill(&self.kill_plan)?;
+        self.kill_plan.kill()?;
         if let Some(mut child) = self.child.lock().take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -372,7 +381,12 @@ mod tests {
     }
 
     // A codex-style config: id from `thread.started`, end on `turn.completed`.
-    fn codex_args(prompt: &str, session_id: Option<&str>, _thinking: Option<&str>, model: Option<&str>) -> Vec<String> {
+    fn codex_args(
+        prompt: &str,
+        session_id: Option<&str>,
+        _thinking: Option<&str>,
+        model: Option<&str>,
+    ) -> Vec<String> {
         let mut a = vec!["exec".to_string()];
         if let Some(id) = session_id {
             a.push("resume".into());
@@ -419,7 +433,7 @@ mod tests {
                 model: None,
                 stdout_is_json: true,
                 env: vec![],
-                kill_plan: KillPlan::ProcessGroup,
+                kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -478,7 +492,7 @@ mod tests {
                 model: Some("gpt-5.2-codex".into()),
                 stdout_is_json: true,
                 env: vec![],
-                kill_plan: KillPlan::ProcessGroup,
+                kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -517,7 +531,7 @@ mod tests {
                 model: None,
                 stdout_is_json: true,
                 env: vec![],
-                kill_plan: KillPlan::ProcessGroup,
+                kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -534,7 +548,11 @@ mod tests {
         let exit = xrx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(!exit.success);
         assert!(!exit.interrupted);
-        assert!(exit.message.contains("exit status: 127"), "{}", exit.message);
+        assert!(
+            exit.message.contains("exit status: 127"),
+            "{}",
+            exit.message
+        );
         assert!(exit.message.contains("node missing"), "{}", exit.message);
     }
 
@@ -555,7 +573,10 @@ mod tests {
 
         // Holding a write fd to the script makes exec() return ETXTBSY, so the
         // spawn loop keeps retrying (child slot empty) until we drop it.
-        let busy_fd = std::fs::OpenOptions::new().write(true).open(&script).unwrap();
+        let busy_fd = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&script)
+            .unwrap();
 
         let (xtx, xrx) = mpsc::channel();
         let session = ExecSession::new(
@@ -568,7 +589,7 @@ mod tests {
                 model: None,
                 stdout_is_json: true,
                 env: vec![],
-                kill_plan: KillPlan::ProcessGroup,
+                kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
             codex_id,
@@ -597,6 +618,9 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("turn never reported exit — pre-spawn interrupt was dropped");
         assert!(exit.interrupted, "interrupt was not honored: {exit:?}");
-        assert!(!exit.success, "interrupted turn should not report success: {exit:?}");
+        assert!(
+            !exit.success,
+            "interrupted turn should not report success: {exit:?}"
+        );
     }
 }
