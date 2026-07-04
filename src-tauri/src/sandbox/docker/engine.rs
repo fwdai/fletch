@@ -149,9 +149,14 @@ impl SandboxEngine for DockerEngine {
         let name = container_name(ctx.agent_id);
         let claude_config_dir = nondefault_claude_config_dir(ctx.home);
 
-        // Make sure the ~/.claude mount source exists so Docker doesn't
-        // create it (first run on a machine that never ran claude).
+        // Make sure the mount sources exist so Docker doesn't create them with
+        // daemon-owned (root) permissions — or fail the launch outright — on a
+        // first run that never wrote them. Covers ~/.claude and, when set, a
+        // non-default CLAUDE_CONFIG_DIR carrying claude's config/auth.
         let _ = std::fs::create_dir_all(ctx.home.join(".claude"));
+        if let Some(dir) = &claude_config_dir {
+            let _ = std::fs::create_dir_all(dir);
+        }
 
         let prefix_args = run_args(&RunSpec {
             interactive: ctx.interactive,
@@ -404,14 +409,16 @@ fn container_gone_within(name: &str, budget: Duration) -> bool {
 }
 
 /// User-readable meanings for the docker CLI's reserved exit codes; other
-/// codes are the contained agent's own and pass through unmapped. (An agent
-/// exiting 126/127 itself is indistinguishable and accepted — the message
-/// still points at the right layer for the overwhelmingly common cause.)
+/// codes are the contained agent's own and pass through unmapped. `docker run`
+/// relays the agent's own exit status, so a `claude` that starts fine and later
+/// exits 125/126/127 is indistinguishable from a launcher/image failure — the
+/// messages name the likely Docker-layer cause but flag the agent-exit
+/// possibility so they don't mislead when the container did launch.
 fn describe_exit_code(code: i32) -> Option<String> {
     let msg = match code {
-        125 => "Docker could not start the sandbox container — the daemon reported an error. Is Docker Desktop still running?",
-        126 => "The sandbox image cannot execute the agent binary — `claude` exists in the image but is not runnable.",
-        127 => "The sandbox image has no `claude` on its PATH. If you set a custom docker_image, it must include Claude Code.",
+        125 => "Exit 125: Docker could not start the sandbox container — the daemon reported an error (or the agent itself exited 125). Is Docker Desktop still running?",
+        126 => "Exit 126: the agent binary in the sandbox image is present but not runnable (or the agent itself exited 126). If you set a custom docker_image, check its `claude`.",
+        127 => "Exit 127: no `claude` on the sandbox image's PATH (or the agent itself exited 127). A custom docker_image must include Claude Code.",
         _ => return None,
     };
     Some(msg.to_string())
@@ -568,6 +575,11 @@ mod tests {
         assert!(missing.contains("no `claude`"), "{missing}");
         let distinct: std::collections::HashSet<_> = [&daemon, &not_exec, &missing].into();
         assert_eq!(distinct.len(), 3);
+        // Each hedges: docker relays the agent's own status, so these codes can
+        // originate inside the container — the message must not over-claim.
+        for msg in [&daemon, &not_exec, &missing] {
+            assert!(msg.contains("agent itself exited"), "must hedge: {msg}");
+        }
         for code in [0, 1, 2, 124, 128, 130, 137, 143] {
             assert_eq!(
                 describe_exit_code(code),
