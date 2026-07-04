@@ -5,6 +5,7 @@ import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
+import { EngineBadge } from "@/components/ui/EngineBadge";
 import { lookupModel } from "@/data/modelCatalog";
 import { providerChip, providerLabel } from "@/data/providers";
 import type { DraftAgent } from "@/store";
@@ -171,6 +172,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={14} />
           )}
         </span>
+        <EngineBadge engine={agent.sandbox_engine} />
         {runLive && (
           <span
             className="ag-run tip"

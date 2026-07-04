@@ -59,13 +59,52 @@ export function Workspace() {
   );
 }
 
+/** Classify a docker agent's crash reason so the banner can offer the right
+ *  recovery action. Keys off the backend's own error strings (engine exit-code
+ *  mapping + launch/build errors in sandbox/docker, and the D1 auth CTA):
+ *   - "docker-down": daemon stopped / not installed / build couldn't connect →
+ *     "Start Docker Desktop".
+ *   - "image":       a bad image (missing/broken `claude`, exit 126/127) →
+ *     point at the sandbox settings to fix `docker_image`.
+ *   - "auth":        no Anthropic credentials in the container → connect Claude.
+ *  Order matters: daemon-down is checked first (its message also mentions the
+ *  image). Returns null for non-docker crashes (the plain banner). */
+function dockerCrashKind(msg: string | null | undefined): "docker-down" | "image" | "auth" | null {
+  if (!msg) return null;
+  const m = msg.toLowerCase();
+  if (
+    m.includes("docker desktop") ||
+    m.includes("docker daemon") ||
+    m.includes("docker isn't running") ||
+    m.includes("docker binary not found") ||
+    m.includes("is docker installed") ||
+    m.includes("preparing the docker sandbox image failed")
+  ) {
+    return "docker-down";
+  }
+  if (
+    m.includes("connect claude for containers") ||
+    m.includes("setup-token") ||
+    m.includes("no anthropic credentials") ||
+    m.includes("not authenticated")
+  ) {
+    return "auth";
+  }
+  if (m.includes("docker_image") || m.includes("sandbox image")) return "image";
+  return null;
+}
+
 /** Shown when an agent's process exited with an error. Surfaces the crash
  *  reason (otherwise only a red dot in the sidebar) and a Resume action —
  *  both already captured on the record / available in the store, just never
  *  rendered. Sits under the header so the transcript leading up to the crash
- *  stays visible. */
+ *  stays visible. Docker crashes additionally get a targeted recovery action
+ *  (start the daemon / fix the image / connect Claude). */
 function CrashBanner({ agent }: { agent: AgentRecord }) {
   const resume = useAppStore((s) => s.resume);
+  const startDockerDesktop = useAppStore((s) => s.startDockerDesktop);
+  const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
+  const dockerKind = dockerCrashKind(agent.last_error);
   // Guard against a double-click firing two concurrent resumes: status stays
   // "error" until the backend's status event lands, so the banner (and button)
   // linger through that window. `resume` catches internally, so on success the
@@ -75,9 +114,35 @@ function CrashBanner({ agent }: { agent: AgentRecord }) {
   return (
     <div className="crash-banner flex-center" role="alert">
       <div className="crash-text">
-        <span className="crash-title">Agent stopped unexpectedly</span>
+        <span className="crash-title">
+          {dockerKind === "docker-down"
+            ? "Docker isn't available"
+            : dockerKind === "image"
+              ? "Sandbox image problem"
+              : dockerKind === "auth"
+                ? "Claude isn't connected for containers"
+                : "Agent stopped unexpectedly"}
+        </span>
         {agent.last_error && <span className="crash-detail">{agent.last_error}</span>}
       </div>
+      {dockerKind === "docker-down" && (
+        <Button variant="outline" onClick={() => void startDockerDesktop()}>
+          <Icon name="play" size={12} />
+          Start Docker Desktop
+        </Button>
+      )}
+      {dockerKind === "image" && (
+        <Button variant="outline" onClick={() => openSettingsScreen("experimental")}>
+          <Icon name="settings" size={12} />
+          Sandbox settings
+        </Button>
+      )}
+      {dockerKind === "auth" && (
+        <Button variant="outline" onClick={() => openSettingsScreen("general")}>
+          <Icon name="cube" size={12} />
+          Connect Claude for containers
+        </Button>
+      )}
       <Button
         variant="outline"
         disabled={resuming}

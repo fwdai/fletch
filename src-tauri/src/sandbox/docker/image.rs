@@ -17,6 +17,7 @@ use std::time::Duration;
 use crate::error::Result;
 
 use super::cli;
+use super::progress::{self, BuildEvent};
 
 /// Progress sink for image builds: called once per docker output line.
 /// Slice C2 wires this to UI events; until then callers pass `&|_| {}` or a
@@ -144,7 +145,26 @@ fn ensure_image_with(
 
     let args = build_args(tag, ctx.path());
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    cli::run_docker_streaming(&args, BUILD_TIMEOUT, on_progress)?;
+    // Broadcast the build lifecycle to the UI (slice C2). `Started`/`Finished`/
+    // `Failed` fire only here, where a build actually runs (a cached image
+    // returns above without emitting), so the toast appears only for real
+    // builds. Each output line is forwarded alongside the caller's own sink so
+    // the tracing forwarder / test counter keep working unchanged.
+    progress::emit(BuildEvent::Started);
+    let forward = |line: &str| {
+        on_progress(line);
+        progress::emit(BuildEvent::Line {
+            line: line.to_string(),
+        });
+    };
+    let result = cli::run_docker_streaming(&args, BUILD_TIMEOUT, &forward);
+    match &result {
+        Ok(()) => progress::emit(BuildEvent::Finished),
+        Err(e) => progress::emit(BuildEvent::Failed {
+            error: e.to_string(),
+        }),
+    }
+    result?;
     tracing::info!(tag, "agent docker image built");
     Ok(())
 }

@@ -166,3 +166,23 @@
   gap: 6px;
   justify-content: flex-end;
 }
+
+/* Docker image-build toast — reuses the update-toast chrome but anchors
+   bottom-left so it never overlaps a concurrent update toast (bottom-right). */
+.docker-build-toast {
+  right: auto;
+  left: 16px;
+  transform-origin: bottom left;
+}
+.docker-build-toast > svg {
+  color: var(--info);
+}
+/* The streamed build line: a single truncated row of docker output. */
+.docker-build-line {
+  max-height: 2.6em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+}

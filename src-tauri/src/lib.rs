@@ -493,6 +493,46 @@ async fn clear_container_auth_token(state: tauri::State<'_, DbState>) -> Result<
     Ok(())
 }
 
+/// Persist the docker launch knobs (`docker_image` override + `docker_memory` /
+/// `docker_cpus` limits) and update the in-process mirror the spawn path reads,
+/// so a change applies to the next docker spawn without a restart. Blank values
+/// clear the setting (the launch path falls back to its defaults). Same
+/// persist-then-mirror shape as `set_sandbox_engine` — the mirror
+/// (`sandbox::docker::LaunchSettings`) is the whole struct, so all three are
+/// written together.
+#[tauri::command]
+async fn set_docker_launch_settings(
+    image: Option<String>,
+    memory: Option<String>,
+    cpus: Option<String>,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    // Blank → None: a cleared field must not be stored as a launch override
+    // (an empty `--memory`/`--cpus` value or `docker_image` would break `docker
+    // run`), and the mirror treats blank as "use default" anyway.
+    let norm = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let image = norm(image);
+    let memory = norm(memory);
+    let cpus = norm(cpus);
+    {
+        let conn = state.lock();
+        for (key, value) in [
+            (sandbox::docker::IMAGE_SETTING, &image),
+            (sandbox::docker::MEMORY_SETTING, &memory),
+            (sandbox::docker::CPUS_SETTING, &cpus),
+        ] {
+            database::set_setting(&conn, key, value.as_deref().unwrap_or(""))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
+        image_override: image,
+        memory,
+        cpus,
+    });
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Error/crash reporting. The DSN is baked in at build time via
@@ -626,6 +666,19 @@ pub fn run() {
                 }));
             }
 
+            // Forward docker image-build progress to the UI (slice C2). The
+            // build runs deep in the spawn path (no AppHandle there), so it
+            // emits through a process-wide sink installed here — mirroring the
+            // git-dist emitter above. Rare (first docker spawn per image), so a
+            // single toast fed by these events suffices.
+            {
+                use tauri::Emitter;
+                let handle = app.handle().clone();
+                sandbox::docker::set_build_sink(move |event| {
+                    let _ = handle.emit("docker:build-progress", event);
+                });
+            }
+
             // Anonymous product telemetry. Mint (or read) the install's random
             // distinct id, read the opt-out consent flag, and detect a version
             // change since the last launch — all from `settings`, before any
@@ -736,6 +789,7 @@ pub fn run() {
             get_container_auth_status,
             set_container_auth_token,
             clear_container_auth_token,
+            set_docker_launch_settings,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::get_agent_diff_stats,
@@ -806,6 +860,7 @@ pub fn run() {
             commands::validate_agent_bin,
             commands::discover_supported_models,
             commands::reveal_logs,
+            commands::start_docker_desktop,
             commands::detect_editors,
             commands::open_in_editor,
         ])
