@@ -228,11 +228,17 @@
   text-align: left;
   transition: background 0.12s var(--ease);
 }
-.model-custom-row:hover {
+.model-custom-row:not(.is-disabled):hover {
   background: var(--hover);
 }
 .model-custom-row.active {
   background: var(--selected);
+}
+/* .is-disabled, not :disabled — the row uses aria-disabled so it stays
+ * hover-capable and can surface its tooltip (see ModelPicker.tsx). */
+.model-custom-row.is-disabled {
+  opacity: 0.42;
+  cursor: default;
 }
 .model-custom-row > svg {
   margin-left: auto;

@@ -243,13 +243,16 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                     <button
                       key={a.id}
                       type="button"
-                      disabled={dockerBlocked}
-                      title={
+                      // Same reasoning as the provider rows above: aria-disabled
+                      // (not the native attr) keeps the row hover-capable so the
+                      // CSS .tip/data-tip refusal is reachable in the WebView.
+                      aria-disabled={dockerBlocked}
+                      data-tip={
                         dockerBlocked
                           ? `${providerLabel(a.base)} isn't available in Docker sandboxes yet`
                           : undefined
                       }
-                      className={`model-custom-row flex-center ${active ? "active" : ""}`}
+                      className={`model-custom-row flex-center ${dockerBlocked ? "is-disabled tip" : ""} ${active ? "active" : ""}`}
                       onMouseEnter={() => setHovered(null)}
                       onClick={() => !dockerBlocked && pickCustom(a.id, a.base, a.model)}
                     >
