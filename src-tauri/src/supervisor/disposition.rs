@@ -168,7 +168,11 @@ impl Supervisor {
                 // resolving name collisions with a -restored suffix.
                 Some(desired_name) => {
                     let chosen = choose_restore_branch_name(&snap.repo_path, desired_name).await;
-                    provision::provision_on_branch(workspace_mode, &spec, &chosen).await?;
+                    // `desired_name` rides along as the fetch source: when the
+                    // tip must be refetched (clone mode), the remote only
+                    // knows the original name, not the -restored rename.
+                    provision::provision_on_branch(workspace_mode, &spec, &chosen, desired_name)
+                        .await?;
                     Some(chosen)
                 }
                 // Branchless agent (never pushed) → restore detached at the
@@ -366,9 +370,16 @@ async fn teardown_agent_worktrees(agent_id: &str, repos: &[TrackedRepo], op: &st
         if let Err(e) = provision::teardown(mode, &spec).await {
             tracing::warn!(error = %e, subdir = %repo.subdir, op, "workspace teardown failed");
         }
-        if let Some(branch) = &repo.branch {
-            if let Err(e) = git::branch_delete(&repo.repo_path, branch).await {
-                tracing::warn!(%branch, error = %e, op, "branch delete failed");
+        // Only worktree-mode branches are refs of the source repo. A clone's
+        // branch lives inside the (now `rm -rf`'d) clone and was never created
+        // in the source repo, so `branch -D` here would force-delete an
+        // unrelated same-named branch in the user's source repo — losing the
+        // pointer to their unpushed work.
+        if mode == WorkspaceMode::Worktree {
+            if let Some(branch) = &repo.branch {
+                if let Err(e) = git::branch_delete(&repo.repo_path, branch).await {
+                    tracing::warn!(%branch, error = %e, op, "branch delete failed");
+                }
             }
         }
     }

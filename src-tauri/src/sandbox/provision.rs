@@ -91,12 +91,18 @@ pub async fn provision(mode: WorkspaceMode, spec: &CheckoutSpec<'_>) -> Result<(
 /// refs of the origin repo) and the worktree attached to it. Clone: the branch
 /// is created inside the clone; when `base_ref` isn't present in the source
 /// repo (the agent's commits lived only in the torn-down clone), it is fetched
-/// from `origin` via `branch` first — which is why restore of a clone
+/// from `origin` via `origin_branch` first — which is why restore of a clone
 /// workspace requires the branch to have been pushed.
+///
+/// `origin_branch` is the branch name as the remote knows it. It differs from
+/// `branch` when restore renamed to dodge a local collision (`feat` →
+/// `feat-restored`): the remote only has the original name, so fetching the
+/// renamed one would fail and make a pushed branch unrestorable.
 pub async fn provision_on_branch(
     mode: WorkspaceMode,
     spec: &CheckoutSpec<'_>,
     branch: &str,
+    origin_branch: &str,
 ) -> Result<()> {
     match mode {
         WorkspaceMode::Worktree => {
@@ -106,9 +112,10 @@ pub async fn provision_on_branch(
         WorkspaceMode::Clone => {
             clone_base(spec).await?;
             let branch = branch.to_string();
+            let origin_branch = origin_branch.to_string();
             finish_clone(spec, |dest| async move {
                 if !commit_present(&dest, spec.base_ref).await {
-                    fetch_branch(&dest, &branch).await?;
+                    fetch_branch(&dest, &origin_branch).await?;
                 }
                 git::run_git(
                     &dest,
@@ -224,15 +231,23 @@ where
 
 /// Point the clone's `origin` at the source repo's real remote so push/PR/
 /// fetch behave exactly as they would from a worktree. When the source has no
-/// `origin`, the clone keeps its local-path remote — push then fails the same
-/// way it would in the source repo, which is the honest behavior.
+/// `origin`, the clone's implicit local-path `origin` is *removed*: keeping it
+/// would let `git push -u origin <branch>` silently create branches and
+/// objects inside the user's source repo. With no remote at all, push fails
+/// cleanly — the same terminal state the source repo itself is in.
 async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
     let out = git::git_output(spec.source_repo, &["remote", "get-url", "origin"]).await?;
     if !out.status.success() {
         tracing::info!(
             source = %spec.source_repo.display(),
-            "source repo has no origin remote; clone keeps the local-path remote"
+            "source repo has no origin remote; removing the clone's local-path remote"
         );
+        git::run_git(
+            spec.dest,
+            &["remote", "remove", "origin"],
+            "remote remove origin",
+        )
+        .await?;
         return Ok(());
     }
     let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -428,7 +443,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clone_without_source_origin_keeps_local_path_remote() {
+    async fn clone_without_source_origin_removes_local_path_remote() {
         let td = tempfile::tempdir().unwrap();
         let (repo, _first, head) = fixture_repo(td.path());
         let dest = td.path().join("clone");
@@ -439,11 +454,9 @@ mod tests {
         };
 
         provision(WorkspaceMode::Clone, &spec).await.unwrap();
-        let origin = run(&dest, &["remote", "get-url", "origin"]);
-        assert!(
-            std::fs::canonicalize(&origin).unwrap() == std::fs::canonicalize(&repo).unwrap(),
-            "origin should still point at the source repo, got: {origin}"
-        );
+        // The implicit local-path origin must be gone: a push from the clone
+        // must never be able to write into the user's source repo.
+        assert_eq!(run(&dest, &["remote"]), "");
     }
 
     #[tokio::test]
@@ -531,9 +544,14 @@ mod tests {
             dest: &dest,
         };
 
-        provision_on_branch(WorkspaceMode::Worktree, &spec, "feat/restore")
-            .await
-            .unwrap();
+        provision_on_branch(
+            WorkspaceMode::Worktree,
+            &spec,
+            "feat/restore",
+            "feat/restore",
+        )
+        .await
+        .unwrap();
         assert_eq!(
             run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]),
             "feat/restore"
@@ -552,7 +570,7 @@ mod tests {
             dest: &dest,
         };
 
-        provision_on_branch(WorkspaceMode::Clone, &spec, "feat/restore")
+        provision_on_branch(WorkspaceMode::Clone, &spec, "feat/restore", "feat/restore")
             .await
             .unwrap();
         assert_eq!(
@@ -606,11 +624,29 @@ mod tests {
             base_ref: &tip,
             dest: &dest,
         };
-        provision_on_branch(WorkspaceMode::Clone, &spec, "feat")
+        provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat")
             .await
             .unwrap();
         assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat");
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), tip);
+
+        // Restore under a collision-renamed local branch: the fetch must still
+        // target the name the remote knows (`feat`), while the local branch is
+        // created under the renamed one.
+        let dest2 = td.path().join("clone2");
+        let spec2 = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &tip,
+            dest: &dest2,
+        };
+        provision_on_branch(WorkspaceMode::Clone, &spec2, "feat-restored", "feat")
+            .await
+            .unwrap();
+        assert_eq!(
+            run(&dest2, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "feat-restored"
+        );
+        assert_eq!(run(&dest2, &["rev-parse", "HEAD"]), tip);
     }
 
     #[tokio::test]
