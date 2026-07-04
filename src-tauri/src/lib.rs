@@ -441,6 +441,58 @@ async fn probe_docker_engine() -> Result<sandbox::DockerAvailability, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Which step of the container auth chain would supply Anthropic credentials
+/// to a docker agent right now — the settings UI status row. Async +
+/// `spawn_blocking` because the first resolution may load the login-shell env
+/// (runs a shell).
+#[tauri::command]
+async fn get_container_auth_status(
+) -> Result<sandbox::docker::auth::ContainerAuthStatus, String> {
+    tauri::async_runtime::spawn_blocking(sandbox::docker::auth::status)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Store a pasted `claude setup-token` for containerized agents under the
+/// `claude_container_token` setting — plaintext in sqlite, the same posture
+/// as `github_token`. Trims; rejects empty; unexpected shapes are accepted
+/// with a warning (which, like every log line here, never includes the token
+/// itself). Persists and then updates the in-process mirror, like
+/// `set_sandbox_engine` and `github::set_token`.
+#[tauri::command]
+async fn set_container_auth_token(
+    token: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    let (token, recognized) = sandbox::docker::auth::normalize_token(&token)?;
+    if !recognized {
+        tracing::warn!(
+            "container auth token doesn't look like a `claude setup-token` value \
+             (sk-ant-oat…); storing it anyway"
+        );
+    }
+    {
+        let conn = state.lock();
+        database::set_setting(&conn, sandbox::docker::auth::TOKEN_SETTING, &token)
+            .map_err(|e| e.to_string())?;
+    }
+    sandbox::docker::auth::set_stored_token(Some(token));
+    Ok(())
+}
+
+/// Drop the stored container token (blank the setting + clear the mirror,
+/// mirroring `github_disconnect`). Later chain steps take over, if any.
+#[tauri::command]
+async fn clear_container_auth_token(state: tauri::State<'_, DbState>) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(&conn, sandbox::docker::auth::TOKEN_SETTING, "")
+            .map_err(|e| e.to_string())?;
+    }
+    sandbox::docker::auth::set_stored_token(None);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Error/crash reporting. The DSN is baked in at build time via
@@ -528,6 +580,15 @@ pub fn run() {
             {
                 sandbox::set_selected_engine_kind(kind);
             }
+
+            // Seed the in-process container auth token (mirror of the
+            // `claude_container_token` setting, same pattern as the GitHub
+            // token below) so the docker auth chain — resolved at spawn time
+            // with no DB handle — sees a token pasted in a previous run.
+            sandbox::docker::auth::set_stored_token(database::get_setting(
+                &db.lock(),
+                sandbox::docker::auth::TOKEN_SETTING,
+            ));
 
             // Unified git resolution: point the portable-install root at app
             // data, wire the fallback commit identity to the signed-in
@@ -659,6 +720,9 @@ pub fn run() {
             get_sandbox_engine,
             set_sandbox_engine,
             probe_docker_engine,
+            get_container_auth_status,
+            set_container_auth_token,
+            clear_container_auth_token,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::get_agent_diff_stats,

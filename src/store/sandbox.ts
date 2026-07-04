@@ -33,4 +33,29 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     set({ dockerProbe: probe });
     return probe;
   },
+
+  containerAuth: null,
+  refreshContainerAuth: async () => {
+    try {
+      set({ containerAuth: await api.getContainerAuthStatus() });
+    } catch {
+      // A failed resolution means we can't confirm any credentials — show the
+      // "Not connected" state (with its connect CTA) rather than a stale one.
+      set({ containerAuth: { status: "none" } });
+    }
+  },
+  setContainerAuthToken: async (token) => {
+    // No try/catch: the connect modal surfaces the rejection (empty token)
+    // inline next to the paste field, so the error must propagate.
+    await api.setContainerAuthToken(token);
+    await get().refreshContainerAuth();
+  },
+  clearContainerAuthToken: async () => {
+    try {
+      await api.clearContainerAuthToken();
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+    await get().refreshContainerAuth();
+  },
 });

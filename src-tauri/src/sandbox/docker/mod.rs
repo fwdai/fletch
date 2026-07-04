@@ -16,6 +16,7 @@
 //! - [`image`] — the embedded agent Dockerfile and content-addressed builds.
 //! - [`cleanup`] — container labels and the dead-instance orphan sweep.
 
+pub mod auth;
 mod cleanup;
 mod cli;
 // Everything in `image` is consumed by the B2 launch path; within B1 only its

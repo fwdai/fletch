@@ -5,6 +5,7 @@ import { Select } from "@/components/ui/Select";
 import { ACCENTS } from "@/data/providers";
 import type { Density, SandboxEngine, ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { ContainerAuth } from "./ContainerAuth";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 // Docker Desktop can take a few seconds to answer after it's launched, so a
@@ -225,6 +226,7 @@ export function GeneralPane() {
             onChange={(v) => void setSandboxEngine(v)}
           />
         </SetRow>
+        <ContainerAuth />
       </SetGroup>
 
       <SetGroup label="Diagnostics" last>
