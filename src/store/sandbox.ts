@@ -1,4 +1,4 @@
-import { api } from "@/api";
+import { api, type DockerProbe } from "@/api";
 import { DEFAULT_SANDBOX_ENGINE } from "@/storage/preferences";
 import type { SandboxSlice, SliceCreator } from "./types";
 
@@ -22,12 +22,15 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     }
   },
   refreshDockerProbe: async () => {
+    let probe: DockerProbe;
     try {
-      set({ dockerProbe: await api.probeDockerEngine() });
+      probe = await api.probeDockerEngine();
     } catch {
       // A failed probe means we can't confirm docker — treat as not installed
       // so the option gates off rather than dangling enabled.
-      set({ dockerProbe: { status: "not-installed" } });
+      probe = { status: "not-installed" };
     }
+    set({ dockerProbe: probe });
+    return probe;
   },
 });
