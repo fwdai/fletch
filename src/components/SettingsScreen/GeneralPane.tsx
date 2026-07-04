@@ -52,9 +52,14 @@ export function GeneralPane() {
   const dockerProbe = useAppStore((s) => s.dockerProbe);
   const refreshDockerProbe = useAppStore((s) => s.refreshDockerProbe);
 
-  // Probe Docker on open so the engine option reflects the live daemon state.
+  // Probe Docker on open — and again whenever the window regains focus — so the
+  // engine option reflects the live daemon state, including when the user starts
+  // Docker Desktop (as the disabled-option hint suggests) while the pane is open.
   useEffect(() => {
     void refreshDockerProbe();
+    const onFocus = () => void refreshDockerProbe();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [refreshDockerProbe]);
 
   // Three states for the docker option: enabled when the daemon answered the
