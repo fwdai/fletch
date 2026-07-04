@@ -243,9 +243,14 @@ async fn handle_request_file(
 
     let (resp, effects) = dispatcher.dispatch(stem, &req.op, &req.args).await;
 
+    // The op has now run and may have had side effects (e.g. a git push). Even
+    // if writing the response fails, we must remove the request file so the
+    // next poll tick can't re-acquire and re-dispatch it — a lost response (the
+    // caller times out waiting) is strictly safer than executing a
+    // side-effectful op twice. The request stays only if the process crashes
+    // before this point, which preserves at-least-once for un-dispatched ops.
     if let Err(e) = write_response_atomic(responses, stem, &resp) {
-        tracing::warn!(error = %e, id = %stem, "rpc: write response failed");
-        return effects;
+        tracing::error!(error = %e, id = %stem, "rpc: write response failed after dispatch; dropping request to avoid re-execution");
     }
 
     remove_request_file(path);
@@ -560,6 +565,49 @@ mod tests {
         let body = std::fs::read_to_string(rpc_dir.join("responses/req-7.json")).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["ok"], true);
+    }
+
+    /// A response-write failure *after* dispatch must not leave the request
+    /// eligible for a second dispatch: the op already ran (possibly with side
+    /// effects like a git push), so the request file is dropped even though no
+    /// response was written. A later tick then finds nothing to re-execute.
+    #[tokio::test]
+    async fn write_failure_after_dispatch_does_not_redispatch() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "req-8.json",
+            r#"{"id":"req-8","op":"ping"}"#,
+        );
+
+        // Force write_response_atomic to fail deterministically: it writes to
+        // `responses/req-8.json.tmp` first, so a directory in that spot makes
+        // the write error out on every platform.
+        std::fs::create_dir(rpc_dir.join("responses/req-8.json.tmp")).unwrap();
+
+        let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
+        process_pending(&rpc_dir, &dispatcher).await;
+
+        assert_eq!(
+            dispatcher.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the op runs once"
+        );
+        assert!(
+            !rpc_dir.join("requests/req-8.json").exists(),
+            "request must be removed even when the response write fails"
+        );
+        assert!(!rpc_dir.join("responses/req-8.json").exists());
+
+        // A subsequent tick must not re-run the (side-effectful) op.
+        process_pending(&rpc_dir, &dispatcher).await;
+        assert_eq!(
+            dispatcher.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a write failure must not cause the op to run a second time"
+        );
     }
 
     #[tokio::test]
