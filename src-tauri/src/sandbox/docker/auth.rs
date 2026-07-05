@@ -16,8 +16,11 @@
 //!    `CLAUDE_CODE_OAUTH_TOKEN` → forward those (plus `ANTHROPIC_BASE_URL` /
 //!    `ANTHROPIC_AUTH_TOKEN` for proxy setups, which ride along but don't
 //!    constitute a hit on their own).
-//! 3. `<home>/.claude/.credentials.json` exists → nothing to inject: the
-//!    `~/.claude` bind mount carries it, and refresh writes land on the host.
+//! 3. `<home>/.claude/.credentials.json` holds a usable OAuth token (non-empty
+//!    access token, non-placeholder `expiresAt`) → nothing to inject: the
+//!    `~/.claude` bind mount carries it, and refresh writes land on the host. A
+//!    stale placeholder (macOS Keychain logins leave `"expiresAt": 0` on disk)
+//!    does *not* count — see [`credentials_file_usable`].
 //! 4. Nothing → [`ContainerAuth::Unavailable`]; the spawn path fails fast and
 //!    the UI shows the "Connect Claude for containers" call-to-action.
 //!
@@ -123,13 +126,40 @@ impl fmt::Debug for ContainerAuth {
 /// call: the login-shell env is loaded (a shell runs) if nothing earlier
 /// populated `bin_resolve`'s cache.
 pub fn resolve() -> ContainerAuth {
-    let credentials_file =
-        dirs::home_dir().is_some_and(|home| home.join(".claude/.credentials.json").exists());
+    let credentials_file = dirs::home_dir().is_some_and(|home| {
+        credentials_file_usable(std::fs::read(home.join(".claude/.credentials.json")).ok().as_deref())
+    });
     resolve_from(
         stored_token(),
         bin_resolve::login_shell_env(),
         credentials_file,
     )
+}
+
+/// Whether `~/.claude/.credentials.json` carries an OAuth credential the
+/// container can actually authenticate with. Mere existence is *not* enough:
+/// on a macOS host the live token lives in the Keychain and the on-disk file is
+/// commonly a stale placeholder (`"expiresAt": 0`) — counting that as a hit
+/// boots the container straight into "Not logged in · Please run /login", which
+/// it can't recover from (no interactive login inside the sandbox).
+///
+/// A file counts only when it holds a non-empty `claudeAiOauth.accessToken` and
+/// a positive `expiresAt`. We deliberately do *not* require `expiresAt` to be
+/// in the future: an expired-but-refreshable token is the documented refresh
+/// flow (the container refreshes and the write lands on the mounted file), so
+/// rejecting it would break working Linux-host setups. The `expiresAt <= 0`
+/// (or missing/empty-token) placeholder is the only shape we reject.
+fn credentials_file_usable(contents: Option<&[u8]>) -> bool {
+    let Some(bytes) = contents else { return false };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+    let oauth = &json["claudeAiOauth"];
+    let has_access = oauth["accessToken"]
+        .as_str()
+        .is_some_and(|t| !t.trim().is_empty());
+    let expires_ok = oauth["expiresAt"].as_i64().is_some_and(|e| e > 0);
+    has_access && expires_ok
 }
 
 /// The chain itself, pure over its inputs so tests can exercise the ordering
@@ -300,6 +330,36 @@ mod tests {
         let (env, source) = resolved(resolve_from(None, None, true));
         assert_eq!(source, AuthSource::CredentialsFile);
         assert!(env.is_empty());
+    }
+
+    #[test]
+    fn credentials_file_usable_accepts_a_real_oauth_token() {
+        assert!(credentials_file_usable(Some(
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1893456000000}}"#
+        )));
+        // Expired-but-nonzero is still usable: the container can refresh via the
+        // mounted file (the documented refresh flow), so we must not reject it.
+        assert!(credentials_file_usable(Some(
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1}}"#
+        )));
+    }
+
+    #[test]
+    fn credentials_file_usable_rejects_stale_and_malformed() {
+        // The reported macOS bug: a Keychain login leaves a placeholder on disk.
+        assert!(!credentials_file_usable(Some(
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":0}}"#
+        )));
+        // Empty access token, missing expiry, wrong shape, unparseable, absent.
+        assert!(!credentials_file_usable(Some(
+            br#"{"claudeAiOauth":{"accessToken":"","expiresAt":1893456000000}}"#
+        )));
+        assert!(!credentials_file_usable(Some(
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x"}}"#
+        )));
+        assert!(!credentials_file_usable(Some(br#"{"somethingElse":true}"#)));
+        assert!(!credentials_file_usable(Some(b"not json")));
+        assert!(!credentials_file_usable(None));
     }
 
     #[test]
