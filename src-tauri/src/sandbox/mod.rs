@@ -7,6 +7,8 @@ use std::sync::{Arc, OnceLock};
 
 use parking_lot::RwLock;
 
+use crate::error::{Error, Result};
+
 pub use docker::{availability as docker_availability, DockerAvailability};
 pub use engine::{AgentLaunchCtx, EngineKind, Keepalive, KillHandle, LaunchPlan, SandboxEngine};
 pub use seatbelt::{
@@ -38,21 +40,25 @@ pub fn selected_engine_kind() -> EngineKind {
 }
 
 /// Resolve the engine for an agent stamped with `kind`, availability-checked
-/// at spawn time: docker falls back to seatbelt with a warning when the
-/// daemon is unreachable, so the agent still runs — sandboxed, just not
-/// containerized. Callers pick the agent binary by the *returned* engine's
-/// `kind()`, not by `kind`, so the fallback resolves a real host binary.
-pub fn engine_for(kind: EngineKind) -> Arc<dyn SandboxEngine> {
+/// at spawn time. A docker-stamped agent whose daemon is unreachable is a hard
+/// error: silently falling back to seatbelt would launch the process *outside*
+/// the container boundary the user selected, while the record and UI keep
+/// showing Docker — an isolation downgrade the caller never sees. Fail closed
+/// instead so the spawn surfaces the unavailability rather than degrading.
+pub fn engine_for(kind: EngineKind) -> Result<Arc<dyn SandboxEngine>> {
     match kind {
-        EngineKind::SandboxExec => seatbelt_engine(),
+        EngineKind::SandboxExec => Ok(seatbelt_engine()),
         EngineKind::Docker => match docker::availability() {
-            DockerAvailability::Available { .. } => docker::DockerEngine::shared(),
+            DockerAvailability::Available { .. } => Ok(docker::DockerEngine::shared()),
             status => {
                 tracing::warn!(
                     ?status,
-                    "docker engine selected but unavailable; falling back to sandbox-exec"
+                    "docker engine selected but unavailable; refusing to launch outside the container boundary"
                 );
-                seatbelt_engine()
+                Err(Error::SandboxUnavailable(format!(
+                    "Docker sandbox is selected but unavailable ({status:?}); \
+                     start Docker or switch the sandbox engine before launching."
+                )))
             }
         },
     }
@@ -63,7 +69,7 @@ pub fn engine_for(kind: EngineKind) -> Arc<dyn SandboxEngine> {
 /// stamped on the agent's record instead; this stays for callers with no
 /// record in hand (none today — B2's non-agent surfaces use it).
 #[allow(dead_code)]
-pub fn current_engine() -> Arc<dyn SandboxEngine> {
+pub fn current_engine() -> Result<Arc<dyn SandboxEngine>> {
     engine_for(selected_engine_kind())
 }
 
