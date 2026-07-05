@@ -95,6 +95,25 @@ impl ManagedSession {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        // `Command::spawn` reports a missing program and a missing working
+        // directory identically as ENOENT ("No such file or directory (os
+        // error 2)"), which is impossible to act on. Check both up front and
+        // name the broken precondition instead. For docker agents `cwd` is the
+        // freshly-cloned workspace, so a missing one means provisioning didn't
+        // leave it where the launch expects — not a docker problem at all.
+        if spec.program.is_absolute() && !spec.program.exists() {
+            return Err(Error::Other(format!(
+                "managed spawn: program not found at {}",
+                spec.program.display()
+            )));
+        }
+        if !spec.cwd.exists() {
+            return Err(Error::Other(format!(
+                "managed spawn: working directory does not exist: {}",
+                spec.cwd.display()
+            )));
+        }
+
         let mut child = cmd
             .spawn()
             .map_err(|e| Error::Other(format!("managed spawn: {e}")))?;
