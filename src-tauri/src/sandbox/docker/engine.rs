@@ -9,7 +9,9 @@
 //!   root, its RPC mailbox, and `~/.claude` — are bind-mounted at their exact
 //!   host paths, and the container runs with `HOME=<host home>`; transcripts,
 //!   RPC payloads, and diff paths all embed absolute host paths, so nothing in
-//!   the app translates paths.
+//!   the app translates paths. The workspace and mailbox are read-write;
+//!   `~/.claude` (and any non-default `CLAUDE_CONFIG_DIR`) enters **read-only
+//!   except `.credentials.json`** (invariant 5).
 //! - **The real repo's writable state and its hooks never enter the container;
 //!   its object store enters read-only (invariant 2).** Only the agent's own
 //!   parent dir is mounted writable; `supervisor::lifecycle` forces clone-mode
@@ -19,11 +21,27 @@
 //!   that store, never the source `.git` (config/hooks) — is bind-mounted
 //!   **read-only** at its identical host path so in-container git can read
 //!   history while a write attempt fails with `Read-only file system`.
+//! - **`~/.claude` is not a write surface (invariant 5).** `~/.claude` is
+//!   shared host state: its `settings.json` can define hooks Claude Code runs
+//!   *on the host*, and it holds other agents' transcripts and MCP secrets. It
+//!   is mounted read-only so a prompt-injected container agent cannot plant a
+//!   host-executed hook. The one writable file is `.credentials.json`,
+//!   remounted read-write on top (RW file mount ordered after the RO dir mount
+//!   in argv) so claude's own OAuth token refresh still persists to the host —
+//!   the `CredentialsFile` auth chain in [`super::auth`] depends on it.
 //! - **Secrets never in argv (invariant 3).** Auth vars are set on the docker
 //!   *CLI process* environment (`LaunchPlan::env`) and forwarded into the
 //!   container with bare `-e NAME` — the value never appears in `ps`.
 //! - **No orphans (invariant 4).** Containers carry the `fletch.host-pid` /
 //!   `fletch.agent-id` labels the startup sweep keys on (`super::cleanup`).
+//!
+//! Threat model. The container is *live-process containment*, not a trust
+//! boundary against a determined attacker: the git clone + PR flow (invariant
+//! 2) is the review gate that keeps agent output off the real repo, `~/.claude`
+//! is read-only except the credential file (invariant 5) so a compromised agent
+//! can neither plant a host-executed hook nor exfiltrate via config, and secrets
+//! stay out of argv (invariant 3). Containers run as root in v1 (a known
+//! limitation — see below), so in-container isolation is not relied upon.
 //!
 //! Containers run as root in v1: Docker Desktop's VirtioFS maps ownership so
 //! mounted host files appear owned by the user. // TODO(linux-host): UID
@@ -36,12 +54,12 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 
-use crate::bin_resolve;
 use crate::error::{Error, Result};
 use crate::sandbox::engine::{
     AgentLaunchCtx, EngineKind, Keepalive, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
 
+use super::auth::{self, ContainerAuth};
 use super::{cleanup, cli, image};
 
 /// Settings key overriding the container image (see [`image::resolve_image`]).
@@ -54,14 +72,24 @@ pub const CPUS_SETTING: &str = "docker_cpus";
 const DEFAULT_MEMORY: &str = "4g";
 const DEFAULT_CPUS: &str = "2";
 
+/// The one file under a claude config dir that stays writable when the dir is
+/// bind-mounted read-only: claude's OAuth refresh rewrites the rotated token
+/// here, and the `CredentialsFile` auth chain (see [`super::auth`]) needs that
+/// write to land on the host. Mounted read-write on top of the read-only dir.
+const CREDENTIALS_FILE: &str = ".credentials.json";
+
 /// Auth variables forwarded into containers with bare `-e NAME` (values ride
-/// the docker CLI's process env — invariant 3). `ANTHROPIC_BASE_URL` covers
-/// proxy setups; a bare `-e` for an unset variable forwards nothing, so the
-/// list is passed unconditionally and argv stays deterministic.
+/// the docker CLI's process env — invariant 3). `ANTHROPIC_BASE_URL` /
+/// `ANTHROPIC_AUTH_TOKEN` cover proxy setups; a bare `-e` for an unset variable
+/// forwards nothing, so the list is passed unconditionally and argv stays
+/// deterministic. Must stay a superset of every var [`auth::resolve`] (D1) can
+/// emit — a resolved value with no matching bare `-e` would sit on the CLI
+/// process env yet never reach the container.
 const AUTH_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
 ];
 
 /// Signal/removal docker calls during teardown.
@@ -184,6 +212,15 @@ impl SandboxEngine for DockerEngine {
         // full-copy clones or worktrees (no mount).
         let borrowed_object_stores = borrowed_object_stores(ctx.writable_root);
 
+        // The read-only config mounts get a writable `.credentials.json` overlay
+        // only when the file already exists: a bare `-v` on a missing source
+        // makes Docker create a root-owned *directory* there, which would break
+        // claude's later attempt to write the real file.
+        let claude_credentials_rw = claude_dir.join(CREDENTIALS_FILE).is_file();
+        let config_dir_credentials_rw = claude_config_dir
+            .as_deref()
+            .is_some_and(|dir| dir.join(CREDENTIALS_FILE).is_file());
+
         let prefix_args = run_args(&RunSpec {
             interactive: ctx.interactive,
             name: &name,
@@ -194,6 +231,8 @@ impl SandboxEngine for DockerEngine {
             cwd: ctx.cwd,
             claude_config_dir: claude_config_dir.as_deref(),
             borrowed_object_stores: &borrowed_object_stores,
+            claude_credentials_rw,
+            config_dir_credentials_rw,
             memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
             cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
             image: &image,
@@ -217,7 +256,7 @@ impl SandboxEngine for DockerEngine {
                 dir.to_string_lossy().into_owned(),
             ));
         }
-        env.extend(interim_container_auth_env());
+        apply_container_auth(&mut env, auth::resolve())?;
 
         Ok(LaunchPlan {
             program: docker,
@@ -274,19 +313,31 @@ impl SandboxEngine for DockerEngine {
     }
 }
 
-/// Interim container auth: forward Anthropic credentials from the user's
-/// login-shell environment when present, so `~/.zshrc` exporters work with no
-/// setup. Replaced by `sandbox::docker::auth::container_auth_env()` when
-/// slice D1 lands (Fletch-stored setup token + credential-file chain) — this
-/// is its single call site, so the swap is one line in `launch_agent`.
-fn interim_container_auth_env() -> Vec<(String, String)> {
-    let Some(shell_env) = bin_resolve::login_shell_env() else {
-        return Vec::new();
-    };
-    AUTH_ENV_VARS
-        .iter()
-        .filter_map(|var| shell_env.get(*var).map(|v| (var.to_string(), v.clone())))
-        .collect()
+/// Launch-blocking message when the container auth chain (D1) resolves nothing.
+/// Kept as one stable, matchable string so slice C2 can turn it into a Settings
+/// call-to-action; the wording tells the user exactly what to do.
+const NO_CONTAINER_AUTH_MSG: &str = "No Anthropic credentials for containers — open Settings → General → Sandbox and connect Claude for containers (claude setup-token).";
+
+/// Fold the D1 auth-chain outcome ([`auth::resolve`]) into the docker CLI's
+/// process env, from which [`run_args`]' bare `-e NAME` flags forward it into
+/// the container (invariant 3 — values never touch argv). An [`AuthSource`] is
+/// logged (the enum variant only, never a token value); [`ContainerAuth`]'s
+/// `Debug` redacts values so even `?source` cannot leak one. When the chain
+/// yields nothing the launch fails fast with [`NO_CONTAINER_AUTH_MSG`].
+///
+/// [`AuthSource`]: super::auth::AuthSource
+fn apply_container_auth(env: &mut Vec<(String, String)>, auth: ContainerAuth) -> Result<()> {
+    match auth {
+        ContainerAuth::Resolved {
+            env: auth_env,
+            source,
+        } => {
+            tracing::info!(target: "fletch::docker", ?source, "container auth resolved");
+            env.extend(auth_env);
+            Ok(())
+        }
+        ContainerAuth::Unavailable => Err(Error::Other(NO_CONTAINER_AUTH_MSG.to_string())),
+    }
 }
 
 /// `Some(v)` only when `v` is present and non-blank — settings rows can hold
@@ -386,6 +437,12 @@ struct RunSpec<'a> {
     /// bind-mounted read-only at their identical host paths. Empty for a
     /// worktree or an old full-copy clone.
     borrowed_object_stores: &'a [PathBuf],
+    /// Whether `~/.claude/.credentials.json` exists as a file — gates the
+    /// writable overlay on the read-only `~/.claude` mount.
+    claude_credentials_rw: bool,
+    /// Same, for the non-default `CLAUDE_CONFIG_DIR` (only meaningful when
+    /// `claude_config_dir` is `Some`).
+    config_dir_credentials_rw: bool,
     memory: &'a str,
     cpus: &'a str,
     image: &'a str,
@@ -408,15 +465,11 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push("--label".into());
     args.push(cleanup::agent_id_label(spec.agent_id));
     // Mounts at identical host paths (invariant 1). Exactly these — nothing
-    // else from the host enters the container.
-    let mut mounts = vec![
-        spec.writable_root.to_path_buf(),
-        spec.rpc_dir.to_path_buf(),
-        spec.home.join(".claude"),
-    ];
-    mounts.extend(spec.claude_config_dir.map(Path::to_path_buf));
-    for mount in &mounts {
-        let path = mount.to_string_lossy();
+    // else from the host enters the container. The workspace and RPC mailbox
+    // are read-write; the claude config dir(s) are read-only except their
+    // `.credentials.json` (invariant 5) — see [`push_claude_config_mount`].
+    for path in [spec.writable_root, spec.rpc_dir] {
+        let path = path.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}"));
     }
@@ -430,6 +483,14 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         let path = store.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}:ro"));
+    }
+    push_claude_config_mount(
+        &mut args,
+        &spec.home.join(".claude"),
+        spec.claude_credentials_rw,
+    );
+    if let Some(dir) = spec.claude_config_dir {
+        push_claude_config_mount(&mut args, dir, spec.config_dir_credentials_rw);
     }
     args.push("-w".into());
     args.push(spec.cwd.to_string_lossy().into_owned());
@@ -451,6 +512,26 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push(spec.image.into());
     args.push(spec.agent_bin.into());
     args
+}
+
+/// Bind-mount a claude config dir **read-only**, then — when `credentials_rw` —
+/// remount its `.credentials.json` read-write on top. The dir is shared host
+/// state whose `settings.json` can define hooks Claude Code executes on the
+/// host, so a container agent must not be able to write it (invariant 5); the
+/// credential file is the sole exception so OAuth token refresh persists. The
+/// RW file mount is pushed *after* the RO dir mount so Docker layers the file
+/// over the directory, and skipped entirely when the file is absent (a bare
+/// `-v` on a missing source would have Docker create a root-owned dir there).
+fn push_claude_config_mount(args: &mut Vec<String>, dir: &Path, credentials_rw: bool) {
+    let path = dir.to_string_lossy();
+    args.push("-v".into());
+    args.push(format!("{path}:{path}:ro"));
+    if credentials_rw {
+        let creds = dir.join(CREDENTIALS_FILE);
+        let creds = creds.to_string_lossy();
+        args.push("-v".into());
+        args.push(format!("{creds}:{creds}"));
+    }
 }
 
 /// `fletch-<agent_id>-<8-char nonce>`. The nonce keeps respawns (view switch,
@@ -545,6 +626,8 @@ mod tests {
             cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
             claude_config_dir: None,
             borrowed_object_stores: &[],
+            claude_credentials_rw: false,
+            config_dir_credentials_rw: false,
             memory: "4g",
             cpus: "2",
             image: "fletch-agent:abc123def456",
@@ -562,24 +645,79 @@ mod tests {
 
     #[test]
     fn argv_mounts_exactly_the_three_dirs_at_identical_paths() {
-        // No borrowed object stores (worktree / old full-copy clone): only the
-        // base three writable mounts, no `:ro` entries.
+        // Workspace + mailbox read-write; `~/.claude` read-only (invariant 5).
+        // No credentials file in this spec, so no writable overlay is appended;
+        // no borrowed object stores, so no `.git/objects` RO mount either.
         let args = run_args(&test_spec(false));
         assert_eq!(
             values_of(&args, "-v"),
             vec![
                 "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
                 "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-                "/Users/u/.claude:/Users/u/.claude",
+                "/Users/u/.claude:/Users/u/.claude:ro",
             ],
         );
         assert!(
-            !args.iter().any(|a| a.ends_with(":ro")),
-            "no RO mount without borrowed object stores"
+            !args.iter().any(|a| a.contains("/objects")),
+            "no object-store mount without borrowed stores"
         );
         assert_eq!(
             values_of(&args, "-w"),
             vec!["/Users/u/.fletch/worktrees/orkney/repo"],
+        );
+    }
+
+    /// Invariant 5: `~/.claude` is read-only so a prompt-injected agent cannot
+    /// plant a host-executed hook in `settings.json`, but `.credentials.json`
+    /// stays writable (appended *after* the RO dir mount) so token refresh
+    /// persists. No other read-write config surface may remain.
+    #[test]
+    fn argv_mounts_claude_readonly_with_writable_credentials() {
+        let mut spec = test_spec(false);
+        spec.claude_credentials_rw = true;
+        let args = run_args(&spec);
+        let mounts = values_of(&args, "-v");
+
+        // The dir is read-only; the credentials file is read-write on top.
+        let dir_idx = mounts
+            .iter()
+            .position(|m| *m == "/Users/u/.claude:/Users/u/.claude:ro")
+            .expect("~/.claude mounted read-only");
+        let creds_idx = mounts
+            .iter()
+            .position(|m| {
+                *m == "/Users/u/.claude/.credentials.json:/Users/u/.claude/.credentials.json"
+            })
+            .expect("credentials file mounted read-write");
+        assert!(
+            dir_idx < creds_idx,
+            "RW credentials mount must follow the RO dir mount so Docker layers it on top",
+        );
+
+        // No read-write mount of any `~/.claude` path other than the credential
+        // file — the whole point is that no config write surface survives.
+        for mount in &mounts {
+            let (src, _) = mount.split_once(':').unwrap();
+            if src.starts_with("/Users/u/.claude") {
+                assert!(
+                    mount.ends_with(":ro") || src.ends_with("/.credentials.json"),
+                    "unexpected read-write config surface: {mount}",
+                );
+            }
+        }
+    }
+
+    /// A host with no credentials file still launches — the writable overlay is
+    /// skipped rather than pointing `-v` at a missing source (which Docker would
+    /// materialize as a root-owned directory).
+    #[test]
+    fn argv_omits_credentials_mount_when_file_absent() {
+        let args = run_args(&test_spec(false)); // claude_credentials_rw: false
+        assert!(
+            !values_of(&args, "-v")
+                .iter()
+                .any(|m| m.contains("/.credentials.json")),
+            "no credentials mount when the file is absent",
         );
     }
 
@@ -591,13 +729,15 @@ mod tests {
         let mut spec = test_spec(false);
         spec.borrowed_object_stores = &stores;
         let args = run_args(&spec);
+        // Order: workspace RW, mailbox RW, borrowed store RO, then `~/.claude`
+        // RO (invariant 5).
         assert_eq!(
             values_of(&args, "-v"),
             vec![
                 "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
                 "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-                "/Users/u/.claude:/Users/u/.claude",
                 "/Users/u/repo/.git/objects:/Users/u/repo/.git/objects:ro",
+                "/Users/u/.claude:/Users/u/.claude:ro",
             ],
         );
     }
@@ -614,9 +754,11 @@ mod tests {
         let mut spec = test_spec(false);
         spec.borrowed_object_stores = &stores;
         let args = run_args(&spec);
+        // Object-store RO mounts only (exclude the `~/.claude:ro` mount, which
+        // also ends in `:ro` under invariant 5).
         let ro: Vec<&str> = values_of(&args, "-v")
             .into_iter()
-            .filter(|m| m.ends_with(":ro"))
+            .filter(|m| m.ends_with(":ro") && m.contains("/objects"))
             .collect();
         assert_eq!(
             ro,
@@ -743,6 +885,7 @@ mod tests {
             "ANTHROPIC_API_KEY",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
         ] {
             assert!(forwarded.contains(&var), "missing bare -e {var}");
         }
@@ -764,10 +907,17 @@ mod tests {
 
     #[test]
     fn argv_mounts_and_forwards_nondefault_claude_config_dir() {
+        // The non-default config dir gets the same read-only-except-credentials
+        // treatment as `~/.claude` (invariant 5).
         let mut spec = test_spec(false);
         spec.claude_config_dir = Some(Path::new("/Users/u/.claude-eve"));
+        spec.config_dir_credentials_rw = true;
         let args = run_args(&spec);
-        assert!(values_of(&args, "-v").contains(&"/Users/u/.claude-eve:/Users/u/.claude-eve"));
+        let mounts = values_of(&args, "-v");
+        assert!(mounts.contains(&"/Users/u/.claude-eve:/Users/u/.claude-eve:ro"));
+        assert!(mounts.contains(
+            &"/Users/u/.claude-eve/.credentials.json:/Users/u/.claude-eve/.credentials.json"
+        ));
         assert!(values_of(&args, "-e").contains(&"CLAUDE_CONFIG_DIR"));
     }
 
@@ -826,6 +976,86 @@ mod tests {
         assert_eq!(non_blank(Some(" 8g ")), Some("8g"));
     }
 
+    /// D1 swap, happy path: a resolved auth env lands on the docker CLI process
+    /// env verbatim, and every var it carries has a matching bare `-e NAME` in
+    /// argv — so the value forwards into the container yet never appears in
+    /// argv (invariant 3). Guards against `AUTH_ENV_VARS` drifting behind the
+    /// set `auth::resolve` can emit.
+    #[test]
+    fn resolved_auth_forwards_values_in_env_never_argv() {
+        use super::super::auth::AuthSource;
+
+        let secret = "sk-ant-oat-SECRET-VALUE";
+        let resolved = ContainerAuth::Resolved {
+            env: vec![
+                ("CLAUDE_CODE_OAUTH_TOKEN".to_string(), secret.to_string()),
+                (
+                    "ANTHROPIC_AUTH_TOKEN".to_string(),
+                    "proxy-secret".to_string(),
+                ),
+            ],
+            source: AuthSource::StoredToken,
+        };
+        let mut env: Vec<(String, String)> = Vec::new();
+        apply_container_auth(&mut env, resolved).expect("resolved auth applies");
+
+        // Values ride the CLI process env.
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == secret));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "ANTHROPIC_AUTH_TOKEN" && v == "proxy-secret"));
+
+        // Every forwarded var name has a bare `-e NAME` in argv, and no value
+        // (secret or otherwise) leaks into argv.
+        let args = run_args(&test_spec(false));
+        let forwarded = values_of(&args, "-e");
+        for (name, _) in &env {
+            assert!(
+                forwarded.contains(&name.as_str()),
+                "resolved var {name} has no bare -e in argv (AUTH_ENV_VARS drifted)",
+            );
+        }
+        for arg in &args {
+            assert!(!arg.contains(secret), "secret leaked into argv: {arg}");
+            assert!(!arg.contains("proxy-secret"), "proxy secret in argv: {arg}");
+        }
+    }
+
+    /// D1 swap, empty resolution (`CredentialsFile`): no env additions, no
+    /// error — the `~/.claude` mount carries the credential.
+    #[test]
+    fn resolved_auth_with_empty_env_is_a_noop() {
+        use super::super::auth::AuthSource;
+
+        let mut env: Vec<(String, String)> = Vec::new();
+        apply_container_auth(
+            &mut env,
+            ContainerAuth::Resolved {
+                env: Vec::new(),
+                source: AuthSource::CredentialsFile,
+            },
+        )
+        .expect("credentials-file resolves");
+        assert!(env.is_empty());
+    }
+
+    /// D1 swap, `Unavailable`: the launch fails fast with the settings pointer
+    /// C2 keys its call-to-action on. Asserts the stable substrings so the
+    /// wording can evolve without silently breaking the UI match.
+    #[test]
+    fn unavailable_auth_fails_launch_with_settings_pointer() {
+        let mut env: Vec<(String, String)> = Vec::new();
+        let err = apply_container_auth(&mut env, ContainerAuth::Unavailable)
+            .expect_err("Unavailable must block the launch");
+        let msg = err.to_string();
+        assert!(msg.contains("Settings"), "no settings pointer: {msg}");
+        assert!(msg.contains("setup-token"), "no setup-token hint: {msg}");
+        assert_eq!(msg, NO_CONTAINER_AUTH_MSG);
+        assert!(env.is_empty(), "a failed resolution must add no env");
+    }
+
     /// Integration: a real `docker run` round-trip through the exact argv the
     /// engine builds — busybox standing in for the agent image, `echo` for
     /// the agent binary. `FLETCH_DOCKER_TESTS=1 cargo test -- --ignored`
@@ -853,6 +1083,8 @@ mod tests {
             cwd: &root,
             claude_config_dir: None,
             borrowed_object_stores: &[],
+            claude_credentials_rw: false,
+            config_dir_credentials_rw: false,
             memory: "256m",
             cpus: "1",
             image: "busybox",

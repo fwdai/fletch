@@ -5,7 +5,7 @@ import { Icon } from "@/components/Icon";
 import { Chip } from "@/components/ui/Chip";
 import { lookupModel } from "@/data/modelCatalog";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
-import { DEFAULT_PROVIDER_ID } from "@/data/providers";
+import { DEFAULT_PROVIDER_ID, providerLabel } from "@/data/providers";
 import type { AgentUsage } from "@/store";
 import { useAppStore } from "@/store";
 import { AttachmentList } from "./AttachmentList";
@@ -130,6 +130,7 @@ export function Composer({
   const modelCatalog = useAppStore((s) => s.modelCatalog);
   const setComposerDraft = useAppStore((s) => s.setComposerDraft);
   const customAgents = useAppStore((s) => s.customAgents);
+  const sandboxEngine = useAppStore((s) => s.sandboxEngine);
 
   // Hide the thinking-effort picker for a model the catalog knows can't reason.
   // When the model is unknown (a new session before the first turn, or one the
@@ -151,6 +152,14 @@ export function Composer({
 
   const detail = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
   const thinkingLevels = detail?.thinkingLevels ?? [];
+
+  // A new-agent draft can still hold a non-Claude provider chosen before the
+  // sandbox engine was switched to Docker. Only Claude runs in Docker today, so
+  // block the send here — otherwise the stale selection reaches spawnAgent and
+  // fails in the backend. `provider` mirrors a custom agent's base, so this
+  // covers custom agents too. Existing sessions already spawned with their
+  // engine and keep a locked picker, so they're exempt.
+  const dockerBlocked = !existingSession && sandboxEngine === "docker" && provider !== "claude";
 
   const [thinkingValue, setThinkingValue] = useState<string | undefined>(() =>
     resolveThinking(defaultProvider),
@@ -265,7 +274,7 @@ export function Composer({
       onStop?.();
       return;
     }
-    if ((!trimmed && attachments.length === 0) || disabled) return;
+    if ((!trimmed && attachments.length === 0) || disabled || dockerBlocked) return;
     onSend({ text: trimmed, provider, model, thinking: thinkingValue, customAgentId, attachments });
     setText("");
     setAttachments([]);
@@ -291,7 +300,7 @@ export function Composer({
   // Busy + empty → Stop; busy + typed (or idle) → Send. So a mid-turn
   // follow-up sends with Enter, and an empty composer still stops the turn.
   const showStop = stopping && !hasContent;
-  const sendDisabled = showStop ? !onStop : disabled || !hasContent;
+  const sendDisabled = showStop ? !onStop : disabled || !hasContent || dockerBlocked;
 
   return (
     <div className={`composer${isDropTarget ? " is-drop-target" : ""}`}>
@@ -376,15 +385,27 @@ export function Composer({
         </Chip>
         <span style={{ flex: 1 }} />
         {features.tokenUsage && usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
-        <button
-          type="button"
-          className={`send flex-center ${showStop ? "is-stop" : ""}`}
-          disabled={sendDisabled}
-          onClick={showStop ? stop : send}
-          aria-label={showStop ? "Stop" : "Send"}
+        {/* A disabled <button> swallows hover in the WebView, so the reason
+         *  rides a wrapper span that stays hover-capable (same pattern as the
+         *  ModelPicker's disabled rows). */}
+        <span
+          className={dockerBlocked ? "tip" : undefined}
+          data-tip={
+            dockerBlocked
+              ? `${providerLabel(provider)} isn't available in Docker sandboxes yet — switch to Claude to send`
+              : undefined
+          }
         >
-          <Icon name={showStop ? "stop" : "arrowUp"} size={13} />
-        </button>
+          <button
+            type="button"
+            className={`send flex-center ${showStop ? "is-stop" : ""}`}
+            disabled={sendDisabled}
+            onClick={showStop ? stop : send}
+            aria-label={showStop ? "Stop" : "Send"}
+          >
+            <Icon name={showStop ? "stop" : "arrowUp"} size={13} />
+          </button>
+        </span>
       </div>
     </div>
   );

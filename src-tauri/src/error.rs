@@ -27,6 +27,9 @@ pub enum Error {
     #[error("database schema is newer than this app version")]
     SchemaTooNew,
 
+    #[error("sandbox unavailable: {0}")]
+    SandboxUnavailable(String),
+
     #[error("{0}")]
     Other(String),
 }
