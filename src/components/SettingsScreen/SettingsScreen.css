@@ -501,6 +501,20 @@
 .set-cauth-note {
   color: var(--fg-2);
 }
+/* Inline warning when the selected engine can't be used right now (e.g. a
+   persisted Docker choice whose daemon is down): new agents would fail to
+   launch until it's resolved, so surface it rather than let the Select read as
+   active. Warn-tinted like the other inline banners. */
+.set-sandbox-warn {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--warn), var(--bg-0) 86%);
+  border: 1px solid color-mix(in srgb, var(--warn), var(--bg-0) 68%);
+  border-radius: var(--r-md);
+  color: var(--fg-1);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
 
 /* ── PROVIDERS ───────────────────────────────────────────────────────── */
 .set-checked {

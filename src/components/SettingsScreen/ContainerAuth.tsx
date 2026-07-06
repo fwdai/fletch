@@ -67,8 +67,10 @@ export function ContainerAuth() {
 function ContainerAuthModal({ onClose }: { onClose: () => void }) {
   const status = useAppStore((s) => s.containerAuth?.status);
   const clearContainerAuthToken = useAppStore((s) => s.clearContainerAuthToken);
-  // On success the hook refreshes the status row, then closes the modal.
-  const { phase, url, error, connect, submit, cancel } = useClaudeSetup(onClose);
+  // No onConnected callback: the hook refreshes the status row itself, and we
+  // want the modal to stay open on success so its confirmation ("Connected…")
+  // and the "Done" button render. The user dismisses it.
+  const { phase, url, error, connect, submit, cancel } = useClaudeSetup();
   const [manual, setManual] = useState(false);
   const [busy, setBusy] = useState(false);
 
