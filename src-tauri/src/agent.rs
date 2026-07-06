@@ -482,12 +482,12 @@ fn pi_read(paths: &[PathBuf]) -> Vec<RawRecord> {
 // Claude is the lone persistent-runner agent (not in PER_TURN_AGENTS), launched
 // `--session-id <uuid>` / `--resume <uuid>`, so it writes
 // `<config-dir>/projects/<slug>/<uuid>.jsonl` (config-dir = CLAUDE_CONFIG_DIR or
-// `~/.claude`). find_session_jsonl already locates it. Content lines carry a
-// top-level
+// `~/.claude`). find_session_jsonl locates it, honoring the Docker sandbox's
+// per-agent transcript dir (derived from `cwd`). Content lines carry a top-level
 // `uuid`; metadata lines (mode/permission-mode/…) don't → positional fallback.
 
-fn claude_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
-    crate::transcripts::find_session_jsonl(session_id)
+fn claude_locate(session_id: &str, cwd: &Path) -> Vec<PathBuf> {
+    crate::transcripts::find_session_jsonl(session_id, cwd)
         .into_iter()
         .collect()
 }

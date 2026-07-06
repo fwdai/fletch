@@ -106,6 +106,12 @@ const CREDENTIALS_FILE: &str = ".credentials.json";
 /// design closes.
 const EPHEMERAL_RUNTIME_SUBDIRS: &[&str] = &["session-env", "shell-snapshots"];
 
+/// Claude's session-transcript subdir within a config dir (`<config-dir>/
+/// projects/<slug>/<uuid>.jsonl`). Unlike [`EPHEMERAL_RUNTIME_SUBDIRS`], this
+/// one is bind-mounted to a *persistent* per-agent host dir (not tmpfs) so
+/// `--resume` survives container recreation — see [`push_claude_config_mount`].
+const PROJECTS_SUBDIR: &str = "projects";
+
 /// Auth variables forwarded into containers with bare `-e NAME` (values ride
 /// the docker CLI's process env — invariant 3). `ANTHROPIC_BASE_URL` /
 /// `ANTHROPIC_AUTH_TOKEN` cover proxy setups; a bare `-e` for an unset variable
@@ -222,6 +228,25 @@ impl SandboxEngine for DockerEngine {
             prepare_config_mount_dir(dir)?;
         }
 
+        // Per-agent host dir backing claude's `projects/` (session transcripts).
+        // Bind-mounted read-write over the read-only config dir's `projects/`
+        // (see [`push_claude_config_mount`]) so `--resume` survives container
+        // recreation without exposing the shared `~/.claude/projects` — other
+        // agents' transcripts and global memory stay unreachable (invariant 5).
+        // Lives under the agent's writable root, so archive teardown's `rm -rf`
+        // of that root reclaims it with no separate cleanup. Created before
+        // `docker run` so Docker binds an existing source instead of
+        // materializing it root-owned.
+        let projects_src = ctx
+            .writable_root
+            .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME);
+        std::fs::create_dir_all(&projects_src).map_err(|e| {
+            Error::Other(format!(
+                "preparing Docker sandbox projects mount {} failed: {e}",
+                projects_src.display()
+            ))
+        })?;
+
         // Object stores every checkout under the agent's writable root borrows
         // via git alternates (a --shared clone). Scanned across all tracked
         // repos, not just the primary `cwd`: a multi-repo agent has one shared
@@ -251,6 +276,7 @@ impl SandboxEngine for DockerEngine {
             borrowed_object_stores: &borrowed_object_stores,
             claude_credentials_rw,
             config_dir_credentials_rw,
+            projects_src: &projects_src,
             memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
             cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
             image: &image,
@@ -461,6 +487,11 @@ struct RunSpec<'a> {
     /// Same, for the non-default `CLAUDE_CONFIG_DIR` (only meaningful when
     /// `claude_config_dir` is `Some`).
     config_dir_credentials_rw: bool,
+    /// Per-agent host dir bind-mounted read-write over each config dir's
+    /// `projects/` so claude's session transcript persists across container
+    /// recreation (resume) while the shared `~/.claude` stays read-only. Lives
+    /// under `writable_root`; see [`push_claude_config_mount`].
+    projects_src: &'a Path,
     memory: &'a str,
     cpus: &'a str,
     image: &'a str,
@@ -506,9 +537,15 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         &mut args,
         &spec.home.join(".claude"),
         spec.claude_credentials_rw,
+        spec.projects_src,
     );
     if let Some(dir) = spec.claude_config_dir {
-        push_claude_config_mount(&mut args, dir, spec.config_dir_credentials_rw);
+        push_claude_config_mount(
+            &mut args,
+            dir,
+            spec.config_dir_credentials_rw,
+            spec.projects_src,
+        );
     }
     args.push("-w".into());
     args.push(spec.cwd.to_string_lossy().into_owned());
@@ -532,17 +569,20 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args
 }
 
-/// Create a claude config dir and its ephemeral-runtime mountpoints before it's
-/// handed to `-v`. The dir itself must exist or Docker would materialize it
-/// root-owned; each [`EPHEMERAL_RUNTIME_SUBDIRS`] entry must exist *inside* it
-/// too, because the tmpfs overlay ([`push_claude_config_mount`]) mounts onto
-/// that subpath and the RO parent bind can't grow a fresh mountpoint at run
-/// time. Creating empty dirs is harmless — the tmpfs shadows them, so nothing
-/// the agent writes there ever lands on the host.
+/// Create a claude config dir and its overlay mountpoints before it's handed to
+/// `-v`. The dir itself must exist or Docker would materialize it root-owned;
+/// each overlay target must exist *inside* it too, because the overlay
+/// ([`push_claude_config_mount`]) mounts onto that subpath and the RO parent
+/// bind can't grow a fresh mountpoint at run time. The overlays are the
+/// [`EPHEMERAL_RUNTIME_SUBDIRS`] tmpfs targets plus `projects/` (the read-write
+/// per-agent transcript bind). Creating empty dirs is harmless — the overlay
+/// shadows each, so nothing the agent writes there lands on this shared dir.
 fn prepare_config_mount_dir(dir: &Path) -> Result<()> {
-    for target in std::iter::once(dir.to_path_buf())
-        .chain(EPHEMERAL_RUNTIME_SUBDIRS.iter().map(|s| dir.join(s)))
-    {
+    let overlays = EPHEMERAL_RUNTIME_SUBDIRS
+        .iter()
+        .copied()
+        .chain(std::iter::once(PROJECTS_SUBDIR));
+    for target in std::iter::once(dir.to_path_buf()).chain(overlays.map(|s| dir.join(s))) {
         std::fs::create_dir_all(&target).map_err(|e| {
             Error::Other(format!(
                 "preparing Docker sandbox config mount {} failed: {e}",
@@ -554,20 +594,34 @@ fn prepare_config_mount_dir(dir: &Path) -> Result<()> {
 }
 
 /// Bind-mount a claude config dir **read-only**, then layer the writable
-/// exceptions on top: `.credentials.json` (when `credentials_rw`) so OAuth
-/// token refresh persists to the host, and an ephemeral tmpfs per
-/// [`EPHEMERAL_RUNTIME_SUBDIRS`] entry so claude's per-session scaffolding
-/// (`session-env`, `shell-snapshots`) can be written without a bare write to
-/// the RO dir failing with `EROFS`. The dir is shared host state whose
-/// `settings.json` can define hooks Claude Code executes on the host, so a
-/// container agent must not be able to write it (invariant 5); these overlays
-/// are the sole exceptions and each is deliberately either the host credential
-/// file or throwaway container-local storage — never a persistent host write
-/// surface. Every overlay is pushed *after* the RO dir mount so Docker layers
-/// it on top; the credentials `-v` is skipped when the file is absent (a bare
-/// `-v` on a missing source would have Docker create a root-owned dir there),
-/// while the tmpfs overlays need no source and always apply.
-fn push_claude_config_mount(args: &mut Vec<String>, dir: &Path, credentials_rw: bool) {
+/// exceptions on top. The dir is shared host state whose `settings.json` can
+/// define hooks Claude Code executes on the host, so a container agent must not
+/// be able to write it (invariant 5); these are the sole exceptions, and each is
+/// deliberately either the host credential file, throwaway container-local
+/// storage, or a per-agent host dir that never touches the shared config:
+///
+/// - `.credentials.json` (when `credentials_rw`) — remounted read-write so
+///   claude's OAuth token refresh persists to the host. Skipped when the file
+///   is absent (a bare `-v` on a missing source would have Docker create a
+///   root-owned dir there).
+/// - each [`EPHEMERAL_RUNTIME_SUBDIRS`] entry (`session-env`, `shell-snapshots`)
+///   — an ephemeral tmpfs so claude's per-session scaffolding can be written
+///   without a bare write to the RO dir failing with `EROFS`. Needs no source.
+/// - `projects/` — `projects_src` (a per-agent host dir under `writable_root`)
+///   bound read-write over it, so claude's session transcript persists across
+///   container recreation (`--resume` after an app relaunch) while the shared
+///   `~/.claude/projects` — other agents' transcripts, global memory — stays
+///   unreadable and unwritable. This is a *non-identical-path* bind: it departs
+///   from invariant 1's identical-host-path rule, which `projects/` doesn't need
+///   since claude references it only through its config dir.
+///
+/// Every overlay is pushed *after* the RO dir mount so Docker layers it on top.
+fn push_claude_config_mount(
+    args: &mut Vec<String>,
+    dir: &Path,
+    credentials_rw: bool,
+    projects_src: &Path,
+) {
     let path = dir.to_string_lossy();
     args.push("-v".into());
     args.push(format!("{path}:{path}:ro"));
@@ -577,6 +631,13 @@ fn push_claude_config_mount(args: &mut Vec<String>, dir: &Path, credentials_rw: 
         args.push("-v".into());
         args.push(format!("{creds}:{creds}"));
     }
+    let projects_target = dir.join(PROJECTS_SUBDIR);
+    args.push("-v".into());
+    args.push(format!(
+        "{}:{}",
+        projects_src.to_string_lossy(),
+        projects_target.to_string_lossy()
+    ));
     for sub in EPHEMERAL_RUNTIME_SUBDIRS {
         args.push("--tmpfs".into());
         args.push(dir.join(sub).to_string_lossy().into_owned());
@@ -677,6 +738,7 @@ mod tests {
             borrowed_object_stores: &[],
             claude_credentials_rw: false,
             config_dir_credentials_rw: false,
+            projects_src: Path::new("/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects"),
             memory: "4g",
             cpus: "2",
             image: "fletch-agent:abc123def456",
@@ -694,9 +756,10 @@ mod tests {
 
     #[test]
     fn argv_mounts_exactly_the_three_dirs_at_identical_paths() {
-        // Workspace + mailbox read-write; `~/.claude` read-only (invariant 5).
-        // No credentials file in this spec, so no writable overlay is appended;
-        // no borrowed object stores, so no `.git/objects` RO mount either.
+        // Workspace + mailbox read-write; `~/.claude` read-only (invariant 5),
+        // followed by the read-write per-agent `projects/` transcript overlay.
+        // No credentials file in this spec, so no credentials overlay; no
+        // borrowed object stores, so no `.git/objects` RO mount either.
         let args = run_args(&test_spec(false));
         assert_eq!(
             values_of(&args, "-v"),
@@ -704,6 +767,7 @@ mod tests {
                 "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
                 "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
                 "/Users/u/.claude:/Users/u/.claude:ro",
+                "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
             ],
         );
         assert!(
@@ -796,6 +860,49 @@ mod tests {
         );
     }
 
+    /// Claude persists its session transcript at `<config-dir>/projects/<slug>/
+    /// <uuid>.jsonl`; under the RO `~/.claude` mount that write fails, so
+    /// `--resume` can't survive a container recreation. A read-write bind of the
+    /// per-agent host dir (under `writable_root`) over `~/.claude/projects`
+    /// fixes it *without* exposing the shared `~/.claude/projects` — the bind
+    /// source is the isolated per-agent dir, not any host `~/.claude` path.
+    #[test]
+    fn argv_binds_per_agent_projects_dir_read_write() {
+        let args = run_args(&test_spec(false));
+
+        // The transcript overlay: per-agent host source → container projects/,
+        // read-write (no `:ro` suffix).
+        let overlay =
+            "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects";
+        assert!(
+            values_of(&args, "-v").contains(&overlay),
+            "projects transcript overlay must be bound read-write",
+        );
+
+        // Ordered after the RO `~/.claude` mount so Docker layers it on top.
+        let ro_idx = args
+            .iter()
+            .position(|a| a == "/Users/u/.claude:/Users/u/.claude:ro")
+            .expect("~/.claude mounted read-only");
+        let overlay_idx = args.iter().position(|a| a == overlay).unwrap();
+        assert!(ro_idx < overlay_idx, "projects overlay must follow the RO dir mount");
+
+        // Invariant 5: no read-write bind draws from a host `~/.claude` path, so
+        // the shared config's `projects/` (other agents' transcripts, global
+        // memory) is unwritable. Only the read-only `~/.claude` bind may name it
+        // as a source; this spec has no `.credentials.json`, its lone exception.
+        for mount in values_of(&args, "-v") {
+            if mount.ends_with(":ro") {
+                continue;
+            }
+            let (src, _) = mount.split_once(':').unwrap();
+            assert!(
+                !src.starts_with("/Users/u/.claude"),
+                "no host ~/.claude path may be a read-write bind source: {mount}",
+            );
+        }
+    }
+
     /// A host with no credentials file still launches — the writable overlay is
     /// skipped rather than pointing `-v` at a missing source (which Docker would
     /// materialize as a root-owned directory).
@@ -818,8 +925,8 @@ mod tests {
         let mut spec = test_spec(false);
         spec.borrowed_object_stores = &stores;
         let args = run_args(&spec);
-        // Order: workspace RW, mailbox RW, borrowed store RO, then `~/.claude`
-        // RO (invariant 5).
+        // Order: workspace RW, mailbox RW, borrowed store RO, `~/.claude` RO
+        // (invariant 5), then the RW per-agent `projects/` transcript overlay.
         assert_eq!(
             values_of(&args, "-v"),
             vec![
@@ -827,6 +934,7 @@ mod tests {
                 "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
                 "/Users/u/repo/.git/objects:/Users/u/repo/.git/objects:ro",
                 "/Users/u/.claude:/Users/u/.claude:ro",
+                "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
             ],
         );
     }
@@ -1158,9 +1266,15 @@ mod tests {
         let root = td.path().join("root");
         let rpc = td.path().join("rpc");
         let home = td.path().join("home");
-        for d in [&root, &rpc, &home.join(".claude")] {
+        for d in [&root, &rpc] {
             std::fs::create_dir_all(d).unwrap();
         }
+        // Same mount-source/mountpoint prep `launch_agent` does, so the tmpfs
+        // overlays and the `projects/` bind have targets under the RO `~/.claude`
+        // bind and a source dir that isn't materialized root-owned.
+        prepare_config_mount_dir(&home.join(".claude")).unwrap();
+        let projects_src = root.join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME);
+        std::fs::create_dir_all(&projects_src).unwrap();
         let name = container_name("b2-int-test");
         let args = run_args(&RunSpec {
             interactive: false,
@@ -1174,6 +1288,7 @@ mod tests {
             borrowed_object_stores: &[],
             claude_credentials_rw: false,
             config_dir_credentials_rw: false,
+            projects_src: &projects_src,
             memory: "256m",
             cpus: "1",
             image: "busybox",

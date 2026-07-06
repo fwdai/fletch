@@ -10,12 +10,31 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 
+/// Directory (under an agent's writable root) that the Docker sandbox binds
+/// over the container's read-only `<config-dir>/projects`, so claude's session
+/// transcripts persist on a per-agent host dir instead of the shared, read-only
+/// `~/.claude` (see `sandbox::docker`). Shared with the mount side so the writer
+/// and this reader agree on one name.
+pub(crate) const DOCKER_CLAUDE_PROJECTS_DIRNAME: &str = ".fletch-claude-projects";
+
 /// Locate the claude session JSONL by scanning the candidate `projects/*/`
 /// dirs (see [`claude_projects_dirs`]) for `<session-id>.jsonl`. Claude's
 /// path-encoding scheme isn't part of its public API, so we glob instead of
 /// recomputing the encoded directory name from the worktree path.
-pub(crate) fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
-    find_session_jsonl_in(&claude_projects_dirs(), session_id)
+///
+/// A Docker-sandboxed agent writes its transcript to a per-agent host dir
+/// ([`DOCKER_CLAUDE_PROJECTS_DIRNAME`]) rather than the shared `~/.claude`, so
+/// that dir is scanned first. The agent's cwd is `<writable_root>/<repo>`, so
+/// its parent is the writable root that holds it. Seatbelt agents have no such
+/// dir (it won't exist and is skipped), so the scan falls through to the
+/// standard `~/.claude` / `CLAUDE_CONFIG_DIR` candidates.
+pub(crate) fn find_session_jsonl(session_id: &str, cwd: &Path) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = cwd.parent() {
+        dirs.push(parent.join(DOCKER_CLAUDE_PROJECTS_DIRNAME));
+    }
+    dirs.extend(claude_projects_dirs());
+    find_session_jsonl_in(&dirs, session_id)
 }
 
 /// Candidate `projects` directories Claude may have written transcripts to.
@@ -209,6 +228,29 @@ mod tests {
 
         let missing = cfg.path().join("does-not-exist");
         let found = find_session_jsonl_in(&[missing, projects], sid);
+        assert_eq!(found.as_deref(), Some(jsonl.as_path()));
+    }
+
+    #[test]
+    fn find_session_jsonl_prefers_docker_per_agent_dir() {
+        // A Docker-sandboxed agent writes its transcript to
+        // `<writable_root>/<DOCKER_CLAUDE_PROJECTS_DIRNAME>/<slug>/<sid>.jsonl`,
+        // where the agent's cwd is `<writable_root>/<repo>`. The locator derives
+        // that dir from `cwd.parent()` and scans it first — no dependency on the
+        // host `~/.claude`, which the container never wrote (the match early-
+        // returns before any real-home candidate is read).
+        let td = tempfile::tempdir().unwrap();
+        let writable_root = td.path().join("orkney");
+        let cwd = writable_root.join("repo");
+        let slug = writable_root
+            .join(DOCKER_CLAUDE_PROJECTS_DIRNAME)
+            .join("-Users-u-orkney-repo");
+        std::fs::create_dir_all(&slug).unwrap();
+        let sid = "11111111-2222-3333-4444-555555555555";
+        let jsonl = slug.join(format!("{sid}.jsonl"));
+        std::fs::write(&jsonl, b"{}\n").unwrap();
+
+        let found = find_session_jsonl(sid, &cwd);
         assert_eq!(found.as_deref(), Some(jsonl.as_path()));
     }
 }
