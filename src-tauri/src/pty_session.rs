@@ -222,7 +222,17 @@ impl PtySession {
     /// synchronously, so the app can't exit and leak an orphan. Callers that
     /// hold a lock should drop it first (see `RunSession::stop`).
     pub fn kill(&self) -> Result<()> {
-        self.kill_plan.kill()?;
+        // Tear the sandbox down first, then ALWAYS run the local process-group
+        // kill — a failed engine teardown must never skip reaping the host-side
+        // wrapper child (exec_session documents the same ordering). Both results
+        // are bound before we combine, so the local kill runs even when the
+        // engine kill errors; the engine error then takes precedence.
+        let engine_result = self.kill_plan.kill();
+        let local_result = self.kill_local_process();
+        engine_result.and(local_result)
+    }
+
+    fn kill_local_process(&self) -> Result<()> {
         #[cfg(unix)]
         if let Some(pgid) = self.pgid {
             return kill_process_group(pgid);

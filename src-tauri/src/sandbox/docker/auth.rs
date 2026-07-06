@@ -73,6 +73,18 @@ const SHELL_AUTH_VARS: [&str; 4] = [
     "ANTHROPIC_AUTH_TOKEN",
 ];
 
+/// Proxy/gateway endpoint config that rides along with *any* resolved
+/// credential. Unlike a credential this doesn't authenticate — it only points
+/// the resolved login at a different endpoint — so it must reach the container
+/// regardless of which chain step won (the `ShellEnv` step already forwards it
+/// via [`SHELL_AUTH_VARS`]). Deliberately excludes every credential var —
+/// [`SHELL_KEY_VARS`] *and* `ANTHROPIC_AUTH_TOKEN`, which Claude sends as a
+/// bearer credential and prefers over the OAuth login: an ambient one must
+/// never ride along and override, say, the Keychain login the chain picked.
+/// `ANTHROPIC_AUTH_TOKEN` still forwards when the shell env is itself the
+/// resolved source (via [`SHELL_AUTH_VARS`]), just not on top of another.
+const PROXY_RIDE_ALONG: [&str; 1] = ["ANTHROPIC_BASE_URL"];
+
 /// Expected prefix of a `claude setup-token` credential. Other shapes are
 /// accepted with a warning — the format isn't a contract we own.
 const SETUP_TOKEN_PREFIX: &str = "sk-ant-oat";
@@ -260,15 +272,30 @@ fn resolve_from(
     shell_env: Option<&HashMap<String, String>>,
     credentials_file: bool,
 ) -> ContainerAuth {
+    // Append the proxy/gateway ride-along vars (see [`PROXY_RIDE_ALONG`]) to a
+    // credential the chain picked from a source other than the shell env, so a
+    // custom endpoint still reaches the container without any *credential* var
+    // riding along to override the resolved login.
+    let with_proxy = |mut env: Vec<(String, String)>| -> Vec<(String, String)> {
+        if let Some(shell) = shell_env {
+            for var in PROXY_RIDE_ALONG {
+                if let Some(value) = shell.get(var).map(|v| v.trim()).filter(|v| !v.is_empty()) {
+                    env.push((var.to_string(), value.to_string()));
+                }
+            }
+        }
+        env
+    };
+
     if let Some(token) = keychain {
         return ContainerAuth::Resolved {
-            env: vec![(OAUTH_TOKEN_VAR.to_string(), token)],
+            env: with_proxy(vec![(OAUTH_TOKEN_VAR.to_string(), token)]),
             source: AuthSource::Keychain,
         };
     }
     if let Some(token) = stored {
         return ContainerAuth::Resolved {
-            env: vec![(OAUTH_TOKEN_VAR.to_string(), token)],
+            env: with_proxy(vec![(OAUTH_TOKEN_VAR.to_string(), token)]),
             source: AuthSource::StoredToken,
         };
     }
@@ -297,7 +324,7 @@ fn resolve_from(
     }
     if credentials_file {
         return ContainerAuth::Resolved {
-            env: Vec::new(),
+            env: with_proxy(Vec::new()),
             source: AuthSource::CredentialsFile,
         };
     }
@@ -425,6 +452,31 @@ mod tests {
     }
 
     #[test]
+    fn proxy_config_rides_along_but_ambient_credentials_do_not() {
+        // Keychain wins, but the shell also exports a proxy base URL and a
+        // competing API key. The base URL rides along (endpoint config); the
+        // API key must NOT — forwarding it would let claude prefer it over the
+        // Keychain login the chain actually resolved.
+        let shell = shell_env(&[
+            ("ANTHROPIC_API_KEY", "sk-ant-ambient-key"),
+            ("ANTHROPIC_BASE_URL", "https://proxy.example.com"),
+        ]);
+        let (env, source) = resolved(resolve_from(
+            Some("sk-ant-oat-keychain".into()),
+            None,
+            Some(&shell),
+            false,
+        ));
+        assert_eq!(source, AuthSource::Keychain);
+        let mut keys: Vec<_> = env.iter().map(|(k, _)| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN"]);
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == "sk-ant-oat-keychain"));
+    }
+
+    #[test]
     fn usable_oauth_token_extracts_or_rejects() {
         // Same shape for the file and the Keychain password: extract the token
         // when usable, reject the macOS placeholder and malformed blobs.
@@ -496,12 +548,21 @@ mod tests {
     }
 
     #[test]
-    fn proxy_vars_alone_are_not_a_hit() {
-        // BASE_URL without a key var must fall through — it can't authenticate.
+    fn proxy_vars_alone_are_not_a_hit_but_ride_along() {
+        // BASE_URL without a key var can't authenticate, so it doesn't make the
+        // shell env a credential hit — resolution falls through to the
+        // credentials file. The proxy endpoint still rides along so the
+        // container honors it.
         let shell = shell_env(&[("ANTHROPIC_BASE_URL", "https://proxy.example.com")]);
         let (env, source) = resolved(resolve_from(None, None, Some(&shell), true));
         assert_eq!(source, AuthSource::CredentialsFile);
-        assert!(env.is_empty());
+        assert_eq!(
+            env,
+            vec![(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://proxy.example.com".to_string()
+            )]
+        );
     }
 
     #[test]

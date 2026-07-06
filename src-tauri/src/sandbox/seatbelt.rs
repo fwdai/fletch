@@ -305,8 +305,16 @@ pub fn build_profile(
     // A non-default `CLAUDE_CONFIG_DIR` is where claude actually writes its
     // config/transcripts/auth, so grant it too. Resolve symlinks first so the
     // SBPL path matches what the sandbox sees at write time (every other entry
-    // is canonical); then skip it when it's the default `~/.claude` already
-    // allowed above, to avoid a redundant entry.
+    // is canonical); then skip it only when it equals the *raw* default
+    // `{home}/.claude` granted above (`claude_state`), to avoid a redundant
+    // entry. Compare against the raw default deliberately — do NOT canonicalize
+    // this side: `claude_state` grants the raw path, so if a resolved config dir
+    // differs from it we must still add the extra grant. If `~/.claude` is
+    // itself a symlink and the config dir points at its resolved target,
+    // canonicalizing here would treat it as default and drop the grant, yet the
+    // raw `claude_state` rule wouldn't cover the target — denying claude's
+    // writes. (Docker can canonicalize both sides because its `~/.claude` bind
+    // mount follows the symlink source; the SBPL allow-list can't.)
     let claude_config_extra = claude_config_dir
         .map(resolve_existing_prefix)
         .map(|p| p.to_string_lossy().into_owned())
@@ -396,7 +404,7 @@ fn canonical(p: &Path) -> Result<PathBuf> {
 /// well-known macOS symlinks (`/tmp` → `/private/tmp`, `/var` → `/private/var`),
 /// so the emitted SBPL path matches the sandbox's resolved write path. Falls
 /// back to `p` unchanged if nothing resolves (e.g. a bogus path).
-fn resolve_existing_prefix(p: &Path) -> PathBuf {
+pub(crate) fn resolve_existing_prefix(p: &Path) -> PathBuf {
     let mut cur = p.to_path_buf();
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     loop {
