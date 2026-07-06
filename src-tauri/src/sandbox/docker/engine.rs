@@ -25,10 +25,17 @@
 //!   shared host state: its `settings.json` can define hooks Claude Code runs
 //!   *on the host*, and it holds other agents' transcripts and MCP secrets. It
 //!   is mounted read-only so a prompt-injected container agent cannot plant a
-//!   host-executed hook. The one writable file is `.credentials.json`,
-//!   remounted read-write on top (RW file mount ordered after the RO dir mount
-//!   in argv) so claude's own OAuth token refresh still persists to the host —
-//!   the `CredentialsFile` auth chain in [`super::auth`] depends on it.
+//!   host-executed hook. Two kinds of writable exception are layered on top,
+//!   both ordered after the RO dir mount in argv: `.credentials.json` is
+//!   remounted read-write so claude's own OAuth token refresh still persists to
+//!   the host (the `CredentialsFile` auth chain in [`super::auth`] depends on
+//!   it), and each [`EPHEMERAL_RUNTIME_SUBDIRS`] entry (`session-env`,
+//!   `shell-snapshots`) gets an ephemeral **tmpfs** overlay so claude's
+//!   per-session scaffolding — which it otherwise `mkdir`s under the RO dir and
+//!   fails with `EROFS` — is written to throwaway container-local storage that
+//!   never reaches the host. Neither exception is a persistent host write
+//!   surface, so invariant 5 holds: nothing an agent writes under `~/.claude`
+//!   survives to influence the host or a later session.
 //! - **Secrets never in argv (invariant 3).** Auth vars are set on the docker
 //!   *CLI process* environment (`LaunchPlan::env`) and forwarded into the
 //!   container with bare `-e NAME` — the value never appears in `ps`.
@@ -77,6 +84,27 @@ const DEFAULT_CPUS: &str = "2";
 /// here, and the `CredentialsFile` auth chain (see [`super::auth`]) needs that
 /// write to land on the host. Mounted read-write on top of the read-only dir.
 const CREDENTIALS_FILE: &str = ".credentials.json";
+
+/// Subdirs of a claude config dir that Claude Code creates and writes *afresh
+/// every session* — the per-session env store (`mkdir session-env/<id>` at
+/// startup) and the shell-environment snapshot the Bash tool sources. The
+/// config dir is bind-mounted read-only (invariant 5), so a bare write here
+/// fails with `EROFS` and aborts the agent before it runs. Each gets an
+/// ephemeral **tmpfs** overlay instead: claude writes its own per-session
+/// scaffolding into throwaway container-local storage, nothing reaches the
+/// shared host config, and nothing persists across runs.
+///
+/// Deliberately narrow — only claude-regenerated, non-config, non-executable
+/// state belongs here. Everything else under the config dir stays read-only so
+/// a prompt-injected agent can't plant a host-executed `hook`/`plugin`/`skill`,
+/// a `settings.json` permission grant, a `CLAUDE.md` instruction, or a
+/// `projects/<cwd>/memory` entry a later session would trust (invariant 5).
+/// `projects/` in particular is left read-only on purpose: the RO mount already
+/// lets claude *read* config and memory, and its transcript writes are
+/// best-effort (a failed write logs and continues), so it needs no overlay —
+/// while making it writable would reopen exactly the injection surface this
+/// design closes.
+const EPHEMERAL_RUNTIME_SUBDIRS: &[&str] = &["session-env", "shell-snapshots"];
 
 /// Auth variables forwarded into containers with bare `-e NAME` (values ride
 /// the docker CLI's process env — invariant 3). `ANTHROPIC_BASE_URL` /
@@ -189,19 +217,9 @@ impl SandboxEngine for DockerEngine {
         // loses access to its auth/config. Fail the launch with the path
         // instead of pressing on with a bad mount.
         let claude_dir = ctx.home.join(".claude");
-        std::fs::create_dir_all(&claude_dir).map_err(|e| {
-            Error::Other(format!(
-                "preparing Docker sandbox config mount {} failed: {e}",
-                claude_dir.display()
-            ))
-        })?;
+        prepare_config_mount_dir(&claude_dir)?;
         if let Some(dir) = &claude_config_dir {
-            std::fs::create_dir_all(dir).map_err(|e| {
-                Error::Other(format!(
-                    "preparing Docker sandbox config mount {} failed: {e}",
-                    dir.display()
-                ))
-            })?;
+            prepare_config_mount_dir(dir)?;
         }
 
         // Object stores every checkout under the agent's writable root borrows
@@ -514,14 +532,41 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args
 }
 
-/// Bind-mount a claude config dir **read-only**, then — when `credentials_rw` —
-/// remount its `.credentials.json` read-write on top. The dir is shared host
-/// state whose `settings.json` can define hooks Claude Code executes on the
-/// host, so a container agent must not be able to write it (invariant 5); the
-/// credential file is the sole exception so OAuth token refresh persists. The
-/// RW file mount is pushed *after* the RO dir mount so Docker layers the file
-/// over the directory, and skipped entirely when the file is absent (a bare
-/// `-v` on a missing source would have Docker create a root-owned dir there).
+/// Create a claude config dir and its ephemeral-runtime mountpoints before it's
+/// handed to `-v`. The dir itself must exist or Docker would materialize it
+/// root-owned; each [`EPHEMERAL_RUNTIME_SUBDIRS`] entry must exist *inside* it
+/// too, because the tmpfs overlay ([`push_claude_config_mount`]) mounts onto
+/// that subpath and the RO parent bind can't grow a fresh mountpoint at run
+/// time. Creating empty dirs is harmless — the tmpfs shadows them, so nothing
+/// the agent writes there ever lands on the host.
+fn prepare_config_mount_dir(dir: &Path) -> Result<()> {
+    for target in std::iter::once(dir.to_path_buf())
+        .chain(EPHEMERAL_RUNTIME_SUBDIRS.iter().map(|s| dir.join(s)))
+    {
+        std::fs::create_dir_all(&target).map_err(|e| {
+            Error::Other(format!(
+                "preparing Docker sandbox config mount {} failed: {e}",
+                target.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// Bind-mount a claude config dir **read-only**, then layer the writable
+/// exceptions on top: `.credentials.json` (when `credentials_rw`) so OAuth
+/// token refresh persists to the host, and an ephemeral tmpfs per
+/// [`EPHEMERAL_RUNTIME_SUBDIRS`] entry so claude's per-session scaffolding
+/// (`session-env`, `shell-snapshots`) can be written without a bare write to
+/// the RO dir failing with `EROFS`. The dir is shared host state whose
+/// `settings.json` can define hooks Claude Code executes on the host, so a
+/// container agent must not be able to write it (invariant 5); these overlays
+/// are the sole exceptions and each is deliberately either the host credential
+/// file or throwaway container-local storage — never a persistent host write
+/// surface. Every overlay is pushed *after* the RO dir mount so Docker layers
+/// it on top; the credentials `-v` is skipped when the file is absent (a bare
+/// `-v` on a missing source would have Docker create a root-owned dir there),
+/// while the tmpfs overlays need no source and always apply.
 fn push_claude_config_mount(args: &mut Vec<String>, dir: &Path, credentials_rw: bool) {
     let path = dir.to_string_lossy();
     args.push("-v".into());
@@ -531,6 +576,10 @@ fn push_claude_config_mount(args: &mut Vec<String>, dir: &Path, credentials_rw: 
         let creds = creds.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{creds}:{creds}"));
+    }
+    for sub in EPHEMERAL_RUNTIME_SUBDIRS {
+        args.push("--tmpfs".into());
+        args.push(dir.join(sub).to_string_lossy().into_owned());
     }
 }
 
@@ -705,6 +754,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Claude Code `mkdir`s `~/.claude/session-env/<id>` and writes a
+    /// `shell-snapshots/` entry every session; under the RO `~/.claude` mount
+    /// those fail with `EROFS` and abort the agent. Each gets an ephemeral
+    /// tmpfs overlay at its exact host path, ordered *after* the RO dir mount so
+    /// Docker layers it on top — and as `--tmpfs`, not `-v`, so no host write
+    /// surface is added (invariant 5).
+    #[test]
+    fn argv_overlays_ephemeral_runtime_dirs_with_tmpfs() {
+        let args = run_args(&test_spec(false));
+
+        // Exactly the whitelisted subdirs, at their identical host paths.
+        assert_eq!(
+            values_of(&args, "--tmpfs"),
+            vec![
+                "/Users/u/.claude/session-env",
+                "/Users/u/.claude/shell-snapshots",
+            ],
+        );
+
+        // The RO dir mount precedes every tmpfs overlay so Docker layers them on
+        // top rather than under the read-only bind.
+        let ro_idx = args
+            .iter()
+            .position(|a| a == "/Users/u/.claude:/Users/u/.claude:ro")
+            .expect("~/.claude mounted read-only");
+        for tmpfs in ["/Users/u/.claude/session-env", "/Users/u/.claude/shell-snapshots"] {
+            let idx = args.iter().position(|a| a == tmpfs).unwrap();
+            assert!(ro_idx < idx, "tmpfs overlay {tmpfs} must follow the RO dir mount");
+        }
+
+        // The overlays are tmpfs, never a `-v` bind — no `~/.claude` write
+        // surface reaches the host.
+        assert!(
+            !values_of(&args, "-v")
+                .iter()
+                .any(|m| m.contains("/session-env") || m.contains("/shell-snapshots")),
+            "runtime dirs must be tmpfs overlays, not host bind mounts",
+        );
     }
 
     /// A host with no credentials file still launches — the writable overlay is
