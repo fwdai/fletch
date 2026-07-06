@@ -41,7 +41,9 @@
 //! Seatbelt agents never see any of this — they keep the user's own login.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use parking_lot::RwLock;
 
@@ -156,14 +158,32 @@ impl fmt::Debug for ContainerAuth {
     }
 }
 
+/// The config dir whose `.credentials.json` claude reads: the explicit
+/// `CLAUDE_CONFIG_DIR` if set, else `~/.claude`. Pure over its inputs so the
+/// resolution is unit-testable without touching process env or `$HOME`.
+fn credentials_config_dir(config_dir_env: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
+    config_dir_env
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| h.join(".claude")))
+}
+
 /// Walk the auth chain (first hit wins). Called by the docker launch path at
 /// spawn time and, via [`status`], by the settings UI. May block on the first
 /// call: the login-shell env is loaded (a shell runs) if nothing earlier
 /// populated `bin_resolve`'s cache.
 pub fn resolve() -> ContainerAuth {
     let keychain = keychain_token();
-    let credentials_file = dirs::home_dir().is_some_and(|home| {
-        credentials_file_usable(std::fs::read(home.join(".claude/.credentials.json")).ok().as_deref())
+    // Check the config dir claude will actually read from — the explicit
+    // `CLAUDE_CONFIG_DIR` if set, else `~/.claude` — which is also the dir the
+    // engine mounts (see `nondefault_claude_config_dir`). Hardcoding `~/.claude`
+    // would refuse a container whose only credential is a `.credentials.json`
+    // living in a custom config dir.
+    let credentials_file = credentials_config_dir(
+        std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+    .is_some_and(|dir| {
+        credentials_file_usable(std::fs::read(dir.join(".credentials.json")).ok().as_deref())
     });
     let process_env: HashMap<String, String> = SHELL_AUTH_VARS
         .iter()
@@ -572,6 +592,24 @@ mod tests {
             resolve_from(None, None, Some(&shell), false),
             ContainerAuth::Unavailable
         ));
+    }
+
+    #[test]
+    fn credentials_config_dir_honors_claude_config_dir() {
+        let home = Path::new("/Users/u");
+        // Unset → the default `~/.claude`.
+        assert_eq!(
+            credentials_config_dir(None, Some(home)),
+            Some(PathBuf::from("/Users/u/.claude"))
+        );
+        // A custom `CLAUDE_CONFIG_DIR` is used verbatim — this is the dir claude
+        // reads its `.credentials.json` from and the one the engine mounts.
+        assert_eq!(
+            credentials_config_dir(Some(OsStr::new("/cfg/eve")), Some(home)),
+            Some(PathBuf::from("/cfg/eve"))
+        );
+        // No env and no home → nothing to check.
+        assert_eq!(credentials_config_dir(None, None), None);
     }
 
     #[test]

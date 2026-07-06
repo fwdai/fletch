@@ -79,6 +79,13 @@ pub enum KillHandle {
 impl KillHandle {
     /// Engine-side teardown. Callers still run their local child kill after
     /// this — for containers the local child is just the attached CLI.
+    ///
+    /// Note the `Result` is only the *engine* teardown's outcome. Sessions run
+    /// their local child/process-group kill unconditionally regardless of it,
+    /// but each combines the two differently: `pty_session` surfaces a local
+    /// kill failure too, while `managed`/`exec` treat the local child as
+    /// best-effort and return this engine result alone. So a caller can't read a
+    /// uniform meaning from `kill()`'s `Result` across the spawn shapes.
     pub fn kill(&self) -> Result<()> {
         match self {
             Self::ProcessGroup => Ok(()),
