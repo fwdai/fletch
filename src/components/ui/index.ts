@@ -12,6 +12,7 @@ export { DropdownItem, DropdownMenu, DropdownSection, DropdownSeparator } from "
 export { IconButton } from "./IconButton";
 export type { LoaderSize, LoaderVariant } from "./Loader";
 export { Loader } from "./Loader";
+export { SandboxBadge } from "./SandboxBadge";
 export { Scrim } from "./Scrim";
 export type { SelectOption } from "./Select";
 export { Select } from "./Select";
