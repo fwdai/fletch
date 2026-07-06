@@ -12,6 +12,15 @@
 //!   the app translates paths. The workspace and mailbox are read-write;
 //!   `~/.claude` (and any non-default `CLAUDE_CONFIG_DIR`) enters **read-only
 //!   except `.credentials.json`** (invariant 5).
+//! - **The real repo's writable state and its hooks never enter the container;
+//!   its object store enters read-only (invariant 2).** Only the agent's own
+//!   parent dir is mounted writable; `supervisor::lifecycle` forces clone-mode
+//!   workspaces for docker agents, so no linked-worktree `.git` pointer can
+//!   reach the user's repo. A `--shared` clone borrows the source's object
+//!   store via alternates (see `sandbox::provision`); that store — and only
+//!   that store, never the source `.git` (config/hooks) — is bind-mounted
+//!   **read-only** at its identical host path so in-container git can read
+//!   history while a write attempt fails with `Read-only file system`.
 //! - **`~/.claude` is not a write surface (invariant 5).** `~/.claude` is
 //!   shared host state: its `settings.json` can define hooks Claude Code runs
 //!   *on the host*, and it holds other agents' transcripts and MCP secrets. It
@@ -20,10 +29,6 @@
 //!   remounted read-write on top (RW file mount ordered after the RO dir mount
 //!   in argv) so claude's own OAuth token refresh still persists to the host —
 //!   the `CredentialsFile` auth chain in [`super::auth`] depends on it.
-//! - **The real repo never enters the container (invariant 2).** Only the
-//!   agent's own parent dir is mounted; `supervisor::lifecycle` forces
-//!   clone-mode workspaces for docker agents, so no linked-worktree `.git`
-//!   pointer can reach the user's repo.
 //! - **Secrets never in argv (invariant 3).** Auth vars are set on the docker
 //!   *CLI process* environment (`LaunchPlan::env`) and forwarded into the
 //!   container with bare `-e NAME` — the value never appears in `ps`.
@@ -199,6 +204,14 @@ impl SandboxEngine for DockerEngine {
             })?;
         }
 
+        // Object stores every checkout under the agent's writable root borrows
+        // via git alternates (a --shared clone). Scanned across all tracked
+        // repos, not just the primary `cwd`: a multi-repo agent has one shared
+        // clone per repo, each borrowing its own source's objects. Mounted
+        // read-only so in-container git reads borrowed history; empty for old
+        // full-copy clones or worktrees (no mount).
+        let borrowed_object_stores = borrowed_object_stores(ctx.writable_root);
+
         // The read-only config mounts get a writable `.credentials.json` overlay
         // only when the file already exists: a bare `-v` on a missing source
         // makes Docker create a root-owned *directory* there, which would break
@@ -217,6 +230,7 @@ impl SandboxEngine for DockerEngine {
             home: ctx.home,
             cwd: ctx.cwd,
             claude_config_dir: claude_config_dir.as_deref(),
+            borrowed_object_stores: &borrowed_object_stores,
             claude_credentials_rw,
             config_dir_credentials_rw,
             memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
@@ -344,6 +358,70 @@ fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
     Some(dir)
 }
 
+/// Every object store borrowed via git alternates by any checkout under the
+/// agent's `writable_root` — each an absolute path to mount read-only.
+///
+/// `writable_root` is the agent's parent dir, holding one checkout per tracked
+/// repo at `<root>/<subdir>/`. Each `--shared` clone records its source's
+/// objects in `<subdir>/.git/objects/info/alternates`; a multi-repo agent has
+/// several, so scanning only the primary `cwd` would leave secondary checkouts'
+/// borrowed objects unmounted and break git (log/diff/checkout/commit) there.
+///
+/// For each checkout the chain is followed transitively: `git clone --shared`
+/// records only the immediate source, so a chained source (B borrowed from A)
+/// leaves the checkout pointing at B while git resolves B→A at runtime — A must
+/// be mounted too or in-container git fails to normalize the alternate. Results
+/// are deduped (repos may share a base). No alternates anywhere (old full-copy
+/// clones, worktrees) → empty, so no extra mount is added — backward
+/// compatible. Reading the files rather than reconstructing paths keeps fresh
+/// spawn, resume, and view-switch uniform.
+fn borrowed_object_stores(writable_root: &Path) -> Vec<PathBuf> {
+    /// The alternates listed in `<objects_dir>/info/alternates`, if any.
+    fn read_alternates(objects_dir: &Path) -> Vec<PathBuf> {
+        let Ok(contents) = std::fs::read_to_string(objects_dir.join("info/alternates")) else {
+            return Vec::new();
+        };
+        contents
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(PathBuf::from)
+            .collect()
+    }
+
+    // Seed the chain walk from every checkout's own object store. Sort the
+    // subdirs so the mount order is deterministic (read_dir order isn't).
+    let mut checkouts: Vec<PathBuf> = match std::fs::read_dir(writable_root) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    checkouts.sort();
+
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // BFS over the alternates chains: each checkout's own alternates first (in
+    // file order), then each borrowed store's own. `seen` dedups shared bases
+    // and guards against a cyclic alternates chain.
+    let mut queue: std::collections::VecDeque<PathBuf> = checkouts
+        .iter()
+        .flat_map(|c| read_alternates(&c.join(".git/objects")))
+        .collect();
+    while let Some(store) = queue.pop_front() {
+        if !seen.insert(store.clone()) {
+            continue;
+        }
+        for next in read_alternates(&store) {
+            queue.push_back(next);
+        }
+        out.push(store);
+    }
+    out
+}
+
 /// Everything [`run_args`] needs, bundled so the builder is pure and the argv
 /// shape unit-testable without a daemon.
 struct RunSpec<'a> {
@@ -355,6 +433,10 @@ struct RunSpec<'a> {
     home: &'a Path,
     cwd: &'a Path,
     claude_config_dir: Option<&'a Path>,
+    /// Object stores borrowed via git alternates (a `--shared` clone),
+    /// bind-mounted read-only at their identical host paths. Empty for a
+    /// worktree or an old full-copy clone.
+    borrowed_object_stores: &'a [PathBuf],
     /// Whether `~/.claude/.credentials.json` exists as a file — gates the
     /// writable overlay on the read-only `~/.claude` mount.
     claude_credentials_rw: bool,
@@ -390,6 +472,17 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         let path = path.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}"));
+    }
+    // Object stores borrowed by a --shared clone, mounted read-only at their
+    // identical host path so the alternates file resolves in-container with no
+    // rewriting. RO keeps invariant 2: borrowed history is readable, but the
+    // source store (and, since we mount only `objects`, never `.git/hooks` or
+    // config) can't be mutated from inside the container. The list already
+    // includes any transitively-chained stores (see `borrowed_object_stores`).
+    for store in spec.borrowed_object_stores {
+        let path = store.to_string_lossy();
+        args.push("-v".into());
+        args.push(format!("{path}:{path}:ro"));
     }
     push_claude_config_mount(
         &mut args,
@@ -532,6 +625,7 @@ mod tests {
             home: Path::new("/Users/u"),
             cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
             claude_config_dir: None,
+            borrowed_object_stores: &[],
             claude_credentials_rw: false,
             config_dir_credentials_rw: false,
             memory: "4g",
@@ -552,7 +646,8 @@ mod tests {
     #[test]
     fn argv_mounts_exactly_the_three_dirs_at_identical_paths() {
         // Workspace + mailbox read-write; `~/.claude` read-only (invariant 5).
-        // No credentials file in this spec, so no writable overlay is appended.
+        // No credentials file in this spec, so no writable overlay is appended;
+        // no borrowed object stores, so no `.git/objects` RO mount either.
         let args = run_args(&test_spec(false));
         assert_eq!(
             values_of(&args, "-v"),
@@ -561,6 +656,10 @@ mod tests {
                 "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
                 "/Users/u/.claude:/Users/u/.claude:ro",
             ],
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("/objects")),
+            "no object-store mount without borrowed stores"
         );
         assert_eq!(
             values_of(&args, "-w"),
@@ -619,6 +718,126 @@ mod tests {
                 .iter()
                 .any(|m| m.contains("/.credentials.json")),
             "no credentials mount when the file is absent",
+        );
+    }
+
+    #[test]
+    fn argv_mounts_borrowed_object_store_read_only() {
+        // A --shared clone borrows the source's objects: the base three plus a
+        // single RO mount of the borrowed store at its identical host path.
+        let stores = vec![PathBuf::from("/Users/u/repo/.git/objects")];
+        let mut spec = test_spec(false);
+        spec.borrowed_object_stores = &stores;
+        let args = run_args(&spec);
+        // Order: workspace RW, mailbox RW, borrowed store RO, then `~/.claude`
+        // RO (invariant 5).
+        assert_eq!(
+            values_of(&args, "-v"),
+            vec![
+                "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
+                "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
+                "/Users/u/repo/.git/objects:/Users/u/repo/.git/objects:ro",
+                "/Users/u/.claude:/Users/u/.claude:ro",
+            ],
+        );
+    }
+
+    #[test]
+    fn argv_mounts_every_chained_alternate_read_only() {
+        // Every store the workspace borrows (directly or transitively) gets its
+        // own RO mount; `run_args` mounts whatever `borrowed_object_stores`
+        // resolved.
+        let stores = vec![
+            PathBuf::from("/Users/u/repo/.git/objects"),
+            PathBuf::from("/Users/u/shared-cache/objects"),
+        ];
+        let mut spec = test_spec(false);
+        spec.borrowed_object_stores = &stores;
+        let args = run_args(&spec);
+        // Object-store RO mounts only (exclude the `~/.claude:ro` mount, which
+        // also ends in `:ro` under invariant 5).
+        let ro: Vec<&str> = values_of(&args, "-v")
+            .into_iter()
+            .filter(|m| m.ends_with(":ro") && m.contains("/objects"))
+            .collect();
+        assert_eq!(
+            ro,
+            vec![
+                "/Users/u/repo/.git/objects:/Users/u/repo/.git/objects:ro",
+                "/Users/u/shared-cache/objects:/Users/u/shared-cache/objects:ro",
+            ],
+        );
+    }
+
+    #[test]
+    fn borrowed_object_stores_reads_alternates_lines() {
+        // Layout: writable_root/<subdir>/.git/objects/info/alternates.
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        let info = root.join("repo/.git/objects/info");
+        std::fs::create_dir_all(&info).unwrap();
+
+        // Absent alternates → nothing to mount (worktree / full-copy clone).
+        assert!(borrowed_object_stores(root).is_empty());
+
+        std::fs::write(
+            info.join("alternates"),
+            "/src/a/.git/objects\n\n  /src/b/objects  \n",
+        )
+        .unwrap();
+        assert_eq!(
+            borrowed_object_stores(root),
+            vec![
+                PathBuf::from("/src/a/.git/objects"),
+                PathBuf::from("/src/b/objects"),
+            ],
+        );
+    }
+
+    #[test]
+    fn borrowed_object_stores_follows_chained_alternates() {
+        // Model checkout --shared→ B --shared→ A: the checkout points only at
+        // B; B points at A. Both B and A must be discovered so both get
+        // mounted, or in-container git can't reach A's objects.
+        let td = tempfile::tempdir().unwrap();
+        let a = td.path().join("A/.git/objects");
+        let b = td.path().join("B/.git/objects");
+        // The checkout lives under the writable root as a subdir.
+        let checkout = td.path().join("root/repo/.git/objects");
+        for dir in [&a, &b, &checkout] {
+            std::fs::create_dir_all(dir.join("info")).unwrap();
+        }
+        std::fs::write(checkout.join("info/alternates"), format!("{}\n", b.display())).unwrap();
+        std::fs::write(b.join("info/alternates"), format!("{}\n", a.display())).unwrap();
+
+        assert_eq!(
+            borrowed_object_stores(&td.path().join("root")),
+            vec![b, a],
+            "chain must resolve checkout→B→A, mounting both borrowed stores"
+        );
+    }
+
+    #[test]
+    fn borrowed_object_stores_scans_every_repo_checkout() {
+        // A multi-repo agent: two shared-clone checkouts under one writable
+        // root, each borrowing a different source. Both borrowed stores must be
+        // discovered — scanning only the primary would strand the secondary.
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("agent");
+        let primary = root.join("app/.git/objects/info");
+        let secondary = root.join("lib/.git/objects/info");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&secondary).unwrap();
+        std::fs::write(primary.join("alternates"), "/src/app/.git/objects\n").unwrap();
+        std::fs::write(secondary.join("alternates"), "/src/lib/.git/objects\n").unwrap();
+
+        // Sorted by subdir name: `app` before `lib`.
+        assert_eq!(
+            borrowed_object_stores(&root),
+            vec![
+                PathBuf::from("/src/app/.git/objects"),
+                PathBuf::from("/src/lib/.git/objects"),
+            ],
         );
     }
 
@@ -863,6 +1082,7 @@ mod tests {
             home: &home,
             cwd: &root,
             claude_config_dir: None,
+            borrowed_object_stores: &[],
             claude_credentials_rw: false,
             config_dir_credentials_rw: false,
             memory: "256m",
