@@ -226,6 +226,15 @@ export function GeneralPane() {
             onChange={(v) => void setSandboxEngine(v)}
           />
         </SetRow>
+        {sandboxEngine === "docker" && dockerProbe && !dockerAvailable && (
+          <div className="set-sandbox-warn">
+            Docker is selected but{" "}
+            {dockerProbe.status === "daemon-down" ? "the daemon isn't running" : "isn't installed"}.
+            New agents won't launch until it's available —{" "}
+            {dockerProbe.status === "daemon-down" ? "start" : "install"} Docker Desktop, or switch
+            back to Seatbelt.
+          </div>
+        )}
         <ContainerAuth />
       </SetGroup>
 
