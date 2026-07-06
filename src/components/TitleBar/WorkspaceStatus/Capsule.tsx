@@ -2,6 +2,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
 import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
+import { SandboxBadge } from "@/components/ui";
 import { useAppStore } from "@/store";
 import { dotStatus } from "./derive";
 import { ChecksChip, GitBadge } from "./GitBadge";
@@ -41,6 +42,7 @@ export function Capsule({ agent, projectName }: Props) {
         <span className="ws-ctx">
           <StatusDot status={status} />
           <span className="ws-proj-name">{projectName}</span>
+          <SandboxBadge engine={agent.sandbox_engine} />
           <span className="ws-slash">/</span>
           <span className="ws-agent-name">{agent.name}</span>
         </span>

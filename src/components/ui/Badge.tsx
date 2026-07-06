@@ -17,13 +17,16 @@ interface Props {
   variant?: BadgeVariant;
   /** Text for the CSS-only hover tooltip. */
   tip?: string;
+  /** Open the tooltip below the badge instead of above — for badges near the
+   *  top edge (e.g. the title bar) where an upward tooltip would be clipped. */
+  tipDown?: boolean;
   className?: string;
 }
 
 /** Compact status pill — agent state (new / error) and PR state (open / merged
  *  / closed). Non-interactive (renders a <span>); mono + color-coded. Sibling
  *  of IconButton/Chip. */
-export function Badge({ children, variant = "neutral", tip, className }: Props) {
+export function Badge({ children, variant = "neutral", tip, tipDown, className }: Props) {
   const cls = [
     "ag-badge",
     "iflex-center",
@@ -34,7 +37,7 @@ export function Badge({ children, variant = "neutral", tip, className }: Props) 
     .filter(Boolean)
     .join(" ");
   return (
-    <span className={cls} data-tip={tip}>
+    <span className={cls} data-tip={tip} data-tip-down={tip && tipDown ? "" : undefined}>
       {children}
     </span>
   );

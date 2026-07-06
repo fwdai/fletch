@@ -22,3 +22,11 @@
   bottom: auto;
   top: calc(100% + 6px);
 }
+/* Wrapping tooltip — for explanatory sentences that shouldn't stay one line. */
+.tip.tip-wide[data-tip]:hover::after {
+  white-space: normal;
+  width: max-content;
+  max-width: 240px;
+  text-align: left;
+  line-height: 1.4;
+}
