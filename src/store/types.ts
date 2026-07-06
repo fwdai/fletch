@@ -4,6 +4,8 @@ import type { AgentUsage } from "@/adapters/usage";
 import type {
   AgentRecord,
   AgentView,
+  ContainerAuthStatus,
+  DockerProbe,
   GhStatus,
   GitState,
   PrChecks,
@@ -21,6 +23,7 @@ import type { CustomAgent, NewCustomAgent } from "@/storage/customAgents";
 import type {
   Density,
   FeatureFlags,
+  SandboxEngine,
   SettingsIntent,
   SettingsSection,
   ThemeMode,
@@ -349,6 +352,62 @@ export interface AccountSlice {
   setTelemetryEnabled: (enabled: boolean) => void;
 }
 
+/** Live state of the embedded docker image build (first docker spawn). `null`
+ *  when no build is in progress. `building` streams the latest output line;
+ *  `failed` stays up (with `error`) until dismissed. Success clears to `null`. */
+export interface DockerBuildProgress {
+  status: "building" | "failed";
+  /** Most recent `docker build` output line (building only). */
+  lastLine: string | null;
+  /** Failure reason (failed only). */
+  error: string | null;
+}
+
+export interface SandboxSlice {
+  /** Engine new agents are stamped with. Mirrors the backend-owned
+   *  `sandbox_engine` setting; existing agents keep their stamped engine. */
+  sandboxEngine: SandboxEngine;
+  /** Latest Docker availability probe; `null` until the first probe lands. */
+  dockerProbe: DockerProbe | null;
+  /** Which container auth chain step is active (Anthropic credentials for
+   *  docker agents); `null` until the first refresh lands. */
+  containerAuth: ContainerAuthStatus | null;
+  /** Live image-build progress for the build toast; `null` = no build. */
+  dockerBuild: DockerBuildProgress | null;
+  /** Advanced docker launch knobs, mirrored from the backend-owned
+   *  `docker_image` / `docker_memory` / `docker_cpus` settings. Empty string =
+   *  unset (the launch path uses its defaults: 4g memory, 2 cpus, embedded
+   *  image). */
+  dockerImage: string;
+  dockerMemory: string;
+  dockerCpus: string;
+
+  /** Persist a new engine choice via the backend, which validates docker
+   *  against a live daemon probe — reverts the store on refusal. */
+  setSandboxEngine: (engine: SandboxEngine) => Promise<void>;
+  /** Re-probe Docker availability into `dockerProbe` (settings pane open).
+   *  Returns the probe result so callers can poll until the daemon answers. */
+  refreshDockerProbe: () => Promise<DockerProbe>;
+  /** Re-resolve the container auth chain into `containerAuth`. */
+  refreshContainerAuth: () => Promise<void>;
+  /** Persist a pasted `claude setup-token` for containers, then refresh the
+   *  status. Throws on backend refusal (empty token) so the connect modal
+   *  can show the error inline. */
+  setContainerAuthToken: (token: string) => Promise<void>;
+  /** Drop the stored container token, then refresh the status (a later chain
+   *  step — shell env / credentials file — may take over). */
+  clearContainerAuthToken: () => Promise<void>;
+  /** Dismiss the build toast (used after a failed build). */
+  dismissDockerBuild: () => void;
+  /** Persist the advanced docker launch knobs (image / memory / cpus) via the
+   *  backend, which writes the settings AND updates the spawn-path mirror.
+   *  Reverts the store on failure. */
+  saveDockerLaunchSettings: (image: string, memory: string, cpus: string) => Promise<void>;
+  /** Launch Docker Desktop (daemon-down error action); surfaces failures via
+   *  `lastError`. */
+  startDockerDesktop: () => Promise<void>;
+}
+
 export interface AppearanceSlice {
   // ── appearance & feature flags ────────────────────────────────────────────
   theme: ThemeMode;
@@ -475,6 +534,7 @@ export type AppState = AppSlice &
   AccountSlice &
   AppearanceSlice &
   ProvidersSlice &
-  CustomAgentsSlice;
+  CustomAgentsSlice &
+  SandboxSlice;
 
 export type SliceCreator<T> = StateCreator<AppState, [], [], T>;

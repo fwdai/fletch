@@ -12,6 +12,8 @@ use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnS
 use crate::error::{Error, Result};
 use crate::git;
 use crate::rpc;
+use crate::sandbox::provision::{self, CheckoutSpec, WorkspaceMode};
+use crate::sandbox::{self, EngineKind};
 use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir, is_per_turn_provider, new_agent_record,
     repo_worktree_path, AgentRecord, AgentStatus, AgentView, TrackedRepo,
@@ -26,6 +28,78 @@ use super::{transition_active, Supervisor};
 
 const WATCHDOG_TICK: Duration = Duration::from_millis(500);
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The engine stamped on an agent's record at creation. Records from before
+/// engine selection existed (NULL) always ran under sandbox-exec, so that
+/// stays their permanent kind — never re-derived from the live setting.
+pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
+    record
+        .sandbox_engine
+        .as_deref()
+        .and_then(EngineKind::from_setting)
+        .unwrap_or(EngineKind::SandboxExec)
+}
+
+/// The provisioning mode an agent stamped with `engine` actually gets.
+///
+/// Docker forces `Clone` regardless of the `workspace_mode` dev flag: a linked
+/// worktree's `.git` file points into the user's real repo, and a container
+/// must never be able to reach that (invariant 2).
+///
+/// Seatbelt also defaults to `Clone` — both engines converge on one
+/// self-contained-checkout model, made cheap by `git clone --shared` (objects
+/// borrowed via alternates, not copied). An explicit `workspace_mode=worktree`
+/// still opts back into the linked-worktree model.
+///
+/// Restore re-provisions each repo at its archived tip. Provisioning refetches
+/// from `origin` only when that tip isn't already reachable in the source
+/// repo's object store (see `provision_on_branch`); when it is, restore borrows
+/// it back via alternates and checks out offline, no remote branch needed (see
+/// the `provision.rs` restore tests).
+///
+/// A clone-native agent writes new commits into its *own* `.git/objects`, and
+/// archive teardown `rm -rf`s the clone — so commits that never reached
+/// `origin` or the source store are gone, and restore can only recover what
+/// did. This is the accepted cost of Clone mode, and the reason the
+/// `workspace_mode=worktree` opt-out remains.
+///
+/// One further worktree-mode tradeoff: the commit / update-branch delegation
+/// signal is driven by git hooks installed only into a clone's `.git/hooks`
+/// (`provision::install_delegation_hooks` — a linked worktree's hooks live in
+/// the user's real repo and must never be touched), so under the worktree
+/// opt-out the panel's delegation attribution for native in-container commits
+/// silently doesn't fire. Acceptable for a hidden dev flag.
+pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>) -> WorkspaceMode {
+    match engine {
+        EngineKind::Docker => WorkspaceMode::Clone,
+        // Explicit opt-out to the linked-worktree model; everything else —
+        // unset or "clone" — resolves to Clone.
+        EngineKind::SandboxExec => match setting {
+            Some("worktree") => WorkspaceMode::Worktree,
+            Some("clone") | None => WorkspaceMode::Clone,
+            Some(other) => {
+                tracing::warn!(value = %other, "unrecognized workspace_mode setting; using clone");
+                WorkspaceMode::Clone
+            }
+        },
+    }
+}
+
+/// Only claude runs in Docker sandboxes in v1 (the embedded image ships
+/// claude alone; per-turn CLIs haven't been ported). Checked before every
+/// spawn — fresh spawns and, via `spawn_agent_process`, resume/view-switch —
+/// so a docker-stamped record can never launch an unsupported provider.
+fn ensure_engine_supports_provider(engine: EngineKind, provider: &str) -> Result<()> {
+    if engine == EngineKind::Docker && provider != "claude" {
+        let label = per_turn_descriptor(provider)
+            .map(|d| d.label())
+            .unwrap_or(provider);
+        return Err(Error::Other(format!(
+            "{label} isn't available in Docker sandboxes yet"
+        )));
+    }
+    Ok(())
+}
 
 /// Resolved, per-spawn inputs for `spawn_agent_process` — everything that
 /// isn't already carried on the `AgentRecord` (paths, session id, and this
@@ -115,6 +189,11 @@ impl Supervisor {
             )));
         }
 
+        // The engine this agent will be stamped with, resolved once so the
+        // provider gate, the stamp, and the provisioning mode below all agree.
+        let engine_kind = sandbox::selected_engine_kind();
+        ensure_engine_supports_provider(engine_kind, &provider)?;
+
         // Only agents with a wired native (PTY/TUI) view can honor a Native
         // request; the rest fall back to the structured Custom view. Native
         // views are being rolled out per agent (see `AgentCapabilities`).
@@ -174,6 +253,11 @@ impl Supervisor {
         // built-in spawn. The brief is re-injected on every spawn/resume.
         record.instructions = instructions;
         record.custom_agent_id = custom_agent_id;
+        // Stamp the sandbox engine at creation: the agent keeps this engine
+        // for life (respawn, view-switch, restore), so a later settings change
+        // never re-engines it — see `spawn_agent_process`, which reuses the
+        // stored value instead of the live setting.
+        record.sandbox_engine = Some(engine_kind.as_setting().to_string());
         let parent_dir = agent_parent_dir(&agent_id)?;
         let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
 
@@ -188,6 +272,16 @@ impl Supervisor {
         );
         self.set_status(&app, &agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.clone());
+
+        // Workspace provisioning mode — the `workspace_mode` dev flag under
+        // seatbelt, forced to `Clone` under docker. Read once, outside the
+        // spawn task, so the whole spawn uses one consistent mode.
+        let workspace_mode = effective_workspace_mode(
+            engine_kind,
+            self.workspace
+                .setting(provision::WORKSPACE_MODE_SETTING)
+                .as_deref(),
+        );
 
         let sup = self.clone();
         let app_for_task = app.clone();
@@ -212,9 +306,12 @@ impl Supervisor {
                 },
                 None => None,
             };
-            if let Err(e) =
-                git::worktree_add_detached(&repo_path, &primary_worktree, base.as_deref()).await
-            {
+            let spec = CheckoutSpec {
+                source_repo: &repo_path,
+                base_ref: base.as_deref().unwrap_or("HEAD"),
+                dest: &primary_worktree,
+            };
+            if let Err(e) = provision::provision(workspace_mode, &spec).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                 return;
             }
@@ -231,7 +328,7 @@ impl Supervisor {
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
-                let _ = git::worktree_remove(&repo_path, &primary_worktree, true).await;
+                let _ = provision::teardown(workspace_mode, &spec).await;
                 let _ = tokio::fs::remove_dir_all(&parent_dir).await;
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
             }
@@ -273,7 +370,33 @@ impl Supervisor {
             Some(b) => git::fetch_fork_point(&repo_path, b).await,
             None => None,
         };
-        git::worktree_add_detached(&repo_path, &worktree, base.as_deref()).await?;
+        // Same clone-forcing rule as the primary repo: a docker-stamped agent
+        // mounts its parent dir, so every workspace under it must be
+        // self-contained.
+        let engine = stamped_engine(&record);
+        let workspace_mode = effective_workspace_mode(
+            engine,
+            self.workspace
+                .setting(provision::WORKSPACE_MODE_SETTING)
+                .as_deref(),
+        );
+        let spec = CheckoutSpec {
+            source_repo: &repo_path,
+            base_ref: base.as_deref().unwrap_or("HEAD"),
+            dest: &worktree,
+        };
+        // A repo added to a *live* agent can't get a new bind mount: the Docker
+        // container's mounts are fixed at `docker run`, so a `--shared` clone's
+        // borrowed object store would be unreachable in-container. Provision it
+        // self-contained (full object copy, no alternates) so it needs no mount
+        // and in-container git works immediately. Seatbelt has no container and
+        // uses the normal (`--shared`) clone path. A later restore relaunches
+        // the container and re-provisions via `--shared` + mount.
+        if engine == EngineKind::Docker {
+            provision::provision_self_contained(&spec).await?;
+        } else {
+            provision::provision(workspace_mode, &spec).await?;
+        }
         let base_sha = git::rev_parse(&worktree, "HEAD").await.ok();
 
         let repo = TrackedRepo {
@@ -440,6 +563,11 @@ impl Supervisor {
         } = launch;
         let agent_id_str = agent_id.to_string();
 
+        let engine = stamped_engine(record);
+        // Re-checked on every launch path (resume, view switch, binary-swap
+        // respawn), not just fresh spawns: only claude runs under docker.
+        ensure_engine_supports_provider(engine, &record.provider)?;
+
         if per_turn {
             match record.view {
                 // Native view: launch the agent's interactive TUI in a PTY,
@@ -466,6 +594,7 @@ impl Supervisor {
                         rpc_dir,
                         cols: 120,
                         rows: 32,
+                        engine,
                     };
                     spawn_pty_per_turn_agent(
                         spec,
@@ -482,12 +611,14 @@ impl Supervisor {
                 AgentView::Custom => spawn_per_turn_agent(
                     &record.provider,
                     PerTurnSpec {
+                        agent_id: agent_id_str.clone(),
                         cwd,
                         sandbox_root,
                         session_id,
                         model: record.model.clone(),
                         instructions: record.instructions.clone(),
                         rpc_dir,
+                        engine,
                     },
                     app.clone(),
                     agent_id_str.clone(),
@@ -513,6 +644,7 @@ impl Supervisor {
                 rpc_dir,
                 cols: 120,
                 rows: 32,
+                engine,
             };
             match record.view {
                 AgentView::Native => spawn_pty_agent(
@@ -1048,6 +1180,64 @@ fn apply_exit_if_current(
         sup.set_status(app, agent_id, status.clone(), err);
         if matches!(status, AgentStatus::Idle) {
             sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Invariant 2: a docker agent's workspace is always a self-contained
+    /// clone, whatever the `workspace_mode` dev flag says.
+    #[test]
+    fn docker_forces_clone_workspaces() {
+        for setting in [None, Some("worktree"), Some("clone"), Some("bogus")] {
+            assert_eq!(
+                effective_workspace_mode(EngineKind::Docker, setting),
+                WorkspaceMode::Clone,
+                "docker must force clone for setting {setting:?}",
+            );
+        }
+    }
+
+    /// Seatbelt now defaults to `Clone` (cheap via `--shared`); an explicit
+    /// `workspace_mode=worktree` is the only way back to the historical linked
+    /// worktree, which trades away offline restore of never-pushed branches.
+    #[test]
+    fn seatbelt_defaults_to_clone_with_worktree_opt_out() {
+        for setting in [None, Some("clone"), Some("bogus")] {
+            assert_eq!(
+                effective_workspace_mode(EngineKind::SandboxExec, setting),
+                WorkspaceMode::Clone,
+                "seatbelt must default to clone for setting {setting:?}",
+            );
+        }
+        assert_eq!(
+            effective_workspace_mode(EngineKind::SandboxExec, Some("worktree")),
+            WorkspaceMode::Worktree,
+        );
+    }
+
+    #[test]
+    fn docker_refuses_every_provider_but_claude() {
+        assert!(ensure_engine_supports_provider(EngineKind::Docker, "claude").is_ok());
+        for provider in ["codex", "cursor", "opencode", "pi", "antigravity"] {
+            let err = ensure_engine_supports_provider(EngineKind::Docker, provider)
+                .expect_err("per-turn providers must refuse under docker");
+            assert!(
+                err.to_string()
+                    .ends_with("isn't available in Docker sandboxes yet"),
+                "unexpected refusal copy: {err}",
+            );
+        }
+        // The copy uses the human-facing product name, not the provider id.
+        let err = ensure_engine_supports_provider(EngineKind::Docker, "codex").unwrap_err();
+        assert!(err.to_string().starts_with("Codex "), "{err}");
+
+        // Seatbelt is unaffected.
+        for provider in ["claude", "codex", "cursor"] {
+            assert!(ensure_engine_supports_provider(EngineKind::SandboxExec, provider).is_ok());
         }
     }
 }

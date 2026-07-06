@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentModels } from "./data/modelCatalog/types";
+import type { SandboxEngine } from "./storage/preferences";
 
 export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
@@ -62,6 +63,10 @@ export interface AgentRecord {
   /** The custom agent this session was spawned from (null for a built-in
    *  spawn). Used to show the custom agent's name/color in the sidebar. */
   custom_agent_id?: string | null;
+  /** Sandbox engine stamped at creation ("sandbox-exec" | "docker") and kept
+   *  for the agent's life — a settings change never re-engines it. Null for
+   *  agents created before engine selection existed (they run sandbox-exec). */
+  sandbox_engine?: string | null;
 }
 
 export interface Workspace {
@@ -349,6 +354,30 @@ export interface GhRepoSummary {
   updated_at: string;
 }
 
+/** Result of probing the local Docker installation (Settings › General).
+ *  `version` is the daemon's server version, present only when available. */
+export interface DockerProbe {
+  status: "available" | "not-installed" | "daemon-down";
+  version?: string;
+}
+
+/** Which step of the container auth chain (pasted token → shell env →
+ *  claude credentials file) would supply Anthropic credentials to a docker
+ *  agent right now (Settings › General › Sandbox status row). */
+export interface ContainerAuthStatus {
+  status: "keychain" | "stored-token" | "shell-env" | "credentials-file" | "none";
+}
+
+/** One image-build lifecycle event from the `docker:build-progress` stream.
+ *  The embedded agent image is built on the first docker spawn (a slow
+ *  `docker build`); these feed the build toast. `line` is set only on `"line"`,
+ *  `error` only on `"failed"`. */
+export interface DockerBuildEvent {
+  phase: "started" | "line" | "finished" | "failed";
+  line?: string;
+  error?: string;
+}
+
 /** An editor or terminal detected on the user's machine (title-bar launcher). */
 export interface DetectedEditor {
   id: string;
@@ -370,6 +399,36 @@ export const api = {
   // Emit the deferred first `app_opened` once onboarding completes — i.e. after
   // the data-sharing disclosure has been shown. See `track_app_opened` (Rust).
   trackAppOpened: () => invoke<void>("track_app_opened"),
+  // Sandbox engine selection. The setting is backend-owned (snake_case
+  // `sandbox_engine`, written by `set_sandbox_engine` — which validates docker
+  // against a live daemon probe and refuses when it's unreachable).
+  getSandboxEngine: () => invoke<SandboxEngine>("get_sandbox_engine"),
+  setSandboxEngine: (engine: SandboxEngine) => invoke<void>("set_sandbox_engine", { engine }),
+  probeDockerEngine: () => invoke<DockerProbe>("probe_docker_engine"),
+  // Anthropic auth for containerized agents. Docker-only: seatbelt agents keep
+  // the user's own claude login. The token setting is backend-owned
+  // (`claude_container_token`, written by the set/clear commands below — never
+  // via a frontend `setSetting`).
+  getContainerAuthStatus: () => invoke<ContainerAuthStatus>("get_container_auth_status"),
+  setContainerAuthToken: (token: string) => invoke<void>("set_container_auth_token", { token }),
+  clearContainerAuthToken: () => invoke<void>("clear_container_auth_token"),
+  // Automated `claude setup-token` capture: drives the CLI under a PTY,
+  // surfaces the consent URL + auth-code prompt as `claude-setup:url` /
+  // `claude-setup:awaiting-code` events, and resolves once the token is stored.
+  // The token itself never crosses this boundary. See `useClaudeSetup`.
+  connectClaudeContainerAuth: () => invoke<void>("connect_claude_container_auth"),
+  submitClaudeSetupCode: (code: string) => invoke<void>("submit_claude_setup_code", { code }),
+  cancelClaudeContainerAuth: () => invoke<void>("cancel_claude_container_auth"),
+  // Advanced docker launch knobs (image override + resource limits). Backend-
+  // owned settings (`docker_image` / `docker_memory` / `docker_cpus`): the
+  // command persists all three AND updates the spawn-path mirror. Blank clears
+  // a field (falls back to the launch defaults). Never write these via a
+  // frontend `setSetting`.
+  setDockerLaunchSettings: (image: string | null, memory: string | null, cpus: string | null) =>
+    invoke<void>("set_docker_launch_settings", { image, memory, cpus }),
+  /** Launch Docker Desktop (the daemon-down error state's action). macOS-only;
+   *  rejects elsewhere. */
+  startDockerDesktop: () => invoke<void>("start_docker_desktop"),
   getAgentDiffStats: (agentId: string) => invoke<DiffStats>("get_agent_diff_stats", { agentId }),
   addWorkspaceRepo: (repoPath: string) => invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>
@@ -648,4 +707,10 @@ export function onRunOutput(cb: (e: RunOutputEvent) => void): Promise<UnlistenFn
 
 export function onRunState(cb: (e: RunStateEvent) => void): Promise<UnlistenFn> {
   return listen<RunStateEvent>("run:state", (event) => cb(event.payload));
+}
+
+/** Fires per line (and at start/finish/failure) while the embedded docker agent
+ *  image builds on a cold first spawn — feeds the build progress toast. */
+export function onDockerBuildProgress(cb: (e: DockerBuildEvent) => void): Promise<UnlistenFn> {
+  return listen<DockerBuildEvent>("docker:build-progress", (event) => cb(event.payload));
 }

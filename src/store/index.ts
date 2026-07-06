@@ -9,6 +9,7 @@ import { createDraftsSlice } from "./drafts";
 import { createGitSlice } from "./git";
 import { createProvidersSlice } from "./providers";
 import { createReposSlice } from "./repos";
+import { createSandboxSlice } from "./sandbox";
 import type { AppState } from "./types";
 import { createUiSlice } from "./ui";
 import { createWorkspaceSlice } from "./workspace";
@@ -27,6 +28,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createAppearanceSlice(...a),
   ...createProvidersSlice(...a),
   ...createCustomAgentsSlice(...a),
+  ...createSandboxSlice(...a),
 }));
 
 export type { ChatItem } from "@/adapters";

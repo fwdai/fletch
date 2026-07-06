@@ -11,6 +11,7 @@ import {
   onAgentStatus,
   onAgentTask,
   onAgentView,
+  onDockerBuildProgress,
   onPrStateChanged,
   onRunState,
   onSessionRecordsAppended,
@@ -40,6 +41,7 @@ import {
   parsePaneWidth,
   parseProviderFlags,
   parseProviderPathOverrides,
+  parseSandboxEngine,
   type ThemeMode,
   type WorkspaceView,
 } from "@/storage/preferences";
@@ -124,6 +126,15 @@ const hydrateSettings = async (set: AppSet) => {
       // switch a caller to `setSetting("telemetryEnabled", …)`: that's a
       // different key and the toggle would silently stop working.
       telemetryEnabled: s.telemetry_enabled !== "false",
+      // Backend-owned like telemetry_enabled (snake_case, written by the
+      // `set_sandbox_engine` Rust command) — read it, never setSetting it.
+      sandboxEngine: parseSandboxEngine(s.sandbox_engine),
+      // Advanced docker launch knobs — backend-owned (snake_case, written by
+      // `set_docker_launch_settings`), so read them here and never setSetting.
+      // Blank = unset (launch defaults apply).
+      dockerImage: s.docker_image || "",
+      dockerMemory: s.docker_memory || "",
+      dockerCpus: s.docker_cpus || "",
       // Auto-open the welcome tour for new users (no completion flag yet).
       onboardingOpen: s.onboardingComplete !== "true",
       // Panel layout — restore the user's last splitter widths and collapse state.
@@ -369,6 +380,27 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // dot lit from another tab — this always-on listener owns `runPhases`.
   await onRunState((e) => {
     set((s) => ({ runPhases: { ...s.runPhases, [e.agent_id]: e.phase } }));
+  });
+
+  // Docker image-build progress (first docker spawn). Drives the build toast:
+  // started opens it, lines update the tail, finished clears it, failed keeps
+  // it up (with the reason) until the user dismisses.
+  await onDockerBuildProgress((e) => {
+    if (e.phase === "started") {
+      set({ dockerBuild: { status: "building", lastLine: null, error: null } });
+    } else if (e.phase === "line") {
+      set((s) =>
+        s.dockerBuild
+          ? { dockerBuild: { ...s.dockerBuild, lastLine: e.line ?? s.dockerBuild.lastLine } }
+          : {},
+      );
+    } else if (e.phase === "finished") {
+      set({ dockerBuild: null });
+    } else if (e.phase === "failed") {
+      set({
+        dockerBuild: { status: "failed", lastLine: null, error: e.error ?? "Image build failed" },
+      });
+    }
   });
 };
 

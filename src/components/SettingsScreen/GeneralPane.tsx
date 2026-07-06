@@ -1,9 +1,21 @@
+import { useEffect } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 import { ACCENTS } from "@/data/providers";
-import type { Density, ThemeMode } from "@/storage/preferences";
+import type { Density, SandboxEngine, ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { ContainerAuth } from "./ContainerAuth";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
+
+// Docker Desktop can start or stop while this pane stays open, so we re-probe
+// on a steady interval (plus immediately on mount and on window focus) rather
+// than once. Polling both ways keeps the engine option AND the "selected but
+// unavailable" warning tracking the live daemon: a one-shot or stop-when-
+// available probe would latch a stale state and, e.g., leave the warning
+// hidden after the daemon stops. The backend caches each probe for a few
+// seconds, so a tight interval mostly hits that cache.
+const PROBE_INTERVAL_MS = 3_000;
 
 const SIDE_PANELS: FeatureItem[] = [
   { key: "git", title: "Git", sub: "Branch, file changes, and smart commit / push / PR actions." },
@@ -45,6 +57,38 @@ export function GeneralPane() {
   const telemetryEnabled = useAppStore((s) => s.telemetryEnabled);
   const setTelemetryEnabled = useAppStore((s) => s.setTelemetryEnabled);
   const revealLogs = useAppStore((s) => s.revealLogs);
+  const sandboxEngine = useAppStore((s) => s.sandboxEngine);
+  const setSandboxEngine = useAppStore((s) => s.setSandboxEngine);
+  const dockerProbe = useAppStore((s) => s.dockerProbe);
+  const refreshDockerProbe = useAppStore((s) => s.refreshDockerProbe);
+
+  useEffect(() => {
+    let cancelled = false;
+    const probe = () => {
+      if (!cancelled) void refreshDockerProbe();
+    };
+    probe(); // immediately on mount
+    const timer = setInterval(probe, PROBE_INTERVAL_MS);
+    // Re-check right away when the window returns (e.g. the user just launched
+    // Docker Desktop from the hint) instead of waiting for the next tick.
+    const onFocus = () => probe();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [refreshDockerProbe]);
+
+  // Three states for the docker option: enabled when the daemon answered the
+  // probe; otherwise disabled with a hint saying how to fix it. `null` (probe
+  // still in flight) gates off too — never offer an engine we can't confirm.
+  const dockerAvailable = dockerProbe?.status === "available";
+  const dockerHint = dockerAvailable
+    ? dockerProbe?.version && `v${dockerProbe.version}`
+    : dockerProbe?.status === "daemon-down"
+      ? "Start Docker Desktop"
+      : "Install Docker Desktop";
 
   const FeatureRow = ({ item }: { item: FeatureItem }) => (
     <SetRow title={item.title} sub={item.sub}>
@@ -128,6 +172,38 @@ export function GeneralPane() {
         >
           <SetToggle on={notifyEnabled} onClick={() => setNotifyEnabled(!notifyEnabled)} />
         </SetRow>
+      </SetGroup>
+
+      <SetGroup label="Sandbox">
+        <SetRow
+          title="Engine"
+          sub="Applies to newly created agents; existing agents keep the engine they started with. Docker agents run in a Linux container: builds and tests run on Linux, not macOS. Only Claude Code is available in containers for now."
+        >
+          <Select<SandboxEngine>
+            value={sandboxEngine}
+            ariaLabel="Sandbox engine"
+            options={[
+              { value: "sandbox-exec", label: "Seatbelt (sandbox-exec)" },
+              {
+                value: "docker",
+                label: "Docker",
+                hint: dockerHint || undefined,
+                disabled: !dockerAvailable,
+              },
+            ]}
+            onChange={(v) => void setSandboxEngine(v)}
+          />
+        </SetRow>
+        {sandboxEngine === "docker" && dockerProbe && !dockerAvailable && (
+          <div className="set-sandbox-warn">
+            Docker is selected but{" "}
+            {dockerProbe.status === "daemon-down" ? "the daemon isn't running" : "isn't installed"}.
+            New agents won't launch until it's available —{" "}
+            {dockerProbe.status === "daemon-down" ? "start" : "install"} Docker Desktop, or switch
+            back to Seatbelt.
+          </div>
+        )}
+        <ContainerAuth />
       </SetGroup>
 
       <SetGroup label="Diagnostics" last>

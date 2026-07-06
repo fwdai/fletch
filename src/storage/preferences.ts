@@ -156,6 +156,23 @@ export function parsePaneWidth(raw: string | undefined, fallback: number): numbe
   return Math.min(MAX_PANE_WIDTH, Math.max(MIN_PANE_WIDTH, n));
 }
 
+// ---- Sandbox engine ------------------------------------------------------------
+
+/** Isolation engine new agents are stamped with. Mirrors the backend's
+ *  `EngineKind::as_setting` spellings (`sandbox/engine.rs`), so both sides
+ *  agree on the wire strings. */
+export type SandboxEngine = "sandbox-exec" | "docker";
+
+export const DEFAULT_SANDBOX_ENGINE: SandboxEngine = "sandbox-exec";
+
+/** Parse the `sandbox_engine` setting. The key is backend-owned (snake_case,
+ *  written by the `set_sandbox_engine` Rust command — never via a frontend
+ *  `setSetting`, same posture as `telemetry_enabled`). Unknown/missing values
+ *  fall back to the seatbelt default, matching the backend's parser. */
+export function parseSandboxEngine(raw: string | undefined): SandboxEngine {
+  return raw === "docker" ? "docker" : DEFAULT_SANDBOX_ENGINE;
+}
+
 // ---- Provider binary path overrides ------------------------------------------
 
 /** Settings-key prefix for per-agent custom binary paths. Must match the

@@ -27,7 +27,7 @@ use crate::instructions;
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
-use crate::sandbox::SANDBOX_EXEC;
+use crate::sandbox::{AgentLaunchCtx, EngineKind, Keepalive, LaunchPlan, SandboxEngine};
 
 pub enum Agent {
     Pty(PtyAgent),
@@ -41,15 +41,14 @@ pub enum Agent {
 
 pub struct PtyAgent {
     pty: PtySession,
-    /// `sandbox-exec` profile for claude's PTY run. `None` for per-turn
-    /// agents in the native view: they launch their own binary directly and
-    /// self-sandbox, so there's no profile to keep alive.
-    _profile_file: Option<tempfile::NamedTempFile>,
+    #[allow(dead_code)]
+    keepalive: Keepalive,
 }
 
 pub struct ManagedAgent {
     session: ManagedSession,
-    _profile_file: tempfile::NamedTempFile,
+    #[allow(dead_code)]
+    keepalive: Keepalive,
 }
 
 pub struct PerTurnAgent {
@@ -60,6 +59,8 @@ pub struct PerTurnAgent {
 /// no sandbox profile (the agent sandboxes itself) and the session id is
 /// optional — these agents assign one on the first turn.
 pub struct PerTurnSpec {
+    /// The agent's id, forwarded to the sandbox engine's launch context.
+    pub agent_id: String,
     /// The agent's working directory — the primary repo's worktree.
     pub cwd: PathBuf,
     /// Sandbox writable root — the agent's parent dir (same role as
@@ -76,6 +77,10 @@ pub struct PerTurnSpec {
     pub instructions: Option<String>,
     /// The agent's RPC mailbox dir, exposed to the child as `FLETCH_RPC_DIR`.
     pub rpc_dir: PathBuf,
+    /// Sandbox engine stamped on the agent's record at creation and reused on
+    /// every subsequent spawn, so a settings change never re-engines an
+    /// existing agent (see `supervisor::lifecycle`).
+    pub engine: EngineKind,
 }
 
 /// The per-turn inputs a `*_build_args` builder turns into CLI argv. Bundled
@@ -137,6 +142,14 @@ pub struct PerTurnDescriptor {
     /// ingest verbatim records into `session_records`. `None` = no readable
     /// transcript.
     pub transcript: Option<TranscriptReader>,
+}
+
+impl PerTurnDescriptor {
+    /// Human-facing product name, for error copy (e.g. the docker-sandbox
+    /// refusal in `supervisor::lifecycle`).
+    pub fn label(&self) -> &'static str {
+        self.label
+    }
 }
 
 /// One verbatim durable record from an agent's transcript: the raw body in the
@@ -469,12 +482,12 @@ fn pi_read(paths: &[PathBuf]) -> Vec<RawRecord> {
 // Claude is the lone persistent-runner agent (not in PER_TURN_AGENTS), launched
 // `--session-id <uuid>` / `--resume <uuid>`, so it writes
 // `<config-dir>/projects/<slug>/<uuid>.jsonl` (config-dir = CLAUDE_CONFIG_DIR or
-// `~/.claude`). find_session_jsonl already locates it. Content lines carry a
-// top-level
+// `~/.claude`). find_session_jsonl locates it, honoring the Docker sandbox's
+// per-agent transcript dir (derived from `cwd`). Content lines carry a top-level
 // `uuid`; metadata lines (mode/permission-mode/…) don't → positional fallback.
 
-fn claude_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
-    crate::transcripts::find_session_jsonl(session_id)
+fn claude_locate(session_id: &str, cwd: &Path) -> Vec<PathBuf> {
+    crate::transcripts::find_session_jsonl(session_id, cwd)
         .into_iter()
         .collect()
 }
@@ -781,6 +794,10 @@ pub struct SpawnSpec<'a> {
     pub rpc_dir: PathBuf,
     pub cols: u16,
     pub rows: u16,
+    /// Sandbox engine stamped on the agent's record at creation and reused on
+    /// every subsequent spawn (fresh, view-switch, resume), so a settings
+    /// change never re-engines an existing agent (see `supervisor::lifecycle`).
+    pub engine: EngineKind,
 }
 
 /// The environment Fletch injects into every agent child: the absolute path to
@@ -799,8 +816,31 @@ impl Agent {
         F: Fn(Vec<u8>) + Send + 'static,
         G: Fn(PtyExit) + Send + 'static,
     {
-        let (profile_file, args) = prepare_pty_args(&spec)?;
-        let env = rpc_env(&spec.rpc_dir);
+        let home =
+            dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let engine = sandbox::engine_for(spec.engine)?;
+        let claude = claude_bin_for(engine.as_ref(), &home)?;
+        let agent_args = prepare_pty_args(&spec);
+
+        let ctx = AgentLaunchCtx {
+            agent_id: spec.agent_id,
+            writable_root: &spec.sandbox_root,
+            rpc_dir: &spec.rpc_dir,
+            cwd: &spec.cwd,
+            home: &home,
+            interactive: true,
+        };
+        let LaunchPlan {
+            program,
+            prefix_args,
+            env: launch_env,
+            keepalive,
+            kill,
+        } = engine.launch_agent(&ctx, &claude)?;
+        let mut args = prefix_args;
+        args.extend(agent_args);
+        let mut env = launch_env;
+        env.extend(rpc_env(&spec.rpc_dir));
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -808,28 +848,25 @@ impl Agent {
             fresh = spec.fresh,
             cwd = %spec.cwd.display(),
             sandbox_root = %spec.sandbox_root.display(),
-            profile = %profile_file.path().display(),
             argv = ?args,
             "spawning sandboxed pty agent"
         );
 
         let pty = PtySession::spawn(
             PtySpawn {
-                program: Path::new(SANDBOX_EXEC),
+                program: &program,
                 args: &args,
                 cwd: &spec.cwd,
                 env: &env,
                 cols: spec.cols,
                 rows: spec.rows,
+                kill_plan: kill,
             },
             on_output,
             on_exit,
         )?;
 
-        Ok(Self::Pty(PtyAgent {
-            pty,
-            _profile_file: Some(profile_file),
-        }))
+        Ok(Self::Pty(PtyAgent { pty, keepalive }))
     }
 
     /// Launch a per-turn agent's interactive TUI in a PTY — the native view
@@ -859,20 +896,29 @@ impl Agent {
             Some(spec.session_id)
         };
         let agent_args = (desc.pty_args)(session, spec.model, spec.instructions);
-        let env = rpc_env(&spec.rpc_dir);
 
-        // Unified sandbox: run the agent's TUI under sandbox-exec with Fletch's
-        // profile (the agent's own sandbox is disabled in its arg builder), so
-        // per-turn agents are confined exactly like claude. argv becomes
-        // `sandbox-exec -f <profile> <agent-bin> <agent-args…>`.
-        let profile_file = prepare_sandbox(&spec.sandbox_root, &spec.rpc_dir, &home)?;
-        let profile_path = profile_file
-            .path()
-            .to_str()
-            .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
-            .to_string();
-        let mut args: Vec<String> = vec!["-f".into(), profile_path, bin.clone()];
+        // Unified sandbox: run the agent's TUI under the sandbox engine (the
+        // agent's own sandbox is disabled in its arg builder), so per-turn
+        // agents are confined exactly like claude.
+        let ctx = AgentLaunchCtx {
+            agent_id: spec.agent_id,
+            writable_root: &spec.sandbox_root,
+            rpc_dir: &spec.rpc_dir,
+            cwd: &spec.cwd,
+            home: &home,
+            interactive: true,
+        };
+        let LaunchPlan {
+            program,
+            prefix_args,
+            env: launch_env,
+            keepalive,
+            kill,
+        } = sandbox::engine_for(spec.engine)?.launch_agent(&ctx, &bin)?;
+        let mut args = prefix_args;
         args.extend(agent_args);
+        let mut env = launch_env;
+        env.extend(rpc_env(&spec.rpc_dir));
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -888,21 +934,19 @@ impl Agent {
 
         let pty = PtySession::spawn(
             PtySpawn {
-                program: Path::new(SANDBOX_EXEC),
+                program: &program,
                 args: &args,
                 cwd: &spec.cwd,
                 env: &env,
                 cols: spec.cols,
                 rows: spec.rows,
+                kill_plan: kill,
             },
             on_output,
             on_exit,
         )?;
 
-        Ok(Self::Pty(PtyAgent {
-            pty,
-            _profile_file: Some(profile_file),
-        }))
+        Ok(Self::Pty(PtyAgent { pty, keepalive }))
     }
 
     pub fn spawn_managed<F, G>(spec: SpawnSpec<'_>, on_event: F, on_exit: G) -> Result<Self>
@@ -910,8 +954,31 @@ impl Agent {
         F: Fn(Value) + Send + 'static,
         G: Fn(ManagedExit) + Send + 'static,
     {
-        let (profile_file, args) = prepare_managed_args(&spec)?;
-        let env = rpc_env(&spec.rpc_dir);
+        let home =
+            dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let engine = sandbox::engine_for(spec.engine)?;
+        let claude = claude_bin_for(engine.as_ref(), &home)?;
+        let agent_args = prepare_managed_args(&spec);
+
+        let ctx = AgentLaunchCtx {
+            agent_id: spec.agent_id,
+            writable_root: &spec.sandbox_root,
+            rpc_dir: &spec.rpc_dir,
+            cwd: &spec.cwd,
+            home: &home,
+            interactive: false,
+        };
+        let LaunchPlan {
+            program,
+            prefix_args,
+            env: launch_env,
+            keepalive,
+            kill,
+        } = engine.launch_agent(&ctx, &claude)?;
+        let mut args = prefix_args;
+        args.extend(agent_args);
+        let mut env = launch_env;
+        env.extend(rpc_env(&spec.rpc_dir));
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -919,26 +986,23 @@ impl Agent {
             fresh = spec.fresh,
             cwd = %spec.cwd.display(),
             sandbox_root = %spec.sandbox_root.display(),
-            profile = %profile_file.path().display(),
             argv = ?args,
             "spawning sandboxed managed agent"
         );
 
         let session = ManagedSession::spawn(
             ManagedSpawn {
-                program: Path::new(SANDBOX_EXEC),
+                program: &program,
                 args: &args,
                 cwd: &spec.cwd,
                 env: &env,
+                kill_plan: kill,
             },
             on_event,
             on_exit,
         )?;
 
-        Ok(Self::Managed(ManagedAgent {
-            session,
-            _profile_file: profile_file,
-        }))
+        Ok(Self::Managed(ManagedAgent { session, keepalive }))
     }
 
     /// Build a per-turn runner (codex, cursor, opencode, pi) from its
@@ -1004,43 +1068,48 @@ impl Agent {
         G: Fn(String) + Send + Sync + 'static,
         H: Fn(ExecExit) + Send + Sync + 'static,
     {
-        // Unified sandbox: wrap each turn's process in sandbox-exec with
-        // Fletch's profile. The agent binary moves into `prefix_args`
-        // (`sandbox-exec -f <profile> <agent-bin>`), and the profile tempfile
-        // rides on the ExecSession so it outlives the per-turn respawns.
         let home = dirs::home_dir()
             .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let profile_file = prepare_sandbox(&spec.sandbox_root, &spec.rpc_dir, &home)?;
-        let profile_path = profile_file
-            .path()
-            .to_str()
-            .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
-            .to_string();
         let agent_bin = program
             .to_str()
-            .ok_or_else(|| Error::Other("agent bin path not utf-8".into()))?
-            .to_string();
-        let prefix_args = vec!["-f".to_string(), profile_path, agent_bin];
+            .ok_or_else(|| Error::Other("agent bin path not utf-8".into()))?;
+
+        let ctx = AgentLaunchCtx {
+            agent_id: &spec.agent_id,
+            writable_root: &spec.sandbox_root,
+            rpc_dir: &spec.rpc_dir,
+            cwd: &spec.cwd,
+            home: &home,
+            interactive: false,
+        };
+        let LaunchPlan {
+            program: launch_program,
+            prefix_args,
+            env: launch_env,
+            keepalive,
+            kill,
+        } = sandbox::engine_for(spec.engine)?.launch_agent(&ctx, agent_bin)?;
+        let mut env = launch_env;
+        env.extend(rpc_env(&spec.rpc_dir));
 
         tracing::info!(
-            program = %SANDBOX_EXEC,
             agent_bin = %program.display(),
             cwd = %spec.cwd.display(),
             sandbox_root = %spec.sandbox_root.display(),
             resume = spec.session_id.is_some(),
             "preparing sandboxed per-turn runner"
         );
-        let env = rpc_env(&spec.rpc_dir);
         let session = ExecSession::new(
             ExecSpawn {
-                program: PathBuf::from(SANDBOX_EXEC),
+                program: launch_program,
                 prefix_args,
-                profile: Some(profile_file),
+                keepalive,
                 cwd: spec.cwd,
                 session_id: spec.session_id,
                 model: spec.model,
                 stdout_is_json,
                 env,
+                kill_plan: kill,
             },
             build_args,
             extract_session_id,
@@ -1128,19 +1197,6 @@ impl Agent {
     }
 }
 
-fn prepare_sandbox(
-    writable_root: &Path,
-    rpc_dir: &Path,
-    home: &Path,
-) -> Result<tempfile::NamedTempFile> {
-    // The agent inherits the app's env, so the CLAUDE_CONFIG_DIR it'll write to
-    // is whatever this process sees (fletch doesn't override it). Grant it.
-    let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
-    let profile_text =
-        sandbox::build_profile(writable_root, rpc_dir, home, claude_config_dir.as_deref())?;
-    sandbox::profile_tempfile(&profile_text)
-}
-
 /// Claude's session-level effort flag (`--effort <level>`), shared by the
 /// managed (custom-view) and PTY (native-view) arg builders. Empty when no
 /// effort was selected for the session, so claude falls back to its own
@@ -1171,24 +1227,8 @@ fn push_opt(args: &mut Vec<String>, flag: &str, value: Option<&str>) {
     }
 }
 
-fn prepare_pty_args(
-    spec: &SpawnSpec<'_>,
-) -> Result<(tempfile::NamedTempFile, Vec<String>)> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    let claude = resolve_claude(&home)?;
-    let profile_file = prepare_sandbox(&spec.sandbox_root, &spec.rpc_dir, &home)?;
-
-    let profile_path = profile_file
-        .path()
-        .to_str()
-        .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
-        .to_string();
-
+fn prepare_pty_args(spec: &SpawnSpec<'_>) -> Vec<String> {
     let mut args: Vec<String> = vec![
-        "-f".into(),
-        profile_path,
-        claude,
         "--dangerously-skip-permissions".into(),
         "--permission-mode".into(),
         "bypassPermissions".into(),
@@ -1205,23 +1245,10 @@ fn prepare_pty_args(
         args.push(spec.session_id.to_string());
     }
 
-    Ok((profile_file, args))
+    args
 }
 
-fn prepare_managed_args(
-    spec: &SpawnSpec<'_>,
-) -> Result<(tempfile::NamedTempFile, Vec<String>)> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    let claude = resolve_claude(&home)?;
-    let profile_file = prepare_sandbox(&spec.sandbox_root, &spec.rpc_dir, &home)?;
-
-    let profile_path = profile_file
-        .path()
-        .to_str()
-        .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
-        .to_string();
-
+fn prepare_managed_args(spec: &SpawnSpec<'_>) -> Vec<String> {
     // Stream-json input + output give us a structured back-and-forth
     // over stdio. --verbose is required when using stream-json output
     // so events keep flowing. --include-partial-messages emits
@@ -1234,9 +1261,6 @@ fn prepare_managed_args(
     // managed_session.rs. `bypassPermissions` can't do this: it auto-denies
     // AskUserQuestion before the client is consulted.
     let mut args: Vec<String> = vec![
-        "-f".into(),
-        profile_path,
-        claude,
         "--print".into(),
         "--input-format".into(),
         "stream-json".into(),
@@ -1261,11 +1285,26 @@ fn prepare_managed_args(
         args.push(spec.session_id.to_string());
     }
 
-    Ok((profile_file, args))
+    args
 }
 
 fn resolve_claude(home: &Path) -> Result<String> {
     resolve_agent_bin("claude", "claude", "Claude Code", home)
+}
+
+/// The claude binary handed to `launch_agent`, decided by the *resolved*
+/// engine's kind: under docker it's the in-image name `claude` (the image
+/// carries its own install; a resolved host path would be meaningless — or
+/// missing — inside the container), under seatbelt the host-resolved
+/// absolute path as always. Keyed off the resolved engine rather than the
+/// stamped setting; a docker-stamped agent whose daemon is down never reaches
+/// here — `sandbox::engine_for` fails the spawn instead of degrading to
+/// seatbelt — so the resolved engine always matches the launch boundary.
+fn claude_bin_for(engine: &dyn SandboxEngine, home: &Path) -> Result<String> {
+    match engine.kind() {
+        EngineKind::Docker => Ok("claude".to_string()),
+        EngineKind::SandboxExec => resolve_claude(home),
+    }
 }
 
 // ── per-turn provider configs ─────────────────────────────────────────────

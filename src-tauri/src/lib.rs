@@ -439,6 +439,279 @@ fn track_app_opened() {
     telemetry::track("app_opened", json!({}));
 }
 
+/// The persisted sandbox engine selection (`"sandbox-exec"` | `"docker"`).
+/// Reads the in-memory mirror seeded at startup and kept in sync by
+/// `set_sandbox_engine`, so no DB handle is needed.
+#[tauri::command]
+fn get_sandbox_engine() -> String {
+    sandbox::selected_engine_kind().as_setting().to_string()
+}
+
+/// Change the sandbox engine stamped onto *new* agents. Docker is validated
+/// against a live daemon probe before being accepted, so a success here means
+/// the choice is actionable. Persists to `settings` and updates the in-memory
+/// mirror — like `set_agent_bin_override` keeps the DB and process state in
+/// sync. Existing agents are unaffected: each keeps the engine stamped on its
+/// record at creation.
+#[tauri::command]
+async fn set_sandbox_engine(
+    engine: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    let kind = sandbox::EngineKind::from_setting(&engine)
+        .ok_or_else(|| format!("unknown sandbox engine: {engine}"))?;
+    if kind == sandbox::EngineKind::Docker {
+        // `spawn_blocking`: the probe can block up to its 2s timeout.
+        let probe = tauri::async_runtime::spawn_blocking(sandbox::docker_availability)
+            .await
+            .map_err(|e| e.to_string())?;
+        match probe {
+            sandbox::DockerAvailability::Available { .. } => {}
+            sandbox::DockerAvailability::NotInstalled => {
+                return Err("Docker is not installed — install Docker Desktop first.".into())
+            }
+            sandbox::DockerAvailability::DaemonDown => {
+                return Err("Docker isn't running — start Docker Desktop first.".into())
+            }
+        }
+    }
+    {
+        let conn = state.lock();
+        database::set_setting(&conn, sandbox::ENGINE_SETTING, kind.as_setting())
+            .map_err(|e| e.to_string())?;
+    }
+    sandbox::set_selected_engine_kind(kind);
+    Ok(())
+}
+
+/// Probe the local Docker installation for the settings UI. Async +
+/// `spawn_blocking` because the probe can block up to its 2s timeout.
+#[tauri::command]
+async fn probe_docker_engine() -> Result<sandbox::DockerAvailability, String> {
+    tauri::async_runtime::spawn_blocking(sandbox::docker_availability)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Which step of the container auth chain would supply Anthropic credentials
+/// to a docker agent right now — the settings UI status row. Async +
+/// `spawn_blocking` because the first resolution may load the login-shell env
+/// (runs a shell).
+#[tauri::command]
+async fn get_container_auth_status(
+) -> Result<sandbox::docker::auth::ContainerAuthStatus, String> {
+    tauri::async_runtime::spawn_blocking(sandbox::docker::auth::status)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Store a pasted `claude setup-token` for containerized agents under the
+/// `claude_container_token` setting — plaintext in sqlite, the same posture
+/// as `github_token`. Trims; rejects empty; unexpected shapes are accepted
+/// with a warning (which, like every log line here, never includes the token
+/// itself). Persists and then updates the in-process mirror, like
+/// `set_sandbox_engine` and `github::set_token`.
+#[tauri::command]
+async fn set_container_auth_token(
+    token: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    store_container_token(&state, &token)
+}
+
+/// Persist-then-mirror core shared by the paste command
+/// ([`set_container_auth_token`]) and the automated capture flow
+/// ([`connect_claude_container_auth`]): normalize + shape-check (warning, never
+/// logging the token, on an unrecognized shape), write the
+/// `claude_container_token` setting, then update the in-process mirror the
+/// spawn path reads — so a change applies to the next docker spawn without a
+/// restart. Same shape as `github::set_token`.
+fn store_container_token(db: &DbState, raw_token: &str) -> Result<(), String> {
+    let (token, recognized) = sandbox::docker::auth::normalize_token(raw_token)?;
+    if !recognized {
+        tracing::warn!(
+            "container auth token doesn't look like a `claude setup-token` value \
+             (sk-ant-oat…); storing it anyway"
+        );
+    }
+    {
+        let conn = db.lock();
+        database::set_setting(&conn, sandbox::docker::auth::TOKEN_SETTING, &token)
+            .map_err(|e| e.to_string())?;
+    }
+    sandbox::docker::auth::set_stored_token(Some(token));
+    Ok(())
+}
+
+/// A `claude setup-token` capture in flight, held so the code-submit and cancel
+/// commands can reach its live PTY. At most one runs at a time; dropping the
+/// stored session kills the PTY (see [`sandbox::docker::setup_token`]).
+type ClaudeSetupState = Mutex<Option<sandbox::docker::setup_token::ClaudeSetup>>;
+
+/// Drive `claude setup-token` on the user's behalf: spawn it under a PTY, emit
+/// the consent URL and the auth-code prompt to the UI (`claude-setup:url` /
+/// `claude-setup:awaiting-code`), and — once the user completes browser consent
+/// and submits the code via [`submit_claude_setup_code`] — capture the emitted
+/// token and store it through the shared [`store_container_token`] path (no
+/// paste, no restart). Resolves when the token is stored; errors on timeout,
+/// cancel, a missing `claude` CLI, or an exit with no token. The token never
+/// reaches the frontend or the logs.
+#[tauri::command]
+async fn connect_claude_container_auth(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DbState>,
+    setup: tauri::State<'_, ClaudeSetupState>,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let home = dirs::home_dir().ok_or("Could not determine your home directory.")?;
+    let bin = bin_resolve::resolve_bin("claude", &home).ok_or(
+        "Couldn't find the `claude` CLI on your PATH. Install Claude Code, then try again.",
+    )?;
+
+    let (tx, rx) = std::sync::mpsc::channel::<crate::error::Result<String>>();
+    let emit_handle = app.clone();
+    let emit: Arc<dyn Fn(sandbox::docker::setup_token::SetupEvent) + Send + Sync> =
+        Arc::new(move |event| {
+            use sandbox::docker::setup_token::SetupEvent;
+            match event {
+                SetupEvent::Url(url) => {
+                    let _ = emit_handle.emit("claude-setup:url", url);
+                }
+                SetupEvent::AwaitingCode => {
+                    let _ = emit_handle.emit("claude-setup:awaiting-code", ());
+                }
+            }
+        });
+
+    // Claim the single-flight slot atomically with the spawn: checking and
+    // storing under one lock hold closes the check→store window a concurrent
+    // connect (double "already in progress") or cancel (sees an empty slot,
+    // no-ops, then this PTY publishes and runs uncancelled until timeout) would
+    // otherwise slip through. `start` is a quick spawn and holds no `.await`.
+    {
+        let mut slot = setup.lock();
+        if slot.is_some() {
+            return Err("A Claude connection is already in progress.".into());
+        }
+        let session = sandbox::docker::setup_token::ClaudeSetup::start(
+            std::path::Path::new(&bin),
+            &std::env::temp_dir(),
+            emit,
+            tx,
+        )
+        .map_err(|e| e.to_string())?;
+        *slot = Some(session);
+    }
+
+    // Wait off the async runtime: the user drives a browser consent in between,
+    // so the ceiling is generous. Blank the slot on any outcome — dropping the
+    // session kills the PTY (success, error, or timeout alike).
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(std::time::Duration::from_secs(300))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let _ = setup.lock().take();
+
+    match outcome {
+        Ok(Ok(token)) => store_container_token(&state, &token),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(
+            "Timed out waiting for the token. Re-run and complete the browser sign-in.".into(),
+        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("Claude setup ended unexpectedly.".into())
+        }
+    }
+}
+
+/// Feed the user's auth code to the live `claude setup-token` PTY started by
+/// [`connect_claude_container_auth`].
+#[tauri::command]
+async fn submit_claude_setup_code(
+    code: String,
+    setup: tauri::State<'_, ClaudeSetupState>,
+) -> Result<(), String> {
+    let guard = setup.lock();
+    match guard.as_ref() {
+        Some(session) => session.submit_code(&code).map_err(|e| e.to_string()),
+        None => Err("No Claude connection is in progress.".into()),
+    }
+}
+
+/// Abandon an in-flight [`connect_claude_container_auth`]: drop the session
+/// (killing the PTY), which makes the waiting connect command return an error
+/// the frontend ignores via its run-id guard.
+#[tauri::command]
+async fn cancel_claude_container_auth(
+    setup: tauri::State<'_, ClaudeSetupState>,
+) -> Result<(), String> {
+    setup.lock().take();
+    Ok(())
+}
+
+/// Drop the stored container token (blank the setting + clear the mirror,
+/// mirroring `github_disconnect`). Later chain steps take over, if any.
+#[tauri::command]
+async fn clear_container_auth_token(state: tauri::State<'_, DbState>) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(&conn, sandbox::docker::auth::TOKEN_SETTING, "")
+            .map_err(|e| e.to_string())?;
+    }
+    sandbox::docker::auth::set_stored_token(None);
+    Ok(())
+}
+
+/// Persist the docker launch knobs (`docker_image` override + `docker_memory` /
+/// `docker_cpus` limits) and update the in-process mirror the spawn path reads,
+/// so a change applies to the next docker spawn without a restart. Blank values
+/// clear the setting (the launch path falls back to its defaults). Same
+/// persist-then-mirror shape as `set_sandbox_engine` — the mirror
+/// (`sandbox::docker::LaunchSettings`) is the whole struct, so all three are
+/// written together.
+#[tauri::command]
+async fn set_docker_launch_settings(
+    image: Option<String>,
+    memory: Option<String>,
+    cpus: Option<String>,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    // Blank → None: a cleared field must not be stored as a launch override
+    // (an empty `--memory`/`--cpus` value or `docker_image` would break `docker
+    // run`), and the mirror treats blank as "use default" anyway.
+    let norm = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let image = norm(image);
+    let memory = norm(memory);
+    let cpus = norm(cpus);
+    {
+        let conn = state.lock();
+        // All three must land together. Written individually, a mid-loop
+        // failure (image commits, then memory errors) would leave a mixed
+        // config committed to the DB — one the UI never shows, since it reverts
+        // all three optimistically and we skip the mirror update on error, so a
+        // restart would silently hydrate the partial write. The transaction
+        // rolls back on any failure, keeping DB, mirror, and UI in sync.
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        for (key, value) in [
+            (sandbox::docker::IMAGE_SETTING, &image),
+            (sandbox::docker::MEMORY_SETTING, &memory),
+            (sandbox::docker::CPUS_SETTING, &cpus),
+        ] {
+            database::set_setting(&tx, key, value.as_deref().unwrap_or(""))
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
+        image_override: image,
+        memory,
+        cpus,
+    });
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Error/crash reporting. The DSN is baked in at build time via
@@ -516,6 +789,39 @@ pub fn run() {
             // honor user-set custom paths without touching the DB each time.
             bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&db.lock()));
 
+            // Seed the in-memory sandbox engine selection (mirror of the
+            // `sandbox_engine` setting) so spawn-time engine resolution —
+            // deep in agent code with no DB handle — honors the user's
+            // choice. Missing/unknown values keep the sandbox-exec default.
+            if let Some(kind) = database::get_setting(&db.lock(), sandbox::ENGINE_SETTING)
+                .as_deref()
+                .and_then(sandbox::EngineKind::from_setting)
+            {
+                sandbox::set_selected_engine_kind(kind);
+            }
+
+            // Seed the docker launch knobs (image override + resource limits)
+            // the same way — mirrored in-process for the spawn path. Slice C2
+            // adds the settings UI whose set-commands keep this in sync
+            // mid-run; until then changes apply on next launch.
+            {
+                let conn = db.lock();
+                sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
+                    image_override: database::get_setting(&conn, sandbox::docker::IMAGE_SETTING),
+                    memory: database::get_setting(&conn, sandbox::docker::MEMORY_SETTING),
+                    cpus: database::get_setting(&conn, sandbox::docker::CPUS_SETTING),
+                });
+            }
+
+            // Seed the in-process container auth token (mirror of the
+            // `claude_container_token` setting, same pattern as the GitHub
+            // token below) so the docker auth chain — resolved at spawn time
+            // with no DB handle — sees a token pasted in a previous run.
+            sandbox::docker::auth::set_stored_token(database::get_setting(
+                &db.lock(),
+                sandbox::docker::auth::TOKEN_SETTING,
+            ));
+
             // Unified git resolution: point the portable-install root at app
             // data, wire the fallback commit identity to the signed-in
             // profile, and kick off resolve-or-download in the background —
@@ -537,6 +843,19 @@ pub fn run() {
                 tauri::async_runtime::spawn(git_dist::startup(move |payload| {
                     let _ = handle.emit("git-dist:state", payload);
                 }));
+            }
+
+            // Forward docker image-build progress to the UI. The
+            // build runs deep in the spawn path (no AppHandle there), so it
+            // emits through a process-wide sink installed here — mirroring the
+            // git-dist emitter above. Rare (first docker spawn per image), so a
+            // single toast fed by these events suffices.
+            {
+                use tauri::Emitter;
+                let handle = app.handle().clone();
+                sandbox::docker::set_build_sink(move |event| {
+                    let _ = handle.emit("docker:build-progress", event);
+                });
             }
 
             // Anonymous product telemetry. Mint (or read) the install's random
@@ -589,6 +908,9 @@ pub fn run() {
             let workspace = Arc::new(WorkspaceManager::new(db));
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
+            // At most one `claude setup-token` capture runs at a time; the
+            // code-submit / cancel commands reach it through this slot.
+            app.manage(ClaudeSetupState::default());
 
             // Reclaim nested-Fletch RPC mailbox and worktree roots left in the
             // temp dir by dead instances (dogfooding runs). Live instances'
@@ -596,6 +918,9 @@ pub fn run() {
             // untouched.
             crate::sandbox::cleanup_nested_rpc_roots();
             crate::sandbox::cleanup_nested_worktrees_roots();
+            // Same reclamation for docker containers left by dead instances —
+            // probe-gated and on its own thread, so startup never waits on it.
+            crate::sandbox::docker::sweep_orphans_at_startup();
 
             // Quitting normally goes through `RunEvent::ExitRequested` (below),
             // but a SIGINT (Ctrl-C under `tauri dev`) or SIGTERM (sent by the
@@ -640,6 +965,16 @@ pub fn run() {
             set_agent_bin_override,
             set_telemetry_enabled,
             track_app_opened,
+            get_sandbox_engine,
+            set_sandbox_engine,
+            probe_docker_engine,
+            get_container_auth_status,
+            set_container_auth_token,
+            clear_container_auth_token,
+            connect_claude_container_auth,
+            submit_claude_setup_code,
+            cancel_claude_container_auth,
+            set_docker_launch_settings,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::get_agent_diff_stats,
@@ -710,6 +1045,7 @@ pub fn run() {
             commands::validate_agent_bin,
             commands::discover_supported_models,
             commands::reveal_logs,
+            commands::start_docker_desktop,
             commands::detect_editors,
             commands::open_in_editor,
         ])

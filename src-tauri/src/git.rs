@@ -60,7 +60,7 @@ const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// `Output`; callers that inspect exit codes themselves (e.g. `show-ref`'s
 /// 0/1) use this and check `status`, while `run_git` layers the
 /// success-or-`Error::Git` check on top.
-async fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
+pub(crate) async fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
     git_output_env(dir, args, &[]).await
 }
 
@@ -93,8 +93,21 @@ async fn git_output_env(
 /// `Error::Git("<label> failed: <stderr>")` — `label` names the op for the
 /// message. Collapses the "spawn, check status, format stderr" trio repeated
 /// across this module into one call.
-async fn run_git(dir: &Path, args: &[&str], label: &str) -> Result<std::process::Output> {
-    let out = git_output(dir, args).await?;
+pub(crate) async fn run_git(dir: &Path, args: &[&str], label: &str) -> Result<std::process::Output> {
+    run_git_env(dir, args, &[], label).await
+}
+
+/// `run_git` with extra child env — the require-zero-exit wrapper for the
+/// mutation helpers that must carry the no-hooks env (and, where relevant, an
+/// identity/auth merge). Keeps the "spawn, check status, format stderr" trio in
+/// one place so each hook-disabling call site stays a one-liner.
+async fn run_git_env(
+    dir: &Path,
+    args: &[&str],
+    env: &[(String, String)],
+    label: &str,
+) -> Result<std::process::Output> {
+    let out = git_output_env(dir, args, env).await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "{label} failed: {}",
@@ -111,6 +124,63 @@ fn apply_github_auth(cmd: &mut Command) {
     for (k, v) in crate::github::git_auth_env() {
         cmd.env(k, v);
     }
+}
+
+/// Env that makes a host-side git invocation ignore the workspace's own
+/// hooks. Agent workspaces are agent-writable, so a hostile `.git/hooks/*`
+/// would otherwise execute on the host when Fletch runs commit/push/merge.
+/// `/dev/null` is not a directory, so git finds no hooks and runs none.
+pub(crate) fn no_hooks_env() -> Vec<(String, String)> {
+    vec![
+        ("GIT_CONFIG_COUNT".into(), "1".into()),
+        ("GIT_CONFIG_KEY_0".into(), "core.hooksPath".into()),
+        ("GIT_CONFIG_VALUE_0".into(), "/dev/null".into()),
+    ]
+}
+
+/// Combine several env-var sets into one, correctly re-indexing any
+/// `GIT_CONFIG_*` entries. Each set uses git's env-config convention
+/// (`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`), so
+/// setting two such sets blindly would let the second `GIT_CONFIG_COUNT`
+/// shadow the first and silently drop a config entry — exactly the trap when
+/// `git_auth_env()` and `no_hooks_env()` are both needed. This walks each
+/// set's declared count, re-emits its key/value pairs under fresh contiguous
+/// indices, and writes a single `GIT_CONFIG_COUNT` equal to the total.
+/// Non-`GIT_CONFIG_*` vars (e.g. the identity `GIT_AUTHOR_*`) pass through
+/// unchanged.
+pub(crate) fn merge_git_env(sets: &[&[(String, String)]]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut idx: u32 = 0;
+    for set in sets {
+        let lookup = |name: &str| set.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+        // Read only the entries the set declared it populated.
+        let count: u32 = lookup("GIT_CONFIG_COUNT")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        for i in 0..count {
+            if let (Some(key), Some(val)) = (
+                lookup(&format!("GIT_CONFIG_KEY_{i}")),
+                lookup(&format!("GIT_CONFIG_VALUE_{i}")),
+            ) {
+                out.push((format!("GIT_CONFIG_KEY_{idx}"), key));
+                out.push((format!("GIT_CONFIG_VALUE_{idx}"), val));
+                idx += 1;
+            }
+        }
+        // Anything outside the GIT_CONFIG_* protocol (identity vars, etc.)
+        // carries over verbatim.
+        for (k, v) in set.iter() {
+            if k == "GIT_CONFIG_COUNT"
+                || k.starts_with("GIT_CONFIG_KEY_")
+                || k.starts_with("GIT_CONFIG_VALUE_")
+            {
+                continue;
+            }
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    out.push(("GIT_CONFIG_COUNT".into(), idx.to_string()));
+    out
 }
 
 /// Env vars that guarantee commit-creating commands (commit, merge via pull,
@@ -169,7 +239,11 @@ pub async fn worktree_add_detached(
     if let Some(base) = base {
         args.push(base);
     }
-    let out = git_output(repo, &args).await?;
+    // `worktree add` checks out files in the new worktree, firing
+    // `post-checkout` — a hook in the *source* repo would run on the host, so
+    // disable workspace hooks for defense-in-depth.
+    let hooks = no_hooks_env();
+    let out = git_output_env(repo, &args, &hooks).await?;
     if out.status.success() {
         return Ok(());
     }
@@ -195,7 +269,7 @@ pub async fn worktree_add_detached(
             }
         }
         if !worktree_path.exists() {
-            let retry = git_output(repo, &args).await?;
+            let retry = git_output_env(repo, &args, &hooks).await?;
             if retry.status.success() {
                 tracing::info!(path = %worktree_path.display(), "recovered orphan worktree path on spawn");
                 return Ok(());
@@ -278,7 +352,15 @@ pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
 /// promote a detached-HEAD worktree onto a named branch once the
 /// first user message gives us a slug.
 pub async fn checkout_new_branch(worktree: &Path, branch: &str) -> Result<()> {
-    run_git(worktree, &["checkout", "-b", branch], &format!("checkout -b {branch}")).await?;
+    // `checkout` fires `post-checkout`, which would run on the host against an
+    // agent-writable workspace — disable workspace hooks for this invocation.
+    run_git_env(
+        worktree,
+        &["checkout", "-b", branch],
+        &no_hooks_env(),
+        &format!("checkout -b {branch}"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -364,7 +446,7 @@ pub async fn init_repo(path: &Path) -> Result<()> {
 pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
     run_git(repo, &["add", "-A"], "add -A").await?;
 
-    let env = identity_env(repo).await;
+    let env = merge_git_env(&[&identity_env(repo).await, &no_hooks_env()]);
     let out = git_output_env(repo, &["commit", "-m", message], &env).await?;
     if !out.status.success() {
         // `git commit` writes the common "nothing to commit, working tree
@@ -518,6 +600,140 @@ mod tests {
         assert!(out.status.success());
     }
 
+    /// Look up a `GIT_CONFIG_KEY_<n>`'s paired value in a merged env set.
+    fn config_value_for(env: &[(String, String)], key: &str) -> Option<String> {
+        for i in 0.. {
+            let k = format!("GIT_CONFIG_KEY_{i}");
+            let entry = env.iter().find(|(name, _)| *name == k)?;
+            if entry.1 == key {
+                return env
+                    .iter()
+                    .find(|(name, _)| *name == format!("GIT_CONFIG_VALUE_{i}"))
+                    .map(|(_, v)| v.clone());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn no_hooks_env_points_hookspath_at_dev_null() {
+        let env = no_hooks_env();
+        assert_eq!(config_value_for(&env, "core.hooksPath").as_deref(), Some("/dev/null"));
+    }
+
+    #[test]
+    fn merge_git_env_reindexes_both_sets_without_collision() {
+        // Two GIT_CONFIG_* sets that both declare COUNT=1 with KEY_0/VALUE_0.
+        // Merged blindly one would clobber the other; the merge must keep both
+        // under distinct indices and report the total count.
+        let auth = vec![
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+            (
+                "GIT_CONFIG_KEY_0".to_string(),
+                "http.https://github.com/.extraheader".to_string(),
+            ),
+            (
+                "GIT_CONFIG_VALUE_0".to_string(),
+                "AUTHORIZATION: basic abc123".to_string(),
+            ),
+        ];
+        let merged = merge_git_env(&[&auth, &no_hooks_env()]);
+
+        // COUNT equals the total across both sets.
+        assert_eq!(
+            merged
+                .iter()
+                .find(|(k, _)| k == "GIT_CONFIG_COUNT")
+                .map(|(_, v)| v.as_str()),
+            Some("2")
+        );
+        // There is exactly one COUNT entry (the second set's didn't survive).
+        assert_eq!(
+            merged.iter().filter(|(k, _)| k == "GIT_CONFIG_COUNT").count(),
+            1
+        );
+        // Both config entries are present with distinct indices.
+        assert_eq!(
+            config_value_for(&merged, "core.hooksPath").as_deref(),
+            Some("/dev/null")
+        );
+        assert_eq!(
+            config_value_for(&merged, "http.https://github.com/.extraheader").as_deref(),
+            Some("AUTHORIZATION: basic abc123")
+        );
+    }
+
+    #[test]
+    fn merge_git_env_passes_plain_env_through() {
+        // identity-style vars aren't part of the GIT_CONFIG_* protocol and must
+        // survive the merge untouched.
+        let identity = vec![
+            ("GIT_AUTHOR_NAME".to_string(), "Tester".to_string()),
+            ("GIT_AUTHOR_EMAIL".to_string(), "t@example.com".to_string()),
+        ];
+        let merged = merge_git_env(&[&identity, &no_hooks_env()]);
+        assert!(merged
+            .iter()
+            .any(|(k, v)| k == "GIT_AUTHOR_NAME" && v == "Tester"));
+        assert!(merged
+            .iter()
+            .any(|(k, v)| k == "GIT_AUTHOR_EMAIL" && v == "t@example.com"));
+        assert_eq!(
+            config_value_for(&merged, "core.hooksPath").as_deref(),
+            Some("/dev/null")
+        );
+    }
+
+    /// Write an executable `.git/hooks/<name>` that drops `sentinel` and fails.
+    /// If git ran it, the sentinel would exist (and, for pre-* hooks, the op
+    /// would be aborted). Unix-only: hooks must be executable to run.
+    #[cfg(unix)]
+    fn write_failing_hook(repo: &Path, name: &str, sentinel: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let hooks = repo.join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let path = hooks.join(name);
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", sentinel.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn commit_all_ignores_workspace_pre_commit_hook() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+
+        let sentinel = td.path().join("hook-ran");
+        write_failing_hook(repo, "pre-commit", &sentinel);
+
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        // With hooks honored, the `exit 1` pre-commit would abort this commit.
+        commit_all(repo, "first").await.unwrap();
+
+        assert!(!sentinel.exists(), "workspace pre-commit hook must not run");
+        // And the commit actually landed.
+        let log = run_git(repo, &["log", "--oneline"], "log").await.unwrap();
+        assert!(String::from_utf8_lossy(&log.stdout).contains("first"));
+    }
+
+    #[test]
+    fn push_env_disables_hooks() {
+        // A live remote is impractical here; assert instead that push's env
+        // carries `core.hooksPath=/dev/null` (merged alongside any auth).
+        let merged = merge_git_env(&[&crate::github::git_auth_env(), &no_hooks_env()]);
+        assert_eq!(
+            config_value_for(&merged, "core.hooksPath").as_deref(),
+            Some("/dev/null")
+        );
+    }
+
     #[tokio::test]
     async fn commit_all_clean_tree_reports_nothing_to_commit() {
         let td = tempfile::tempdir().unwrap();
@@ -626,6 +842,69 @@ mod tests {
         assert!(worktree_add_detached(&repo, &wt, None).await.is_err());
         assert!(wt.join("precious.txt").exists());
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn conflicting_rebase_runs_no_workspace_hooks_and_leaves_no_rebase_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+
+        // Base commit; remember the starting branch to rebase onto.
+        std::fs::write(repo.join("a.txt"), b"base\n").unwrap();
+        commit_all(repo, "base").await.unwrap();
+        let base = current_branch(repo).await.unwrap().unwrap();
+
+        // Feature branch edits a.txt one way…
+        checkout_new_branch(repo, "feature").await.unwrap();
+        std::fs::write(repo.join("a.txt"), b"feature\n").unwrap();
+        commit_all(repo, "feature edit").await.unwrap();
+
+        // …while base advances with a conflicting edit to the same line.
+        config(repo, "checkout.quiet", "true").await; // keep output tidy
+        let out = Command::new("git")
+            .current_dir(repo)
+            .args(["checkout", &base])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success());
+        std::fs::write(repo.join("a.txt"), b"base advanced\n").unwrap();
+        commit_all(repo, "base edit").await.unwrap();
+        let out = Command::new("git")
+            .current_dir(repo)
+            .args(["checkout", "feature"])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success());
+
+        // Plant a hostile post-checkout hook. The rebase checks out the base to
+        // start replaying (fires post-checkout) and, on conflict, aborts — both
+        // host-side and both must run with workspace hooks disabled.
+        let sentinel = td.path().join("hook-ran");
+        let hook = repo.join(".git/hooks/post-checkout");
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\ntouch '{}'\n", sentinel.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Rebase conflicts on a.txt → rebase_onto aborts internally and errs.
+        let err = rebase_onto(repo, &base).await.unwrap_err();
+        assert!(err.to_string().contains("rebase onto"), "got: {err}");
+
+        // No workspace hook ran during any host-side step of the rebase.
+        assert!(!sentinel.exists(), "workspace post-checkout hook must not run");
+        // And the abort left the worktree clean, not mid-rebase.
+        assert!(!repo.join(".git/rebase-merge").exists());
+        assert!(!repo.join(".git/rebase-apply").exists());
+    }
 }
 
 fn parse_shortstat(s: &str) -> (u32, u32) {
@@ -664,7 +943,15 @@ pub async fn worktree_add_branch(
     let path = worktree_path
         .to_str()
         .ok_or_else(|| Error::InvalidPath(worktree_path.display().to_string()))?;
-    run_git(repo, &["worktree", "add", path, branch], &format!("worktree add {branch}")).await?;
+    // Checks out `branch` in the new worktree, firing `post-checkout` — disable
+    // workspace hooks so a source-repo hook can't run on the host.
+    run_git_env(
+        repo,
+        &["worktree", "add", path, branch],
+        &no_hooks_env(),
+        &format!("worktree add {branch}"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -676,7 +963,12 @@ pub async fn worktree_add_branch(
 pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
     let mut cmd = crate::git_dist::command(worktree);
     cmd.args(["push", "-u", "origin", branch]);
-    apply_github_auth(&mut cmd);
+    // Auth for the https transport *and* hook-disabling — `pre-push` fires on
+    // the host, so a workspace-planted hook must not run. Merge so neither
+    // set's `GIT_CONFIG_COUNT` clobbers the other.
+    for (k, v) in merge_git_env(&[&crate::github::git_auth_env(), &no_hooks_env()]) {
+        cmd.env(k, v);
+    }
     let out = output_timed(&mut cmd, "git push").await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
@@ -702,9 +994,15 @@ pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
 pub async fn pull(worktree: &Path) -> Result<()> {
     let mut cmd = crate::git_dist::command(worktree);
     cmd.args(["pull"]);
-    apply_github_auth(&mut cmd);
-    // A pull may create a merge commit, which needs an author/committer.
-    for (k, v) in identity_env(worktree).await {
+    // Auth for the https transport; identity because a pull may create a merge
+    // commit; no-hooks because the merge fires `post-merge`/`prepare-commit-msg`
+    // on the host. Merge so the auth and no-hooks `GIT_CONFIG_*` sets don't
+    // clobber each other (identity uses plain env vars and passes through).
+    for (k, v) in merge_git_env(&[
+        &crate::github::git_auth_env(),
+        &no_hooks_env(),
+        &identity_env(worktree).await,
+    ]) {
         cmd.env(k, v);
     }
     let out = output_timed(&mut cmd, "git pull").await?;
@@ -722,17 +1020,21 @@ pub async fn pull(worktree: &Path) -> Result<()> {
 /// base has moved ahead. Aborts the rebase on conflict so the worktree is never
 /// left mid-rebase — the caller surfaces the error.
 pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
-    // Rebasing rewrites commits, which needs a committer identity.
-    let env = identity_env(worktree).await;
+    // Rebasing rewrites commits, which needs a committer identity; it also
+    // fires `pre-rebase`/`post-rewrite`, so disable workspace hooks too.
+    let env = merge_git_env(&[&identity_env(worktree).await, &no_hooks_env()]);
     let out = git_output_env(worktree, &["rebase", base], &env).await?;
     if !out.status.success() {
         let conflict = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        // Don't leave the worktree mid-rebase. If the abort *itself* fails or
-        // times out, the worktree is stuck mid-rebase and needs manual
-        // recovery — surface that alongside the original conflict rather than
-        // silently swallowing it and reporting only the conflict.
+        // Don't leave the worktree mid-rebase. `rebase --abort` checks out the
+        // original HEAD, firing `post-checkout` — so it too must run with hooks
+        // disabled, else the failure path reopens the very host-execution hole
+        // the success path closes. If the abort *itself* fails or times out, the
+        // worktree is stuck mid-rebase and needs manual recovery — surface that
+        // alongside the original conflict rather than silently swallowing it and
+        // reporting only the conflict.
         if let Err(abort_err) =
-            run_git(worktree, &["rebase", "--abort"], "rebase --abort").await
+            run_git_env(worktree, &["rebase", "--abort"], &no_hooks_env(), "rebase --abort").await
         {
             return Err(Error::Git(format!(
                 "rebase onto {base} failed: {conflict}; the worktree is left \
@@ -749,7 +1051,7 @@ pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
 /// Errors if there is nothing to commit or if git is unhappy.
 pub async fn commit(worktree: &Path, message: &str) -> Result<()> {
     run_git(worktree, &["add", "-A"], "add -A").await?;
-    let env = identity_env(worktree).await;
+    let env = merge_git_env(&[&identity_env(worktree).await, &no_hooks_env()]);
     let out = git_output_env(worktree, &["commit", "-m", message], &env).await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
@@ -787,7 +1089,7 @@ pub async fn merge_abort(worktree: &Path) -> Result<()> {
 /// identity fallback like every other commit-creating op.
 pub async fn commit_initial(repo: &Path) -> Result<()> {
     run_git(repo, &["add", "-A"], "add -A").await?;
-    let env = identity_env(repo).await;
+    let env = merge_git_env(&[&identity_env(repo).await, &no_hooks_env()]);
     let out = git_output_env(
         repo,
         &["commit", "--allow-empty", "-m", "Initial commit"],

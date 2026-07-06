@@ -39,6 +39,12 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const customAgents = useAppStore((s) => s.customAgents);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
+  // New agents get the currently selected sandbox engine. Only Claude Code runs
+  // in Docker containers today, so under the docker engine every other coding
+  // agent (and any custom agent not based on Claude) is disabled — matching the
+  // backend spawn refusal in supervisor/lifecycle.rs.
+  const sandboxEngine = useAppStore((s) => s.sandboxEngine);
+  const dockerOnly = sandboxEngine === "docker";
 
   const selected = PROVIDERS.find((p) => p.id === provider) ?? PROVIDERS[0];
   const enabled = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
@@ -178,28 +184,48 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                 // never disables an agent the user really has.
                 const installed = !providersProbed || !!providerPaths[p.id];
                 const missing = providersProbed && !installed;
+                // Non-Claude agents can't run under Docker yet (see dockerOnly).
+                const dockerBlocked = dockerOnly && p.id !== "claude";
+                const disabled = !installed || dockerBlocked;
+                // Why disabled — dockerBlocked wins over missing (a non-Claude
+                // agent under Docker is blocked regardless of install state).
+                const disabledTip = dockerBlocked
+                  ? `${p.label} isn't available in Docker sandboxes yet`
+                  : "Not installed — see Settings › Providers";
                 const isSelected = p.id === provider && !customAgentId;
                 const isOpen = hovered === p.id;
                 return (
                   <button
                     key={p.id}
                     type="button"
-                    disabled={!installed}
-                    className={`model-agent-row flex-center ${isSelected ? "active" : ""} ${isOpen ? "hot" : ""}`}
+                    // aria-disabled, not the native `disabled` attr: a disabled
+                    // <button> swallows hover/pointer events in the WebView, so
+                    // its tooltip never shows and the user is left with only
+                    // "Docker: Claude only" and no reason. aria-disabled keeps
+                    // the row hover-capable; the guarded handlers below keep it
+                    // inert. The tooltip is the CSS `.tip`/`data-tip` one
+                    // (shows on :hover), used only for the disabled explanation.
+                    aria-disabled={disabled}
+                    className={`model-agent-row flex-center ${disabled ? "is-disabled tip" : ""} ${isSelected ? "active" : ""} ${isOpen ? "hot" : ""}`}
+                    data-tip={disabled ? disabledTip : undefined}
                     title={
-                      missing
-                        ? "Not installed — see Settings › Providers"
+                      disabled
+                        ? undefined
                         : "Click to use the default model · hover to choose a model"
                     }
-                    onMouseEnter={() => installed && setHovered(p.id)}
-                    onClick={() => installed && pickModel(p.id, undefined)}
+                    onMouseEnter={() => !disabled && setHovered(p.id)}
+                    onClick={() => !disabled && pickModel(p.id, undefined)}
                   >
                     <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={26} />
                     <span className="model-agent-name truncate text-base">{p.label}</span>
                     <span className="model-agent-ver text-xs">
-                      {missing ? "Not installed" : providerVersions[p.id]}
+                      {dockerBlocked
+                        ? "Docker: Claude only"
+                        : missing
+                          ? "Not installed"
+                          : providerVersions[p.id]}
                     </span>
-                    {installed && <Icon name="chevR" size={12} />}
+                    {!disabled && <Icon name="chevR" size={12} />}
                   </button>
                 );
               })}
@@ -211,13 +237,24 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
               {selectableCustom.length > 0 ? (
                 selectableCustom.map((a) => {
                   const active = a.id === customAgentId;
+                  // A custom agent inherits its base provider's docker support.
+                  const dockerBlocked = dockerOnly && a.base !== "claude";
                   return (
                     <button
                       key={a.id}
                       type="button"
-                      className={`model-custom-row flex-center ${active ? "active" : ""}`}
+                      // Same reasoning as the provider rows above: aria-disabled
+                      // (not the native attr) keeps the row hover-capable so the
+                      // CSS .tip/data-tip refusal is reachable in the WebView.
+                      aria-disabled={dockerBlocked}
+                      data-tip={
+                        dockerBlocked
+                          ? `${providerLabel(a.base)} isn't available in Docker sandboxes yet`
+                          : undefined
+                      }
+                      className={`model-custom-row flex-center ${dockerBlocked ? "is-disabled tip" : ""} ${active ? "active" : ""}`}
                       onMouseEnter={() => setHovered(null)}
-                      onClick={() => pickCustom(a.id, a.base, a.model)}
+                      onClick={() => !dockerBlocked && pickCustom(a.id, a.base, a.model)}
                     >
                       <Mono name={a.name} hue={a.color} size={26} />
                       <span className="model-custom-text">

@@ -115,10 +115,19 @@ impl Supervisor {
         // Interactive shells: PtySession::drop kills the child.
         drop(std::mem::take(&mut *self.shells.lock()));
 
-        // Agent sessions: Agent::shutdown consumes and drops, killing the
-        // managed/pty/per-turn child.
+        // Agent sessions: `Agent::shutdown` consumes and drops, killing the
+        // managed/pty/per-turn child. Bump each generation *first* so the
+        // kill-induced process exit is recognized as our own intentional
+        // teardown and ignored by `apply_exit_if_current` (stale gen), rather
+        // than recorded as a crash — the same guard the timeout/resume teardown
+        // paths use. Without it a docker agent's `docker run` exits 143 (SIGTERM
+        // from container teardown), which persists a `last_error` and makes the
+        // agent derive to `Error` on the next launch, forcing a manual Resume;
+        // seatbelt happens to exit 0 on stdin close and slips past. Bumping here
+        // makes both engines resume silently.
         let agents = std::mem::take(&mut *self.agents.lock());
-        for (_, agent) in agents {
+        for (id, agent) in agents {
+            self.bump_generation(&id);
             let _ = agent.shutdown();
         }
     }
@@ -303,6 +312,7 @@ fn transition_active(sup: &Supervisor, app: &AppHandle, agent_id: &str, new: Age
 mod tests {
     use super::*;
     use crate::pty_session::PtySpawn;
+    use crate::sandbox::KillHandle;
     use crate::workspace::{new_agent_record, AgentView, TrackedRepo};
     use std::path::Path;
     use std::time::Duration;
@@ -355,6 +365,7 @@ mod tests {
                 env: &[],
                 cols: 80,
                 rows: 24,
+                kill_plan: KillHandle::ProcessGroup,
             },
             |_| {},
             |_| {},
@@ -426,6 +437,7 @@ mod tests {
                 env: &[],
                 cols: 80,
                 rows: 24,
+                kill_plan: KillHandle::ProcessGroup,
             },
             |_| {},
             move |_exit| {

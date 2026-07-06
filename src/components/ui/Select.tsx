@@ -10,6 +10,10 @@ export interface SelectOption<T extends string> {
   /** Optional leading visual (e.g. a provider icon) shown before the label,
    *  in both the trigger and the option row. */
   icon?: ReactNode;
+  /** Disable just this option: shown (with its hint explaining why) but not
+   *  selectable. Distinct from the component-level `disabled`, which locks
+   *  the whole control. */
+  disabled?: boolean;
 }
 
 interface Props<T extends string> {
@@ -108,6 +112,8 @@ export function Select<T extends string>({
                 type="button"
                 role="option"
                 aria-selected={o.value === value}
+                aria-disabled={o.disabled}
+                disabled={o.disabled}
                 className={`dd-item flex-center ${o.value === value ? "active" : ""}`}
                 onClick={() => pick(o.value)}
               >

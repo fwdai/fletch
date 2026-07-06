@@ -216,6 +216,11 @@
   flex-shrink: 0;
   gap: 8px;
 }
+/* Dropdowns used as row controls (e.g. the sandbox engine select) need an
+   explicit width — as a flex item the select would shrink-wrap its label. */
+.set-row-c .ui-select {
+  width: 240px;
+}
 
 /* premium toggle */
 .set-toggle {
@@ -448,6 +453,67 @@
 }
 .set-gh-uri {
   color: var(--fg-2);
+}
+
+/* ── CONTAINER AUTH (Sandbox › Claude auth) ──────────────────────────── */
+.set-cauth-status {
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+.set-cauth-status.connected {
+  color: var(--fg-1);
+}
+/* Modal internals; the dialog chrome reuses `.ghc-*` (GithubConnect.css). */
+.set-cauth-cmd {
+  gap: 6px;
+  padding: 4px 6px 4px 12px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+}
+.set-cauth-input {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--fg-0);
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: border-color 0.12s;
+}
+.set-cauth-input:focus {
+  border-color: var(--accent);
+}
+/* Consent URL surfaced during the automated flow (fallback to the CLI's own
+   browser-open); mono + single-line with the tail elided so a ~250-char URL
+   doesn't blow out the dialog. The recognizable `https://claude.com/…` head
+   stays visible; Copy/Open carry the full value. */
+.set-cauth-url {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Muted per-phase status line ("Opening your browser…", "Verifying…"). */
+.set-cauth-note {
+  color: var(--fg-2);
+}
+/* Inline warning when the selected engine can't be used right now (e.g. a
+   persisted Docker choice whose daemon is down): new agents would fail to
+   launch until it's resolved, so surface it rather than let the Select read as
+   active. Warn-tinted like the other inline banners. */
+.set-sandbox-warn {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--warn), var(--bg-0) 86%);
+  border: 1px solid color-mix(in srgb, var(--warn), var(--bg-0) 68%);
+  border-radius: var(--r-md);
+  color: var(--fg-1);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
 }
 
 /* ── PROVIDERS ───────────────────────────────────────────────────────── */

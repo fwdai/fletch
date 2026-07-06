@@ -2,8 +2,11 @@ import type { AgentStatus, GitState, PrChecks, PrState } from "@/api";
 
 /** One agent-delegated git action: the user clicked a panel action whose
  *  judgment part (message, description, conflict edits) belongs to the
- *  coding agent; the agent executes the mutation through the app's file
- *  RPC (`git_commit` / `open_pr` / `git_update_branch` / `git_push`). */
+ *  coding agent. The agent runs local mutations (commit, merge, conflict
+ *  resolution) as plain in-sandbox git, and the credentialed remote actions
+ *  through the app's file RPC (`open_pr` / `git_push` / `git_fetch`). The
+ *  `agent:git-action` signal that confirms a local mutation arrives via the
+ *  clone's `post-commit` / `post-merge` hooks (see `gitActionProvesKind`). */
 export type GitDelegationKind =
   | "commit"
   | "commit-push"
@@ -93,8 +96,13 @@ export function delegationStep(
 export function gitActionProvesKind(kind: GitDelegationKind, op: string): boolean {
   switch (kind) {
     case "commit":
-    case "resolve":
       return op === "git_commit";
+    case "resolve":
+      // Completing a conflicted merge yields a merge commit, which post-commit
+      // reports as `git_update_branch`; a rebase/cherry-pick resolution is a
+      // plain commit (`git_commit`). Accept either — the snapshot (no conflicts
+      // left) gates actual completion.
+      return op === "git_commit" || op === "git_update_branch";
     case "commit-push":
     case "fix-checks":
       return op === "git_commit" || op === "git_push";
@@ -105,6 +113,11 @@ export function gitActionProvesKind(kind: GitDelegationKind, op: string): boolea
     case "push":
       return op === "git_push";
     case "update-branch":
+      // Proven only by an actual base merge: a clean merge fires the clone's
+      // post-merge hook, and a conflicted merge's completing commit is a merge
+      // commit that post-commit also reports as `git_update_branch`. A plain
+      // `git commit` reports `git_commit`, so an unrelated commit made during
+      // this delegation can't stand in for the merge.
       return op === "git_update_branch";
   }
 }

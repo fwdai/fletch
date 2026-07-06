@@ -4,7 +4,7 @@
 //! — so the launcher only ever offers tools that are actually present.
 
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use crate::bin_resolve;
@@ -28,7 +28,8 @@ struct KnownEditor {
     /// CLI launcher names to try on PATH, first match wins (e.g. `code`).
     clis: &'static [&'static str],
     /// macOS `.app` name (without the extension), used both to detect the app
-    /// and to launch it by name via LaunchServices.
+    /// and to launch it by name via LaunchServices. Only read on macOS.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     mac_app: Option<&'static str>,
 }
 
@@ -166,6 +167,7 @@ fn is_available(ed: &KnownEditor, home: Option<&Path>) -> bool {
 
 #[cfg(target_os = "macos")]
 fn mac_app_installed(ed: &KnownEditor, home: Option<&Path>) -> bool {
+    use std::path::PathBuf;
     let Some(app) = ed.mac_app else { return false };
     let bundle = format!("{app}.app");
     // Cover the GUI-app locations plus Utilities (where the system Terminal

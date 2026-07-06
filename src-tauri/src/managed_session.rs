@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 
 use crate::child_io;
 use crate::error::{Error, Result};
+use crate::sandbox::KillHandle;
 
 /// Tools whose `can_use_tool` request we hold open for a human answer instead
 /// of auto-approving. Everything else runs unattended.
@@ -52,6 +53,7 @@ pub struct ManagedSession {
     /// `request_id`s of `can_use_tool` prompts we're holding open, awaiting a
     /// human answer. Drained on interrupt so the turn can unwind.
     pending: Arc<Mutex<HashSet<String>>>,
+    kill_plan: KillHandle,
 }
 
 pub struct ManagedSpawn<'a> {
@@ -61,6 +63,8 @@ pub struct ManagedSpawn<'a> {
     /// Extra environment variables (e.g. `FLETCH_RPC_DIR`). `Command` inherits
     /// the parent environment by default; these are layered on top.
     pub env: &'a [(String, String)],
+    /// How to terminate the child (chosen by the sandbox engine).
+    pub kill_plan: KillHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +94,25 @@ impl ManagedSession {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+
+        // `Command::spawn` reports a missing program and a missing working
+        // directory identically as ENOENT ("No such file or directory (os
+        // error 2)"), which is impossible to act on. Check both up front and
+        // name the broken precondition instead. For docker agents `cwd` is the
+        // freshly-cloned workspace, so a missing one means provisioning didn't
+        // leave it where the launch expects — not a docker problem at all.
+        if spec.program.is_absolute() && !spec.program.exists() {
+            return Err(Error::Other(format!(
+                "managed spawn: program not found at {}",
+                spec.program.display()
+            )));
+        }
+        if !spec.cwd.exists() {
+            return Err(Error::Other(format!(
+                "managed spawn: working directory does not exist: {}",
+                spec.cwd.display()
+            )));
+        }
 
         let mut child = cmd
             .spawn()
@@ -141,11 +164,18 @@ impl ManagedSession {
 
         child_io::spawn_stderr_reader(stderr, "managed", |_| {});
 
+        let kill_plan_for_exit = spec.kill_plan.clone();
         child_io::spawn_reaper(child_arc.clone(), "managed", move |status| {
             let exit = match status {
                 Ok(status) => ManagedExit {
                     success: status.success(),
-                    message: format!("{status}"),
+                    // The engine may reserve launcher exit codes with a clearer
+                    // meaning than the raw status (docker CLI 125/126/127 —
+                    // daemon/image failures); otherwise report the status as-is.
+                    message: status
+                        .code()
+                        .and_then(|c| kill_plan_for_exit.describe_exit(c))
+                        .unwrap_or_else(|| format!("{status}")),
                 },
                 Err(e) => ManagedExit {
                     success: false,
@@ -160,6 +190,7 @@ impl ManagedSession {
             child: child_arc,
             stdin: stdin_arc,
             pending,
+            kill_plan: spec.kill_plan,
         })
     }
 
@@ -236,6 +267,10 @@ impl ManagedSession {
     }
 
     pub fn kill(&self) -> Result<()> {
+        // Tear the sandbox down first, but never let a failed engine teardown
+        // skip closing stdin / reaping the local child (see exec_session): an
+        // errored container kill must not strand the host-side wrapper.
+        let engine_result = self.kill_plan.kill();
         // Close stdin to signal EOF (claude exits cleanly that way),
         // then kill if it's still alive.
         let _ = self.stdin.lock().take();
@@ -243,7 +278,7 @@ impl ManagedSession {
             let _ = child.kill();
             let _ = child.wait();
         }
-        Ok(())
+        engine_result
     }
 }
 
@@ -364,15 +399,11 @@ mod tests {
             child: Arc::new(Mutex::new(None)),
             stdin: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashSet::new())),
+            kill_plan: KillHandle::ProcessGroup,
         };
 
         assert!(session
-            .answer_tool_use(
-                "already-drained",
-                json!({}),
-                ToolUseBehavior::Allow,
-                None,
-            )
+            .answer_tool_use("already-drained", json!({}), ToolUseBehavior::Allow, None,)
             .is_ok());
     }
 
@@ -395,7 +426,10 @@ mod tests {
         assert_eq!(v["response"]["subtype"], "success");
         assert_eq!(v["response"]["request_id"], "req-1");
         assert_eq!(v["response"]["response"]["behavior"], "allow");
-        assert_eq!(v["response"]["response"]["updatedInput"]["answers"]["q"], "a");
+        assert_eq!(
+            v["response"]["response"]["updatedInput"]["answers"]["q"],
+            "a"
+        );
     }
 
     #[test]

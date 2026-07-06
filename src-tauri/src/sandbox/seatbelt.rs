@@ -24,7 +24,42 @@
 
 use std::path::{Path, PathBuf};
 
+use super::engine::{AgentLaunchCtx, EngineKind, Keepalive, KillHandle, LaunchPlan, SandboxEngine};
 use crate::error::{Error, Result};
+
+pub struct SandboxExecEngine;
+
+impl SandboxEngine for SandboxExecEngine {
+    fn kind(&self) -> EngineKind {
+        EngineKind::SandboxExec
+    }
+
+    fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
+        let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
+        let profile_text = build_profile(
+            ctx.writable_root,
+            ctx.rpc_dir,
+            ctx.home,
+            claude_config_dir.as_deref(),
+        )?;
+        let profile_file = profile_tempfile(&profile_text)?;
+        let profile_path = profile_file
+            .path()
+            .to_str()
+            .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
+            .to_string();
+        Ok(LaunchPlan {
+            program: PathBuf::from(SANDBOX_EXEC),
+            prefix_args: vec!["-f".into(), profile_path, agent_bin.to_string()],
+            env: vec![],
+            keepalive: Keepalive::Profile(profile_file),
+            // sandbox-exec is a plain process wrapper — the session's own
+            // process-group escalation tears everything down; the trait's
+            // default no-op `kill` applies.
+            kill: KillHandle::ProcessGroup,
+        })
+    }
+}
 
 /// The macOS sandbox wrapper. Every confined process (agents *and* the Run
 /// panel) is launched as `sandbox-exec -f <profile> <program> …`.
@@ -64,16 +99,16 @@ fn standard_state_dirs(home_s: &str) -> Vec<String> {
 /// profile: a running project legitimately needs its toolchain to write here,
 /// whereas an agent editing source does not.
 const RUN_TOOLCHAIN_DIRS: &[&str] = &[
-    ".cargo",          // Rust: registry, git checkouts, installed bins
-    ".rustup",         // Rust: downloaded toolchains (rust-toolchain.toml)
-    "go",              // Go: GOPATH — module cache (pkg/mod) + installed bins
-    ".bun",            // Bun: global install cache
-    "Library/pnpm",    // pnpm: content-addressable store (macOS default)
-    ".bundle",         // Bundler: config + cache
-    ".gem",            // RubyGems: default gem home
-    ".rbenv",          // rbenv: shims + installed Ruby versions
-    ".rvm",            // rvm: alternative Ruby version manager
-    "Library/Python",  // pip --user / no-venv user site-packages
+    ".cargo",         // Rust: registry, git checkouts, installed bins
+    ".rustup",        // Rust: downloaded toolchains (rust-toolchain.toml)
+    "go",             // Go: GOPATH — module cache (pkg/mod) + installed bins
+    ".bun",           // Bun: global install cache
+    "Library/pnpm",   // pnpm: content-addressable store (macOS default)
+    ".bundle",        // Bundler: config + cache
+    ".gem",           // RubyGems: default gem home
+    ".rbenv",         // rbenv: shims + installed Ruby versions
+    ".rvm",           // rvm: alternative Ruby version manager
+    "Library/Python", // pip --user / no-venv user site-packages
 ];
 
 /// Build the SBPL profile for a **Run-panel** process (setup/dev command).
@@ -233,13 +268,15 @@ fn cleanup_nested_state_roots_in(base: &Path) {
 /// Whether a process with `pid` currently exists — a signal-0 `kill` probe.
 /// `Err` (ESRCH, or EPERM on a reused pid we don't own) is treated as gone,
 /// which only ever under-reclaims; a live Fletch we own always probes `Ok`.
+/// `pub(crate)` so the docker orphan sweep (`sandbox/docker/cleanup.rs`) can
+/// share the exact liveness semantics instead of duplicating them.
 #[cfg(unix)]
-fn pid_alive(pid: i32) -> bool {
+pub(crate) fn pid_alive(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
 }
 
 #[cfg(not(unix))]
-fn pid_alive(_pid: i32) -> bool {
+pub(crate) fn pid_alive(_pid: i32) -> bool {
     true // can't probe — never reclaim
 }
 
@@ -268,8 +305,15 @@ pub fn build_profile(
     // A non-default `CLAUDE_CONFIG_DIR` is where claude actually writes its
     // config/transcripts/auth, so grant it too. Resolve symlinks first so the
     // SBPL path matches what the sandbox sees at write time (every other entry
-    // is canonical); then skip it when it's the default `~/.claude` already
-    // allowed above, to avoid a redundant entry.
+    // is canonical); then skip it only when it equals the default `{home}/.claude`
+    // granted above (`claude_state`), to avoid a redundant entry. `home` is
+    // already canonical, but the `.claude` leaf is NOT symlink-resolved —
+    // `claude_state` grants that literal path — so compare against it un-resolved.
+    // If `~/.claude` is itself a symlink and the config dir points at its
+    // resolved target, resolving the leaf here too would treat it as default and
+    // drop the grant, yet the literal `claude_state` rule wouldn't cover the
+    // target, denying claude's writes. (Docker can resolve both sides because its
+    // `~/.claude` bind mount follows the symlink source; the SBPL allow-list can't.)
     let claude_config_extra = claude_config_dir
         .map(resolve_existing_prefix)
         .map(|p| p.to_string_lossy().into_owned())
@@ -332,7 +376,7 @@ pub fn build_profile(
 pub fn profile_tempfile(text: &str) -> Result<tempfile::NamedTempFile> {
     use std::io::Write;
     let mut f = tempfile::Builder::new()
-        .prefix("quorum-sandbox-")
+        .prefix("fletch-sandbox-")
         .suffix(".sb")
         .tempfile()
         .map_err(|e| Error::Other(format!("create sandbox profile tmp: {e}")))?;
@@ -349,8 +393,7 @@ fn sbpl_string(s: &str) -> String {
 }
 
 fn canonical(p: &Path) -> Result<PathBuf> {
-    std::fs::canonicalize(p)
-        .map_err(|e| Error::Other(format!("canonicalize {}: {e}", p.display())))
+    std::fs::canonicalize(p).map_err(|e| Error::Other(format!("canonicalize {}: {e}", p.display())))
 }
 
 /// Resolve symlinks in the longest existing prefix of `p`, then re-append the
@@ -360,7 +403,7 @@ fn canonical(p: &Path) -> Result<PathBuf> {
 /// well-known macOS symlinks (`/tmp` → `/private/tmp`, `/var` → `/private/var`),
 /// so the emitted SBPL path matches the sandbox's resolved write path. Falls
 /// back to `p` unchanged if nothing resolves (e.g. a bogus path).
-fn resolve_existing_prefix(p: &Path) -> PathBuf {
+pub(crate) fn resolve_existing_prefix(p: &Path) -> PathBuf {
     let mut cur = p.to_path_buf();
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     loop {
@@ -447,7 +490,9 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let resolved = resolve_existing_prefix(&link.join("not-created-yet"));
-        let expected = std::fs::canonicalize(&real).unwrap().join("not-created-yet");
+        let expected = std::fs::canonicalize(&real)
+            .unwrap()
+            .join("not-created-yet");
         assert_eq!(resolved, expected);
     }
 

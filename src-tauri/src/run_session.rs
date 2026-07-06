@@ -205,6 +205,7 @@ where
             env,
             cols: 120,
             rows: 32,
+            kill_plan: crate::sandbox::KillHandle::ProcessGroup,
         },
         on_output,
         on_exit,

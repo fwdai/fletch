@@ -12,11 +12,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
+use crate::sandbox::KillHandle;
 
 pub struct PtySession {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    kill_plan: KillHandle,
     /// The child's process-group id. portable-pty makes the child a `setsid`
     /// session leader, so its pid *is* the pgid, and every descendant that
     /// stays in the group shares it. We keep it to signal the whole group on
@@ -37,6 +39,8 @@ pub struct PtySpawn<'a> {
     pub env: &'a [(String, String)],
     pub cols: u16,
     pub rows: u16,
+    /// How to terminate the child (chosen by the sandbox engine).
+    pub kill_plan: KillHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -150,9 +154,10 @@ impl PtySession {
         });
         thread::spawn(move || coalesce_output(rx, on_output));
 
+        let kill_plan_for_exit = spec.kill_plan.clone();
         thread::spawn(move || match child.wait() {
             Ok(status) => {
-                let exit = exit_from_status(status);
+                let exit = exit_from_status(status, &kill_plan_for_exit);
                 tracing::info!(
                     success = exit.success,
                     message = %exit.message,
@@ -173,6 +178,7 @@ impl PtySession {
             master,
             writer,
             killer: Mutex::new(killer),
+            kill_plan: spec.kill_plan,
             #[cfg(unix)]
             pgid,
         })
@@ -216,6 +222,17 @@ impl PtySession {
     /// synchronously, so the app can't exit and leak an orphan. Callers that
     /// hold a lock should drop it first (see `RunSession::stop`).
     pub fn kill(&self) -> Result<()> {
+        // Tear the sandbox down first, then ALWAYS run the local process-group
+        // kill — a failed engine teardown must never skip reaping the host-side
+        // wrapper child (exec_session documents the same ordering). Both results
+        // are bound before we combine, so the local kill runs even when the
+        // engine kill errors; the engine error then takes precedence.
+        let engine_result = self.kill_plan.kill();
+        let local_result = self.kill_local_process();
+        engine_result.and(local_result)
+    }
+
+    fn kill_local_process(&self) -> Result<()> {
         #[cfg(unix)]
         if let Some(pgid) = self.pgid {
             return kill_process_group(pgid);
@@ -332,10 +349,16 @@ fn coalesce_output<F: Fn(Vec<u8>)>(rx: mpsc::Receiver<Vec<u8>>, on_output: F) {
     }
 }
 
-fn exit_from_status(status: ExitStatus) -> PtyExit {
+/// Build the exit outcome, letting the sandbox engine translate launcher exit
+/// codes it reserves (docker CLI 125/126/127 — daemon/image failures) into
+/// user-readable messages; anything else reports the raw status.
+fn exit_from_status(status: ExitStatus, kill_plan: &KillHandle) -> PtyExit {
+    let message = kill_plan
+        .describe_exit(status.exit_code() as i32)
+        .unwrap_or_else(|| status.to_string());
     PtyExit {
         success: status.success(),
-        message: status.to_string(),
+        message,
     }
 }
 
@@ -360,14 +383,12 @@ mod tests {
         let _pty = PtySession::spawn(
             PtySpawn {
                 program: std::path::Path::new("/bin/sh"),
-                args: &[
-                    "-lc".to_string(),
-                    "printf hello-from-pty".to_string(),
-                ],
+                args: &["-lc".to_string(), "printf hello-from-pty".to_string()],
                 cwd: td.path(),
                 env: &[],
                 cols: 80,
                 rows: 24,
+                kill_plan: KillHandle::ProcessGroup,
             },
             move |bytes| {
                 let _ = out_tx.send(bytes);
@@ -409,6 +430,7 @@ mod tests {
                 env: &[],
                 cols: 80,
                 rows: 24,
+                kill_plan: KillHandle::ProcessGroup,
             },
             |_| {},
             |_| {},
@@ -424,7 +446,10 @@ mod tests {
             {
                 break pid;
             }
-            assert!(start.elapsed() < Duration::from_secs(5), "child never started");
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "child never started"
+            );
             std::thread::sleep(Duration::from_millis(20));
         };
         assert!(alive(child), "backgrounded child should be running");
