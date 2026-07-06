@@ -132,9 +132,15 @@ impl Supervisor {
                 ))
             })?;
             if let Err(e) = git::rev_parse(&snap.repo_path, sha).await {
-                let fetchable =
-                    matches!(workspace_mode, WorkspaceMode::Clone) && snap.branch_name.is_some();
-                if !fetchable {
+                // A clone-mode tip that's gone from the source store is still
+                // recoverable by refetching the pushed branch — but only when
+                // the source actually has an `origin` to fetch from. Without
+                // one (a repo with no remote), provisioning would fail deep in
+                // `fetch_branch` with a rawer error, so reject it here instead.
+                let refetchable = matches!(workspace_mode, WorkspaceMode::Clone)
+                    && snap.branch_name.is_some()
+                    && source_has_origin(&snap.repo_path).await;
+                if !refetchable {
                     return Err(Error::Other(format!(
                         "branch tip {} no longer reachable in {}: {e}",
                         sha,
@@ -324,6 +330,15 @@ async fn capture_repo_snapshots(
             deletions: total_dels,
         },
     )
+}
+
+/// Whether `repo` has an `origin` remote — the only source a clone-mode restore
+/// can refetch a tip from once it's gone from the local object store.
+async fn source_has_origin(repo: &Path) -> bool {
+    git::git_output(repo, &["remote", "get-url", "origin"])
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Pick a free branch name for a restored agent: the archived name if it's

@@ -2,6 +2,26 @@ import { api, type DockerProbe } from "@/api";
 import { DEFAULT_SANDBOX_ENGINE } from "@/storage/preferences";
 import type { SandboxSlice, SliceCreator } from "./types";
 
+type StoreSet = Parameters<SliceCreator<SandboxSlice>>[0];
+
+/** Apply an optimistic `patch`, reverting to `prev` (and surfacing the error)
+ *  if the backend write rejects. These settings persist through a backend
+ *  command that can refuse — e.g. the docker engine racing a daemon shutdown —
+ *  so the UI must never keep a value that didn't stick. */
+async function optimistic(
+  set: StoreSet,
+  patch: Partial<SandboxSlice>,
+  prev: Partial<SandboxSlice>,
+  persist: () => Promise<void>,
+) {
+  set(patch);
+  try {
+    await persist();
+  } catch (e) {
+    set({ ...prev, lastError: String(e) });
+  }
+}
+
 export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   sandboxEngine: DEFAULT_SANDBOX_ENGINE,
   dockerProbe: null,
@@ -10,21 +30,13 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   dockerMemory: "",
   dockerCpus: "",
 
-  setSandboxEngine: async (engine) => {
-    const prev = get().sandboxEngine;
-    // Optimistic: the backend validates docker against a live daemon probe
-    // and can refuse (probe raced a daemon shutdown) — revert so the UI never
-    // shows an engine that didn't persist.
-    set({ sandboxEngine: engine });
-    try {
-      // The backend command persists the `sandbox_engine` setting AND updates
-      // its in-memory spawn-path mirror, so we don't also call setSetting here
-      // (same posture as `setTelemetryEnabled`).
-      await api.setSandboxEngine(engine);
-    } catch (e) {
-      set({ sandboxEngine: prev, lastError: String(e) });
-    }
-  },
+  setSandboxEngine: (engine) =>
+    // The backend command persists the `sandbox_engine` setting AND updates its
+    // in-memory spawn-path mirror, so we don't also call setSetting here (same
+    // posture as `setTelemetryEnabled`).
+    optimistic(set, { sandboxEngine: engine }, { sandboxEngine: get().sandboxEngine }, () =>
+      api.setSandboxEngine(engine),
+    ),
   refreshDockerProbe: async () => {
     let probe: DockerProbe;
     try {
@@ -65,20 +77,17 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
 
   dismissDockerBuild: () => set({ dockerBuild: null }),
 
-  saveDockerLaunchSettings: async (image, memory, cpus) => {
-    const prev = {
-      dockerImage: get().dockerImage,
-      dockerMemory: get().dockerMemory,
-      dockerCpus: get().dockerCpus,
-    };
-    // Optimistic, reverted on backend refusal — same posture as setSandboxEngine.
-    set({ dockerImage: image, dockerMemory: memory, dockerCpus: cpus });
-    try {
-      await api.setDockerLaunchSettings(image || null, memory || null, cpus || null);
-    } catch (e) {
-      set({ ...prev, lastError: String(e) });
-    }
-  },
+  saveDockerLaunchSettings: (image, memory, cpus) =>
+    optimistic(
+      set,
+      { dockerImage: image, dockerMemory: memory, dockerCpus: cpus },
+      {
+        dockerImage: get().dockerImage,
+        dockerMemory: get().dockerMemory,
+        dockerCpus: get().dockerCpus,
+      },
+      () => api.setDockerLaunchSettings(image || null, memory || null, cpus || null),
+    ),
 
   startDockerDesktop: async () => {
     try {
