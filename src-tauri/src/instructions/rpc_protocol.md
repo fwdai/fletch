@@ -58,7 +58,8 @@ jq -n --arg id "$ID" --arg msg "$MSG" '{id:$id,op:"echo",args:{message:$msg}}' \
 mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"
 ```
 
-The exact op names are feature-specific. Fletch currently uses this same
-transport for Git actions, and the Git dispatcher also exposes `echo` as a
-simple round-trip check. Future app features can define their own ops on top of
-the same mailbox.
+The exact op names are feature-specific. Fletch uses this transport for the git
+actions that need host-held GitHub credentials — `git_push`, `open_pr`, and
+`git_fetch` (local git you run directly; see the git-actions playbooks). The
+dispatcher also exposes `echo` as a simple round-trip check. Future app features
+can define their own ops on top of the same mailbox.

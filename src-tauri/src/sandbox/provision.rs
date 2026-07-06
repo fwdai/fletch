@@ -277,6 +277,7 @@ where
     let result = async {
         rewrite_origin(spec).await?;
         copy_local_identity(spec).await?;
+        install_delegation_hooks(spec.dest).await?;
         checkout(spec.dest.to_path_buf()).await
     }
     .await;
@@ -314,6 +315,78 @@ async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
         "remote set-url origin",
     )
     .await?;
+    Ok(())
+}
+
+/// Install Fletch's delegation-signal git hooks into the clone's `.git/hooks`.
+///
+/// With local git mutations (commit, merge, conflict-resolve) now running as
+/// native in-container git rather than host RPC ops, the old "a mutating RPC op
+/// succeeded" delegation signal is gone for those actions. These hooks restore
+/// it without teaching the agent anything: on the agent's own `git commit` /
+/// `git merge`, git runs the hook, which pings the RPC mailbox
+/// (`$FLETCH_RPC_DIR`, inherited from the triggering git process's env) so the
+/// host relays an `agent:git-action` event — exactly what the panel's
+/// delegation tracking consumes.
+///
+/// Contained by construction: host-side git (diff polling, push, PR, fetch)
+/// runs with `core.hooksPath=/dev/null` (`git::no_hooks_env`), so these hooks
+/// never fire on the host — only on the agent's sandboxed git, where any command
+/// they run is already inside the sandbox. The hook is best-effort and always
+/// exits 0, so a missing mailbox or a slow write can never fail the agent's
+/// commit. Installed only for clones (this is the clone-arm path); a linked
+/// worktree's hooks live in the user's real repo and must never be touched.
+async fn install_delegation_hooks(dest: &Path) -> Result<()> {
+    let hooks_dir = dest.join(".git/hooks");
+    // A fresh clone always has `.git/hooks`, but create it defensively so a
+    // future object-layout change can't silently drop the signal.
+    tokio::fs::create_dir_all(&hooks_dir).await?;
+    // post-commit fires on `git commit` (a plain commit, or the commit that
+    // completes a conflicted merge); post-merge fires on a clean `git merge`
+    // (fast-forward or merge commit). Between them they cover every native
+    // local mutation an agent playbook performs. The reported action name
+    // mirrors the legacy RPC op the frontend still maps to each delegation kind.
+    for (hook, action) in [
+        ("post-commit", "git_commit"),
+        ("post-merge", "git_update_branch"),
+    ] {
+        let path = hooks_dir.join(hook);
+        tokio::fs::write(&path, delegation_hook_script(action)).await?;
+        set_executable(&path).await?;
+    }
+    Ok(())
+}
+
+/// The body of a delegation hook reporting `action`. POSIX `sh`, no bashisms:
+/// runs in the container image's shell and macOS `/bin/sh` alike. Writes the
+/// mailbox request atomically (`.tmp` then `mv`) so the watcher never reads a
+/// half-written file, and swallows every error — the git op must not depend on
+/// the signal landing.
+fn delegation_hook_script(action: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+# Fletch-managed: delegation signal. Pings the app RPC mailbox so the panel can
+# attribute this git action to the agent's turn. Best-effort; never blocks or
+# fails the git operation. Do not edit — reinstalled on provision.
+[ -n "$FLETCH_RPC_DIR" ] || exit 0
+reqdir="$FLETCH_RPC_DIR/requests"
+[ -d "$reqdir" ] || exit 0
+id="hook-$$-$(date +%s%N 2>/dev/null || date +%s)"
+tmp="$reqdir/$id.json.tmp"
+printf '{{"id":"%s","op":"signal_git_action","args":{{"action":"{action}"}}}}' "$id" > "$tmp" 2>/dev/null \
+  && mv "$tmp" "$reqdir/$id.json" 2>/dev/null
+exit 0
+"#
+    )
+}
+
+/// Mark a file user/group/other-executable (0755). The hooks must be executable
+/// or git silently ignores them.
+async fn set_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = tokio::fs::metadata(path).await?.permissions();
+    perms.set_mode(0o755);
+    tokio::fs::set_permissions(path, perms).await?;
     Ok(())
 }
 
@@ -514,6 +587,77 @@ mod tests {
         // The implicit local-path origin must be gone: a push from the clone
         // must never be able to write into the user's source repo.
         assert_eq!(run(&dest, &["remote"]), "");
+    }
+
+    #[tokio::test]
+    async fn clone_installs_executable_delegation_hooks() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+
+        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+
+        for (hook, action) in [
+            ("post-commit", "git_commit"),
+            ("post-merge", "git_update_branch"),
+        ] {
+            let path = dest.join(".git/hooks").join(hook);
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{hook} missing"));
+            assert!(body.contains("signal_git_action"), "{hook} must ping the signal op");
+            assert!(
+                body.contains(&format!(r#""action":"{action}""#)),
+                "{hook} must report {action}"
+            );
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert!(mode & 0o111 != 0, "{hook} must be executable, mode={mode:o}");
+        }
+    }
+
+    #[tokio::test]
+    async fn delegation_hook_fires_on_a_native_commit() {
+        // End-to-end: a plain in-repo `git commit` runs the installed hook,
+        // which writes a well-formed signal request into the mailbox dir.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        // Land on a branch so a commit is straightforward.
+        run(&dest, &["checkout", "-q", "-b", "work"]);
+
+        let mailbox = td.path().join("mbox");
+        let requests = mailbox.join("requests");
+        std::fs::create_dir_all(&requests).unwrap();
+        std::fs::write(dest.join("c.txt"), b"change").unwrap();
+        run(&dest, &["add", "-A"]);
+        // The hook reads $FLETCH_RPC_DIR from the committing process's env.
+        let out = std::process::Command::new("git")
+            .current_dir(&dest)
+            .env("FLETCH_RPC_DIR", &mailbox)
+            .args(["commit", "-q", "-m", "hooked"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+        let entries: Vec<_> = std::fs::read_dir(&requests)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .collect();
+        assert_eq!(entries.len(), 1, "exactly one signal request expected");
+        let body = std::fs::read_to_string(entries[0].path()).unwrap();
+        assert!(body.contains(r#""op":"signal_git_action""#), "body: {body}");
+        assert!(body.contains(r#""action":"git_commit""#), "body: {body}");
     }
 
     #[tokio::test]

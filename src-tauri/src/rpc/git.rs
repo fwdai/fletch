@@ -22,11 +22,24 @@ pub const EVENT_PR_OPENED: &str = "git.pr_opened";
 /// (which can't tell agent work from a manual action or a pre-existing match).
 pub const EVENT_ACTION_DONE: &str = "git.action_done";
 
-/// Ops that change repo/PR state — the ones whose success means the agent did
-/// the delegated work. Read-only ops (status) and the test ops (echo/ping) are
-/// excluded so they never read as a completed delegation.
+/// Host-brokered ops that change remote state — the ones that must run on the
+/// host because they need GitHub credentials that never enter the sandbox, and
+/// whose success means the agent did the delegated work. Local mutations
+/// (commit, merge, conflict-resolve) now run as native in-container git and are
+/// *not* here — their delegation signal arrives out-of-band via the clone's
+/// `post-commit`/`post-merge` hooks (see `signal_git_action`). Read-only ops
+/// (status, fetch) and the test ops (echo/ping) are excluded so they never read
+/// as a completed delegation.
 fn is_mutating_op(op: &str) -> bool {
-    matches!(op, "git_commit" | "git_push" | "open_pr" | "git_update_branch")
+    matches!(op, "git_push" | "open_pr")
+}
+
+/// The local-git action names a delegation hook may report. Kept to a closed
+/// set so a compromised hook can't fabricate an arbitrary op string into the
+/// UI's delegation attribution. These mirror the op names the frontend's
+/// `gitActionProvesKind` still recognizes for backward compatibility.
+fn is_signalable_action(action: &str) -> bool {
+    matches!(action, "git_commit" | "git_update_branch")
 }
 
 #[derive(Clone)]
@@ -57,6 +70,14 @@ impl GitDispatcher {
         let (resp, mut effects) = match op {
             "open_pr" => self.open_pr(id, args).await,
             "git_push" => self.git_push(id, args).await,
+            // Credentialed fetch of the base branch for the native in-container
+            // merge in `update-branch`: the token stays host-side, so the agent
+            // can't fetch a private remote itself.
+            "git_fetch" => (self.git_fetch(id, args).await, Vec::new()),
+            // Out-of-band delegation signal from the clone's local git hooks
+            // (post-commit / post-merge). Not a mutation the host performs —
+            // it only relays that the agent's native git action ran.
+            "signal_git_action" => self.signal_git_action(id, args),
             "echo" => (self.echo(id, args).await, Vec::new()),
             "ping" => (Response::ok(id, 0, "pong".to_string(), String::new()), Vec::new()),
             "git_status" => (
@@ -69,8 +90,6 @@ impl GitDispatcher {
                 .await,
                 Vec::new(),
             ),
-            "git_commit" => (self.git_commit(id, args).await, Vec::new()),
-            "git_update_branch" => (self.git_update_branch(id).await, Vec::new()),
             other => (Response::err(id, format!("unknown op: {other}")), Vec::new()),
         };
         // A successful mutating op is ground truth that the agent performed the
@@ -93,15 +112,24 @@ impl GitDispatcher {
         Response::ok(id, 0, message.to_string(), String::new())
     }
 
-    async fn git_commit(&self, id: &str, args: &Value) -> Response {
-        let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
-        if message.trim().is_empty() {
-            return Response::err(id, "git_commit requires a non-empty `message` arg");
+    /// Relay a native-git delegation signal from a clone-installed hook. The
+    /// hook can't emit an app event itself, so it pings this op; we translate it
+    /// into the same `EVENT_ACTION_DONE` a host-side mutation would emit, so the
+    /// UI attributes the agent's in-container commit/merge to its turn exactly as
+    /// before. Synchronous: no git runs, we only validate and emit.
+    fn signal_git_action(&self, id: &str, args: &Value) -> (Response, Vec<RpcEvent>) {
+        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        if !is_signalable_action(action) {
+            return (
+                Response::err(id, format!("signal_git_action: unknown action {action:?}")),
+                Vec::new(),
+            );
         }
-        match crate::git::commit_all(&self.cwd, message).await {
-            Ok(()) => Response::ok(id, 0, "committed".to_string(), String::new()),
-            Err(e) => Response::err(id, e.to_string()),
-        }
+        let effects = vec![RpcEvent::named(
+            EVENT_ACTION_DONE,
+            serde_json::json!({ "op": action }),
+        )];
+        (Response::ok(id, 0, String::new(), String::new()), effects)
     }
 
     async fn open_pr(&self, id: &str, args: &Value) -> (Response, Vec<RpcEvent>) {
@@ -200,30 +228,38 @@ impl GitDispatcher {
         }
     }
 
-    async fn git_update_branch(&self, id: &str) -> Response {
-        // Auth for the fetch, plus hook-disabling on both ops: the workspace is
-        // agent-writable, so a planted hook must not run on the host. `merge_git_env`
-        // reindexes so the auth and no-hooks `GIT_CONFIG_*` sets don't collide.
-        let no_hooks = crate::git::no_hooks_env();
-        let auth = crate::git::merge_git_env(&[&crate::github::git_auth_env(), &no_hooks]);
-        let fetch = run_git_command(id, &self.cwd, &["fetch", "origin", &self.base_branch], &auth)
-            .await;
-        if !fetch.ok || fetch.exit_code != Some(0) {
-            return fetch;
+    /// Fetch a base branch from `origin` with the host-held GitHub token, so the
+    /// agent can then run a native in-container `git merge origin/<base>` without
+    /// the token ever entering the sandbox. Read-only on the local repo (updates
+    /// only the `origin/<base>` remote-tracking ref); the merge, conflict
+    /// resolution, and merge commit are the agent's native git. `args.ref`
+    /// selects the branch (the `update-branch` playbook passes its `base`);
+    /// absent, the spawn parent branch is used. Hooks are disabled on this
+    /// host-side invocation for the same reason as push (agent-writable `.git`).
+    async fn git_fetch(&self, id: &str, args: &Value) -> Response {
+        let branch = match arg_branch_named(args, "ref") {
+            Some(r) => r,
+            None => self.base_branch.clone(),
+        };
+        if branch.starts_with('-') {
+            return Response::err(id, format!("git_fetch: refusing option-like ref {branch:?}"));
         }
-        // A clean merge creates a merge commit (needs an identity) and fires
-        // `post-merge` on the host (needs hooks disabled).
-        let env = crate::git::merge_git_env(&[
-            &crate::git::identity_env(&self.cwd).await,
-            &no_hooks,
+        let auth = crate::git::merge_git_env(&[
+            &crate::github::git_auth_env(),
+            &crate::git::no_hooks_env(),
         ]);
-        let target = format!("origin/{}", self.base_branch);
-        run_git_command(id, &self.cwd, &["merge", "--no-edit", &target], &env).await
+        run_git_command(id, &self.cwd, &["fetch", "origin", &branch], &auth).await
     }
 }
 
 fn arg_branch(args: &Value) -> Option<String> {
-    args.get("branch")
+    arg_branch_named(args, "branch")
+}
+
+/// Read a trimmed, non-empty string arg by key. Used for `branch` (push/PR) and
+/// `ref` (fetch).
+fn arg_branch_named(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -353,36 +389,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn git_commit_stages_and_commits_the_worktree() {
+    async fn signal_git_action_emits_action_done_for_known_actions() {
         let td = tempfile::tempdir().unwrap();
         let repo = td.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         run_git(&repo, &["init", "-q"]);
-        run_git(&repo, &["config", "user.email", "t@example.com"]);
-        run_git(&repo, &["config", "user.name", "Tester"]);
-        std::fs::write(repo.join("new.txt"), b"hello").unwrap();
 
         let rpc_dir = td.path().join("rpc");
         ensure_mailbox(&rpc_dir).unwrap();
         write_request(
             &rpc_dir.join("requests"),
-            "c1.json",
-            r#"{"id":"c1","op":"git_commit","args":{"message":"add new.txt"}}"#,
+            "s1.json",
+            r#"{"id":"s1","op":"signal_git_action","args":{"action":"git_commit"}}"#,
         );
 
         let dispatcher = dispatcher(&repo);
-        process_pending(&rpc_dir, &dispatcher).await;
+        let effects = process_pending(&rpc_dir, &dispatcher).await;
 
-        let body = std::fs::read_to_string(rpc_dir.join("responses/c1.json")).unwrap();
+        let body = std::fs::read_to_string(rpc_dir.join("responses/s1.json")).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["ok"], true, "response: {body}");
+        assert!(
+            has_action_done(&effects, "git_commit"),
+            "a post-commit hook signal must relay an action-done, got: {effects:?}"
+        );
+    }
 
-        let log = std::process::Command::new("git")
-            .current_dir(&repo)
-            .args(["log", "--oneline"])
-            .output()
-            .unwrap();
-        assert!(String::from_utf8_lossy(&log.stdout).contains("add new.txt"));
+    #[tokio::test]
+    async fn signal_git_action_rejects_unknown_action() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, effects) = disp
+            .dispatch_inner("s", "signal_git_action", &json!({"action": "rm -rf"}))
+            .await;
+        assert!(!resp.ok, "an unrecognized action must be rejected");
+        assert!(
+            effects.is_empty(),
+            "a rejected signal must emit nothing, got: {effects:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn git_fetch_without_remote_reports_error() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, effects) = disp
+            .dispatch_inner("f1", "git_fetch", &json!({"ref": "main"}))
+            .await;
+        // No origin remote → git exits non-zero, but the op itself ran and must
+        // NOT read as a completed mutation (fetch is not a mutating op).
+        assert!(resp.ok, "the op ran; the failure is in the exit code");
+        assert_ne!(resp.exit_code, Some(0));
+        assert!(!has_action_done(&effects, "git_fetch"));
+    }
+
+    #[tokio::test]
+    async fn git_fetch_refuses_option_like_ref() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, _fx) = disp
+            .dispatch_inner("f2", "git_fetch", &json!({"ref": "--upload-pack=evil"}))
+            .await;
+        assert!(!resp.ok);
+        assert!(resp.error.as_deref().unwrap_or_default().contains("option-like"));
     }
 
     #[tokio::test]
@@ -503,128 +584,6 @@ mod tests {
         assert_eq!(fallback_branch("!!!"), "chore/update");
     }
 
-    fn setup_origin_and_clone() -> (tempfile::TempDir, std::path::PathBuf) {
-        let td = tempfile::tempdir().unwrap();
-        let origin = td.path().join("origin.git");
-        std::fs::create_dir_all(&origin).unwrap();
-        run_git(&origin, &["init", "-q", "--bare", "-b", "main"]);
-
-        let work = td.path().join("work");
-        let out = std::process::Command::new("git")
-            .current_dir(td.path())
-            .args(["clone", "-q", origin.to_str().unwrap(), "work"])
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        run_git(&work, &["config", "user.email", "t@example.com"]);
-        run_git(&work, &["config", "user.name", "Tester"]);
-        run_git(&work, &["checkout", "-q", "-b", "main"]);
-        std::fs::write(work.join("a.txt"), b"base\n").unwrap();
-        run_git(&work, &["add", "-A"]);
-        run_git(&work, &["commit", "-q", "-m", "init"]);
-        run_git(&work, &["push", "-q", "-u", "origin", "main"]);
-
-        run_git(&work, &["checkout", "-q", "-b", "feat"]);
-        std::fs::write(work.join("feat.txt"), b"feature\n").unwrap();
-        run_git(&work, &["add", "-A"]);
-        run_git(&work, &["commit", "-q", "-m", "feat work"]);
-        run_git(&work, &["checkout", "-q", "main"]);
-        std::fs::write(work.join("b.txt"), b"advance\n").unwrap();
-        run_git(&work, &["add", "-A"]);
-        run_git(&work, &["commit", "-q", "-m", "main advances"]);
-        run_git(&work, &["push", "-q", "origin", "main"]);
-        run_git(&work, &["checkout", "-q", "feat"]);
-        (td, work)
-    }
-
-    #[tokio::test]
-    async fn git_update_branch_merges_the_advanced_base() {
-        let (td, work) = setup_origin_and_clone();
-        let rpc_dir = td.path().join("rpc");
-        ensure_mailbox(&rpc_dir).unwrap();
-        write_request(
-            &rpc_dir.join("requests"),
-            "u1.json",
-            r#"{"id":"u1","op":"git_update_branch"}"#,
-        );
-
-        let dispatcher = dispatcher(&work);
-        process_pending(&rpc_dir, &dispatcher).await;
-
-        let body = std::fs::read_to_string(rpc_dir.join("responses/u1.json")).unwrap();
-        let v: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["ok"], true, "response: {body}");
-        assert_eq!(v["exit_code"], 0, "response: {body}");
-        assert!(work.join("b.txt").exists());
-    }
-
-    #[tokio::test]
-    async fn git_update_branch_reports_conflicts_and_leaves_merge_open() {
-        let (td, work) = setup_origin_and_clone();
-        std::fs::write(work.join("a.txt"), b"feat version\n").unwrap();
-        run_git(&work, &["add", "-A"]);
-        run_git(&work, &["commit", "-q", "-m", "feat edits a"]);
-        run_git(&work, &["checkout", "-q", "main"]);
-        std::fs::write(work.join("a.txt"), b"main version\n").unwrap();
-        run_git(&work, &["add", "-A"]);
-        run_git(&work, &["commit", "-q", "-m", "main edits a"]);
-        run_git(&work, &["push", "-q", "origin", "main"]);
-        run_git(&work, &["checkout", "-q", "feat"]);
-
-        let rpc_dir = td.path().join("rpc");
-        ensure_mailbox(&rpc_dir).unwrap();
-        write_request(
-            &rpc_dir.join("requests"),
-            "u2.json",
-            r#"{"id":"u2","op":"git_update_branch"}"#,
-        );
-
-        let dispatcher = dispatcher(&work);
-        process_pending(&rpc_dir, &dispatcher).await;
-
-        let body = std::fs::read_to_string(rpc_dir.join("responses/u2.json")).unwrap();
-        let v: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["ok"], true, "response: {body}");
-        assert_ne!(v["exit_code"], 0, "response: {body}");
-        assert!(v["stdout"].as_str().unwrap().contains("CONFLICT"));
-        let status = std::process::Command::new("git")
-            .current_dir(&work)
-            .args(["status", "--porcelain=v1"])
-            .output()
-            .unwrap();
-        assert!(String::from_utf8_lossy(&status.stdout).contains("UU a.txt"));
-    }
-
-    #[tokio::test]
-    async fn git_commit_rejects_empty_message() {
-        let td = tempfile::tempdir().unwrap();
-        let repo = td.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        run_git(&repo, &["init", "-q", "-b", "main"]);
-        run_git(&repo, &["config", "user.email", "t@example.com"]);
-        run_git(&repo, &["config", "user.name", "Tester"]);
-
-        let rpc_dir = td.path().join("rpc");
-        ensure_mailbox(&rpc_dir).unwrap();
-        write_request(
-            &rpc_dir.join("requests"),
-            "c2.json",
-            r#"{"id":"c2","op":"git_commit","args":{"message":"  "}}"#,
-        );
-
-        let dispatcher = dispatcher(&repo);
-        process_pending(&rpc_dir, &dispatcher).await;
-
-        let body = std::fs::read_to_string(rpc_dir.join("responses/c2.json")).unwrap();
-        let v: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["ok"], false);
-        assert!(v["error"].as_str().unwrap().contains("message"));
-    }
-
     fn has_action_done(effects: &[RpcEvent], expect_op: &str) -> bool {
         effects.iter().any(|e| {
             let RpcEvent::Named { name, payload } = e;
@@ -633,32 +592,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn successful_mutating_op_emits_action_done() {
-        let td = tempfile::tempdir().unwrap();
-        let repo = td.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        run_git(&repo, &["init", "-q"]);
-        run_git(&repo, &["config", "user.email", "t@example.com"]);
-        run_git(&repo, &["config", "user.name", "Tester"]);
-        std::fs::write(repo.join("new.txt"), b"hello").unwrap();
-
-        let disp = dispatcher(&repo);
-        let (resp, effects) = disp
-            .dispatch_inner("c1", "git_commit", &json!({"message": "add new.txt"}))
-            .await;
-        assert!(resp.ok, "commit should succeed");
-        assert!(
-            has_action_done(&effects, "git_commit"),
-            "a successful git_commit must emit the action-done signal"
-        );
-    }
-
-    #[tokio::test]
     async fn read_only_and_failed_ops_emit_no_action_done() {
         let td = tempfile::tempdir().unwrap();
         let repo = td.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        run_git(&repo, &["init", "-q"]);
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
         let disp = dispatcher(&repo);
 
         // Read-only op: never an action-done signal.
@@ -668,14 +611,13 @@ mod tests {
             "git_status is read-only and must not signal an action"
         );
 
-        // A failed mutating op (empty message) must NOT signal success.
-        let (resp, commit_fx) = disp
-            .dispatch_inner("c", "git_commit", &json!({"message": "   "}))
-            .await;
+        // A failed mutating op (push with no remote) must NOT signal success:
+        // `is_mutating_op` gates the emit on `resp.ok`.
+        let (resp, push_fx) = disp.dispatch_inner("p", "git_push", &Value::Null).await;
         assert!(!resp.ok);
         assert!(
-            !has_action_done(&commit_fx, "git_commit"),
-            "a failed git_commit must not signal an action"
+            !has_action_done(&push_fx, "git_push"),
+            "a failed git_push must not signal an action"
         );
     }
 }

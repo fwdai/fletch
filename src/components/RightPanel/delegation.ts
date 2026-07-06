@@ -2,8 +2,11 @@ import type { AgentStatus, GitState, PrChecks, PrState } from "@/api";
 
 /** One agent-delegated git action: the user clicked a panel action whose
  *  judgment part (message, description, conflict edits) belongs to the
- *  coding agent; the agent executes the mutation through the app's file
- *  RPC (`git_commit` / `open_pr` / `git_update_branch` / `git_push`). */
+ *  coding agent. The agent runs local mutations (commit, merge, conflict
+ *  resolution) as plain in-sandbox git, and the credentialed remote actions
+ *  through the app's file RPC (`open_pr` / `git_push` / `git_fetch`). The
+ *  `agent:git-action` signal that confirms a local mutation arrives via the
+ *  clone's `post-commit` / `post-merge` hooks (see `gitActionProvesKind`). */
 export type GitDelegationKind =
   | "commit"
   | "commit-push"
@@ -105,7 +108,11 @@ export function gitActionProvesKind(kind: GitDelegationKind, op: string): boolea
     case "push":
       return op === "git_push";
     case "update-branch":
-      return op === "git_update_branch";
+      // A clean merge fires the clone's post-merge hook (`git_update_branch`);
+      // a conflicted merge is completed by a native `git commit`, firing
+      // post-commit (`git_commit`). Accept either — resolution still ANDs this
+      // with the merge-state snapshot, so listing both ops is safe.
+      return op === "git_update_branch" || op === "git_commit";
   }
 }
 
