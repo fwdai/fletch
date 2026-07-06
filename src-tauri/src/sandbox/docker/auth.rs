@@ -74,13 +74,16 @@ const SHELL_AUTH_VARS: [&str; 4] = [
 ];
 
 /// Proxy/gateway endpoint config that rides along with *any* resolved
-/// credential. Unlike a credential these don't authenticate — they only point
-/// the resolved login at a different endpoint — so they must reach the
-/// container regardless of which chain step won (the `ShellEnv` step already
-/// forwards them via [`SHELL_AUTH_VARS`]). Deliberately excludes the credential
-/// vars ([`SHELL_KEY_VARS`]): an ambient `ANTHROPIC_API_KEY` must never ride
-/// along and override, say, the Keychain login the chain actually picked.
-const PROXY_RIDE_ALONG: [&str; 2] = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"];
+/// credential. Unlike a credential this doesn't authenticate — it only points
+/// the resolved login at a different endpoint — so it must reach the container
+/// regardless of which chain step won (the `ShellEnv` step already forwards it
+/// via [`SHELL_AUTH_VARS`]). Deliberately excludes every credential var —
+/// [`SHELL_KEY_VARS`] *and* `ANTHROPIC_AUTH_TOKEN`, which Claude sends as a
+/// bearer credential and prefers over the OAuth login: an ambient one must
+/// never ride along and override, say, the Keychain login the chain picked.
+/// `ANTHROPIC_AUTH_TOKEN` still forwards when the shell env is itself the
+/// resolved source (via [`SHELL_AUTH_VARS`]), just not on top of another.
+const PROXY_RIDE_ALONG: [&str; 1] = ["ANTHROPIC_BASE_URL"];
 
 /// Expected prefix of a `claude setup-token` credential. Other shapes are
 /// accepted with a warning — the format isn't a contract we own.
