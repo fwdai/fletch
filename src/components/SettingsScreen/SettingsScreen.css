@@ -486,6 +486,21 @@
 .set-cauth-input:focus {
   border-color: var(--accent);
 }
+/* Consent URL surfaced during the automated flow (fallback to the CLI's own
+   browser-open); mono + single-line with the tail elided so a ~250-char URL
+   doesn't blow out the dialog. The recognizable `https://claude.com/…` head
+   stays visible; Copy/Open carry the full value. */
+.set-cauth-url {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Muted per-phase status line ("Opening your browser…", "Verifying…"). */
+.set-cauth-note {
+  color: var(--fg-2);
+}
 
 /* ── PROVIDERS ───────────────────────────────────────────────────────── */
 .set-checked {
