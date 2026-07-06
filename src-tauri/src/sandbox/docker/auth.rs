@@ -23,13 +23,16 @@
 //! 2. A `claude setup-token` value captured into settings ([`TOKEN_SETTING`],
 //!    auto-populated by [`super::setup_token`]) → `CLAUDE_CODE_OAUTH_TOKEN`. The
 //!    fallback for hosts without a readable Keychain login.
-//! 3. The app's process env or the login-shell probe exports
-//!    `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` → forward those (plus
-//!    `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` for proxy setups, which ride
-//!    along but don't constitute a hit on their own). Both sources are consulted
-//!    (login-shell wins on collision) so a token in the launching terminal's
-//!    env works even when the `/bin/zsh -lc` probe can't see it — see
-//!    [`merge_auth_env`].
+//! 3. The app's process env or the login-shell probe exports a credential —
+//!    `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or `ANTHROPIC_AUTH_TOKEN`
+//!    (a custom-gateway bearer) → forward it plus `ANTHROPIC_BASE_URL` (the
+//!    gateway/proxy endpoint). `ANTHROPIC_BASE_URL` alone is not a credential.
+//!    This step sits below Keychain/stored, so an ambient credential here never
+//!    overrides a resolved login — but it means a gateway-only host (no
+//!    Keychain, no stored token) authenticates on docker just as it does under
+//!    seatbelt. Both sources are consulted (login-shell wins on collision) so a
+//!    token in the launching terminal's env works even when the `/bin/zsh -lc`
+//!    probe can't see it — see [`merge_auth_env`].
 //! 4. `<home>/.claude/.credentials.json` holds a usable OAuth token (non-empty
 //!    access token, non-placeholder `expiresAt`) → nothing to inject: the
 //!    `~/.claude` bind mount carries it, and refresh writes land on the host. A
@@ -63,11 +66,19 @@ const OAUTH_TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 #[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
-/// Shell vars that constitute a chain hit on their own.
-const SHELL_KEY_VARS: [&str; 2] = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
+/// Shell vars that constitute a chain hit on their own. `ANTHROPIC_AUTH_TOKEN`
+/// (a custom-gateway bearer credential) counts too, so a host that authenticates
+/// *only* via a gateway isn't refused on docker while it works under seatbelt —
+/// but it sits in the `ShellEnv` step (below Keychain/stored), so it never
+/// overrides a resolved login, matching how `ANTHROPIC_API_KEY` is treated.
+const SHELL_KEY_VARS: [&str; 3] = [
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_AUTH_TOKEN",
+];
 
 /// Everything forwarded from the login shell once one of [`SHELL_KEY_VARS`]
-/// is present; the extra two support proxy/gateway setups.
+/// is present; `ANTHROPIC_BASE_URL` is the endpoint for the proxy/gateway.
 const SHELL_AUTH_VARS: [&str; 4] = [
     "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -75,16 +86,14 @@ const SHELL_AUTH_VARS: [&str; 4] = [
     "ANTHROPIC_AUTH_TOKEN",
 ];
 
-/// Proxy/gateway endpoint config that rides along with *any* resolved
-/// credential. Unlike a credential this doesn't authenticate — it only points
-/// the resolved login at a different endpoint — so it must reach the container
-/// regardless of which chain step won (the `ShellEnv` step already forwards it
-/// via [`SHELL_AUTH_VARS`]). Deliberately excludes every credential var —
-/// [`SHELL_KEY_VARS`] *and* `ANTHROPIC_AUTH_TOKEN`, which Claude sends as a
-/// bearer credential and prefers over the OAuth login: an ambient one must
-/// never ride along and override, say, the Keychain login the chain picked.
-/// `ANTHROPIC_AUTH_TOKEN` still forwards when the shell env is itself the
-/// resolved source (via [`SHELL_AUTH_VARS`]), just not on top of another.
+/// Endpoint var forwarded alongside a credential resolved from a *higher* chain
+/// step (Keychain/stored/credentials-file). It's an endpoint, not a credential —
+/// it points the resolved login at a custom `ANTHROPIC_BASE_URL` (e.g. a proxy
+/// in front of Anthropic that accepts that login) — so it always rides along.
+/// `ANTHROPIC_AUTH_TOKEN` is a credential, not an endpoint, so it is NOT here: an
+/// ambient one must never ride along and override the resolved login (it's only
+/// forwarded when the shell env is itself the resolved credential — the
+/// `ShellEnv` step, via [`SHELL_AUTH_VARS`]).
 const PROXY_RIDE_ALONG: [&str; 1] = ["ANTHROPIC_BASE_URL"];
 
 /// Expected prefix of a `claude setup-token` credential. Other shapes are
@@ -292,10 +301,14 @@ fn resolve_from(
     shell_env: Option<&HashMap<String, String>>,
     credentials_file: bool,
 ) -> ContainerAuth {
-    // Append the proxy/gateway ride-along vars (see [`PROXY_RIDE_ALONG`]) to a
-    // credential the chain picked from a source other than the shell env, so a
-    // custom endpoint still reaches the container without any *credential* var
-    // riding along to override the resolved login.
+    // Append the endpoint ride-along (see [`PROXY_RIDE_ALONG`]) to a credential
+    // the chain picked from a *higher* step than the shell env, so a custom
+    // `ANTHROPIC_BASE_URL` still points the resolved login at its proxy. Only the
+    // endpoint rides along — never a credential var — so an ambient
+    // `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` can't override the resolved
+    // login. (The endpoint is forwarded regardless of whether a gateway token is
+    // also set: the user set `BASE_URL` deliberately, often for network egress,
+    // so honoring it beats silently falling back to the default endpoint.)
     let with_proxy = |mut env: Vec<(String, String)>| -> Vec<(String, String)> {
         if let Some(shell) = shell_env {
             for var in PROXY_RIDE_ALONG {
@@ -494,6 +507,46 @@ mod tests {
         assert!(env
             .iter()
             .any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == "sk-ant-oat-keychain"));
+    }
+
+    #[test]
+    fn gateway_token_alone_resolves_via_shell_env() {
+        // A host whose only credential is a custom-gateway bearer (+ its
+        // endpoint) — no Keychain, no stored token, no credentials file — still
+        // authenticates on docker, matching seatbelt. It resolves in the
+        // shell-env step, forwarding both the token and the endpoint.
+        let shell = shell_env(&[
+            ("ANTHROPIC_AUTH_TOKEN", "gw-secret"),
+            ("ANTHROPIC_BASE_URL", "https://gateway.example.com"),
+        ]);
+        let (env, source) = resolved(resolve_from(None, None, Some(&shell), false));
+        assert_eq!(source, AuthSource::ShellEnv);
+        let mut keys: Vec<_> = env.iter().map(|(k, _)| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]);
+    }
+
+    #[test]
+    fn endpoint_rides_along_but_ambient_gateway_token_does_not() {
+        // Keychain wins. A custom BASE_URL still rides along — it's an endpoint,
+        // so it just points the resolved OAuth login at its proxy (honoring an
+        // explicit endpoint beats falling back to the default). But the ambient
+        // gateway AUTH_TOKEN must NOT ride along — forwarding it would let it
+        // override the Keychain login.
+        let shell = shell_env(&[
+            ("ANTHROPIC_AUTH_TOKEN", "gw-secret"),
+            ("ANTHROPIC_BASE_URL", "https://proxy.example.com"),
+        ]);
+        let (env, source) = resolved(resolve_from(
+            Some("sk-ant-oat-keychain".into()),
+            None,
+            Some(&shell),
+            false,
+        ));
+        assert_eq!(source, AuthSource::Keychain);
+        let mut keys: Vec<_> = env.iter().map(|(k, _)| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN"]);
     }
 
     #[test]
