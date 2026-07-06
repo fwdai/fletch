@@ -396,7 +396,7 @@ fn canonical(p: &Path) -> Result<PathBuf> {
 /// well-known macOS symlinks (`/tmp` → `/private/tmp`, `/var` → `/private/var`),
 /// so the emitted SBPL path matches the sandbox's resolved write path. Falls
 /// back to `p` unchanged if nothing resolves (e.g. a bogus path).
-fn resolve_existing_prefix(p: &Path) -> PathBuf {
+pub(crate) fn resolve_existing_prefix(p: &Path) -> PathBuf {
     let mut cur = p.to_path_buf();
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     loop {

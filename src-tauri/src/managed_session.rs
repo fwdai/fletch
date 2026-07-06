@@ -267,7 +267,10 @@ impl ManagedSession {
     }
 
     pub fn kill(&self) -> Result<()> {
-        self.kill_plan.kill()?;
+        // Tear the sandbox down first, but never let a failed engine teardown
+        // skip closing stdin / reaping the local child (see exec_session): an
+        // errored container kill must not strand the host-side wrapper.
+        let engine_result = self.kill_plan.kill();
         // Close stdin to signal EOF (claude exits cleanly that way),
         // then kill if it's still alive.
         let _ = self.stdin.lock().take();
@@ -275,7 +278,7 @@ impl ManagedSession {
             let _ = child.kill();
             let _ = child.wait();
         }
-        Ok(())
+        engine_result
     }
 }
 

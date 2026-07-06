@@ -64,6 +64,7 @@ use crate::error::{Error, Result};
 use crate::sandbox::engine::{
     AgentLaunchCtx, EngineKind, Keepalive, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
+use crate::sandbox::seatbelt::resolve_existing_prefix;
 
 use super::auth::{self, ContainerAuth};
 use super::{cleanup, cli, image};
@@ -110,20 +111,6 @@ const EPHEMERAL_RUNTIME_SUBDIRS: &[&str] = &["session-env", "shell-snapshots"];
 /// one is bind-mounted to a *persistent* per-agent host dir (not tmpfs) so
 /// `--resume` survives container recreation — see [`push_claude_config_mount`].
 const PROJECTS_SUBDIR: &str = "projects";
-
-/// Auth variables forwarded into containers with bare `-e NAME` (values ride
-/// the docker CLI's process env — invariant 3). `ANTHROPIC_BASE_URL` /
-/// `ANTHROPIC_AUTH_TOKEN` cover proxy setups; a bare `-e` for an unset variable
-/// forwards nothing, so the list is passed unconditionally and argv stays
-/// deterministic. Must stay a superset of every var [`auth::resolve`] (D1) can
-/// emit — a resolved value with no matching bare `-e` would sit on the CLI
-/// process env yet never reach the container.
-const AUTH_ENV_VARS: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-];
 
 /// Signal/removal docker calls during teardown.
 const KILL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -264,27 +251,10 @@ impl SandboxEngine for DockerEngine {
             .as_deref()
             .is_some_and(|dir| dir.join(CREDENTIALS_FILE).is_file());
 
-        let prefix_args = run_args(&RunSpec {
-            interactive: ctx.interactive,
-            name: &name,
-            agent_id: ctx.agent_id,
-            writable_root: ctx.writable_root,
-            rpc_dir: ctx.rpc_dir,
-            home: ctx.home,
-            cwd: ctx.cwd,
-            claude_config_dir: claude_config_dir.as_deref(),
-            borrowed_object_stores: &borrowed_object_stores,
-            claude_credentials_rw,
-            config_dir_credentials_rw,
-            projects_src: &projects_src,
-            memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
-            cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
-            image: &image,
-            agent_bin,
-        });
-
-        // Values for the bare `-e NAME` forwards above — set on the docker
-        // CLI process, never in argv (invariant 3).
+        // Env set on the docker CLI process; forwarded into the container by the
+        // bare `-e NAME` flags `run_args` emits (values never touch argv —
+        // invariant 3). The auth chain appends its resolved vars last, so only
+        // what it actually picked is forwarded.
         let mut env: Vec<(String, String)> = vec![
             ("HOME".into(), ctx.home.to_string_lossy().into_owned()),
             (
@@ -300,7 +270,35 @@ impl SandboxEngine for DockerEngine {
                 dir.to_string_lossy().into_owned(),
             ));
         }
+        let auth_start = env.len();
         apply_container_auth(&mut env, auth::resolve())?;
+
+        // Forward exactly the resolved auth var names (the tail
+        // `apply_container_auth` appended). Scoped so the borrow of `env` ends
+        // before it moves into the plan below.
+        let prefix_args = {
+            let auth_vars: Vec<&str> =
+                env[auth_start..].iter().map(|(k, _)| k.as_str()).collect();
+            run_args(&RunSpec {
+                interactive: ctx.interactive,
+                name: &name,
+                agent_id: ctx.agent_id,
+                writable_root: ctx.writable_root,
+                rpc_dir: ctx.rpc_dir,
+                home: ctx.home,
+                cwd: ctx.cwd,
+                claude_config_dir: claude_config_dir.as_deref(),
+                borrowed_object_stores: &borrowed_object_stores,
+                claude_credentials_rw,
+                config_dir_credentials_rw,
+                projects_src: &projects_src,
+                memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
+                cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
+                image: &image,
+                agent_bin,
+                auth_vars: &auth_vars,
+            })
+        };
 
         Ok(LaunchPlan {
             program: docker,
@@ -379,10 +377,16 @@ fn non_blank(value: Option<&str>) -> Option<&str> {
 /// A non-default `CLAUDE_CONFIG_DIR` from the app environment, mounted and
 /// forwarded so claude writes its config/transcripts/auth where the host
 /// expects them — the same rule as seatbelt's `claude_config_extra`. `None`
-/// when unset or when it's just the default `~/.claude` (already mounted).
+/// when unset or when it resolves to the default `~/.claude` (already mounted).
+///
+/// The default check canonicalizes via [`resolve_existing_prefix`] exactly like
+/// seatbelt, so a symlink or trailing-slash pointing at `~/.claude` is treated
+/// as default on both engines. The *original* path is returned for the mount
+/// and the `CLAUDE_CONFIG_DIR` forward, so the in-container path stays identical
+/// to the host env's value (invariant 1).
 fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
     let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from)?;
-    if dir == home.join(".claude") {
+    if resolve_existing_prefix(&dir) == home.join(".claude") {
         return None;
     }
     Some(dir)
@@ -482,6 +486,12 @@ struct RunSpec<'a> {
     cpus: &'a str,
     image: &'a str,
     agent_bin: &'a str,
+    /// Auth var *names* the chain resolved ([`auth::resolve`]), each forwarded
+    /// with a bare `-e NAME` so its value (set on the docker CLI process env)
+    /// never appears in argv. Only the resolved set is forwarded: an ambient
+    /// credential the chain didn't pick must not reach the container and
+    /// override the resolved login.
+    auth_vars: &'a [&'a str],
 }
 
 /// The `docker run` argv (everything after the docker binary), ending with
@@ -536,12 +546,13 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push("-w".into());
     args.push(spec.cwd.to_string_lossy().into_owned());
     // Bare `-e NAME` forwards from the docker CLI's own environment without
-    // the value ever appearing in argv (invariant 3 for the auth vars).
+    // the value ever appearing in argv (invariant 3 for the auth vars). Auth
+    // vars come from `spec.auth_vars` — the set the chain actually resolved.
     let mut forwarded: Vec<&str> = vec!["HOME", "FLETCH_RPC_DIR", "TERM", "COLORTERM"];
     if spec.claude_config_dir.is_some() {
         forwarded.push("CLAUDE_CONFIG_DIR");
     }
-    forwarded.extend(AUTH_ENV_VARS);
+    forwarded.extend(spec.auth_vars.iter().copied());
     for var in forwarded {
         args.push("-e".into());
         args.push(var.into());
@@ -729,6 +740,12 @@ mod tests {
             cpus: "2",
             image: "fletch-agent:abc123def456",
             agent_bin: "claude",
+            auth_vars: &[
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_AUTH_TOKEN",
+            ],
         }
     }
 
@@ -1159,11 +1176,10 @@ mod tests {
         assert_eq!(non_blank(Some(" 8g ")), Some("8g"));
     }
 
-    /// D1 swap, happy path: a resolved auth env lands on the docker CLI process
-    /// env verbatim, and every var it carries has a matching bare `-e NAME` in
-    /// argv — so the value forwards into the container yet never appears in
-    /// argv (invariant 3). Guards against `AUTH_ENV_VARS` drifting behind the
-    /// set `auth::resolve` can emit.
+    /// Happy path: a resolved auth env lands on the docker CLI process env
+    /// verbatim, and forwarding exactly those names puts a matching bare
+    /// `-e NAME` in argv for each — so values forward into the container yet
+    /// never appear in argv (invariant 3).
     #[test]
     fn resolved_auth_forwards_values_in_env_never_argv() {
         use super::super::auth::AuthSource;
@@ -1190,14 +1206,17 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "ANTHROPIC_AUTH_TOKEN" && v == "proxy-secret"));
 
-        // Every forwarded var name has a bare `-e NAME` in argv, and no value
-        // (secret or otherwise) leaks into argv.
-        let args = run_args(&test_spec(false));
+        // Forwarding exactly those names emits a bare `-e NAME` for each, with
+        // no value (secret or otherwise) anywhere in argv.
+        let auth_var_names: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+        let mut spec = test_spec(false);
+        spec.auth_vars = &auth_var_names;
+        let args = run_args(&spec);
         let forwarded = values_of(&args, "-e");
         for (name, _) in &env {
             assert!(
                 forwarded.contains(&name.as_str()),
-                "resolved var {name} has no bare -e in argv (AUTH_ENV_VARS drifted)",
+                "resolved var {name} has no bare -e in argv",
             );
         }
         for arg in &args {
@@ -1279,6 +1298,7 @@ mod tests {
             cpus: "1",
             image: "busybox",
             agent_bin: "echo",
+            auth_vars: &[],
         });
         let docker = cli::docker_bin().expect("docker installed");
         let out = std::process::Command::new(docker)
