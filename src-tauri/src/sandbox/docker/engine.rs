@@ -176,10 +176,13 @@ impl SandboxEngine for DockerEngine {
             })?;
         }
 
-        // Object stores this workspace borrows via git alternates (a --shared
-        // clone). Mounted read-only so in-container git can read borrowed
-        // history; empty for an old full-copy clone or a worktree (no mount).
-        let borrowed_object_stores = borrowed_object_stores(ctx.cwd);
+        // Object stores every checkout under the agent's writable root borrows
+        // via git alternates (a --shared clone). Scanned across all tracked
+        // repos, not just the primary `cwd`: a multi-repo agent has one shared
+        // clone per repo, each borrowing its own source's objects. Mounted
+        // read-only so in-container git reads borrowed history; empty for old
+        // full-copy clones or worktrees (no mount).
+        let borrowed_object_stores = borrowed_object_stores(ctx.writable_root);
 
         let prefix_args = run_args(&RunSpec {
             interactive: ctx.interactive,
@@ -304,18 +307,24 @@ fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
     Some(dir)
 }
 
-/// Object stores the workspace at `cwd` borrows via git alternates, each an
-/// absolute path to mount read-only. Starts from
-/// `<cwd>/.git/objects/info/alternates` (a `--shared` clone writes one line —
-/// the source's objects) and follows each borrowed store's own
-/// `info/alternates` transitively: `git clone --shared` records only the
-/// immediate source, so a chained source (B borrowed from A) leaves the
-/// workspace pointing at B while git resolves B→A at runtime — A must be
-/// mounted too or in-container git fails to normalize the alternate. Absent
-/// file (old full-copy clone, or a worktree) → empty, so no extra mount is
-/// added and the behavior is backward compatible. Reading the files rather than
-/// reconstructing paths keeps fresh spawn, resume, and view-switch uniform.
-fn borrowed_object_stores(cwd: &Path) -> Vec<PathBuf> {
+/// Every object store borrowed via git alternates by any checkout under the
+/// agent's `writable_root` — each an absolute path to mount read-only.
+///
+/// `writable_root` is the agent's parent dir, holding one checkout per tracked
+/// repo at `<root>/<subdir>/`. Each `--shared` clone records its source's
+/// objects in `<subdir>/.git/objects/info/alternates`; a multi-repo agent has
+/// several, so scanning only the primary `cwd` would leave secondary checkouts'
+/// borrowed objects unmounted and break git (log/diff/checkout/commit) there.
+///
+/// For each checkout the chain is followed transitively: `git clone --shared`
+/// records only the immediate source, so a chained source (B borrowed from A)
+/// leaves the checkout pointing at B while git resolves B→A at runtime — A must
+/// be mounted too or in-container git fails to normalize the alternate. Results
+/// are deduped (repos may share a base). No alternates anywhere (old full-copy
+/// clones, worktrees) → empty, so no extra mount is added — backward
+/// compatible. Reading the files rather than reconstructing paths keeps fresh
+/// spawn, resume, and view-switch uniform.
+fn borrowed_object_stores(writable_root: &Path) -> Vec<PathBuf> {
     /// The alternates listed in `<objects_dir>/info/alternates`, if any.
     fn read_alternates(objects_dir: &Path) -> Vec<PathBuf> {
         let Ok(contents) = std::fs::read_to_string(objects_dir.join("info/alternates")) else {
@@ -329,13 +338,27 @@ fn borrowed_object_stores(cwd: &Path) -> Vec<PathBuf> {
             .collect()
     }
 
+    // Seed the chain walk from every checkout's own object store. Sort the
+    // subdirs so the mount order is deterministic (read_dir order isn't).
+    let mut checkouts: Vec<PathBuf> = match std::fs::read_dir(writable_root) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    checkouts.sort();
+
     let mut out: Vec<PathBuf> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    // BFS over the alternates chain: workspace's alternates first (in file
-    // order), then each borrowed store's own. `seen` dedups shared bases and
-    // guards against a cyclic alternates chain.
-    let mut queue: std::collections::VecDeque<PathBuf> =
-        read_alternates(&cwd.join(".git/objects")).into();
+    // BFS over the alternates chains: each checkout's own alternates first (in
+    // file order), then each borrowed store's own. `seen` dedups shared bases
+    // and guards against a cyclic alternates chain.
+    let mut queue: std::collections::VecDeque<PathBuf> = checkouts
+        .iter()
+        .flat_map(|c| read_alternates(&c.join(".git/objects")))
+        .collect();
     while let Some(store) = queue.pop_front() {
         if !seen.insert(store.clone()) {
             continue;
@@ -606,13 +629,14 @@ mod tests {
 
     #[test]
     fn borrowed_object_stores_reads_alternates_lines() {
+        // Layout: writable_root/<subdir>/.git/objects/info/alternates.
         let td = tempfile::tempdir().unwrap();
-        let cwd = td.path();
-        let info = cwd.join(".git/objects/info");
+        let root = td.path();
+        let info = root.join("repo/.git/objects/info");
         std::fs::create_dir_all(&info).unwrap();
 
         // Absent alternates → nothing to mount (worktree / full-copy clone).
-        assert!(borrowed_object_stores(cwd).is_empty());
+        assert!(borrowed_object_stores(root).is_empty());
 
         std::fs::write(
             info.join("alternates"),
@@ -620,7 +644,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            borrowed_object_stores(cwd),
+            borrowed_object_stores(root),
             vec![
                 PathBuf::from("/src/a/.git/objects"),
                 PathBuf::from("/src/b/objects"),
@@ -630,23 +654,48 @@ mod tests {
 
     #[test]
     fn borrowed_object_stores_follows_chained_alternates() {
-        // Model C --shared→ B --shared→ A: the workspace (C) points only at B;
-        // B points at A. Both B and A must be discovered so both get mounted,
-        // or in-container git can't reach A's objects.
+        // Model checkout --shared→ B --shared→ A: the checkout points only at
+        // B; B points at A. Both B and A must be discovered so both get
+        // mounted, or in-container git can't reach A's objects.
         let td = tempfile::tempdir().unwrap();
         let a = td.path().join("A/.git/objects");
         let b = td.path().join("B/.git/objects");
-        let c = td.path().join("C/.git/objects");
-        for dir in [&a, &b, &c] {
+        // The checkout lives under the writable root as a subdir.
+        let checkout = td.path().join("root/repo/.git/objects");
+        for dir in [&a, &b, &checkout] {
             std::fs::create_dir_all(dir.join("info")).unwrap();
         }
-        std::fs::write(c.join("info/alternates"), format!("{}\n", b.display())).unwrap();
+        std::fs::write(checkout.join("info/alternates"), format!("{}\n", b.display())).unwrap();
         std::fs::write(b.join("info/alternates"), format!("{}\n", a.display())).unwrap();
 
         assert_eq!(
-            borrowed_object_stores(&td.path().join("C")),
+            borrowed_object_stores(&td.path().join("root")),
             vec![b, a],
-            "chain must resolve C→B→A, mounting both borrowed stores"
+            "chain must resolve checkout→B→A, mounting both borrowed stores"
+        );
+    }
+
+    #[test]
+    fn borrowed_object_stores_scans_every_repo_checkout() {
+        // A multi-repo agent: two shared-clone checkouts under one writable
+        // root, each borrowing a different source. Both borrowed stores must be
+        // discovered — scanning only the primary would strand the secondary.
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("agent");
+        let primary = root.join("app/.git/objects/info");
+        let secondary = root.join("lib/.git/objects/info");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&secondary).unwrap();
+        std::fs::write(primary.join("alternates"), "/src/app/.git/objects\n").unwrap();
+        std::fs::write(secondary.join("alternates"), "/src/lib/.git/objects\n").unwrap();
+
+        // Sorted by subdir name: `app` before `lib`.
+        assert_eq!(
+            borrowed_object_stores(&root),
+            vec![
+                PathBuf::from("/src/app/.git/objects"),
+                PathBuf::from("/src/lib/.git/objects"),
+            ],
         );
     }
 
