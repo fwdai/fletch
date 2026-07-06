@@ -94,7 +94,20 @@ async fn git_output_env(
 /// message. Collapses the "spawn, check status, format stderr" trio repeated
 /// across this module into one call.
 pub(crate) async fn run_git(dir: &Path, args: &[&str], label: &str) -> Result<std::process::Output> {
-    let out = git_output(dir, args).await?;
+    run_git_env(dir, args, &[], label).await
+}
+
+/// `run_git` with extra child env — the require-zero-exit wrapper for the
+/// mutation helpers that must carry the no-hooks env (and, where relevant, an
+/// identity/auth merge). Keeps the "spawn, check status, format stderr" trio in
+/// one place so each hook-disabling call site stays a one-liner.
+async fn run_git_env(
+    dir: &Path,
+    args: &[&str],
+    env: &[(String, String)],
+    label: &str,
+) -> Result<std::process::Output> {
+    let out = git_output_env(dir, args, env).await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "{label} failed: {}",
@@ -341,13 +354,13 @@ pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
 pub async fn checkout_new_branch(worktree: &Path, branch: &str) -> Result<()> {
     // `checkout` fires `post-checkout`, which would run on the host against an
     // agent-writable workspace — disable workspace hooks for this invocation.
-    let out = git_output_env(worktree, &["checkout", "-b", branch], &no_hooks_env()).await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "checkout -b {branch} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    run_git_env(
+        worktree,
+        &["checkout", "-b", branch],
+        &no_hooks_env(),
+        &format!("checkout -b {branch}"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -829,6 +842,69 @@ mod tests {
         assert!(worktree_add_detached(&repo, &wt, None).await.is_err());
         assert!(wt.join("precious.txt").exists());
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn conflicting_rebase_runs_no_workspace_hooks_and_leaves_no_rebase_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+
+        // Base commit; remember the starting branch to rebase onto.
+        std::fs::write(repo.join("a.txt"), b"base\n").unwrap();
+        commit_all(repo, "base").await.unwrap();
+        let base = current_branch(repo).await.unwrap().unwrap();
+
+        // Feature branch edits a.txt one way…
+        checkout_new_branch(repo, "feature").await.unwrap();
+        std::fs::write(repo.join("a.txt"), b"feature\n").unwrap();
+        commit_all(repo, "feature edit").await.unwrap();
+
+        // …while base advances with a conflicting edit to the same line.
+        config(repo, "checkout.quiet", "true").await; // keep output tidy
+        let out = Command::new("git")
+            .current_dir(repo)
+            .args(["checkout", &base])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success());
+        std::fs::write(repo.join("a.txt"), b"base advanced\n").unwrap();
+        commit_all(repo, "base edit").await.unwrap();
+        let out = Command::new("git")
+            .current_dir(repo)
+            .args(["checkout", "feature"])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success());
+
+        // Plant a hostile post-checkout hook. The rebase checks out the base to
+        // start replaying (fires post-checkout) and, on conflict, aborts — both
+        // host-side and both must run with workspace hooks disabled.
+        let sentinel = td.path().join("hook-ran");
+        let hook = repo.join(".git/hooks/post-checkout");
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\ntouch '{}'\n", sentinel.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Rebase conflicts on a.txt → rebase_onto aborts internally and errs.
+        let err = rebase_onto(repo, &base).await.unwrap_err();
+        assert!(err.to_string().contains("rebase onto"), "got: {err}");
+
+        // No workspace hook ran during any host-side step of the rebase.
+        assert!(!sentinel.exists(), "workspace post-checkout hook must not run");
+        // And the abort left the worktree clean, not mid-rebase.
+        assert!(!repo.join(".git/rebase-merge").exists());
+        assert!(!repo.join(".git/rebase-apply").exists());
+    }
 }
 
 fn parse_shortstat(s: &str) -> (u32, u32) {
@@ -869,14 +945,13 @@ pub async fn worktree_add_branch(
         .ok_or_else(|| Error::InvalidPath(worktree_path.display().to_string()))?;
     // Checks out `branch` in the new worktree, firing `post-checkout` — disable
     // workspace hooks so a source-repo hook can't run on the host.
-    let out =
-        git_output_env(repo, &["worktree", "add", path, branch], &no_hooks_env()).await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "worktree add {branch} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
+    run_git_env(
+        repo,
+        &["worktree", "add", path, branch],
+        &no_hooks_env(),
+        &format!("worktree add {branch}"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -951,12 +1026,15 @@ pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
     let out = git_output_env(worktree, &["rebase", base], &env).await?;
     if !out.status.success() {
         let conflict = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        // Don't leave the worktree mid-rebase. If the abort *itself* fails or
-        // times out, the worktree is stuck mid-rebase and needs manual
-        // recovery — surface that alongside the original conflict rather than
-        // silently swallowing it and reporting only the conflict.
+        // Don't leave the worktree mid-rebase. `rebase --abort` checks out the
+        // original HEAD, firing `post-checkout` — so it too must run with hooks
+        // disabled, else the failure path reopens the very host-execution hole
+        // the success path closes. If the abort *itself* fails or times out, the
+        // worktree is stuck mid-rebase and needs manual recovery — surface that
+        // alongside the original conflict rather than silently swallowing it and
+        // reporting only the conflict.
         if let Err(abort_err) =
-            run_git(worktree, &["rebase", "--abort"], "rebase --abort").await
+            run_git_env(worktree, &["rebase", "--abort"], &no_hooks_env(), "rebase --abort").await
         {
             return Err(Error::Git(format!(
                 "rebase onto {base} failed: {conflict}; the worktree is left \
