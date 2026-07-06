@@ -2,7 +2,10 @@
 .tip {
   position: relative;
 }
-.tip[data-tip]:hover::after {
+/* Shown on pointer hover and on keyboard focus, so tooltips are reachable
+ * without a mouse. */
+.tip[data-tip]:hover::after,
+.tip[data-tip]:focus-visible::after {
   content: attr(data-tip);
   position: absolute;
   bottom: calc(100% + 6px);
@@ -18,15 +21,21 @@
   pointer-events: none;
   z-index: var(--z-toast);
 }
-.tip[data-tip-down]:hover::after {
+.tip[data-tip-down]:hover::after,
+.tip[data-tip-down]:focus-visible::after {
   bottom: auto;
   top: calc(100% + 6px);
 }
-/* Wrapping tooltip — for explanatory sentences that shouldn't stay one line. */
-.tip.tip-wide[data-tip]:hover::after {
+/* Wrapping tooltip — for explanatory sentences that shouldn't stay one line.
+ * Anchored to the badge's left edge (grows rightward) rather than centered, so
+ * the start of the text stays on-screen for badges near a window edge. */
+.tip.tip-wide[data-tip]:hover::after,
+.tip.tip-wide[data-tip]:focus-visible::after {
   white-space: normal;
   width: max-content;
   max-width: 240px;
   text-align: left;
   line-height: 1.4;
+  left: 0;
+  transform: none;
 }

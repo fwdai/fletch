@@ -15,7 +15,7 @@ const TIP =
 export function SandboxBadge({ engine }: { engine?: string | null }) {
   if (engine !== "docker") return null;
   return (
-    <Badge variant="docker" tip={TIP} tipDown className="tip-wide sandbox-badge">
+    <Badge variant="docker" tip={TIP} tipDown label={TIP} className="tip-wide sandbox-badge">
       <Icon name="cube" size={10} />
     </Badge>
   );
