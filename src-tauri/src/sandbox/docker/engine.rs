@@ -10,10 +10,15 @@
 //!   host paths, and the container runs with `HOME=<host home>`; transcripts,
 //!   RPC payloads, and diff paths all embed absolute host paths, so nothing in
 //!   the app translates paths.
-//! - **The real repo never enters the container (invariant 2).** Only the
-//!   agent's own parent dir is mounted; `supervisor::lifecycle` forces
-//!   clone-mode workspaces for docker agents, so no linked-worktree `.git`
-//!   pointer can reach the user's repo.
+//! - **The real repo's writable state and its hooks never enter the container;
+//!   its object store enters read-only (invariant 2).** Only the agent's own
+//!   parent dir is mounted writable; `supervisor::lifecycle` forces clone-mode
+//!   workspaces for docker agents, so no linked-worktree `.git` pointer can
+//!   reach the user's repo. A `--shared` clone borrows the source's object
+//!   store via alternates (see `sandbox::provision`); that store — and only
+//!   that store, never the source `.git` (config/hooks) — is bind-mounted
+//!   **read-only** at its identical host path so in-container git can read
+//!   history while a write attempt fails with `Read-only file system`.
 //! - **Secrets never in argv (invariant 3).** Auth vars are set on the docker
 //!   *CLI process* environment (`LaunchPlan::env`) and forwarded into the
 //!   container with bare `-e NAME` — the value never appears in `ps`.
@@ -171,6 +176,11 @@ impl SandboxEngine for DockerEngine {
             })?;
         }
 
+        // Object stores this workspace borrows via git alternates (a --shared
+        // clone). Mounted read-only so in-container git can read borrowed
+        // history; empty for an old full-copy clone or a worktree (no mount).
+        let borrowed_object_stores = borrowed_object_stores(ctx.cwd);
+
         let prefix_args = run_args(&RunSpec {
             interactive: ctx.interactive,
             name: &name,
@@ -180,6 +190,7 @@ impl SandboxEngine for DockerEngine {
             home: ctx.home,
             cwd: ctx.cwd,
             claude_config_dir: claude_config_dir.as_deref(),
+            borrowed_object_stores: &borrowed_object_stores,
             memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
             cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
             image: &image,
@@ -293,6 +304,50 @@ fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
     Some(dir)
 }
 
+/// Object stores the workspace at `cwd` borrows via git alternates, each an
+/// absolute path to mount read-only. Starts from
+/// `<cwd>/.git/objects/info/alternates` (a `--shared` clone writes one line —
+/// the source's objects) and follows each borrowed store's own
+/// `info/alternates` transitively: `git clone --shared` records only the
+/// immediate source, so a chained source (B borrowed from A) leaves the
+/// workspace pointing at B while git resolves B→A at runtime — A must be
+/// mounted too or in-container git fails to normalize the alternate. Absent
+/// file (old full-copy clone, or a worktree) → empty, so no extra mount is
+/// added and the behavior is backward compatible. Reading the files rather than
+/// reconstructing paths keeps fresh spawn, resume, and view-switch uniform.
+fn borrowed_object_stores(cwd: &Path) -> Vec<PathBuf> {
+    /// The alternates listed in `<objects_dir>/info/alternates`, if any.
+    fn read_alternates(objects_dir: &Path) -> Vec<PathBuf> {
+        let Ok(contents) = std::fs::read_to_string(objects_dir.join("info/alternates")) else {
+            return Vec::new();
+        };
+        contents
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(PathBuf::from)
+            .collect()
+    }
+
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // BFS over the alternates chain: workspace's alternates first (in file
+    // order), then each borrowed store's own. `seen` dedups shared bases and
+    // guards against a cyclic alternates chain.
+    let mut queue: std::collections::VecDeque<PathBuf> =
+        read_alternates(&cwd.join(".git/objects")).into();
+    while let Some(store) = queue.pop_front() {
+        if !seen.insert(store.clone()) {
+            continue;
+        }
+        for next in read_alternates(&store) {
+            queue.push_back(next);
+        }
+        out.push(store);
+    }
+    out
+}
+
 /// Everything [`run_args`] needs, bundled so the builder is pure and the argv
 /// shape unit-testable without a daemon.
 struct RunSpec<'a> {
@@ -304,6 +359,10 @@ struct RunSpec<'a> {
     home: &'a Path,
     cwd: &'a Path,
     claude_config_dir: Option<&'a Path>,
+    /// Object stores borrowed via git alternates (a `--shared` clone),
+    /// bind-mounted read-only at their identical host paths. Empty for a
+    /// worktree or an old full-copy clone.
+    borrowed_object_stores: &'a [PathBuf],
     memory: &'a str,
     cpus: &'a str,
     image: &'a str,
@@ -337,6 +396,17 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         let path = mount.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}"));
+    }
+    // Object stores borrowed by a --shared clone, mounted read-only at their
+    // identical host path so the alternates file resolves in-container with no
+    // rewriting. RO keeps invariant 2: borrowed history is readable, but the
+    // source store (and, since we mount only `objects`, never `.git/hooks` or
+    // config) can't be mutated from inside the container. The list already
+    // includes any transitively-chained stores (see `borrowed_object_stores`).
+    for store in spec.borrowed_object_stores {
+        let path = store.to_string_lossy();
+        args.push("-v".into());
+        args.push(format!("{path}:{path}:ro"));
     }
     args.push("-w".into());
     args.push(spec.cwd.to_string_lossy().into_owned());
@@ -451,6 +521,7 @@ mod tests {
             home: Path::new("/Users/u"),
             cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
             claude_config_dir: None,
+            borrowed_object_stores: &[],
             memory: "4g",
             cpus: "2",
             image: "fletch-agent:abc123def456",
@@ -468,6 +539,8 @@ mod tests {
 
     #[test]
     fn argv_mounts_exactly_the_three_dirs_at_identical_paths() {
+        // No borrowed object stores (worktree / old full-copy clone): only the
+        // base three writable mounts, no `:ro` entries.
         let args = run_args(&test_spec(false));
         assert_eq!(
             values_of(&args, "-v"),
@@ -477,9 +550,103 @@ mod tests {
                 "/Users/u/.claude:/Users/u/.claude",
             ],
         );
+        assert!(
+            !args.iter().any(|a| a.ends_with(":ro")),
+            "no RO mount without borrowed object stores"
+        );
         assert_eq!(
             values_of(&args, "-w"),
             vec!["/Users/u/.fletch/worktrees/orkney/repo"],
+        );
+    }
+
+    #[test]
+    fn argv_mounts_borrowed_object_store_read_only() {
+        // A --shared clone borrows the source's objects: the base three plus a
+        // single RO mount of the borrowed store at its identical host path.
+        let stores = vec![PathBuf::from("/Users/u/repo/.git/objects")];
+        let mut spec = test_spec(false);
+        spec.borrowed_object_stores = &stores;
+        let args = run_args(&spec);
+        assert_eq!(
+            values_of(&args, "-v"),
+            vec![
+                "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
+                "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
+                "/Users/u/.claude:/Users/u/.claude",
+                "/Users/u/repo/.git/objects:/Users/u/repo/.git/objects:ro",
+            ],
+        );
+    }
+
+    #[test]
+    fn argv_mounts_every_chained_alternate_read_only() {
+        // Every store the workspace borrows (directly or transitively) gets its
+        // own RO mount; `run_args` mounts whatever `borrowed_object_stores`
+        // resolved.
+        let stores = vec![
+            PathBuf::from("/Users/u/repo/.git/objects"),
+            PathBuf::from("/Users/u/shared-cache/objects"),
+        ];
+        let mut spec = test_spec(false);
+        spec.borrowed_object_stores = &stores;
+        let args = run_args(&spec);
+        let ro: Vec<&str> = values_of(&args, "-v")
+            .into_iter()
+            .filter(|m| m.ends_with(":ro"))
+            .collect();
+        assert_eq!(
+            ro,
+            vec![
+                "/Users/u/repo/.git/objects:/Users/u/repo/.git/objects:ro",
+                "/Users/u/shared-cache/objects:/Users/u/shared-cache/objects:ro",
+            ],
+        );
+    }
+
+    #[test]
+    fn borrowed_object_stores_reads_alternates_lines() {
+        let td = tempfile::tempdir().unwrap();
+        let cwd = td.path();
+        let info = cwd.join(".git/objects/info");
+        std::fs::create_dir_all(&info).unwrap();
+
+        // Absent alternates → nothing to mount (worktree / full-copy clone).
+        assert!(borrowed_object_stores(cwd).is_empty());
+
+        std::fs::write(
+            info.join("alternates"),
+            "/src/a/.git/objects\n\n  /src/b/objects  \n",
+        )
+        .unwrap();
+        assert_eq!(
+            borrowed_object_stores(cwd),
+            vec![
+                PathBuf::from("/src/a/.git/objects"),
+                PathBuf::from("/src/b/objects"),
+            ],
+        );
+    }
+
+    #[test]
+    fn borrowed_object_stores_follows_chained_alternates() {
+        // Model C --shared→ B --shared→ A: the workspace (C) points only at B;
+        // B points at A. Both B and A must be discovered so both get mounted,
+        // or in-container git can't reach A's objects.
+        let td = tempfile::tempdir().unwrap();
+        let a = td.path().join("A/.git/objects");
+        let b = td.path().join("B/.git/objects");
+        let c = td.path().join("C/.git/objects");
+        for dir in [&a, &b, &c] {
+            std::fs::create_dir_all(dir.join("info")).unwrap();
+        }
+        std::fs::write(c.join("info/alternates"), format!("{}\n", b.display())).unwrap();
+        std::fs::write(b.join("info/alternates"), format!("{}\n", a.display())).unwrap();
+
+        assert_eq!(
+            borrowed_object_stores(&td.path().join("C")),
+            vec![b, a],
+            "chain must resolve C→B→A, mounting both borrowed stores"
         );
     }
 
@@ -636,6 +803,7 @@ mod tests {
             home: &home,
             cwd: &root,
             claude_config_dir: None,
+            borrowed_object_stores: &[],
             memory: "256m",
             cpus: "1",
             image: "busybox",

@@ -40,14 +40,38 @@ pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
         .unwrap_or(EngineKind::SandboxExec)
 }
 
-/// The provisioning mode an agent stamped with `engine` actually gets. Docker
-/// forces `Clone` regardless of the `workspace_mode` dev flag: a linked
+/// The provisioning mode an agent stamped with `engine` actually gets.
+///
+/// Docker forces `Clone` regardless of the `workspace_mode` dev flag: a linked
 /// worktree's `.git` file points into the user's real repo, and a container
 /// must never be able to reach that (sandbox plan invariant 2).
+///
+/// Seatbelt now also defaults to `Clone` — both engines converge on one
+/// self-contained-checkout model, made cheap by `git clone --shared` (objects
+/// borrowed via alternates, not copied). An explicit `workspace_mode=worktree`
+/// still opts back into the historical linked-worktree model.
+///
+/// Changed restore semantics under seatbelt: a clone's commits live only in
+/// the (torn-down) clone and on the real remote once pushed, so restoring an
+/// archived agent whose branch was never pushed now fails — provisioning
+/// refetches the tip from `origin` (see `provision_on_branch`), which needs
+/// network and a pushed branch. Worktree mode created the branch in the source
+/// repo, so its commits survived teardown and restore worked offline. Users
+/// who need offline restore of never-pushed work can set
+/// `workspace_mode=worktree`.
 pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>) -> WorkspaceMode {
     match engine {
         EngineKind::Docker => WorkspaceMode::Clone,
-        EngineKind::SandboxExec => WorkspaceMode::from_setting(setting),
+        // Explicit opt-out to the historical linked-worktree model; everything
+        // else — unset (the new default) or "clone" — resolves to Clone.
+        EngineKind::SandboxExec => match setting {
+            Some("worktree") => WorkspaceMode::Worktree,
+            Some("clone") | None => WorkspaceMode::Clone,
+            Some(other) => {
+                tracing::warn!(value = %other, "unrecognized workspace_mode setting; using clone");
+                WorkspaceMode::Clone
+            }
+        },
     }
 }
 
@@ -1135,8 +1159,7 @@ mod tests {
     use super::*;
 
     /// Invariant 2: a docker agent's workspace is always a self-contained
-    /// clone, whatever the `workspace_mode` dev flag says; seatbelt keeps
-    /// honoring the flag.
+    /// clone, whatever the `workspace_mode` dev flag says.
     #[test]
     fn docker_forces_clone_workspaces() {
         for setting in [None, Some("worktree"), Some("clone"), Some("bogus")] {
@@ -1146,12 +1169,22 @@ mod tests {
                 "docker must force clone for setting {setting:?}",
             );
         }
+    }
+
+    /// Seatbelt now defaults to `Clone` (cheap via `--shared`); an explicit
+    /// `workspace_mode=worktree` is the only way back to the historical linked
+    /// worktree, which trades away offline restore of never-pushed branches.
+    #[test]
+    fn seatbelt_defaults_to_clone_with_worktree_opt_out() {
+        for setting in [None, Some("clone"), Some("bogus")] {
+            assert_eq!(
+                effective_workspace_mode(EngineKind::SandboxExec, setting),
+                WorkspaceMode::Clone,
+                "seatbelt must default to clone for setting {setting:?}",
+            );
+        }
         assert_eq!(
-            effective_workspace_mode(EngineKind::SandboxExec, Some("clone")),
-            WorkspaceMode::Clone,
-        );
-        assert_eq!(
-            effective_workspace_mode(EngineKind::SandboxExec, None),
+            effective_workspace_mode(EngineKind::SandboxExec, Some("worktree")),
             WorkspaceMode::Worktree,
         );
     }

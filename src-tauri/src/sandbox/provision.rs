@@ -1,14 +1,26 @@
 //! Workspace provisioning: how an agent's checkout comes into existence.
 //!
 //! Two modes. `Worktree` is the historical behavior — a linked `git worktree`
-//! whose `.git` file points back into the origin repo. `Clone` is a fully
-//! self-contained copy, required by the Docker engine: a linked worktree's
-//! `.git` file references the origin repo's `.git/worktrees/<name>` by
-//! absolute path, so containerizing it would mean mounting the user's real
-//! `.git` — a sandbox escape (a writable `.git/hooks` executes on the host
-//! the next time the user runs git). A clone needs zero extra mounts, and
-//! because it still lives at the normal host path, all host-side git (diff
-//! polling, RPC commit/push, archive/restore) operates on it unchanged.
+//! whose `.git` file points back into the origin repo. `Clone` is a
+//! self-contained checkout with its own real, writable `.git`, required by the
+//! Docker engine: a linked worktree's `.git` file references the origin repo's
+//! `.git/worktrees/<name>` by absolute path, so containerizing it would mean
+//! mounting the user's real `.git` — a sandbox escape (a writable `.git/hooks`
+//! executes on the host the next time the user runs git).
+//!
+//! The clone is made with `git clone --shared`: it borrows the source's object
+//! store via `.git/objects/info/alternates` (an absolute path to the source's
+//! objects) and copies **no** objects, so a spawn costs kilobytes and
+//! milliseconds instead of a full history copy. New objects (agent commits,
+//! fetches) land in the clone's own `.git/objects`; reads of existing history
+//! fall through to the borrowed store. Because the clone lives at the normal
+//! host path, all host-side git (diff polling, RPC commit/push,
+//! archive/restore) operates on it unchanged. For Docker the borrowed object
+//! store is mounted read-only at its identical host path (see
+//! `sandbox::docker::engine`); under seatbelt no mount is needed (same
+//! filesystem, reads open, writes blocked outside the workspace by policy).
+//! The source object store must therefore remain present for the clone's
+//! lifetime — Fletch owns the source repo lifecycle, so this holds.
 //!
 //! The mode is selected by the `workspace_mode` settings key (dev flag, not
 //! exposed in UI — set via sqlite for testing) so the clone path can be
@@ -29,7 +41,8 @@ pub const WORKSPACE_MODE_SETTING: &str = "workspace_mode";
 pub enum WorkspaceMode {
     /// Linked `git worktree` sharing the source repo's object store.
     Worktree,
-    /// Self-contained `git clone --no-hardlinks` (Docker-safe).
+    /// Self-contained `git clone --shared` — its own writable `.git`, objects
+    /// borrowed from the source via alternates (Docker-safe).
     Clone,
 }
 
@@ -166,9 +179,26 @@ pub fn detect_mode(dest: &Path) -> Option<WorkspaceMode> {
     }
 }
 
-/// `git clone --no-hardlinks` + origin rewrite + repo-local identity copy —
-/// the parts shared by both clone-arm entry points. Leaves HEAD wherever the
-/// clone put it; callers do their own checkout.
+/// `git clone --shared` + origin rewrite + repo-local identity copy — the
+/// parts shared by both clone-arm entry points. Leaves HEAD wherever the clone
+/// put it; callers do their own checkout.
+///
+/// `--shared` borrows the source's object store via
+/// `.git/objects/info/alternates` (an absolute path to the source's objects)
+/// and copies no objects, so the clone is kilobytes on disk. The source object
+/// store must stay present for the clone's lifetime (Fletch owns the source
+/// repo lifecycle). Borrowed objects are only ever *referenced* — never written
+/// — and for Docker the store is mounted read-only, so a container can't reach
+/// through the alternates link to mutate the source.
+///
+/// Caveat — gc/prune on the source: `--shared` breaks only if the source
+/// prunes an object the clone references. Base history stays reachable from the
+/// source's own refs, so ordinary `git gc --auto` (prunes only unreachable
+/// objects past the grace period) is safe. The real risk is an aggressive
+/// `git prune` / `gc --prune=now` on the source *while an agent is live and
+/// referencing a since-deleted base branch*. Not hardened against here (the
+/// common case is safe); if that becomes a problem, disable gc on the source
+/// while any agent is active (crash-safe, via transient env-config).
 async fn clone_base(spec: &CheckoutSpec<'_>) -> Result<()> {
     let source = path_str(spec.source_repo)?;
     let dest = path_str(spec.dest)?;
@@ -182,16 +212,16 @@ async fn clone_base(spec: &CheckoutSpec<'_>) -> Result<()> {
         tokio::fs::remove_dir_all(spec.dest).await?;
     }
 
-    // `--no-hardlinks` is mandatory: hardlinked objects would let a container
-    // corrupt the source repo's objects through shared inodes.
-    // TODO(perf): no `--filter=blob:none` for large repos — local promisor
-    // remotes are fragile; full-clone cost is accepted in v1.
+    // `--shared` borrows the source's objects via an alternates file and
+    // copies none, so a spawn is cheap regardless of repo size. Borrowed
+    // objects are read-only (referenced, and RO-mounted for Docker), so a
+    // container can't corrupt the source through them.
     //
-    // No timeout: this is a local copy, but a large repo can legitimately
-    // take minutes (same reasoning as `new_project::clone`). `kill_on_drop`
-    // still reaps the child if the spawn task is aborted.
+    // No timeout: `--shared` is near-instant, but keep the unbounded shape
+    // (and `kill_on_drop`) consistent with `new_project::clone`; the child is
+    // still reaped if the spawn task is aborted.
     let out = crate::git_dist::command(spec.source_repo)
-        .args(["clone", "--no-hardlinks", &source, &dest])
+        .args(["clone", "--shared", &source, &dest])
         .kill_on_drop(true)
         .output()
         .await?;
@@ -200,7 +230,7 @@ async fn clone_base(spec: &CheckoutSpec<'_>) -> Result<()> {
         // "already exists" (mirrors `new_project::clone`).
         let _ = tokio::fs::remove_dir_all(spec.dest).await;
         return Err(Error::Git(format!(
-            "clone --no-hardlinks failed: {}",
+            "clone --shared failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
@@ -478,11 +508,8 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
-    async fn clone_shares_no_hardlinks_with_source() {
-        use std::os::unix::fs::MetadataExt;
-
+    async fn clone_borrows_objects_via_alternates_without_copying() {
         let td = tempfile::tempdir().unwrap();
         let (repo, _first, head) = fixture_repo(td.path());
         let dest = td.path().join("clone");
@@ -493,26 +520,45 @@ mod tests {
         };
 
         provision(WorkspaceMode::Clone, &spec).await.unwrap();
-        let mut stack = vec![dest.join(".git").join("objects")];
-        let mut checked = 0usize;
+
+        // `--shared` writes an alternates file pointing at the source's object
+        // store and copies no objects.
+        let alternates = dest.join(".git/objects/info/alternates");
+        let contents = std::fs::read_to_string(&alternates).unwrap();
+        let source_objects = repo.join(".git/objects");
+        assert!(
+            contents
+                .lines()
+                .any(|l| Path::new(l.trim()) == source_objects),
+            "alternates {contents:?} should list {}",
+            source_objects.display()
+        );
+
+        // No loose objects were copied into the clone (the whole point of
+        // --shared): the source objects live only in the borrowed store.
+        let mut loose = 0usize;
+        let mut stack = vec![dest.join(".git/objects")];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
                 let entry = entry.unwrap();
-                let meta = entry.metadata().unwrap();
-                if meta.is_dir() {
+                let name = entry.file_name();
+                // Skip the bookkeeping dirs (`info`, `pack`); count only the
+                // `xx/` fan-out dirs holding loose object files.
+                if name == "info" || name == "pack" {
+                    continue;
+                }
+                if entry.metadata().unwrap().is_dir() {
                     stack.push(entry.path());
                 } else {
-                    checked += 1;
-                    assert_eq!(
-                        meta.nlink(),
-                        1,
-                        "hardlinked object: {}",
-                        entry.path().display()
-                    );
+                    loose += 1;
                 }
             }
         }
-        assert!(checked > 0, "expected object files to verify");
+        assert_eq!(loose, 0, "--shared must not copy loose objects");
+
+        // History is still fully reachable through the borrowed store.
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
+        assert!(run(&dest, &["log", "--format=%s"]).contains("first"));
     }
 
     #[tokio::test]
