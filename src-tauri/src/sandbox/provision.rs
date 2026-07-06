@@ -276,7 +276,7 @@ where
 {
     let result = async {
         rewrite_origin(spec).await?;
-        copy_local_identity(spec).await?;
+        seed_identity(spec).await?;
         install_delegation_hooks(spec.dest).await?;
         checkout(spec.dest.to_path_buf()).await
     }
@@ -390,26 +390,32 @@ async fn set_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Copy repo-local `user.name` / `user.email` into the clone. Global
-/// gitconfig already applies host-side; only per-repo identity would
-/// otherwise be lost (clones don't inherit the source's local config).
-async fn copy_local_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
-    for key in ["user.name", "user.email"] {
-        // Exits 1 when unset — not an error, just nothing to copy.
-        let out = git::git_output(spec.source_repo, &["config", "--local", "--get", key]).await?;
-        if !out.status.success() {
-            continue;
-        }
-        let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if value.is_empty() {
-            continue;
-        }
-        git::run_git(
-            spec.dest,
-            &["config", key, &value],
-            &format!("config {key}"),
-        )
-        .await?;
+/// Seed the clone with a git identity it can commit under **without** the
+/// host's global gitconfig. A container can't see that file, so with local git
+/// mutations now running as native in-container `git commit`, a clone that
+/// inherited its identity only from the host's global config would die with
+/// git's "Please tell me who you are" — the retired host-side commit path used
+/// to paper over this via `git::identity_env`.
+///
+/// Write the *effective* identity the source repo resolves (`--get`, i.e.
+/// local ▸ global ▸ system — exactly what the host itself would author with)
+/// into the clone's own config, and fill any half the host can't resolve from
+/// the signed-in profile / neutral default. This is the same fallback
+/// `git::identity_env` applied, but persisted into the clone so in-container
+/// git sees it. Clones are ephemeral, so freezing the value here is harmless.
+async fn seed_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
+    let (fallback_name, fallback_email) = crate::git_dist::fallback_identity();
+    for (key, fallback) in [("user.name", fallback_name), ("user.email", fallback_email)] {
+        // `--get` (no `--local`) is the effective value across every scope;
+        // empty or exit-1 means the host resolves nothing, so fall back.
+        let effective = git::git_output(spec.source_repo, &["config", "--get", key])
+            .await
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .filter(|v| !v.is_empty());
+        let value = effective.unwrap_or(fallback);
+        git::run_git(spec.dest, &["config", key, &value], &format!("config {key}")).await?;
     }
     Ok(())
 }
@@ -677,6 +683,32 @@ mod tests {
             run(&dest, &["config", "--local", "user.email"]),
             "t@example.com"
         );
+    }
+
+    #[tokio::test]
+    async fn clone_seeds_identity_when_source_resolves_none_locally() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        // Drop the repo-local identity the fixture set: the source now resolves
+        // an identity only from ambient global/system config, or nothing —
+        // exactly the reviewer's "identity lives only in host global config,
+        // which the container can't see" case.
+        run(&repo, &["config", "--local", "--unset", "user.name"]);
+        run(&repo, &["config", "--local", "--unset", "user.email"]);
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+
+        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+
+        // Whatever the host's ambient config, the clone must resolve a non-empty
+        // identity in its OWN config so a native in-container `git commit` never
+        // dies with "Please tell me who you are".
+        assert!(!run(&dest, &["config", "--local", "user.name"]).is_empty());
+        assert!(!run(&dest, &["config", "--local", "user.email"]).is_empty());
     }
 
     #[tokio::test]
