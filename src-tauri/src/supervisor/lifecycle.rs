@@ -51,14 +51,23 @@ pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
 /// borrowed via alternates, not copied). An explicit `workspace_mode=worktree`
 /// still opts back into the historical linked-worktree model.
 ///
-/// Changed restore semantics under seatbelt: a clone's commits live only in
-/// the (torn-down) clone and on the real remote once pushed, so restoring an
-/// archived agent whose branch was never pushed now fails — provisioning
-/// refetches the tip from `origin` (see `provision_on_branch`), which needs
-/// network and a pushed branch. Worktree mode created the branch in the source
-/// repo, so its commits survived teardown and restore worked offline. Users
-/// who need offline restore of never-pushed work can set
-/// `workspace_mode=worktree`.
+/// Changed restore semantics under seatbelt — but only for work that lives
+/// *solely* in a clone. Restore re-provisions each repo at its archived tip;
+/// provisioning refetches from `origin` only when that tip isn't already in the
+/// source repo's object store (see `provision_on_branch`).
+///
+/// - A clone-native agent writes new commits into its *own* `.git/objects`;
+///   archive teardown `rm -rf`s the clone, so unpushed commits are gone and
+///   restore can only recover what was pushed. This is the accepted cost of
+///   Clone mode — the reason the `workspace_mode=worktree` opt-out remains.
+/// - A pre-existing agent archived under the old Worktree default kept its
+///   commits in the *source* repo's object store (a worktree shares it), so
+///   even though teardown deleted the worktree branch, the tip object survives.
+///   Clone-mode restore borrows it back via alternates and checks it out
+///   offline — no remote branch needed (see the `provision.rs` restore tests).
+///   It only becomes unrecoverable once the source repo gc-prunes the
+///   now-unreachable object, which would have broken worktree-mode restore just
+///   the same. So the flip does not regress restore of legacy archives.
 pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>) -> WorkspaceMode {
     match engine {
         EngineKind::Docker => WorkspaceMode::Clone,

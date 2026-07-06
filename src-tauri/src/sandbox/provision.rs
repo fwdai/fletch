@@ -696,6 +696,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clone_provision_on_branch_restores_unreachable_source_tip_offline() {
+        // Regression guard for the seatbelt Clone default. A pre-existing agent
+        // archived under the old Worktree default made its commits in the
+        // *source* repo's object store; archive teardown deleted the worktree
+        // branch, leaving the tip present but unreachable. Restoring it under
+        // Clone mode must recover it offline via alternates — no origin, no
+        // fetch — so flipping the default doesn't regress legacy archives.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, _head) = fixture_repo(td.path());
+
+        // Simulate the archived worktree agent's commit landing in the source
+        // store, then teardown deleting the branch (tip now unreachable).
+        run(&repo, &["checkout", "-q", "-b", "feat"]);
+        std::fs::write(repo.join("feat.txt"), b"agent work").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "agent work"]);
+        let tip = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["checkout", "-q", "main"]);
+        run(&repo, &["branch", "-q", "-D", "feat"]);
+        // The object is unreachable but still present in the source store.
+        assert_eq!(run(&repo, &["rev-parse", "--verify", &tip]), tip);
+        // No origin: restore must not need the network.
+        assert_eq!(run(&repo, &["remote"]), "");
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &tip,
+            dest: &dest,
+        };
+        provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat")
+            .await
+            .unwrap();
+        assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat");
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), tip);
+        // The recovered tip's tree is intact (borrowed via alternates).
+        assert!(dest.join("feat.txt").exists());
+    }
+
+    #[tokio::test]
     async fn clone_recovers_orphan_dir_at_target() {
         let td = tempfile::tempdir().unwrap();
         let (repo, _first, head) = fixture_repo(td.path());
