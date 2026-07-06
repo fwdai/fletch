@@ -15,22 +15,23 @@ interface Props {
   children: ReactNode;
   /** Color/tone. Maps to the `.ag-badge` variants in styles/shared/badge.css. */
   variant?: BadgeVariant;
-  /** Text for the CSS-only hover tooltip. */
+  /** Text for the short CSS-only hover tooltip (single line — see badge.css). */
   tip?: string;
-  /** Open the tooltip below the badge instead of above — for badges near the
-   *  top edge (e.g. the title bar) where an upward tooltip would be clipped. */
-  tipDown?: boolean;
-  /** Accessible name. Required for icon-only badges: it exposes the meaning to
-   *  screen readers (as `role="img"`) and makes the badge keyboard-focusable so
-   *  its tooltip is reachable without a pointer. Usually mirrors `tip`. */
+  /** Accessible name for an icon-only badge — renders `role="img"` +
+   *  `aria-label` so screen readers announce what the glyph means. */
   label?: string;
+  /** Long-form explanation shown as the native `title` tooltip. The OS/webview
+   *  positions and wraps it, so unlike `tip` it can't clip at a window edge —
+   *  use it for sentence-length copy. Also exposed to assistive tech as the
+   *  badge's accessible description. */
+  hint?: string;
   className?: string;
 }
 
 /** Compact status pill — agent state (new / error) and PR state (open / merged
  *  / closed). Non-interactive (renders a <span>); mono + color-coded. Sibling
  *  of IconButton/Chip. */
-export function Badge({ children, variant = "neutral", tip, tipDown, label, className }: Props) {
+export function Badge({ children, variant = "neutral", tip, label, hint, className }: Props) {
   const cls = [
     "ag-badge",
     "iflex-center",
@@ -44,10 +45,9 @@ export function Badge({ children, variant = "neutral", tip, tipDown, label, clas
     <span
       className={cls}
       data-tip={tip}
-      data-tip-down={tip && tipDown ? "" : undefined}
+      title={hint}
       role={label ? "img" : undefined}
       aria-label={label}
-      tabIndex={label ? 0 : undefined}
     >
       {children}
     </span>
