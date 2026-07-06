@@ -11,6 +11,7 @@ import { SetRow } from "./primitives";
 /** Human labels for each container-auth chain step (see the backend chain in
  *  `sandbox/docker/auth.rs` — first hit wins, so exactly one is active). */
 const STATUS_LABELS: Record<string, string> = {
+  keychain: "Using your Claude login (Keychain)",
   "stored-token": "Using stored token",
   "shell-env": "Using API key from environment",
   "credentials-file": "Using claude credentials file",
@@ -41,7 +42,7 @@ export function ContainerAuth() {
     <>
       <SetRow
         title="Claude auth for containers"
-        sub="Docker agents can't see your Keychain login, so they need an API key from your environment (shell profile or the launching terminal) or a setup-token. Seatbelt agents keep using your own login."
+        sub="Docker agents use your macOS Keychain Claude login automatically, tracking whichever account you're currently logged into. If that's unavailable (no login, or a non-macOS host) they fall back to an API key from your environment or a setup-token. Seatbelt agents keep using your own login."
       >
         <span className={`set-cauth-status text-sm ${connected ? "connected" : ""}`}>
           {status ? STATUS_LABELS[status] : "Checking…"}

@@ -9,22 +9,33 @@
 //! [`ContainerAuth`] redacts values in its `Debug` output, and nothing in this
 //! module traces a token.
 //!
-//! The chain:
-//! 1. A `claude setup-token` value pasted into settings
-//!    ([`TOKEN_SETTING`]) → `CLAUDE_CODE_OAUTH_TOKEN`.
-//! 2. The app's process env or the login-shell probe exports
+//! The chain (first hit wins), re-evaluated on every spawn:
+//! 1. The **macOS Keychain** login (`security find-generic-password -s
+//!    "Claude Code-credentials"`) → its `claudeAiOauth.accessToken` forwarded as
+//!    `CLAUDE_CODE_OAUTH_TOKEN`. This is where an interactive `claude` login
+//!    stores the live credential on macOS, so reading it fresh each spawn tracks
+//!    the *currently authenticated account* — the same one a seatbelt agent
+//!    would use — with no pasting and no staleness when the user switches
+//!    accounts. Keychain-primary: it sits ahead of the stored token so a
+//!    re-login (e.g. after hitting a rate limit) takes effect immediately. Only
+//!    a usable token counts (see [`usable_oauth_token`]); no Keychain / no login
+//!    (Linux, CI) falls through. See [`keychain_token`].
+//! 2. A `claude setup-token` value captured into settings ([`TOKEN_SETTING`],
+//!    auto-populated by [`super::setup_token`]) → `CLAUDE_CODE_OAUTH_TOKEN`. The
+//!    fallback for hosts without a readable Keychain login.
+//! 3. The app's process env or the login-shell probe exports
 //!    `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` → forward those (plus
 //!    `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` for proxy setups, which ride
 //!    along but don't constitute a hit on their own). Both sources are consulted
 //!    (login-shell wins on collision) so a token in the launching terminal's
 //!    env works even when the `/bin/zsh -lc` probe can't see it — see
 //!    [`merge_auth_env`].
-//! 3. `<home>/.claude/.credentials.json` holds a usable OAuth token (non-empty
+//! 4. `<home>/.claude/.credentials.json` holds a usable OAuth token (non-empty
 //!    access token, non-placeholder `expiresAt`) → nothing to inject: the
 //!    `~/.claude` bind mount carries it, and refresh writes land on the host. A
 //!    stale placeholder (macOS Keychain logins leave `"expiresAt": 0` on disk)
 //!    does *not* count — see [`credentials_file_usable`].
-//! 4. Nothing → [`ContainerAuth::Unavailable`]; the spawn path fails fast and
+//! 5. Nothing → [`ContainerAuth::Unavailable`]; the spawn path fails fast and
 //!    the UI shows the "Connect Claude for containers" call-to-action.
 //!
 //! Seatbelt agents never see any of this — they keep the user's own login.
@@ -43,6 +54,12 @@ pub const TOKEN_SETTING: &str = "claude_container_token";
 
 /// Env var claude reads a setup-token (OAuth) credential from.
 const OAUTH_TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/// macOS Keychain generic-password service name Claude Code stores its login
+/// credential under. The password payload is the same `{"claudeAiOauth":{…}}`
+/// JSON as `~/.claude/.credentials.json`, so [`usable_oauth_token`] parses both.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
 /// Shell vars that constitute a chain hit on their own.
 const SHELL_KEY_VARS: [&str; 2] = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
@@ -87,7 +104,10 @@ fn sanitize(token: Option<String>) -> Option<String> {
 /// Which chain step supplied the credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthSource {
-    /// The pasted setup-token from settings.
+    /// The live macOS Keychain login (`claude`'s own credential), read fresh
+    /// each spawn and forwarded — tracks the currently authenticated account.
+    Keychain,
+    /// The pasted/captured setup-token from settings.
     StoredToken,
     /// Auth vars from the app's process env or the user's login shell.
     ShellEnv,
@@ -129,6 +149,7 @@ impl fmt::Debug for ContainerAuth {
 /// call: the login-shell env is loaded (a shell runs) if nothing earlier
 /// populated `bin_resolve`'s cache.
 pub fn resolve() -> ContainerAuth {
+    let keychain = keychain_token();
     let credentials_file = dirs::home_dir().is_some_and(|home| {
         credentials_file_usable(std::fs::read(home.join(".claude/.credentials.json")).ok().as_deref())
     });
@@ -137,7 +158,31 @@ pub fn resolve() -> ContainerAuth {
         .filter_map(|var| std::env::var(var).ok().map(|v| (var.to_string(), v)))
         .collect();
     let env = merge_auth_env(&process_env, bin_resolve::login_shell_env());
-    resolve_from(stored_token(), env.as_ref(), credentials_file)
+    resolve_from(keychain, stored_token(), env.as_ref(), credentials_file)
+}
+
+/// The live host login token from the macOS Keychain, or `None` when there's no
+/// readable/usable login (Keychain locked or empty, non-macOS host). Shells out
+/// to `security find-generic-password -s <service> -w`, which prints the stored
+/// password — the `{"claudeAiOauth":{…}}` JSON — to stdout. Read fresh on every
+/// [`resolve`] so a `claude` re-login is reflected in the very next spawn. The
+/// process may surface a one-time Keychain access prompt the first time a new
+/// Fletch build reads the item; "Always Allow" persists it.
+#[cfg(target_os = "macos")]
+fn keychain_token() -> Option<String> {
+    let out = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    usable_oauth_token(Some(&out.stdout))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_token() -> Option<String> {
+    None
 }
 
 /// Fold the app's own process environment together with the login-shell probe
@@ -186,25 +231,41 @@ fn merge_auth_env(
 /// rejecting it would break working Linux-host setups. The `expiresAt <= 0`
 /// (or missing/empty-token) placeholder is the only shape we reject.
 fn credentials_file_usable(contents: Option<&[u8]>) -> bool {
-    let Some(bytes) = contents else { return false };
-    let Ok(json) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        return false;
-    };
+    usable_oauth_token(contents).is_some()
+}
+
+/// Extract a container-usable OAuth access token from a credentials JSON blob —
+/// the `~/.claude/.credentials.json` file *or* the macOS Keychain password,
+/// which share the `{"claudeAiOauth":{accessToken,expiresAt}}` shape. Returns
+/// the trimmed access token only when it's non-empty and `expiresAt > 0`, the
+/// same usability bar [`credentials_file_usable`] documents: the `expiresAt <= 0`
+/// (or empty-token / wrong-shape / unparseable) placeholder is rejected, while
+/// an expired-but-refreshable positive `expiresAt` is accepted.
+fn usable_oauth_token(contents: Option<&[u8]>) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_slice(contents?).ok()?;
     let oauth = &json["claudeAiOauth"];
-    let has_access = oauth["accessToken"]
+    let token = oauth["accessToken"]
         .as_str()
-        .is_some_and(|t| !t.trim().is_empty());
+        .map(str::trim)
+        .filter(|t| !t.is_empty())?;
     let expires_ok = oauth["expiresAt"].as_i64().is_some_and(|e| e > 0);
-    has_access && expires_ok
+    expires_ok.then(|| token.to_string())
 }
 
 /// The chain itself, pure over its inputs so tests can exercise the ordering
 /// without touching process globals or the filesystem.
 fn resolve_from(
+    keychain: Option<String>,
     stored: Option<String>,
     shell_env: Option<&HashMap<String, String>>,
     credentials_file: bool,
 ) -> ContainerAuth {
+    if let Some(token) = keychain {
+        return ContainerAuth::Resolved {
+            env: vec![(OAUTH_TOKEN_VAR.to_string(), token)],
+            source: AuthSource::Keychain,
+        };
+    }
     if let Some(token) = stored {
         return ContainerAuth::Resolved {
             env: vec![(OAUTH_TOKEN_VAR.to_string(), token)],
@@ -249,6 +310,7 @@ fn resolve_from(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum ContainerAuthStatus {
+    Keychain,
     StoredToken,
     ShellEnv,
     CredentialsFile,
@@ -259,6 +321,7 @@ pub enum ContainerAuthStatus {
 pub fn status() -> ContainerAuthStatus {
     match resolve() {
         ContainerAuth::Resolved { source, .. } => match source {
+            AuthSource::Keychain => ContainerAuthStatus::Keychain,
             AuthSource::StoredToken => ContainerAuthStatus::StoredToken,
             AuthSource::ShellEnv => ContainerAuthStatus::ShellEnv,
             AuthSource::CredentialsFile => ContainerAuthStatus::CredentialsFile,
@@ -327,7 +390,7 @@ mod tests {
         // abort the launch). merge_auth_env feeds it into the env chain step.
         let process = shell_env(&[("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-proc")]);
         let merged = merge_auth_env(&process, None);
-        let (env, source) = resolved(resolve_from(None, merged.as_ref(), false));
+        let (env, source) = resolved(resolve_from(None, None, merged.as_ref(), false));
         assert_eq!(source, AuthSource::ShellEnv);
         assert_eq!(
             env,
@@ -339,9 +402,57 @@ mod tests {
     }
 
     #[test]
+    fn keychain_beats_stored_shell_and_credentials_file() {
+        // Keychain-primary: the live host login wins over a (possibly stale)
+        // stored setup-token, shell env, and the mounted credentials file — so a
+        // `claude` re-login is reflected on the very next spawn.
+        let shell = shell_env(&[("ANTHROPIC_API_KEY", "sk-ant-api-key")]);
+        let auth = resolve_from(
+            Some("sk-ant-oat-keychain".into()),
+            Some("sk-ant-oat-stored".into()),
+            Some(&shell),
+            true,
+        );
+        let (env, source) = resolved(auth);
+        assert_eq!(source, AuthSource::Keychain);
+        assert_eq!(
+            env,
+            vec![(
+                "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+                "sk-ant-oat-keychain".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn usable_oauth_token_extracts_or_rejects() {
+        // Same shape for the file and the Keychain password: extract the token
+        // when usable, reject the macOS placeholder and malformed blobs.
+        assert_eq!(
+            usable_oauth_token(Some(
+                br#"{"claudeAiOauth":{"accessToken":"  sk-ant-oat-x \n","expiresAt":1893456000000}}"#
+            )),
+            Some("sk-ant-oat-x".to_string()),
+            "trimmed token extracted from a usable blob"
+        );
+        // expiresAt:0 placeholder (Keychain login on disk), empty token, wrong
+        // shape, unparseable, absent — all reject.
+        for blob in [
+            &br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","expiresAt":0}}"#[..],
+            &br#"{"claudeAiOauth":{"accessToken":"","expiresAt":1893456000000}}"#[..],
+            &br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x"}}"#[..],
+            &br#"{"somethingElse":true}"#[..],
+            &b"not json"[..],
+        ] {
+            assert_eq!(usable_oauth_token(Some(blob)), None, "must reject: {blob:?}");
+        }
+        assert_eq!(usable_oauth_token(None), None);
+    }
+
+    #[test]
     fn stored_token_beats_shell_env_and_credentials_file() {
         let shell = shell_env(&[("ANTHROPIC_API_KEY", "sk-ant-api-key")]);
-        let auth = resolve_from(Some("sk-ant-oat-stored".into()), Some(&shell), true);
+        let auth = resolve_from(None, Some("sk-ant-oat-stored".into()), Some(&shell), true);
         let (env, source) = resolved(auth);
         assert_eq!(source, AuthSource::StoredToken);
         assert_eq!(
@@ -360,7 +471,7 @@ mod tests {
             ("ANTHROPIC_BASE_URL", "https://proxy.example.com"),
             ("PATH", "/usr/bin"),
         ]);
-        let (env, source) = resolved(resolve_from(None, Some(&shell), true));
+        let (env, source) = resolved(resolve_from(None, None, Some(&shell), true));
         assert_eq!(source, AuthSource::ShellEnv);
         let mut keys: Vec<_> = env.iter().map(|(k, _)| k.as_str()).collect();
         keys.sort_unstable();
@@ -373,7 +484,7 @@ mod tests {
         // trimmed — the status check trims when deciding it's a hit, so the
         // forwarded value has to match or Claude auth fails in-container.
         let shell = shell_env(&[("ANTHROPIC_API_KEY", "  sk-ant-api-key\n")]);
-        let (env, source) = resolved(resolve_from(None, Some(&shell), false));
+        let (env, source) = resolved(resolve_from(None, None, Some(&shell), false));
         assert_eq!(source, AuthSource::ShellEnv);
         assert_eq!(
             env,
@@ -388,7 +499,7 @@ mod tests {
     fn proxy_vars_alone_are_not_a_hit() {
         // BASE_URL without a key var must fall through — it can't authenticate.
         let shell = shell_env(&[("ANTHROPIC_BASE_URL", "https://proxy.example.com")]);
-        let (env, source) = resolved(resolve_from(None, Some(&shell), true));
+        let (env, source) = resolved(resolve_from(None, None, Some(&shell), true));
         assert_eq!(source, AuthSource::CredentialsFile);
         assert!(env.is_empty());
     }
@@ -397,7 +508,7 @@ mod tests {
     fn blank_shell_values_are_ignored() {
         let shell = shell_env(&[("ANTHROPIC_API_KEY", "  ")]);
         assert!(matches!(
-            resolve_from(None, Some(&shell), false),
+            resolve_from(None, None, Some(&shell), false),
             ContainerAuth::Unavailable
         ));
     }
@@ -405,7 +516,7 @@ mod tests {
     #[test]
     fn credentials_file_resolves_with_empty_env() {
         // The ~/.claude mount carries the file; nothing to inject.
-        let (env, source) = resolved(resolve_from(None, None, true));
+        let (env, source) = resolved(resolve_from(None, None, None, true));
         assert_eq!(source, AuthSource::CredentialsFile);
         assert!(env.is_empty());
     }
@@ -443,18 +554,18 @@ mod tests {
     #[test]
     fn nothing_resolves_to_unavailable() {
         assert!(matches!(
-            resolve_from(None, None, false),
+            resolve_from(None, None, None, false),
             ContainerAuth::Unavailable
         ));
         assert!(matches!(
-            resolve_from(None, Some(&shell_env(&[("PATH", "/usr/bin")])), false),
+            resolve_from(None, None, Some(&shell_env(&[("PATH", "/usr/bin")])), false),
             ContainerAuth::Unavailable
         ));
     }
 
     #[test]
     fn debug_output_redacts_token_values() {
-        let auth = resolve_from(Some("sk-ant-oat-SECRET-VALUE".into()), None, false);
+        let auth = resolve_from(None, Some("sk-ant-oat-SECRET-VALUE".into()), None, false);
         let printed = format!("{auth:?}");
         assert!(printed.contains("CLAUDE_CODE_OAUTH_TOKEN"), "{printed}");
         assert!(printed.contains("StoredToken"), "{printed}");
@@ -487,6 +598,7 @@ mod tests {
     #[test]
     fn status_serializes_to_the_wire_shape() {
         for (status, wire) in [
+            (ContainerAuthStatus::Keychain, "keychain"),
             (ContainerAuthStatus::StoredToken, "stored-token"),
             (ContainerAuthStatus::ShellEnv, "shell-env"),
             (ContainerAuthStatus::CredentialsFile, "credentials-file"),

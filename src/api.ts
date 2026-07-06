@@ -365,7 +365,7 @@ export interface DockerProbe {
  *  claude credentials file) would supply Anthropic credentials to a docker
  *  agent right now (Settings › General › Sandbox status row). */
 export interface ContainerAuthStatus {
-  status: "stored-token" | "shell-env" | "credentials-file" | "none";
+  status: "keychain" | "stored-token" | "shell-env" | "credentials-file" | "none";
 }
 
 /** One image-build lifecycle event from the `docker:build-progress` stream.
