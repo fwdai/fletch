@@ -49,8 +49,8 @@ pub fn reveal_logs() -> Result<()> {
 }
 
 /// Launch Docker Desktop — the "Start Docker Desktop" action on a docker
-/// agent's daemon-down error state (slice C2). macOS-only, like the rest of the
-/// sandbox feature (`open -a Docker`); other platforms error so the UI can
+/// agent's daemon-down error state. macOS-only, like the rest of the sandbox
+/// feature (`open -a Docker`); other platforms error so the UI can
 /// report it rather than silently no-op. The daemon then takes a few seconds to
 /// answer, which the settings pane's probe-retry loop already covers.
 #[tauri::command]

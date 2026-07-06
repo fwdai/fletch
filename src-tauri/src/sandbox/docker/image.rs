@@ -19,9 +19,8 @@ use crate::error::Result;
 use super::cli;
 use super::progress::{self, BuildEvent};
 
-/// Progress sink for image builds: called once per docker output line.
-/// Slice C2 wires this to UI events; until then callers pass `&|_| {}` or a
-/// tracing forwarder.
+/// Progress sink for image builds: called once per docker output line. Callers
+/// pass a tracing forwarder to log build output, or `&|_| {}` to ignore it.
 pub type Progress<'a> = &'a (dyn Fn(&str) + Send + Sync);
 
 /// The agent container image. Debian-slim keeps apt available for the tools
@@ -43,9 +42,8 @@ ENTRYPOINT ["/entrypoint.sh"]
 /// PID-1 shim. The container gets `HOME=<host home>` (a path that does not
 /// exist in the image), so the entrypoint creates it and seeds the minimal
 /// `~/.claude.json` claude needs to skip interactive onboarding. Seeding is
-/// conditional and the file is container-ephemeral by design — see slice B2:
-/// bind-mounting the real `~/.claude.json` would break on claude's atomic
-/// rename-replace writes.
+/// conditional and the file is container-ephemeral by design: bind-mounting the
+/// real `~/.claude.json` would break on claude's atomic rename-replace writes.
 pub const ENTRYPOINT_SH: &str = r#"#!/bin/sh
 set -e
 mkdir -p "$HOME"
@@ -145,11 +143,11 @@ fn ensure_image_with(
 
     let args = build_args(tag, ctx.path());
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    // Broadcast the build lifecycle to the UI (slice C2). `Started`/`Finished`/
-    // `Failed` fire only here, where a build actually runs (a cached image
-    // returns above without emitting), so the toast appears only for real
-    // builds. Each output line is forwarded alongside the caller's own sink so
-    // the tracing forwarder / test counter keep working unchanged.
+    // Broadcast the build lifecycle to the UI. `Started`/`Finished`/`Failed`
+    // fire only here, where a build actually runs (a cached image returns above
+    // without emitting), so the toast appears only for real builds. Each output
+    // line is forwarded alongside the caller's own sink so the tracing
+    // forwarder / test counter keep working unchanged.
     progress::emit(BuildEvent::Started);
     let forward = |line: &str| {
         on_progress(line);

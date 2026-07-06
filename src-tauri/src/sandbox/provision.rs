@@ -1,9 +1,9 @@
 //! Workspace provisioning: how an agent's checkout comes into existence.
 //!
-//! Two modes. `Worktree` is the historical behavior — a linked `git worktree`
-//! whose `.git` file points back into the origin repo. `Clone` is a
-//! self-contained checkout with its own real, writable `.git`, required by the
-//! Docker engine: a linked worktree's `.git` file references the origin repo's
+//! Two modes. `Worktree` is a linked `git worktree` whose `.git` file points
+//! back into the origin repo. `Clone` is a self-contained checkout with its own
+//! real, writable `.git`, required by the Docker engine: a linked worktree's
+//! `.git` file references the origin repo's
 //! `.git/worktrees/<name>` by absolute path, so containerizing it would mean
 //! mounting the user's real `.git` — a sandbox escape (a writable `.git/hooks`
 //! executes on the host the next time the user runs git).
@@ -22,18 +22,19 @@
 //! The source object store must therefore remain present for the clone's
 //! lifetime — Fletch owns the source repo lifecycle, so this holds.
 //!
-//! The mode is selected by the `workspace_mode` settings key (dev flag, not
-//! exposed in UI — set via sqlite for testing) so the clone path can be
-//! exercised under seatbelt before the Docker engine exists.
+//! The effective mode is chosen per agent at spawn time (see
+//! `supervisor::lifecycle::effective_workspace_mode`): Docker always uses
+//! `Clone`; seatbelt uses `Clone` too unless the `workspace_mode` dev flag
+//! (set via sqlite, not exposed in UI) opts back into linked worktrees.
 
 use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::git;
 
-/// Settings-table key selecting the provisioning mode: `"worktree"` (default)
-/// or `"clone"`. Read at spawn time; slice B2 forces `Clone` whenever the
-/// engine is Docker regardless of this key.
+/// Settings-table key overriding the provisioning mode under seatbelt:
+/// `"worktree"` or `"clone"`. Docker always uses `Clone` regardless of this
+/// key; see `supervisor::lifecycle::effective_workspace_mode`.
 pub const WORKSPACE_MODE_SETTING: &str = "workspace_mode";
 
 /// How an agent workspace is materialized from its source repo.
@@ -47,7 +48,7 @@ pub enum WorkspaceMode {
 }
 
 /// What to check out where. `base_ref` is any commit-ish; pass `"HEAD"` for
-/// "the source repo's current HEAD" (the legacy no-base behavior).
+/// "the source repo's current HEAD" (the no-base behavior).
 pub struct CheckoutSpec<'a> {
     /// The user's real repo root.
     pub source_repo: &'a Path,

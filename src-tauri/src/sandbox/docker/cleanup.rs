@@ -1,9 +1,8 @@
 //! Container labels and the dead-instance orphan sweep.
 //!
-//! Invariant 4 of the sandbox plan: no orphaned containers. Every container
-//! Fletch launches carries `fletch.host-pid=<pid>` (which app instance owns
-//! it) and `fletch.agent-id=<id>` (which agent it runs). If the app dies
-//! without cleanup — crash, force-quit, SIGKILL — its containers keep
+//! Every container Fletch launches carries `fletch.host-pid=<pid>` (which app
+//! instance owns it) and `fletch.agent-id=<id>` (which agent it runs). If the
+//! app dies without cleanup — crash, force-quit, SIGKILL — its containers keep
 //! running; the next startup sweeps them by the same pid-liveness rule the
 //! nested-root sweeps use (`sandbox/seatbelt.rs`): remove only containers
 //! whose owning pid is gone, never a live side-by-side instance's.
@@ -19,17 +18,14 @@ pub const HOST_PID_LABEL: &str = "fletch.host-pid";
 
 /// Label carrying the agent id a container runs (attribution/debugging; the
 /// sweep keys on [`HOST_PID_LABEL`] alone).
-#[allow(dead_code)] // slice B2 stamps it on `docker run`
 pub const AGENT_ID_LABEL: &str = "fletch.agent-id";
 
-/// `fletch.host-pid=<our pid>` — the value B2 passes to `docker run --label`.
-#[allow(dead_code)] // slice B2 is the consumer
+/// `fletch.host-pid=<our pid>` — the `--label` value stamped on `docker run`.
 pub fn host_pid_label() -> String {
     format!("{HOST_PID_LABEL}={}", std::process::id())
 }
 
-/// `fletch.agent-id=<agent_id>` — sibling of [`host_pid_label`] for B2's argv.
-#[allow(dead_code)] // slice B2 is the consumer
+/// `fletch.agent-id=<agent_id>` — sibling of [`host_pid_label`].
 pub fn agent_id_label(agent_id: &str) -> String {
     format!("{AGENT_ID_LABEL}={agent_id}")
 }

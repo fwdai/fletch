@@ -64,15 +64,6 @@ pub fn engine_for(kind: EngineKind) -> Result<Arc<dyn SandboxEngine>> {
     }
 }
 
-/// The engine matching the current setting — what a launch would use absent a
-/// per-agent stamp. Launch paths resolve through `engine_for` with the kind
-/// stamped on the agent's record instead; this stays for callers with no
-/// record in hand (none today — B2's non-agent surfaces use it).
-#[allow(dead_code)]
-pub fn current_engine() -> Result<Arc<dyn SandboxEngine>> {
-    engine_for(selected_engine_kind())
-}
-
 /// The seatbelt engine, shared process-wide: it is stateless, and per-launch
 /// state (profile tempfile) lives on the `LaunchPlan`.
 fn seatbelt_engine() -> Arc<dyn SandboxEngine> {

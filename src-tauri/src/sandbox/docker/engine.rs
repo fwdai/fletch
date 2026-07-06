@@ -1,9 +1,8 @@
 //! The Docker sandbox engine: one container per agent process, agent ≈ PID 1.
 //!
-//! Launch shape (fixed in the sandbox plan, slice B2): every agent process is
-//! its own `docker run --rm --init` — no long-lived container + `docker exec`,
-//! whose kill/exit-code semantics are broken. The plan invariants this file
-//! carries:
+//! Launch shape: every agent process is its own `docker run --rm --init` — no
+//! long-lived container + `docker exec`, whose kill/exit-code semantics are
+//! broken. The invariants this file carries:
 //!
 //! - **Path identity (invariant 1).** The three mounts — the agent's writable
 //!   root, its RPC mailbox, and `~/.claude` — are bind-mounted at their exact
@@ -136,8 +135,8 @@ const TERM_GRACE: Duration = Duration::from_millis(500);
 
 /// Launch knobs read from the `settings` table, mirrored in-process (the spawn
 /// path has no DB handle — same pattern as `sandbox::set_selected_engine_kind`).
-/// Seeded at startup in `lib.rs setup`; slice C2 adds the settings UI whose
-/// set-commands will keep the mirror in sync mid-run.
+/// Seeded at startup in `lib.rs setup` and kept in sync by the settings
+/// set-commands.
 #[derive(Clone, Default)]
 pub struct LaunchSettings {
     /// `docker_image` — a non-empty value is used verbatim, skipping the
@@ -194,7 +193,8 @@ impl DockerEngine {
                 return Ok(tag.clone());
             }
         }
-        // Build progress goes to the log until slice C2 wires it to UI events.
+        // Per-line build output goes to the log; the UI build toast is driven
+        // separately by the `progress` sink inside `image::ensure_image`.
         let on_progress = |line: &str| tracing::info!(target: "fletch::docker_build", "{line}");
         let tag = image::resolve_image(override_image, &on_progress)
             .map_err(|e| Error::Other(format!("preparing the Docker sandbox image failed: {e}")))?;
@@ -320,9 +320,7 @@ impl SandboxEngine for DockerEngine {
     /// exit), and an error here would abort the caller's local process-group
     /// teardown of the docker CLI child.
     fn kill(&self, plan: &KillPlan) -> Result<()> {
-        let KillPlan::Container { name } = plan else {
-            return Ok(());
-        };
+        let KillPlan::Container { name } = plan;
         match cli::run_docker(&["kill", "-s", "TERM", name], KILL_TIMEOUT) {
             Ok(out) if out.status.success() => {
                 if !container_gone_within(name, TERM_GRACE) {
@@ -340,26 +338,14 @@ impl SandboxEngine for DockerEngine {
         Ok(())
     }
 
-    /// Containers die independently of the host (daemon stop, OOM kill), so
-    /// liveness asks the daemon rather than the local CLI child. Any failure
-    /// to answer — container gone, daemon down, timeout — reads as dead: the
-    /// user's remedy is the same, and this is the health surface the UI polls
-    /// (slice C2).
-    fn is_alive(&self, plan: &KillPlan) -> bool {
-        let KillPlan::Container { name } = plan else {
-            return true;
-        };
-        container_running(name)
-    }
-
     fn describe_exit(&self, _plan: &KillPlan, code: i32) -> Option<String> {
         describe_exit_code(code)
     }
 }
 
-/// Launch-blocking message when the container auth chain (D1) resolves nothing.
-/// Kept as one stable, matchable string so slice C2 can turn it into a Settings
-/// call-to-action; the wording tells the user exactly what to do.
+/// Launch-blocking message when the container auth chain resolves nothing.
+/// Kept as one stable, matchable string the frontend keys its Settings
+/// call-to-action on; the wording tells the user exactly what to do.
 const NO_CONTAINER_AUTH_MSG: &str = "No Anthropic credentials for containers — open Settings → General → Sandbox and connect Claude for containers (claude setup-token).";
 
 /// Fold the D1 auth-chain outcome ([`auth::resolve`]) into the docker CLI's
@@ -1313,7 +1299,7 @@ mod tests {
         );
     }
 
-    /// Integration: kill/is_alive against a live container.
+    /// Integration: kill and liveness against a live container.
     /// `FLETCH_DOCKER_TESTS=1 cargo test -- --ignored`
     #[test]
     #[ignore = "requires Docker; opt in via FLETCH_DOCKER_TESTS=1"]
@@ -1337,8 +1323,8 @@ mod tests {
 
         let engine = DockerEngine::shared();
         let plan = KillPlan::Container { name: name.clone() };
-        assert!(engine.is_alive(&plan), "fresh container should be running");
+        assert!(container_running(&name), "fresh container should be running");
         engine.kill(&plan).unwrap();
-        assert!(!engine.is_alive(&plan), "killed container reads as dead");
+        assert!(!container_running(&name), "killed container reads as dead");
     }
 }

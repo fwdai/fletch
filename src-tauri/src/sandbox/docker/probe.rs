@@ -1,8 +1,8 @@
 //! Daemon availability probe, cached for UI polling.
 //!
-//! The settings pane (slice C1) polls this to enable/disable the Docker
-//! engine option, and spawn paths (B2) gate on it — so it must be cheap to
-//! call repeatedly and must never hang: the underlying `docker version` call
+//! The settings pane polls this to enable/disable the Docker engine option,
+//! and spawn paths gate on it — so it must be cheap to call repeatedly and
+//! must never hang: the underlying `docker version` call
 //! is bounded at 2s, and results are cached for 5s so a polling UI costs at
 //! most one daemon round-trip per window.
 

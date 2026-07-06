@@ -44,35 +44,29 @@ pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
 ///
 /// Docker forces `Clone` regardless of the `workspace_mode` dev flag: a linked
 /// worktree's `.git` file points into the user's real repo, and a container
-/// must never be able to reach that (sandbox plan invariant 2).
+/// must never be able to reach that (invariant 2).
 ///
-/// Seatbelt now also defaults to `Clone` — both engines converge on one
+/// Seatbelt also defaults to `Clone` — both engines converge on one
 /// self-contained-checkout model, made cheap by `git clone --shared` (objects
 /// borrowed via alternates, not copied). An explicit `workspace_mode=worktree`
-/// still opts back into the historical linked-worktree model.
+/// still opts back into the linked-worktree model.
 ///
-/// Changed restore semantics under seatbelt — but only for work that lives
-/// *solely* in a clone. Restore re-provisions each repo at its archived tip;
-/// provisioning refetches from `origin` only when that tip isn't already in the
-/// source repo's object store (see `provision_on_branch`).
+/// Restore re-provisions each repo at its archived tip. Provisioning refetches
+/// from `origin` only when that tip isn't already reachable in the source
+/// repo's object store (see `provision_on_branch`); when it is, restore borrows
+/// it back via alternates and checks out offline, no remote branch needed (see
+/// the `provision.rs` restore tests).
 ///
-/// - A clone-native agent writes new commits into its *own* `.git/objects`;
-///   archive teardown `rm -rf`s the clone, so unpushed commits are gone and
-///   restore can only recover what was pushed. This is the accepted cost of
-///   Clone mode — the reason the `workspace_mode=worktree` opt-out remains.
-/// - A pre-existing agent archived under the old Worktree default kept its
-///   commits in the *source* repo's object store (a worktree shares it), so
-///   even though teardown deleted the worktree branch, the tip object survives.
-///   Clone-mode restore borrows it back via alternates and checks it out
-///   offline — no remote branch needed (see the `provision.rs` restore tests).
-///   It only becomes unrecoverable once the source repo gc-prunes the
-///   now-unreachable object, which would have broken worktree-mode restore just
-///   the same. So the flip does not regress restore of legacy archives.
+/// A clone-native agent writes new commits into its *own* `.git/objects`, and
+/// archive teardown `rm -rf`s the clone — so commits that never reached
+/// `origin` or the source store are gone, and restore can only recover what
+/// did. This is the accepted cost of Clone mode, and the reason the
+/// `workspace_mode=worktree` opt-out remains.
 pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>) -> WorkspaceMode {
     match engine {
         EngineKind::Docker => WorkspaceMode::Clone,
-        // Explicit opt-out to the historical linked-worktree model; everything
-        // else — unset (the new default) or "clone" — resolves to Clone.
+        // Explicit opt-out to the linked-worktree model; everything else —
+        // unset or "clone" — resolves to Clone.
         EngineKind::SandboxExec => match setting {
             Some("worktree") => WorkspaceMode::Worktree,
             Some("clone") | None => WorkspaceMode::Clone,
