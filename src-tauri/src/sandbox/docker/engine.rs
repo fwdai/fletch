@@ -195,6 +195,12 @@ impl SandboxEngine for DockerEngine {
         EngineKind::Docker
     }
 
+    /// Claude-only despite the agent-agnostic `agent_bin` parameter: the mounts,
+    /// `~/.claude` overlays, `projects/` transcript bind, and auth chain are all
+    /// claude-shaped. `supervisor::lifecycle::ensure_engine_supports_provider`
+    /// gates docker launches to `provider == "claude"`, so a non-claude
+    /// `agent_bin` never reaches here; a future per-turn-under-docker provider
+    /// would need its own config handling rather than inheriting claude's.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
         let docker = cli::docker_bin()
             .ok_or_else(|| Error::Other("docker binary not found — is Docker installed?".into()))?;

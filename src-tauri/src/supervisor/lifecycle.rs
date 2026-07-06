@@ -62,6 +62,13 @@ pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
 /// `origin` or the source store are gone, and restore can only recover what
 /// did. This is the accepted cost of Clone mode, and the reason the
 /// `workspace_mode=worktree` opt-out remains.
+///
+/// One further worktree-mode tradeoff: the commit / update-branch delegation
+/// signal is driven by git hooks installed only into a clone's `.git/hooks`
+/// (`provision::install_delegation_hooks` — a linked worktree's hooks live in
+/// the user's real repo and must never be touched), so under the worktree
+/// opt-out the panel's delegation attribution for native in-container commits
+/// silently doesn't fire. Acceptable for a hidden dev flag.
 pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>) -> WorkspaceMode {
     match engine {
         EngineKind::Docker => WorkspaceMode::Clone,
