@@ -36,7 +36,8 @@ use crate::sandbox::engine::{
     AgentLaunchCtx, EngineKind, Keepalive, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
 
-use super::{auth, cleanup, cli, image};
+use super::auth::{self, ContainerAuth};
+use super::{cleanup, cli, image};
 
 /// Settings key overriding the container image (see [`image::resolve_image`]).
 pub const IMAGE_SETTING: &str = "docker_image";
@@ -52,8 +53,9 @@ const DEFAULT_CPUS: &str = "2";
 /// the docker CLI's process env — invariant 3). `ANTHROPIC_BASE_URL` /
 /// `ANTHROPIC_AUTH_TOKEN` cover proxy setups; a bare `-e` for an unset variable
 /// forwards nothing, so the list is passed unconditionally and argv stays
-/// deterministic. Superset of every var [`auth::resolve`] can emit, so whatever
-/// the chain resolves is actually forwarded (not just set on the CLI process).
+/// deterministic. Must stay a superset of every var [`auth::resolve`] (D1) can
+/// emit — a resolved value with no matching bare `-e` would sit on the CLI
+/// process env yet never reach the container.
 const AUTH_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -205,7 +207,7 @@ impl SandboxEngine for DockerEngine {
                 dir.to_string_lossy().into_owned(),
             ));
         }
-        env.extend(container_auth_env());
+        apply_container_auth(&mut env, auth::resolve())?;
 
         Ok(LaunchPlan {
             program: docker,
@@ -262,17 +264,30 @@ impl SandboxEngine for DockerEngine {
     }
 }
 
-/// Auth env forwarded into the container, resolved fresh on every launch
-/// (never cached across spawns). [`auth::resolve`] reads the live
-/// `STORED_TOKEN` mirror, so a token pasted through `set_container_auth_token`
-/// applies to the next spawn with no app restart. `Unavailable` forwards
-/// nothing — the `~/.claude` mount still carries a credentials file if present.
-/// Every var it can return is in [`AUTH_ENV_VARS`], so all of it is actually
-/// forwarded rather than merely set on the docker CLI process.
-fn container_auth_env() -> Vec<(String, String)> {
-    match auth::resolve() {
-        auth::ContainerAuth::Resolved { env, .. } => env,
-        auth::ContainerAuth::Unavailable => Vec::new(),
+/// Launch-blocking message when the container auth chain (D1) resolves nothing.
+/// Kept as one stable, matchable string so slice C2 can turn it into a Settings
+/// call-to-action; the wording tells the user exactly what to do.
+const NO_CONTAINER_AUTH_MSG: &str = "No Anthropic credentials for containers — open Settings → General → Sandbox and connect Claude for containers (claude setup-token).";
+
+/// Fold the D1 auth-chain outcome ([`auth::resolve`]) into the docker CLI's
+/// process env, from which [`run_args`]' bare `-e NAME` flags forward it into
+/// the container (invariant 3 — values never touch argv). An [`AuthSource`] is
+/// logged (the enum variant only, never a token value); [`ContainerAuth`]'s
+/// `Debug` redacts values so even `?source` cannot leak one. When the chain
+/// yields nothing the launch fails fast with [`NO_CONTAINER_AUTH_MSG`].
+///
+/// [`AuthSource`]: super::auth::AuthSource
+fn apply_container_auth(env: &mut Vec<(String, String)>, auth: ContainerAuth) -> Result<()> {
+    match auth {
+        ContainerAuth::Resolved {
+            env: auth_env,
+            source,
+        } => {
+            tracing::info!(target: "fletch::docker", ?source, "container auth resolved");
+            env.extend(auth_env);
+            Ok(())
+        }
+        ContainerAuth::Unavailable => Err(Error::Other(NO_CONTAINER_AUTH_MSG.to_string())),
     }
 }
 
@@ -548,22 +563,26 @@ mod tests {
         );
     }
 
-    /// Regression: a token set through the same in-process mirror the
-    /// `set_container_auth_token` command writes (`auth::set_stored_token`,
-    /// called after its DB write) must reach the *next* launch's container env
-    /// with no app restart — the spawn path re-resolves auth per launch rather
-    /// than caching it. Before this wiring, `launch_agent` read only the login
-    /// shell and ignored the stored token, so a pasted token never applied
-    /// until a restart re-seeded some other source. Stored-token is first-hit
-    /// in the chain, so this is deterministic regardless of the test host's
-    /// shell env or `~/.claude`.
+    /// Regression, live mirror → spawn: a token set through the same in-process
+    /// mirror the `set_container_auth_token` command writes
+    /// (`auth::set_stored_token`, called after its DB write) must reach the
+    /// *next* launch's container env with no app restart. Unlike the
+    /// constructed-`Resolved` tests above, this drives the real
+    /// `set_stored_token` → `auth::resolve()` → `apply_container_auth` path, so
+    /// it fails if `resolve` ever stops reading the live mirror at spawn time
+    /// (the original bug: the launch path ignored the stored token until a
+    /// restart re-seeded another source). Stored-token is first-hit in the
+    /// chain, so this is deterministic regardless of the test host's shell env
+    /// or `~/.claude`.
     #[test]
     fn pasted_token_reaches_next_launch_without_restart() {
         auth::set_stored_token(Some("sk-ant-oat-regression".into()));
-        let env = container_auth_env();
+        let mut env: Vec<(String, String)> = Vec::new();
+        let applied = apply_container_auth(&mut env, auth::resolve());
         // Restore the process global before asserting so a failure can't leak
         // into other tests sharing the mirror.
         auth::set_stored_token(None);
+        applied.expect("a stored token must resolve to usable auth");
 
         assert!(
             env.iter().any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN"
@@ -641,6 +660,86 @@ mod tests {
         assert_eq!(non_blank(Some("")), None);
         assert_eq!(non_blank(Some("  ")), None);
         assert_eq!(non_blank(Some(" 8g ")), Some("8g"));
+    }
+
+    /// D1 swap, happy path: a resolved auth env lands on the docker CLI process
+    /// env verbatim, and every var it carries has a matching bare `-e NAME` in
+    /// argv — so the value forwards into the container yet never appears in
+    /// argv (invariant 3). Guards against `AUTH_ENV_VARS` drifting behind the
+    /// set `auth::resolve` can emit.
+    #[test]
+    fn resolved_auth_forwards_values_in_env_never_argv() {
+        use super::super::auth::AuthSource;
+
+        let secret = "sk-ant-oat-SECRET-VALUE";
+        let resolved = ContainerAuth::Resolved {
+            env: vec![
+                ("CLAUDE_CODE_OAUTH_TOKEN".to_string(), secret.to_string()),
+                (
+                    "ANTHROPIC_AUTH_TOKEN".to_string(),
+                    "proxy-secret".to_string(),
+                ),
+            ],
+            source: AuthSource::StoredToken,
+        };
+        let mut env: Vec<(String, String)> = Vec::new();
+        apply_container_auth(&mut env, resolved).expect("resolved auth applies");
+
+        // Values ride the CLI process env.
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == secret));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "ANTHROPIC_AUTH_TOKEN" && v == "proxy-secret"));
+
+        // Every forwarded var name has a bare `-e NAME` in argv, and no value
+        // (secret or otherwise) leaks into argv.
+        let args = run_args(&test_spec(false));
+        let forwarded = values_of(&args, "-e");
+        for (name, _) in &env {
+            assert!(
+                forwarded.contains(&name.as_str()),
+                "resolved var {name} has no bare -e in argv (AUTH_ENV_VARS drifted)",
+            );
+        }
+        for arg in &args {
+            assert!(!arg.contains(secret), "secret leaked into argv: {arg}");
+            assert!(!arg.contains("proxy-secret"), "proxy secret in argv: {arg}");
+        }
+    }
+
+    /// D1 swap, empty resolution (`CredentialsFile`): no env additions, no
+    /// error — the `~/.claude` mount carries the credential.
+    #[test]
+    fn resolved_auth_with_empty_env_is_a_noop() {
+        use super::super::auth::AuthSource;
+
+        let mut env: Vec<(String, String)> = Vec::new();
+        apply_container_auth(
+            &mut env,
+            ContainerAuth::Resolved {
+                env: Vec::new(),
+                source: AuthSource::CredentialsFile,
+            },
+        )
+        .expect("credentials-file resolves");
+        assert!(env.is_empty());
+    }
+
+    /// D1 swap, `Unavailable`: the launch fails fast with the settings pointer
+    /// C2 keys its call-to-action on. Asserts the stable substrings so the
+    /// wording can evolve without silently breaking the UI match.
+    #[test]
+    fn unavailable_auth_fails_launch_with_settings_pointer() {
+        let mut env: Vec<(String, String)> = Vec::new();
+        let err = apply_container_auth(&mut env, ContainerAuth::Unavailable)
+            .expect_err("Unavailable must block the launch");
+        let msg = err.to_string();
+        assert!(msg.contains("Settings"), "no settings pointer: {msg}");
+        assert!(msg.contains("setup-token"), "no setup-token hint: {msg}");
+        assert_eq!(msg, NO_CONTAINER_AUTH_MSG);
+        assert!(env.is_empty(), "a failed resolution must add no env");
     }
 
     /// Integration: a real `docker run` round-trip through the exact argv the

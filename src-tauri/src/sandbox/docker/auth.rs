@@ -12,12 +12,18 @@
 //! The chain:
 //! 1. A `claude setup-token` value pasted into settings
 //!    ([`TOKEN_SETTING`]) → `CLAUDE_CODE_OAUTH_TOKEN`.
-//! 2. The login-shell env exports `ANTHROPIC_API_KEY` or
-//!    `CLAUDE_CODE_OAUTH_TOKEN` → forward those (plus `ANTHROPIC_BASE_URL` /
-//!    `ANTHROPIC_AUTH_TOKEN` for proxy setups, which ride along but don't
-//!    constitute a hit on their own).
-//! 3. `<home>/.claude/.credentials.json` exists → nothing to inject: the
-//!    `~/.claude` bind mount carries it, and refresh writes land on the host.
+//! 2. The app's process env or the login-shell probe exports
+//!    `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` → forward those (plus
+//!    `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` for proxy setups, which ride
+//!    along but don't constitute a hit on their own). Both sources are consulted
+//!    (login-shell wins on collision) so a token in the launching terminal's
+//!    env works even when the `/bin/zsh -lc` probe can't see it — see
+//!    [`merge_auth_env`].
+//! 3. `<home>/.claude/.credentials.json` holds a usable OAuth token (non-empty
+//!    access token, non-placeholder `expiresAt`) → nothing to inject: the
+//!    `~/.claude` bind mount carries it, and refresh writes land on the host. A
+//!    stale placeholder (macOS Keychain logins leave `"expiresAt": 0` on disk)
+//!    does *not* count — see [`credentials_file_usable`].
 //! 4. Nothing → [`ContainerAuth::Unavailable`]; the spawn path fails fast and
 //!    the UI shows the "Connect Claude for containers" call-to-action.
 //!
@@ -83,7 +89,7 @@ fn sanitize(token: Option<String>) -> Option<String> {
 pub enum AuthSource {
     /// The pasted setup-token from settings.
     StoredToken,
-    /// Auth vars exported by the user's login shell.
+    /// Auth vars from the app's process env or the user's login shell.
     ShellEnv,
     /// `~/.claude/.credentials.json` — carried by the `~/.claude` mount, so
     /// there is nothing to inject.
@@ -123,13 +129,73 @@ impl fmt::Debug for ContainerAuth {
 /// call: the login-shell env is loaded (a shell runs) if nothing earlier
 /// populated `bin_resolve`'s cache.
 pub fn resolve() -> ContainerAuth {
-    let credentials_file =
-        dirs::home_dir().is_some_and(|home| home.join(".claude/.credentials.json").exists());
-    resolve_from(
-        stored_token(),
-        bin_resolve::login_shell_env(),
-        credentials_file,
-    )
+    let credentials_file = dirs::home_dir().is_some_and(|home| {
+        credentials_file_usable(std::fs::read(home.join(".claude/.credentials.json")).ok().as_deref())
+    });
+    let process_env: HashMap<String, String> = SHELL_AUTH_VARS
+        .iter()
+        .filter_map(|var| std::env::var(var).ok().map(|v| (var.to_string(), v)))
+        .collect();
+    let env = merge_auth_env(&process_env, bin_resolve::login_shell_env());
+    resolve_from(stored_token(), env.as_ref(), credentials_file)
+}
+
+/// Fold the app's own process environment together with the login-shell probe
+/// into one auth view for the env chain step (login-shell wins on collision).
+///
+/// The docker CLI child inherits the app's process env, so a token exported in
+/// the terminal that launched Fletch — or on a bash-only host, where the
+/// `/bin/zsh -lc` probe in [`bin_resolve::login_shell_env`] can't see it — was
+/// always forwarded into the container by the bare `-e VAR` flags. Consulting
+/// only the login-shell probe here would make [`resolve`] report `Unavailable`
+/// for exactly that setup, and the fail-fast launch path would then abort a
+/// container that would otherwise have authenticated fine. Reading the process
+/// env too keeps that path working. `None` when neither source carries an auth
+/// var.
+fn merge_auth_env(
+    process_env: &HashMap<String, String>,
+    shell_env: Option<&HashMap<String, String>>,
+) -> Option<HashMap<String, String>> {
+    let mut merged = HashMap::new();
+    for var in SHELL_AUTH_VARS {
+        if let Some(v) = process_env.get(var) {
+            merged.insert(var.to_string(), v.clone());
+        }
+    }
+    if let Some(shell) = shell_env {
+        for var in SHELL_AUTH_VARS {
+            if let Some(v) = shell.get(var) {
+                merged.insert(var.to_string(), v.clone());
+            }
+        }
+    }
+    (!merged.is_empty()).then_some(merged)
+}
+
+/// Whether `~/.claude/.credentials.json` carries an OAuth credential the
+/// container can actually authenticate with. Mere existence is *not* enough:
+/// on a macOS host the live token lives in the Keychain and the on-disk file is
+/// commonly a stale placeholder (`"expiresAt": 0`) — counting that as a hit
+/// boots the container straight into "Not logged in · Please run /login", which
+/// it can't recover from (no interactive login inside the sandbox).
+///
+/// A file counts only when it holds a non-empty `claudeAiOauth.accessToken` and
+/// a positive `expiresAt`. We deliberately do *not* require `expiresAt` to be
+/// in the future: an expired-but-refreshable token is the documented refresh
+/// flow (the container refreshes and the write lands on the mounted file), so
+/// rejecting it would break working Linux-host setups. The `expiresAt <= 0`
+/// (or missing/empty-token) placeholder is the only shape we reject.
+fn credentials_file_usable(contents: Option<&[u8]>) -> bool {
+    let Some(bytes) = contents else { return false };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+    let oauth = &json["claudeAiOauth"];
+    let has_access = oauth["accessToken"]
+        .as_str()
+        .is_some_and(|t| !t.trim().is_empty());
+    let expires_ok = oauth["expiresAt"].as_i64().is_some_and(|e| e > 0);
+    has_access && expires_ok
 }
 
 /// The chain itself, pure over its inputs so tests can exercise the ordering
@@ -231,6 +297,48 @@ mod tests {
     }
 
     #[test]
+    fn merge_auth_env_honors_process_env_and_prefers_shell() {
+        let process = shell_env(&[
+            ("ANTHROPIC_API_KEY", "proc-key"),
+            ("ANTHROPIC_BASE_URL", "https://proc-proxy"),
+        ]);
+        // Process env alone is honored.
+        let m = merge_auth_env(&process, None).unwrap();
+        assert_eq!(m.get("ANTHROPIC_API_KEY").unwrap(), "proc-key");
+        // Login-shell wins on collision; process-only vars still survive.
+        let shell = shell_env(&[("ANTHROPIC_API_KEY", "shell-key")]);
+        let m = merge_auth_env(&process, Some(&shell)).unwrap();
+        assert_eq!(m.get("ANTHROPIC_API_KEY").unwrap(), "shell-key");
+        assert_eq!(m.get("ANTHROPIC_BASE_URL").unwrap(), "https://proc-proxy");
+    }
+
+    #[test]
+    fn merge_auth_env_none_when_no_auth_vars() {
+        assert!(merge_auth_env(&HashMap::new(), None).is_none());
+        // Non-auth vars are ignored, so a shell with only PATH is not a source.
+        let junk = shell_env(&[("PATH", "/usr/bin")]);
+        assert!(merge_auth_env(&junk, Some(&junk)).is_none());
+    }
+
+    #[test]
+    fn process_env_token_resolves_instead_of_aborting() {
+        // The regression: a token in the app's process env but not the
+        // login-shell probe must resolve (not fall through to Unavailable and
+        // abort the launch). merge_auth_env feeds it into the env chain step.
+        let process = shell_env(&[("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-proc")]);
+        let merged = merge_auth_env(&process, None);
+        let (env, source) = resolved(resolve_from(None, merged.as_ref(), false));
+        assert_eq!(source, AuthSource::ShellEnv);
+        assert_eq!(
+            env,
+            vec![(
+                "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+                "sk-ant-oat-proc".to_string()
+            )]
+        );
+    }
+
+    #[test]
     fn stored_token_beats_shell_env_and_credentials_file() {
         let shell = shell_env(&[("ANTHROPIC_API_KEY", "sk-ant-api-key")]);
         let auth = resolve_from(Some("sk-ant-oat-stored".into()), Some(&shell), true);
@@ -300,6 +408,36 @@ mod tests {
         let (env, source) = resolved(resolve_from(None, None, true));
         assert_eq!(source, AuthSource::CredentialsFile);
         assert!(env.is_empty());
+    }
+
+    #[test]
+    fn credentials_file_usable_accepts_a_real_oauth_token() {
+        assert!(credentials_file_usable(Some(
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1893456000000}}"#
+        )));
+        // Expired-but-nonzero is still usable: the container can refresh via the
+        // mounted file (the documented refresh flow), so we must not reject it.
+        assert!(credentials_file_usable(Some(
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1}}"#
+        )));
+    }
+
+    #[test]
+    fn credentials_file_usable_rejects_stale_and_malformed() {
+        // The reported macOS bug: a Keychain login leaves a placeholder on disk.
+        assert!(!credentials_file_usable(Some(
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":0}}"#
+        )));
+        // Empty access token, missing expiry, wrong shape, unparseable, absent.
+        assert!(!credentials_file_usable(Some(
+            br#"{"claudeAiOauth":{"accessToken":"","expiresAt":1893456000000}}"#
+        )));
+        assert!(!credentials_file_usable(Some(
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x"}}"#
+        )));
+        assert!(!credentials_file_usable(Some(br#"{"somethingElse":true}"#)));
+        assert!(!credentials_file_usable(Some(b"not json")));
+        assert!(!credentials_file_usable(None));
     }
 
     #[test]

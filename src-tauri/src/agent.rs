@@ -818,7 +818,7 @@ impl Agent {
     {
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let engine = sandbox::engine_for(spec.engine);
+        let engine = sandbox::engine_for(spec.engine)?;
         let claude = claude_bin_for(engine.as_ref(), &home)?;
         let agent_args = prepare_pty_args(&spec);
 
@@ -914,7 +914,7 @@ impl Agent {
             env: launch_env,
             keepalive,
             kill,
-        } = sandbox::engine_for(spec.engine).launch_agent(&ctx, &bin)?;
+        } = sandbox::engine_for(spec.engine)?.launch_agent(&ctx, &bin)?;
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -956,7 +956,7 @@ impl Agent {
     {
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let engine = sandbox::engine_for(spec.engine);
+        let engine = sandbox::engine_for(spec.engine)?;
         let claude = claude_bin_for(engine.as_ref(), &home)?;
         let agent_args = prepare_managed_args(&spec);
 
@@ -1088,7 +1088,7 @@ impl Agent {
             env: launch_env,
             keepalive,
             kill,
-        } = sandbox::engine_for(spec.engine).launch_agent(&ctx, agent_bin)?;
+        } = sandbox::engine_for(spec.engine)?.launch_agent(&ctx, agent_bin)?;
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
 
@@ -1297,8 +1297,9 @@ fn resolve_claude(home: &Path) -> Result<String> {
 /// carries its own install; a resolved host path would be meaningless — or
 /// missing — inside the container), under seatbelt the host-resolved
 /// absolute path as always. Keyed off the resolved engine rather than the
-/// stamped setting so a docker-stamped agent that fell back to seatbelt
-/// (daemon down, see `sandbox::engine_for`) still execs a real host binary.
+/// stamped setting; a docker-stamped agent whose daemon is down never reaches
+/// here — `sandbox::engine_for` fails the spawn instead of degrading to
+/// seatbelt — so the resolved engine always matches the launch boundary.
 fn claude_bin_for(engine: &dyn SandboxEngine, home: &Path) -> Result<String> {
     match engine.kind() {
         EngineKind::Docker => Ok("claude".to_string()),

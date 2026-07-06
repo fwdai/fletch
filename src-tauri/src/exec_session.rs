@@ -325,12 +325,16 @@ impl ExecSession {
     }
 
     pub fn kill(&self) -> Result<()> {
-        self.kill_plan.kill()?;
+        // Tear the engine down first, but never let a failed teardown strand the
+        // local wrapper process: reap the child unconditionally, then surface the
+        // engine error. Otherwise a Docker-backed session whose container kill
+        // errors would leave the host-side wrapper running.
+        let engine_result = self.kill_plan.kill();
         if let Some(mut child) = self.child.lock().take() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        Ok(())
+        engine_result
     }
 }
 
