@@ -31,13 +31,12 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 
-use crate::bin_resolve;
 use crate::error::{Error, Result};
 use crate::sandbox::engine::{
     AgentLaunchCtx, EngineKind, Keepalive, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
 
-use super::{cleanup, cli, image};
+use super::{auth, cleanup, cli, image};
 
 /// Settings key overriding the container image (see [`image::resolve_image`]).
 pub const IMAGE_SETTING: &str = "docker_image";
@@ -50,13 +49,16 @@ const DEFAULT_MEMORY: &str = "4g";
 const DEFAULT_CPUS: &str = "2";
 
 /// Auth variables forwarded into containers with bare `-e NAME` (values ride
-/// the docker CLI's process env — invariant 3). `ANTHROPIC_BASE_URL` covers
-/// proxy setups; a bare `-e` for an unset variable forwards nothing, so the
-/// list is passed unconditionally and argv stays deterministic.
+/// the docker CLI's process env — invariant 3). `ANTHROPIC_BASE_URL` /
+/// `ANTHROPIC_AUTH_TOKEN` cover proxy setups; a bare `-e` for an unset variable
+/// forwards nothing, so the list is passed unconditionally and argv stays
+/// deterministic. Superset of every var [`auth::resolve`] can emit, so whatever
+/// the chain resolves is actually forwarded (not just set on the CLI process).
 const AUTH_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
 ];
 
 /// Signal/removal docker calls during teardown.
@@ -203,7 +205,7 @@ impl SandboxEngine for DockerEngine {
                 dir.to_string_lossy().into_owned(),
             ));
         }
-        env.extend(interim_container_auth_env());
+        env.extend(container_auth_env());
 
         Ok(LaunchPlan {
             program: docker,
@@ -260,19 +262,18 @@ impl SandboxEngine for DockerEngine {
     }
 }
 
-/// Interim container auth: forward Anthropic credentials from the user's
-/// login-shell environment when present, so `~/.zshrc` exporters work with no
-/// setup. Replaced by `sandbox::docker::auth::container_auth_env()` when
-/// slice D1 lands (Fletch-stored setup token + credential-file chain) — this
-/// is its single call site, so the swap is one line in `launch_agent`.
-fn interim_container_auth_env() -> Vec<(String, String)> {
-    let Some(shell_env) = bin_resolve::login_shell_env() else {
-        return Vec::new();
-    };
-    AUTH_ENV_VARS
-        .iter()
-        .filter_map(|var| shell_env.get(*var).map(|v| (var.to_string(), v.clone())))
-        .collect()
+/// Auth env forwarded into the container, resolved fresh on every launch
+/// (never cached across spawns). [`auth::resolve`] reads the live
+/// `STORED_TOKEN` mirror, so a token pasted through `set_container_auth_token`
+/// applies to the next spawn with no app restart. `Unavailable` forwards
+/// nothing — the `~/.claude` mount still carries a credentials file if present.
+/// Every var it can return is in [`AUTH_ENV_VARS`], so all of it is actually
+/// forwarded rather than merely set on the docker CLI process.
+fn container_auth_env() -> Vec<(String, String)> {
+    match auth::resolve() {
+        auth::ContainerAuth::Resolved { env, .. } => env,
+        auth::ContainerAuth::Unavailable => Vec::new(),
+    }
 }
 
 /// `Some(v)` only when `v` is present and non-blank — settings rows can hold
@@ -527,6 +528,7 @@ mod tests {
             "ANTHROPIC_API_KEY",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
         ] {
             assert!(forwarded.contains(&var), "missing bare -e {var}");
         }
@@ -543,6 +545,37 @@ mod tests {
         assert!(
             !forwarded.contains(&"CLAUDE_CONFIG_DIR"),
             "default config dir must not be forwarded",
+        );
+    }
+
+    /// Regression: a token set through the same in-process mirror the
+    /// `set_container_auth_token` command writes (`auth::set_stored_token`,
+    /// called after its DB write) must reach the *next* launch's container env
+    /// with no app restart — the spawn path re-resolves auth per launch rather
+    /// than caching it. Before this wiring, `launch_agent` read only the login
+    /// shell and ignored the stored token, so a pasted token never applied
+    /// until a restart re-seeded some other source. Stored-token is first-hit
+    /// in the chain, so this is deterministic regardless of the test host's
+    /// shell env or `~/.claude`.
+    #[test]
+    fn pasted_token_reaches_next_launch_without_restart() {
+        auth::set_stored_token(Some("sk-ant-oat-regression".into()));
+        let env = container_auth_env();
+        // Restore the process global before asserting so a failure can't leak
+        // into other tests sharing the mirror.
+        auth::set_stored_token(None);
+
+        assert!(
+            env.iter().any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN"
+                && v == "sk-ant-oat-regression"),
+            "stored token missing from launch env: {:?}",
+            env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+        );
+        // Present in env is not enough — it only enters the container if the
+        // var also has a bare `-e` forward in the argv.
+        assert!(
+            AUTH_ENV_VARS.contains(&"CLAUDE_CODE_OAUTH_TOKEN"),
+            "token var set on the CLI process but never forwarded into the container",
         );
     }
 
