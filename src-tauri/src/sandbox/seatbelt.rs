@@ -305,12 +305,17 @@ pub fn build_profile(
     // A non-default `CLAUDE_CONFIG_DIR` is where claude actually writes its
     // config/transcripts/auth, so grant it too. Resolve symlinks first so the
     // SBPL path matches what the sandbox sees at write time (every other entry
-    // is canonical); then skip it when it's the default `~/.claude` already
-    // allowed above, to avoid a redundant entry.
+    // is canonical); then skip it when it resolves to the default `~/.claude`
+    // already allowed above, to avoid a redundant entry. The default is
+    // canonicalized the same way so a symlinked home path can't defeat the
+    // comparison (mirrors docker's `nondefault_claude_config_dir`).
+    let default_claude = resolve_existing_prefix(&home.join(".claude"))
+        .to_string_lossy()
+        .into_owned();
     let claude_config_extra = claude_config_dir
         .map(resolve_existing_prefix)
         .map(|p| p.to_string_lossy().into_owned())
-        .filter(|p| *p != format!("{home_s}/.claude"))
+        .filter(|p| *p != default_claude)
         .map(|p| format!("\n  (subpath {})", sbpl_string(&p)))
         .unwrap_or_default();
     let npm_state = sbpl_string(&format!("{home_s}/.npm"));

@@ -376,17 +376,18 @@ fn non_blank(value: Option<&str>) -> Option<&str> {
 
 /// A non-default `CLAUDE_CONFIG_DIR` from the app environment, mounted and
 /// forwarded so claude writes its config/transcripts/auth where the host
-/// expects them — the same rule as seatbelt's `claude_config_extra`. `None`
-/// when unset or when it resolves to the default `~/.claude` (already mounted).
+/// expects them — mirroring seatbelt's `claude_config_extra`. `None` when unset
+/// or when it resolves to the default `~/.claude` (already mounted).
 ///
-/// The default check canonicalizes via [`resolve_existing_prefix`] exactly like
-/// seatbelt, so a symlink or trailing-slash pointing at `~/.claude` is treated
-/// as default on both engines. The *original* path is returned for the mount
-/// and the `CLAUDE_CONFIG_DIR` forward, so the in-container path stays identical
-/// to the host env's value (invariant 1).
+/// The default check canonicalizes *both* sides via [`resolve_existing_prefix`]:
+/// a symlink or trailing-slash component in either the config dir **or** the
+/// home path would otherwise make a dir that really points at `~/.claude` read
+/// as non-default, adding a redundant mount + `CLAUDE_CONFIG_DIR` forward. The
+/// *original* path is returned for a genuinely non-default dir, so the mount and
+/// forward stay at the exact host path the agent uses (invariant 1).
 fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
     let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from)?;
-    if resolve_existing_prefix(&dir) == home.join(".claude") {
+    if resolve_existing_prefix(&dir) == resolve_existing_prefix(&home.join(".claude")) {
         return None;
     }
     Some(dir)
