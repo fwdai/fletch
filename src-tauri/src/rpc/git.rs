@@ -248,7 +248,26 @@ impl GitDispatcher {
             &crate::github::git_auth_env(),
             &crate::git::no_hooks_env(),
         ]);
-        run_git_command(id, &self.cwd, &["fetch", "origin", &branch], &auth).await
+        let resp = run_git_command(id, &self.cwd, &["fetch", "origin", &branch], &auth).await;
+        // `run_git_command` reports `ok: true` for any git that *ran*, carrying a
+        // non-zero result only in `exit_code`. For fetch that's a trap: a missing
+        // ref or a transient remote failure would leave `origin/<branch>` stale
+        // while the agent merges it anyway. Convert a non-zero fetch into a hard
+        // error so the `update-branch` flow stops here instead of merging old
+        // state. A response that's already an error (spawn/timeout) passes through
+        // unchanged, keeping its original message.
+        if !resp.ok || resp.exit_code == Some(0) {
+            return resp;
+        }
+        let detail = resp
+            .stderr
+            .filter(|s| !s.trim().is_empty())
+            .or(resp.stdout)
+            .unwrap_or_default();
+        Response::err(
+            id,
+            format!("git_fetch: fetch origin {branch} failed: {}", detail.trim()),
+        )
     }
 }
 
@@ -444,10 +463,15 @@ mod tests {
         let (resp, effects) = disp
             .dispatch_inner("f1", "git_fetch", &json!({"ref": "main"}))
             .await;
-        // No origin remote → git exits non-zero, but the op itself ran and must
-        // NOT read as a completed mutation (fetch is not a mutating op).
-        assert!(resp.ok, "the op ran; the failure is in the exit code");
-        assert_ne!(resp.exit_code, Some(0));
+        // No origin remote → git exits non-zero. This must surface as a hard
+        // error, not an ok response, so the agent stops instead of merging a
+        // stale `origin/<base>`. And it's never a completed mutation.
+        assert!(!resp.ok, "a failed fetch must be an error response, got: {resp:?}");
+        assert!(
+            resp.error.as_deref().unwrap_or_default().contains("failed"),
+            "error should explain the fetch failed, got: {:?}",
+            resp.error
+        );
         assert!(!has_action_done(&effects, "git_fetch"));
     }
 
