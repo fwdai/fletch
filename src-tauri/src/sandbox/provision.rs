@@ -46,23 +46,6 @@ pub enum WorkspaceMode {
     Clone,
 }
 
-impl WorkspaceMode {
-    /// Parse the `workspace_mode` setting. Anything other than an explicit
-    /// `"clone"` — including absent or unrecognized values — falls back to
-    /// `Worktree`, the historical default, so a typo'd dev flag can't change
-    /// behavior silently on top of a warning.
-    pub fn from_setting(value: Option<&str>) -> Self {
-        match value {
-            Some("clone") => WorkspaceMode::Clone,
-            Some("worktree") | None => WorkspaceMode::Worktree,
-            Some(other) => {
-                tracing::warn!(value = %other, "unrecognized workspace_mode setting; using worktree");
-                WorkspaceMode::Worktree
-            }
-        }
-    }
-}
-
 /// What to check out where. `base_ref` is any commit-ish; pass `"HEAD"` for
 /// "the source repo's current HEAD" (the legacy no-base behavior).
 pub struct CheckoutSpec<'a> {
@@ -498,23 +481,6 @@ mod tests {
         run(&repo, &["commit", "-q", "-m", "second"]);
         let head = run(&repo, &["rev-parse", "HEAD"]);
         (repo, first, head)
-    }
-
-    #[test]
-    fn mode_parses_setting_with_worktree_default() {
-        assert_eq!(WorkspaceMode::from_setting(None), WorkspaceMode::Worktree);
-        assert_eq!(
-            WorkspaceMode::from_setting(Some("worktree")),
-            WorkspaceMode::Worktree
-        );
-        assert_eq!(
-            WorkspaceMode::from_setting(Some("clone")),
-            WorkspaceMode::Clone
-        );
-        assert_eq!(
-            WorkspaceMode::from_setting(Some("docker?!")),
-            WorkspaceMode::Worktree
-        );
     }
 
     #[tokio::test]
