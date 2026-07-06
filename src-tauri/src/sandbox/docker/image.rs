@@ -259,7 +259,9 @@ mod tests {
         let _ = cli::run_docker(&["rmi", "-f", &tag], Duration::from_secs(30));
 
         let lines = std::sync::atomic::AtomicUsize::new(0);
-        let progress = |_: &str| drop(lines.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+        let progress = |_: &str| {
+            lines.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        };
         ensure_image_with(dockerfile, ENTRYPOINT_SH, &tag, &progress).unwrap();
         assert!(
             image_exists(&tag).unwrap(),

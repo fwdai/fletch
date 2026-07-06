@@ -46,23 +46,6 @@ pub enum WorkspaceMode {
     Clone,
 }
 
-impl WorkspaceMode {
-    /// Parse the `workspace_mode` setting. Anything other than an explicit
-    /// `"clone"` — including absent or unrecognized values — falls back to
-    /// `Worktree`, the historical default, so a typo'd dev flag can't change
-    /// behavior silently on top of a warning.
-    pub fn from_setting(value: Option<&str>) -> Self {
-        match value {
-            Some("clone") => WorkspaceMode::Clone,
-            Some("worktree") | None => WorkspaceMode::Worktree,
-            Some(other) => {
-                tracing::warn!(value = %other, "unrecognized workspace_mode setting; using worktree");
-                WorkspaceMode::Worktree
-            }
-        }
-    }
-}
-
 /// What to check out where. `base_ref` is any commit-ish; pass `"HEAD"` for
 /// "the source repo's current HEAD" (the legacy no-base behavior).
 pub struct CheckoutSpec<'a> {
@@ -276,7 +259,8 @@ where
 {
     let result = async {
         rewrite_origin(spec).await?;
-        copy_local_identity(spec).await?;
+        seed_identity(spec).await?;
+        install_delegation_hooks(spec.dest).await?;
         checkout(spec.dest.to_path_buf()).await
     }
     .await;
@@ -317,26 +301,114 @@ async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Copy repo-local `user.name` / `user.email` into the clone. Global
-/// gitconfig already applies host-side; only per-repo identity would
-/// otherwise be lost (clones don't inherit the source's local config).
-async fn copy_local_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
-    for key in ["user.name", "user.email"] {
-        // Exits 1 when unset — not an error, just nothing to copy.
-        let out = git::git_output(spec.source_repo, &["config", "--local", "--get", key]).await?;
-        if !out.status.success() {
-            continue;
-        }
-        let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if value.is_empty() {
-            continue;
-        }
-        git::run_git(
-            spec.dest,
-            &["config", key, &value],
-            &format!("config {key}"),
-        )
-        .await?;
+/// Install Fletch's delegation-signal git hooks into the clone's `.git/hooks`.
+///
+/// With local git mutations (commit, merge, conflict-resolve) now running as
+/// native in-container git rather than host RPC ops, the old "a mutating RPC op
+/// succeeded" delegation signal is gone for those actions. These hooks restore
+/// it without teaching the agent anything: on the agent's own `git commit` /
+/// `git merge`, git runs the hook, which pings the RPC mailbox
+/// (`$FLETCH_RPC_DIR`, inherited from the triggering git process's env) so the
+/// host relays an `agent:git-action` event — exactly what the panel's
+/// delegation tracking consumes.
+///
+/// Contained by construction: host-side git (diff polling, push, PR, fetch)
+/// runs with `core.hooksPath=/dev/null` (`git::no_hooks_env`), so these hooks
+/// never fire on the host — only on the agent's sandboxed git, where any command
+/// they run is already inside the sandbox. The hook is best-effort and always
+/// exits 0, so a missing mailbox or a slow write can never fail the agent's
+/// commit. Installed only for clones (this is the clone-arm path); a linked
+/// worktree's hooks live in the user's real repo and must never be touched.
+async fn install_delegation_hooks(dest: &Path) -> Result<()> {
+    let hooks_dir = dest.join(".git/hooks");
+    // A fresh clone always has `.git/hooks`, but create it defensively so a
+    // future object-layout change can't silently drop the signal.
+    tokio::fs::create_dir_all(&hooks_dir).await?;
+    // post-merge fires on a completed clean `git merge` (fast-forward or merge
+    // commit): the action is unambiguously a base merge.
+    let post_merge = hooks_dir.join("post-merge");
+    tokio::fs::write(&post_merge, delegation_hook_script(r#"action="git_update_branch""#)).await?;
+    set_executable(&post_merge).await?;
+    // post-commit fires on *every* plain `git commit` — including the commit
+    // that completes a *conflicted* merge, which never reaches post-merge. Those
+    // two cases must report different actions or an unrelated commit made during
+    // an `update-branch` delegation would falsely satisfy it. A merge-completion
+    // commit is a merge commit (it has a second parent, `HEAD^2`); a plain commit
+    // does not — so branch on that.
+    let post_commit = hooks_dir.join("post-commit");
+    let set_action = concat!(
+        "if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then\n",
+        "  action=\"git_update_branch\"\n",
+        "else\n",
+        "  action=\"git_commit\"\n",
+        "fi",
+    );
+    tokio::fs::write(&post_commit, delegation_hook_script(set_action)).await?;
+    set_executable(&post_commit).await?;
+    Ok(())
+}
+
+/// The body of a delegation hook. `set_action` is a shell fragment that assigns
+/// the reported op to `$action` (a literal for post-merge, a merge-commit test
+/// for post-commit). POSIX `sh`, no bashisms: runs in the container image's
+/// shell and macOS `/bin/sh` alike. Writes the mailbox request atomically
+/// (`.tmp` then `mv`) so the watcher never reads a half-written file, and
+/// swallows every error — the git op must not depend on the signal landing.
+fn delegation_hook_script(set_action: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+# Fletch-managed: delegation signal. Pings the app RPC mailbox so the panel can
+# attribute this git action to the agent's turn. Best-effort; never blocks or
+# fails the git operation. Do not edit — reinstalled on provision.
+[ -n "$FLETCH_RPC_DIR" ] || exit 0
+reqdir="$FLETCH_RPC_DIR/requests"
+[ -d "$reqdir" ] || exit 0
+{set_action}
+id="hook-$$-$(date +%s%N 2>/dev/null || date +%s)"
+tmp="$reqdir/$id.json.tmp"
+printf '{{"id":"%s","op":"signal_git_action","args":{{"action":"%s"}}}}' "$id" "$action" > "$tmp" 2>/dev/null \
+  && mv "$tmp" "$reqdir/$id.json" 2>/dev/null
+exit 0
+"#
+    )
+}
+
+/// Mark a file user/group/other-executable (0755). The hooks must be executable
+/// or git silently ignores them.
+async fn set_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = tokio::fs::metadata(path).await?.permissions();
+    perms.set_mode(0o755);
+    tokio::fs::set_permissions(path, perms).await?;
+    Ok(())
+}
+
+/// Seed the clone with a git identity it can commit under **without** the
+/// host's global gitconfig. A container can't see that file, so with local git
+/// mutations now running as native in-container `git commit`, a clone that
+/// inherited its identity only from the host's global config would die with
+/// git's "Please tell me who you are" — the retired host-side commit path used
+/// to paper over this via `git::identity_env`.
+///
+/// Write the *effective* identity the source repo resolves (`--get`, i.e.
+/// local ▸ global ▸ system — exactly what the host itself would author with)
+/// into the clone's own config, and fill any half the host can't resolve from
+/// the signed-in profile / neutral default. This is the same fallback
+/// `git::identity_env` applied, but persisted into the clone so in-container
+/// git sees it. Clones are ephemeral, so freezing the value here is harmless.
+async fn seed_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
+    let (fallback_name, fallback_email) = crate::git_dist::fallback_identity();
+    for (key, fallback) in [("user.name", fallback_name), ("user.email", fallback_email)] {
+        // `--get` (no `--local`) is the effective value across every scope;
+        // empty or exit-1 means the host resolves nothing, so fall back.
+        let effective = git::git_output(spec.source_repo, &["config", "--get", key])
+            .await
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .filter(|v| !v.is_empty());
+        let value = effective.unwrap_or(fallback);
+        git::run_git(spec.dest, &["config", key, &value], &format!("config {key}")).await?;
     }
     Ok(())
 }
@@ -409,23 +481,6 @@ mod tests {
         run(&repo, &["commit", "-q", "-m", "second"]);
         let head = run(&repo, &["rev-parse", "HEAD"]);
         (repo, first, head)
-    }
-
-    #[test]
-    fn mode_parses_setting_with_worktree_default() {
-        assert_eq!(WorkspaceMode::from_setting(None), WorkspaceMode::Worktree);
-        assert_eq!(
-            WorkspaceMode::from_setting(Some("worktree")),
-            WorkspaceMode::Worktree
-        );
-        assert_eq!(
-            WorkspaceMode::from_setting(Some("clone")),
-            WorkspaceMode::Clone
-        );
-        assert_eq!(
-            WorkspaceMode::from_setting(Some("docker?!")),
-            WorkspaceMode::Worktree
-        );
     }
 
     #[tokio::test]
@@ -517,6 +572,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clone_installs_executable_delegation_hooks() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+
+        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+
+        for hook in ["post-commit", "post-merge"] {
+            let path = dest.join(".git/hooks").join(hook);
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{hook} missing"));
+            assert!(body.contains("signal_git_action"), "{hook} must ping the signal op");
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert!(mode & 0o111 != 0, "{hook} must be executable, mode={mode:o}");
+        }
+        // post-merge always reports a base merge; post-commit distinguishes a
+        // merge-completion commit (HEAD^2) from a plain one.
+        let post_merge = std::fs::read_to_string(dest.join(".git/hooks/post-merge")).unwrap();
+        assert!(post_merge.contains(r#"action="git_update_branch""#));
+        let post_commit = std::fs::read_to_string(dest.join(".git/hooks/post-commit")).unwrap();
+        assert!(post_commit.contains("HEAD^2"), "post-commit must test for a merge commit");
+        assert!(post_commit.contains(r#"action="git_update_branch""#));
+        assert!(post_commit.contains(r#"action="git_commit""#));
+    }
+
+    #[tokio::test]
+    async fn post_commit_hook_reports_merge_commit_as_update_branch() {
+        // The conflicted-merge path of `update-branch`: the completing commit is
+        // a merge commit (two parents), so post-commit must report a base merge
+        // rather than a plain commit — otherwise the delegation couldn't tell it
+        // apart from an unrelated commit.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+
+        // Two branches that diverge on different files → a clean but non-ff
+        // merge. `--no-commit` stops before committing (so post-merge does not
+        // fire), leaving the merge for a manual `git commit` that post-commit
+        // sees as a two-parent merge commit.
+        run(&dest, &["checkout", "-q", "-b", "target"]);
+        std::fs::write(dest.join("t.txt"), b"t").unwrap();
+        run(&dest, &["add", "-A"]);
+        run(&dest, &["commit", "-q", "-m", "target edit"]);
+        run(&dest, &["checkout", "-q", "-b", "side", "HEAD~1"]);
+        std::fs::write(dest.join("s.txt"), b"s").unwrap();
+        run(&dest, &["add", "-A"]);
+        run(&dest, &["commit", "-q", "-m", "side edit"]);
+        run(&dest, &["checkout", "-q", "target"]);
+        run(&dest, &["merge", "--no-ff", "--no-commit", "side"]);
+
+        let mailbox = td.path().join("mbox");
+        std::fs::create_dir_all(mailbox.join("requests")).unwrap();
+        let out = std::process::Command::new("git")
+            .current_dir(&dest)
+            .env("FLETCH_RPC_DIR", &mailbox)
+            .args(["commit", "--no-edit"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+        let reqs: Vec<_> = std::fs::read_dir(mailbox.join("requests"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .collect();
+        assert_eq!(reqs.len(), 1, "exactly one signal expected");
+        let body = std::fs::read_to_string(reqs[0].path()).unwrap();
+        assert!(
+            body.contains(r#""action":"git_update_branch""#),
+            "a merge-completion commit must report a base merge, body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegation_hook_fires_on_a_native_commit() {
+        // End-to-end: a plain in-repo `git commit` runs the installed hook,
+        // which writes a well-formed signal request into the mailbox dir.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        // Land on a branch so a commit is straightforward.
+        run(&dest, &["checkout", "-q", "-b", "work"]);
+
+        let mailbox = td.path().join("mbox");
+        let requests = mailbox.join("requests");
+        std::fs::create_dir_all(&requests).unwrap();
+        std::fs::write(dest.join("c.txt"), b"change").unwrap();
+        run(&dest, &["add", "-A"]);
+        // The hook reads $FLETCH_RPC_DIR from the committing process's env.
+        let out = std::process::Command::new("git")
+            .current_dir(&dest)
+            .env("FLETCH_RPC_DIR", &mailbox)
+            .args(["commit", "-q", "-m", "hooked"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+        let entries: Vec<_> = std::fs::read_dir(&requests)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .collect();
+        assert_eq!(entries.len(), 1, "exactly one signal request expected");
+        let body = std::fs::read_to_string(entries[0].path()).unwrap();
+        assert!(body.contains(r#""op":"signal_git_action""#), "body: {body}");
+        assert!(body.contains(r#""action":"git_commit""#), "body: {body}");
+    }
+
+    #[tokio::test]
     async fn clone_copies_repo_local_identity() {
         let td = tempfile::tempdir().unwrap();
         let (repo, _first, head) = fixture_repo(td.path());
@@ -533,6 +714,32 @@ mod tests {
             run(&dest, &["config", "--local", "user.email"]),
             "t@example.com"
         );
+    }
+
+    #[tokio::test]
+    async fn clone_seeds_identity_when_source_resolves_none_locally() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        // Drop the repo-local identity the fixture set: the source now resolves
+        // an identity only from ambient global/system config, or nothing —
+        // exactly the reviewer's "identity lives only in host global config,
+        // which the container can't see" case.
+        run(&repo, &["config", "--local", "--unset", "user.name"]);
+        run(&repo, &["config", "--local", "--unset", "user.email"]);
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+
+        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+
+        // Whatever the host's ambient config, the clone must resolve a non-empty
+        // identity in its OWN config so a native in-container `git commit` never
+        // dies with "Please tell me who you are".
+        assert!(!run(&dest, &["config", "--local", "user.name"]).is_empty());
+        assert!(!run(&dest, &["config", "--local", "user.email"]).is_empty());
     }
 
     #[tokio::test]
