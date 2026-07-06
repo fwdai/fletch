@@ -80,20 +80,39 @@ pub async fn provision(mode: WorkspaceMode, spec: &CheckoutSpec<'_>) -> Result<(
         WorkspaceMode::Worktree => {
             git::worktree_add_detached(spec.source_repo, spec.dest, Some(spec.base_ref)).await
         }
-        WorkspaceMode::Clone => {
-            clone_base(spec).await?;
-            finish_clone(spec, |dest| async move {
-                git::run_git(
-                    &dest,
-                    &["checkout", "--detach", spec.base_ref],
-                    &format!("checkout --detach {}", spec.base_ref),
-                )
-                .await?;
-                Ok(())
-            })
-            .await
-        }
+        // `--shared`: objects borrowed from the source. For Docker the borrowed
+        // store is mounted RO at launch — safe for the primary workspace and
+        // any repo present when the container starts.
+        WorkspaceMode::Clone => clone_detached(spec, true).await,
     }
+}
+
+/// Provision a **self-contained** clone (full object copy, no alternates),
+/// detached at `spec.base_ref`. For a repo added to an *already-running* Docker
+/// agent: the container's bind mounts are fixed at `docker run`, so a `--shared`
+/// clone's borrowed object store could never be mounted and in-container git
+/// would fail with missing objects. A self-contained clone needs no extra mount
+/// and works immediately. Seatbelt has no such constraint and uses [`provision`]
+/// (`--shared`) even for added repos — same filesystem, no mount involved.
+pub async fn provision_self_contained(spec: &CheckoutSpec<'_>) -> Result<()> {
+    clone_detached(spec, false).await
+}
+
+/// Shared clone-arm body for [`provision`] / [`provision_self_contained`]:
+/// clone (borrowing objects when `shared`), run the post-clone fixups, then
+/// check out `spec.base_ref` detached.
+async fn clone_detached(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
+    clone_base(spec, shared).await?;
+    finish_clone(spec, |dest| async move {
+        git::run_git(
+            &dest,
+            &["checkout", "--detach", spec.base_ref],
+            &format!("checkout --detach {}", spec.base_ref),
+        )
+        .await?;
+        Ok(())
+    })
+    .await
 }
 
 /// Create the workspace checked out on a new local branch `branch` pointing at
@@ -123,7 +142,9 @@ pub async fn provision_on_branch(
             git::worktree_add_branch(spec.source_repo, spec.dest, branch).await
         }
         WorkspaceMode::Clone => {
-            clone_base(spec).await?;
+            // Restore always relaunches the container, so the RO mount for a
+            // `--shared` clone's borrowed store is re-established at launch.
+            clone_base(spec, true).await?;
             let branch = branch.to_string();
             let origin_branch = origin_branch.to_string();
             finish_clone(spec, |dest| async move {
@@ -179,27 +200,32 @@ pub fn detect_mode(dest: &Path) -> Option<WorkspaceMode> {
     }
 }
 
-/// `git clone --shared` + origin rewrite + repo-local identity copy — the
-/// parts shared by both clone-arm entry points. Leaves HEAD wherever the clone
-/// put it; callers do their own checkout.
+/// `git clone` + origin rewrite + repo-local identity copy — the parts shared
+/// by every clone-arm entry point. Leaves HEAD wherever the clone put it;
+/// callers do their own checkout.
 ///
-/// `--shared` borrows the source's object store via
-/// `.git/objects/info/alternates` (an absolute path to the source's objects)
-/// and copies no objects, so the clone is kilobytes on disk. The source object
-/// store must stay present for the clone's lifetime (Fletch owns the source
-/// repo lifecycle). Borrowed objects are only ever *referenced* — never written
-/// — and for Docker the store is mounted read-only, so a container can't reach
-/// through the alternates link to mutate the source.
+/// `shared` picks the object strategy:
+/// - `true` → `git clone --shared`: borrows the source's object store via
+///   `.git/objects/info/alternates` (an absolute path to the source's objects)
+///   and copies no objects, so the clone is kilobytes on disk. The source
+///   object store must stay present for the clone's lifetime (Fletch owns the
+///   source repo lifecycle). Borrowed objects are only ever *referenced* —
+///   never written — and for Docker the store is mounted read-only, so a
+///   container can't reach through the alternates link to mutate the source.
+/// - `false` → `git clone --no-hardlinks`: a full, self-contained object copy
+///   with no alternates. Used when the clone can't rely on the borrowed store
+///   being mounted — a repo added to an already-running Docker container, whose
+///   bind mounts are fixed at `docker run` (see [`provision_self_contained`]).
 ///
-/// Caveat — gc/prune on the source: `--shared` breaks only if the source
-/// prunes an object the clone references. Base history stays reachable from the
-/// source's own refs, so ordinary `git gc --auto` (prunes only unreachable
-/// objects past the grace period) is safe. The real risk is an aggressive
-/// `git prune` / `gc --prune=now` on the source *while an agent is live and
-/// referencing a since-deleted base branch*. Not hardened against here (the
-/// common case is safe); if that becomes a problem, disable gc on the source
-/// while any agent is active (crash-safe, via transient env-config).
-async fn clone_base(spec: &CheckoutSpec<'_>) -> Result<()> {
+/// Caveat — gc/prune on the source (`shared` only): `--shared` breaks only if
+/// the source prunes an object the clone references. Base history stays
+/// reachable from the source's own refs, so ordinary `git gc --auto` (prunes
+/// only unreachable objects past the grace period) is safe. The real risk is an
+/// aggressive `git prune` / `gc --prune=now` on the source *while an agent is
+/// live and referencing a since-deleted base branch*. Not hardened against here
+/// (the common case is safe); if that becomes a problem, disable gc on the
+/// source while any agent is active (crash-safe, via transient env-config).
+async fn clone_base(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
     let source = path_str(spec.source_repo)?;
     let dest = path_str(spec.dest)?;
 
@@ -212,16 +238,17 @@ async fn clone_base(spec: &CheckoutSpec<'_>) -> Result<()> {
         tokio::fs::remove_dir_all(spec.dest).await?;
     }
 
-    // `--shared` borrows the source's objects via an alternates file and
-    // copies none, so a spawn is cheap regardless of repo size. Borrowed
-    // objects are read-only (referenced, and RO-mounted for Docker), so a
-    // container can't corrupt the source through them.
+    // `--shared` borrows objects via an alternates file (cheap, RO for Docker);
+    // `--no-hardlinks` makes a full self-contained copy (no shared inodes, so a
+    // container can't corrupt the source even without the RO mount).
     //
-    // No timeout: `--shared` is near-instant, but keep the unbounded shape
-    // (and `kill_on_drop`) consistent with `new_project::clone`; the child is
-    // still reaped if the spawn task is aborted.
+    // No timeout: `--shared` is near-instant and a local copy can legitimately
+    // take minutes, so keep the unbounded shape (and `kill_on_drop`) consistent
+    // with `new_project::clone`; the child is still reaped if the spawn task is
+    // aborted.
+    let object_flag = if shared { "--shared" } else { "--no-hardlinks" };
     let out = crate::git_dist::command(spec.source_repo)
-        .args(["clone", "--shared", &source, &dest])
+        .args(["clone", object_flag, &source, &dest])
         .kill_on_drop(true)
         .output()
         .await?;
@@ -230,7 +257,7 @@ async fn clone_base(spec: &CheckoutSpec<'_>) -> Result<()> {
         // "already exists" (mirrors `new_project::clone`).
         let _ = tokio::fs::remove_dir_all(spec.dest).await;
         return Err(Error::Git(format!(
-            "clone --shared failed: {}",
+            "clone {object_flag} failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
@@ -693,6 +720,46 @@ mod tests {
             "feat-restored"
         );
         assert_eq!(run(&dest2, &["rev-parse", "HEAD"]), tip);
+    }
+
+    #[tokio::test]
+    async fn provision_self_contained_copies_objects_without_alternates() {
+        // A repo added to a live Docker agent must not borrow via alternates
+        // (the container can't mount the borrowed store): it gets a full,
+        // self-contained object copy instead.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+
+        provision_self_contained(&spec).await.unwrap();
+
+        // No alternates file — objects live in the clone itself.
+        assert!(!dest.join(".git/objects/info/alternates").exists());
+        // Objects were actually copied in (loose objects present).
+        let mut loose = 0usize;
+        let mut stack = vec![dest.join(".git/objects")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap();
+                let name = entry.file_name();
+                if name == "info" || name == "pack" {
+                    continue;
+                }
+                if entry.metadata().unwrap().is_dir() {
+                    stack.push(entry.path());
+                } else {
+                    loose += 1;
+                }
+            }
+        }
+        assert!(loose > 0, "self-contained clone must copy objects in");
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
+        assert_eq!(detect_mode(&dest), Some(WorkspaceMode::Clone));
     }
 
     #[tokio::test]

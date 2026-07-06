@@ -364,8 +364,9 @@ impl Supervisor {
         // Same clone-forcing rule as the primary repo: a docker-stamped agent
         // mounts its parent dir, so every workspace under it must be
         // self-contained.
+        let engine = stamped_engine(&record);
         let workspace_mode = effective_workspace_mode(
-            stamped_engine(&record),
+            engine,
             self.workspace
                 .setting(provision::WORKSPACE_MODE_SETTING)
                 .as_deref(),
@@ -375,7 +376,18 @@ impl Supervisor {
             base_ref: base.as_deref().unwrap_or("HEAD"),
             dest: &worktree,
         };
-        provision::provision(workspace_mode, &spec).await?;
+        // A repo added to a *live* agent can't get a new bind mount: the Docker
+        // container's mounts are fixed at `docker run`, so a `--shared` clone's
+        // borrowed object store would be unreachable in-container. Provision it
+        // self-contained (full object copy, no alternates) so it needs no mount
+        // and in-container git works immediately. Seatbelt has no container and
+        // uses the normal (`--shared`) clone path. A later restore relaunches
+        // the container and re-provisions via `--shared` + mount.
+        if engine == EngineKind::Docker {
+            provision::provision_self_contained(&spec).await?;
+        } else {
+            provision::provision(workspace_mode, &spec).await?;
+        }
         let base_sha = git::rev_parse(&worktree, "HEAD").await.ok();
 
         let repo = TrackedRepo {
