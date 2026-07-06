@@ -1,4 +1,4 @@
-//! Image-build progress broadcast (slice C2).
+//! Image-build progress broadcast to the UI.
 //!
 //! The embedded agent image is built on the first docker spawn (see
 //! [`super::image::ensure_image`]) — a potentially minutes-long `docker build`

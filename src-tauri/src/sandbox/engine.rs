@@ -31,7 +31,6 @@ impl EngineKind {
     }
 }
 
-#[allow(dead_code)]
 pub struct AgentLaunchCtx<'a> {
     pub agent_id: &'a str,
     pub writable_root: &'a Path,
@@ -54,19 +53,16 @@ pub enum Keepalive {
 }
 
 /// Engine-specific data describing how to tear down what was launched.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub enum KillPlan {
-    ProcessGroup,
     Container { name: String },
 }
 
 /// Teardown handle bound at launch time. Sessions call [`KillHandle::kill`]
 /// before their own process-group escalation and never inspect the variant —
 /// adding an engine requires no session changes. The engine that produced the
-/// plan is captured here, NOT looked up at kill time: once engine selection is
-/// setting-driven (slice C1), a session must be torn down by the engine that
-/// launched it, regardless of what the setting says now.
+/// plan is captured here, not looked up at kill time, so a session is always
+/// torn down by the engine that launched it regardless of the current setting.
 #[derive(Clone)]
 pub enum KillHandle {
     /// The session's own child-handle / process-group termination is the whole
@@ -87,19 +83,6 @@ impl KillHandle {
         match self {
             Self::ProcessGroup => Ok(()),
             Self::Engine { engine, plan } => engine.kill(plan),
-        }
-    }
-
-    /// Whether the sandboxed process is still running, as far as the engine
-    /// can tell. `ProcessGroup` children can't outlive the session's own child
-    /// handle, so the session's view is authoritative and this returns true.
-    /// Docker containers can die independently of the host process (daemon
-    /// stop, OOM kill), which is what this exists to surface — see slice B2.
-    #[allow(dead_code)]
-    pub fn is_alive(&self) -> bool {
-        match self {
-            Self::ProcessGroup => true,
-            Self::Engine { engine, plan } => engine.is_alive(plan),
         }
     }
 
@@ -136,13 +119,6 @@ pub trait SandboxEngine: Send + Sync {
     /// child kill is sufficient.
     fn kill(&self, _plan: &KillPlan) -> Result<()> {
         Ok(())
-    }
-
-    /// Whether the sandboxed process behind `plan` is still running. Override
-    /// where the sandbox can outlive or die independently of the local child
-    /// (Docker); the default defers to the session's own child handle.
-    fn is_alive(&self, _plan: &KillPlan) -> bool {
-        true
     }
 
     /// A user-readable meaning for the launcher's exit `code`, if this engine

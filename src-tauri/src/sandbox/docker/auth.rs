@@ -1,10 +1,10 @@
-//! Anthropic auth for containerized agents (slice D1).
+//! Anthropic auth for containerized agents.
 //!
 //! Host claude logins usually live in the macOS Keychain, which doesn't exist
 //! inside a container, and Fletch itself injects no credentials — so docker
 //! agents need auth resolved explicitly. [`resolve`] walks a first-hit-wins
 //! chain and returns the env vars to set on the *docker CLI process*; the
-//! launch path (B2) forwards them with bare `-e VAR` flags, so token values
+//! launch path forwards them with bare `-e VAR` flags, so token values
 //! never appear in argv (invariant 3). They must never appear in logs either:
 //! [`ContainerAuth`] redacts values in its `Debug` output, and nothing in this
 //! module traces a token.
@@ -306,7 +306,7 @@ fn resolve_from(
 
 /// Wire shape of the `get_container_auth_status` command — [`resolve`]'s
 /// outcome for the settings status row. Serializes like `DockerAvailability`:
-/// `{ "status": "stored-token" | "shell-env" | "credentials-file" | "none" }`.
+/// `{ "status": "keychain" | "stored-token" | "shell-env" | "credentials-file" | "none" }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum ContainerAuthStatus {

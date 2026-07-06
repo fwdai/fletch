@@ -42,9 +42,8 @@ pub(super) fn run_docker(args: &[&str], timeout: Duration) -> Result<Output> {
 
 /// Run `docker <args>` streaming every output line (stdout and stderr) to
 /// `on_line` as it appears — the shape `docker build` needs so image-build
-/// progress can reach the UI (slice C2). Fails on non-zero exit with the
-/// last output lines in the message, or on `timeout` expiry.
-#[allow(dead_code)] // reached via `image`, whose consumer is slice B2
+/// progress can reach the UI. Fails on non-zero exit with the last output
+/// lines in the message, or on `timeout` expiry.
 pub(super) fn run_docker_streaming(
     args: &[&str],
     timeout: Duration,
@@ -89,7 +88,6 @@ pub(super) fn run_docker_streaming(
 
 /// Forward each line of `reader` to `on_line`, retaining a bounded tail for
 /// error reporting.
-#[allow(dead_code)] // reached via `image`, whose consumer is slice B2
 fn forward_lines(
     reader: impl std::io::Read,
     on_line: &(dyn Fn(&str) + Send + Sync),

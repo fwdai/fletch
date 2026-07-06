@@ -624,10 +624,10 @@ mod tests {
         assert!(!rpc_dir.join("responses/req-5.json").exists());
     }
 
-    /// B3 acceptance: with no FS-event mechanism anywhere (this transport has
-    /// none — the watcher is a bare interval tick), a dropped request file is
-    /// answered within 1s by the poll path alone. The tick here mirrors the
-    /// spec's 500ms fallback; production polls even faster (`RPC_TICK`).
+    /// With no FS-event mechanism anywhere (this transport has none — the
+    /// watcher is a bare interval tick), a dropped request file is answered
+    /// within 1s by the poll path alone. The tick here mirrors the 500ms
+    /// fallback; production polls even faster (`RPC_TICK`).
     #[tokio::test]
     async fn poll_tick_answers_request_within_a_second_without_fs_events() {
         let td = tempfile::tempdir().unwrap();

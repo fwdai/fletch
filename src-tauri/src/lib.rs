@@ -793,7 +793,7 @@ pub fn run() {
                 }));
             }
 
-            // Forward docker image-build progress to the UI (slice C2). The
+            // Forward docker image-build progress to the UI. The
             // build runs deep in the spawn path (no AppHandle there), so it
             // emits through a process-wide sink installed here — mirroring the
             // git-dist emitter above. Rare (first docker spawn per image), so a
