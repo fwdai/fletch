@@ -376,15 +376,18 @@ fn non_blank(value: Option<&str>) -> Option<&str> {
 
 /// A non-default `CLAUDE_CONFIG_DIR` from the app environment, mounted and
 /// forwarded so claude writes its config/transcripts/auth where the host
-/// expects them — mirroring seatbelt's `claude_config_extra`. `None` when unset
-/// or when it resolves to the default `~/.claude` (already mounted).
+/// expects them. `None` when unset or when it resolves to the default
+/// `~/.claude` (already mounted).
 ///
-/// The default check canonicalizes *both* sides via [`resolve_existing_prefix`]:
-/// a symlink or trailing-slash component in either the config dir **or** the
-/// home path would otherwise make a dir that really points at `~/.claude` read
-/// as non-default, adding a redundant mount + `CLAUDE_CONFIG_DIR` forward. The
-/// *original* path is returned for a genuinely non-default dir, so the mount and
-/// forward stay at the exact host path the agent uses (invariant 1).
+/// The default check canonicalizes *both* sides via [`resolve_existing_prefix`],
+/// so a symlink or trailing-slash in the config dir or the home path can't make
+/// a dir that really points at `~/.claude` read as non-default (a redundant
+/// mount + `CLAUDE_CONFIG_DIR` forward). Canonicalizing both sides is safe here
+/// — unlike seatbelt's literal-path SBPL allow-list, which compares against the
+/// *raw* default — because the default `~/.claude` bind mount follows its
+/// symlink source, so a config dir pointing at the resolved target is still
+/// covered by that mount. The *original* path is returned for a genuinely
+/// non-default dir, so the mount/forward stay at the host path (invariant 1).
 fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
     let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from)?;
     if resolve_existing_prefix(&dir) == resolve_existing_prefix(&home.join(".claude")) {

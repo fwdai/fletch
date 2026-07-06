@@ -305,17 +305,20 @@ pub fn build_profile(
     // A non-default `CLAUDE_CONFIG_DIR` is where claude actually writes its
     // config/transcripts/auth, so grant it too. Resolve symlinks first so the
     // SBPL path matches what the sandbox sees at write time (every other entry
-    // is canonical); then skip it when it resolves to the default `~/.claude`
-    // already allowed above, to avoid a redundant entry. The default is
-    // canonicalized the same way so a symlinked home path can't defeat the
-    // comparison (mirrors docker's `nondefault_claude_config_dir`).
-    let default_claude = resolve_existing_prefix(&home.join(".claude"))
-        .to_string_lossy()
-        .into_owned();
+    // is canonical); then skip it only when it equals the *raw* default
+    // `{home}/.claude` granted above (`claude_state`), to avoid a redundant
+    // entry. Compare against the raw default deliberately — do NOT canonicalize
+    // this side: `claude_state` grants the raw path, so if a resolved config dir
+    // differs from it we must still add the extra grant. If `~/.claude` is
+    // itself a symlink and the config dir points at its resolved target,
+    // canonicalizing here would treat it as default and drop the grant, yet the
+    // raw `claude_state` rule wouldn't cover the target — denying claude's
+    // writes. (Docker can canonicalize both sides because its `~/.claude` bind
+    // mount follows the symlink source; the SBPL allow-list can't.)
     let claude_config_extra = claude_config_dir
         .map(resolve_existing_prefix)
         .map(|p| p.to_string_lossy().into_owned())
-        .filter(|p| *p != default_claude)
+        .filter(|p| *p != format!("{home_s}/.claude"))
         .map(|p| format!("\n  (subpath {})", sbpl_string(&p)))
         .unwrap_or_default();
     let npm_state = sbpl_string(&format!("{home_s}/.npm"));
