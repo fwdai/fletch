@@ -201,14 +201,22 @@ impl GitDispatcher {
     }
 
     async fn git_update_branch(&self, id: &str) -> Response {
-        let auth = crate::github::git_auth_env();
+        // Auth for the fetch, plus hook-disabling on both ops: the workspace is
+        // agent-writable, so a planted hook must not run on the host. `merge_git_env`
+        // reindexes so the auth and no-hooks `GIT_CONFIG_*` sets don't collide.
+        let no_hooks = crate::git::no_hooks_env();
+        let auth = crate::git::merge_git_env(&[&crate::github::git_auth_env(), &no_hooks]);
         let fetch = run_git_command(id, &self.cwd, &["fetch", "origin", &self.base_branch], &auth)
             .await;
         if !fetch.ok || fetch.exit_code != Some(0) {
             return fetch;
         }
-        // A clean merge creates a merge commit, which needs an identity.
-        let env = crate::git::identity_env(&self.cwd).await;
+        // A clean merge creates a merge commit (needs an identity) and fires
+        // `post-merge` on the host (needs hooks disabled).
+        let env = crate::git::merge_git_env(&[
+            &crate::git::identity_env(&self.cwd).await,
+            &no_hooks,
+        ]);
         let target = format!("origin/{}", self.base_branch);
         run_git_command(id, &self.cwd, &["merge", "--no-edit", &target], &env).await
     }
