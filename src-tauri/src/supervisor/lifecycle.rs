@@ -40,14 +40,47 @@ pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
         .unwrap_or(EngineKind::SandboxExec)
 }
 
-/// The provisioning mode an agent stamped with `engine` actually gets. Docker
-/// forces `Clone` regardless of the `workspace_mode` dev flag: a linked
+/// The provisioning mode an agent stamped with `engine` actually gets.
+///
+/// Docker forces `Clone` regardless of the `workspace_mode` dev flag: a linked
 /// worktree's `.git` file points into the user's real repo, and a container
 /// must never be able to reach that (sandbox plan invariant 2).
+///
+/// Seatbelt now also defaults to `Clone` — both engines converge on one
+/// self-contained-checkout model, made cheap by `git clone --shared` (objects
+/// borrowed via alternates, not copied). An explicit `workspace_mode=worktree`
+/// still opts back into the historical linked-worktree model.
+///
+/// Changed restore semantics under seatbelt — but only for work that lives
+/// *solely* in a clone. Restore re-provisions each repo at its archived tip;
+/// provisioning refetches from `origin` only when that tip isn't already in the
+/// source repo's object store (see `provision_on_branch`).
+///
+/// - A clone-native agent writes new commits into its *own* `.git/objects`;
+///   archive teardown `rm -rf`s the clone, so unpushed commits are gone and
+///   restore can only recover what was pushed. This is the accepted cost of
+///   Clone mode — the reason the `workspace_mode=worktree` opt-out remains.
+/// - A pre-existing agent archived under the old Worktree default kept its
+///   commits in the *source* repo's object store (a worktree shares it), so
+///   even though teardown deleted the worktree branch, the tip object survives.
+///   Clone-mode restore borrows it back via alternates and checks it out
+///   offline — no remote branch needed (see the `provision.rs` restore tests).
+///   It only becomes unrecoverable once the source repo gc-prunes the
+///   now-unreachable object, which would have broken worktree-mode restore just
+///   the same. So the flip does not regress restore of legacy archives.
 pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>) -> WorkspaceMode {
     match engine {
         EngineKind::Docker => WorkspaceMode::Clone,
-        EngineKind::SandboxExec => WorkspaceMode::from_setting(setting),
+        // Explicit opt-out to the historical linked-worktree model; everything
+        // else — unset (the new default) or "clone" — resolves to Clone.
+        EngineKind::SandboxExec => match setting {
+            Some("worktree") => WorkspaceMode::Worktree,
+            Some("clone") | None => WorkspaceMode::Clone,
+            Some(other) => {
+                tracing::warn!(value = %other, "unrecognized workspace_mode setting; using clone");
+                WorkspaceMode::Clone
+            }
+        },
     }
 }
 
@@ -331,8 +364,9 @@ impl Supervisor {
         // Same clone-forcing rule as the primary repo: a docker-stamped agent
         // mounts its parent dir, so every workspace under it must be
         // self-contained.
+        let engine = stamped_engine(&record);
         let workspace_mode = effective_workspace_mode(
-            stamped_engine(&record),
+            engine,
             self.workspace
                 .setting(provision::WORKSPACE_MODE_SETTING)
                 .as_deref(),
@@ -342,7 +376,18 @@ impl Supervisor {
             base_ref: base.as_deref().unwrap_or("HEAD"),
             dest: &worktree,
         };
-        provision::provision(workspace_mode, &spec).await?;
+        // A repo added to a *live* agent can't get a new bind mount: the Docker
+        // container's mounts are fixed at `docker run`, so a `--shared` clone's
+        // borrowed object store would be unreachable in-container. Provision it
+        // self-contained (full object copy, no alternates) so it needs no mount
+        // and in-container git works immediately. Seatbelt has no container and
+        // uses the normal (`--shared`) clone path. A later restore relaunches
+        // the container and re-provisions via `--shared` + mount.
+        if engine == EngineKind::Docker {
+            provision::provision_self_contained(&spec).await?;
+        } else {
+            provision::provision(workspace_mode, &spec).await?;
+        }
         let base_sha = git::rev_parse(&worktree, "HEAD").await.ok();
 
         let repo = TrackedRepo {
@@ -1135,8 +1180,7 @@ mod tests {
     use super::*;
 
     /// Invariant 2: a docker agent's workspace is always a self-contained
-    /// clone, whatever the `workspace_mode` dev flag says; seatbelt keeps
-    /// honoring the flag.
+    /// clone, whatever the `workspace_mode` dev flag says.
     #[test]
     fn docker_forces_clone_workspaces() {
         for setting in [None, Some("worktree"), Some("clone"), Some("bogus")] {
@@ -1146,12 +1190,22 @@ mod tests {
                 "docker must force clone for setting {setting:?}",
             );
         }
+    }
+
+    /// Seatbelt now defaults to `Clone` (cheap via `--shared`); an explicit
+    /// `workspace_mode=worktree` is the only way back to the historical linked
+    /// worktree, which trades away offline restore of never-pushed branches.
+    #[test]
+    fn seatbelt_defaults_to_clone_with_worktree_opt_out() {
+        for setting in [None, Some("clone"), Some("bogus")] {
+            assert_eq!(
+                effective_workspace_mode(EngineKind::SandboxExec, setting),
+                WorkspaceMode::Clone,
+                "seatbelt must default to clone for setting {setting:?}",
+            );
+        }
         assert_eq!(
-            effective_workspace_mode(EngineKind::SandboxExec, Some("clone")),
-            WorkspaceMode::Clone,
-        );
-        assert_eq!(
-            effective_workspace_mode(EngineKind::SandboxExec, None),
+            effective_workspace_mode(EngineKind::SandboxExec, Some("worktree")),
             WorkspaceMode::Worktree,
         );
     }

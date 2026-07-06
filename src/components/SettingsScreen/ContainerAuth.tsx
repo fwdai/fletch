@@ -12,7 +12,7 @@ import { SetRow } from "./primitives";
  *  `sandbox/docker/auth.rs` — first hit wins, so exactly one is active). */
 const STATUS_LABELS: Record<string, string> = {
   "stored-token": "Using stored token",
-  "shell-env": "Using API key from shell profile",
+  "shell-env": "Using API key from environment",
   "credentials-file": "Using claude credentials file",
   none: "Not connected",
 };
@@ -41,7 +41,7 @@ export function ContainerAuth() {
     <>
       <SetRow
         title="Claude auth for containers"
-        sub="Docker agents can't see your Keychain login, so they need an API key from your shell profile or a setup-token. Seatbelt agents keep using your own login."
+        sub="Docker agents can't see your Keychain login, so they need an API key from your environment (shell profile or the launching terminal) or a setup-token. Seatbelt agents keep using your own login."
       >
         <span className={`set-cauth-status text-sm ${connected ? "connected" : ""}`}>
           {status ? STATUS_LABELS[status] : "Checking…"}
