@@ -464,7 +464,18 @@ async fn set_container_auth_token(
     token: String,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let (token, recognized) = sandbox::docker::auth::normalize_token(&token)?;
+    store_container_token(&state, &token)
+}
+
+/// Persist-then-mirror core shared by the paste command
+/// ([`set_container_auth_token`]) and the automated capture flow
+/// ([`connect_claude_container_auth`]): normalize + shape-check (warning, never
+/// logging the token, on an unrecognized shape), write the
+/// `claude_container_token` setting, then update the in-process mirror the
+/// spawn path reads — so a change applies to the next docker spawn without a
+/// restart. Same shape as `github::set_token`.
+fn store_container_token(db: &DbState, raw_token: &str) -> Result<(), String> {
+    let (token, recognized) = sandbox::docker::auth::normalize_token(raw_token)?;
     if !recognized {
         tracing::warn!(
             "container auth token doesn't look like a `claude setup-token` value \
@@ -472,11 +483,119 @@ async fn set_container_auth_token(
         );
     }
     {
-        let conn = state.lock();
+        let conn = db.lock();
         database::set_setting(&conn, sandbox::docker::auth::TOKEN_SETTING, &token)
             .map_err(|e| e.to_string())?;
     }
     sandbox::docker::auth::set_stored_token(Some(token));
+    Ok(())
+}
+
+/// A `claude setup-token` capture in flight, held so the code-submit and cancel
+/// commands can reach its live PTY. At most one runs at a time; dropping the
+/// stored session kills the PTY (see [`sandbox::docker::setup_token`]).
+type ClaudeSetupState = Mutex<Option<sandbox::docker::setup_token::ClaudeSetup>>;
+
+/// Drive `claude setup-token` on the user's behalf: spawn it under a PTY, emit
+/// the consent URL and the auth-code prompt to the UI (`claude-setup:url` /
+/// `claude-setup:awaiting-code`), and — once the user completes browser consent
+/// and submits the code via [`submit_claude_setup_code`] — capture the emitted
+/// token and store it through the shared [`store_container_token`] path (no
+/// paste, no restart). Resolves when the token is stored; errors on timeout,
+/// cancel, a missing `claude` CLI, or an exit with no token. The token never
+/// reaches the frontend or the logs.
+#[tauri::command]
+async fn connect_claude_container_auth(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DbState>,
+    setup: tauri::State<'_, ClaudeSetupState>,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let home = dirs::home_dir().ok_or("Could not determine your home directory.")?;
+    let bin = bin_resolve::resolve_bin("claude", &home).ok_or(
+        "Couldn't find the `claude` CLI on your PATH. Install Claude Code, then try again.",
+    )?;
+
+    let (tx, rx) = std::sync::mpsc::channel::<crate::error::Result<String>>();
+    let emit_handle = app.clone();
+    let emit: Arc<dyn Fn(sandbox::docker::setup_token::SetupEvent) + Send + Sync> =
+        Arc::new(move |event| {
+            use sandbox::docker::setup_token::SetupEvent;
+            match event {
+                SetupEvent::Url(url) => {
+                    let _ = emit_handle.emit("claude-setup:url", url);
+                }
+                SetupEvent::AwaitingCode => {
+                    let _ = emit_handle.emit("claude-setup:awaiting-code", ());
+                }
+            }
+        });
+
+    // Claim the single-flight slot atomically with the spawn: checking and
+    // storing under one lock hold closes the check→store window a concurrent
+    // connect (double "already in progress") or cancel (sees an empty slot,
+    // no-ops, then this PTY publishes and runs uncancelled until timeout) would
+    // otherwise slip through. `start` is a quick spawn and holds no `.await`.
+    {
+        let mut slot = setup.lock();
+        if slot.is_some() {
+            return Err("A Claude connection is already in progress.".into());
+        }
+        let session = sandbox::docker::setup_token::ClaudeSetup::start(
+            std::path::Path::new(&bin),
+            &std::env::temp_dir(),
+            emit,
+            tx,
+        )
+        .map_err(|e| e.to_string())?;
+        *slot = Some(session);
+    }
+
+    // Wait off the async runtime: the user drives a browser consent in between,
+    // so the ceiling is generous. Blank the slot on any outcome — dropping the
+    // session kills the PTY (success, error, or timeout alike).
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(std::time::Duration::from_secs(300))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let _ = setup.lock().take();
+
+    match outcome {
+        Ok(Ok(token)) => store_container_token(&state, &token),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(
+            "Timed out waiting for the token. Re-run and complete the browser sign-in.".into(),
+        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("Claude setup ended unexpectedly.".into())
+        }
+    }
+}
+
+/// Feed the user's auth code to the live `claude setup-token` PTY started by
+/// [`connect_claude_container_auth`].
+#[tauri::command]
+async fn submit_claude_setup_code(
+    code: String,
+    setup: tauri::State<'_, ClaudeSetupState>,
+) -> Result<(), String> {
+    let guard = setup.lock();
+    match guard.as_ref() {
+        Some(session) => session.submit_code(&code).map_err(|e| e.to_string()),
+        None => Err("No Claude connection is in progress.".into()),
+    }
+}
+
+/// Abandon an in-flight [`connect_claude_container_auth`]: drop the session
+/// (killing the PTY), which makes the waiting connect command return an error
+/// the frontend ignores via its run-id guard.
+#[tauri::command]
+async fn cancel_claude_container_auth(
+    setup: tauri::State<'_, ClaudeSetupState>,
+) -> Result<(), String> {
+    setup.lock().take();
     Ok(())
 }
 
@@ -737,6 +856,9 @@ pub fn run() {
             let workspace = Arc::new(WorkspaceManager::new(db));
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
+            // At most one `claude setup-token` capture runs at a time; the
+            // code-submit / cancel commands reach it through this slot.
+            app.manage(ClaudeSetupState::default());
 
             // Reclaim nested-Fletch RPC mailbox and worktree roots left in the
             // temp dir by dead instances (dogfooding runs). Live instances'
@@ -797,6 +919,9 @@ pub fn run() {
             get_container_auth_status,
             set_container_auth_token,
             clear_container_auth_token,
+            connect_claude_container_auth,
+            submit_claude_setup_code,
+            cancel_claude_container_auth,
             set_docker_launch_settings,
             oauth::oauth_device_login,
             commands::get_workspace,

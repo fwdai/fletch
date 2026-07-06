@@ -18,6 +18,7 @@
 //!   (one `docker run --rm --init` container per agent process).
 
 pub mod auth;
+pub mod setup_token;
 mod cleanup;
 mod cli;
 mod engine;

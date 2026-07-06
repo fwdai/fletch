@@ -412,6 +412,13 @@ export const api = {
   getContainerAuthStatus: () => invoke<ContainerAuthStatus>("get_container_auth_status"),
   setContainerAuthToken: (token: string) => invoke<void>("set_container_auth_token", { token }),
   clearContainerAuthToken: () => invoke<void>("clear_container_auth_token"),
+  // Automated `claude setup-token` capture: drives the CLI under a PTY,
+  // surfaces the consent URL + auth-code prompt as `claude-setup:url` /
+  // `claude-setup:awaiting-code` events, and resolves once the token is stored.
+  // The token itself never crosses this boundary. See `useClaudeSetup`.
+  connectClaudeContainerAuth: () => invoke<void>("connect_claude_container_auth"),
+  submitClaudeSetupCode: (code: string) => invoke<void>("submit_claude_setup_code", { code }),
+  cancelClaudeContainerAuth: () => invoke<void>("cancel_claude_container_auth"),
   // Advanced docker launch knobs (image override + resource limits). Backend-
   // owned settings (`docker_image` / `docker_memory` / `docker_cpus`): the
   // command persists all three AND updates the spawn-path mirror. Blank clears
