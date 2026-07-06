@@ -1,4 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
+import { useRef } from "react";
 import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import type { DraftAgent } from "@/store";
@@ -70,14 +71,30 @@ export function ProjectGroup({
 
   const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";
 
+  // A native drag that ends on the header dispatches a trailing `click` in some
+  // browsers, which would toggle the group open/closed after a reorder. Track
+  // whether the current interaction turned into a drag (set on dragstart, reset
+  // when a fresh press begins) and swallow that phantom click.
+  const draggedRef = useRef(false);
+
   return (
     <div className={`proj ${dragging ? "dragging" : ""} ${dropClass}`}>
       <div
         className={`proj-h flex-center ${open ? "open" : ""} ${reorderable ? "reorderable" : ""}`}
-        onClick={onToggle}
+        onMouseDown={() => {
+          draggedRef.current = false;
+        }}
+        onClick={() => {
+          if (draggedRef.current) {
+            draggedRef.current = false;
+            return;
+          }
+          onToggle();
+        }}
         title={repoPath}
         draggable={reorderable}
         onDragStart={(e) => {
+          draggedRef.current = true;
           // Marks the drag as a move; the payload itself is tracked in React state.
           e.dataTransfer.effectAllowed = "move";
           e.dataTransfer.setData("text/plain", repoPath);
