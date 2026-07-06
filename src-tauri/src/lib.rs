@@ -517,10 +517,6 @@ async fn connect_claude_container_auth(
         "Couldn't find the `claude` CLI on your PATH. Install Claude Code, then try again.",
     )?;
 
-    if setup.lock().is_some() {
-        return Err("A Claude connection is already in progress.".into());
-    }
-
     let (tx, rx) = std::sync::mpsc::channel::<crate::error::Result<String>>();
     let emit_handle = app.clone();
     let emit: Arc<dyn Fn(sandbox::docker::setup_token::SetupEvent) + Send + Sync> =
@@ -536,14 +532,25 @@ async fn connect_claude_container_auth(
             }
         });
 
-    let session = sandbox::docker::setup_token::ClaudeSetup::start(
-        std::path::Path::new(&bin),
-        &std::env::temp_dir(),
-        emit,
-        tx,
-    )
-    .map_err(|e| e.to_string())?;
-    *setup.lock() = Some(session);
+    // Claim the single-flight slot atomically with the spawn: checking and
+    // storing under one lock hold closes the check→store window a concurrent
+    // connect (double "already in progress") or cancel (sees an empty slot,
+    // no-ops, then this PTY publishes and runs uncancelled until timeout) would
+    // otherwise slip through. `start` is a quick spawn and holds no `.await`.
+    {
+        let mut slot = setup.lock();
+        if slot.is_some() {
+            return Err("A Claude connection is already in progress.".into());
+        }
+        let session = sandbox::docker::setup_token::ClaudeSetup::start(
+            std::path::Path::new(&bin),
+            &std::env::temp_dir(),
+            emit,
+            tx,
+        )
+        .map_err(|e| e.to_string())?;
+        *slot = Some(session);
+    }
 
     // Wait off the async runtime: the user drives a browser consent in between,
     // so the ceiling is generous. Blank the slot on any outcome — dropping the

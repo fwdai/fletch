@@ -26,10 +26,17 @@ use std::sync::mpsc::Sender;
 
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::error::Result;
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox::KillHandle;
+
+/// How long `on_exit` waits for the output pipeline to drain the final bytes
+/// (the token line) after the child exits, before concluding no token arrived.
+/// The reader → coalescer flushes within one ~16ms frame of EOF, so this is
+/// generous; it only ever elapses on a genuine no-token exit (error / cancel).
+const EXIT_DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 /// PTY width. Wide enough that the ~250-char consent URL and the token both fit
 /// on one line — narrow terminals wrap them mid-value (see module docs).
@@ -122,19 +129,37 @@ impl ClaudeSetup {
         let on_exit = {
             let parse = parse.clone();
             move |exit: PtyExit| {
-                let mut p = parse.lock();
-                let Some(tx) = p.tx.take() else {
-                    return; // token already delivered — normal success path
-                };
-                // EOF means no more bytes, so a lenient final scan is safe.
-                let outcome = match extract_setup_token(&p.raw) {
-                    Some(token) => Ok(token),
-                    None => Err(crate::error::Error::Other(format!(
-                        "Claude exited before returning a token ({}).",
-                        exit.message
-                    ))),
-                };
-                let _ = tx.send(outcome);
+                // `wait()` (this thread) races the reader → coalescer → on_output
+                // pipeline: on a fast token-then-exit, the final bytes may not be
+                // in `p.raw` yet. So don't conclude "no token" immediately — poll
+                // for a grace window, bailing the moment either the output path
+                // resolves (tx taken) or the token lands in the drained buffer.
+                let deadline = Instant::now() + EXIT_DRAIN_GRACE;
+                loop {
+                    {
+                        let mut p = parse.lock();
+                        if p.tx.is_none() {
+                            return; // output path already delivered the token
+                        }
+                        // EOF means no more bytes, so a lenient scan is safe.
+                        if let Some(token) = extract_setup_token(&p.raw) {
+                            if let Some(tx) = p.tx.take() {
+                                let _ = tx.send(Ok(token));
+                            }
+                            return;
+                        }
+                        if Instant::now() >= deadline {
+                            if let Some(tx) = p.tx.take() {
+                                let _ = tx.send(Err(crate::error::Error::Other(format!(
+                                    "Claude exited before returning a token ({}).",
+                                    exit.message
+                                ))));
+                            }
+                            return;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
             }
         };
 
