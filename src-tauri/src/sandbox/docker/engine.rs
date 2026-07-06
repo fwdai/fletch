@@ -9,7 +9,17 @@
 //!   root, its RPC mailbox, and `~/.claude` — are bind-mounted at their exact
 //!   host paths, and the container runs with `HOME=<host home>`; transcripts,
 //!   RPC payloads, and diff paths all embed absolute host paths, so nothing in
-//!   the app translates paths.
+//!   the app translates paths. The workspace and mailbox are read-write;
+//!   `~/.claude` (and any non-default `CLAUDE_CONFIG_DIR`) enters **read-only
+//!   except `.credentials.json`** (invariant 5).
+//! - **`~/.claude` is not a write surface (invariant 5).** `~/.claude` is
+//!   shared host state: its `settings.json` can define hooks Claude Code runs
+//!   *on the host*, and it holds other agents' transcripts and MCP secrets. It
+//!   is mounted read-only so a prompt-injected container agent cannot plant a
+//!   host-executed hook. The one writable file is `.credentials.json`,
+//!   remounted read-write on top (RW file mount ordered after the RO dir mount
+//!   in argv) so claude's own OAuth token refresh still persists to the host —
+//!   the `CredentialsFile` auth chain in [`super::auth`] depends on it.
 //! - **The real repo never enters the container (invariant 2).** Only the
 //!   agent's own parent dir is mounted; `supervisor::lifecycle` forces
 //!   clone-mode workspaces for docker agents, so no linked-worktree `.git`
@@ -19,6 +29,14 @@
 //!   container with bare `-e NAME` — the value never appears in `ps`.
 //! - **No orphans (invariant 4).** Containers carry the `fletch.host-pid` /
 //!   `fletch.agent-id` labels the startup sweep keys on (`super::cleanup`).
+//!
+//! Threat model. The container is *live-process containment*, not a trust
+//! boundary against a determined attacker: the git clone + PR flow (invariant
+//! 2) is the review gate that keeps agent output off the real repo, `~/.claude`
+//! is read-only except the credential file (invariant 5) so a compromised agent
+//! can neither plant a host-executed hook nor exfiltrate via config, and secrets
+//! stay out of argv (invariant 3). Containers run as root in v1 (a known
+//! limitation — see below), so in-container isolation is not relied upon.
 //!
 //! Containers run as root in v1: Docker Desktop's VirtioFS maps ownership so
 //! mounted host files appear owned by the user. // TODO(linux-host): UID
@@ -48,6 +66,12 @@ pub const CPUS_SETTING: &str = "docker_cpus";
 
 const DEFAULT_MEMORY: &str = "4g";
 const DEFAULT_CPUS: &str = "2";
+
+/// The one file under a claude config dir that stays writable when the dir is
+/// bind-mounted read-only: claude's OAuth refresh rewrites the rotated token
+/// here, and the `CredentialsFile` auth chain (see [`super::auth`]) needs that
+/// write to land on the host. Mounted read-write on top of the read-only dir.
+const CREDENTIALS_FILE: &str = ".credentials.json";
 
 /// Auth variables forwarded into containers with bare `-e NAME` (values ride
 /// the docker CLI's process env — invariant 3). `ANTHROPIC_BASE_URL` /
@@ -175,6 +199,15 @@ impl SandboxEngine for DockerEngine {
             })?;
         }
 
+        // The read-only config mounts get a writable `.credentials.json` overlay
+        // only when the file already exists: a bare `-v` on a missing source
+        // makes Docker create a root-owned *directory* there, which would break
+        // claude's later attempt to write the real file.
+        let claude_credentials_rw = claude_dir.join(CREDENTIALS_FILE).is_file();
+        let config_dir_credentials_rw = claude_config_dir
+            .as_deref()
+            .is_some_and(|dir| dir.join(CREDENTIALS_FILE).is_file());
+
         let prefix_args = run_args(&RunSpec {
             interactive: ctx.interactive,
             name: &name,
@@ -184,6 +217,8 @@ impl SandboxEngine for DockerEngine {
             home: ctx.home,
             cwd: ctx.cwd,
             claude_config_dir: claude_config_dir.as_deref(),
+            claude_credentials_rw,
+            config_dir_credentials_rw,
             memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
             cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
             image: &image,
@@ -320,6 +355,12 @@ struct RunSpec<'a> {
     home: &'a Path,
     cwd: &'a Path,
     claude_config_dir: Option<&'a Path>,
+    /// Whether `~/.claude/.credentials.json` exists as a file — gates the
+    /// writable overlay on the read-only `~/.claude` mount.
+    claude_credentials_rw: bool,
+    /// Same, for the non-default `CLAUDE_CONFIG_DIR` (only meaningful when
+    /// `claude_config_dir` is `Some`).
+    config_dir_credentials_rw: bool,
     memory: &'a str,
     cpus: &'a str,
     image: &'a str,
@@ -342,17 +383,21 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push("--label".into());
     args.push(cleanup::agent_id_label(spec.agent_id));
     // Mounts at identical host paths (invariant 1). Exactly these — nothing
-    // else from the host enters the container.
-    let mut mounts = vec![
-        spec.writable_root.to_path_buf(),
-        spec.rpc_dir.to_path_buf(),
-        spec.home.join(".claude"),
-    ];
-    mounts.extend(spec.claude_config_dir.map(Path::to_path_buf));
-    for mount in &mounts {
-        let path = mount.to_string_lossy();
+    // else from the host enters the container. The workspace and RPC mailbox
+    // are read-write; the claude config dir(s) are read-only except their
+    // `.credentials.json` (invariant 5) — see [`push_claude_config_mount`].
+    for path in [spec.writable_root, spec.rpc_dir] {
+        let path = path.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}"));
+    }
+    push_claude_config_mount(
+        &mut args,
+        &spec.home.join(".claude"),
+        spec.claude_credentials_rw,
+    );
+    if let Some(dir) = spec.claude_config_dir {
+        push_claude_config_mount(&mut args, dir, spec.config_dir_credentials_rw);
     }
     args.push("-w".into());
     args.push(spec.cwd.to_string_lossy().into_owned());
@@ -374,6 +419,26 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push(spec.image.into());
     args.push(spec.agent_bin.into());
     args
+}
+
+/// Bind-mount a claude config dir **read-only**, then — when `credentials_rw` —
+/// remount its `.credentials.json` read-write on top. The dir is shared host
+/// state whose `settings.json` can define hooks Claude Code executes on the
+/// host, so a container agent must not be able to write it (invariant 5); the
+/// credential file is the sole exception so OAuth token refresh persists. The
+/// RW file mount is pushed *after* the RO dir mount so Docker layers the file
+/// over the directory, and skipped entirely when the file is absent (a bare
+/// `-v` on a missing source would have Docker create a root-owned dir there).
+fn push_claude_config_mount(args: &mut Vec<String>, dir: &Path, credentials_rw: bool) {
+    let path = dir.to_string_lossy();
+    args.push("-v".into());
+    args.push(format!("{path}:{path}:ro"));
+    if credentials_rw {
+        let creds = dir.join(CREDENTIALS_FILE);
+        let creds = creds.to_string_lossy();
+        args.push("-v".into());
+        args.push(format!("{creds}:{creds}"));
+    }
 }
 
 /// `fletch-<agent_id>-<8-char nonce>`. The nonce keeps respawns (view switch,
@@ -467,6 +532,8 @@ mod tests {
             home: Path::new("/Users/u"),
             cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
             claude_config_dir: None,
+            claude_credentials_rw: false,
+            config_dir_credentials_rw: false,
             memory: "4g",
             cpus: "2",
             image: "fletch-agent:abc123def456",
@@ -484,18 +551,74 @@ mod tests {
 
     #[test]
     fn argv_mounts_exactly_the_three_dirs_at_identical_paths() {
+        // Workspace + mailbox read-write; `~/.claude` read-only (invariant 5).
+        // No credentials file in this spec, so no writable overlay is appended.
         let args = run_args(&test_spec(false));
         assert_eq!(
             values_of(&args, "-v"),
             vec![
                 "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
                 "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-                "/Users/u/.claude:/Users/u/.claude",
+                "/Users/u/.claude:/Users/u/.claude:ro",
             ],
         );
         assert_eq!(
             values_of(&args, "-w"),
             vec!["/Users/u/.fletch/worktrees/orkney/repo"],
+        );
+    }
+
+    /// Invariant 5: `~/.claude` is read-only so a prompt-injected agent cannot
+    /// plant a host-executed hook in `settings.json`, but `.credentials.json`
+    /// stays writable (appended *after* the RO dir mount) so token refresh
+    /// persists. No other read-write config surface may remain.
+    #[test]
+    fn argv_mounts_claude_readonly_with_writable_credentials() {
+        let mut spec = test_spec(false);
+        spec.claude_credentials_rw = true;
+        let args = run_args(&spec);
+        let mounts = values_of(&args, "-v");
+
+        // The dir is read-only; the credentials file is read-write on top.
+        let dir_idx = mounts
+            .iter()
+            .position(|m| *m == "/Users/u/.claude:/Users/u/.claude:ro")
+            .expect("~/.claude mounted read-only");
+        let creds_idx = mounts
+            .iter()
+            .position(|m| {
+                *m == "/Users/u/.claude/.credentials.json:/Users/u/.claude/.credentials.json"
+            })
+            .expect("credentials file mounted read-write");
+        assert!(
+            dir_idx < creds_idx,
+            "RW credentials mount must follow the RO dir mount so Docker layers it on top",
+        );
+
+        // No read-write mount of any `~/.claude` path other than the credential
+        // file — the whole point is that no config write surface survives.
+        for mount in &mounts {
+            let (src, _) = mount.split_once(':').unwrap();
+            if src.starts_with("/Users/u/.claude") {
+                assert!(
+                    mount.ends_with(":ro") || src.ends_with("/.credentials.json"),
+                    "unexpected read-write config surface: {mount}",
+                );
+            }
+        }
+    }
+
+    /// A host with no credentials file still launches — the writable overlay is
+    /// skipped rather than pointing `-v` at a missing source (which Docker would
+    /// materialize as a root-owned directory).
+    #[test]
+    fn argv_omits_credentials_mount_when_file_absent() {
+        let args = run_args(&test_spec(false)); // claude_credentials_rw: false
+        assert!(
+            !values_of(&args, "-v")
+                .iter()
+                .any(|m| m.contains("/.credentials.json")),
+            "no credentials mount when the file is absent",
         );
     }
 
@@ -565,10 +688,17 @@ mod tests {
 
     #[test]
     fn argv_mounts_and_forwards_nondefault_claude_config_dir() {
+        // The non-default config dir gets the same read-only-except-credentials
+        // treatment as `~/.claude` (invariant 5).
         let mut spec = test_spec(false);
         spec.claude_config_dir = Some(Path::new("/Users/u/.claude-eve"));
+        spec.config_dir_credentials_rw = true;
         let args = run_args(&spec);
-        assert!(values_of(&args, "-v").contains(&"/Users/u/.claude-eve:/Users/u/.claude-eve"));
+        let mounts = values_of(&args, "-v");
+        assert!(mounts.contains(&"/Users/u/.claude-eve:/Users/u/.claude-eve:ro"));
+        assert!(mounts.contains(
+            &"/Users/u/.claude-eve/.credentials.json:/Users/u/.claude-eve/.credentials.json"
+        ));
         assert!(values_of(&args, "-e").contains(&"CLAUDE_CONFIG_DIR"));
     }
 
@@ -733,6 +863,8 @@ mod tests {
             home: &home,
             cwd: &root,
             claude_config_dir: None,
+            claude_credentials_rw: false,
+            config_dir_credentials_rw: false,
             memory: "256m",
             cpus: "1",
             image: "busybox",
