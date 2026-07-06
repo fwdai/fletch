@@ -183,6 +183,10 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         model,
         instructions,
         custom?.id,
+        // The base branch the user picked on the new-agent screen. The backend
+        // forks the worktree from it and records it as the agent's parent
+        // branch (PR base / ahead-behind).
+        draft.base,
       );
       const fresh = await api.getWorkspace();
       set((state) => {

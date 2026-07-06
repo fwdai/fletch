@@ -404,8 +404,10 @@ export const api = {
     model?: string,
     instructions?: string,
     customAgentId?: string,
-    /** Explicit fork point (commit-ish). A workflow step passes the previous
-     *  step's HEAD here so its worktree continues that work. */
+    /** Base the worktree forks from and the agent's recorded parent branch
+     *  (PR base / ahead-behind). The new-agent screen passes the chosen base
+     *  branch; a workflow step instead passes the previous step's HEAD
+     *  (commit-ish) so its worktree continues that work. */
     forkBase?: string,
   ) =>
     invoke<AgentRecord>("spawn_agent", {

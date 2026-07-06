@@ -83,10 +83,11 @@ pub struct SpawnRequest {
     pub instructions: Option<String>,
     /// Custom agent identity; `None` for a plain built-in spawn.
     pub custom_agent_id: Option<String>,
-    /// Explicit fork point (a commit-ish). When set — e.g. a workflow step
-    /// forking from the previous step's HEAD — the worktree is cut from this
-    /// commit instead of the parent branch's remote fork-point. `None` keeps the
-    /// default behavior.
+    /// Base the worktree forks from, which also becomes the agent's recorded
+    /// parent branch (PR base / ahead-behind). The new-agent screen passes the
+    /// chosen base branch here; a workflow step instead passes the previous
+    /// step's HEAD (a commit-ish). `None` falls back to the repo's current
+    /// branch.
     pub fork_base: Option<String>,
 }
 
@@ -132,9 +133,14 @@ impl Supervisor {
         };
         let name = agent_id.clone();
 
-        // Parent_branch captured per-repo; primary's parent is the
-        // branch the user was on when they hit Spawn.
-        let parent_branch = git::current_branch(&repo_path).await.ok().flatten();
+        // The agent's parent branch — the base its worktree forks from and the
+        // ref it later targets for PRs / ahead-behind. The base the user chose
+        // on the new-agent screen (`fork_base`) wins; absent a choice, fall back
+        // to the branch the repo was on when the user hit Spawn.
+        let parent_branch = match &fork_base {
+            Some(base) if !base.trim().is_empty() => Some(base.clone()),
+            _ => git::current_branch(&repo_path).await.ok().flatten(),
+        };
         let subdir = allocate_repo_subdir(&repo_path, &[]);
         // Cloned for the background fork task — `parent_branch`/`subdir` are
         // moved into `primary` below.
@@ -192,17 +198,19 @@ impl Supervisor {
                 return;
             }
 
-            // Fork point: an explicit base (a workflow step forking from the
-            // previous step's HEAD) wins; otherwise fork from the freshest remote
-            // state of the parent branch so the agent never starts on stale local
-            // refs. Best-effort: offline, no remote, or a local-only branch all
-            // fall back to local HEAD.
-            let base = match &fork_base {
-                Some(sha) => Some(sha.clone()),
-                None => match &parent_for_fork {
-                    Some(b) => git::fetch_fork_point(&repo_path, b).await,
-                    None => None,
+            // Fork point: prefer the freshest remote state of the parent branch
+            // (the user's chosen base, or the repo's current branch) so the agent
+            // never starts on stale local refs. Best-effort — if the remote is
+            // unavailable (offline, no remote, a local-only branch, or a workflow
+            // commit-ish), use the ref directly when it resolves, otherwise fall
+            // through to HEAD so an unresolvable base degrades instead of failing
+            // the spawn.
+            let base = match &parent_for_fork {
+                Some(b) => match git::fetch_fork_point(&repo_path, b).await {
+                    Some(remote) => Some(remote),
+                    None => git::rev_parse(&repo_path, b).await.ok().map(|_| b.clone()),
                 },
+                None => None,
             };
             if let Err(e) =
                 git::worktree_add_detached(&repo_path, &primary_worktree, base.as_deref()).await
