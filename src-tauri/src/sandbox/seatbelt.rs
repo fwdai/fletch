@@ -55,7 +55,7 @@ impl SandboxEngine for SandboxExecEngine {
             keepalive: Keepalive::Profile(profile_file),
             // sandbox-exec is a plain process wrapper — the session's own
             // process-group escalation tears everything down; the trait's
-            // default no-op kill/is_alive apply.
+            // default no-op `kill` applies.
             kill: KillHandle::ProcessGroup,
         })
     }
@@ -305,16 +305,15 @@ pub fn build_profile(
     // A non-default `CLAUDE_CONFIG_DIR` is where claude actually writes its
     // config/transcripts/auth, so grant it too. Resolve symlinks first so the
     // SBPL path matches what the sandbox sees at write time (every other entry
-    // is canonical); then skip it only when it equals the *raw* default
-    // `{home}/.claude` granted above (`claude_state`), to avoid a redundant
-    // entry. Compare against the raw default deliberately — do NOT canonicalize
-    // this side: `claude_state` grants the raw path, so if a resolved config dir
-    // differs from it we must still add the extra grant. If `~/.claude` is
-    // itself a symlink and the config dir points at its resolved target,
-    // canonicalizing here would treat it as default and drop the grant, yet the
-    // raw `claude_state` rule wouldn't cover the target — denying claude's
-    // writes. (Docker can canonicalize both sides because its `~/.claude` bind
-    // mount follows the symlink source; the SBPL allow-list can't.)
+    // is canonical); then skip it only when it equals the default `{home}/.claude`
+    // granted above (`claude_state`), to avoid a redundant entry. `home` is
+    // already canonical, but the `.claude` leaf is NOT symlink-resolved —
+    // `claude_state` grants that literal path — so compare against it un-resolved.
+    // If `~/.claude` is itself a symlink and the config dir points at its
+    // resolved target, resolving the leaf here too would treat it as default and
+    // drop the grant, yet the literal `claude_state` rule wouldn't cover the
+    // target, denying claude's writes. (Docker can resolve both sides because its
+    // `~/.claude` bind mount follows the symlink source; the SBPL allow-list can't.)
     let claude_config_extra = claude_config_dir
         .map(resolve_existing_prefix)
         .map(|p| p.to_string_lossy().into_owned())

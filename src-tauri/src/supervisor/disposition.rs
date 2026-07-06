@@ -418,3 +418,36 @@ async fn teardown_agent_worktrees(agent_id: &str, repos: &[TrackedRepo], op: &st
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn git(repo: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn source_has_origin_reflects_the_remote() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        git(repo, &["init", "-q", "-b", "main"]);
+        // A fresh repo has no `origin` — a clone-mode tip that's gone from the
+        // object store here is genuinely unrecoverable, so the restore
+        // pre-flight must reject it rather than fail later inside `fetch_branch`.
+        assert!(!source_has_origin(repo).await);
+        // Adding a remote flips it.
+        git(repo, &["remote", "add", "origin", "https://example.com/x.git"]);
+        assert!(source_has_origin(repo).await);
+    }
+}

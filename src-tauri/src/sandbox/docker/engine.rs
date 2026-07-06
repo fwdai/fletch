@@ -396,10 +396,14 @@ fn non_blank(value: Option<&str>) -> Option<&str> {
 /// non-default dir, so the mount/forward stay at the host path (invariant 1).
 fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
     let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from)?;
-    if resolve_existing_prefix(&dir) == resolve_existing_prefix(&home.join(".claude")) {
-        return None;
-    }
-    Some(dir)
+    (!config_dir_is_default(&dir, home)).then_some(dir)
+}
+
+/// Whether `dir` resolves to the default `~/.claude`. Both sides go through
+/// [`resolve_existing_prefix`] — see [`nondefault_claude_config_dir`] for why.
+/// Pure over its inputs so the comparison rule is directly testable.
+fn config_dir_is_default(dir: &Path, home: &Path) -> bool {
+    resolve_existing_prefix(dir) == resolve_existing_prefix(&home.join(".claude"))
 }
 
 /// Every object store borrowed via git alternates by any checkout under the
@@ -1132,11 +1136,31 @@ mod tests {
     }
 
     #[test]
-    fn nondefault_config_dir_rules_match_seatbelt() {
-        // Pure check of the comparison rule (the env var itself is process
-        // state; tests must not mutate it).
-        let home = Path::new("/Users/u");
-        assert_eq!(home.join(".claude"), Path::new("/Users/u/.claude"));
+    fn config_dir_is_default_canonicalizes_both_sides() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path();
+        let default = home.join(".claude");
+        std::fs::create_dir_all(&default).unwrap();
+
+        // The literal default, and its trailing-slash spelling, are default.
+        assert!(config_dir_is_default(&default, home));
+        assert!(config_dir_is_default(&home.join(".claude/"), home));
+        // A genuinely different dir is not.
+        assert!(!config_dir_is_default(&home.join(".claude-eve"), home));
+
+        // A symlink that resolves to the default is treated as default — the
+        // both-sides canonicalization this test exists to prove. (On macOS the
+        // tempdir itself lives under a `/var`→`/private/var` symlink, so the
+        // home side is exercised too.)
+        #[cfg(unix)]
+        {
+            let link = home.join("link-to-claude");
+            std::os::unix::fs::symlink(&default, &link).unwrap();
+            assert!(
+                config_dir_is_default(&link, home),
+                "a symlink resolving to ~/.claude must read as default"
+            );
+        }
     }
 
     #[test]
