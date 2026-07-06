@@ -341,28 +341,37 @@ async fn install_delegation_hooks(dest: &Path) -> Result<()> {
     // A fresh clone always has `.git/hooks`, but create it defensively so a
     // future object-layout change can't silently drop the signal.
     tokio::fs::create_dir_all(&hooks_dir).await?;
-    // post-commit fires on `git commit` (a plain commit, or the commit that
-    // completes a conflicted merge); post-merge fires on a clean `git merge`
-    // (fast-forward or merge commit). Between them they cover every native
-    // local mutation an agent playbook performs. The reported action name
-    // mirrors the legacy RPC op the frontend still maps to each delegation kind.
-    for (hook, action) in [
-        ("post-commit", "git_commit"),
-        ("post-merge", "git_update_branch"),
-    ] {
-        let path = hooks_dir.join(hook);
-        tokio::fs::write(&path, delegation_hook_script(action)).await?;
-        set_executable(&path).await?;
-    }
+    // post-merge fires on a completed clean `git merge` (fast-forward or merge
+    // commit): the action is unambiguously a base merge.
+    let post_merge = hooks_dir.join("post-merge");
+    tokio::fs::write(&post_merge, delegation_hook_script(r#"action="git_update_branch""#)).await?;
+    set_executable(&post_merge).await?;
+    // post-commit fires on *every* plain `git commit` — including the commit
+    // that completes a *conflicted* merge, which never reaches post-merge. Those
+    // two cases must report different actions or an unrelated commit made during
+    // an `update-branch` delegation would falsely satisfy it. A merge-completion
+    // commit is a merge commit (it has a second parent, `HEAD^2`); a plain commit
+    // does not — so branch on that.
+    let post_commit = hooks_dir.join("post-commit");
+    let set_action = concat!(
+        "if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then\n",
+        "  action=\"git_update_branch\"\n",
+        "else\n",
+        "  action=\"git_commit\"\n",
+        "fi",
+    );
+    tokio::fs::write(&post_commit, delegation_hook_script(set_action)).await?;
+    set_executable(&post_commit).await?;
     Ok(())
 }
 
-/// The body of a delegation hook reporting `action`. POSIX `sh`, no bashisms:
-/// runs in the container image's shell and macOS `/bin/sh` alike. Writes the
-/// mailbox request atomically (`.tmp` then `mv`) so the watcher never reads a
-/// half-written file, and swallows every error — the git op must not depend on
-/// the signal landing.
-fn delegation_hook_script(action: &str) -> String {
+/// The body of a delegation hook. `set_action` is a shell fragment that assigns
+/// the reported op to `$action` (a literal for post-merge, a merge-commit test
+/// for post-commit). POSIX `sh`, no bashisms: runs in the container image's
+/// shell and macOS `/bin/sh` alike. Writes the mailbox request atomically
+/// (`.tmp` then `mv`) so the watcher never reads a half-written file, and
+/// swallows every error — the git op must not depend on the signal landing.
+fn delegation_hook_script(set_action: &str) -> String {
     format!(
         r#"#!/bin/sh
 # Fletch-managed: delegation signal. Pings the app RPC mailbox so the panel can
@@ -371,9 +380,10 @@ fn delegation_hook_script(action: &str) -> String {
 [ -n "$FLETCH_RPC_DIR" ] || exit 0
 reqdir="$FLETCH_RPC_DIR/requests"
 [ -d "$reqdir" ] || exit 0
+{set_action}
 id="hook-$$-$(date +%s%N 2>/dev/null || date +%s)"
 tmp="$reqdir/$id.json.tmp"
-printf '{{"id":"%s","op":"signal_git_action","args":{{"action":"{action}"}}}}' "$id" > "$tmp" 2>/dev/null \
+printf '{{"id":"%s","op":"signal_git_action","args":{{"action":"%s"}}}}' "$id" "$action" > "$tmp" 2>/dev/null \
   && mv "$tmp" "$reqdir/$id.json" 2>/dev/null
 exit 0
 "#
@@ -609,20 +619,75 @@ mod tests {
 
         provision(WorkspaceMode::Clone, &spec).await.unwrap();
 
-        for (hook, action) in [
-            ("post-commit", "git_commit"),
-            ("post-merge", "git_update_branch"),
-        ] {
+        for hook in ["post-commit", "post-merge"] {
             let path = dest.join(".git/hooks").join(hook);
             let body = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{hook} missing"));
             assert!(body.contains("signal_git_action"), "{hook} must ping the signal op");
-            assert!(
-                body.contains(&format!(r#""action":"{action}""#)),
-                "{hook} must report {action}"
-            );
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert!(mode & 0o111 != 0, "{hook} must be executable, mode={mode:o}");
         }
+        // post-merge always reports a base merge; post-commit distinguishes a
+        // merge-completion commit (HEAD^2) from a plain one.
+        let post_merge = std::fs::read_to_string(dest.join(".git/hooks/post-merge")).unwrap();
+        assert!(post_merge.contains(r#"action="git_update_branch""#));
+        let post_commit = std::fs::read_to_string(dest.join(".git/hooks/post-commit")).unwrap();
+        assert!(post_commit.contains("HEAD^2"), "post-commit must test for a merge commit");
+        assert!(post_commit.contains(r#"action="git_update_branch""#));
+        assert!(post_commit.contains(r#"action="git_commit""#));
+    }
+
+    #[tokio::test]
+    async fn post_commit_hook_reports_merge_commit_as_update_branch() {
+        // The conflicted-merge path of `update-branch`: the completing commit is
+        // a merge commit (two parents), so post-commit must report a base merge
+        // rather than a plain commit — otherwise the delegation couldn't tell it
+        // apart from an unrelated commit.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+
+        // Two branches that diverge on different files → a clean but non-ff
+        // merge. `--no-commit` stops before committing (so post-merge does not
+        // fire), leaving the merge for a manual `git commit` that post-commit
+        // sees as a two-parent merge commit.
+        run(&dest, &["checkout", "-q", "-b", "target"]);
+        std::fs::write(dest.join("t.txt"), b"t").unwrap();
+        run(&dest, &["add", "-A"]);
+        run(&dest, &["commit", "-q", "-m", "target edit"]);
+        run(&dest, &["checkout", "-q", "-b", "side", "HEAD~1"]);
+        std::fs::write(dest.join("s.txt"), b"s").unwrap();
+        run(&dest, &["add", "-A"]);
+        run(&dest, &["commit", "-q", "-m", "side edit"]);
+        run(&dest, &["checkout", "-q", "target"]);
+        run(&dest, &["merge", "--no-ff", "--no-commit", "side"]);
+
+        let mailbox = td.path().join("mbox");
+        std::fs::create_dir_all(mailbox.join("requests")).unwrap();
+        let out = std::process::Command::new("git")
+            .current_dir(&dest)
+            .env("FLETCH_RPC_DIR", &mailbox)
+            .args(["commit", "--no-edit"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+        let reqs: Vec<_> = std::fs::read_dir(mailbox.join("requests"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .collect();
+        assert_eq!(reqs.len(), 1, "exactly one signal expected");
+        let body = std::fs::read_to_string(reqs[0].path()).unwrap();
+        assert!(
+            body.contains(r#""action":"git_update_branch""#),
+            "a merge-completion commit must report a base merge, body: {body}"
+        );
     }
 
     #[tokio::test]

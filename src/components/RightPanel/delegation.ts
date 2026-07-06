@@ -96,8 +96,13 @@ export function delegationStep(
 export function gitActionProvesKind(kind: GitDelegationKind, op: string): boolean {
   switch (kind) {
     case "commit":
-    case "resolve":
       return op === "git_commit";
+    case "resolve":
+      // Completing a conflicted merge yields a merge commit, which post-commit
+      // reports as `git_update_branch`; a rebase/cherry-pick resolution is a
+      // plain commit (`git_commit`). Accept either — the snapshot (no conflicts
+      // left) gates actual completion.
+      return op === "git_commit" || op === "git_update_branch";
     case "commit-push":
     case "fix-checks":
       return op === "git_commit" || op === "git_push";
@@ -108,11 +113,12 @@ export function gitActionProvesKind(kind: GitDelegationKind, op: string): boolea
     case "push":
       return op === "git_push";
     case "update-branch":
-      // A clean merge fires the clone's post-merge hook (`git_update_branch`);
-      // a conflicted merge is completed by a native `git commit`, firing
-      // post-commit (`git_commit`). Accept either — resolution still ANDs this
-      // with the merge-state snapshot, so listing both ops is safe.
-      return op === "git_update_branch" || op === "git_commit";
+      // Proven only by an actual base merge: a clean merge fires the clone's
+      // post-merge hook, and a conflicted merge's completing commit is a merge
+      // commit that post-commit also reports as `git_update_branch`. A plain
+      // `git commit` reports `git_commit`, so an unrelated commit made during
+      // this delegation can't stand in for the merge.
+      return op === "git_update_branch";
   }
 }
 
