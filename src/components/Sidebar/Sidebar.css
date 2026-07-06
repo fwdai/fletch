@@ -75,6 +75,29 @@
 
 .proj {
   margin-bottom: 16px;
+  position: relative;
+}
+/* Dim the group while it's being dragged to a new position. */
+.proj.dragging {
+  opacity: 0.4;
+}
+/* Insertion line shown on the group under the drag pointer. */
+.proj.drop-before::before,
+.proj.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.proj.drop-before::before {
+  top: -8px;
+}
+.proj.drop-after::after {
+  bottom: -8px;
 }
 .proj-h {
   gap: 6px;
@@ -91,6 +114,26 @@
 }
 .proj-h:hover {
   background: var(--hover);
+}
+.proj-h.reorderable {
+  cursor: grab;
+}
+.proj-h.reorderable:active {
+  cursor: grabbing;
+}
+/* Drag affordance: a muted grip that firms up on hover. Fixed-width slot so
+ * showing it doesn't shift the project name. */
+.proj-h .pgrip {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin-left: -4px;
+  color: var(--fg-3);
+  opacity: 0.35;
+  transition: opacity 0.1s;
+}
+.proj-h:hover .pgrip {
+  opacity: 0.9;
 }
 .proj-h .chev {
   width: 10px;

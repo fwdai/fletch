@@ -1,4 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
+import { useRef } from "react";
 import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import type { DraftAgent } from "@/store";
@@ -17,6 +18,16 @@ interface Props {
   /** Show the remove (×) button — only true when this is a pinned-but-empty group. */
   removable: boolean;
   onToggle: () => void;
+  /** Whether this group can be dragged to reorder (disabled while searching). */
+  reorderable: boolean;
+  /** This group is the one currently being dragged. */
+  dragging: boolean;
+  /** Show a drop line above ("before") or below ("after") this group, or none. */
+  dropIndicator: "before" | "after" | null;
+  onDragStart: () => void;
+  onDragEnterGroup: () => void;
+  onDropGroup: () => void;
+  onDragEndGroup: () => void;
 }
 
 export function ProjectGroup({
@@ -27,6 +38,13 @@ export function ProjectGroup({
   open,
   removable,
   onToggle,
+  reorderable,
+  dragging,
+  dropIndicator,
+  onDragStart,
+  onDragEnterGroup,
+  onDropGroup,
+  onDragEndGroup,
 }: Props) {
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
@@ -51,13 +69,57 @@ export function ProjectGroup({
     createDraft(repoPath);
   }
 
+  const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";
+
+  // A native drag that ends on the header dispatches a trailing `click` in some
+  // browsers, which would toggle the group open/closed after a reorder. Track
+  // whether the current interaction turned into a drag (set on dragstart, reset
+  // when a fresh press begins) and swallow that phantom click.
+  const draggedRef = useRef(false);
+
   return (
-    <div className="proj">
+    <div className={`proj ${dragging ? "dragging" : ""} ${dropClass}`}>
       <div
-        className={`proj-h flex-center ${open ? "open" : ""}`}
-        onClick={onToggle}
+        className={`proj-h flex-center ${open ? "open" : ""} ${reorderable ? "reorderable" : ""}`}
+        onMouseDown={() => {
+          draggedRef.current = false;
+        }}
+        onClick={() => {
+          if (draggedRef.current) {
+            draggedRef.current = false;
+            return;
+          }
+          onToggle();
+        }}
         title={repoPath}
+        draggable={reorderable}
+        onDragStart={(e) => {
+          draggedRef.current = true;
+          // Marks the drag as a move; the payload itself is tracked in React state.
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", repoPath);
+          onDragStart();
+        }}
+        onDragEnter={reorderable ? onDragEnterGroup : undefined}
+        onDragOver={
+          reorderable
+            ? (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+              }
+            : undefined
+        }
+        onDrop={
+          reorderable
+            ? (e) => {
+                e.preventDefault();
+                onDropGroup();
+              }
+            : undefined
+        }
+        onDragEnd={reorderable ? onDragEndGroup : undefined}
       >
+        {reorderable && <Icon name="grip" size={12} className="pgrip" />}
         <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
