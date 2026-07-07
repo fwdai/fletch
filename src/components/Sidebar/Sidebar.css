@@ -101,9 +101,9 @@
 }
 .proj-h {
   gap: 6px;
-  /* name column aligned to the agents' 13px text rail; chevron lives in the
-   * gutter (absolute, like .ag-rail), so the header reads as the list's label */
-  padding: 0 8px 0 13px;
+  /* same grid as .agent: name on the 13px text rail, 9px right padding, and
+   * the chevron living in the left spine lane (absolute, like .ag-rail) */
+  padding: 0 9px 0 13px;
   height: 28px;
   border-radius: var(--r-sm);
   font-size: var(--fs-xs);
@@ -116,7 +116,9 @@
   user-select: none;
 }
 .proj-h:hover {
-  background: var(--hover);
+  /* match .agent:hover so the whole list hovers identically (softer than the
+   * old solid --hover, so content never looks like it's touching a hard edge) */
+  background: color-mix(in oklch, var(--bd-soft) 50%, transparent);
 }
 /* The whole header is the drag target — cursor:grab is the only reorder
  * affordance (no grip glyph, so the name keeps the gutter's left rail). */
@@ -128,19 +130,20 @@
 }
 .proj-h .chev {
   position: absolute;
-  left: 1px;
+  /* center (~3px) sits on the agent status-rail line (~2.5px) so the chevron
+   * reads as the header's spine glyph, in line with the rails below it */
+  left: -2px;
   top: 50%;
   width: 10px;
   height: 10px;
-  color: var(--fg-3);
-  opacity: 0.55;
+  color: var(--fg-2);
   transform: translateY(-50%);
   transition:
     transform 0.15s var(--ease),
-    opacity 0.1s;
+    color 0.1s;
 }
 .proj-h:hover .chev {
-  opacity: 0.9;
+  color: var(--fg-1);
 }
 .proj-h.open .chev {
   transform: translateY(-50%) rotate(90deg);
@@ -166,8 +169,9 @@
   margin-right: 4px;
 }
 /* Ghost affordance: always visible so "add an agent" is discoverable without
- * hovering, but borderless + muted so it never competes with the label. It
- * earns the accent fill only on hover. */
+ * hovering. Borderless (no filled chip) but at --fg-2 — a step brighter than
+ * the --fg-3 meta text, so it clearly reads as an action. Earns the accent
+ * fill on hover. */
 .proj-h .padd {
   width: 22px;
   height: 22px;
@@ -175,15 +179,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--fg-3);
+  color: var(--fg-2);
   background: transparent;
-  opacity: 0.6;
   transition: var(--transition-ui);
 }
 .proj-h .padd:hover {
   background: var(--accent-soft);
   color: var(--accent);
-  opacity: 1;
 }
 /* Remove (empty projects only) is destructive and rare — hidden until the row
  * is engaged. */
