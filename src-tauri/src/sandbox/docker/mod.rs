@@ -42,11 +42,14 @@ pub use progress::set_build_sink;
 /// provider-agnostic.
 ///
 /// Seatbelt runs six providers; Docker is being brought up one at a time as each
-/// gets its image + config-mount + auth wired here — claude and codex so far.
+/// gets its image + config-mount + auth wired here — claude, codex, opencode, and
+/// pi so far (cursor and antigravity are still gated).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DockerProvider {
     Claude,
     Codex,
+    Opencode,
+    Pi,
 }
 
 impl DockerProvider {
@@ -58,6 +61,8 @@ impl DockerProvider {
         match provider {
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
+            "opencode" => Some(Self::Opencode),
+            "pi" => Some(Self::Pi),
             _ => None,
         }
     }
@@ -72,6 +77,8 @@ impl DockerProvider {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Opencode => "opencode",
+            Self::Pi => "pi",
         }
     }
 }

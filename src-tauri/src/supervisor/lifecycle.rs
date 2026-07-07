@@ -86,8 +86,9 @@ pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>
 }
 
 /// Which providers run in Docker sandboxes: those with a wired-up container
-/// image + config-mount + auth (see [`sandbox::docker::DockerProvider`]) — claude
-/// and codex so far, brought up one at a time as the rest are ported. Checked
+/// image + config-mount + auth (see [`sandbox::docker::DockerProvider`]) — claude,
+/// codex, opencode, and pi so far (cursor and antigravity are still gated),
+/// brought up as the rest are ported. Checked
 /// before every spawn — fresh spawns and, via `spawn_agent_process`,
 /// resume/view-switch — so a docker-stamped record can never launch an
 /// unsupported provider. Consults the capability lookup rather than string-
@@ -1223,16 +1224,16 @@ mod tests {
     }
 
     #[test]
-    fn docker_supports_claude_and_codex_but_refuses_the_rest() {
-        // Both wired-up providers launch under docker.
-        for provider in ["claude", "codex"] {
+    fn docker_supports_wired_providers_but_refuses_the_rest() {
+        // All wired-up providers launch under docker.
+        for provider in ["claude", "codex", "opencode", "pi"] {
             assert!(
                 ensure_engine_supports_provider(EngineKind::Docker, provider).is_ok(),
                 "{provider} should be docker-supported",
             );
         }
         // The still-unported per-turn agents refuse with the stable copy.
-        for provider in ["cursor", "opencode", "pi", "antigravity"] {
+        for provider in ["cursor", "antigravity"] {
             let err = ensure_engine_supports_provider(EngineKind::Docker, provider)
                 .expect_err("unported providers must refuse under docker");
             assert!(

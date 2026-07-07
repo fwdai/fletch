@@ -243,17 +243,23 @@ impl SandboxEngine for DockerEngine {
             ("COLORTERM".into(), "truecolor".into()),
         ];
 
-        // Per-provider config-dir mount inputs for `RunSpec`. Defaults describe
-        // "no config surface"; the matched arm fills in what its provider needs.
+        // Owned per-provider mount inputs, borrowed into a `ProviderMounts` when
+        // the `RunSpec` is built below. Defaults describe "no config surface";
+        // the matched arm fills in what its provider needs.
         let mut claude_config_dir: Option<PathBuf> = None;
         let mut claude_credentials_rw = false;
         let mut config_dir_credentials_rw = false;
         let mut projects_src: Option<PathBuf> = None;
         let mut codex_config_dir: Option<PathBuf> = None;
         let mut forward_codex_home = false;
+        let mut oc_data: Option<PathBuf> = None;
+        let mut oc_config: Option<PathBuf> = None;
+        let mut forward_xdg_data_home = false;
+        let mut forward_xdg_config_home = false;
+        let mut pi_data: Option<PathBuf> = None;
 
-        // The config-dir env (CLAUDE_CONFIG_DIR / CODEX_HOME) is pushed before
-        // this mark so only the *auth* tail is forwarded as auth vars.
+        // The config-dir env (CLAUDE_CONFIG_DIR / CODEX_HOME / XDG_*) is pushed
+        // before this mark so only the *auth* tail is forwarded as auth vars.
         let auth_start;
         match provider {
             DockerProvider::Claude => {
@@ -330,6 +336,52 @@ impl SandboxEngine for DockerEngine {
                 )?;
                 codex_config_dir = Some(dir);
             }
+            DockerProvider::Opencode => {
+                // OpenCode's data dir carries the accounts DB / auth.json and the
+                // session storage the host transcript reader tails, so it's bound
+                // read-write at its identical host path (mirrors codex's ~/.codex).
+                let data = opencode_data_dir(ctx.home);
+                // Forward XDG_DATA_HOME only when it points somewhere other than
+                // the default `~/.local/share` the container resolves via HOME —
+                // mirrors codex's CODEX_HOME handling.
+                forward_xdg_data_home = xdg_base_is_nondefault("XDG_DATA_HOME", ctx.home, ".local/share");
+                if forward_xdg_data_home {
+                    if let Some(v) = std::env::var_os("XDG_DATA_HOME") {
+                        env.push(("XDG_DATA_HOME".into(), v.to_string_lossy().into_owned()));
+                    }
+                }
+                // The config dir (custom providers + plugin installs opencode
+                // writes) is optional: opencode runs without it, and binding a
+                // missing source would have Docker create it root-owned. Mount +
+                // forward it only when it already exists.
+                let config = opencode_config_dir(ctx.home);
+                if config.is_dir() {
+                    forward_xdg_config_home =
+                        xdg_base_is_nondefault("XDG_CONFIG_HOME", ctx.home, ".config");
+                    if forward_xdg_config_home {
+                        if let Some(v) = std::env::var_os("XDG_CONFIG_HOME") {
+                            env.push(("XDG_CONFIG_HOME".into(), v.to_string_lossy().into_owned()));
+                        }
+                    }
+                    oc_config = Some(config);
+                }
+
+                auth_start = env.len();
+                let api_keys = present_api_keys(|n| std::env::var(n).ok());
+                prepare_opencode_launch(&mut env, &data, api_keys)?;
+                oc_data = Some(data);
+            }
+            DockerProvider::Pi => {
+                // Pi keeps everything under `~/.pi` (agent/auth.json,
+                // agent/settings.json, agent/sessions/), bound read-write at its
+                // identical host path so auth persists and the host transcript
+                // reader tails the sessions.
+                let data = ctx.home.join(".pi");
+                auth_start = env.len();
+                let api_keys = present_api_keys(|n| std::env::var(n).ok());
+                prepare_pi_launch(&mut env, &data, api_keys)?;
+                pi_data = Some(data);
+            }
         }
 
         // Forward exactly the resolved auth var names (the tail appended after
@@ -338,22 +390,48 @@ impl SandboxEngine for DockerEngine {
         let prefix_args = {
             let auth_vars: Vec<&str> =
                 env[auth_start..].iter().map(|(k, _)| k.as_str()).collect();
+            // Assemble the provider's mount directives from the owned locals the
+            // matched arm above filled in. Exactly one arm ran, so exactly one
+            // variant's locals are populated.
+            let mounts = match provider {
+                DockerProvider::Claude => ProviderMounts::Claude {
+                    config_dir: claude_config_dir.as_deref(),
+                    credentials_rw: claude_credentials_rw,
+                    config_dir_credentials_rw,
+                    projects_src: projects_src
+                        .as_deref()
+                        .expect("claude launch must supply a projects_src"),
+                },
+                DockerProvider::Codex => ProviderMounts::Codex {
+                    config_dir: codex_config_dir
+                        .as_deref()
+                        .expect("codex launch must supply a config_dir"),
+                    forward_home: forward_codex_home,
+                },
+                DockerProvider::Opencode => ProviderMounts::Opencode {
+                    data_dir: oc_data
+                        .as_deref()
+                        .expect("opencode launch must supply a data_dir"),
+                    config_dir: oc_config.as_deref(),
+                    forward_xdg_data_home,
+                    forward_xdg_config_home,
+                },
+                DockerProvider::Pi => ProviderMounts::Pi {
+                    data_dir: pi_data
+                        .as_deref()
+                        .expect("pi launch must supply a data_dir"),
+                },
+            };
             run_args(&RunSpec {
                 interactive: ctx.interactive,
-                provider,
                 name: &name,
                 agent_id: ctx.agent_id,
                 writable_root: ctx.writable_root,
                 rpc_dir: ctx.rpc_dir,
                 home: ctx.home,
                 cwd: ctx.cwd,
-                claude_config_dir: claude_config_dir.as_deref(),
+                mounts,
                 borrowed_object_stores: &borrowed_object_stores,
-                claude_credentials_rw,
-                config_dir_credentials_rw,
-                projects_src: projects_src.as_deref(),
-                codex_config_dir: codex_config_dir.as_deref(),
-                forward_codex_home,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
                 cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
                 image: &image,
@@ -437,6 +515,35 @@ fn apply_container_auth(env: &mut Vec<(String, String)>, auth: ContainerAuth) ->
 const NO_CODEX_AUTH_MSG: &str =
     "No Codex credentials for containers — sign in with `codex` on the host (writes ~/.codex/auth.json) or set OPENAI_API_KEY.";
 
+/// Launch-blocking message when opencode has no usable credential: no accounts DB
+/// / auth.json on its data-dir mount and no known provider API key set. Same
+/// fail-fast rationale as [`NO_CODEX_AUTH_MSG`].
+const NO_OPENCODE_AUTH_MSG: &str =
+    "No OpenCode credentials for containers — sign in with `opencode auth login` on the host or set a provider API key (e.g. ANTHROPIC_API_KEY or OPENAI_API_KEY).";
+
+/// Launch-blocking message when pi has no usable credential: no
+/// `~/.pi/agent/auth.json` on its mount and no known provider API key set.
+const NO_PI_AUTH_MSG: &str =
+    "No Pi credentials for containers — sign in with `pi` on the host (writes ~/.pi/agent/auth.json) or set a provider API key (e.g. ANTHROPIC_API_KEY or OPENAI_API_KEY).";
+
+/// Provider API-key env vars the multi-provider CLIs (opencode, pi) read to
+/// authenticate. Whichever are set in the app's process env are forwarded by bare
+/// `-e NAME` (invariant 3) so the in-container CLI can use them, and a set key
+/// satisfies the auth requirement on its own. Curated to the mainstream providers
+/// both CLIs honor (verified against each CLI's binary) — not exhaustive, but
+/// enough that a user with any common key set can launch. Codex is excluded: it's
+/// single-provider (OpenAI) and resolved separately.
+const MULTI_PROVIDER_API_KEY_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GEMINI_API_KEY",
+    "GROQ_API_KEY",
+    "XAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "MISTRAL_API_KEY",
+];
+
 /// Codex's config dir: `$CODEX_HOME` if set, else `~/.codex`. This is both the
 /// dir bind-mounted read-write and where `transcripts::find_codex_rollouts`
 /// reads transcripts, so the two must agree — mirror its resolution.
@@ -454,6 +561,44 @@ fn codex_home_is_nondefault(home: &Path) -> bool {
     match std::env::var_os("CODEX_HOME") {
         Some(v) => resolve_existing_prefix(&PathBuf::from(v)) != resolve_existing_prefix(&home.join(".codex")),
         None => false,
+    }
+}
+
+/// OpenCode's data dir: `$XDG_DATA_HOME/opencode` if set, else
+/// `~/.local/share/opencode`. This is both the dir bind-mounted read-write and
+/// where `agent::opencode_locate` reads its session storage on the host, so the
+/// two must agree — mirror its resolution.
+fn opencode_data_dir(home: &Path) -> PathBuf {
+    xdg_base(home, "XDG_DATA_HOME", ".local/share").join("opencode")
+}
+
+/// OpenCode's config dir: `$XDG_CONFIG_HOME/opencode` if set, else
+/// `~/.config/opencode` (custom providers + plugin installs). Mounted only when
+/// it already exists (see the launch path).
+fn opencode_config_dir(home: &Path) -> PathBuf {
+    xdg_base(home, "XDG_CONFIG_HOME", ".config").join("opencode")
+}
+
+/// The XDG base dir named by `var` (`$var` if set non-blank, else
+/// `home/<default_rel>`). Shared by [`opencode_data_dir`]/[`opencode_config_dir`].
+fn xdg_base(home: &Path, var: &str, default_rel: &str) -> PathBuf {
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(default_rel))
+}
+
+/// Whether `$var` points to an XDG base other than the default `home/<default_rel>`
+/// the container already resolves via `HOME`. Only a non-default base is forwarded,
+/// mirroring [`codex_home_is_nondefault`]; both sides canonicalize via
+/// [`resolve_existing_prefix`] so a symlink can't read as non-default.
+fn xdg_base_is_nondefault(var: &str, home: &Path, default_rel: &str) -> bool {
+    match std::env::var_os(var) {
+        Some(v) if !v.is_empty() => {
+            resolve_existing_prefix(&PathBuf::from(v))
+                != resolve_existing_prefix(&home.join(default_rel))
+        }
+        _ => false,
     }
 }
 
@@ -508,6 +653,99 @@ fn codex_auth_env(api_key: Option<&str>, auth_file: bool) -> Result<Vec<(String,
         return Ok(Vec::new());
     }
     Err(Error::Other(NO_CODEX_AUTH_MSG.to_string()))
+}
+
+/// The subset of [`MULTI_PROVIDER_API_KEY_ENV`] present and non-blank via
+/// `lookup` (a var name → value resolver, `std::env::var` in production, a fixture
+/// in tests), each as a `(name, value)` to forward. Order follows the constant so
+/// forwarding is deterministic.
+fn present_api_keys(lookup: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    MULTI_PROVIDER_API_KEY_ENV
+        .iter()
+        .filter_map(|&name| {
+            let value = lookup(name)?;
+            let value = value.trim();
+            (!value.is_empty()).then(|| (name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+/// Shared auth rule for the multi-provider CLIs (opencode, pi): a forwarded
+/// provider key OR a credential carried on the read-write mount suffices; neither
+/// present → the caller's launch-blocking message. Returns the keys to forward
+/// (empty when the mount carries the login and no key is set), mirroring
+/// [`codex_auth_env`]'s shape.
+fn multi_provider_auth_env(
+    api_keys: Vec<(String, String)>,
+    credential_on_mount: bool,
+    no_auth_msg: &str,
+) -> Result<Vec<(String, String)>> {
+    if !api_keys.is_empty() || credential_on_mount {
+        Ok(api_keys)
+    } else {
+        Err(Error::Other(no_auth_msg.to_string()))
+    }
+}
+
+/// Fold opencode's container auth into the docker CLI's process env, then make
+/// sure the data dir exists so the read-write bind has a host source. OpenCode's
+/// login lives in its data-dir mount (the accounts DB `opencode.db`, or a legacy
+/// `auth.json`); a provider API key in the app's env is forwarded when set. Either
+/// alone suffices, so — like codex — a key-only user who never ran opencode gets
+/// the dir created rather than required. Neither present → fail the launch before
+/// touching the filesystem. Auth values ride the process env and forward by bare
+/// `-e` (invariant 3); only booleans are logged.
+fn prepare_opencode_launch(
+    env: &mut Vec<(String, String)>,
+    data_dir: &Path,
+    api_keys: Vec<(String, String)>,
+) -> Result<()> {
+    let auth_file = data_dir.join("auth.json").is_file();
+    let auth_db = data_dir.join("opencode.db").is_file();
+    let has_keys = !api_keys.is_empty();
+    let resolved = multi_provider_auth_env(api_keys, auth_file || auth_db, NO_OPENCODE_AUTH_MSG)?;
+    tracing::info!(
+        target: "fletch::docker",
+        auth_file,
+        auth_db,
+        api_keys = has_keys,
+        "opencode container auth resolved"
+    );
+    env.extend(resolved);
+    std::fs::create_dir_all(data_dir).map_err(|e| {
+        Error::Other(format!(
+            "Couldn't create OpenCode data dir {}: {e}",
+            data_dir.display()
+        ))
+    })?;
+    Ok(())
+}
+
+/// Fold pi's container auth into the docker CLI's process env, then make sure
+/// `~/.pi` exists so the read-write bind has a host source. Pi's login lives in
+/// `~/.pi/agent/auth.json` on that mount; a provider API key in the app's env is
+/// forwarded when set. Either alone suffices, so a key-only user who never ran pi
+/// gets `~/.pi` created rather than required. Neither present → fail the launch
+/// before touching the filesystem. Only booleans are logged.
+fn prepare_pi_launch(
+    env: &mut Vec<(String, String)>,
+    data_dir: &Path,
+    api_keys: Vec<(String, String)>,
+) -> Result<()> {
+    let auth_file = data_dir.join("agent/auth.json").is_file();
+    let has_keys = !api_keys.is_empty();
+    let resolved = multi_provider_auth_env(api_keys, auth_file, NO_PI_AUTH_MSG)?;
+    tracing::info!(
+        target: "fletch::docker",
+        auth_file,
+        api_keys = has_keys,
+        "pi container auth resolved"
+    );
+    env.extend(resolved);
+    std::fs::create_dir_all(data_dir).map_err(|e| {
+        Error::Other(format!("Couldn't create Pi data dir {}: {e}", data_dir.display()))
+    })?;
+    Ok(())
 }
 
 /// `Some(v)` only when `v` is present and non-blank — settings rows can hold
@@ -606,46 +844,76 @@ fn borrowed_object_stores(writable_root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The provider-specific config/data mounts and config-dir env a launch needs —
+/// one variant per supported provider. Replaces the additive per-provider field
+/// clusters `RunSpec` used to carry (claude_config_dir, codex_config_dir, …),
+/// which grew unwieldy at four providers with three-quarters of them inert on any
+/// given launch. Each variant holds exactly its own provider's data and
+/// [`run_args`] matches once on the whole thing. Claude's read-only-except-
+/// carve-outs treatment is unique; the other three are read-write binds at
+/// identical host paths, differing only in which dirs they mount and which env
+/// var (if any) they forward.
+enum ProviderMounts<'a> {
+    /// Claude: `~/.claude` (and any non-default `CLAUDE_CONFIG_DIR`) bind-mounted
+    /// **read-only** except a writable `.credentials.json` overlay and the
+    /// per-agent `projects/` transcript bind (invariant 5); see
+    /// [`push_claude_config_mount`].
+    Claude {
+        /// Non-default `CLAUDE_CONFIG_DIR`, mounted + forwarded alongside
+        /// `~/.claude`. `None` when unset or resolving to the default.
+        config_dir: Option<&'a Path>,
+        /// Whether `~/.claude/.credentials.json` exists — gates its RW overlay.
+        credentials_rw: bool,
+        /// Same, for the non-default `CLAUDE_CONFIG_DIR` (meaningful only when
+        /// `config_dir` is `Some`).
+        config_dir_credentials_rw: bool,
+        /// Per-agent host dir (under `writable_root`) bound read-write over each
+        /// config dir's `projects/` so the session transcript survives container
+        /// recreation while the shared `~/.claude` stays read-only.
+        projects_src: &'a Path,
+    },
+    /// Codex: `$CODEX_HOME`/`~/.codex` bind-mounted **read-write** at its host
+    /// path (auth.json refresh + session rollouts must persist).
+    Codex {
+        config_dir: &'a Path,
+        /// Forward `CODEX_HOME` (a non-default `$CODEX_HOME` only).
+        forward_home: bool,
+    },
+    /// OpenCode: its data dir (`$XDG_DATA_HOME/opencode` else
+    /// `~/.local/share/opencode`) bind-mounted **read-write** — it carries the
+    /// accounts DB / `auth.json` and the session storage the host transcript
+    /// reader tails — plus its config dir (`$XDG_CONFIG_HOME/opencode` else
+    /// `~/.config/opencode`) when it exists (custom providers + plugin installs,
+    /// which opencode writes → also RW).
+    Opencode {
+        data_dir: &'a Path,
+        config_dir: Option<&'a Path>,
+        /// Forward `XDG_DATA_HOME` / `XDG_CONFIG_HOME` (non-default bases only).
+        forward_xdg_data_home: bool,
+        forward_xdg_config_home: bool,
+    },
+    /// Pi: `~/.pi` bind-mounted **read-write** — it holds `agent/auth.json`,
+    /// `agent/settings.json`, and the `agent/sessions/` transcripts the host
+    /// reader tails at the identical path.
+    Pi { data_dir: &'a Path },
+}
+
 /// Everything [`run_args`] needs, bundled so the builder is pure and the argv
 /// shape unit-testable without a daemon.
 struct RunSpec<'a> {
     interactive: bool,
-    /// Which provider is launching — selects the config-dir mount + config-dir
-    /// env below. The `claude_*` fields apply only to [`DockerProvider::Claude`]
-    /// and `codex_config_dir`/`forward_codex_home` only to
-    /// [`DockerProvider::Codex`]; the other provider's fields are inert.
-    provider: DockerProvider,
     name: &'a str,
     agent_id: &'a str,
     writable_root: &'a Path,
     rpc_dir: &'a Path,
     home: &'a Path,
     cwd: &'a Path,
-    claude_config_dir: Option<&'a Path>,
+    /// The launching provider's config/data mounts + config-dir env forwards.
+    mounts: ProviderMounts<'a>,
     /// Object stores borrowed via git alternates (a `--shared` clone),
     /// bind-mounted read-only at their identical host paths. Empty for a
     /// worktree or an old full-copy clone.
     borrowed_object_stores: &'a [PathBuf],
-    /// Whether `~/.claude/.credentials.json` exists as a file — gates the
-    /// writable overlay on the read-only `~/.claude` mount.
-    claude_credentials_rw: bool,
-    /// Same, for the non-default `CLAUDE_CONFIG_DIR` (only meaningful when
-    /// `claude_config_dir` is `Some`).
-    config_dir_credentials_rw: bool,
-    /// Per-agent host dir bind-mounted read-write over each config dir's
-    /// `projects/` so claude's session transcript persists across container
-    /// recreation (resume) while the shared `~/.claude` stays read-only. Lives
-    /// under `writable_root`; see [`push_claude_config_mount`]. `Some` for the
-    /// claude provider, `None` for codex (which persists transcripts via its own
-    /// read-write `~/.codex` mount).
-    projects_src: Option<&'a Path>,
-    /// Codex's config dir (`$CODEX_HOME` or `~/.codex`), bind-mounted
-    /// **read-write** at its identical host path so auth-token refresh and
-    /// session rollout writes persist to the host. `Some` only for codex.
-    codex_config_dir: Option<&'a Path>,
-    /// Forward `CODEX_HOME` into the container (a non-default `$CODEX_HOME`);
-    /// only meaningful for codex.
-    forward_codex_home: bool,
     memory: &'a str,
     cpus: &'a str,
     image: &'a str,
@@ -694,38 +962,38 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         args.push(format!("{path}:{path}:ro"));
     }
     // Provider config-dir mount(s), layered after the workspace/mailbox/object
-    // stores. Claude gets the read-only-except-carve-outs treatment; codex gets
-    // a single read-write bind (see the field docs on `RunSpec`).
-    match spec.provider {
-        DockerProvider::Claude => {
-            // Claude always supplies a `projects_src`; the launch path builds it.
-            let projects_src = spec
-                .projects_src
-                .expect("claude launch must supply a projects_src");
+    // stores. Claude gets the read-only-except-carve-outs treatment; the other
+    // three get read-write binds at their identical host paths (see the
+    // `ProviderMounts` variant docs).
+    match &spec.mounts {
+        ProviderMounts::Claude {
+            config_dir,
+            credentials_rw,
+            config_dir_credentials_rw,
+            projects_src,
+        } => {
             push_claude_config_mount(
                 &mut args,
                 &spec.home.join(".claude"),
-                spec.claude_credentials_rw,
+                *credentials_rw,
                 projects_src,
             );
-            if let Some(dir) = spec.claude_config_dir {
-                push_claude_config_mount(
-                    &mut args,
-                    dir,
-                    spec.config_dir_credentials_rw,
-                    projects_src,
-                );
+            if let Some(dir) = config_dir {
+                push_claude_config_mount(&mut args, dir, *config_dir_credentials_rw, projects_src);
             }
         }
-        DockerProvider::Codex => {
-            if let Some(dir) = spec.codex_config_dir {
-                let path = dir.to_string_lossy();
-                args.push("-v".into());
-                // Read-write (no `:ro`): codex refreshes auth.json in place and
-                // writes session rollouts here, both of which must reach the host.
-                args.push(format!("{path}:{path}"));
+        ProviderMounts::Codex { config_dir, .. } => push_rw_bind(&mut args, config_dir),
+        ProviderMounts::Opencode {
+            data_dir,
+            config_dir,
+            ..
+        } => {
+            push_rw_bind(&mut args, data_dir);
+            if let Some(dir) = config_dir {
+                push_rw_bind(&mut args, dir);
             }
         }
+        ProviderMounts::Pi { data_dir } => push_rw_bind(&mut args, data_dir),
     }
     args.push("-w".into());
     args.push(spec.cwd.to_string_lossy().into_owned());
@@ -733,17 +1001,30 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     // the value ever appearing in argv (invariant 3 for the auth vars). Auth
     // vars come from `spec.auth_vars` — the set the chain actually resolved.
     let mut forwarded: Vec<&str> = vec!["HOME", "FLETCH_RPC_DIR", "TERM", "COLORTERM"];
-    match spec.provider {
-        DockerProvider::Claude => {
-            if spec.claude_config_dir.is_some() {
+    match &spec.mounts {
+        ProviderMounts::Claude { config_dir, .. } => {
+            if config_dir.is_some() {
                 forwarded.push("CLAUDE_CONFIG_DIR");
             }
         }
-        DockerProvider::Codex => {
-            if spec.forward_codex_home {
+        ProviderMounts::Codex { forward_home, .. } => {
+            if *forward_home {
                 forwarded.push("CODEX_HOME");
             }
         }
+        ProviderMounts::Opencode {
+            forward_xdg_data_home,
+            forward_xdg_config_home,
+            ..
+        } => {
+            if *forward_xdg_data_home {
+                forwarded.push("XDG_DATA_HOME");
+            }
+            if *forward_xdg_config_home {
+                forwarded.push("XDG_CONFIG_HOME");
+            }
+        }
+        ProviderMounts::Pi { .. } => {}
     }
     forwarded.extend(spec.auth_vars.iter().copied());
     for var in forwarded {
@@ -757,6 +1038,18 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push(spec.image.into());
     args.push(spec.agent_bin.into());
     args
+}
+
+/// Bind-mount `dir` **read-write** at its identical host path (no `:ro`). The
+/// shape codex/opencode/pi share: the CLI refreshes its auth and writes session
+/// state in place, and writing at the host path is what keeps the host-side
+/// transcript reader working (invariant 1). Unlike claude's config mount there
+/// are no read-only carve-outs — the user accepted a full read-write config dir
+/// for these self-authenticating CLIs (same call as codex's `~/.codex`).
+fn push_rw_bind(args: &mut Vec<String>, dir: &Path) {
+    let path = dir.to_string_lossy();
+    args.push("-v".into());
+    args.push(format!("{path}:{path}"));
 }
 
 /// Create a claude config dir and its overlay mountpoints before it's handed to
@@ -919,25 +1212,34 @@ fn describe_exit_code(code: i32) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The per-agent claude transcript dir every claude spec shares.
+    const CLAUDE_PROJECTS_SRC: &str = "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects";
+
+    /// Claude mount directives with the two carve-out knobs the argv tests flex.
+    fn claude_mounts<'a>(
+        config_dir: Option<&'a Path>,
+        credentials_rw: bool,
+        config_dir_credentials_rw: bool,
+    ) -> ProviderMounts<'a> {
+        ProviderMounts::Claude {
+            config_dir,
+            credentials_rw,
+            config_dir_credentials_rw,
+            projects_src: Path::new(CLAUDE_PROJECTS_SRC),
+        }
+    }
+
     fn test_spec<'a>(interactive: bool) -> RunSpec<'a> {
         RunSpec {
             interactive,
-            provider: DockerProvider::Claude,
             name: "fletch-orkney-deadbeef",
             agent_id: "orkney",
             writable_root: Path::new("/Users/u/.fletch/worktrees/orkney"),
             rpc_dir: Path::new("/Users/u/.fletch/rpc/orkney"),
             home: Path::new("/Users/u"),
             cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
-            claude_config_dir: None,
+            mounts: claude_mounts(None, false, false),
             borrowed_object_stores: &[],
-            claude_credentials_rw: false,
-            config_dir_credentials_rw: false,
-            projects_src: Some(Path::new(
-                "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects",
-            )),
-            codex_config_dir: None,
-            forward_codex_home: false,
             memory: "4g",
             cpus: "2",
             image: "fletch-agent:abc123def456",
@@ -951,31 +1253,45 @@ mod tests {
         }
     }
 
-    /// A codex `RunSpec`: no claude config surface, a read-write `~/.codex`
-    /// mount, `OPENAI_API_KEY` as the forwarded auth var, and the codex image.
-    fn codex_spec<'a>() -> RunSpec<'a> {
+    /// A `RunSpec` for a read-write-config provider (codex/opencode/pi): no claude
+    /// config surface, `mounts`/`image`/`agent_bin`/`auth_vars` supplied by the
+    /// caller. Keeps the codex/opencode/pi argv tests to their own differences.
+    fn rw_config_spec<'a>(
+        mounts: ProviderMounts<'a>,
+        image: &'a str,
+        agent_bin: &'a str,
+        auth_vars: &'a [&'a str],
+    ) -> RunSpec<'a> {
         RunSpec {
             interactive: false,
-            provider: DockerProvider::Codex,
             name: "fletch-orkney-deadbeef",
             agent_id: "orkney",
             writable_root: Path::new("/Users/u/.fletch/worktrees/orkney"),
             rpc_dir: Path::new("/Users/u/.fletch/rpc/orkney"),
             home: Path::new("/Users/u"),
             cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
-            claude_config_dir: None,
+            mounts,
             borrowed_object_stores: &[],
-            claude_credentials_rw: false,
-            config_dir_credentials_rw: false,
-            projects_src: None,
-            codex_config_dir: Some(Path::new("/Users/u/.codex")),
-            forward_codex_home: false,
             memory: "4g",
             cpus: "2",
-            image: "fletch-agent-codex:abc123def456",
-            agent_bin: "codex",
-            auth_vars: &["OPENAI_API_KEY"],
+            image,
+            agent_bin,
+            auth_vars,
         }
+    }
+
+    /// A codex `RunSpec`: a read-write `~/.codex` mount, `OPENAI_API_KEY` as the
+    /// forwarded auth var, and the codex image.
+    fn codex_spec<'a>() -> RunSpec<'a> {
+        rw_config_spec(
+            ProviderMounts::Codex {
+                config_dir: Path::new("/Users/u/.codex"),
+                forward_home: false,
+            },
+            "fletch-agent-codex:abc123def456",
+            "codex",
+            &["OPENAI_API_KEY"],
+        )
     }
 
     /// Two-token flag lookup: the value following `flag` each time it appears.
@@ -1019,7 +1335,7 @@ mod tests {
     #[test]
     fn argv_mounts_claude_readonly_with_writable_credentials() {
         let mut spec = test_spec(false);
-        spec.claude_credentials_rw = true;
+        spec.mounts = claude_mounts(None, true, false);
         let args = run_args(&spec);
         let mounts = values_of(&args, "-v");
 
@@ -1221,7 +1537,10 @@ mod tests {
 
         // A non-default $CODEX_HOME is forwarded so in-container codex reads it.
         let mut spec = codex_spec();
-        spec.forward_codex_home = true;
+        spec.mounts = ProviderMounts::Codex {
+            config_dir: Path::new("/Users/u/.codex"),
+            forward_home: true,
+        };
         assert!(values_of(&run_args(&spec), "-e").contains(&"CODEX_HOME"));
 
         // No token value anywhere in argv.
@@ -1231,6 +1550,121 @@ mod tests {
                 "argv token `{arg}` carries a value — only label tokens may",
             );
         }
+    }
+
+    fn opencode_spec<'a>() -> RunSpec<'a> {
+        rw_config_spec(
+            ProviderMounts::Opencode {
+                data_dir: Path::new("/Users/u/.local/share/opencode"),
+                config_dir: None,
+                forward_xdg_data_home: false,
+                forward_xdg_config_home: false,
+            },
+            "fletch-agent-opencode:abc123def456",
+            "opencode",
+            &["ANTHROPIC_API_KEY"],
+        )
+    }
+
+    fn pi_spec<'a>() -> RunSpec<'a> {
+        rw_config_spec(
+            ProviderMounts::Pi {
+                data_dir: Path::new("/Users/u/.pi"),
+            },
+            "fletch-agent-pi:abc123def456",
+            "pi",
+            &["ANTHROPIC_API_KEY"],
+        )
+    }
+
+    /// Assert no claude/codex config surface leaks into another provider's argv:
+    /// no `~/.claude` mount, no tmpfs overlay, no `projects/` transcript bind, and
+    /// no `~/.codex` mount. Shared by the opencode and pi mount tests.
+    fn assert_no_claude_or_codex_surface(args: &[String]) {
+        assert!(!args.iter().any(|a| a.contains("/.claude")), "no ~/.claude path");
+        assert!(!args.iter().any(|a| a.contains("/.codex")), "no ~/.codex path");
+        assert!(values_of(args, "--tmpfs").is_empty(), "no tmpfs overlays");
+        assert!(
+            !args.iter().any(|a| a.contains("fletch-claude-projects")),
+            "no projects/ transcript bind",
+        );
+    }
+
+    /// OpenCode mounts its data dir read-write (accounts DB + session storage must
+    /// reach the host) and launches the opencode image + `opencode` bin. Its
+    /// config dir is absent here (the common case), so only the data dir mounts.
+    #[test]
+    fn argv_opencode_mounts_data_dir_read_write() {
+        let args = run_args(&opencode_spec());
+        assert_eq!(
+            values_of(&args, "-v"),
+            vec![
+                "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
+                "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
+                // data dir read-write: no `:ro` suffix.
+                "/Users/u/.local/share/opencode:/Users/u/.local/share/opencode",
+            ],
+        );
+        assert_no_claude_or_codex_surface(&args);
+        assert_eq!(args[args.len() - 2], "fletch-agent-opencode:abc123def456");
+        assert_eq!(args[args.len() - 1], "opencode");
+    }
+
+    /// OpenCode's config dir (when present) mounts read-write after the data dir,
+    /// and a non-default XDG base forwards the matching var by bare name only.
+    #[test]
+    fn argv_opencode_mounts_config_dir_and_forwards_xdg() {
+        let mut spec = opencode_spec();
+        spec.mounts = ProviderMounts::Opencode {
+            data_dir: Path::new("/xdg/data/opencode"),
+            config_dir: Some(Path::new("/Users/u/.config/opencode")),
+            forward_xdg_data_home: true,
+            forward_xdg_config_home: false,
+        };
+        let args = run_args(&spec);
+        let mounts = values_of(&args, "-v");
+        assert!(mounts.contains(&"/xdg/data/opencode:/xdg/data/opencode"));
+        assert!(mounts.contains(&"/Users/u/.config/opencode:/Users/u/.config/opencode"));
+
+        let forwarded = values_of(&args, "-e");
+        assert!(forwarded.contains(&"XDG_DATA_HOME"), "non-default XDG_DATA_HOME forwards");
+        assert!(!forwarded.contains(&"XDG_CONFIG_HOME"), "default XDG_CONFIG_HOME must not forward");
+        assert!(forwarded.contains(&"ANTHROPIC_API_KEY"));
+        // No value token in argv (invariant 3).
+        for arg in &args {
+            assert!(
+                !arg.contains('=') || arg.starts_with("fletch."),
+                "argv token `{arg}` carries a value",
+            );
+        }
+    }
+
+    /// Pi mounts `~/.pi` read-write and launches the pi image + `pi` bin; no
+    /// claude/codex surface, and the forwarded key rides by bare name only.
+    #[test]
+    fn argv_pi_mounts_dot_pi_read_write() {
+        let args = run_args(&pi_spec());
+        assert_eq!(
+            values_of(&args, "-v"),
+            vec![
+                "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
+                "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
+                "/Users/u/.pi:/Users/u/.pi",
+            ],
+        );
+        assert_no_claude_or_codex_surface(&args);
+        let forwarded = values_of(&args, "-e");
+        assert!(forwarded.contains(&"ANTHROPIC_API_KEY"), "missing bare -e ANTHROPIC_API_KEY");
+        assert!(!forwarded.contains(&"CLAUDE_CONFIG_DIR"));
+        assert!(!forwarded.contains(&"CODEX_HOME"));
+        for arg in &args {
+            assert!(
+                !arg.contains('=') || arg.starts_with("fletch."),
+                "argv token `{arg}` carries a value",
+            );
+        }
+        assert_eq!(args[args.len() - 2], "fletch-agent-pi:abc123def456");
+        assert_eq!(args[args.len() - 1], "pi");
     }
 
     #[test]
@@ -1401,8 +1835,7 @@ mod tests {
         // The non-default config dir gets the same read-only-except-credentials
         // treatment as `~/.claude` (invariant 5).
         let mut spec = test_spec(false);
-        spec.claude_config_dir = Some(Path::new("/Users/u/.claude-eve"));
-        spec.config_dir_credentials_rw = true;
+        spec.mounts = claude_mounts(Some(Path::new("/Users/u/.claude-eve")), false, true);
         let args = run_args(&spec);
         let mounts = values_of(&args, "-v");
         assert!(mounts.contains(&"/Users/u/.claude-eve:/Users/u/.claude-eve:ro"));
@@ -1616,6 +2049,105 @@ mod tests {
         assert!(!no_auth.exists(), "auth failure must not create the dir");
     }
 
+    /// `present_api_keys` returns only the known, non-blank vars, trimmed, in the
+    /// constant's order — and never a var outside the curated set.
+    #[test]
+    fn present_api_keys_filters_trims_and_orders() {
+        let env: std::collections::HashMap<&str, &str> = [
+            ("OPENAI_API_KEY", " sk-openai \n"),
+            ("ANTHROPIC_API_KEY", "sk-ant"),
+            ("GROQ_API_KEY", "   "),      // blank → dropped
+            ("SOME_OTHER_KEY", "nope"),   // not in the curated set → dropped
+        ]
+        .into_iter()
+        .collect();
+        let keys = present_api_keys(|n| env.get(n).map(|v| v.to_string()));
+        assert_eq!(
+            keys,
+            vec![
+                // ANTHROPIC precedes OPENAI in MULTI_PROVIDER_API_KEY_ENV.
+                ("ANTHROPIC_API_KEY".to_string(), "sk-ant".to_string()),
+                ("OPENAI_API_KEY".to_string(), "sk-openai".to_string()),
+            ],
+        );
+        assert!(present_api_keys(|_| None).is_empty());
+    }
+
+    /// The shared multi-provider rule: a forwarded key OR a credential on the
+    /// mount resolves (returning the keys to forward); neither → the given error.
+    #[test]
+    fn multi_provider_auth_env_key_or_mount_or_fail() {
+        let key = vec![("ANTHROPIC_API_KEY".to_string(), "sk".to_string())];
+        // Key present: forwarded, regardless of the mount.
+        assert_eq!(
+            multi_provider_auth_env(key.clone(), false, NO_OPENCODE_AUTH_MSG).unwrap(),
+            key,
+        );
+        // No key but a credential on the mount: resolves with nothing to inject.
+        assert!(multi_provider_auth_env(Vec::new(), true, NO_PI_AUTH_MSG).unwrap().is_empty());
+        // Neither: the caller's fail-fast message.
+        let err = multi_provider_auth_env(Vec::new(), false, NO_OPENCODE_AUTH_MSG).unwrap_err();
+        assert_eq!(err.to_string(), NO_OPENCODE_AUTH_MSG);
+    }
+
+    /// Regression (mirrors the codex key-only case): an opencode user with only a
+    /// provider API key set (never ran opencode) still launches — the missing data
+    /// dir is created for the RW bind. A stored login on the mount (opencode.db or
+    /// auth.json) also resolves. No credential at all fails before touching disk.
+    #[test]
+    fn opencode_key_only_launch_creates_missing_data_dir() {
+        let td = tempfile::tempdir().unwrap();
+
+        // Key-only: dir created, key forwarded.
+        let dir = td.path().join("share/opencode");
+        let mut env = Vec::new();
+        let keys = vec![("OPENAI_API_KEY".to_string(), "sk".to_string())];
+        prepare_opencode_launch(&mut env, &dir, keys.clone()).unwrap();
+        assert!(dir.is_dir(), "data dir must exist for the RW bind mount");
+        assert_eq!(env, keys);
+
+        // Stored login on the mount (opencode.db), no key: resolves, nothing to inject.
+        let db_dir = td.path().join("with-db/opencode");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        std::fs::write(db_dir.join("opencode.db"), b"x").unwrap();
+        let mut env2 = Vec::new();
+        prepare_opencode_launch(&mut env2, &db_dir, Vec::new()).unwrap();
+        assert!(env2.is_empty());
+
+        // Neither: fail fast, no dir created.
+        let none = td.path().join("no-auth/opencode");
+        let err = prepare_opencode_launch(&mut Vec::new(), &none, Vec::new()).unwrap_err();
+        assert_eq!(err.to_string(), NO_OPENCODE_AUTH_MSG);
+        assert!(!none.exists(), "auth failure must not create the dir");
+    }
+
+    /// Regression for pi: key-only user launches (`~/.pi` created for the RW bind);
+    /// `~/.pi/agent/auth.json` on the mount also resolves; neither fails fast.
+    #[test]
+    fn pi_key_only_launch_creates_missing_data_dir() {
+        let td = tempfile::tempdir().unwrap();
+
+        let dir = td.path().join(".pi");
+        let mut env = Vec::new();
+        let keys = vec![("ANTHROPIC_API_KEY".to_string(), "sk".to_string())];
+        prepare_pi_launch(&mut env, &dir, keys.clone()).unwrap();
+        assert!(dir.is_dir(), "~/.pi must exist for the RW bind mount");
+        assert_eq!(env, keys);
+
+        // auth.json on the mount, no key: resolves, nothing to inject.
+        let with_auth = td.path().join(".pi-authed");
+        std::fs::create_dir_all(with_auth.join("agent")).unwrap();
+        std::fs::write(with_auth.join("agent/auth.json"), b"{}").unwrap();
+        let mut env2 = Vec::new();
+        prepare_pi_launch(&mut env2, &with_auth, Vec::new()).unwrap();
+        assert!(env2.is_empty());
+
+        let none = td.path().join(".pi-no-auth");
+        let err = prepare_pi_launch(&mut Vec::new(), &none, Vec::new()).unwrap_err();
+        assert_eq!(err.to_string(), NO_PI_AUTH_MSG);
+        assert!(!none.exists(), "auth failure must not create the dir");
+    }
+
     /// Integration: a real `docker run` round-trip through the exact argv the
     /// engine builds — busybox standing in for the agent image, `echo` for
     /// the agent binary. `FLETCH_DOCKER_TESTS=1 cargo test -- --ignored`
@@ -1641,20 +2173,19 @@ mod tests {
         let name = container_name("b2-int-test");
         let args = run_args(&RunSpec {
             interactive: false,
-            provider: DockerProvider::Claude,
             name: &name,
             agent_id: "b2-int-test",
             writable_root: &root,
             rpc_dir: &rpc,
             home: &home,
             cwd: &root,
-            claude_config_dir: None,
+            mounts: ProviderMounts::Claude {
+                config_dir: None,
+                credentials_rw: false,
+                config_dir_credentials_rw: false,
+                projects_src: &projects_src,
+            },
             borrowed_object_stores: &[],
-            claude_credentials_rw: false,
-            config_dir_credentials_rw: false,
-            projects_src: Some(&projects_src),
-            codex_config_dir: None,
-            forward_codex_home: false,
             memory: "256m",
             cpus: "1",
             image: "busybox",
