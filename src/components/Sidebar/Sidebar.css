@@ -118,7 +118,9 @@
 }
 .proj-h:hover {
   /* match .agent:hover so the whole list hovers identically (softer than the
-   * old solid --hover, so content never looks like it's touching a hard edge) */
+   * old solid --hover, so content never looks like it's touching a hard edge).
+   * --hover first as a fallback for WebViews without color-mix() support. */
+  background: var(--hover);
   background: color-mix(in oklch, var(--bd-soft) 50%, transparent);
 }
 /* The whole header is the drag target — cursor:grab is the only reorder
