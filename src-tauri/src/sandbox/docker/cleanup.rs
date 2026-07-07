@@ -180,15 +180,16 @@ fn parse_images_line(line: &str) -> Option<ImageRow> {
 /// of `image_tag(provider)` across all providers) is removed — old-hash tags
 /// from Dockerfile revisions and untagged leftovers from TTL rebuilds alike.
 ///
-/// Legacy path: images built before the label existed can only be attributed
-/// by name — a non-current tag under one of Fletch's own repos (`fletch-agent`,
-/// `fletch-agent-codex`, …; Fletch-owned by construction) is removed too. This
-/// arm becomes dead weight once pre-label installs age out and can then be
-/// deleted.
+/// Legacy path: images built before the label existed carry no ownership
+/// proof, so they are removed only on an exact [`LEGACY_TAGS`] match — the
+/// closed list of tags pre-label Fletch actually shipped. Neither namespace
+/// nor tag shape is trusted on its own: a user image in a Fletch repo, even
+/// under a hex tag, never matches. This arm becomes dead weight once
+/// pre-label installs age out and can then be deleted along with the list.
 ///
 /// Never touched: current tags, the user's `docker_image` override (excluded
 /// defensively even though it can't carry the label), any unlabeled image
-/// outside Fletch's repos, and images in use by a container — `docker rmi`
+/// not on the legacy list, and images in use by a container — `docker rmi`
 /// runs WITHOUT `-f`, so an in-use image fails removal, which is expected and
 /// logged at debug. Returns the number of images actually removed; callers
 /// treat all failures as non-fatal.
@@ -268,16 +269,17 @@ fn list_images(args: &[&str]) -> Result<Vec<ImageRow>> {
 /// The label is the authority, with one belt-and-braces exception each way:
 /// a *labeled* image tagged outside `known_repos` is kept (a user re-tagged
 /// our image under their own name — their tag, their call), and an *unlabeled*
-/// image inside `known_repos` is removed (the legacy path — the repo names are
-/// Fletch-owned by construction). Current tags and the `docker_image` override
-/// are always kept.
+/// image is removed only on an exact [`LEGACY_TAGS`] match (the closed list of
+/// tags pre-label Fletch actually shipped — shape or namespace alone is never
+/// an ownership signal for unlabeled images). Current tags and the
+/// `docker_image` override are always kept.
 ///
-/// Within Fletch's repos, only tags Fletch itself could have written are
-/// removal candidates: the content-addressed shape (12 lowercase hex chars —
-/// see `image::tag_for`) or no tag at all (a dangling rebuild predecessor).
-/// A human-shaped tag like `fletch-agent:backup` — whether the user tagged
-/// our labeled image or built their own into our namespace — is theirs to
-/// keep: a tag a human wrote is the human's call.
+/// Within Fletch's repos, a labeled image is a removal candidate only under a
+/// tag Fletch itself could have written: the content-addressed shape (12
+/// lowercase hex chars — see `image::tag_for`) or no tag at all (a dangling
+/// rebuild predecessor). A human-shaped tag like `fletch-agent:backup` —
+/// a user's `docker tag` of our image — is theirs to keep: a tag a human
+/// wrote is the human's call.
 fn image_removal_refs(
     labeled: &[ImageRow],
     legacy: &[ImageRow],
@@ -321,14 +323,12 @@ fn image_removal_refs(
         push(row);
     }
     for row in legacy {
-        // The repo filter is load-bearing for the "unlabeled non-fletch →
-        // keep" property even though the listing is already repo-scoped:
-        // selection must be safe regardless of what the listing fed it.
-        if row.untagged() || !known_repos.contains(row.repo.as_str()) {
+        // Exact match only: an unlabeled image carries no ownership proof, so
+        // the only safe removal signal is a tag we know Fletch shipped. A
+        // user's own image in our namespace — even under a hex/git-SHA-shaped
+        // tag like `fletch-agent:deadbeefcafe` — never matches.
+        if row.untagged() || !LEGACY_TAGS.contains(&row.named().as_str()) {
             continue;
-        }
-        if !is_content_addressed_tag(&row.tag) {
-            continue; // user image built into our namespace: never touch
         }
         if protected(row) {
             continue;
@@ -344,6 +344,23 @@ fn image_removal_refs(
 fn is_content_addressed_tag(tag: &str) -> bool {
     tag.len() == 12 && tag.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
+
+/// Every tag pre-label Fletch ever shipped — the exact, closed set of images
+/// the legacy GC arm may remove. Each is `tag_for(repo, dockerfile,
+/// entrypoint)` recomputed from the embedded constants at the named git
+/// commit (the hash input is `sha256(dockerfile ++ entrypoint)[..12]`); the
+/// claude entry was additionally confirmed against a real pre-label install.
+/// The label era starts with the commit introducing this list, so it never
+/// grows — once pre-label installs have aged out, this arm and list can be
+/// deleted wholesale.
+const LEGACY_TAGS: &[&str] = &[
+    "fletch-agent:1ea320e4ab55",          // claude, unchanged pre-label era (at 3870598)
+    "fletch-agent-codex:fa189de85caf",    // codex, #367..3870598
+    "fletch-agent-opencode:87523a7118a0", // opencode, #368..3870598
+    "fletch-agent-pi:54ab6c418d9c",       // pi, #368..3870598
+    "fletch-agent-cursor:2d8ee8975d0d",   // cursor, #369 before the --version build check (3557367)
+    "fletch-agent-cursor:b84044879c26",   // cursor, #369 after it (b77d973..3870598)
+];
 
 #[cfg(test)]
 mod tests {
@@ -432,8 +449,8 @@ mod tests {
             row("hhh", "fletch-agent", "backup"),
         ];
         let legacy = vec![
-            // Pre-label image in a Fletch-owned repo: removable by name.
-            row("fff", "fletch-agent-codex", "badc0debadc0"),
+            // Genuine pre-label image: exact LEGACY_TAGS match, removable.
+            row("fff", "fletch-agent-codex", "fa189de85caf"),
             // Current tag also shows up in the repo-scoped listing: kept.
             row("bbb", "fletch-agent", "cafe00000000"),
             // Selection must be safe even if a listing misbehaves: an
@@ -441,6 +458,9 @@ mod tests {
             row("ggg", "someones-image", "latest"),
             // A user's own image built into our namespace: human tag, kept.
             row("iii", "fletch-agent", "backup"),
+            // A user's own image under a hex/git-SHA-shaped tag in our
+            // namespace: shape is not ownership — kept (exact-match only).
+            row("jjj", "fletch-agent", "deadbeefcafe"),
         ];
 
         let refs = image_removal_refs(
@@ -455,9 +475,24 @@ mod tests {
             vec![
                 "fletch-agent:0dab1e000000".to_string(),
                 "ccc".to_string(),
-                "fletch-agent-codex:badc0debadc0".to_string(),
+                "fletch-agent-codex:fa189de85caf".to_string(),
             ],
         );
+    }
+
+    /// The legacy allowlist stays well-formed: every entry names a repo the
+    /// current binary owns, under a content-addressed tag shape. (The hash
+    /// values themselves are frozen history — recomputed from the embedded
+    /// constants at the commits named on each entry.)
+    #[test]
+    fn legacy_tags_are_fletch_shaped() {
+        let known_repos: HashSet<&'static str> =
+            DockerProvider::ALL.iter().map(|p| image::image_repo(*p)).collect();
+        for entry in LEGACY_TAGS {
+            let (repo, tag) = entry.split_once(':').expect("legacy entry must be repo:tag");
+            assert!(known_repos.contains(repo), "unknown legacy repo: {repo}");
+            assert!(is_content_addressed_tag(tag), "malformed legacy tag: {tag}");
+        }
     }
 
     /// Only tags Fletch's content addressing could have written count as
