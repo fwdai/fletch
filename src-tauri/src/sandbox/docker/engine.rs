@@ -145,6 +145,90 @@ pub fn set_launch_settings(settings: LaunchSettings) {
     *LAUNCH_SETTINGS.write() = settings;
 }
 
+/// Settings key persisting the version-refresh loop guard: a JSON object of
+/// `provider id → "host_version@image_tag"`, recording the last host/image
+/// pairing a version-mismatch rebuild *succeeded* for. Not a user-facing
+/// setting — private bookkeeping that must survive restarts: in the guarded
+/// case (host CLI pinned away from the registry's latest, so the mismatch
+/// persists even after a successful rebuild) an in-memory guard would decay
+/// into one full `--no-cache` rebuild on every app run. One pair per provider
+/// suffices — any change to either side legitimately warrants one fresh
+/// attempt.
+pub const VERSION_GUARD_SETTING: &str = "docker_version_refresh_guard";
+
+/// Writes the guard map back to its settings row (installed by
+/// [`init_version_refresh_guard`]).
+type VersionGuardPersist = Box<dyn Fn(&std::collections::HashMap<String, String>) + Send + Sync>;
+
+/// The version-refresh loop guard, mirrored in-process like
+/// [`LAUNCH_SETTINGS`] (the image code that consults it runs on spawn paths
+/// and background threads with no DB handle). Seeded and wired to a persister
+/// at startup by [`init_version_refresh_guard`]; until then (tests, headless)
+/// it's empty and unpersisted, and recording still guards the current
+/// process run.
+struct VersionGuard {
+    /// provider id → `"host_version@image_tag"` last successfully rebuilt for.
+    attempted: std::collections::HashMap<String, String>,
+    /// Writes the whole map back to the settings row.
+    persist: Option<VersionGuardPersist>,
+}
+
+static VERSION_GUARD: RwLock<Option<VersionGuard>> = RwLock::new(None);
+
+/// Install the loop-guard state: `attempted` as loaded from
+/// [`VERSION_GUARD_SETTING`], `persist` writing it back. The app wires this
+/// to a `database::set_setting` closure at startup — the same mirror idiom as
+/// [`set_launch_settings`] and `progress::set_build_sink`.
+pub fn init_version_refresh_guard(
+    attempted: std::collections::HashMap<String, String>,
+    persist: impl Fn(&std::collections::HashMap<String, String>) + Send + Sync + 'static,
+) {
+    *VERSION_GUARD.write() = Some(VersionGuard {
+        attempted,
+        persist: Some(Box::new(persist)),
+    });
+}
+
+/// Whether a version-mismatch rebuild already succeeded for exactly this
+/// `pair` (`"host_version@image_tag"`). If so the trigger is inert: the
+/// mismatch survived a rebuild, so it isn't rebuildable-away (pinned host).
+pub(super) fn version_refresh_attempted(provider_id: &str, pair: &str) -> bool {
+    VERSION_GUARD
+        .read()
+        .as_ref()
+        .is_some_and(|g| g.attempted.get(provider_id).map(String::as_str) == Some(pair))
+}
+
+/// Record (and persist, when wired) that a version-mismatch rebuild succeeded
+/// for `pair`. Called from the background rebuild thread on success only —
+/// failures must retry on a later run, exactly like TTL rebuild failures.
+pub(super) fn record_version_refresh(provider_id: &str, pair: String) {
+    let mut guard = VERSION_GUARD.write();
+    let state = guard.get_or_insert_with(|| VersionGuard {
+        attempted: std::collections::HashMap::new(),
+        persist: None,
+    });
+    state.attempted.insert(provider_id.to_string(), pair);
+    if let Some(persist) = &state.persist {
+        persist(&state.attempted);
+    }
+}
+
+/// The current `docker_image` override, trimmed, `None` when unset/blank —
+/// read by the image GC (`cleanup::sweep_stale_images`) to defensively exclude
+/// the user's image from removal. Structurally it should never be a candidate
+/// (Fletch never builds it, so it carries no `fletch.agent` label and lives
+/// outside Fletch's repos), but a lifecycle we don't own gets a second fence.
+pub(super) fn image_override() -> Option<String> {
+    LAUNCH_SETTINGS
+        .read()
+        .image_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// The `SandboxEngine` implementation for Docker. Obtain it via
 /// [`DockerEngine::shared`]: launches embed an `Arc` of the engine in their
 /// [`KillHandle`], and sharing one instance also shares the once-per-app-run
@@ -174,7 +258,13 @@ impl DockerEngine {
 
     /// The image to launch `provider` from, resolving (and building, if the
     /// embedded image is missing) at most once per app run per (provider,
-    /// override) pair.
+    /// override) pair. Resolution also runs the background freshness checks
+    /// (TTL + host/container version parity — see `image::resolve_image`),
+    /// so their cadence is once per app run too. The host version comes from
+    /// the existing memoized probe (`agent::cached_provider_version` — at
+    /// most one `--version` subprocess per provider per run, shared with
+    /// ingest); a machine with no host CLI yields `None` and the version
+    /// trigger is simply inert, leaving the TTL as the backstop.
     fn resolve_image_cached(
         &self,
         provider: DockerProvider,
@@ -185,11 +275,24 @@ impl DockerEngine {
         if let Some(tag) = cache.get(&key) {
             return Ok(tag.clone());
         }
+        // Skip the host probe entirely on the override path: the user's image
+        // is never inspected or refreshed, so there is nothing to compare.
+        let host_cli_version = if override_image.map(str::trim).filter(|s| !s.is_empty()).is_none()
+        {
+            crate::agent::cached_provider_version(provider.id())
+        } else {
+            None
+        };
         // Per-line build output goes to the log; the UI build toast is driven
         // separately by the `progress` sink inside `image::ensure_image`.
         let on_progress = |line: &str| tracing::info!(target: "fletch::docker_build", "{line}");
-        let tag = image::resolve_image(provider, override_image, &on_progress)
-            .map_err(|e| Error::Other(format!("preparing the Docker sandbox image failed: {e}")))?;
+        let tag = image::resolve_image(
+            provider,
+            override_image,
+            host_cli_version.as_deref(),
+            &on_progress,
+        )
+        .map_err(|e| Error::Other(format!("preparing the Docker sandbox image failed: {e}")))?;
         cache.insert(key, tag.clone());
         Ok(tag)
     }
@@ -1293,6 +1396,48 @@ fn describe_exit_code(code: i32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The version-refresh loop guard: exact-pair matching, per-provider
+    /// isolation, persistence callback on record, and safe recording before
+    /// `init` is ever called. Touches the process-wide `VERSION_GUARD`
+    /// static — the only test that does, so no serialization needed (the
+    /// same shared-global contract as `progress`'s sink test).
+    #[test]
+    fn version_refresh_guard_round_trip() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        // Pre-init (headless/tests): nothing attempted, recording is safe and
+        // guards the current process even without a persister.
+        assert!(!version_refresh_attempted("claude", "v1@fletch-agent:aaa"));
+        record_version_refresh("claude", "v1@fletch-agent:aaa".into());
+        assert!(version_refresh_attempted("claude", "v1@fletch-agent:aaa"));
+
+        // Init replaces state wholesale (the app seeds from the settings row).
+        let persisted = Arc::new(AtomicUsize::new(0));
+        let count = persisted.clone();
+        init_version_refresh_guard(
+            [("codex".to_string(), "v2@fletch-agent-codex:bbb".to_string())].into(),
+            move |map| {
+                count.store(map.len(), Ordering::SeqCst);
+            },
+        );
+        assert!(version_refresh_attempted("codex", "v2@fletch-agent-codex:bbb"));
+        // Exact pair only: a new host version or a new tag re-arms the trigger.
+        assert!(!version_refresh_attempted("codex", "v3@fletch-agent-codex:bbb"));
+        assert!(!version_refresh_attempted("codex", "v2@fletch-agent-codex:ccc"));
+        // Per-provider isolation.
+        assert!(!version_refresh_attempted("claude", "v2@fletch-agent-codex:bbb"));
+
+        // Recording persists the whole map through the installed callback,
+        // and one pair per provider suffices (newer replaces older).
+        record_version_refresh("claude", "v9@fletch-agent:ddd".into());
+        assert_eq!(persisted.load(Ordering::SeqCst), 2, "persister sees both providers");
+        record_version_refresh("claude", "v10@fletch-agent:ddd".into());
+        assert!(version_refresh_attempted("claude", "v10@fletch-agent:ddd"));
+        assert!(!version_refresh_attempted("claude", "v9@fletch-agent:ddd"));
+        assert_eq!(persisted.load(Ordering::SeqCst), 2, "replaced, not accumulated");
+    }
 
     /// The per-agent claude transcript dir every claude spec shares.
     const CLAUDE_PROJECTS_SRC: &str = "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects";

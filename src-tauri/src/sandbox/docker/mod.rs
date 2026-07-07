@@ -13,7 +13,8 @@
 //!   the app on a wedged daemon.
 //! - [`probe`] — cached daemon availability for UI polling.
 //! - [`image`] — the embedded agent Dockerfile and content-addressed builds.
-//! - [`cleanup`] — container labels and the dead-instance orphan sweep.
+//! - [`cleanup`] — container labels, the dead-instance orphan sweep, and the
+//!   stale agent-image GC.
 //! - [`engine`] — `DockerEngine`, the `SandboxEngine` implementation
 //!   (one `docker run --rm --init` container per agent process).
 
@@ -27,7 +28,8 @@ mod probe;
 mod progress;
 
 pub use engine::{
-    set_launch_settings, DockerEngine, LaunchSettings, CPUS_SETTING, IMAGE_SETTING, MEMORY_SETTING,
+    init_version_refresh_guard, set_launch_settings, DockerEngine, LaunchSettings, CPUS_SETTING,
+    IMAGE_SETTING, MEMORY_SETTING, VERSION_GUARD_SETTING,
 };
 pub use probe::{availability, DockerAvailability};
 pub use progress::set_build_sink;
@@ -57,6 +59,19 @@ pub enum DockerProvider {
 }
 
 impl DockerProvider {
+    /// Every docker-supported provider. The image GC derives "the current
+    /// expected images" from this list, so a variant missing here would make
+    /// the GC treat that provider's live image as stale — when adding a
+    /// variant, extend this list (the exhaustive `match` in `image::image_spec`
+    /// will already force you into that file).
+    pub const ALL: [Self; 5] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Opencode,
+        Self::Pi,
+        Self::Cursor,
+    ];
+
     /// Map a provider id (as stamped on `AgentRecord.provider` / used by the
     /// frontend) to its Docker support, or `None` when the provider has no
     /// container support yet — the launch gate turns `None` into the
@@ -69,6 +84,21 @@ impl DockerProvider {
             "pi" => Some(Self::Pi),
             "cursor" => Some(Self::Cursor),
             _ => None,
+        }
+    }
+
+    /// The provider id string — [`from_id`](Self::from_id)'s inverse
+    /// (round-trip enforced by a test in [`image`]). Used where a variant must
+    /// key string-indexed state shared with the rest of the app, e.g. the host
+    /// version probe (`agent::cached_provider_version`) and the persisted
+    /// version-refresh loop guard (see `engine`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Opencode => "opencode",
+            Self::Pi => "pi",
+            Self::Cursor => "cursor",
         }
     }
 
@@ -90,10 +120,12 @@ impl DockerProvider {
 }
 
 /// Best-effort reclamation of containers left behind by dead Fletch
-/// instances, for app startup (`lib.rs`, next to the nested-root sweeps).
-/// Runs on its own thread and probes the daemon first, so startup never
-/// waits on Docker — not even for the 2s probe timeout — and a machine
-/// without Docker skips the sweep entirely.
+/// instances — and of superseded agent images — for app startup (`lib.rs`,
+/// next to the nested-root sweeps). Runs on its own thread and probes the
+/// daemon first, so startup never waits on Docker — not even for the 2s probe
+/// timeout — and a machine without Docker skips both sweeps entirely. The
+/// image sweep runs second: a removed orphan container can unpin the stale
+/// image it was running. Both sweeps are non-fatal by construction.
 pub fn sweep_orphans_at_startup() {
     std::thread::spawn(|| {
         if !matches!(probe::availability(), DockerAvailability::Available { .. }) {
@@ -103,6 +135,11 @@ pub fn sweep_orphans_at_startup() {
             Ok(0) => {}
             Ok(n) => tracing::info!(removed = n, "swept orphaned fletch containers"),
             Err(e) => tracing::warn!(error = %e, "docker orphan sweep failed"),
+        }
+        match cleanup::sweep_stale_images() {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(removed = n, "swept stale fletch agent images"),
+            Err(e) => tracing::warn!(error = %e, "docker image sweep failed"),
         }
     });
 }
