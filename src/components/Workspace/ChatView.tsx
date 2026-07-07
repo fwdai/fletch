@@ -238,6 +238,17 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   // anchor is redundant.
   const turnPending = liveBusy && isTurnPending(items) && turns.length <= 1;
 
+  // Index where the currently-open turn begins (the last top-level user
+  // message). Only tools at/after it belong to the running turn, so only they
+  // may show a live spinner — a dangling tool_call left by an interrupted or
+  // reloaded earlier turn must not light up when a later turn sets `busy`.
+  const openTurnStart = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      if (items[i].kind === "user_message") return i;
+    }
+    return 0;
+  }, [items]);
+
   // Live-timer anchor: the backend's turn-start timestamp (from `turn:started`,
   // the same value the footer's duration uses, so they never drift). On reload
   // mid-turn no event fired this session, so fall back to the open turn's
@@ -286,6 +297,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                     item={item}
                     provider={agent.provider}
                     agentId={agent.id}
+                    busy={liveBusy && i >= openTurnStart}
                     turnId={turnIds[i]}
                   />
                   {turnFooters[i] != null && <TurnFooter {...turnFooters[i]!} />}

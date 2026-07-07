@@ -27,11 +27,18 @@ export const MessageItem = memo(function MessageItem({
   item,
   provider,
   agentId,
+  busy,
   turnId,
 }: {
   item: ViewItem;
   provider?: string;
   agentId?: string;
+  /** This row's turn is live: the agent is mid-turn AND the row is part of the
+   *  currently-open turn (top-level) or of a still-running parent tool (nested
+   *  subagent). Lets a tool still awaiting its result show a "running" spinner
+   *  (and a subagent step count) rather than looking settled — while keeping
+   *  dangling tool_calls from interrupted/earlier turns quiet. */
+  busy?: boolean;
   /** Ordinal of this user turn, used by ChatNav to locate the bubble in the
    *  DOM. Set only for top-level navigable user prompts. */
   turnId?: number;
@@ -81,17 +88,32 @@ export const MessageItem = memo(function MessageItem({
       }
       const presenter = getPresenter(item.call.name);
       const children = item.call.children ?? [];
+      // In flight: the agent is busy and this call has no result yet (a long
+      // Bash, or a subagent still working). Kept collapsed — the spinner plus a
+      // live subagent step count signal activity without expanding the row.
+      const running = Boolean(busy) && !item.result;
       return (
         <ToolRow
           name={item.call.name}
           icon={presenter.icon}
           isError={item.result?.is_error}
-          summary={presenter.summary(item.call, item.result)}
+          running={running}
+          summary={
+            <>
+              {presenter.summary(item.call, item.result)}
+              {running && <SubagentProgress items={children} />}
+            </>
+          }
           expanded={
             <>
               {presenter.expanded(item.call, item.result)}
               {children.length > 0 && (
-                <SubagentThread items={children} provider={provider} agentId={agentId} />
+                <SubagentThread
+                  items={children}
+                  provider={provider}
+                  agentId={agentId}
+                  busy={running}
+                />
               )}
             </>
           }
@@ -156,6 +178,21 @@ function UserBubble({
   );
 }
 
+/** Live progress badge for a running tool call that has spawned a subagent.
+ *  Counts the subagent's meaningful steps so far (assistant messages + tool
+ *  calls) and shows a dim "· N steps" hint next to the collapsed row summary,
+ *  so activity is visible without expanding the thread. Renders nothing for
+ *  ordinary tool calls (no children) — those just get the spinner. */
+function SubagentProgress({ items }: { items: ChatItem[] }) {
+  const steps = items.filter((c) => c.kind === "tool_call" || c.kind === "agent_message").length;
+  if (steps === 0) return null;
+  return (
+    <span style={{ color: "var(--fg-3)", marginLeft: 8 }}>
+      · {steps} step{steps === 1 ? "" : "s"}
+    </span>
+  );
+}
+
 /** A subagent's threaded sub-conversation, rendered inside its spawning
  *  tool row's expanded body. Runs the children through the same
  *  policy → pairing → MessageItem pipeline as the main log (so tool calls
@@ -165,10 +202,12 @@ function SubagentThread({
   items,
   provider,
   agentId,
+  busy,
 }: {
   items: ChatItem[];
   provider?: string;
   agentId?: string;
+  busy?: boolean;
 }) {
   // Re-derive only when the children or provider change — not on every parent
   // re-render (e.g. a streaming token elsewhere in the main log).
@@ -186,7 +225,13 @@ function SubagentThread({
       }}
     >
       {rows.map((row, i) => (
-        <MessageItem key={rowKey(row, i)} item={row} provider={provider} agentId={agentId} />
+        <MessageItem
+          key={rowKey(row, i)}
+          item={row}
+          provider={provider}
+          agentId={agentId}
+          busy={busy}
+        />
       ))}
     </div>
   );
