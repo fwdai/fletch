@@ -271,6 +271,13 @@ fn list_images(args: &[&str]) -> Result<Vec<ImageRow>> {
 /// image inside `known_repos` is removed (the legacy path — the repo names are
 /// Fletch-owned by construction). Current tags and the `docker_image` override
 /// are always kept.
+///
+/// Within Fletch's repos, only tags Fletch itself could have written are
+/// removal candidates: the content-addressed shape (12 lowercase hex chars —
+/// see `image::tag_for`) or no tag at all (a dangling rebuild predecessor).
+/// A human-shaped tag like `fletch-agent:backup` — whether the user tagged
+/// our labeled image or built their own into our namespace — is theirs to
+/// keep: a tag a human wrote is the human's call.
 fn image_removal_refs(
     labeled: &[ImageRow],
     legacy: &[ImageRow],
@@ -305,6 +312,9 @@ fn image_removal_refs(
         if !row.untagged() && !known_repos.contains(row.repo.as_str()) {
             continue; // labeled but re-tagged under a user name: never touch
         }
+        if !row.untagged() && !is_content_addressed_tag(&row.tag) {
+            continue; // human-written tag in our repo: their tag, their call
+        }
         if protected(row) {
             continue;
         }
@@ -317,12 +327,22 @@ fn image_removal_refs(
         if row.untagged() || !known_repos.contains(row.repo.as_str()) {
             continue;
         }
+        if !is_content_addressed_tag(&row.tag) {
+            continue; // user image built into our namespace: never touch
+        }
         if protected(row) {
             continue;
         }
         push(row);
     }
     refs
+}
+
+/// Whether a tag has the shape Fletch's content addressing writes — exactly
+/// 12 lowercase hex chars (`image::tag_for`'s `sha256[..12]`). Anything else
+/// in a Fletch repo was written by a human and is never a removal candidate.
+fn is_content_addressed_tag(tag: &str) -> bool {
+    tag.len() == 12 && tag.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 #[cfg(test)]
@@ -393,29 +413,34 @@ mod tests {
     /// stale → remove; the `docker_image` override → keep in every spelling.
     #[test]
     fn image_gc_selection() {
-        let current_tags: HashSet<String> = ["fletch-agent:currentaaaaa".to_string()].into();
+        let current_tags: HashSet<String> = ["fletch-agent:cafe00000000".to_string()].into();
         let known_repos: HashSet<&'static str> = ["fletch-agent", "fletch-agent-codex"].into();
 
         let labeled = vec![
             // Old hash under a Fletch repo: superseded by a Dockerfile revision.
-            row("aaa", "fletch-agent", "0ldhash00000"),
+            row("aaa", "fletch-agent", "0dab1e000000"),
             // The current tag: what launches use today.
-            row("bbb", "fletch-agent", "currentaaaaa"),
+            row("bbb", "fletch-agent", "cafe00000000"),
             // Untagged leftover of a TTL rebuild: removable only by id.
             row("ccc", "<none>", "<none>"),
             // Labeled but re-tagged under a user's name: their tag, kept.
             row("ddd", "mybackup", "keep"),
             // The override, hypothetically labeled (shouldn't happen): kept.
             row("eee", "ghcr.io/me/custom", "1"),
+            // Labeled but human-tagged inside our repo (`docker tag` of our
+            // image): their tag, kept.
+            row("hhh", "fletch-agent", "backup"),
         ];
         let legacy = vec![
             // Pre-label image in a Fletch-owned repo: removable by name.
-            row("fff", "fletch-agent-codex", "pre1abe10000"),
+            row("fff", "fletch-agent-codex", "badc0debadc0"),
             // Current tag also shows up in the repo-scoped listing: kept.
-            row("bbb", "fletch-agent", "currentaaaaa"),
+            row("bbb", "fletch-agent", "cafe00000000"),
             // Selection must be safe even if a listing misbehaves: an
             // unlabeled non-fletch row is never removed.
             row("ggg", "someones-image", "latest"),
+            // A user's own image built into our namespace: human tag, kept.
+            row("iii", "fletch-agent", "backup"),
         ];
 
         let refs = image_removal_refs(
@@ -428,11 +453,26 @@ mod tests {
         assert_eq!(
             refs,
             vec![
-                "fletch-agent:0ldhash00000".to_string(),
+                "fletch-agent:0dab1e000000".to_string(),
                 "ccc".to_string(),
-                "fletch-agent-codex:pre1abe10000".to_string(),
+                "fletch-agent-codex:badc0debadc0".to_string(),
             ],
         );
+    }
+
+    /// Only tags Fletch's content addressing could have written count as
+    /// removal candidates — exactly 12 lowercase hex chars.
+    #[test]
+    fn content_addressed_tag_shape() {
+        assert!(is_content_addressed_tag("0123abcdef01"));
+        assert!(is_content_addressed_tag("000000000000"));
+        // Human-shaped tags, wrong length, uppercase: all kept.
+        assert!(!is_content_addressed_tag("backup"));
+        assert!(!is_content_addressed_tag("latest"));
+        assert!(!is_content_addressed_tag("0123ABCDEF01"));
+        assert!(!is_content_addressed_tag("0123abcdef0"));
+        assert!(!is_content_addressed_tag("0123abcdef012"));
+        assert!(!is_content_addressed_tag(""));
     }
 
     /// Override matching is defensive across spellings: exact `repo:tag`,
@@ -442,19 +482,35 @@ mod tests {
         let current_tags = HashSet::new();
         let known_repos: HashSet<&'static str> = ["fletch-agent"].into();
         // Hypothetical worst case: the user's override lives *inside* a
-        // Fletch repo (they tagged their own image over our name).
+        // Fletch repo under a content-addressed-looking tag (anything
+        // human-shaped is already kept by the tag-shape guard).
         let labeled = vec![
-            row("aaa", "fletch-agent", "latest"),
-            row("bbb", "fletch-agent", "stale0000000"),
+            row("aaa", "fletch-agent", "aaaaaaaaaaaa"),
+            row("bbb", "fletch-agent", "bbbbbbbbbbbb"),
         ];
 
-        // Bare-repo override protects the `:latest` row only.
-        let refs = image_removal_refs(&labeled, &[], &current_tags, &known_repos, Some("fletch-agent"));
-        assert_eq!(refs, vec!["fletch-agent:stale0000000".to_string()]);
+        // Exact repo:tag override protects that row only.
+        let refs = image_removal_refs(
+            &labeled,
+            &[],
+            &current_tags,
+            &known_repos,
+            Some("fletch-agent:aaaaaaaaaaaa"),
+        );
+        assert_eq!(refs, vec!["fletch-agent:bbbbbbbbbbbb".to_string()]);
 
         // Id override protects by id.
         let refs = image_removal_refs(&labeled, &[], &current_tags, &known_repos, Some("bbb"));
-        assert_eq!(refs, vec!["fletch-agent:latest".to_string()]);
+        assert_eq!(refs, vec!["fletch-agent:aaaaaaaaaaaa".to_string()]);
+
+        // A bare-repo override reads as `:latest` — and a `:latest` row in our
+        // repo is kept by the tag-shape guard even before the override check,
+        // with or without the override present.
+        let with_latest = vec![row("lll", "fletch-agent", "latest")];
+        for ov in [Some("fletch-agent"), None] {
+            assert!(image_removal_refs(&with_latest, &[], &current_tags, &known_repos, ov)
+                .is_empty());
+        }
 
         // Blank override protects nothing (same as None).
         let refs = image_removal_refs(&labeled, &[], &current_tags, &known_repos, Some("  "));
