@@ -101,11 +101,10 @@
 }
 .proj-h {
   gap: 6px;
-  /* name stays on the agents' 13px text rail; the chevron floats (absolute) in
-   * the gutter with real left padding, and the right padding is trimmed so the
-   * "+" glyph is ~the same distance from the right edge as the chevron is from
-   * the left — a balanced row, not edge-hugging on one side. */
-  padding: 0 3px 0 13px;
+  /* name sits at 19px, aligned with the indented agent names; the chevron
+   * floats (absolute) on the rail line with ~7px left padding, and the right
+   * padding is trimmed so the "+" glyph balances the chevron's inset. */
+  padding: 0 4px 0 19px;
   height: 28px;
   border-radius: var(--r-sm);
   font-size: var(--fs-xs);
@@ -132,9 +131,9 @@
 }
 .proj-h .chev {
   position: absolute;
-  /* padded in from the edge (ink lands ~7px in) so the row never looks like it
-   * has no left padding; name still sits at 13px, chevron tucks just before it */
-  left: 3px;
+  /* centered (~9px) on the indented agent rail line, with ~7px of left padding
+   * to its ink and a clear gap before the name at 19px */
+  left: 4px;
   top: 50%;
   width: 10px;
   height: 10px;
@@ -222,7 +221,10 @@
   flex-direction: column;
   gap: 1px;
   margin-left: 0;
-  padding: 4px 0;
+  /* indent the agents so their status rail slides under the header chevron —
+   * nests the list inside the project and lets the chevron sit on the rail
+   * line while still keeping its own left padding */
+  padding: 4px 0 4px 6px;
   overflow: visible;
   max-height: 1200px;
   transition:
