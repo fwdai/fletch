@@ -42,14 +42,18 @@ pub use progress::set_build_sink;
 /// provider-agnostic.
 ///
 /// Seatbelt runs six providers; Docker is being brought up one at a time as each
-/// gets its image + config-mount + auth wired here — claude, codex, opencode, and
-/// pi so far (cursor and antigravity are still gated).
+/// gets its image + config-mount + auth wired here — claude, codex, opencode, pi,
+/// and cursor so far. antigravity remains gated: its CLI (`agy`) has no
+/// non-interactive credential path — auth is browser OAuth with its tokens in the
+/// host keychain and no API-key env fallback (maintainer-confirmed), so a fresh
+/// container cannot authenticate. See `ensure_engine_supports_provider`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DockerProvider {
     Claude,
     Codex,
     Opencode,
     Pi,
+    Cursor,
 }
 
 impl DockerProvider {
@@ -63,6 +67,7 @@ impl DockerProvider {
             "codex" => Some(Self::Codex),
             "opencode" => Some(Self::Opencode),
             "pi" => Some(Self::Pi),
+            "cursor" => Some(Self::Cursor),
             _ => None,
         }
     }
@@ -79,6 +84,7 @@ impl DockerProvider {
             Self::Codex => "codex",
             Self::Opencode => "opencode",
             Self::Pi => "pi",
+            Self::Cursor => "cursor-agent",
         }
     }
 }

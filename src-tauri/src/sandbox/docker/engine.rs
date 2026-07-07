@@ -257,6 +257,7 @@ impl SandboxEngine for DockerEngine {
         let mut forward_xdg_data_home = false;
         let mut forward_xdg_config_home = false;
         let mut pi_data: Option<PathBuf> = None;
+        let mut cursor_data: Option<PathBuf> = None;
 
         // The config-dir env (CLAUDE_CONFIG_DIR / CODEX_HOME / XDG_*) is pushed
         // before this mark so only the *auth* tail is forwarded as auth vars.
@@ -382,6 +383,20 @@ impl SandboxEngine for DockerEngine {
                 prepare_pi_launch(&mut env, &data, api_keys)?;
                 pi_data = Some(data);
             }
+            DockerProvider::Cursor => {
+                // `~/.cursor` is bound read-write at its identical host path so
+                // cursor's session transcripts land where the host reader
+                // (`agent::cursor_locate`) tails them. It carries no credential
+                // (the login token is keychain-bound); auth is CURSOR_API_KEY only.
+                let data = ctx.home.join(".cursor");
+                auth_start = env.len();
+                prepare_cursor_launch(
+                    &mut env,
+                    &data,
+                    std::env::var("CURSOR_API_KEY").ok().as_deref(),
+                )?;
+                cursor_data = Some(data);
+            }
         }
 
         // Forward exactly the resolved auth var names (the tail appended after
@@ -420,6 +435,11 @@ impl SandboxEngine for DockerEngine {
                     data_dir: pi_data
                         .as_deref()
                         .expect("pi launch must supply a data_dir"),
+                },
+                DockerProvider::Cursor => ProviderMounts::Cursor {
+                    data_dir: cursor_data
+                        .as_deref()
+                        .expect("cursor launch must supply a data_dir"),
                 },
             };
             run_args(&RunSpec {
@@ -525,6 +545,15 @@ const NO_OPENCODE_AUTH_MSG: &str =
 /// `~/.pi/agent/auth.json` on its mount and no known provider API key set.
 const NO_PI_AUTH_MSG: &str =
     "No Pi credentials for containers — sign in with `pi` on the host (writes ~/.pi/agent/auth.json) or set a provider API key (e.g. ANTHROPIC_API_KEY or OPENAI_API_KEY).";
+
+/// Launch-blocking message when cursor has no usable credential. Unlike the other
+/// providers there is no mount-based fallback: `cursor-agent login` stores its
+/// access/refresh tokens in the host OS keychain (macOS "Cursor Safe Storage"),
+/// which a Linux container can't read, and `~/.cursor` carries only identity
+/// metadata — not a bearer token. So `CURSOR_API_KEY` is the sole container
+/// credential; fail fast (before touching the filesystem) when it's unset.
+const NO_CURSOR_AUTH_MSG: &str =
+    "No Cursor credentials for containers — set CURSOR_API_KEY (create one at cursor.com/dashboard). `cursor-agent login` stores its token in the host keychain, which containers can't read.";
 
 /// Provider API-key env vars the multi-provider CLIs (opencode, pi) read to
 /// authenticate. Whichever are set in the app's process env are forwarded by bare
@@ -748,6 +777,50 @@ fn prepare_pi_launch(
     Ok(())
 }
 
+/// Fold cursor's container auth into the docker CLI's process env, then make sure
+/// `~/.cursor` exists so the read-write bind has a host source. Cursor is a
+/// single-provider CLI, so — like codex — no cross-provider key set applies;
+/// unlike every other provider, though, its credential can't ride the mount:
+/// `cursor-agent login` writes its tokens to the host OS keychain (see
+/// [`NO_CURSOR_AUTH_MSG`]), so `CURSOR_API_KEY` (forwarded by bare `-e` — invariant
+/// 3) is the only container credential. The `~/.cursor` mount still matters: it's
+/// where cursor writes session transcripts (`agent::cursor_locate` reads them at
+/// the identical host path), so the dir is created for the bind even though it
+/// carries no auth. Fails the launch when `CURSOR_API_KEY` is unset, before
+/// touching the filesystem. Only a boolean is logged, never the key.
+fn prepare_cursor_launch(
+    env: &mut Vec<(String, String)>,
+    config_dir: &Path,
+    api_key: Option<&str>,
+) -> Result<()> {
+    let resolved = cursor_auth_env(api_key)?;
+    tracing::info!(
+        target: "fletch::docker",
+        api_key = !resolved.is_empty(),
+        "cursor container auth resolved"
+    );
+    env.extend(resolved);
+    std::fs::create_dir_all(config_dir).map_err(|e| {
+        Error::Other(format!(
+            "Couldn't create Cursor config dir {}: {e}",
+            config_dir.display()
+        ))
+    })?;
+    Ok(())
+}
+
+/// Pure core of [`prepare_cursor_launch`]: the auth env to forward given the
+/// process `CURSOR_API_KEY`. A non-blank key is forwarded (trimmed); anything
+/// else — unset or blank — is the launch-blocking error, because cursor's login
+/// token lives in the host keychain and can't reach the container by any other
+/// path (see [`NO_CURSOR_AUTH_MSG`]).
+fn cursor_auth_env(api_key: Option<&str>) -> Result<Vec<(String, String)>> {
+    match api_key.map(str::trim).filter(|k| !k.is_empty()) {
+        Some(key) => Ok(vec![("CURSOR_API_KEY".to_string(), key.to_string())]),
+        None => Err(Error::Other(NO_CURSOR_AUTH_MSG.to_string())),
+    }
+}
+
 /// `Some(v)` only when `v` is present and non-blank — settings rows can hold
 /// empty strings, which must fall back to defaults.
 fn non_blank(value: Option<&str>) -> Option<&str> {
@@ -896,6 +969,11 @@ enum ProviderMounts<'a> {
     /// `agent/settings.json`, and the `agent/sessions/` transcripts the host
     /// reader tails at the identical path.
     Pi { data_dir: &'a Path },
+    /// Cursor: `~/.cursor` bind-mounted **read-write** — it holds the
+    /// `projects/<slug>/agent-transcripts/` session logs the host reader tails at
+    /// the identical path. Carries no credential (cursor's login token is
+    /// keychain-bound); auth is the forwarded `CURSOR_API_KEY` only.
+    Cursor { data_dir: &'a Path },
 }
 
 /// Everything [`run_args`] needs, bundled so the builder is pure and the argv
@@ -994,6 +1072,7 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
             }
         }
         ProviderMounts::Pi { data_dir } => push_rw_bind(&mut args, data_dir),
+        ProviderMounts::Cursor { data_dir } => push_rw_bind(&mut args, data_dir),
     }
     args.push("-w".into());
     args.push(spec.cwd.to_string_lossy().into_owned());
@@ -1025,6 +1104,9 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
             }
         }
         ProviderMounts::Pi { .. } => {}
+        // Cursor forwards no config-dir env; its sole auth var (CURSOR_API_KEY)
+        // rides `spec.auth_vars` like every other resolved credential.
+        ProviderMounts::Cursor { .. } => {}
     }
     forwarded.extend(spec.auth_vars.iter().copied());
     for var in forwarded {
@@ -1577,6 +1659,17 @@ mod tests {
         )
     }
 
+    fn cursor_spec<'a>() -> RunSpec<'a> {
+        rw_config_spec(
+            ProviderMounts::Cursor {
+                data_dir: Path::new("/Users/u/.cursor"),
+            },
+            "fletch-agent-cursor:abc123def456",
+            "cursor-agent",
+            &["CURSOR_API_KEY"],
+        )
+    }
+
     /// Assert no claude/codex config surface leaks into another provider's argv:
     /// no `~/.claude` mount, no tmpfs overlay, no `projects/` transcript bind, and
     /// no `~/.codex` mount. Shared by the opencode and pi mount tests.
@@ -1665,6 +1758,36 @@ mod tests {
         }
         assert_eq!(args[args.len() - 2], "fletch-agent-pi:abc123def456");
         assert_eq!(args[args.len() - 1], "pi");
+    }
+
+    /// Cursor mounts `~/.cursor` read-write (session transcripts must reach the
+    /// host) and launches the cursor image + `cursor-agent` bin; no claude/codex
+    /// surface, and its sole auth var rides by bare name only (invariant 3).
+    #[test]
+    fn argv_cursor_mounts_dot_cursor_read_write() {
+        let args = run_args(&cursor_spec());
+        assert_eq!(
+            values_of(&args, "-v"),
+            vec![
+                "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
+                "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
+                "/Users/u/.cursor:/Users/u/.cursor",
+            ],
+        );
+        assert_no_claude_or_codex_surface(&args);
+        let forwarded = values_of(&args, "-e");
+        assert!(forwarded.contains(&"CURSOR_API_KEY"), "missing bare -e CURSOR_API_KEY");
+        assert!(!forwarded.contains(&"CLAUDE_CONFIG_DIR"));
+        assert!(!forwarded.contains(&"CODEX_HOME"));
+        // No token value in argv, only the label token may carry an `=`.
+        for arg in &args {
+            assert!(
+                !arg.contains('=') || arg.starts_with("fletch."),
+                "argv token `{arg}` carries a value",
+            );
+        }
+        assert_eq!(args[args.len() - 2], "fletch-agent-cursor:abc123def456");
+        assert_eq!(args[args.len() - 1], "cursor-agent");
     }
 
     #[test]
@@ -2146,6 +2269,41 @@ mod tests {
         let err = prepare_pi_launch(&mut Vec::new(), &none, Vec::new()).unwrap_err();
         assert_eq!(err.to_string(), NO_PI_AUTH_MSG);
         assert!(!none.exists(), "auth failure must not create the dir");
+    }
+
+    /// Cursor auth: a non-blank `CURSOR_API_KEY` is forwarded (trimmed); anything
+    /// else fails the launch. Unlike the other providers there is *no* mount
+    /// fallback — the keychain-bound login token can't reach a container — so a
+    /// missing/blank key is the only outcome besides a forwarded key.
+    #[test]
+    fn cursor_auth_env_forwards_key_or_fails() {
+        assert_eq!(
+            cursor_auth_env(Some(" cur-key \n")).unwrap(),
+            vec![("CURSOR_API_KEY".to_string(), "cur-key".to_string())],
+        );
+        // No mount fallback: unset and blank both fail with the settings pointer.
+        assert_eq!(cursor_auth_env(None).unwrap_err().to_string(), NO_CURSOR_AUTH_MSG);
+        assert_eq!(cursor_auth_env(Some("   ")).unwrap_err().to_string(), NO_CURSOR_AUTH_MSG);
+    }
+
+    /// Regression (mirrors the codex key-only case): a cursor user with
+    /// `CURSOR_API_KEY` set launches — the missing `~/.cursor` is created for the
+    /// RW transcript bind. With no key the launch fails, before touching disk
+    /// (there is no mounted-credential path for cursor to fall back to).
+    #[test]
+    fn cursor_key_only_launch_creates_missing_config_dir() {
+        let td = tempfile::tempdir().unwrap();
+
+        let dir = td.path().join(".cursor");
+        let mut env = Vec::new();
+        prepare_cursor_launch(&mut env, &dir, Some("cur-key")).unwrap();
+        assert!(dir.is_dir(), "~/.cursor must exist for the RW bind mount");
+        assert_eq!(env, vec![("CURSOR_API_KEY".to_string(), "cur-key".to_string())]);
+
+        let no_auth = td.path().join(".cursor-no-auth");
+        let err = prepare_cursor_launch(&mut Vec::new(), &no_auth, None).unwrap_err();
+        assert_eq!(err.to_string(), NO_CURSOR_AUTH_MSG);
+        assert!(!no_auth.exists(), "auth failure must not create the dir");
     }
 
     /// Integration: a real `docker run` round-trip through the exact argv the
