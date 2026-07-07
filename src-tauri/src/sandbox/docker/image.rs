@@ -142,7 +142,10 @@ exec "$@"
 /// but via its official installer (`https://cursor.com/install`), which detects
 /// `linux/arm64` and downloads a self-contained bundle (its own node runtime +
 /// per-arch native modules) into `~/.local`; we symlink its `cursor-agent`
-/// launcher onto PATH so the in-image `agent_bin` resolves. The installer pins
+/// launcher onto PATH so the in-image `agent_bin` resolves, then run
+/// `--version` so a build fails loudly if the installer ever relocates the
+/// binary — `ln -s` happily creates a dangling link, and without the check
+/// that drift would only surface as exit-127 launches. The installer pins
 /// whatever version its script currently references — no worse than the `latest`
 /// npm installs the other images use: the Dockerfile *text* is constant so the
 /// content-addressed tag is stable, while a re-pull may fetch a newer bundle
@@ -156,7 +159,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates ripgrep jq procps \
  && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://cursor.com/install | bash \
- && ln -s /root/.local/bin/cursor-agent /usr/local/bin/cursor-agent
+ && ln -s /root/.local/bin/cursor-agent /usr/local/bin/cursor-agent \
+ && cursor-agent --version
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
