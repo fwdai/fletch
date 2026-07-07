@@ -67,7 +67,7 @@ use crate::sandbox::engine::{
 use crate::sandbox::seatbelt::resolve_existing_prefix;
 
 use super::auth::{self, ContainerAuth};
-use super::{cleanup, cli, image};
+use super::{cleanup, cli, image, DockerProvider};
 
 /// Settings key overriding the container image (see [`image::resolve_image`]).
 pub const IMAGE_SETTING: &str = "docker_image";
@@ -150,11 +150,12 @@ pub fn set_launch_settings(settings: LaunchSettings) {
 /// [`KillHandle`], and sharing one instance also shares the once-per-app-run
 /// image resolution cache.
 pub struct DockerEngine {
-    /// The image resolved for this app run, keyed by the override value it
-    /// was resolved under so a (future) mid-run settings change re-resolves.
-    /// Only successes are cached — a failed build retries on the next spawn
-    /// (the user may have started Docker or fixed their network since).
-    resolved_image: Mutex<Option<(Option<String>, String)>>,
+    /// Images resolved for this app run, keyed by `(provider, override)` so each
+    /// provider's per-provider image is resolved (and built) at most once, and a
+    /// (future) mid-run settings change re-resolves. Only successes are cached —
+    /// a failed build retries on the next spawn (the user may have started Docker
+    /// or fixed their network since).
+    resolved_image: Mutex<std::collections::HashMap<(DockerProvider, Option<String>), String>>,
 }
 
 impl DockerEngine {
@@ -165,27 +166,31 @@ impl DockerEngine {
         ENGINE
             .get_or_init(|| {
                 Arc::new(DockerEngine {
-                    resolved_image: Mutex::new(None),
+                    resolved_image: Mutex::new(std::collections::HashMap::new()),
                 })
             })
             .clone()
     }
 
-    /// The image to launch from, resolving (and building, if the embedded
-    /// image is missing) at most once per app run per override value.
-    fn resolve_image_cached(&self, override_image: Option<&str>) -> Result<String> {
+    /// The image to launch `provider` from, resolving (and building, if the
+    /// embedded image is missing) at most once per app run per (provider,
+    /// override) pair.
+    fn resolve_image_cached(
+        &self,
+        provider: DockerProvider,
+        override_image: Option<&str>,
+    ) -> Result<String> {
+        let key = (provider, override_image.map(str::to_string));
         let mut cache = self.resolved_image.lock().unwrap();
-        if let Some((cached_override, tag)) = cache.as_ref() {
-            if cached_override.as_deref() == override_image {
-                return Ok(tag.clone());
-            }
+        if let Some(tag) = cache.get(&key) {
+            return Ok(tag.clone());
         }
         // Per-line build output goes to the log; the UI build toast is driven
         // separately by the `progress` sink inside `image::ensure_image`.
         let on_progress = |line: &str| tracing::info!(target: "fletch::docker_build", "{line}");
-        let tag = image::resolve_image(override_image, &on_progress)
+        let tag = image::resolve_image(provider, override_image, &on_progress)
             .map_err(|e| Error::Other(format!("preparing the Docker sandbox image failed: {e}")))?;
-        *cache = Some((override_image.map(str::to_string), tag.clone()));
+        cache.insert(key, tag.clone());
         Ok(tag)
     }
 }
@@ -195,72 +200,39 @@ impl SandboxEngine for DockerEngine {
         EngineKind::Docker
     }
 
-    /// Claude-only despite the agent-agnostic `agent_bin` parameter: the mounts,
-    /// `~/.claude` overlays, `projects/` transcript bind, and auth chain are all
-    /// claude-shaped. `supervisor::lifecycle::ensure_engine_supports_provider`
-    /// gates docker launches to `provider == "claude"`, so a non-claude
-    /// `agent_bin` never reaches here; a future per-turn-under-docker provider
-    /// would need its own config handling rather than inheriting claude's.
+    /// Launch a container for `ctx.provider`. The provider-agnostic scaffolding —
+    /// the writable-root and RPC mailbox mounts, borrowed git object stores, the
+    /// `--rm --init` shape, naming, and teardown — is shared; the per-provider
+    /// image, config-dir mount, and auth are selected by matching on
+    /// [`DockerProvider`]. `agent_bin` is the in-image command name the caller
+    /// already resolved for the docker boundary (`claude` / `codex`).
+    /// `ensure_engine_supports_provider` gates this to a supported provider, so
+    /// the `from_id` failure below is defensive only.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
+        let provider = DockerProvider::from_id(ctx.provider).ok_or_else(|| {
+            Error::Other(format!(
+                "Docker sandbox has no support for provider `{}`",
+                ctx.provider
+            ))
+        })?;
         let docker = cli::docker_bin()
             .ok_or_else(|| Error::Other("docker binary not found — is Docker installed?".into()))?;
         let settings = LAUNCH_SETTINGS.read().clone();
-        let image = self.resolve_image_cached(settings.image_override.as_deref())?;
+        let image = self.resolve_image_cached(provider, settings.image_override.as_deref())?;
         let name = container_name(ctx.agent_id);
-        let claude_config_dir = nondefault_claude_config_dir(ctx.home);
-
-        // Make sure the mount sources exist before we hand them to `-v`. If a
-        // source can't be created (a file already sits at the path, a read-only
-        // or missing parent, permissions), mounting it anyway would let Docker
-        // recreate it root-owned or fail the bind opaquely — either way claude
-        // loses access to its auth/config. Fail the launch with the path
-        // instead of pressing on with a bad mount.
-        let claude_dir = ctx.home.join(".claude");
-        prepare_config_mount_dir(&claude_dir)?;
-        if let Some(dir) = &claude_config_dir {
-            prepare_config_mount_dir(dir)?;
-        }
-
-        // Per-agent host dir backing claude's `projects/` (session transcripts).
-        // Bind-mounted read-write over the read-only config dir's `projects/`
-        // (see [`push_claude_config_mount`]) so `--resume` survives container
-        // recreation without exposing the shared `~/.claude/projects` — other
-        // agents' transcripts and global memory stay unreachable (invariant 5).
-        // Lives under the agent's writable root, so archive teardown's `rm -rf`
-        // of that root reclaims it with no separate cleanup. Created before
-        // `docker run` so Docker binds an existing source instead of
-        // materializing it root-owned.
-        let projects_src = ctx
-            .writable_root
-            .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME);
-        std::fs::create_dir_all(&projects_src).map_err(|e| {
-            Error::Other(format!(
-                "preparing Docker sandbox projects mount {} failed: {e}",
-                projects_src.display()
-            ))
-        })?;
 
         // Object stores every checkout under the agent's writable root borrows
         // via git alternates (a --shared clone). Scanned across all tracked
         // repos, not just the primary `cwd`: a multi-repo agent has one shared
         // clone per repo, each borrowing its own source's objects. Mounted
         // read-only so in-container git reads borrowed history; empty for old
-        // full-copy clones or worktrees (no mount).
+        // full-copy clones or worktrees (no mount). Docker forces Clone-mode
+        // workspaces for every provider, so this is provider-agnostic.
         let borrowed_object_stores = borrowed_object_stores(ctx.writable_root);
-
-        // The read-only config mounts get a writable `.credentials.json` overlay
-        // only when the file already exists: a bare `-v` on a missing source
-        // makes Docker create a root-owned *directory* there, which would break
-        // claude's later attempt to write the real file.
-        let claude_credentials_rw = claude_dir.join(CREDENTIALS_FILE).is_file();
-        let config_dir_credentials_rw = claude_config_dir
-            .as_deref()
-            .is_some_and(|dir| dir.join(CREDENTIALS_FILE).is_file());
 
         // Env set on the docker CLI process; forwarded into the container by the
         // bare `-e NAME` flags `run_args` emits (values never touch argv —
-        // invariant 3). The auth chain appends its resolved vars last, so only
-        // what it actually picked is forwarded.
+        // invariant 3). Config-dir + auth vars are appended per provider below.
         let mut env: Vec<(String, String)> = vec![
             ("HOME".into(), ctx.home.to_string_lossy().into_owned()),
             (
@@ -270,23 +242,105 @@ impl SandboxEngine for DockerEngine {
             ("TERM".into(), "xterm-256color".into()),
             ("COLORTERM".into(), "truecolor".into()),
         ];
-        if let Some(dir) = &claude_config_dir {
-            env.push((
-                "CLAUDE_CONFIG_DIR".into(),
-                dir.to_string_lossy().into_owned(),
-            ));
-        }
-        let auth_start = env.len();
-        apply_container_auth(&mut env, auth::resolve())?;
 
-        // Forward exactly the resolved auth var names (the tail
-        // `apply_container_auth` appended). Scoped so the borrow of `env` ends
-        // before it moves into the plan below.
+        // Per-provider config-dir mount inputs for `RunSpec`. Defaults describe
+        // "no config surface"; the matched arm fills in what its provider needs.
+        let mut claude_config_dir: Option<PathBuf> = None;
+        let mut claude_credentials_rw = false;
+        let mut config_dir_credentials_rw = false;
+        let mut projects_src: Option<PathBuf> = None;
+        let mut codex_config_dir: Option<PathBuf> = None;
+        let mut forward_codex_home = false;
+
+        // The config-dir env (CLAUDE_CONFIG_DIR / CODEX_HOME) is pushed before
+        // this mark so only the *auth* tail is forwarded as auth vars.
+        let auth_start;
+        match provider {
+            DockerProvider::Claude => {
+                let cfg = nondefault_claude_config_dir(ctx.home);
+
+                // Make sure the mount sources exist before we hand them to `-v`.
+                // If a source can't be created (a file already sits at the path,
+                // a read-only or missing parent, permissions), mounting it anyway
+                // would let Docker recreate it root-owned or fail the bind
+                // opaquely — either way claude loses access to its auth/config.
+                // Fail the launch with the path instead of a bad mount.
+                let claude_dir = ctx.home.join(".claude");
+                prepare_config_mount_dir(&claude_dir)?;
+                if let Some(dir) = &cfg {
+                    prepare_config_mount_dir(dir)?;
+                }
+
+                // Per-agent host dir backing claude's `projects/` (session
+                // transcripts). Bind-mounted read-write over the read-only config
+                // dir's `projects/` (see [`push_claude_config_mount`]) so
+                // `--resume` survives container recreation without exposing the
+                // shared `~/.claude/projects` — other agents' transcripts and
+                // global memory stay unreachable (invariant 5). Lives under the
+                // agent's writable root, so archive teardown's `rm -rf` reclaims
+                // it with no separate cleanup. Created before `docker run` so
+                // Docker binds an existing source instead of materializing it
+                // root-owned.
+                let ps = ctx
+                    .writable_root
+                    .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME);
+                std::fs::create_dir_all(&ps).map_err(|e| {
+                    Error::Other(format!(
+                        "preparing Docker sandbox projects mount {} failed: {e}",
+                        ps.display()
+                    ))
+                })?;
+
+                // The read-only config mounts get a writable `.credentials.json`
+                // overlay only when the file already exists: a bare `-v` on a
+                // missing source makes Docker create a root-owned *directory*
+                // there, which would break claude's later write of the real file.
+                claude_credentials_rw = claude_dir.join(CREDENTIALS_FILE).is_file();
+                config_dir_credentials_rw = cfg
+                    .as_deref()
+                    .is_some_and(|dir| dir.join(CREDENTIALS_FILE).is_file());
+                if let Some(dir) = &cfg {
+                    env.push(("CLAUDE_CONFIG_DIR".into(), dir.to_string_lossy().into_owned()));
+                }
+                claude_config_dir = cfg;
+                projects_src = Some(ps);
+
+                auth_start = env.len();
+                apply_container_auth(&mut env, auth::resolve())?;
+            }
+            DockerProvider::Codex => {
+                // Codex's config dir is bind-mounted read-write: auth.json token
+                // refresh and the session rollout files it writes both need to
+                // persist, and writing rollouts at the same host path keeps the
+                // host-side transcript reader (`find_codex_rollouts`) working.
+                let dir = codex_home_dir(ctx.home);
+                // Forward CODEX_HOME only when it points somewhere other than the
+                // default `~/.codex` the container already resolves via HOME —
+                // mirrors `nondefault_claude_config_dir`.
+                forward_codex_home = codex_home_is_nondefault(ctx.home);
+                if forward_codex_home {
+                    env.push(("CODEX_HOME".into(), dir.to_string_lossy().into_owned()));
+                }
+
+                auth_start = env.len();
+                prepare_codex_launch(
+                    &mut env,
+                    &dir,
+                    std::env::var("OPENAI_API_KEY").ok().as_deref(),
+                )?;
+                codex_config_dir = Some(dir);
+            }
+        }
+
+        // Forward exactly the resolved auth var names (the tail appended after
+        // `auth_start`). Scoped so the borrow of `env` ends before it moves into
+        // the plan below.
         let prefix_args = {
             let auth_vars: Vec<&str> =
                 env[auth_start..].iter().map(|(k, _)| k.as_str()).collect();
             run_args(&RunSpec {
                 interactive: ctx.interactive,
+                provider,
                 name: &name,
                 agent_id: ctx.agent_id,
                 writable_root: ctx.writable_root,
@@ -297,7 +351,9 @@ impl SandboxEngine for DockerEngine {
                 borrowed_object_stores: &borrowed_object_stores,
                 claude_credentials_rw,
                 config_dir_credentials_rw,
-                projects_src: &projects_src,
+                projects_src: projects_src.as_deref(),
+                codex_config_dir: codex_config_dir.as_deref(),
+                forward_codex_home,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
                 cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
                 image: &image,
@@ -372,6 +428,86 @@ fn apply_container_auth(env: &mut Vec<(String, String)>, auth: ContainerAuth) ->
         }
         ContainerAuth::Unavailable => Err(Error::Other(NO_CONTAINER_AUTH_MSG.to_string())),
     }
+}
+
+/// Launch-blocking message when codex has no usable credential: no
+/// `auth.json` in its config dir and `OPENAI_API_KEY` unset. Mirrors
+/// [`NO_CONTAINER_AUTH_MSG`]'s fail-fast: an unauthenticated container boots
+/// straight into a login prompt it can't answer inside the sandbox.
+const NO_CODEX_AUTH_MSG: &str =
+    "No Codex credentials for containers — sign in with `codex` on the host (writes ~/.codex/auth.json) or set OPENAI_API_KEY.";
+
+/// Codex's config dir: `$CODEX_HOME` if set, else `~/.codex`. This is both the
+/// dir bind-mounted read-write and where `transcripts::find_codex_rollouts`
+/// reads transcripts, so the two must agree — mirror its resolution.
+fn codex_home_dir(home: &Path) -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"))
+}
+
+/// Whether `$CODEX_HOME` is set to a dir other than the default `~/.codex`
+/// (which the container already resolves via `HOME`). Only a non-default value
+/// is forwarded, mirroring [`nondefault_claude_config_dir`]; both sides go
+/// through [`resolve_existing_prefix`] so a symlink can't read as non-default.
+fn codex_home_is_nondefault(home: &Path) -> bool {
+    match std::env::var_os("CODEX_HOME") {
+        Some(v) => resolve_existing_prefix(&PathBuf::from(v)) != resolve_existing_prefix(&home.join(".codex")),
+        None => false,
+    }
+}
+
+/// Fold codex's container auth into the docker CLI's process env, then make
+/// sure the config dir exists so the read-write bind has a host source. Codex's
+/// primary credential is the mounted `~/.codex/auth.json` (the read-write mount
+/// carries it and token refresh persists to the host); an `OPENAI_API_KEY` in
+/// the app's process env is forwarded when set (by bare `-e`, so its value never
+/// touches argv — invariant 3). Either alone suffices: a key-only user may
+/// never have run codex on the host, so the dir is created rather than
+/// required — mounting a fresh dir keeps session rollouts landing where
+/// `find_codex_rollouts` reads them. Fails the launch when neither credential
+/// is present (before touching the filesystem), so an unauthenticated
+/// container never boots into an unanswerable login prompt.
+///
+/// Unlike claude, no ANTHROPIC_*/CLAUDE_* var is injected: codex authenticates
+/// against OpenAI, and forwarding those would be dead weight at best.
+fn prepare_codex_launch(
+    env: &mut Vec<(String, String)>,
+    config_dir: &Path,
+    api_key: Option<&str>,
+) -> Result<()> {
+    let auth_file = config_dir.join("auth.json").is_file();
+    let resolved = codex_auth_env(api_key, auth_file)?;
+    // Booleans only — never a token value.
+    tracing::info!(
+        target: "fletch::docker",
+        auth_file,
+        api_key = !resolved.is_empty(),
+        "codex container auth resolved"
+    );
+    env.extend(resolved);
+    std::fs::create_dir_all(config_dir).map_err(|e| {
+        Error::Other(format!(
+            "Couldn't create Codex config dir {}: {e}",
+            config_dir.display()
+        ))
+    })?;
+    Ok(())
+}
+
+/// Pure core of [`prepare_codex_launch`]: the auth env to forward given the process
+/// `OPENAI_API_KEY` (if any) and whether `auth.json` exists on the mount. A
+/// non-blank key is forwarded (trimmed); the mounted `auth.json` carries auth on
+/// its own with nothing to inject. Neither present → the launch-blocking error.
+fn codex_auth_env(api_key: Option<&str>, auth_file: bool) -> Result<Vec<(String, String)>> {
+    let api_key = api_key.map(str::trim).filter(|k| !k.is_empty());
+    if let Some(key) = api_key {
+        return Ok(vec![("OPENAI_API_KEY".to_string(), key.to_string())]);
+    }
+    if auth_file {
+        return Ok(Vec::new());
+    }
+    Err(Error::Other(NO_CODEX_AUTH_MSG.to_string()))
 }
 
 /// `Some(v)` only when `v` is present and non-blank — settings rows can hold
@@ -474,6 +610,11 @@ fn borrowed_object_stores(writable_root: &Path) -> Vec<PathBuf> {
 /// shape unit-testable without a daemon.
 struct RunSpec<'a> {
     interactive: bool,
+    /// Which provider is launching — selects the config-dir mount + config-dir
+    /// env below. The `claude_*` fields apply only to [`DockerProvider::Claude`]
+    /// and `codex_config_dir`/`forward_codex_home` only to
+    /// [`DockerProvider::Codex`]; the other provider's fields are inert.
+    provider: DockerProvider,
     name: &'a str,
     agent_id: &'a str,
     writable_root: &'a Path,
@@ -494,8 +635,17 @@ struct RunSpec<'a> {
     /// Per-agent host dir bind-mounted read-write over each config dir's
     /// `projects/` so claude's session transcript persists across container
     /// recreation (resume) while the shared `~/.claude` stays read-only. Lives
-    /// under `writable_root`; see [`push_claude_config_mount`].
-    projects_src: &'a Path,
+    /// under `writable_root`; see [`push_claude_config_mount`]. `Some` for the
+    /// claude provider, `None` for codex (which persists transcripts via its own
+    /// read-write `~/.codex` mount).
+    projects_src: Option<&'a Path>,
+    /// Codex's config dir (`$CODEX_HOME` or `~/.codex`), bind-mounted
+    /// **read-write** at its identical host path so auth-token refresh and
+    /// session rollout writes persist to the host. `Some` only for codex.
+    codex_config_dir: Option<&'a Path>,
+    /// Forward `CODEX_HOME` into the container (a non-default `$CODEX_HOME`);
+    /// only meaningful for codex.
+    forward_codex_home: bool,
     memory: &'a str,
     cpus: &'a str,
     image: &'a str,
@@ -543,19 +693,39 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         args.push("-v".into());
         args.push(format!("{path}:{path}:ro"));
     }
-    push_claude_config_mount(
-        &mut args,
-        &spec.home.join(".claude"),
-        spec.claude_credentials_rw,
-        spec.projects_src,
-    );
-    if let Some(dir) = spec.claude_config_dir {
-        push_claude_config_mount(
-            &mut args,
-            dir,
-            spec.config_dir_credentials_rw,
-            spec.projects_src,
-        );
+    // Provider config-dir mount(s), layered after the workspace/mailbox/object
+    // stores. Claude gets the read-only-except-carve-outs treatment; codex gets
+    // a single read-write bind (see the field docs on `RunSpec`).
+    match spec.provider {
+        DockerProvider::Claude => {
+            // Claude always supplies a `projects_src`; the launch path builds it.
+            let projects_src = spec
+                .projects_src
+                .expect("claude launch must supply a projects_src");
+            push_claude_config_mount(
+                &mut args,
+                &spec.home.join(".claude"),
+                spec.claude_credentials_rw,
+                projects_src,
+            );
+            if let Some(dir) = spec.claude_config_dir {
+                push_claude_config_mount(
+                    &mut args,
+                    dir,
+                    spec.config_dir_credentials_rw,
+                    projects_src,
+                );
+            }
+        }
+        DockerProvider::Codex => {
+            if let Some(dir) = spec.codex_config_dir {
+                let path = dir.to_string_lossy();
+                args.push("-v".into());
+                // Read-write (no `:ro`): codex refreshes auth.json in place and
+                // writes session rollouts here, both of which must reach the host.
+                args.push(format!("{path}:{path}"));
+            }
+        }
     }
     args.push("-w".into());
     args.push(spec.cwd.to_string_lossy().into_owned());
@@ -563,8 +733,17 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     // the value ever appearing in argv (invariant 3 for the auth vars). Auth
     // vars come from `spec.auth_vars` — the set the chain actually resolved.
     let mut forwarded: Vec<&str> = vec!["HOME", "FLETCH_RPC_DIR", "TERM", "COLORTERM"];
-    if spec.claude_config_dir.is_some() {
-        forwarded.push("CLAUDE_CONFIG_DIR");
+    match spec.provider {
+        DockerProvider::Claude => {
+            if spec.claude_config_dir.is_some() {
+                forwarded.push("CLAUDE_CONFIG_DIR");
+            }
+        }
+        DockerProvider::Codex => {
+            if spec.forward_codex_home {
+                forwarded.push("CODEX_HOME");
+            }
+        }
     }
     forwarded.extend(spec.auth_vars.iter().copied());
     for var in forwarded {
@@ -718,15 +897,19 @@ fn container_gone_within(name: &str, budget: Duration) -> bool {
 
 /// User-readable meanings for the docker CLI's reserved exit codes; other
 /// codes are the contained agent's own and pass through unmapped. `docker run`
-/// relays the agent's own exit status, so a `claude` that starts fine and later
+/// relays the agent's own exit status, so an agent that starts fine and later
 /// exits 125/126/127 is indistinguishable from a launcher/image failure — the
 /// messages name the likely Docker-layer cause but flag the agent-exit
 /// possibility so they don't mislead when the container did launch.
+///
+/// Provider-neutral: the teardown plan carries only the container name, and the
+/// sandbox image now varies per provider, so these speak of "the agent binary"
+/// rather than naming `claude`.
 fn describe_exit_code(code: i32) -> Option<String> {
     let msg = match code {
         125 => "Exit 125: Docker could not start the sandbox container — the daemon reported an error (or the agent itself exited 125). Is Docker Desktop still running?",
-        126 => "Exit 126: the agent binary in the sandbox image is present but not runnable (or the agent itself exited 126). If you set a custom docker_image, check its `claude`.",
-        127 => "Exit 127: no `claude` on the sandbox image's PATH (or the agent itself exited 127). A custom docker_image must include Claude Code.",
+        126 => "Exit 126: the agent binary in the sandbox image is present but not runnable (or the agent itself exited 126). If you set a custom docker_image, check its agent CLI.",
+        127 => "Exit 127: no agent binary on the sandbox image's PATH (or the agent itself exited 127). A custom docker_image must include the launching agent's CLI.",
         _ => return None,
     };
     Some(msg.to_string())
@@ -739,6 +922,7 @@ mod tests {
     fn test_spec<'a>(interactive: bool) -> RunSpec<'a> {
         RunSpec {
             interactive,
+            provider: DockerProvider::Claude,
             name: "fletch-orkney-deadbeef",
             agent_id: "orkney",
             writable_root: Path::new("/Users/u/.fletch/worktrees/orkney"),
@@ -749,7 +933,11 @@ mod tests {
             borrowed_object_stores: &[],
             claude_credentials_rw: false,
             config_dir_credentials_rw: false,
-            projects_src: Path::new("/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects"),
+            projects_src: Some(Path::new(
+                "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects",
+            )),
+            codex_config_dir: None,
+            forward_codex_home: false,
             memory: "4g",
             cpus: "2",
             image: "fletch-agent:abc123def456",
@@ -760,6 +948,33 @@ mod tests {
                 "ANTHROPIC_BASE_URL",
                 "ANTHROPIC_AUTH_TOKEN",
             ],
+        }
+    }
+
+    /// A codex `RunSpec`: no claude config surface, a read-write `~/.codex`
+    /// mount, `OPENAI_API_KEY` as the forwarded auth var, and the codex image.
+    fn codex_spec<'a>() -> RunSpec<'a> {
+        RunSpec {
+            interactive: false,
+            provider: DockerProvider::Codex,
+            name: "fletch-orkney-deadbeef",
+            agent_id: "orkney",
+            writable_root: Path::new("/Users/u/.fletch/worktrees/orkney"),
+            rpc_dir: Path::new("/Users/u/.fletch/rpc/orkney"),
+            home: Path::new("/Users/u"),
+            cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
+            claude_config_dir: None,
+            borrowed_object_stores: &[],
+            claude_credentials_rw: false,
+            config_dir_credentials_rw: false,
+            projects_src: None,
+            codex_config_dir: Some(Path::new("/Users/u/.codex")),
+            forward_codex_home: false,
+            memory: "4g",
+            cpus: "2",
+            image: "fletch-agent-codex:abc123def456",
+            agent_bin: "codex",
+            auth_vars: &["OPENAI_API_KEY"],
         }
     }
 
@@ -954,6 +1169,68 @@ mod tests {
                 "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
             ],
         );
+    }
+
+    /// Codex mounts its config dir read-write (auth refresh + rollout writes
+    /// must reach the host) and launches the codex image + `codex` bin. There's
+    /// no `~/.claude` read-only mount, no tmpfs overlay, and no `projects/`
+    /// transcript bind — codex persists transcripts through this same RW mount.
+    #[test]
+    fn argv_codex_mounts_config_dir_read_write() {
+        let args = run_args(&codex_spec());
+        assert_eq!(
+            values_of(&args, "-v"),
+            vec![
+                "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
+                "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
+                // ~/.codex read-write: no `:ro` suffix.
+                "/Users/u/.codex:/Users/u/.codex",
+            ],
+        );
+        // No claude-shaped surfaces leak into a codex launch.
+        assert!(
+            !args.iter().any(|a| a.contains("/.claude")),
+            "codex must not mount any ~/.claude path"
+        );
+        assert!(
+            values_of(&args, "--tmpfs").is_empty(),
+            "codex has no tmpfs overlays"
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("fletch-claude-projects")),
+            "codex has no projects/ transcript bind"
+        );
+        // Codex image + in-image bin, last (the prefix_args contract).
+        assert_eq!(args[args.len() - 2], "fletch-agent-codex:abc123def456");
+        assert_eq!(args[args.len() - 1], "codex");
+    }
+
+    /// Codex forwards `OPENAI_API_KEY` by bare name (invariant 3) and, unlike
+    /// claude, no `CLAUDE_CONFIG_DIR`/Anthropic vars. `CODEX_HOME` forwards only
+    /// for a non-default `$CODEX_HOME`.
+    #[test]
+    fn argv_codex_forwards_openai_key_and_optional_codex_home() {
+        let args = run_args(&codex_spec());
+        let forwarded = values_of(&args, "-e");
+        assert!(forwarded.contains(&"OPENAI_API_KEY"), "missing bare -e OPENAI_API_KEY");
+        assert!(forwarded.contains(&"HOME"));
+        assert!(!forwarded.contains(&"CLAUDE_CONFIG_DIR"));
+        assert!(!forwarded.contains(&"ANTHROPIC_API_KEY"));
+        // Default ~/.codex: CODEX_HOME is not forwarded (the mount + HOME cover it).
+        assert!(!forwarded.contains(&"CODEX_HOME"), "default CODEX_HOME must not forward");
+
+        // A non-default $CODEX_HOME is forwarded so in-container codex reads it.
+        let mut spec = codex_spec();
+        spec.forward_codex_home = true;
+        assert!(values_of(&run_args(&spec), "-e").contains(&"CODEX_HOME"));
+
+        // No token value anywhere in argv.
+        for arg in &args {
+            assert!(
+                !arg.contains('=') || arg.starts_with("fletch."),
+                "argv token `{arg}` carries a value — only label tokens may",
+            );
+        }
     }
 
     #[test]
@@ -1185,7 +1462,7 @@ mod tests {
         let missing = describe_exit_code(127).unwrap();
         assert!(daemon.contains("daemon"), "{daemon}");
         assert!(not_exec.contains("not runnable"), "{not_exec}");
-        assert!(missing.contains("no `claude`"), "{missing}");
+        assert!(missing.contains("no agent binary"), "{missing}");
         let distinct: std::collections::HashSet<_> = [&daemon, &not_exec, &missing].into();
         assert_eq!(distinct.len(), 3);
         // Each hedges: docker relays the agent's own status, so these codes can
@@ -1292,6 +1569,53 @@ mod tests {
         assert!(env.is_empty(), "a failed resolution must add no env");
     }
 
+    /// Codex auth: a non-blank `OPENAI_API_KEY` is forwarded (trimmed); a bare
+    /// `auth.json` resolves with nothing to inject (the mount carries it); a
+    /// blank key falls back to the file; neither present fails the launch.
+    #[test]
+    fn codex_auth_env_resolves_key_file_or_fails() {
+        // API key wins and is trimmed.
+        assert_eq!(
+            codex_auth_env(Some(" sk-openai \n"), false).unwrap(),
+            vec![("OPENAI_API_KEY".to_string(), "sk-openai".to_string())],
+        );
+        // Key alongside a file still forwards the key.
+        assert_eq!(
+            codex_auth_env(Some("sk-openai"), true).unwrap(),
+            vec![("OPENAI_API_KEY".to_string(), "sk-openai".to_string())],
+        );
+        // No key but a mounted auth.json: nothing to inject, but resolves.
+        assert!(codex_auth_env(None, true).unwrap().is_empty());
+        assert!(codex_auth_env(Some("   "), true).unwrap().is_empty());
+        // Neither: fail-fast with the settings pointer.
+        let err = codex_auth_env(None, false).unwrap_err().to_string();
+        assert_eq!(err, NO_CODEX_AUTH_MSG);
+        assert!(codex_auth_env(Some("  "), false).is_err());
+    }
+
+    /// Regression: a key-only user (`OPENAI_API_KEY` set, never ran codex on
+    /// the host) must launch — the missing config dir is created for the RW
+    /// mount, not treated as "no way to authenticate". With no credential at
+    /// all the launch still fails, and before touching the filesystem.
+    #[test]
+    fn codex_key_only_launch_creates_missing_config_dir() {
+        let td = tempfile::tempdir().unwrap();
+
+        let dir = td.path().join(".codex");
+        let mut env = Vec::new();
+        prepare_codex_launch(&mut env, &dir, Some("sk-openai")).unwrap();
+        assert!(dir.is_dir(), "config dir must exist for the RW bind mount");
+        assert_eq!(
+            env,
+            vec![("OPENAI_API_KEY".to_string(), "sk-openai".to_string())],
+        );
+
+        let no_auth = td.path().join(".codex-no-auth");
+        let err = prepare_codex_launch(&mut Vec::new(), &no_auth, None).unwrap_err();
+        assert_eq!(err.to_string(), NO_CODEX_AUTH_MSG);
+        assert!(!no_auth.exists(), "auth failure must not create the dir");
+    }
+
     /// Integration: a real `docker run` round-trip through the exact argv the
     /// engine builds — busybox standing in for the agent image, `echo` for
     /// the agent binary. `FLETCH_DOCKER_TESTS=1 cargo test -- --ignored`
@@ -1317,6 +1641,7 @@ mod tests {
         let name = container_name("b2-int-test");
         let args = run_args(&RunSpec {
             interactive: false,
+            provider: DockerProvider::Claude,
             name: &name,
             agent_id: "b2-int-test",
             writable_root: &root,
@@ -1327,7 +1652,9 @@ mod tests {
             borrowed_object_stores: &[],
             claude_credentials_rw: false,
             config_dir_credentials_rw: false,
-            projects_src: &projects_src,
+            projects_src: Some(&projects_src),
+            codex_config_dir: None,
+            forward_codex_home: false,
             memory: "256m",
             cpus: "1",
             image: "busybox",

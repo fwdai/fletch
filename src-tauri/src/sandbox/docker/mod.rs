@@ -32,6 +32,50 @@ pub use engine::{
 pub use probe::{availability, DockerAvailability};
 pub use progress::set_build_sink;
 
+/// A provider Fletch can run inside a Docker sandbox. This is the single
+/// capability gate the rest of the app consults instead of string-matching
+/// `provider == "claude"`: [`supervisor::lifecycle::ensure_engine_supports_provider`]
+/// refuses anything [`from_id`](DockerProvider::from_id) doesn't recognize, and
+/// the launch path ([`engine`]) branches on the variant for the provider-specific
+/// image ([`image`]), config-dir mount, and auth. Everything else about a
+/// container (workspace / RPC / object-store mounts, naming, teardown) is
+/// provider-agnostic.
+///
+/// Seatbelt runs six providers; Docker is being brought up one at a time as each
+/// gets its image + config-mount + auth wired here — claude and codex so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DockerProvider {
+    Claude,
+    Codex,
+}
+
+impl DockerProvider {
+    /// Map a provider id (as stamped on `AgentRecord.provider` / used by the
+    /// frontend) to its Docker support, or `None` when the provider has no
+    /// container support yet — the launch gate turns `None` into the
+    /// user-facing "isn't available in Docker sandboxes yet" refusal.
+    pub fn from_id(provider: &str) -> Option<Self> {
+        match provider {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
+
+    /// The command name on the image's PATH — what this provider's npm package
+    /// installs as its executable. Handed to `launch_agent` as the in-image
+    /// `agent_bin` (a host-resolved absolute path would be meaningless inside
+    /// the container). Matches the provider's `bin` field for both supported
+    /// providers today, but named explicitly so it stays an image fact, not a
+    /// coincidence.
+    pub fn image_bin(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+}
+
 /// Best-effort reclamation of containers left behind by dead Fletch
 /// instances, for app startup (`lib.rs`, next to the nested-root sweeps).
 /// Runs on its own thread and probes the daemon first, so startup never
