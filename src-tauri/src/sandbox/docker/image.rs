@@ -85,6 +85,57 @@ mkdir -p "$HOME"
 exec "$@"
 "#;
 
+/// OpenCode's image. Shares [`DOCKERFILE`]'s base byte-for-byte (same `FROM
+/// node:22-slim` and apt line) for layer-cache reuse; only the install step
+/// differs (`opencode-ai`, whose `bin` resolves to a per-arch native binary via
+/// npm optional deps — arm64 and x86-64 both publish one). OpenCode authenticates
+/// from the read-write data-dir mount (its accounts DB / `auth.json`) and/or a
+/// provider API-key env var, so the image carries no provider config.
+pub const OPENCODE_DOCKERFILE: &str = r#"FROM node:22-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates ripgrep jq procps \
+ && rm -rf /var/lib/apt/lists/*
+RUN npm install -g opencode-ai
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+"#;
+
+/// OpenCode's PID-1 shim: create `HOME` and exec. `opencode run --format json
+/// --dangerously-skip-permissions` (see `agent::opencode_build_args`) is fully
+/// non-interactive, and credentials arrive on the read-write data-dir mount or as
+/// a forwarded API-key env var, so nothing is seeded here.
+pub const OPENCODE_ENTRYPOINT_SH: &str = r#"#!/bin/sh
+set -e
+mkdir -p "$HOME"
+exec "$@"
+"#;
+
+/// Pi's image. Shares [`DOCKERFILE`]'s base byte-for-byte for cache reuse; only
+/// the install step differs. Pi ships as a pure-node CLI (`@earendil-works/
+/// pi-coding-agent`, bin `pi` → a `dist/cli.js` launcher), so the same package
+/// runs on every arch node:22-slim supports. Pi authenticates from the read-write
+/// `~/.pi` mount (`~/.pi/agent/auth.json`) and/or a provider API-key env var.
+pub const PI_DOCKERFILE: &str = r#"FROM node:22-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates ripgrep jq procps \
+ && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @earendil-works/pi-coding-agent
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+"#;
+
+/// Pi's PID-1 shim: create `HOME` and exec. `pi -p --mode json` (see
+/// `agent::pi_build_args`) runs one turn non-interactively and auto-runs tools;
+/// credentials come from the mounted `~/.pi/agent/auth.json` or a forwarded
+/// API-key env var, so nothing is seeded here.
+pub const PI_ENTRYPOINT_SH: &str = r#"#!/bin/sh
+set -e
+mkdir -p "$HOME"
+exec "$@"
+"#;
+
 /// The image build inputs for a provider: repo name plus the Dockerfile and
 /// entrypoint whose combined content addresses the tag. Claude returns the
 /// original constants under the original repo name, so its tag is byte-for-byte
@@ -109,6 +160,16 @@ fn image_spec(provider: DockerProvider) -> ImageSpec {
             repo: "fletch-agent-codex",
             dockerfile: CODEX_DOCKERFILE,
             entrypoint: CODEX_ENTRYPOINT_SH,
+        },
+        DockerProvider::Opencode => ImageSpec {
+            repo: "fletch-agent-opencode",
+            dockerfile: OPENCODE_DOCKERFILE,
+            entrypoint: OPENCODE_ENTRYPOINT_SH,
+        },
+        DockerProvider::Pi => ImageSpec {
+            repo: "fletch-agent-pi",
+            dockerfile: PI_DOCKERFILE,
+            entrypoint: PI_ENTRYPOINT_SH,
         },
     }
 }
@@ -316,6 +377,39 @@ mod tests {
         // Provider-specific install step differs.
         assert!(CODEX_DOCKERFILE.contains("@openai/codex"));
         assert!(!CODEX_DOCKERFILE.contains("claude-code"));
+    }
+
+    /// The base layers (everything before the `RUN npm install` line) that every
+    /// provider image must share byte-for-byte so Docker's layer cache is reused.
+    fn base_layers(dockerfile: &str) -> Vec<&str> {
+        dockerfile.lines().take_while(|l| !l.starts_with("RUN npm")).collect()
+    }
+
+    /// OpenCode and Pi each get their own repo + distinct tag, share claude's base
+    /// layers (cache reuse), and install only their own package — no other
+    /// provider's CLI leaks into either image.
+    #[test]
+    fn opencode_and_pi_images_are_distinct_and_share_base() {
+        let claude = image_tag(DockerProvider::Claude);
+        let base = base_layers(DOCKERFILE);
+
+        for (provider, prefix, pkg) in [
+            (DockerProvider::Opencode, "fletch-agent-opencode:", "opencode-ai"),
+            (DockerProvider::Pi, "fletch-agent-pi:", "@earendil-works/pi-coding-agent"),
+        ] {
+            let tag = image_tag(provider);
+            assert!(tag.starts_with(prefix), "{tag}");
+            assert_ne!(tag, claude);
+            let dockerfile = image_spec(provider).dockerfile;
+            assert_eq!(base_layers(dockerfile), base, "base layers must match for cache reuse");
+            assert!(dockerfile.contains(pkg), "{provider:?} must install {pkg}");
+            // No cross-contamination with the other providers' install steps.
+            assert!(!dockerfile.contains("claude-code"));
+            assert!(!dockerfile.contains("@openai/codex"));
+        }
+
+        // The two new tags are distinct from each other, too.
+        assert_ne!(image_tag(DockerProvider::Opencode), image_tag(DockerProvider::Pi));
     }
 
     #[test]

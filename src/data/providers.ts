@@ -35,8 +35,8 @@ export const PROVIDERS: Provider[] = [
   { id: "codex", label: "Codex", short: "CX", hue: 145, dockerSupported: true },
   { id: "cursor", label: "Cursor Agent", short: "CR", hue: 215 },
   { id: "antigravity", label: "Antigravity", short: "AG", hue: 260, fixedModel: true },
-  { id: "opencode", label: "OpenCode", short: "OC", hue: 195 },
-  { id: "pi", label: "Pi", short: "PI", hue: 320 },
+  { id: "opencode", label: "OpenCode", short: "OC", hue: 195, dockerSupported: true },
+  { id: "pi", label: "Pi", short: "PI", hue: 320, dockerSupported: true },
 ];
 
 export const DEFAULT_PROVIDER_ID = "claude";

@@ -39,10 +39,11 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const customAgents = useAppStore((s) => s.customAgents);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
-  // New agents get the currently selected sandbox engine. Only Claude Code runs
-  // in Docker containers today, so under the docker engine every other coding
-  // agent (and any custom agent not based on Claude) is disabled — matching the
-  // backend spawn refusal in supervisor/lifecycle.rs.
+  // New agents get the currently selected sandbox engine. Only providers with
+  // container support (see `isDockerSupported`) run under Docker, so under the
+  // docker engine every unsupported coding agent (and any custom agent whose
+  // base isn't supported) is disabled — matching the backend spawn refusal in
+  // supervisor/lifecycle.rs.
   const sandboxEngine = useAppStore((s) => s.sandboxEngine);
   const dockerOnly = sandboxEngine === "docker";
 
