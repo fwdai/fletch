@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
@@ -77,9 +77,18 @@ export function Sidebar() {
   const [npOpen, setNpOpen] = useState(false);
   const [npMode, setNpMode] = useState<NewProjectMode | null>(null);
   // Transient drag state for reordering: the group being dragged and the one
-  // currently hovered as a drop target.
+  // currently hovered as a drop target. Driven by pointer events (not the HTML5
+  // drag-and-drop API, which Tauri's OS-level drag-drop handler swallows inside
+  // the macOS webview — that handler stays on for the composer's file drop).
   const [dragPath, setDragPath] = useState<string | null>(null);
   const [overPath, setOverPath] = useState<string | null>(null);
+  const dragInfo = useRef<{
+    path: string;
+    x: number;
+    y: number;
+    active: boolean;
+    over: string | null;
+  } | null>(null);
 
   const { sortPaths, reorder } = useProjectReorder();
 
@@ -103,13 +112,44 @@ export function Sidebar() {
   const reorderable = !query.trim();
   const orderedPaths = useMemo(() => groups.map((g) => g.repoPath), [groups]);
 
-  function endDrag() {
-    setDragPath(null);
-    setOverPath(null);
-  }
-  function onDrop(target: string) {
-    if (dragPath) reorder(orderedPaths, dragPath, target);
-    endDrag();
+  // Begin a pointer-driven reorder. `markDragged` lets the group swallow the
+  // trailing click so a real drag doesn't also toggle it open/closed. The order
+  // is captured up front — it doesn't change mid-drag.
+  function startReorder(path: string, e: React.PointerEvent, markDragged: () => void) {
+    const paths = orderedPaths;
+    dragInfo.current = { path, x: e.clientX, y: e.clientY, active: false, over: null };
+
+    const onMove = (ev: PointerEvent) => {
+      const info = dragInfo.current;
+      if (!info) return;
+      // Only promote to a drag once the pointer clears a small threshold, so a
+      // plain click still falls through to the toggle.
+      if (!info.active) {
+        if (Math.hypot(ev.clientX - info.x, ev.clientY - info.y) < 4) return;
+        info.active = true;
+        markDragged();
+        setDragPath(info.path);
+      }
+      const target = document
+        .elementFromPoint(ev.clientX, ev.clientY)
+        ?.closest<HTMLElement>("[data-repo-path]");
+      const over = target?.dataset.repoPath ?? null;
+      info.over = over;
+      setOverPath(over);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      const info = dragInfo.current;
+      dragInfo.current = null;
+      if (info?.active && info.over && info.over !== info.path) {
+        reorder(paths, info.path, info.over);
+      }
+      setDragPath(null);
+      setOverPath(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   }
 
   // Auto-expand a project when its agent or draft is selected.
@@ -166,10 +206,11 @@ export function Sidebar() {
                   reorderable={reorderable}
                   dragging={dragPath === g.repoPath}
                   dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}
-                  onDragStart={() => setDragPath(g.repoPath)}
-                  onDragEnterGroup={() => setOverPath(g.repoPath)}
-                  onDropGroup={() => onDrop(g.repoPath)}
-                  onDragEndGroup={endDrag}
+                  onReorderPointerDown={
+                    reorderable
+                      ? (e, markDragged) => startReorder(g.repoPath, e, markDragged)
+                      : undefined
+                  }
                 />
               );
             })
