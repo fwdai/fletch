@@ -1,14 +1,18 @@
-//! The embedded agent image: what containers run, built on demand.
+//! The embedded agent images: what containers run, built on demand, one image
+//! per supported provider (see [`DockerProvider`]).
 //!
-//! The Dockerfile and entrypoint are compiled into the binary and the image
-//! tag is derived from their content (`fletch-agent:<sha256[..12]>`), so
-//! shipping a change to either automatically produces a new tag — the stale
-//! image is simply never referenced again and the next spawn rebuilds. No
-//! version bookkeeping, no manual invalidation.
+//! The Dockerfile and entrypoint are compiled into the binary and each image's
+//! tag is derived from its content (`<repo>:<sha256[..12]>`, e.g.
+//! `fletch-agent:…` for claude, `fletch-agent-codex:…` for codex), so shipping a
+//! change to either automatically produces a new tag — the stale image is simply
+//! never referenced again and the next spawn rebuilds. No version bookkeeping,
+//! no manual invalidation. Provider images share their base layers (identical
+//! `FROM` + apt step), so a second provider costs only its own install layer.
 //!
 //! Users can bypass all of this with the `docker_image` settings key (see
 //! [`resolve_image`]): a user-supplied image is used verbatim — never built,
-//! never inspected — and must have `claude` on PATH and git installed.
+//! never inspected — and must have the launching provider's CLI on PATH and git
+//! installed. The override is global (applies to whichever provider launches).
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -18,6 +22,7 @@ use crate::error::Result;
 
 use super::cli;
 use super::progress::{self, BuildEvent};
+use super::DockerProvider;
 
 /// Progress sink for image builds: called once per docker output line. Callers
 /// pass a tracing forwarder to log build output, or `&|_| {}` to ignore it.
@@ -53,6 +58,61 @@ fi
 exec "$@"
 "#;
 
+/// Codex's image. Shares [`DOCKERFILE`]'s base byte-for-byte — same `FROM
+/// node:22-slim` and the same apt line — so Docker's layer cache is reused
+/// across the two images; only the provider install step differs
+/// (`@openai/codex` instead of `@anthropic-ai/claude-code`). Codex authenticates
+/// from the read-write `~/.codex` mount (auth.json) and/or `OPENAI_API_KEY`, so
+/// the image carries no provider config of its own.
+pub const CODEX_DOCKERFILE: &str = r#"FROM node:22-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates ripgrep jq procps \
+ && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @openai/codex
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+"#;
+
+/// Codex's PID-1 shim: create `HOME` and exec, nothing more. Unlike claude,
+/// codex needs no onboarding seed — `codex exec` runs non-interactively with
+/// `--skip-git-repo-check` and `approval_policy="never"` (see
+/// `agent::codex_build_args`), and its credentials come from the mounted
+/// `~/.codex/auth.json` rather than a config file we'd seed here.
+pub const CODEX_ENTRYPOINT_SH: &str = r#"#!/bin/sh
+set -e
+mkdir -p "$HOME"
+exec "$@"
+"#;
+
+/// The image build inputs for a provider: repo name plus the Dockerfile and
+/// entrypoint whose combined content addresses the tag. Claude returns the
+/// original constants under the original repo name, so its tag is byte-for-byte
+/// unchanged and existing users never rebuild; new providers get their own repo.
+struct ImageSpec {
+    repo: &'static str,
+    dockerfile: &'static str,
+    entrypoint: &'static str,
+}
+
+/// Per-provider image inputs. Claude's spec is the pre-existing embedded image
+/// verbatim (see the byte-identity guard in tests); codex gets its own repo and
+/// install step, sharing claude's base layers.
+fn image_spec(provider: DockerProvider) -> ImageSpec {
+    match provider {
+        DockerProvider::Claude => ImageSpec {
+            repo: "fletch-agent",
+            dockerfile: DOCKERFILE,
+            entrypoint: ENTRYPOINT_SH,
+        },
+        DockerProvider::Codex => ImageSpec {
+            repo: "fletch-agent-codex",
+            dockerfile: CODEX_DOCKERFILE,
+            entrypoint: CODEX_ENTRYPOINT_SH,
+        },
+    }
+}
+
 /// Builds are slow (base image pull + apt + npm) but bounded: past this we
 /// assume a wedged daemon or dead network and fail the spawn with a clear
 /// error rather than letting it hang indefinitely.
@@ -61,21 +121,24 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(600);
 /// Quick metadata lookups (`docker image inspect`).
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The content-addressed tag for the embedded image.
-pub fn image_tag() -> String {
-    tag_for(DOCKERFILE, ENTRYPOINT_SH)
+/// The content-addressed tag for a provider's embedded image.
+pub fn image_tag(provider: DockerProvider) -> String {
+    let spec = image_spec(provider);
+    tag_for(spec.repo, spec.dockerfile, spec.entrypoint)
 }
 
-/// `fletch-agent:<sha256(dockerfile + entrypoint)[..12]>` — 12 hex chars, the
-/// same abbreviation depth docker itself uses for short ids.
-fn tag_for(dockerfile: &str, entrypoint: &str) -> String {
+/// `<repo>:<sha256(dockerfile + entrypoint)[..12]>` — 12 hex chars, the same
+/// abbreviation depth docker itself uses for short ids. The hash covers only the
+/// dockerfile+entrypoint content (not the repo), so claude's tail is unchanged
+/// from before the repo argument existed as long as its content is.
+fn tag_for(repo: &str, dockerfile: &str, entrypoint: &str) -> String {
     use sha2::Digest;
     let mut hasher = sha2::Sha256::new();
     hasher.update(dockerfile.as_bytes());
     hasher.update(entrypoint.as_bytes());
     let digest = hasher.finalize();
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    format!("fletch-agent:{}", &hex[..12])
+    format!("{repo}:{}", &hex[..12])
 }
 
 /// The image to launch containers from, honoring the `docker_image` settings
@@ -83,25 +146,35 @@ fn tag_for(dockerfile: &str, entrypoint: &str) -> String {
 /// the user owns that image's lifecycle); otherwise the embedded image is
 /// built if missing and its tag returned. Callers read the settings key and
 /// pass it in — this module stays DB-free.
-pub fn resolve_image(override_image: Option<&str>, on_progress: Progress) -> Result<String> {
+pub fn resolve_image(
+    provider: DockerProvider,
+    override_image: Option<&str>,
+    on_progress: Progress,
+) -> Result<String> {
     if let Some(image) = override_image.map(str::trim).filter(|s| !s.is_empty()) {
+        // The override is global and applies verbatim to whichever provider
+        // launches (it must carry that provider's CLI + git on PATH).
+        // TODO(per-provider-override): a future per-provider image setting would
+        // key this on `provider`; today one override serves all.
         tracing::info!(
             image,
+            ?provider,
             "using user-supplied docker image (docker_image setting)"
         );
         return Ok(image.to_string());
     }
-    let tag = image_tag();
-    ensure_image(&tag, on_progress)?;
+    let tag = image_tag(provider);
+    ensure_image(provider, &tag, on_progress)?;
     Ok(tag)
 }
 
-/// Make sure `tag` exists locally, building the embedded Dockerfile under
-/// that tag if it doesn't. Builds are serialized process-wide: concurrent
-/// spawns during a cold start would otherwise race docker into building the
-/// same image N times.
-pub fn ensure_image(tag: &str, on_progress: Progress) -> Result<()> {
-    ensure_image_with(DOCKERFILE, ENTRYPOINT_SH, tag, on_progress)
+/// Make sure `provider`'s image `tag` exists locally, building its embedded
+/// Dockerfile under that tag if it doesn't. Builds are serialized process-wide:
+/// concurrent spawns during a cold start would otherwise race docker into
+/// building the same image N times.
+pub fn ensure_image(provider: DockerProvider, tag: &str, on_progress: Progress) -> Result<()> {
+    let spec = image_spec(provider);
+    ensure_image_with(spec.dockerfile, spec.entrypoint, tag, on_progress)
 }
 
 /// [`ensure_image`] with explicit content — split out so the integration
@@ -192,16 +265,57 @@ mod tests {
 
     #[test]
     fn tag_is_content_addressed() {
-        let tag = tag_for("FROM a\n", "#!/bin/sh\n");
+        let tag = tag_for("fletch-agent", "FROM a\n", "#!/bin/sh\n");
         let (repo, hash) = tag.split_once(':').unwrap();
         assert_eq!(repo, "fletch-agent");
         assert_eq!(hash.len(), 12);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
 
         // Deterministic, and any content change moves the tag.
-        assert_eq!(tag, tag_for("FROM a\n", "#!/bin/sh\n"));
-        assert_ne!(tag, tag_for("FROM b\n", "#!/bin/sh\n"));
-        assert_ne!(tag, tag_for("FROM a\n", "#!/bin/bash\n"));
+        assert_eq!(tag, tag_for("fletch-agent", "FROM a\n", "#!/bin/sh\n"));
+        assert_ne!(tag, tag_for("fletch-agent", "FROM b\n", "#!/bin/sh\n"));
+        assert_ne!(tag, tag_for("fletch-agent", "FROM a\n", "#!/bin/bash\n"));
+        // The repo is a prefix, not part of the hash: a different repo with the
+        // same content shares the tail (so a repo rename can't force a rebuild).
+        assert_eq!(
+            tag_for("fletch-agent", "FROM a\n", "#!/bin/sh\n").split_once(':').unwrap().1,
+            tag_for("other", "FROM a\n", "#!/bin/sh\n").split_once(':').unwrap().1,
+        );
+    }
+
+    /// Acceptance guard: claude's image must not change. Its repo name stays
+    /// `fletch-agent` and its Dockerfile/entrypoint bytes are frozen, so its
+    /// content-addressed tag is byte-for-byte what shipped — existing users must
+    /// never be forced to rebuild by this PR. If this fails, claude's image
+    /// content changed and every user pays a cold rebuild.
+    #[test]
+    fn claude_image_is_unchanged() {
+        // Frozen bytes (do not "fix" to match a changed constant — update the
+        // constant back instead).
+        const FROZEN_DOCKERFILE: &str = "FROM node:22-slim\nRUN apt-get update && apt-get install -y --no-install-recommends \\\n    git curl ca-certificates ripgrep jq procps \\\n && rm -rf /var/lib/apt/lists/*\nRUN npm install -g @anthropic-ai/claude-code\nCOPY entrypoint.sh /entrypoint.sh\nRUN chmod +x /entrypoint.sh\nENTRYPOINT [\"/entrypoint.sh\"]\n";
+        const FROZEN_ENTRYPOINT: &str = "#!/bin/sh\nset -e\nmkdir -p \"$HOME\"\nif [ ! -f \"$HOME/.claude.json\" ]; then\n  printf '{\"hasCompletedOnboarding\": true}\\n' > \"$HOME/.claude.json\"\nfi\nexec \"$@\"\n";
+        assert_eq!(DOCKERFILE, FROZEN_DOCKERFILE, "claude Dockerfile changed");
+        assert_eq!(ENTRYPOINT_SH, FROZEN_ENTRYPOINT, "claude entrypoint changed");
+        assert!(image_tag(DockerProvider::Claude).starts_with("fletch-agent:"));
+    }
+
+    /// Codex gets its own repo and a distinct tag, and shares claude's base
+    /// layers (identical `FROM` + apt line) so the cache is reused.
+    #[test]
+    fn codex_image_is_distinct_and_shares_base() {
+        let codex = image_tag(DockerProvider::Codex);
+        assert!(codex.starts_with("fletch-agent-codex:"), "{codex}");
+        assert_ne!(codex, image_tag(DockerProvider::Claude));
+
+        // Base layers shared: the FROM line and the apt install line are
+        // byte-identical, so Docker reuses those layers across both images.
+        let base: Vec<&str> = DOCKERFILE.lines().take_while(|l| !l.starts_with("RUN npm")).collect();
+        let codex_base: Vec<&str> =
+            CODEX_DOCKERFILE.lines().take_while(|l| !l.starts_with("RUN npm")).collect();
+        assert_eq!(base, codex_base, "base layers must match for cache reuse");
+        // Provider-specific install step differs.
+        assert!(CODEX_DOCKERFILE.contains("@openai/codex"));
+        assert!(!CODEX_DOCKERFILE.contains("claude-code"));
     }
 
     #[test]
@@ -219,7 +333,9 @@ mod tests {
         let called = std::sync::atomic::AtomicBool::new(false);
         let progress = |_: &str| called.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        let image = resolve_image(Some("  ghcr.io/me/custom:1  "), &progress).unwrap();
+        let image =
+            resolve_image(DockerProvider::Claude, Some("  ghcr.io/me/custom:1  "), &progress)
+                .unwrap();
         assert_eq!(
             image, "ghcr.io/me/custom:1",
             "override is trimmed and used verbatim"
@@ -238,7 +354,7 @@ mod tests {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .is_none());
-        assert!(image_tag().starts_with("fletch-agent:"));
+        assert!(image_tag(DockerProvider::Claude).starts_with("fletch-agent:"));
     }
 
     /// Integration: builds a tiny image (busybox base) through the real
@@ -252,7 +368,7 @@ mod tests {
         }
         let dockerfile =
             "FROM busybox\nCOPY entrypoint.sh /entrypoint.sh\nENTRYPOINT [\"/entrypoint.sh\"]\n";
-        let tag = tag_for(dockerfile, ENTRYPOINT_SH);
+        let tag = tag_for("fletch-agent", dockerfile, ENTRYPOINT_SH);
         // Start clean so the build path actually runs.
         let _ = cli::run_docker(&["rmi", "-f", &tag], Duration::from_secs(30));
 

@@ -819,11 +819,12 @@ impl Agent {
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let engine = sandbox::engine_for(spec.engine)?;
-        let claude = claude_bin_for(engine.as_ref(), &home)?;
+        let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let agent_args = prepare_pty_args(&spec);
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
+            provider: "claude",
             writable_root: &spec.sandbox_root,
             rpc_dir: &spec.rpc_dir,
             cwd: &spec.cwd,
@@ -889,7 +890,10 @@ impl Agent {
             .ok_or_else(|| Error::Other(format!("no per-turn descriptor for `{provider}`")))?;
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let bin = resolve_agent_bin(desc.id, desc.bin, desc.label, &home)?;
+        let engine = sandbox::engine_for(spec.engine)?;
+        // Under docker this is the provider's in-image bin (`codex`); under
+        // seatbelt the host-resolved path — same decision claude makes.
+        let bin = agent_bin_for(desc.id, desc.bin, desc.label, engine.as_ref(), &home)?;
         let session = if spec.fresh {
             None
         } else {
@@ -902,6 +906,7 @@ impl Agent {
         // agents are confined exactly like claude.
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
+            provider,
             writable_root: &spec.sandbox_root,
             rpc_dir: &spec.rpc_dir,
             cwd: &spec.cwd,
@@ -914,7 +919,7 @@ impl Agent {
             env: launch_env,
             keepalive,
             kill,
-        } = sandbox::engine_for(spec.engine)?.launch_agent(&ctx, &bin)?;
+        } = engine.launch_agent(&ctx, &bin)?;
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -957,11 +962,12 @@ impl Agent {
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let engine = sandbox::engine_for(spec.engine)?;
-        let claude = claude_bin_for(engine.as_ref(), &home)?;
+        let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let agent_args = prepare_managed_args(&spec);
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
+            provider: "claude",
             writable_root: &spec.sandbox_root,
             rpc_dir: &spec.rpc_dir,
             cwd: &spec.cwd,
@@ -1025,13 +1031,19 @@ impl Agent {
     {
         let home = dirs::home_dir()
             .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let program = PathBuf::from(resolve_agent_bin(desc.id, desc.bin, desc.label, &home)?);
+        // Under docker this resolves to the provider's in-image bin (`codex`);
+        // under seatbelt the host path — same decision claude makes. Resolved
+        // here (not in `spawn_exec`) since the agent bin is provider-specific.
+        let engine = sandbox::engine_for(spec.engine)?;
+        let program =
+            PathBuf::from(agent_bin_for(desc.id, desc.bin, desc.label, engine.as_ref(), &home)?);
         // A custom agent's standing brief is constant for the session, so bind
         // it into the per-turn args builder once here rather than threading it
         // through every turn. `ExecSession` keeps calling a 4-arg builder.
         let build_args = desc.build_args;
         let extra = spec.instructions.clone();
         Self::spawn_exec(
+            desc.id,
             program,
             spec,
             move |prompt, session_id, thinking, model| {
@@ -1054,6 +1066,7 @@ impl Agent {
     /// failed turn that never emits an in-band turn-end still leaves the
     /// agent promptly.
     fn spawn_exec<A, I, F, G, H>(
+        provider: &str,
         program: PathBuf,
         spec: PerTurnSpec,
         build_args: A,
@@ -1076,6 +1089,7 @@ impl Agent {
 
         let ctx = AgentLaunchCtx {
             agent_id: &spec.agent_id,
+            provider,
             writable_root: &spec.sandbox_root,
             rpc_dir: &spec.rpc_dir,
             cwd: &spec.cwd,
@@ -1288,22 +1302,31 @@ fn prepare_managed_args(spec: &SpawnSpec<'_>) -> Vec<String> {
     args
 }
 
-fn resolve_claude(home: &Path) -> Result<String> {
-    resolve_agent_bin("claude", "claude", "Claude Code", home)
-}
-
-/// The claude binary handed to `launch_agent`, decided by the *resolved*
-/// engine's kind: under docker it's the in-image name `claude` (the image
-/// carries its own install; a resolved host path would be meaningless — or
-/// missing — inside the container), under seatbelt the host-resolved
-/// absolute path as always. Keyed off the resolved engine rather than the
-/// stamped setting; a docker-stamped agent whose daemon is down never reaches
-/// here — `sandbox::engine_for` fails the spawn instead of degrading to
+/// The agent binary handed to `launch_agent`, decided by the *resolved*
+/// engine's kind: under docker it's the provider's in-image command name
+/// (`claude` / `codex` — the image carries its own install; a resolved host path
+/// would be meaningless, or missing, inside the container), under seatbelt the
+/// host-resolved absolute path as always. Keyed off the resolved engine rather
+/// than the stamped setting; a docker-stamped agent whose daemon is down never
+/// reaches here — `sandbox::engine_for` fails the spawn instead of degrading to
 /// seatbelt — so the resolved engine always matches the launch boundary.
-fn claude_bin_for(engine: &dyn SandboxEngine, home: &Path) -> Result<String> {
+///
+/// Docker reaches here only for a provider `DockerProvider::from_id` accepts
+/// (the `supervisor::lifecycle` gate ran first), so the `None` arm is defensive.
+fn agent_bin_for(
+    provider: &str,
+    bin: &str,
+    label: &str,
+    engine: &dyn SandboxEngine,
+    home: &Path,
+) -> Result<String> {
     match engine.kind() {
-        EngineKind::Docker => Ok("claude".to_string()),
-        EngineKind::SandboxExec => resolve_claude(home),
+        EngineKind::Docker => sandbox::docker::DockerProvider::from_id(provider)
+            .map(|p| p.image_bin().to_string())
+            .ok_or_else(|| {
+                Error::Other(format!("{label} isn't available in Docker sandboxes yet"))
+            }),
+        EngineKind::SandboxExec => resolve_agent_bin(provider, bin, label, home),
     }
 }
 

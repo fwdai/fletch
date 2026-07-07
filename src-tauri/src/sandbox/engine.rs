@@ -33,6 +33,11 @@ impl EngineKind {
 
 pub struct AgentLaunchCtx<'a> {
     pub agent_id: &'a str,
+    /// The provider launching (`AgentRecord.provider`). Seatbelt ignores it —
+    /// its profile is provider-agnostic — while the Docker engine branches on it
+    /// for the per-provider image, config-dir mount, and auth (see
+    /// [`sandbox::docker::DockerProvider`]).
+    pub provider: &'a str,
     pub writable_root: &'a Path,
     pub rpc_dir: &'a Path,
     pub cwd: &'a Path,

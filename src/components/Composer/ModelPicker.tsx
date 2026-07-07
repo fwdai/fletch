@@ -4,7 +4,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
 import { Chip } from "@/components/ui/Chip";
 import { Scrim } from "@/components/ui/Scrim";
-import { PROVIDERS, providerLabel } from "@/data/providers";
+import { isDockerSupported, PROVIDERS, providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
 
 interface Props {
@@ -184,8 +184,9 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                 // never disables an agent the user really has.
                 const installed = !providersProbed || !!providerPaths[p.id];
                 const missing = providersProbed && !installed;
-                // Non-Claude agents can't run under Docker yet (see dockerOnly).
-                const dockerBlocked = dockerOnly && p.id !== "claude";
+                // Providers without container support can't run under Docker yet
+                // (see dockerOnly + isDockerSupported).
+                const dockerBlocked = dockerOnly && !isDockerSupported(p.id);
                 const disabled = !installed || dockerBlocked;
                 // Why disabled — dockerBlocked wins over missing (a non-Claude
                 // agent under Docker is blocked regardless of install state).
@@ -200,8 +201,8 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                     type="button"
                     // aria-disabled, not the native `disabled` attr: a disabled
                     // <button> swallows hover/pointer events in the WebView, so
-                    // its tooltip never shows and the user is left with only
-                    // "Docker: Claude only" and no reason. aria-disabled keeps
+                    // its tooltip never shows and the user is left with only the
+                    // "Not in Docker yet" chip and no reason. aria-disabled keeps
                     // the row hover-capable; the guarded handlers below keep it
                     // inert. The tooltip is the CSS `.tip`/`data-tip` one
                     // (shows on :hover), used only for the disabled explanation.
@@ -220,7 +221,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                     <span className="model-agent-name truncate text-base">{p.label}</span>
                     <span className="model-agent-ver text-xs">
                       {dockerBlocked
-                        ? "Docker: Claude only"
+                        ? "Not in Docker yet"
                         : missing
                           ? "Not installed"
                           : providerVersions[p.id]}
@@ -238,7 +239,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                 selectableCustom.map((a) => {
                   const active = a.id === customAgentId;
                   // A custom agent inherits its base provider's docker support.
-                  const dockerBlocked = dockerOnly && a.base !== "claude";
+                  const dockerBlocked = dockerOnly && !isDockerSupported(a.base);
                   return (
                     <button
                       key={a.id}

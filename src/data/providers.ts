@@ -19,14 +19,20 @@ export interface Provider {
   /** Agent manages its own model and ignores a per-session selection, so the
    *  picker offers no model choice (e.g. antigravity's `agy --print` runner). */
   fixedModel?: boolean;
+  /** Runs inside a Docker sandbox: the backend has this provider's container
+   *  image, config mount, and auth wired (see `sandbox::docker::DockerProvider`).
+   *  Providers without it are seatbelt-only for now and the picker blocks them
+   *  when the Docker engine is selected. Mirror the backend capability when a
+   *  new provider is ported. */
+  dockerSupported?: boolean;
 }
 
 // Versions and per-account status are never hardcoded here: the backend probes
 // real versions into the store (`providerVersions`, see refreshProviderVersions),
 // and honest, non-user-specific model routing lives in PROVIDER_DETAIL.
 export const PROVIDERS: Provider[] = [
-  { id: "claude", label: "Claude Code", short: "CC", hue: 28 },
-  { id: "codex", label: "Codex", short: "CX", hue: 145 },
+  { id: "claude", label: "Claude Code", short: "CC", hue: 28, dockerSupported: true },
+  { id: "codex", label: "Codex", short: "CX", hue: 145, dockerSupported: true },
   { id: "cursor", label: "Cursor Agent", short: "CR", hue: 215 },
   { id: "antigravity", label: "Antigravity", short: "AG", hue: 260, fixedModel: true },
   { id: "opencode", label: "OpenCode", short: "OC", hue: 195 },
@@ -34,6 +40,15 @@ export const PROVIDERS: Provider[] = [
 ];
 
 export const DEFAULT_PROVIDER_ID = "claude";
+
+/** Whether a provider (or a custom agent's base provider) can run under the
+ *  Docker sandbox engine. Mirrors the backend's
+ *  `ensure_engine_supports_provider` gate so the picker and the spawn path agree
+ *  on which providers are container-ready. Unknown ids are treated as
+ *  unsupported. */
+export function isDockerSupported(id: string | null | undefined): boolean {
+  return !!PROVIDERS.find((p) => p.id === id)?.dockerSupported;
+}
 
 /** URL for a provider/agent's brand icon on the website CDN. Icons live at
  *  /agents/<slug>.svg (slug === provider id), so a rebrand only needs the SVG

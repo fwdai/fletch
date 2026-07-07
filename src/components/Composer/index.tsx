@@ -5,7 +5,7 @@ import { Icon } from "@/components/Icon";
 import { Chip } from "@/components/ui/Chip";
 import { lookupModel } from "@/data/modelCatalog";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
-import { DEFAULT_PROVIDER_ID, providerLabel } from "@/data/providers";
+import { DEFAULT_PROVIDER_ID, isDockerSupported, providerLabel } from "@/data/providers";
 import type { AgentUsage } from "@/store";
 import { useAppStore } from "@/store";
 import { AttachmentList } from "./AttachmentList";
@@ -153,13 +153,14 @@ export function Composer({
   const detail = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
   const thinkingLevels = detail?.thinkingLevels ?? [];
 
-  // A new-agent draft can still hold a non-Claude provider chosen before the
-  // sandbox engine was switched to Docker. Only Claude runs in Docker today, so
-  // block the send here — otherwise the stale selection reaches spawnAgent and
-  // fails in the backend. `provider` mirrors a custom agent's base, so this
-  // covers custom agents too. Existing sessions already spawned with their
-  // engine and keep a locked picker, so they're exempt.
-  const dockerBlocked = !existingSession && sandboxEngine === "docker" && provider !== "claude";
+  // A new-agent draft can still hold a docker-unsupported provider chosen
+  // before the sandbox engine was switched to Docker. Block the send here —
+  // otherwise the stale selection reaches spawnAgent and fails in the backend.
+  // `provider` mirrors a custom agent's base, so this covers custom agents too.
+  // Existing sessions already spawned with their engine and keep a locked
+  // picker, so they're exempt.
+  const dockerBlocked =
+    !existingSession && sandboxEngine === "docker" && !isDockerSupported(provider);
 
   const [thinkingValue, setThinkingValue] = useState<string | undefined>(() =>
     resolveThinking(defaultProvider),

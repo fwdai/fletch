@@ -85,12 +85,15 @@ pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>
     }
 }
 
-/// Only claude runs in Docker sandboxes in v1 (the embedded image ships
-/// claude alone; per-turn CLIs haven't been ported). Checked before every
-/// spawn — fresh spawns and, via `spawn_agent_process`, resume/view-switch —
-/// so a docker-stamped record can never launch an unsupported provider.
+/// Which providers run in Docker sandboxes: those with a wired-up container
+/// image + config-mount + auth (see [`sandbox::docker::DockerProvider`]) — claude
+/// and codex so far, brought up one at a time as the rest are ported. Checked
+/// before every spawn — fresh spawns and, via `spawn_agent_process`,
+/// resume/view-switch — so a docker-stamped record can never launch an
+/// unsupported provider. Consults the capability lookup rather than string-
+/// matching a single provider id.
 fn ensure_engine_supports_provider(engine: EngineKind, provider: &str) -> Result<()> {
-    if engine == EngineKind::Docker && provider != "claude" {
+    if engine == EngineKind::Docker && sandbox::docker::DockerProvider::from_id(provider).is_none() {
         let label = per_turn_descriptor(provider)
             .map(|d| d.label())
             .unwrap_or(provider);
@@ -1220,11 +1223,18 @@ mod tests {
     }
 
     #[test]
-    fn docker_refuses_every_provider_but_claude() {
-        assert!(ensure_engine_supports_provider(EngineKind::Docker, "claude").is_ok());
-        for provider in ["codex", "cursor", "opencode", "pi", "antigravity"] {
+    fn docker_supports_claude_and_codex_but_refuses_the_rest() {
+        // Both wired-up providers launch under docker.
+        for provider in ["claude", "codex"] {
+            assert!(
+                ensure_engine_supports_provider(EngineKind::Docker, provider).is_ok(),
+                "{provider} should be docker-supported",
+            );
+        }
+        // The still-unported per-turn agents refuse with the stable copy.
+        for provider in ["cursor", "opencode", "pi", "antigravity"] {
             let err = ensure_engine_supports_provider(EngineKind::Docker, provider)
-                .expect_err("per-turn providers must refuse under docker");
+                .expect_err("unported providers must refuse under docker");
             assert!(
                 err.to_string()
                     .ends_with("isn't available in Docker sandboxes yet"),
@@ -1232,8 +1242,8 @@ mod tests {
             );
         }
         // The copy uses the human-facing product name, not the provider id.
-        let err = ensure_engine_supports_provider(EngineKind::Docker, "codex").unwrap_err();
-        assert!(err.to_string().starts_with("Codex "), "{err}");
+        let err = ensure_engine_supports_provider(EngineKind::Docker, "cursor").unwrap_err();
+        assert!(err.to_string().starts_with("Cursor "), "{err}");
 
         // Seatbelt is unaffected.
         for provider in ["claude", "codex", "cursor"] {
