@@ -89,6 +89,10 @@ export function Sidebar() {
     active: boolean;
     over: string | null;
   } | null>(null);
+  // Tears down the in-flight drag's window listeners and resets state. Held in a
+  // ref so an interrupted drag (pointercancel, or the sidebar unmounting) can
+  // clean up too — not just a normal pointerup.
+  const dragCleanup = useRef<(() => void) | null>(null);
 
   const { sortPaths, reorder } = useProjectReorder();
 
@@ -137,20 +141,39 @@ export function Sidebar() {
       info.over = over;
       setOverPath(over);
     };
-    const onUp = () => {
+    // `commit` is true only for a clean pointerup; a cancel or unmount tears the
+    // drag down without reordering.
+    // `commit` is true only for a clean pointerup; a cancel, focus loss, or
+    // unmount tears the drag down without reordering.
+    const finish = (commit: boolean) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onCancel);
+      dragCleanup.current = null;
       const info = dragInfo.current;
       dragInfo.current = null;
-      if (info?.active && info.over && info.over !== info.path) {
+      if (commit && info?.active && info.over && info.over !== info.path) {
         reorder(paths, info.path, info.over);
       }
       setDragPath(null);
       setOverPath(null);
     };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
+
+    dragCleanup.current = () => finish(false);
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    // The webview can drop the pointer stream on focus loss without a
+    // pointercancel; bail out so the drag can't get stuck.
+    window.addEventListener("blur", onCancel);
   }
+
+  // Safety net: if the sidebar unmounts mid-drag, tear down the window listeners
+  // so they don't leak past this component's life.
+  useEffect(() => () => dragCleanup.current?.(), []);
 
   // Auto-expand a project when its agent or draft is selected.
   useEffect(() => {
