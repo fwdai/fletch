@@ -195,8 +195,12 @@
   opacity: 0.6;
   pointer-events: auto;
 }
-.proj-h:hover .padd-remove:hover {
+/* Keyboard focus reveals it too — a focused button at opacity:0 would make the
+ * focus ring vanish and hide the action from keyboard users. */
+.proj-h:hover .padd-remove:hover,
+.proj-h .padd-remove:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
 .proj-h .padd[aria-label="New agent"] svg {
   width: 15px;
