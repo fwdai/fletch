@@ -33,9 +33,11 @@ export const MessageItem = memo(function MessageItem({
   item: ViewItem;
   provider?: string;
   agentId?: string;
-  /** The agent is mid-turn. Lets a tool row still awaiting its result show a
-   *  live "running" spinner (and a subagent step count) rather than looking
-   *  settled. Cleared when the turn ends, so no spinner ever hangs. */
+  /** This row's turn is live: the agent is mid-turn AND the row is part of the
+   *  currently-open turn (top-level) or of a still-running parent tool (nested
+   *  subagent). Lets a tool still awaiting its result show a "running" spinner
+   *  (and a subagent step count) rather than looking settled — while keeping
+   *  dangling tool_calls from interrupted/earlier turns quiet. */
   busy?: boolean;
   /** Ordinal of this user turn, used by ChatNav to locate the bubble in the
    *  DOM. Set only for top-level navigable user prompts. */
@@ -110,7 +112,7 @@ export const MessageItem = memo(function MessageItem({
                   items={children}
                   provider={provider}
                   agentId={agentId}
-                  busy={busy}
+                  busy={running}
                 />
               )}
             </>
