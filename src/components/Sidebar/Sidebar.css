@@ -111,6 +111,7 @@
   color: var(--fg-2);
   transition: background 0.1s;
   position: relative;
+  user-select: none;
 }
 .proj-h:hover {
   background: var(--hover);
