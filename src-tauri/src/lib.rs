@@ -813,6 +813,30 @@ pub fn run() {
                 });
             }
 
+            // Seed the docker version-refresh loop guard (mirror of the
+            // `docker_version_refresh_guard` setting — private bookkeeping,
+            // not user-facing) and wire its write-back, so a host CLI pinned
+            // away from the registry's latest triggers at most one
+            // version-parity rebuild ever, not one per app run. Same mirror
+            // idiom as the launch knobs above; the guard is consulted and
+            // recorded on spawn/background threads that have no DB handle.
+            {
+                let seeded: std::collections::HashMap<String, String> =
+                    database::get_setting(&db.lock(), sandbox::docker::VERSION_GUARD_SETTING)
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default();
+                let guard_db = db.clone();
+                sandbox::docker::init_version_refresh_guard(seeded, move |attempted| {
+                    if let Ok(json) = serde_json::to_string(attempted) {
+                        let _ = database::set_setting(
+                            &guard_db.lock(),
+                            sandbox::docker::VERSION_GUARD_SETTING,
+                            &json,
+                        );
+                    }
+                });
+            }
+
             // Seed the in-process container auth token (mirror of the
             // `claude_container_token` setting, same pattern as the GitHub
             // token below) so the docker auth chain — resolved at spawn time
