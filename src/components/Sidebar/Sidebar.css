@@ -101,9 +101,11 @@
 }
 .proj-h {
   gap: 6px;
-  /* same grid as .agent: name on the 13px text rail, 9px right padding, and
-   * the chevron living in the left spine lane (absolute, like .ag-rail) */
-  padding: 0 9px 0 13px;
+  /* name stays on the agents' 13px text rail; the chevron floats (absolute) in
+   * the gutter with real left padding, and the right padding is trimmed so the
+   * "+" glyph is ~the same distance from the right edge as the chevron is from
+   * the left — a balanced row, not edge-hugging on one side. */
+  padding: 0 3px 0 13px;
   height: 28px;
   border-radius: var(--r-sm);
   font-size: var(--fs-xs);
@@ -130,9 +132,9 @@
 }
 .proj-h .chev {
   position: absolute;
-  /* center (~3px) sits on the agent status-rail line (~2.5px) so the chevron
-   * reads as the header's spine glyph, in line with the rails below it */
-  left: -2px;
+  /* padded in from the edge (ink lands ~7px in) so the row never looks like it
+   * has no left padding; name still sits at 13px, chevron tucks just before it */
+  left: 3px;
   top: 50%;
   width: 10px;
   height: 10px;
