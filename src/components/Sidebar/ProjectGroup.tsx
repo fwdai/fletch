@@ -95,7 +95,6 @@ export function ProjectGroup({
         }}
         title={repoPath}
       >
-        {reorderable && <Icon name="grip" size={12} className="pgrip" />}
         <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
@@ -110,7 +109,7 @@ export function ProjectGroup({
         </button>
         {removable && (
           <button
-            className="padd tip"
+            className="padd padd-remove tip"
             data-tip="Remove repo"
             data-tip-down=""
             onClick={onRemove}
