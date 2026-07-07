@@ -101,7 +101,9 @@
 }
 .proj-h {
   gap: 6px;
-  padding: 0 8px;
+  /* name column aligned to the agents' 13px text rail; chevron lives in the
+   * gutter (absolute, like .ag-rail), so the header reads as the list's label */
+  padding: 0 8px 0 13px;
   height: 28px;
   border-radius: var(--r-sm);
   font-size: var(--fs-xs);
@@ -116,35 +118,32 @@
 .proj-h:hover {
   background: var(--hover);
 }
+/* The whole header is the drag target — cursor:grab is the only reorder
+ * affordance (no grip glyph, so the name keeps the gutter's left rail). */
 .proj-h.reorderable {
   cursor: grab;
 }
 .proj-h.reorderable:active {
   cursor: grabbing;
 }
-/* Drag affordance: a muted grip that firms up on hover. Fixed-width slot so
- * showing it doesn't shift the project name. */
-.proj-h .pgrip {
-  flex-shrink: 0;
-  width: 12px;
-  height: 12px;
-  margin-left: -4px;
-  color: var(--fg-3);
-  opacity: 0.35;
-  transition: opacity 0.1s;
-}
-.proj-h:hover .pgrip {
-  opacity: 0.9;
-}
 .proj-h .chev {
+  position: absolute;
+  left: 1px;
+  top: 50%;
   width: 10px;
   height: 10px;
   color: var(--fg-3);
-  transition: transform 0.15s var(--ease);
-  flex-shrink: 0;
+  opacity: 0.55;
+  transform: translateY(-50%);
+  transition:
+    transform 0.15s var(--ease),
+    opacity 0.1s;
+}
+.proj-h:hover .chev {
+  opacity: 0.9;
 }
 .proj-h.open .chev {
-  transform: rotate(90deg);
+  transform: translateY(-50%) rotate(90deg);
 }
 .proj-h .pname {
   flex: 0 1 auto;
@@ -166,6 +165,9 @@
   content: "·";
   margin-right: 4px;
 }
+/* Ghost affordance: always visible so "add an agent" is discoverable without
+ * hovering, but borderless + muted so it never competes with the label. It
+ * earns the accent fill only on hover. */
 .proj-h .padd {
   width: 22px;
   height: 22px;
@@ -173,13 +175,28 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--fg-2);
-  background: var(--bd-soft);
+  color: var(--fg-3);
+  background: transparent;
+  opacity: 0.6;
   transition: var(--transition-ui);
 }
 .proj-h .padd:hover {
   background: var(--accent-soft);
   color: var(--accent);
+  opacity: 1;
+}
+/* Remove (empty projects only) is destructive and rare — hidden until the row
+ * is engaged. */
+.proj-h .padd-remove {
+  opacity: 0;
+  pointer-events: none;
+}
+.proj-h:hover .padd-remove {
+  opacity: 0.6;
+  pointer-events: auto;
+}
+.proj-h:hover .padd-remove:hover {
+  opacity: 1;
 }
 .proj-h .padd[aria-label="New agent"] svg {
   width: 15px;
