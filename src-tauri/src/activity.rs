@@ -116,6 +116,21 @@ impl ManagedActivity {
 
 impl Activity for ManagedActivity {
     fn observe_event(&mut self, event: &Value) {
+        // Subagent (sidechain) events carry the spawning Task/Agent tool's id in
+        // a top-level `parent_tool_use_id`. They belong to a nested turn, not the
+        // main one: a subagent's `result` must not end the main turn, and its
+        // tool_use/tool_result pairs must not touch the main turn's outstanding
+        // set. Ignore them entirely here — the main agent's own Task tool call
+        // stays in `outstanding_tools` until its real `tool_result`, which keeps
+        // `turn_ended()` false while the subagent runs. (The frontend mirrors
+        // this via `parent_tool_use_id` routing in reduce.ts.)
+        if event
+            .get("parent_tool_use_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty())
+        {
+            return;
+        }
         self.last_event_at = Some(Instant::now());
         if (self.is_turn_end)(event) {
             self.explicit_turn_end = true;
@@ -261,6 +276,43 @@ mod tests {
         a.observe_event(&serde_json::json!({
             "type": "assistant",
             "message": {"content": [{"type": "tool_use", "id": "toolu_1"}]}
+        }));
+        a.observe_event(&serde_json::json!({"type": "result", "subtype": "success"}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn managed_ignores_subagent_sidechain_events() {
+        // The main agent spawns a subagent via a Task tool call.
+        let mut a = ManagedActivity::claude();
+        a.observe_event(&serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": "toolu_task", "name": "Task"}]}
+        }));
+        assert!(!a.turn_ended());
+
+        // The subagent runs, emitting its own tool cycle and finally a `result`,
+        // all tagged with the spawning tool's id. None of it must end the main
+        // turn or leak into the main outstanding-tool set.
+        a.observe_event(&serde_json::json!({
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_task",
+            "message": {"content": [{"type": "tool_use", "id": "toolu_sub", "name": "Bash"}]}
+        }));
+        assert_eq!(a.outstanding_tools.len(), 1); // only the main Task call
+        a.observe_event(&serde_json::json!({
+            "type": "result",
+            "parent_tool_use_id": "toolu_task",
+            "subtype": "success"
+        }));
+        // Subagent's result must NOT end the main turn — the Task call is still
+        // outstanding.
+        assert!(!a.turn_ended());
+
+        // The main agent finally gets the Task tool_result, then ends its turn.
+        a.observe_event(&serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_task"}]}
         }));
         a.observe_event(&serde_json::json!({"type": "result", "subtype": "success"}));
         assert!(a.turn_ended());

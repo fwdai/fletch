@@ -286,6 +286,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                     item={item}
                     provider={agent.provider}
                     agentId={agent.id}
+                    busy={liveBusy}
                     turnId={turnIds[i]}
                   />
                   {turnFooters[i] != null && <TurnFooter {...turnFooters[i]!} />}
