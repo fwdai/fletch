@@ -136,6 +136,43 @@ mkdir -p "$HOME"
 exec "$@"
 "#;
 
+/// Cursor's image. Shares [`DOCKERFILE`]'s base byte-for-byte (same `FROM
+/// node:22-slim` and apt line) for layer-cache reuse; only the install step
+/// differs. Unlike the other providers, cursor-agent ships not as an npm package
+/// but via its official installer (`https://cursor.com/install`), which detects
+/// `linux/arm64` and downloads a self-contained bundle (its own node runtime +
+/// per-arch native modules) into `~/.local`; we symlink its `cursor-agent`
+/// launcher onto PATH so the in-image `agent_bin` resolves. The installer pins
+/// whatever version its script currently references — no worse than the `latest`
+/// npm installs the other images use: the Dockerfile *text* is constant so the
+/// content-addressed tag is stable, while a re-pull may fetch a newer bundle
+/// (contents drift under a stable tag — an accepted, documented tradeoff shared
+/// with every `npm install -g <pkg>` here). Cursor authenticates in-container from
+/// a forwarded `CURSOR_API_KEY` (see [`super::engine`]): `cursor-agent login`
+/// stores its tokens in the host OS keychain, which a container can't read, so the
+/// image carries no provider config of its own.
+pub const CURSOR_DOCKERFILE: &str = r#"FROM node:22-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates ripgrep jq procps \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://cursor.com/install | bash \
+ && ln -s /root/.local/bin/cursor-agent /usr/local/bin/cursor-agent
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+"#;
+
+/// Cursor's PID-1 shim: create `HOME` and exec. `cursor-agent -p --output-format
+/// stream-json --force --trust` (see `agent::cursor_build_args`) runs one turn
+/// non-interactively; credentials arrive as the forwarded `CURSOR_API_KEY` env
+/// var and its transcripts land on the read-write `~/.cursor` mount, so nothing is
+/// seeded here.
+pub const CURSOR_ENTRYPOINT_SH: &str = r#"#!/bin/sh
+set -e
+mkdir -p "$HOME"
+exec "$@"
+"#;
+
 /// The image build inputs for a provider: repo name plus the Dockerfile and
 /// entrypoint whose combined content addresses the tag. Claude returns the
 /// original constants under the original repo name, so its tag is byte-for-byte
@@ -170,6 +207,11 @@ fn image_spec(provider: DockerProvider) -> ImageSpec {
             repo: "fletch-agent-pi",
             dockerfile: PI_DOCKERFILE,
             entrypoint: PI_ENTRYPOINT_SH,
+        },
+        DockerProvider::Cursor => ImageSpec {
+            repo: "fletch-agent-cursor",
+            dockerfile: CURSOR_DOCKERFILE,
+            entrypoint: CURSOR_ENTRYPOINT_SH,
         },
     }
 }
@@ -379,10 +421,20 @@ mod tests {
         assert!(!CODEX_DOCKERFILE.contains("claude-code"));
     }
 
-    /// The base layers (everything before the `RUN npm install` line) that every
-    /// provider image must share byte-for-byte so Docker's layer cache is reused.
+    /// The base layers (`FROM` + the shared apt step, through the apt-list
+    /// cleanup) that every provider image must share byte-for-byte so Docker's
+    /// layer cache is reused. Stops at the apt cleanup rather than the install
+    /// `RUN` so it's install-agnostic — npm-installed providers and cursor's
+    /// curl-installer image both compare equal on the base.
     fn base_layers(dockerfile: &str) -> Vec<&str> {
-        dockerfile.lines().take_while(|l| !l.starts_with("RUN npm")).collect()
+        let mut out = Vec::new();
+        for line in dockerfile.lines() {
+            out.push(line);
+            if line.contains("rm -rf /var/lib/apt/lists") {
+                break;
+            }
+        }
+        out
     }
 
     /// OpenCode and Pi each get their own repo + distinct tag, share claude's base
@@ -410,6 +462,37 @@ mod tests {
 
         // The two new tags are distinct from each other, too.
         assert_ne!(image_tag(DockerProvider::Opencode), image_tag(DockerProvider::Pi));
+    }
+
+    /// Cursor gets its own repo + distinct tag and shares claude's base layers
+    /// (cache reuse) even though it installs via the official curl installer
+    /// rather than npm — the base-sharing invariant is install-agnostic. No other
+    /// provider's package leaks into the image.
+    #[test]
+    fn cursor_image_is_distinct_and_shares_base() {
+        let cursor = image_tag(DockerProvider::Cursor);
+        assert!(cursor.starts_with("fletch-agent-cursor:"), "{cursor}");
+        for other in [
+            DockerProvider::Claude,
+            DockerProvider::Codex,
+            DockerProvider::Opencode,
+            DockerProvider::Pi,
+        ] {
+            assert_ne!(cursor, image_tag(other), "cursor tag collides with {other:?}");
+        }
+        // Base (FROM + apt) byte-identical despite the curl-installer install step.
+        assert_eq!(
+            base_layers(CURSOR_DOCKERFILE),
+            base_layers(DOCKERFILE),
+            "base layers must match for cache reuse",
+        );
+        // Installs cursor-agent via its official installer; no other provider's pkg.
+        assert!(CURSOR_DOCKERFILE.contains("cursor.com/install"));
+        assert!(CURSOR_DOCKERFILE.contains("cursor-agent"));
+        assert!(!CURSOR_DOCKERFILE.contains("claude-code"));
+        assert!(!CURSOR_DOCKERFILE.contains("@openai/codex"));
+        assert!(!CURSOR_DOCKERFILE.contains("opencode-ai"));
+        assert!(!CURSOR_DOCKERFILE.contains("pi-coding-agent"));
     }
 
     #[test]

@@ -33,7 +33,7 @@ export interface Provider {
 export const PROVIDERS: Provider[] = [
   { id: "claude", label: "Claude Code", short: "CC", hue: 28, dockerSupported: true },
   { id: "codex", label: "Codex", short: "CX", hue: 145, dockerSupported: true },
-  { id: "cursor", label: "Cursor Agent", short: "CR", hue: 215 },
+  { id: "cursor", label: "Cursor Agent", short: "CR", hue: 215, dockerSupported: true },
   { id: "antigravity", label: "Antigravity", short: "AG", hue: 260, fixedModel: true },
   { id: "opencode", label: "OpenCode", short: "OC", hue: 195, dockerSupported: true },
   { id: "pi", label: "Pi", short: "PI", hue: 320, dockerSupported: true },

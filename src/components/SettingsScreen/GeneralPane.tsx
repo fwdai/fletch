@@ -177,7 +177,7 @@ export function GeneralPane() {
       <SetGroup label="Sandbox">
         <SetRow
           title="Engine"
-          sub="Applies to newly created agents; existing agents keep the engine they started with. Docker agents run in a Linux container: builds and tests run on Linux, not macOS. Claude Code, Codex, OpenCode, and Pi are available in containers for now; other agents stay on Seatbelt."
+          sub="Applies to newly created agents; existing agents keep the engine they started with. Docker agents run in a Linux container: builds and tests run on Linux, not macOS. Claude Code, Codex, OpenCode, Pi, and Cursor Agent are available in containers for now; Antigravity stays on Seatbelt."
         >
           <Select<SandboxEngine>
             value={sandboxEngine}
