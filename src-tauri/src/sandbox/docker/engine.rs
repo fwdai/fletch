@@ -312,14 +312,8 @@ impl SandboxEngine for DockerEngine {
                 // Codex's config dir is bind-mounted read-write: auth.json token
                 // refresh and the session rollout files it writes both need to
                 // persist, and writing rollouts at the same host path keeps the
-                // host-side transcript reader (`find_codex_rollouts`) working. If
-                // it doesn't exist the user has never logged in on the host, so
-                // there'd be nothing to authenticate with — fail fast with a
-                // clear pointer rather than mounting an empty dir.
+                // host-side transcript reader (`find_codex_rollouts`) working.
                 let dir = codex_home_dir(ctx.home);
-                if !dir.is_dir() {
-                    return Err(Error::Other(NO_CODEX_CONFIG_MSG.to_string()));
-                }
                 // Forward CODEX_HOME only when it points somewhere other than the
                 // default `~/.codex` the container already resolves via HOME —
                 // mirrors `nondefault_claude_config_dir`.
@@ -329,7 +323,11 @@ impl SandboxEngine for DockerEngine {
                 }
 
                 auth_start = env.len();
-                apply_codex_auth(&mut env, &dir)?;
+                prepare_codex_launch(
+                    &mut env,
+                    &dir,
+                    std::env::var("OPENAI_API_KEY").ok().as_deref(),
+                )?;
                 codex_config_dir = Some(dir);
             }
         }
@@ -432,13 +430,8 @@ fn apply_container_auth(env: &mut Vec<(String, String)>, auth: ContainerAuth) ->
     }
 }
 
-/// Launch-blocking message when codex's config dir doesn't exist on the host:
-/// there's no login to carry in, so authentication would be impossible.
-const NO_CODEX_CONFIG_MSG: &str =
-    "No Codex config for containers — run `codex` on the host and sign in first (this creates ~/.codex).";
-
-/// Launch-blocking message when codex's config dir exists but carries no usable
-/// credential (no `auth.json`) and `OPENAI_API_KEY` is unset. Mirrors
+/// Launch-blocking message when codex has no usable credential: no
+/// `auth.json` in its config dir and `OPENAI_API_KEY` unset. Mirrors
 /// [`NO_CONTAINER_AUTH_MSG`]'s fail-fast: an unauthenticated container boots
 /// straight into a login prompt it can't answer inside the sandbox.
 const NO_CODEX_AUTH_MSG: &str =
@@ -464,19 +457,27 @@ fn codex_home_is_nondefault(home: &Path) -> bool {
     }
 }
 
-/// Fold codex's container auth into the docker CLI's process env. Codex's
+/// Fold codex's container auth into the docker CLI's process env, then make
+/// sure the config dir exists so the read-write bind has a host source. Codex's
 /// primary credential is the mounted `~/.codex/auth.json` (the read-write mount
 /// carries it and token refresh persists to the host); an `OPENAI_API_KEY` in
 /// the app's process env is forwarded when set (by bare `-e`, so its value never
-/// touches argv — invariant 3). Fails the launch when neither is present, so an
-/// unauthenticated container never boots into an unanswerable login prompt.
+/// touches argv — invariant 3). Either alone suffices: a key-only user may
+/// never have run codex on the host, so the dir is created rather than
+/// required — mounting a fresh dir keeps session rollouts landing where
+/// `find_codex_rollouts` reads them. Fails the launch when neither credential
+/// is present (before touching the filesystem), so an unauthenticated
+/// container never boots into an unanswerable login prompt.
 ///
 /// Unlike claude, no ANTHROPIC_*/CLAUDE_* var is injected: codex authenticates
 /// against OpenAI, and forwarding those would be dead weight at best.
-fn apply_codex_auth(env: &mut Vec<(String, String)>, config_dir: &Path) -> Result<()> {
-    let api_key = std::env::var("OPENAI_API_KEY").ok();
+fn prepare_codex_launch(
+    env: &mut Vec<(String, String)>,
+    config_dir: &Path,
+    api_key: Option<&str>,
+) -> Result<()> {
     let auth_file = config_dir.join("auth.json").is_file();
-    let resolved = codex_auth_env(api_key.as_deref(), auth_file)?;
+    let resolved = codex_auth_env(api_key, auth_file)?;
     // Booleans only — never a token value.
     tracing::info!(
         target: "fletch::docker",
@@ -485,10 +486,16 @@ fn apply_codex_auth(env: &mut Vec<(String, String)>, config_dir: &Path) -> Resul
         "codex container auth resolved"
     );
     env.extend(resolved);
+    std::fs::create_dir_all(config_dir).map_err(|e| {
+        Error::Other(format!(
+            "Couldn't create Codex config dir {}: {e}",
+            config_dir.display()
+        ))
+    })?;
     Ok(())
 }
 
-/// Pure core of [`apply_codex_auth`]: the auth env to forward given the process
+/// Pure core of [`prepare_codex_launch`]: the auth env to forward given the process
 /// `OPENAI_API_KEY` (if any) and whether `auth.json` exists on the mount. A
 /// non-blank key is forwarded (trimmed); the mounted `auth.json` carries auth on
 /// its own with nothing to inject. Neither present → the launch-blocking error.
@@ -1584,6 +1591,29 @@ mod tests {
         let err = codex_auth_env(None, false).unwrap_err().to_string();
         assert_eq!(err, NO_CODEX_AUTH_MSG);
         assert!(codex_auth_env(Some("  "), false).is_err());
+    }
+
+    /// Regression: a key-only user (`OPENAI_API_KEY` set, never ran codex on
+    /// the host) must launch — the missing config dir is created for the RW
+    /// mount, not treated as "no way to authenticate". With no credential at
+    /// all the launch still fails, and before touching the filesystem.
+    #[test]
+    fn codex_key_only_launch_creates_missing_config_dir() {
+        let td = tempfile::tempdir().unwrap();
+
+        let dir = td.path().join(".codex");
+        let mut env = Vec::new();
+        prepare_codex_launch(&mut env, &dir, Some("sk-openai")).unwrap();
+        assert!(dir.is_dir(), "config dir must exist for the RW bind mount");
+        assert_eq!(
+            env,
+            vec![("OPENAI_API_KEY".to_string(), "sk-openai".to_string())],
+        );
+
+        let no_auth = td.path().join(".codex-no-auth");
+        let err = prepare_codex_launch(&mut Vec::new(), &no_auth, None).unwrap_err();
+        assert_eq!(err.to_string(), NO_CODEX_AUTH_MSG);
+        assert!(!no_auth.exists(), "auth failure must not create the dir");
     }
 
     /// Integration: a real `docker run` round-trip through the exact argv the
