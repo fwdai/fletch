@@ -57,6 +57,11 @@ export function ConfigRow({ row, override, onChange, onRevert }: ConfigRowProps)
             onKeyDown={(e) => {
               if (e.key === "Enter") e.currentTarget.blur();
               if (e.key === "Escape") {
+                // Keep Escape from bubbling to the container's document/window
+                // keydown listener (Project Settings modal, Run panel sheet),
+                // which would otherwise close the whole surface instead of just
+                // cancelling this in-progress edit.
+                e.stopPropagation();
                 e.currentTarget.value = display;
                 e.currentTarget.blur();
               }

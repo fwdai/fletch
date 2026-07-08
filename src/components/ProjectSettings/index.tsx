@@ -69,6 +69,7 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
       <div
         className="ps-modal"
         role="dialog"
+        aria-modal="true"
         aria-label="Project settings"
         onClick={(e) => e.stopPropagation()}
       >
