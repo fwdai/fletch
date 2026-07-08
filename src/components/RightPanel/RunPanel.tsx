@@ -13,9 +13,9 @@ import { RunSettingsSheet } from "./RunSettingsSheet";
 
 // Detected run config replaces the old hardcoded defaults. The backend
 // (`detect_run_config`) returns rows per ecosystem; the panel shows the
-// highest-confidence one. The `run.*` overrides in project_settings — the
-// per-project defaults, also editable from Project settings — layer on top
-// of these detected values.
+// highest-confidence one. Two settings layers sit on top: the project's
+// `run.*` settings (edited in Project Settings), then this agent's
+// `run.agent.<id>.*` overrides (edited here in the sheet).
 
 // Strip ANSI escape sequences before rendering. v1 keeps log rendering
 // dead-simple (plain text with pre-wrap); colorization can come later.
@@ -43,6 +43,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   const [lastError, setLastError] = useState<string | null>(null);
   const [log, setLog] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [projectValues, setProjectValues] = useState<Record<string, string>>({});
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [rows, setRows] = useState<SetupRow[]>([]);
   const [ecosystem, setEcosystem] = useState<string | null>(null);
@@ -52,22 +53,27 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   // time we re-subscribe (agent switch).
   const decoderRef = useRef<TextDecoder | null>(null);
 
-  // Load persisted command overrides for this project. Re-loads when
-  // the selected agent (and thus project) changes.
+  // Load the project's run settings (the base every agent inherits) and this
+  // agent's overrides on top of them. Re-loads on agent switch.
   useEffect(() => {
     let cancelled = false;
     if (!agent.project_id) {
+      setProjectValues({});
       setOverrides({});
       return;
     }
     loadRunOverrides(agent.project_id).then((loaded) => {
+      if (cancelled) return;
+      setProjectValues(loaded);
+    });
+    loadRunOverrides(agent.project_id, agent.id).then((loaded) => {
       if (cancelled) return;
       setOverrides(loaded);
     });
     return () => {
       cancelled = true;
     };
-  }, [agent.project_id]);
+  }, [agent.project_id, agent.id]);
 
   // Detect the run config for this agent's checkout. Re-runs on agent
   // switch. The highest-confidence ecosystem fills the table; an empty
@@ -161,8 +167,17 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     el.scrollTop = el.scrollHeight;
   }, [log]);
 
+  // What each row inherits: the project setting when one exists, else the
+  // detected value. Agent-level overrides compare against these, so a value
+  // matching the project setting never reads as an override.
+  const effectiveRows = rows.map((r) =>
+    projectValues[r.id] != null
+      ? { ...r, value: projectValues[r.id], origin: "project" as const }
+      : r,
+  );
+
   const fieldValue = (id: string) => {
-    const row = rows.find((r) => r.id === id);
+    const row = effectiveRows.find((r) => r.id === id);
     return overrides[id] ?? row?.value ?? "";
   };
 
@@ -194,13 +209,14 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   };
 
   const onApply = (next: Record<string, string>) => {
-    // Reconcile the draft against the detected rows: keep only real
+    // Reconcile the draft against the inherited values: keep only real
     // overrides, and prune keys (including stale ones whose row no longer
     // exists after an ecosystem change) from the DB so the override
-    // indicator can't get stuck lit.
-    const { cleaned, toSet, toDelete } = reconcileOverrides(rows, overrides, next);
+    // indicator can't get stuck lit. Persisted under this agent's scope —
+    // the project setting is only edited from Project Settings.
+    const { cleaned, toSet, toDelete } = reconcileOverrides(effectiveRows, overrides, next);
     if (agent.project_id) {
-      persistRunOverrides(agent.project_id, toSet, toDelete);
+      persistRunOverrides(agent.project_id, toSet, toDelete, agent.id);
     }
 
     setOverrides(cleaned);
@@ -267,7 +283,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       {/* ── Settings sheet ── */}
       {settingsOpen && (
         <RunSettingsSheet
-          rows={rows}
+          rows={effectiveRows}
           overrides={overrides}
           ecosystem={ecosystem}
           onClose={() => setSettingsOpen(false)}

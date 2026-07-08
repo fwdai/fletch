@@ -36,7 +36,7 @@ impl Supervisor {
         let cwd = repo_checkout_path(agent_id, &primary.subdir)?;
 
         let (setup_cmd, run_cmd, intended_port) =
-            self.read_run_config(&record.project_id, &cwd);
+            self.read_run_config(agent_id, &record.project_id, &cwd);
         let setup_done = self.workspace.is_setup_completed(agent_id)?;
 
         let session = {
@@ -147,12 +147,18 @@ impl Supervisor {
 
     /// Read the setup + run commands and the intended dev-server port for an
     /// agent, from a single detection pass. The detector provides the baseline
-    /// (same values the panel shows), and any persisted `run.install` /
-    /// `run.dev` / `run.port` overrides in project_settings take precedence. One
+    /// (same values the panel shows); the project's `run.install` / `run.dev`
+    /// / `run.port` settings layer on top, and the agent's `run.agent.<id>.*`
+    /// overrides (edited in the Run panel sheet) take final precedence. One
     /// detector feeds both the panel and the runner, so there is no hardcoded
     /// default to keep in sync. The port is `None` when none can be inferred
     /// (e.g. a plain script) — port safety is then a no-op.
-    fn read_run_config(&self, project_id: &str, checkout: &Path) -> (String, String, Option<u16>) {
+    fn read_run_config(
+        &self,
+        agent_id: &str,
+        project_id: &str,
+        checkout: &Path,
+    ) -> (String, String, Option<u16>) {
         let configs = crate::run_detect::detect_all(checkout);
         let detected = |id: &str| -> Option<String> {
             configs
@@ -167,16 +173,18 @@ impl Supervisor {
         let (install, dev, port_raw) = if project_id.is_empty() {
             (install_default, dev_default, port_default)
         } else {
+            let setting = |key: &str| -> Option<String> {
+                self.workspace
+                    .project_setting(project_id, &format!("run.agent.{agent_id}.{key}"))
+                    .or_else(|| {
+                        self.workspace
+                            .project_setting(project_id, &format!("run.{key}"))
+                    })
+            };
             (
-                self.workspace
-                    .project_setting(project_id, "run.install")
-                    .unwrap_or(install_default),
-                self.workspace
-                    .project_setting(project_id, "run.dev")
-                    .unwrap_or(dev_default),
-                self.workspace
-                    .project_setting(project_id, "run.port")
-                    .or(port_default),
+                setting("install").unwrap_or(install_default),
+                setting("dev").unwrap_or(dev_default),
+                setting("port").or(port_default),
             )
         };
         (install, dev, port_raw.and_then(|s| s.trim().parse::<u16>().ok()))

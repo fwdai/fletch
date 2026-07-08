@@ -119,6 +119,35 @@
 .ps-section-h {
   margin-bottom: 16px;
 }
+/* ── Project Pulse (activity block) ── */
+.pulse-streak {
+  gap: 6px;
+  color: var(--fg-2);
+}
+.pulse-streak-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in oklch, var(--accent), transparent 40%);
+}
+.ps-section .heat {
+  margin-bottom: 24px;
+}
+.pulse-skeleton {
+  height: 128px;
+  margin-bottom: 24px;
+  border-radius: var(--r-sm);
+  background: linear-gradient(90deg, var(--bg-2) 25%, var(--bg-3) 50%, var(--bg-2) 75%);
+  background-size: 200% 100%;
+  animation: stat-shimmer 1.2s linear infinite;
+  opacity: 0.5;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse-skeleton {
+    animation: none;
+  }
+}
 .ps-section-t {
   font-weight: 600;
   color: var(--fg-0);
@@ -142,10 +171,6 @@
   border: 1px solid var(--bd-soft);
   border-radius: 3px;
 }
-.ps-eco-count b {
-  color: var(--fg-0);
-}
-
 /* general section — name + location */
 .ps-field {
   margin-top: 18px;

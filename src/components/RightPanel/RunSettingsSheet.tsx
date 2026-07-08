@@ -68,14 +68,20 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
 
         {/* Body */}
         <div className="run-sheet-body">
-          <RunConfigEditor rows={rows} draft={draft} onChange={setRow} onRevert={revert} />
+          <RunConfigEditor
+            rows={rows}
+            draft={draft}
+            scope="agent"
+            onChange={setRow}
+            onRevert={revert}
+          />
         </div>
 
         {/* Footer */}
         <div className="run-sheet-f flex-center">
           <div className="rsf-status truncate text-sm">
             {changed.length === 0 ? (
-              <span style={{ color: "var(--fg-3)" }}>No overrides — using detected values</span>
+              <span style={{ color: "var(--fg-3)" }}>No overrides — using project settings</span>
             ) : (
               <span>
                 <b style={{ color: "var(--fg-0)" }}>{changed.length}</b>

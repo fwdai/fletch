@@ -9,6 +9,11 @@ export interface SetupRow {
   key: string;
   value: string; // inferred / default
   source: string; // e.g. "scripts.dev", "vite.config.ts"
+  /** Where `value` comes from: repo detection (default) or an explicit
+   *  project setting layered on top. The Run panel maps project settings
+   *  onto detected rows so agent-level edits compare against the value the
+   *  agent actually inherits. */
+  origin?: "detected" | "project";
 }
 
 /** Backend group key → display label. Consumed only by `toSetupRows`. */

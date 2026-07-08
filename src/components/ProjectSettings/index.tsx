@@ -6,6 +6,7 @@ import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
 import { GeneralSection } from "./GeneralSection";
+import { ProjectPulse } from "./ProjectPulse";
 import { RunEnvSection } from "./RunEnvSection";
 
 interface Loaded {
@@ -95,6 +96,7 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
             </div>
           ) : (
             <div className="ps-sections">
+              <ProjectPulse projectId={loaded.projectId} />
               <GeneralSection projectId={loaded.projectId} currentName={name} repoPath={repoPath} />
               <RunEnvSection
                 projectId={loaded.projectId}

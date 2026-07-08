@@ -35,6 +35,7 @@
 @import "./styles/shared/terminal.css";
 @import "./components/History/History.css";
 @import "./components/ProjectSettings/ProjectSettings.css";
+@import "./components/Stats/Stats.css";
 @import "./components/RightPanel/FilePanel/FilePanel.css";
 @import "./components/SettingsScreen/SettingsScreen.css";
 @import "./styles/shared/error-boundary.css";

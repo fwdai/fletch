@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 
 const ALLOWED_TABLES: &[&str] = &[
     "accounts", "custom_agents", "project_settings", "projects", "repos",
-    "sessions", "settings", "workspaces", "worktrees",
+    "sessions", "settings", "usage_daily", "workspaces", "worktrees",
 ];
 
 /// Base name of the on-disk SQLite database within the app data dir. Neutral
@@ -123,6 +123,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0011_custom_agents.sql"),
     include_str!("../migrations/0012_user_turn_timing.sql"),
     include_str!("../migrations/0013_workspace_sandbox_engine.sql"),
+    include_str!("../migrations/0014_pr_times_and_usage_daily.sql"),
 ];
 
 fn get_migrations() -> Migrations<'static> {

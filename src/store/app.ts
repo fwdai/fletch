@@ -47,6 +47,7 @@ import {
   type WorkspaceView,
 } from "@/storage/preferences";
 import { getAllSettings } from "@/storage/settings";
+import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { checkForUpdate } from "@/util/autoUpdate";
 import { notify } from "@/util/notify";
 import { playAgentDone } from "@/util/sound";
@@ -264,6 +265,10 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
           // live, so an empty records result must not wipe it.
           usage: hasUsage(usage) ? { ...state.usage, [id]: usage } : state.usage,
         }));
+        if (hasUsage(usage)) {
+          const projectId = get().workspace?.agents.find((a) => a.id === id)?.project_id;
+          recordUsageSnapshot(id, projectId, usage);
+        }
         // The first turn captures the agent's session id in the DB; pull it
         // into the live workspace so the Native toggle unblocks without a
         // reload. Only when still missing locally — avoids per-turn re-fetch.

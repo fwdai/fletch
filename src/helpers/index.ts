@@ -8,6 +8,7 @@ import { type ChatItem, getAdapter, type RawEvent } from "../adapters";
 import { hasUsage, usageFromRecords } from "../adapters/usage";
 import { api, type SessionRecord, type UserTurn, type Workspace } from "../api";
 import { commandsFor } from "../data/slashCommands";
+import { recordUsageSnapshot } from "../storage/usageDaily";
 import type { AppState, DraftAgent } from "../store";
 
 export function providerFor(state: AppState, agentId: string): string | undefined {
@@ -271,6 +272,8 @@ export async function persistLiveUsage(
     const usage = usageFromRecords(provider, records);
     if (hasUsage(usage)) {
       set({ usage: { ...get().usage, [agentId]: usage } });
+      const projectId = get().workspace?.agents.find((a) => a.id === agentId)?.project_id;
+      recordUsageSnapshot(agentId, projectId, usage);
     }
   } catch {
     // Non-critical: the next records refresh or restart re-folds it.

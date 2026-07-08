@@ -43,6 +43,13 @@ pub struct PrState {
     pub state: PrStatus,
     pub title: String,
     pub mergeable: bool,
+    /// GitHub's createdAt / mergedAt as ms-epoch, when reported. Stamped onto
+    /// `worktrees.pr_opened_at/pr_merged_at` by every PR-state fetch path so
+    /// per-day PR history accrues locally (see `record_pr_times`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_at: Option<i64>,
 }
 
 /// Lightweight PR summary for the composer's "#" mention autocomplete —
@@ -247,7 +254,15 @@ fn branch_pr_nodes(data: &Value) -> Vec<Value> {
 // PR state
 // ---------------------------------------------------------------------------
 
-const PR_STATE_FIELDS: &str = "number url title mergeable";
+const PR_STATE_FIELDS: &str = "number url title mergeable createdAt mergedAt";
+
+/// GitHub ISO-8601 timestamp → ms epoch. None for absent/null/unparseable.
+fn gh_time_ms(node: &Value, field: &str) -> Option<i64> {
+    let iso = node[field].as_str()?;
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .map(|t| t.timestamp_millis())
+}
 
 fn parse_pr_state(node: &Value) -> PrState {
     PrState {
@@ -261,6 +276,8 @@ fn parse_pr_state(node: &Value) -> PrState {
         title: node["title"].as_str().unwrap_or_default().to_string(),
         mergeable: node["state"].as_str() == Some("OPEN")
             && node["mergeable"].as_str() == Some("MERGEABLE"),
+        opened_at: gh_time_ms(node, "createdAt"),
+        merged_at: gh_time_ms(node, "mergedAt"),
     }
 }
 

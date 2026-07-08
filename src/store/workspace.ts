@@ -11,6 +11,7 @@ import {
 } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { setSetting } from "@/storage/settings";
+import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { interruptedAgents } from "./interrupted";
 import type { AppState, SliceCreator, WorkspaceSlice } from "./types";
 
@@ -369,6 +370,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       const turns = await api.readUserTurns(id);
       const items = applyUserTurns(reduceRecords(provider, records), turns);
       const usage = usageFromRecords(provider, records);
+      if (hasUsage(usage)) {
+        const projectId = get().workspace?.agents.find((a) => a.id === id)?.project_id;
+        recordUsageSnapshot(id, projectId, usage);
+      }
       set((state) => {
         // Nothing stored but a live turn is already rendering — don't clobber it.
         if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {
