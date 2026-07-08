@@ -32,7 +32,7 @@ impl Supervisor {
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
         let cwd = repo_checkout_path(agent_id, &primary.subdir)?;
 
-        let (setup_cmd, run_cmd) = self.read_run_commands(&record.project_id, &cwd);
+        let (setup_cmd, run_cmd) = self.read_run_commands(agent_id, &record.project_id, &cwd);
         let setup_done = self.workspace.is_setup_completed(agent_id)?;
 
         let session = {
@@ -113,11 +113,17 @@ impl Supervisor {
     }
 
     /// Read the setup + run commands for an agent. The detector provides
-    /// the baseline (same values the panel shows), and any persisted
-    /// `run.install` / `run.dev` overrides in project_settings take
-    /// precedence. One detector feeds both the panel and the runner, so
-    /// there is no hardcoded default to keep in sync.
-    fn read_run_commands(&self, project_id: &str, checkout: &Path) -> (String, String) {
+    /// the baseline (same values the panel shows); the project's `run.*`
+    /// settings layer on top, and the agent's `run.agent.<id>.*` overrides
+    /// (edited in the Run panel sheet) take final precedence. One detector
+    /// feeds both the panel and the runner, so there is no hardcoded
+    /// default to keep in sync.
+    fn read_run_commands(
+        &self,
+        agent_id: &str,
+        project_id: &str,
+        checkout: &Path,
+    ) -> (String, String) {
         let configs = crate::run_detect::detect_all(checkout);
         let detected = |id: &str| -> String {
             configs
@@ -131,13 +137,18 @@ impl Supervisor {
         if project_id.is_empty() {
             return (install_default, dev_default);
         }
+        let resolve = |key: &str, default: String| -> String {
+            self.workspace
+                .project_setting(project_id, &format!("run.agent.{agent_id}.{key}"))
+                .or_else(|| {
+                    self.workspace
+                        .project_setting(project_id, &format!("run.{key}"))
+                })
+                .unwrap_or(default)
+        };
         (
-            self.workspace
-                .project_setting(project_id, "run.install")
-                .unwrap_or(install_default),
-            self.workspace
-                .project_setting(project_id, "run.dev")
-                .unwrap_or(dev_default),
+            resolve("install", install_default),
+            resolve("dev", dev_default),
         )
     }
 

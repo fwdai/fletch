@@ -387,9 +387,11 @@
   gap: 6px;
   flex-shrink: 0;
 }
+/* The value chip is one persistent box around a naked input, so the border,
+ * focus ring, background, and width (set inline on the input) can all
+ * transition between the view and edit states. */
 .rs-value {
   gap: 6px;
-  max-width: 220px;
   height: 28px;
   padding: 0 9px;
   background: var(--bg-0);
@@ -399,34 +401,45 @@
   color: var(--fg-0);
   cursor: text;
   transition:
-    border-color 0.1s,
-    background 0.1s;
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease,
+    gap 0.15s ease;
 }
 .rs-value:hover {
   border-color: var(--bd);
   background: var(--bg-2);
 }
-.rs-value .rsv-text {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.rs-value.editing {
+  gap: 0;
+  background: var(--bg-0);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 85%);
 }
-.rs-value svg {
+.rs-value input {
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font: inherit;
+  color: inherit;
+  text-overflow: ellipsis;
+  transition: width 0.15s ease;
+}
+.rs-value .rs-edit-ic {
+  width: 10px;
   color: var(--fg-3);
   flex-shrink: 0;
+  overflow: hidden;
+  justify-content: flex-start;
+  transition:
+    width 0.15s ease,
+    opacity 0.15s ease;
 }
-.rs-input {
-  width: 220px;
-  height: 28px;
-  padding: 0 9px;
-  background: var(--bg-0);
-  border: 1px solid var(--accent);
-  outline: none;
-  border-radius: var(--r-sm);
-  font-family: var(--font-mono);
-  color: var(--fg-0);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 85%);
+.rs-value.editing .rs-edit-ic {
+  width: 0;
+  opacity: 0;
 }
 .rs-revert {
   width: 22px;

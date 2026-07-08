@@ -35,15 +35,14 @@ export function RunEnvSection({ projectId, rows, ecosystem, initialOverrides }: 
     commit(next);
   };
 
-  const overrideCount = Object.keys(overrides).length;
-
   return (
     <section className="ps-section">
       <header className="ps-section-h">
         <h2 className="ps-section-t text-lg">Run &amp; environment</h2>
         <p className="ps-section-lead text-sm">
-          Defaults every agent in this project inherits. Detected from the repo; edit a value to
-          override it. Individual runs can still override these from the Run panel.
+          The run configuration every agent in this project inherits. Values are detected from the
+          repo as defaults; edit one to make it the project setting. Individual agents can still
+          override these from the Run panel.
         </p>
       </header>
 
@@ -61,14 +60,14 @@ export function RunEnvSection({ projectId, rows, ecosystem, initialOverrides }: 
             ) : (
               <>No ecosystem detected — edit values below</>
             )}
-            {overrideCount > 0 && (
-              <span className="ps-eco-count">
-                {" · "}
-                <b>{overrideCount}</b> override{overrideCount === 1 ? "" : "s"}
-              </span>
-            )}
           </div>
-          <RunConfigEditor rows={rows} draft={overrides} onChange={onChange} onRevert={onRevert} />
+          <RunConfigEditor
+            rows={rows}
+            draft={overrides}
+            scope="project"
+            onChange={onChange}
+            onRevert={onRevert}
+          />
         </>
       )}
     </section>
