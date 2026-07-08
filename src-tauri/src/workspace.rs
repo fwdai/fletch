@@ -1280,12 +1280,14 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// One `ProjectRef` per pinned repo (repo path joined with its project's
-    /// name + id), ordered like `query_all_repo_paths` so the two lists align.
+    /// One `ProjectRef` per repo, keyed by path (the frontend looks these up by
+    /// path, not by index). A LEFT JOIN keeps a repo even if its project row is
+    /// somehow missing — the name then falls back to the folder basename rather
+    /// than the repo silently vanishing from the sidebar.
     fn query_project_refs(conn: &Connection) -> Vec<ProjectRef> {
         let mut stmt = match conn.prepare(
             "SELECT r.path, p.name, p.id
-             FROM repos r JOIN projects p ON p.id = r.project_id
+             FROM repos r LEFT JOIN projects p ON p.id = r.project_id
              ORDER BY r.created_at",
         ) {
             Ok(s) => s,
@@ -1293,10 +1295,19 @@ impl WorkspaceManager {
         };
         stmt.query_map([], |row| {
             let path: String = row.get(0)?;
+            let name: Option<String> = row.get(1)?;
+            let project_id: Option<String> = row.get(2)?;
+            let name = name.unwrap_or_else(|| {
+                Path::new(&path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&path)
+                    .to_string()
+            });
             Ok(ProjectRef {
                 path: PathBuf::from(path),
-                name: row.get(1)?,
-                project_id: row.get(2)?,
+                name,
+                project_id: project_id.unwrap_or_default(),
             })
         })
         .ok()

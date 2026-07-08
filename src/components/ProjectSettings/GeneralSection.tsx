@@ -32,6 +32,9 @@ export function GeneralSection({ projectId, currentName, repoPath }: Props) {
     setError(null);
     try {
       await renameProject(projectId, trimmed);
+      // Reflect what was actually persisted (trimmed), so the field matches the
+      // sidebar instead of keeping the user's raw input with surrounding space.
+      setName(trimmed);
     } catch (e) {
       setError(String(e));
     } finally {
