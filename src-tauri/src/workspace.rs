@@ -492,8 +492,7 @@ impl WorkspaceManager {
                 [&new_str],
                 |row| row.get::<_, i64>(0),
             )
-            .map(|c| c > 0)
-            .unwrap_or(false);
+            .map(|c| c > 0)?;
         if taken {
             return Err(Error::Other(format!(
                 "a project is already pinned at {new_str}"
