@@ -98,12 +98,16 @@ pub async fn clone(spec: &str, dest_parent: &Path) -> Result<PathBuf> {
 /// Ensure the folder at `path` is a git repository so agents can operate in
 /// worktrees, commit, and track history — the progressive-disclosure ramp for
 /// users who've never heard of git. A plain folder is initialized with an
-/// initial commit (worktrees can't fork a repo with no HEAD); a folder nested
-/// inside an existing repository is rejected with a pointer to the actual
+/// initial commit (a fork needs a HEAD); a repo that's already initialized but
+/// has no commits yet is given its first commit for the same reason; a folder
+/// nested inside an existing repository is rejected with a pointer to the actual
 /// root, since silently initializing a nested repo would split its history.
 pub async fn ensure_git_repo(path: &Path) -> Result<()> {
     if path.join(".git").exists() {
-        return Ok(());
+        // Already a repo — but forking a workspace needs a resolvable HEAD, and
+        // a folder that was `git init`'d but never committed has an unborn one.
+        // Seed the first commit so agents can fork it (no-op when HEAD exists).
+        return git::ensure_head_commit(path).await;
     }
     if let Some(root) = git_toplevel(path).await {
         return Err(Error::InvalidPath(format!(
@@ -246,6 +250,41 @@ mod tests {
         );
 
         ensure_git_repo(&dir).await.unwrap();
+    }
+
+    /// A folder that's already a git repo but has no commits yet (unborn HEAD)
+    /// must be given a first commit — otherwise the workspace clone/worktree
+    /// can't fork it and the agent fails to spawn. Early-returning on the mere
+    /// presence of `.git` (the original bug) leaves HEAD unborn.
+    #[tokio::test]
+    async fn ensure_git_repo_seeds_commit_for_initialized_but_empty_repo() {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path().join("empty-repo");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        // Precondition: initialized, but HEAD is unborn.
+        assert!(dir.join(".git").exists());
+        assert!(!head_resolves(&dir), "test setup: repo should have no commits");
+
+        ensure_git_repo(&dir).await.unwrap();
+
+        assert!(head_resolves(&dir), "adopted empty repo must gain a HEAD commit");
+        // Idempotent: a second adoption doesn't add another commit or error.
+        ensure_git_repo(&dir).await.unwrap();
+    }
+
+    fn head_resolves(dir: &Path) -> bool {
+        std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     /// A folder nested inside an existing repository must be rejected with a

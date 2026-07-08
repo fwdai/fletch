@@ -753,6 +753,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ensure_head_commit_seeds_unborn_head_and_is_idempotent() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+
+        // Unborn HEAD: no commit yet.
+        assert!(rev_parse(repo, "HEAD").await.is_err());
+
+        ensure_head_commit(repo).await.unwrap();
+        let first = rev_parse(repo, "HEAD").await.unwrap();
+
+        // No-op on a repo that already has a HEAD — same commit, no error.
+        ensure_head_commit(repo).await.unwrap();
+        assert_eq!(first, rev_parse(repo, "HEAD").await.unwrap());
+    }
+
+    #[tokio::test]
     async fn fetch_fork_point_without_remote_is_none() {
         // No `origin` configured → best-effort fetch fails and we fall back to
         // local HEAD (None), never an error.
@@ -1103,6 +1122,19 @@ pub async fn commit_initial(repo: &Path) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Guarantee `repo` has a resolvable `HEAD` so a workspace can fork from it.
+/// A repo that's been `git init`'d but never committed has an unborn HEAD, and
+/// neither `git clone --shared` (the default workspace mode) nor `worktree add`
+/// can fork a repo without one — the fork fails and the agent never launches.
+/// Seed the repo's first commit in that case; no-op when HEAD already resolves.
+/// Idempotent, so it's safe to call on every provisioning.
+pub async fn ensure_head_commit(repo: &Path) -> Result<()> {
+    if rev_parse(repo, "HEAD").await.is_ok() {
+        return Ok(());
+    }
+    commit_initial(repo).await
 }
 
 /// Add a remote. Used when publishing a fresh local repo to GitHub.
