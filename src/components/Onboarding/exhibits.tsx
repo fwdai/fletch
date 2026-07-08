@@ -25,7 +25,7 @@ function ExBar({ title }: { title: string }) {
   );
 }
 
-// ── Exhibit 1 · parallel agents in isolated worktrees ───────────────
+// ── Exhibit 1 · parallel agents in isolated checkouts ───────────────
 // Renders the real sidebar agent row (the `.agent` markup + classes from
 // app.css) against mock data, so the preview matches the product exactly.
 interface ParallelAgent {
@@ -124,7 +124,7 @@ export function ExhibitParallel() {
   return (
     <div className="ob-exhibit-wrap ob-reveal" style={{ "--d": ".25s" } as React.CSSProperties}>
       <div className="ob-exhibit">
-        <ExBar title="fletch — worktrees" />
+        <ExBar title="fletch — checkouts" />
         <div className="ex-side">
           <div className="proj">
             <div className="proj-h flex-center open">
@@ -187,7 +187,7 @@ export function ExhibitProviders() {
 }
 
 // ── Exhibit 3 · the control room (home) ─────────────────────────────
-// Every worktree at a glance — the editorial home screen, in miniature.
+// Every checkout at a glance — the editorial home screen, in miniature.
 interface RoomRow {
   name: string;
   landmark: string;
@@ -262,7 +262,7 @@ export function ExhibitRoom() {
             </div>
           </div>
           <div className="ex-room-title">
-            <em>four</em> worktrees still in flight.
+            <em>four</em> checkouts still in flight.
           </div>
           <div className="ex-room-rows">
             {ROOM_ROWS.map((r) => (

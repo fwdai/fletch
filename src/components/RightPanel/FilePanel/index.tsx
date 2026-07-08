@@ -1,4 +1,4 @@
-// FilePanel — the "Files" mode of the Code panel. Browse the agent's worktree
+// FilePanel — the "Files" mode of the Code panel. Browse the agent's checkout
 // and view/edit any file's contents (diffs live in the Code panel's Live mode).
 //
 // This orchestrator owns the explorer's state + file operations and switches
@@ -13,9 +13,9 @@
 // empty folders that git wouldn't otherwise list.
 //
 // Faithful port of the design (fletch v2 files.jsx), wired to the real
-// worktree via the `*_worktree_*` Tauri commands.
+// checkout via the `*_checkout_*` Tauri commands.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { type AgentRecord, api, type WorktreeFile } from "@/api";
+import { type AgentRecord, api, type CheckoutFile } from "@/api";
 import { type ContextMenuEntry, FileContextMenu } from "@/components/RightPanel/FileContextMenu";
 import { joinPath, parentDir } from "@/util/format";
 import { usePoll } from "@/util/hooks";
@@ -41,7 +41,7 @@ interface FilePanelProps {
 }
 
 export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
-  const [files, setFiles] = useState<WorktreeFile[]>([]);
+  const [files, setFiles] = useState<CheckoutFile[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
   const [changedOnly, setChangedOnly] = useState(false);
@@ -53,7 +53,7 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
   // so without this a brand-new folder would vanish on the next poll.
   const [pendingDirs, setPendingDirs] = useState<Set<string>>(() => new Set());
 
-  // Reset per-agent so one worktree's search/expansion doesn't leak. (The open
+  // Reset per-agent so one checkout's search/expansion doesn't leak. (The open
   // file is owned by the parent and reset there.)
   useEffect(() => {
     setQuery("");
@@ -69,7 +69,7 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
 
   const refresh = useCallback(async () => {
     try {
-      setFiles(await api.listWorktreeTree(agent.id));
+      setFiles(await api.listCheckoutTree(agent.id));
     } catch {
       // Keep the previous tree on a transient IPC error rather than blanking it.
     }
@@ -77,7 +77,7 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
   }, [agent.id]);
 
   // Poll the tree at 2s, but only while the explorer is showing — no point
-  // re-listing the worktree while a file is open in the editor.
+  // re-listing the checkout while a file is open in the editor.
   const pollTree = useCallback(async () => {
     if (!openPath) await refresh();
   }, [openPath, refresh]);
@@ -146,7 +146,7 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
           setEdit(null);
           return;
         }
-        await api.renameWorktreePath(agent.id, from, dest);
+        await api.renameCheckoutPath(agent.id, from, dest);
         // An empty folder we're tracking moves with the rename; re-point it (and
         // any tracked descendants) or it would vanish and leave a phantom.
         if (edit.isDir) {
@@ -162,14 +162,14 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
         }
       } else if (edit.mode === "newFile") {
         const dest = joinPath(edit.parentDir, name);
-        await api.createWorktreeFile(agent.id, dest);
+        await api.createCheckoutFile(agent.id, dest);
         setEdit(null);
         await refresh();
         onOpenPath(dest);
         return;
       } else {
         const dest = joinPath(edit.parentDir, name);
-        await api.createWorktreeDir(agent.id, dest);
+        await api.createCheckoutDir(agent.id, dest);
         setPendingDirs((s) => new Set(s).add(dest));
         expand(dest);
       }
@@ -183,7 +183,7 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
   const doDelete = async (node: TreeNode) => {
     setOpError(null);
     try {
-      await api.deleteWorktreePath(agent.id, node.path);
+      await api.deleteCheckoutPath(agent.id, node.path);
       // Drop any tracked empty-dir under what we just removed.
       setPendingDirs((s) => {
         const n = new Set(s);
@@ -202,7 +202,7 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
     setOpError(null);
     try {
       const dest = duplicatePath(node.path, allPaths);
-      await api.copyWorktreeFile(agent.id, node.path, dest);
+      await api.copyCheckoutFile(agent.id, node.path, dest);
       await refresh();
     } catch (e) {
       setOpError(errMsg(e));

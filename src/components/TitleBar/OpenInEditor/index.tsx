@@ -8,7 +8,7 @@ import { EditorTile } from "./EditorTile";
 import { detectEditors, EDITOR_PREF_KEY } from "./editors";
 
 /** Right-side "Open in editor" launcher: a tile of the last-used editor that
- *  opens the active agent's worktree, plus a caret that picks among the editors
+ *  opens the active agent's checkout, plus a caret that picks among the editors
  *  actually installed on this machine. Hidden until an agent is open (nothing
  *  to open otherwise) and until at least one editor is detected. */
 export function OpenInEditor() {
@@ -106,7 +106,7 @@ function Menu({
 }
 
 /** The selected real agent's id, or null when at Home / a draft / settings —
- *  i.e. when there is no worktree to open. */
+ *  i.e. when there is no checkout to open. */
 function useActiveAgentId(): string | null {
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const activeDraftId = useAppStore((s) => s.activeDraftId);

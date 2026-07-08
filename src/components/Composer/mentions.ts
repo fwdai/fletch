@@ -4,7 +4,7 @@
 // sources); picking attaches the file or drills into a directory.
 
 /** A mention query is a filesystem path (resolved via `list_dir`) rather
- *  than a worktree-file search when it starts with `~`, `/`, `./` or `../`. */
+ *  than a checkout-file search when it starts with `~`, `/`, `./` or `../`. */
 export function isFsPath(query: string): boolean {
   return /^(~|\/|\.\/|\.\.\/)/.test(query);
 }
@@ -63,7 +63,7 @@ function isSubsequence(text: string, query: string): boolean {
   return i === query.length;
 }
 
-/** Rank worktree file paths against a mention query. Best matches first:
+/** Rank checkout file paths against a mention query. Best matches first:
  *  basename prefix, then basename substring, then anywhere in the path,
  *  then a fuzzy subsequence fallback. Ties break on the shorter, then
  *  alphabetically-earlier, path. An empty query lists the first `limit`. */

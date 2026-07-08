@@ -9,9 +9,9 @@ use std::path::Path;
 pub struct GoDetector;
 
 impl RunDetector for GoDetector {
-    fn detect(&self, worktree: &Path) -> Option<DetectedConfig> {
-        let go_mod = read_trimmed(worktree, "go.mod")?;
-        let confidence = if exists(worktree, "go.sum") {
+    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
+        let go_mod = read_trimmed(checkout, "go.mod")?;
+        let confidence = if exists(checkout, "go.sum") {
             CONFIDENCE_LOCKFILE
         } else {
             CONFIDENCE_MANIFEST

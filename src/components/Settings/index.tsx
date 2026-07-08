@@ -22,7 +22,7 @@ const FEATURE_GROUPS: { label: string; items: FeatureItem[] }[] = [
       { key: "code", title: "Code", sub: "Browse & edit files, plus a Live diff feed" },
       { key: "git", title: "Git", sub: "Branch, file changes, smart actions" },
       { key: "run", title: "Run", sub: "Dev server with setup table" },
-      { key: "terminal", title: "Terminal", sub: "Interactive shell in the worktree" },
+      { key: "terminal", title: "Terminal", sub: "Interactive shell in the checkout" },
     ],
   },
   {

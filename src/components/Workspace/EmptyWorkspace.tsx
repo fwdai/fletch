@@ -73,9 +73,9 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
 
         <h1 className="empty-title text-5xl">What should be the first task?</h1>
         <p className="empty-sub text-base">
-          A worktree and sandbox will be created at{" "}
+          A checkout and sandbox will be created at{" "}
           <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
-            ~/.fletch/worktrees/{draft.name}
+            ~/.fletch/workspaces/{draft.name}
           </span>
         </p>
 

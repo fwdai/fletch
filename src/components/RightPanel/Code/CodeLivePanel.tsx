@@ -192,7 +192,7 @@ export function CodeLivePanel({
       <div className="code-wrap">
         <div className="empty-msg" style={{ margin: "auto" }}>
           <div className="et">No changes yet</div>
-          <div>Edits the agent makes to this worktree will stream in here.</div>
+          <div>Edits the agent makes to this checkout will stream in here.</div>
         </div>
       </div>
     );

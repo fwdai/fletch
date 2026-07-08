@@ -7,7 +7,7 @@ use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 use crate::run_session::{self, shell_args, user_shell, RunPhase, RunSession, RunStateSnapshot};
-use crate::workspace::repo_worktree_path;
+use crate::workspace::repo_checkout_path;
 
 use super::events::{emit_run_output, emit_run_state};
 use super::Supervisor;
@@ -30,7 +30,7 @@ impl Supervisor {
             .repos
             .first()
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
-        let cwd = repo_worktree_path(agent_id, &primary.subdir)?;
+        let cwd = repo_checkout_path(agent_id, &primary.subdir)?;
 
         let (setup_cmd, run_cmd) = self.read_run_commands(&record.project_id, &cwd);
         let setup_done = self.workspace.is_setup_completed(agent_id)?;
@@ -117,8 +117,8 @@ impl Supervisor {
     /// `run.install` / `run.dev` overrides in project_settings take
     /// precedence. One detector feeds both the panel and the runner, so
     /// there is no hardcoded default to keep in sync.
-    fn read_run_commands(&self, project_id: &str, worktree: &Path) -> (String, String) {
-        let configs = crate::run_detect::detect_all(worktree);
+    fn read_run_commands(&self, project_id: &str, checkout: &Path) -> (String, String) {
+        let configs = crate::run_detect::detect_all(checkout);
         let detected = |id: &str| -> String {
             configs
                 .first()
@@ -154,8 +154,8 @@ impl Supervisor {
             .repos
             .first()
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
-        let worktree = repo_worktree_path(agent_id, &primary.subdir)?;
-        Ok(crate::run_detect::detect_all(&worktree))
+        let checkout = repo_checkout_path(agent_id, &primary.subdir)?;
+        Ok(crate::run_detect::detect_all(&checkout))
     }
 }
 
@@ -221,7 +221,7 @@ fn spawn_run_phase(
     cmd: String,
     chain_run_cmd: Option<String>,
 ) -> Result<()> {
-    // Confine the run command to the worktree + toolchain caches. The command
+    // Confine the run command to the checkout + toolchain caches. The command
     // string is repo-derived (package.json scripts, postinstall, dev-server
     // config), so a malicious agent could otherwise plant a script that runs
     // unsandboxed with full user privilege the moment the user clicks ▶. Reads
@@ -310,8 +310,8 @@ fn sandboxed_run_command(
                 .into_owned(),
         ),
         (
-            crate::workspace::WORKTREES_ROOT_ENV.to_string(),
-            crate::sandbox::nested_worktrees_root(cwd)
+            crate::workspace::WORKSPACES_ROOT_ENV.to_string(),
+            crate::sandbox::nested_checkouts_root(cwd)
                 .to_string_lossy()
                 .into_owned(),
         ),
@@ -360,7 +360,7 @@ fn run_target_git_common_dir(cwd: &Path) -> Option<PathBuf> {
         cwd.join(path)
     };
     // The sbpl subpath must be the *real* path: the sandbox kernel resolves
-    // symlinks before checking, and macOS $TMPDIR / worktree roots are commonly
+    // symlinks before checking, and macOS $TMPDIR / checkout roots are commonly
     // symlinked (`/var` -> `/private/var`). If canonicalization fails, a raw
     // entry likely wouldn't match what the kernel checks, so grant nothing
     // rather than a bogus subpath that gives false confidence.

@@ -44,7 +44,7 @@ export interface AgentRecord {
   /** Which CLI backend powers this agent (claude, codex, ...). Maps to
    *  the TS adapter registered under the same id. */
   provider: string;
-  /** Repos this agent has worktrees in. Always non-empty;
+  /** Repos this agent has checkouts in. Always non-empty;
    *  `repos[0]` is the primary (the workspace repo at spawn). */
   repos: TrackedRepo[];
   task: string;
@@ -163,10 +163,10 @@ export interface GitState {
   head_sha?: string | null;
 }
 
-/** One file in the worktree, as returned by `list_worktree_tree`.
+/** One file in the checkout, as returned by `list_checkout_tree`.
  *  `status` is the single-letter git status vs the parent branch
  *  ("M" | "A" | "D" | "R"), or null when the file is unchanged. */
-export interface WorktreeFile {
+export interface CheckoutFile {
   path: string;
   status: string | null;
   additions: number;
@@ -187,10 +187,10 @@ export interface DirListing {
   entries: DirEntry[];
 }
 
-/** A worktree file's contents plus the metadata the File-panel editor
+/** A checkout file's contents plus the metadata the File-panel editor
  *  needs. `chg_add` / `chg_mod` are 1-indexed line numbers the agent
  *  added / modified (drives the change gutter). */
-export interface WorktreeFileContents {
+export interface CheckoutFileContents {
   text: string;
   lang: string;
   status: string | null;
@@ -390,7 +390,7 @@ export const api = {
   revealLogs: () => invoke<void>("reveal_logs"),
   /** Editors installed on this machine, in picker order. */
   detectEditors: () => invoke<DetectedEditor[]>("detect_editors"),
-  /** Open an agent's worktree in the chosen editor. */
+  /** Open an agent's checkout in the chosen editor. */
   openInEditor: (agentId: string, editorId: string) =>
     invoke<void>("open_in_editor", { agentId, editorId }),
   // Anonymous usage telemetry. Persists the opt-out flag and toggles the live
@@ -463,10 +463,10 @@ export const api = {
     model?: string,
     instructions?: string,
     customAgentId?: string,
-    /** Base the worktree forks from and the agent's recorded parent branch
+    /** Base the checkout forks from and the agent's recorded parent branch
      *  (PR base / ahead-behind). The new-agent screen passes the chosen base
      *  branch; a workflow step instead passes the previous step's HEAD
-     *  (commit-ish) so its worktree continues that work. */
+     *  (commit-ish) so its checkout continues that work. */
     forkBase?: string,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
@@ -565,25 +565,25 @@ export const api = {
   runStop: (agentId: string) => invoke<void>("run_stop", { agentId }),
   runState: (agentId: string) => invoke<RunStateSnapshot>("run_state", { agentId }),
   detectRunConfig: (agentId: string) => invoke<DetectedConfig[]>("detect_run_config", { agentId }),
-  listWorktreeTree: (agentId: string) => invoke<WorktreeFile[]>("list_worktree_tree", { agentId }),
+  listCheckoutTree: (agentId: string) => invoke<CheckoutFile[]>("list_checkout_tree", { agentId }),
   listDir: (path: string) => invoke<DirListing>("list_dir", { path }),
   listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),
-  readWorktreeFile: (agentId: string, path: string) =>
-    invoke<WorktreeFileContents>("read_worktree_file", { agentId, path }),
+  readCheckoutFile: (agentId: string, path: string) =>
+    invoke<CheckoutFileContents>("read_checkout_file", { agentId, path }),
   getFileDiff: (agentId: string, path: string) =>
     invoke<string>("get_file_diff", { agentId, path }),
-  writeWorktreeFile: (agentId: string, path: string, contents: string) =>
-    invoke<void>("write_worktree_file", { agentId, path, contents }),
-  renameWorktreePath: (agentId: string, from: string, to: string) =>
-    invoke<void>("rename_worktree_path", { agentId, from, to }),
-  deleteWorktreePath: (agentId: string, path: string) =>
-    invoke<void>("delete_worktree_path", { agentId, path }),
-  createWorktreeFile: (agentId: string, path: string) =>
-    invoke<void>("create_worktree_file", { agentId, path }),
-  createWorktreeDir: (agentId: string, path: string) =>
-    invoke<void>("create_worktree_dir", { agentId, path }),
-  copyWorktreeFile: (agentId: string, from: string, to: string) =>
-    invoke<void>("copy_worktree_file", { agentId, from, to }),
+  writeCheckoutFile: (agentId: string, path: string, contents: string) =>
+    invoke<void>("write_checkout_file", { agentId, path, contents }),
+  renameCheckoutPath: (agentId: string, from: string, to: string) =>
+    invoke<void>("rename_checkout_path", { agentId, from, to }),
+  deleteCheckoutPath: (agentId: string, path: string) =>
+    invoke<void>("delete_checkout_path", { agentId, path }),
+  createCheckoutFile: (agentId: string, path: string) =>
+    invoke<void>("create_checkout_file", { agentId, path }),
+  createCheckoutDir: (agentId: string, path: string) =>
+    invoke<void>("create_checkout_dir", { agentId, path }),
+  copyCheckoutFile: (agentId: string, from: string, to: string) =>
+    invoke<void>("copy_checkout_file", { agentId, from, to }),
   probeProviderVersions: () => invoke<ProviderProbe[]>("probe_provider_versions"),
   /** Resolve a required non-agent CLI (e.g. "git") and probe its version. */
   checkCli: (name: string) => invoke<ToolStatus>("check_cli", { name }),

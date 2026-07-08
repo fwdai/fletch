@@ -83,7 +83,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     };
   }, [agent.project_id]);
 
-  // Detect the run config for this agent's worktree. Re-runs on agent
+  // Detect the run config for this agent's checkout. Re-runs on agent
   // switch. The highest-confidence ecosystem fills the table; an empty
   // result means nothing was recognized (no-op fallback).
   useEffect(() => {

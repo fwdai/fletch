@@ -71,7 +71,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 
   const branch = gitState?.branch || agent.repos[0]?.branch || "(no branch yet)";
   const base = gitState?.parent_branch || agent.repos[0]?.parent_branch || "main";
-  // The worktree is detached until its first push; a branch is only born from
+  // The checkout is detached until its first push; a branch is only born from
   // an agent that names it. So a direct (agent-bypassed) action that needs a
   // branch — push, open PR — can't run yet: it routes through the agent
   // instead, which picks a conventional name and creates the branch.

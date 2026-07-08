@@ -20,7 +20,7 @@ pub(crate) const DOCKER_CLAUDE_PROJECTS_DIRNAME: &str = ".fletch-claude-projects
 /// Locate the claude session JSONL by scanning the candidate `projects/*/`
 /// dirs (see [`claude_projects_dirs`]) for `<session-id>.jsonl`. Claude's
 /// path-encoding scheme isn't part of its public API, so we glob instead of
-/// recomputing the encoded directory name from the worktree path.
+/// recomputing the encoded directory name from the checkout path.
 ///
 /// A Docker-sandboxed agent writes its transcript to a per-agent host dir
 /// ([`DOCKER_CLAUDE_PROJECTS_DIRNAME`]) rather than the shared `~/.claude`, so

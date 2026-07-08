@@ -22,10 +22,10 @@ const SIDE_PANELS: FeatureItem[] = [
   {
     key: "code",
     title: "Code",
-    sub: "Browse & edit worktree files, plus a Live feed of the agent's diffs.",
+    sub: "Browse & edit checkout files, plus a Live feed of the agent's diffs.",
   },
   { key: "run", title: "Run", sub: "Dev server with an auto-detected, overrideable config." },
-  { key: "terminal", title: "Terminal", sub: "Interactive shell scoped to the worktree." },
+  { key: "terminal", title: "Terminal", sub: "Interactive shell scoped to the checkout." },
 ];
 
 const COMPOSER: FeatureItem[] = [

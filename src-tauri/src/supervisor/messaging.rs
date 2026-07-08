@@ -176,7 +176,7 @@ impl Supervisor {
 }
 
 /// Fire-and-forget handler for the user's first message: persists it
-/// as the agent's `task`. No branch is created here — the worktree stays
+/// as the agent's `task`. No branch is created here — the checkout stays
 /// detached until the first push, when the agent names its branch (see
 /// `open_pr`/`git_push`).
 pub(super) fn on_first_user_message(

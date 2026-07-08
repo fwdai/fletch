@@ -929,6 +929,12 @@ pub fn run() {
 
             app.manage(db.clone());
 
+            // One-time move of the legacy on-disk checkouts root
+            // (`~/.fletch/worktrees` → `~/.fletch/workspaces`) for installs that
+            // predate the rename. Best-effort; runs before the supervisor
+            // provisions any checkout so restores resolve to the new location.
+            crate::workspace::migrate_default_checkouts_root();
+
             let workspace = Arc::new(WorkspaceManager::new(db));
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
@@ -936,12 +942,12 @@ pub fn run() {
             // code-submit / cancel commands reach it through this slot.
             app.manage(ClaudeSetupState::default());
 
-            // Reclaim nested-Fletch RPC mailbox and worktree roots left in the
+            // Reclaim nested-Fletch RPC mailbox and checkout roots left in the
             // temp dir by dead instances (dogfooding runs). Live instances'
             // roots are pid-keyed and skipped, so a side-by-side Fletch is left
             // untouched.
             crate::sandbox::cleanup_nested_rpc_roots();
-            crate::sandbox::cleanup_nested_worktrees_roots();
+            crate::sandbox::cleanup_nested_checkouts_roots();
             // Same reclamation for docker containers left by dead instances —
             // probe-gated and on its own thread, so startup never waits on it.
             crate::sandbox::docker::sweep_orphans_at_startup();
@@ -1053,17 +1059,17 @@ pub fn run() {
             commands::run_stop,
             commands::run_state,
             commands::detect_run_config,
-            commands::list_worktree_tree,
+            commands::list_checkout_tree,
             commands::list_dir,
             commands::list_prs,
-            commands::read_worktree_file,
+            commands::read_checkout_file,
             commands::get_file_diff,
-            commands::write_worktree_file,
-            commands::rename_worktree_path,
-            commands::delete_worktree_path,
-            commands::create_worktree_file,
-            commands::create_worktree_dir,
-            commands::copy_worktree_file,
+            commands::write_checkout_file,
+            commands::rename_checkout_path,
+            commands::delete_checkout_path,
+            commands::create_checkout_file,
+            commands::create_checkout_dir,
+            commands::copy_checkout_file,
             commands::probe_provider_versions,
             commands::check_cli,
             commands::validate_agent_bin,

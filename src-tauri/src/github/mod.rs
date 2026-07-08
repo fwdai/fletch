@@ -159,10 +159,10 @@ pub struct GhRepoSummary {
 // Repo / branch context
 // ---------------------------------------------------------------------------
 
-/// `owner`/`repo` of the worktree's `origin` remote, or `None` when there is
+/// `owner`/`repo` of the checkout's `origin` remote, or `None` when there is
 /// no origin or it isn't github.com. Read ops treat `None` as "no PR".
-async fn repo_ref(worktree: &Path) -> Option<(String, String)> {
-    let out = crate::git_dist::command(worktree)
+async fn repo_ref(checkout: &Path) -> Option<(String, String)> {
+    let out = crate::git_dist::command(checkout)
         .args(["remote", "get-url", "origin"])
         .output()
         .await
@@ -175,14 +175,14 @@ async fn repo_ref(worktree: &Path) -> Option<(String, String)> {
     Some((parts.next()?.to_string(), parts.next()?.to_string()))
 }
 
-async fn require_repo_ref(worktree: &Path) -> Result<(String, String)> {
-    repo_ref(worktree).await.ok_or_else(|| {
+async fn require_repo_ref(checkout: &Path) -> Result<(String, String)> {
+    repo_ref(checkout).await.ok_or_else(|| {
         Error::Gh("this repository's `origin` remote is not a GitHub repository".into())
     })
 }
 
-async fn require_current_branch(worktree: &Path, what: &str) -> Result<String> {
-    crate::git::current_branch(worktree)
+async fn require_current_branch(checkout: &Path, what: &str) -> Result<String> {
+    crate::git::current_branch(checkout)
         .await?
         .ok_or_else(|| Error::Gh(format!("{what}: HEAD is detached — no branch to look up")))
 }
@@ -264,13 +264,13 @@ fn parse_pr_state(node: &Value) -> PrState {
     }
 }
 
-/// Fetch the current PR state for the branch checked out in `worktree`.
+/// Fetch the current PR state for the branch checked out in `checkout`.
 /// `Ok(None)` when the branch has no PR (or no token / non-GitHub origin).
-pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
-    let Some((owner, repo)) = repo_ref(worktree).await else {
+pub async fn pr_view(checkout: &Path) -> Result<Option<PrState>> {
+    let Some((owner, repo)) = repo_ref(checkout).await else {
         return Ok(None);
     };
-    let Some(branch) = crate::git::current_branch(worktree).await? else {
+    let Some(branch) = crate::git::current_branch(checkout).await? else {
         return Ok(None);
     };
     let query = branch_prs_query(PR_STATE_FIELDS);
@@ -286,12 +286,12 @@ pub async fn pr_view(worktree: &Path) -> Result<Option<PrState>> {
 }
 
 /// Fetch PR state by explicit PR number, regardless of the branch currently
-/// checked out in `worktree`. This is the lookup that doesn't rely on branch
+/// checked out in `checkout`. This is the lookup that doesn't rely on branch
 /// identity: once we've recorded a PR number for an agent we fetch by it, so a
 /// recycled workspace/branch name can't resolve to a different (e.g. a prior
 /// agent's merged) PR. `Ok(None)` when the PR can't be found.
-pub async fn pr_view_number(worktree: &Path, number: u32) -> Result<Option<PrState>> {
-    let Some((owner, repo)) = repo_ref(worktree).await else {
+pub async fn pr_view_number(checkout: &Path, number: u32) -> Result<Option<PrState>> {
+    let Some((owner, repo)) = repo_ref(checkout).await else {
         return Ok(None);
     };
     let query = format!(
@@ -314,10 +314,10 @@ pub async fn pr_view_number(worktree: &Path, number: u32) -> Result<Option<PrSta
     Ok(Some(parse_pr_state(node)))
 }
 
-/// List open PRs for the repo at `worktree` (newest first), for the
+/// List open PRs for the repo at `checkout` (newest first), for the
 /// composer's "#" mention autocomplete. Empty when not connected.
-pub async fn pr_list(worktree: &Path, limit: u32) -> Result<Vec<PrSummary>> {
-    let Some((owner, repo)) = repo_ref(worktree).await else {
+pub async fn pr_list(checkout: &Path, limit: u32) -> Result<Vec<PrSummary>> {
+    let Some((owner, repo)) = repo_ref(checkout).await else {
         return Ok(Vec::new());
     };
     let query = r#"query($owner:String!,$repo:String!,$limit:Int!){
@@ -357,11 +357,11 @@ pub async fn pr_list(worktree: &Path, limit: u32) -> Result<Vec<PrSummary>> {
 /// GraphQL call. `Ok(None)` when there is no PR; other failures surface as
 /// `Err` — the command layer treats both as "checks unavailable" and the
 /// panel degrades to `mergeable`-only behavior.
-pub async fn pr_checks(worktree: &Path) -> Result<Option<PrChecks>> {
-    let Some((owner, repo)) = repo_ref(worktree).await else {
+pub async fn pr_checks(checkout: &Path) -> Result<Option<PrChecks>> {
+    let Some((owner, repo)) = repo_ref(checkout).await else {
         return Ok(None);
     };
-    let Some(branch) = crate::git::current_branch(worktree).await? else {
+    let Some(branch) = crate::git::current_branch(checkout).await? else {
         return Ok(None);
     };
     // `startedAt: createdAt` aliases StatusContext's field to the name the
@@ -499,11 +499,11 @@ fn parse_pr_checks(merge_state_status: &str, rollup: &[Value]) -> PrChecks {
 /// GraphQL call (threads inline with the branch-PR lookup; the gh version
 /// needed two). `Ok(None)` when there is no PR; the command layer maps both
 /// `None` and `Err` to "comments unavailable".
-pub async fn pr_comments(worktree: &Path) -> Result<Option<PrComments>> {
-    let Some((owner, repo)) = repo_ref(worktree).await else {
+pub async fn pr_comments(checkout: &Path) -> Result<Option<PrComments>> {
+    let Some((owner, repo)) = repo_ref(checkout).await else {
         return Ok(None);
     };
-    let Some(branch) = crate::git::current_branch(worktree).await? else {
+    let Some(branch) = crate::git::current_branch(checkout).await? else {
         return Ok(None);
     };
     let query = branch_prs_query(
@@ -573,14 +573,14 @@ fn pr_already_exists(message: &str) -> bool {
     message.to_lowercase().contains("already exists")
 }
 
-/// Create a PR for the branch checked out in `worktree`. When `title` is
+/// Create a PR for the branch checked out in `checkout`. When `title` is
 /// empty, the last commit's subject/body fill in (what gh's `--fill` did).
-pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> Result<PrState> {
-    let (owner, repo) = require_repo_ref(worktree).await?;
-    let branch = require_current_branch(worktree, "pr create").await?;
+pub async fn pr_create(checkout: &Path, title: &str, body: &str, base: &str) -> Result<PrState> {
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let branch = require_current_branch(checkout, "pr create").await?;
 
     let (title, body) = if title.is_empty() {
-        crate::git::last_commit_message(worktree).await?
+        crate::git::last_commit_message(checkout).await?
     } else {
         (title.to_string(), body.to_string())
     };
@@ -602,7 +602,7 @@ pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> 
         // one, so the caller isn't stuck erroring forever over a PR that's
         // actually there.
         if pr_already_exists(&message) {
-            if let Some(pr) = pr_view(worktree).await? {
+            if let Some(pr) = pr_view(checkout).await? {
                 return Ok(pr);
             }
         }
@@ -612,7 +612,7 @@ pub async fn pr_create(worktree: &Path, title: &str, body: &str, base: &str) -> 
     // The create response carries no `mergeable` verdict yet (GitHub computes
     // it async) — fetch the same shape every other path returns.
     let number = resp["number"].as_u64().unwrap_or_default() as u32;
-    match pr_view_number(worktree, number).await? {
+    match pr_view_number(checkout, number).await? {
         Some(pr) => Ok(pr),
         None => Err(Error::Gh("PR was created but could not be fetched".into())),
     }
@@ -636,9 +636,9 @@ fn detailed_rest_error(body: &Value) -> String {
 /// Merge the current branch's open PR: enable auto-merge (merge commit) so it
 /// lands when checks pass — or merge immediately when GitHub says the PR is
 /// already clean (the "clean status" refusal), matching `gh pr merge --auto`.
-pub async fn pr_merge(worktree: &Path) -> Result<()> {
-    let (owner, repo) = require_repo_ref(worktree).await?;
-    let branch = require_current_branch(worktree, "pr merge").await?;
+pub async fn pr_merge(checkout: &Path) -> Result<()> {
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let branch = require_current_branch(checkout, "pr merge").await?;
 
     let client = client::Client::new()?;
     let query = branch_prs_query("id");
@@ -1033,7 +1033,7 @@ mod tests {
     }
 
     /// Live read-path check against the real GitHub API, using this repo's
-    /// own worktree as the fixture. Read-only — never creates or merges
+    /// own checkout as the fixture. Read-only — never creates or merges
     /// anything. Ignored by default (needs a token + network); run with:
     ///
     ///   FLETCH_GITHUB_TOKEN=$(gh auth token) cargo test github_live -- --ignored

@@ -343,7 +343,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               }
               stopping={busy}
               mentionSource={() =>
-                api.listWorktreeTree(agent.id).then((files) => files.map((f) => f.path))
+                api.listCheckoutTree(agent.id).then((files) => files.map((f) => f.path))
               }
               listDir={api.listDir}
               listPrs={() => api.listPrs(agent.id)}

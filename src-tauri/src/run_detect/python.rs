@@ -9,21 +9,21 @@ use std::path::Path;
 pub struct PythonDetector;
 
 impl RunDetector for PythonDetector {
-    fn detect(&self, worktree: &Path) -> Option<DetectedConfig> {
-        let has_pyproject = exists(worktree, "pyproject.toml");
-        let has_requirements = exists(worktree, "requirements.txt");
-        let has_pipfile = exists(worktree, "Pipfile");
+    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
+        let has_pyproject = exists(checkout, "pyproject.toml");
+        let has_requirements = exists(checkout, "requirements.txt");
+        let has_pipfile = exists(checkout, "Pipfile");
         if !(has_pyproject || has_requirements || has_pipfile) {
             return None;
         }
 
         // install command + confidence keyed off the lockfile/manifest mix.
-        let (install, lock_present) = if exists(worktree, "uv.lock") {
+        let (install, lock_present) = if exists(checkout, "uv.lock") {
             ("uv sync", true)
-        } else if exists(worktree, "poetry.lock") {
+        } else if exists(checkout, "poetry.lock") {
             ("poetry install", true)
         } else if has_pipfile {
-            ("pipenv install", exists(worktree, "Pipfile.lock"))
+            ("pipenv install", exists(checkout, "Pipfile.lock"))
         } else if has_requirements {
             ("pip install -r requirements.txt", false)
         } else {
@@ -38,7 +38,7 @@ impl RunDetector for PythonDetector {
         // Combined lowercased dependency text for framework heuristics.
         let deps_text = ["requirements.txt", "pyproject.toml", "Pipfile"]
             .iter()
-            .filter_map(|f| read_trimmed(worktree, f))
+            .filter_map(|f| read_trimmed(checkout, f))
             .collect::<Vec<_>>()
             .join("\n")
             .to_lowercase();
@@ -47,10 +47,10 @@ impl RunDetector for PythonDetector {
         let mut rows = Vec::new();
 
         // version: .python-version → pyproject requires-python.
-        if let Some((value, source)) = read_trimmed(worktree, ".python-version")
+        if let Some((value, source)) = read_trimmed(checkout, ".python-version")
             .map(|v| (v, ".python-version"))
             .or_else(|| {
-                read_trimmed(worktree, "pyproject.toml")
+                read_trimmed(checkout, "pyproject.toml")
                     .and_then(|s| requires_python(&s))
                     .map(|v| (v, "pyproject.toml · requires-python"))
             })
@@ -67,7 +67,7 @@ impl RunDetector for PythonDetector {
         rows.push(DetectedRow::new("install", RowGroup::Scripts, "Install", install, "convention"));
 
         // dev + port: Django (needs manage.py) → runserver:8000; Flask → 5000.
-        if exists(worktree, "manage.py") && has_dep("django") {
+        if exists(checkout, "manage.py") && has_dep("django") {
             rows.push(DetectedRow::new("dev", RowGroup::Scripts, "Run", "python manage.py runserver", "Django"));
             rows.push(DetectedRow::new("port", RowGroup::Server, "Port", "8000", "default (Django)"));
         } else if has_dep("flask") {

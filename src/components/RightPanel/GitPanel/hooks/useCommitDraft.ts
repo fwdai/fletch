@@ -12,7 +12,7 @@ export function useCommitDraft(agentId: string, panelState: GitPanelState) {
   const commitRef = useRef<HTMLTextAreaElement>(null);
   const customActive = override && msg.trim().length > 0;
 
-  // Reset on agent switch so a draft doesn't leak between worktrees.
+  // Reset on agent switch so a draft doesn't leak between checkouts.
   useEffect(() => {
     setOverride(false);
     setMsg("");

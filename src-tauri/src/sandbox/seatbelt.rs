@@ -6,13 +6,13 @@
 //! rather than relying on each CLI's own sandbox. `sandbox-exec` is just the
 //! process wrapper around the PTY/exec child, so terminal streaming and startup
 //! timing are unchanged while *writes* are constrained to the agent's parent dir
-//! (under `~/.fletch/worktrees/<id>/`) plus standard state/cache locations and
-//! each agent's own on-disk session store. The agent's per-repo worktrees live
+//! (under `~/.fletch/workspaces/<id>/`) plus standard state/cache locations and
+//! each agent's own on-disk session store. The agent's per-repo checkouts live
 //! as subdirs of that parent, so each inherits the writable allowance.
 //!
 //! Because confinement is by *write* path (reads and network stay open via
 //! `allow default`), each agent that the wrapper covers must have its
-//! out-of-worktree write locations (session transcripts, config, auth refresh)
+//! out-of-checkout write locations (session transcripts, config, auth refresh)
 //! on the allow-list below — otherwise it can't persist its own state. That
 //! covers the agents' own dot-dir stores plus the standard per-user
 //! cache/state dirs in both XDG (`~/.cache`, `~/.config`, `~/.local`) and
@@ -116,15 +116,15 @@ const RUN_TOOLCHAIN_DIRS: &[&str] = &[
 /// Same shape as [`build_profile`] — reads and network stay open (`allow
 /// default`); only *writes* are confined — but tuned for arbitrary project
 /// build toolchains rather than agent CLIs. `writable_root` is the repo
-/// worktree the command runs in (build artifacts, `node_modules`, `.venv`,
-/// `target` all live inside it). On top of the worktree and the shared cache
+/// checkout the command runs in (build artifacts, `node_modules`, `.venv`,
+/// `target` all live inside it). On top of the checkout and the shared cache
 /// dirs, it grants [`RUN_TOOLCHAIN_DIRS`] so cargo/go/bundler/pnpm/bun runs
 /// don't fail-closed on their out-of-tree writes.
 ///
 /// Unlike the agent profile it needs no rpc mailbox or agent state dirs — a
 /// Run process neither speaks RPC nor persists agent transcripts.
 ///
-/// `extra_writable` grants additional out-of-worktree paths the specific Run
+/// `extra_writable` grants additional out-of-checkout paths the specific Run
 /// target needs. The Run panel passes the target's resolved git *common dir*:
 /// a project may write its own git metadata (objects, refs, `worktrees/`
 /// admin data on `git worktree add`), and when the target is itself a linked
@@ -184,20 +184,20 @@ pub fn build_run_profile(
 /// nested instance can't create its agents' mailboxes there. Redirect it under
 /// the system temp dir, which [`build_run_profile`] already grants (macOS
 /// `$TMPDIR` resolves under `/private/var/folders`). Keyed by a hash of the
-/// worktree path so two nested instances never collide on a shared agent id,
+/// checkout path so two nested instances never collide on a shared agent id,
 /// and kept off the host's real mailbox root so nested traffic can't touch host
 /// channels.
 pub fn nested_rpc_root(writable_root: &Path) -> PathBuf {
     nested_state_root("rpc", writable_root)
 }
 
-/// Worktrees root (`$FLETCH_WORKTREES_ROOT`) for a **nested** Fletch launched as
+/// Checkouts root (`$FLETCH_WORKSPACES_ROOT`) for a **nested** Fletch launched as
 /// a Run process — the sibling of [`nested_rpc_root`] for the same reason: the
-/// Run profile denies writes to the host's `~/.fletch/worktrees`, so a nested
-/// instance can't create its agents' worktree checkouts there. (The worktree's
+/// Run profile denies writes to the host's `~/.fletch/workspaces`, so a nested
+/// instance can't create its agents' checkouts there. (The checkout's
 /// git *admin* data lands in the source repo's git common dir, which the Run
 /// profile grants separately — see `build_run_profile`.)
-pub fn nested_worktrees_root(writable_root: &Path) -> PathBuf {
+pub fn nested_checkouts_root(writable_root: &Path) -> PathBuf {
     nested_state_root("worktrees", writable_root)
 }
 
@@ -243,9 +243,9 @@ pub fn cleanup_nested_rpc_roots() {
     cleanup_nested_state_roots_in(&nested_state_base("rpc"));
 }
 
-/// Sibling of [`cleanup_nested_rpc_roots`] for redirected worktree roots — same
+/// Sibling of [`cleanup_nested_rpc_roots`] for redirected checkout roots — same
 /// pid-keyed, dead-only reclamation.
-pub fn cleanup_nested_worktrees_roots() {
+pub fn cleanup_nested_checkouts_roots() {
     cleanup_nested_state_roots_in(&nested_state_base("worktrees"));
 }
 
@@ -282,7 +282,7 @@ pub(crate) fn pid_alive(_pid: i32) -> bool {
 
 /// Build the SBPL profile. `writable_root` is the agent's parent dir;
 /// `rpc_dir` is its private file-mailbox (`~/.fletch/rpc/<id>/`), which lives
-/// outside the worktree tree and so needs its own allow entry.
+/// outside the checkout tree and so needs its own allow entry.
 /// `claude_config_dir` is the value of `CLAUDE_CONFIG_DIR` the agent runs with
 /// (`None` = default `~/.claude`); when set elsewhere the agent writes its
 /// config/transcripts/auth there, so it must be writable too.
@@ -443,7 +443,7 @@ mod tests {
 
         assert!(profile.contains("(deny file-write*)"));
         assert!(profile.contains(&format!("\"{}\"", canonical_root.display())));
-        // The mailbox lives outside the worktree tree, so it needs its own entry.
+        // The mailbox lives outside the checkout tree, so it needs its own entry.
         assert!(profile.contains(&format!("\"{}\"", canonical_rpc.display())));
         // macOS-native per-user state dirs, needed by the agents' toolchains.
         assert!(profile.contains("/Library/Caches"));
@@ -531,19 +531,19 @@ mod tests {
     #[test]
     fn run_profile_confines_writes_to_worktree_and_toolchains() {
         let td = tempfile::tempdir().unwrap();
-        let worktree = td.path().join("repo-worktree");
+        let checkout = td.path().join("repo-worktree");
         let home = td.path().join("home");
-        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&checkout).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_run_profile(&worktree, &home, &[]).unwrap();
-        let canonical_worktree = std::fs::canonicalize(&worktree).unwrap();
+        let profile = build_run_profile(&checkout, &home, &[]).unwrap();
+        let canonical_worktree = std::fs::canonicalize(&checkout).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
 
         // Same deny-by-default posture as the agent profile.
         assert!(profile.contains("(allow default)"));
         assert!(profile.contains("(deny file-write*)"));
-        // The run command writes freely inside its worktree.
+        // The run command writes freely inside its checkout.
         assert!(profile.contains(&format!("\"{}\"", canonical_worktree.display())));
         // Toolchain dirs the default detected commands need (cargo/go/pnpm/bundler).
         for dir in [".cargo", "go", "Library/pnpm", ".bundle", ".rustup", ".bun"] {
@@ -560,12 +560,12 @@ mod tests {
         // A Run process neither speaks RPC nor persists agent transcripts, so
         // the agent-CLI state dirs must not be on its write allow-list.
         let td = tempfile::tempdir().unwrap();
-        let worktree = td.path().join("repo-worktree");
+        let checkout = td.path().join("repo-worktree");
         let home = td.path().join("home");
-        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&checkout).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_run_profile(&worktree, &home, &[]).unwrap();
+        let profile = build_run_profile(&checkout, &home, &[]).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         for dir in [".claude", ".codex", ".cursor", ".gemini", ".pi"] {
             let unexpected = format!("(subpath \"{}/{dir}\")", canonical_home.display());
@@ -618,13 +618,13 @@ mod tests {
     }
 
     #[test]
-    fn nested_worktrees_root_is_temp_scoped_and_distinct_from_rpc() {
+    fn nested_checkouts_root_is_temp_scoped_and_distinct_from_rpc() {
         let wt = Path::new("/Users/x/.fletch/worktrees/rhone/repo");
-        let root = nested_worktrees_root(wt);
+        let root = nested_checkouts_root(wt);
         // Under the system temp root the Run profile grants, so a nested Fletch
-        // can create its worktree checkouts there.
+        // can create its checkouts there.
         assert!(root.starts_with(std::env::temp_dir().join("fletch-worktrees")));
-        // Same worktree key, different kind → different root (rpc vs worktrees
+        // Same checkout key, different kind → different root (rpc vs worktrees
         // never share a dir).
         assert_ne!(root, nested_rpc_root(wt));
     }
@@ -632,15 +632,15 @@ mod tests {
     #[test]
     fn run_profile_grants_extra_writable_common_dir() {
         let td = tempfile::tempdir().unwrap();
-        let worktree = td.path().join("repo-worktree");
+        let checkout = td.path().join("repo-worktree");
         let home = td.path().join("home");
         let common = td.path().join("source-repo/.git");
-        for p in [&worktree, &home, &common] {
+        for p in [&checkout, &home, &common] {
             std::fs::create_dir_all(p).unwrap();
         }
         let canonical_common = std::fs::canonicalize(&common).unwrap();
 
-        let profile = build_run_profile(&worktree, &home, &[canonical_common.clone()]).unwrap();
+        let profile = build_run_profile(&checkout, &home, &[canonical_common.clone()]).unwrap();
         assert!(
             profile.contains(&format!("(subpath \"{}\")", canonical_common.display())),
             "run profile should grant the target's git common dir"

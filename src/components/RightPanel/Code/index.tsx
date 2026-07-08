@@ -1,6 +1,6 @@
 // CodePanel — the unified "Code" right-rail tab. It hosts two modes behind a
 // secondary in-panel switch:
-//   • Files — browse & edit the worktree (the existing <FilePanel>).
+//   • Files — browse & edit the checkout (the existing <FilePanel>).
 //   • Live  — an activity feed of the agent's edits as diffs (<CodeLivePanel>).
 //
 // The open/selected file is owned here so it survives a mode switch and so the
@@ -84,7 +84,7 @@ function ModeSwitch({
           aria-selected={mode === "files"}
           className={`cms-seg iflex-center text-xs ${mode === "files" ? "active" : ""} tip`}
           data-tip-down
-          data-tip="Browse and edit any file in the worktree"
+          data-tip="Browse and edit any file in the checkout"
           onClick={() => onChange("files")}
         >
           <Icon name="folder" size={12} />

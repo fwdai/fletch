@@ -16,7 +16,7 @@ use crate::sandbox::provision::{self, CheckoutSpec, WorkspaceMode};
 use crate::sandbox::{self, EngineKind};
 use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir, is_per_turn_provider, new_agent_record,
-    repo_worktree_path, AgentRecord, AgentStatus, AgentView, TrackedRepo,
+    repo_checkout_path, AgentRecord, AgentStatus, AgentView, TrackedRepo,
 };
 
 use super::events::{emit_agent_event, emit_agent_output, emit_repo_added, emit_view};
@@ -148,7 +148,7 @@ fn build_activity(record: &AgentRecord, effective_fresh: bool) -> Box<dyn Activi
 pub struct SpawnRequest {
     /// Requested view; downgraded to `Custom` for providers without a native view.
     pub view: AgentView,
-    /// Primary repo the agent forks its worktree from.
+    /// Primary repo the agent forks its checkout from.
     pub repo_path: PathBuf,
     /// Provider id (e.g. `"claude"`, `"codex"`).
     pub provider: String,
@@ -162,7 +162,7 @@ pub struct SpawnRequest {
     pub instructions: Option<String>,
     /// Custom agent identity; `None` for a plain built-in spawn.
     pub custom_agent_id: Option<String>,
-    /// Base the worktree forks from, which also becomes the agent's recorded
+    /// Base the checkout forks from, which also becomes the agent's recorded
     /// parent branch (PR base / ahead-behind). The new-agent screen passes the
     /// chosen base branch here; a workflow step instead passes the previous
     /// step's HEAD (a commit-ish). `None` falls back to the repo's current
@@ -217,7 +217,7 @@ impl Supervisor {
         };
         let name = agent_id.clone();
 
-        // The agent's parent branch — the base its worktree forks from and the
+        // The agent's parent branch — the base its checkout forks from and the
         // ref it later targets for PRs / ahead-behind. The base the user chose
         // on the new-agent screen (`fork_base`) wins; absent a choice, fall back
         // to the branch the repo was on when the user hit Spawn.
@@ -264,7 +264,7 @@ impl Supervisor {
         // stored value instead of the live setting.
         record.sandbox_engine = Some(engine_kind.as_setting().to_string());
         let parent_dir = agent_parent_dir(&agent_id)?;
-        let primary_worktree = repo_worktree_path(&agent_id, &subdir)?;
+        let primary_checkout = repo_checkout_path(&agent_id, &subdir)?;
 
         self.workspace.add_agent(&mut record)?;
         crate::telemetry::track(
@@ -314,7 +314,7 @@ impl Supervisor {
             let spec = CheckoutSpec {
                 source_repo: &repo_path,
                 base_ref: base.as_deref().unwrap_or("HEAD"),
-                dest: &primary_worktree,
+                dest: &primary_checkout,
             };
             if let Err(e) = provision::provision(workspace_mode, &spec).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
@@ -324,7 +324,7 @@ impl Supervisor {
             // Record the fork point so diffs measure against the exact starting
             // commit rather than a branch name that can drift. Non-fatal: a
             // missing base_sha just falls back to the parent branch name.
-            if let Ok(sha) = git::rev_parse(&primary_worktree, "HEAD").await {
+            if let Ok(sha) = git::rev_parse(&primary_checkout, "HEAD").await {
                 let _ = sup
                     .workspace
                     .set_repo_base_sha(&id_for_task, &subdir_for_fork, &sha);
@@ -343,8 +343,8 @@ impl Supervisor {
     }
 
     /// Bring a second (or third…) repo into a live agent. Creates a
-    /// detached worktree at `~/.fletch/worktrees/<agent-id>/<subdir>/`
-    /// and appends a TrackedRepo entry. The worktree stays detached until
+    /// detached checkout at `~/.fletch/workspaces/<agent-id>/<subdir>/`
+    /// and appends a TrackedRepo entry. The checkout stays detached until
     /// its first push, consistent with the primary repo.
     pub async fn add_repo_to_agent(
         self: Arc<Self>,
@@ -366,7 +366,7 @@ impl Supervisor {
         }
         let used: Vec<String> = record.repos.iter().map(|r| r.subdir.clone()).collect();
         let subdir = allocate_repo_subdir(&repo_path, &used);
-        let worktree = repo_worktree_path(agent_id, &subdir)?;
+        let checkout = repo_checkout_path(agent_id, &subdir)?;
         let parent_branch = git::current_branch(&repo_path).await.ok().flatten();
 
         // Fork from the freshest remote state of the parent branch (best-effort,
@@ -388,7 +388,7 @@ impl Supervisor {
         let spec = CheckoutSpec {
             source_repo: &repo_path,
             base_ref: base.as_deref().unwrap_or("HEAD"),
-            dest: &worktree,
+            dest: &checkout,
         };
         // A repo added to a *live* agent can't get a new bind mount: the Docker
         // container's mounts are fixed at `docker run`, so a `--shared` clone's
@@ -402,7 +402,7 @@ impl Supervisor {
         } else {
             provision::provision(workspace_mode, &spec).await?;
         }
-        let base_sha = git::rev_parse(&worktree, "HEAD").await.ok();
+        let base_sha = git::rev_parse(&checkout, "HEAD").await.ok();
 
         let repo = TrackedRepo {
             repo_path: repo_path.clone(),
@@ -415,7 +415,7 @@ impl Supervisor {
         self.workspace.append_tracked_repo(agent_id, repo.clone())?;
         emit_repo_added(&app, agent_id, repo.clone());
 
-        // No branch is created here — the new repo's worktree stays detached
+        // No branch is created here — the new repo's checkout stays detached
         // until its first push, when the agent names its branch (same as the
         // primary repo).
         Ok(repo)
@@ -440,7 +440,7 @@ impl Supervisor {
             .repos
             .first()
             .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?;
-        let cwd = repo_worktree_path(agent_id, &primary.subdir)?;
+        let cwd = repo_checkout_path(agent_id, &primary.subdir)?;
         // Sandbox writable root — the agent's parent dir. Every agent (claude
         // and per-turn alike) now runs under sandbox-exec rooted here.
         let sandbox_root = agent_parent_dir(agent_id)?;

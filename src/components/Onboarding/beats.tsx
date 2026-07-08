@@ -27,7 +27,7 @@ const BEAT_PARALLEL: BeatDef = {
   eyebrow: "Parallel by design",
   title: (
     <>
-      Every task gets its <em>own worktree.</em>
+      Every task gets its <em>own checkout.</em>
     </>
   ),
   lede: (
@@ -39,7 +39,7 @@ const BEAT_PARALLEL: BeatDef = {
   points: [
     { icon: "branch", head: "Isolated branches.", body: "No stepping on each other's changes." },
     { icon: "layers", head: "Run in parallel.", body: "Five tasks, five agents, one glance." },
-    { icon: "map", head: "Named by landmark.", body: "Each worktree is easy to find again." },
+    { icon: "map", head: "Named by landmark.", body: "Each checkout is easy to find again." },
   ],
   Exhibit: () => <ExhibitParallel />,
 };
@@ -75,14 +75,14 @@ const BEAT_PROVIDERS: BeatDef = {
   Exhibit: () => <ExhibitProviders />,
 };
 
-// Control room — every worktree at a glance (shown as beat 03).
+// Control room — every checkout at a glance (shown as beat 03).
 const BEAT_ROOM: BeatDef = {
   key: "room",
   num: "03",
   eyebrow: "One quiet control room",
   title: (
     <>
-      Every worktree, <em>at a glance.</em>
+      Every checkout, <em>at a glance.</em>
     </>
   ),
   lede: (
@@ -94,7 +94,7 @@ const BEAT_ROOM: BeatDef = {
   points: [
     { icon: "panelGrid", head: "All projects, one view.", body: "No tab-hopping between repos." },
     { icon: "commit", head: "Status at a glance.", body: "Running, waiting, or needs your call." },
-    { icon: "arrowR", head: "Jump straight in.", body: "One click into any agent's worktree." },
+    { icon: "arrowR", head: "Jump straight in.", body: "One click into any agent's checkout." },
   ],
   Exhibit: () => <ExhibitRoom />,
 };

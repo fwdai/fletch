@@ -1,8 +1,8 @@
-// Loads a worktree file's contents and routes to the right view: a "no
+// Loads a checkout file's contents and routes to the right view: a "no
 // preview" message for binary / too-large / unreadable files, a loading
 // state, or the editable FileEditor.
 import { useEffect, useState } from "react";
-import { type AgentRecord, api, type WorktreeFileContents } from "@/api";
+import { type AgentRecord, api, type CheckoutFileContents } from "@/api";
 import { basename, parentDir } from "@/util/format";
 import { FileEditor } from "./FileEditor";
 import { ViewerHeader } from "./ViewerHeader";
@@ -17,7 +17,7 @@ export function FileViewer({ agent, path, onBack }: FileViewerProps) {
   const name = basename(path);
   const dir = parentDir(path);
 
-  const [contents, setContents] = useState<WorktreeFileContents | null>(null);
+  const [contents, setContents] = useState<CheckoutFileContents | null>(null);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -25,7 +25,7 @@ export function FileViewer({ agent, path, onBack }: FileViewerProps) {
     setContents(null);
     setError(false);
     api
-      .readWorktreeFile(agent.id, path)
+      .readCheckoutFile(agent.id, path)
       .then((c) => {
         if (!cancelled) setContents(c);
       })

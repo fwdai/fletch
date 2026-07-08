@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { WorktreeFile } from "@/api";
+import type { CheckoutFile } from "@/api";
 import { buildTree, duplicatePath } from "@/components/RightPanel/FilePanel/tree";
 import { joinPath, parentDir } from "@/util/format";
 
-const f = (path: string): WorktreeFile => ({ path, status: null, additions: 0, deletions: 0 });
+const f = (path: string): CheckoutFile => ({ path, status: null, additions: 0, deletions: 0 });
 
 describe("parentDir / joinPath", () => {
   it("splits and rejoins paths, treating root as empty", () => {

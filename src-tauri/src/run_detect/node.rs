@@ -20,12 +20,12 @@ const LOCKFILES: &[(&str, &str)] = &[
 ];
 
 impl RunDetector for NodeDetector {
-    fn detect(&self, worktree: &Path) -> Option<DetectedConfig> {
-        let raw = read_trimmed(worktree, "package.json")?;
+    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
+        let raw = read_trimmed(checkout, "package.json")?;
         let pkg: serde_json::Value = serde_json::from_str(&raw).ok()?;
 
         // Package manager: `packageManager` field → lockfile → npm.
-        let lockfile = LOCKFILES.iter().find(|(f, _)| exists(worktree, f));
+        let lockfile = LOCKFILES.iter().find(|(f, _)| exists(checkout, f));
         let pm = pkg
             .get("packageManager")
             .and_then(|v| v.as_str())
@@ -44,9 +44,9 @@ impl RunDetector for NodeDetector {
         let mut rows = Vec::new();
 
         // version: .nvmrc → .node-version → engines.node.
-        if let Some((value, source)) = read_trimmed(worktree, ".nvmrc")
+        if let Some((value, source)) = read_trimmed(checkout, ".nvmrc")
             .map(|v| (v, ".nvmrc"))
-            .or_else(|| read_trimmed(worktree, ".node-version").map(|v| (v, ".node-version")))
+            .or_else(|| read_trimmed(checkout, ".node-version").map(|v| (v, ".node-version")))
             .or_else(|| {
                 pkg.get("engines")
                     .and_then(|e| e.get("node"))
@@ -131,13 +131,13 @@ impl RunDetector for NodeDetector {
         }
 
         // env (optional): .env.local → .env.
-        if let Some(file) = [".env.local", ".env"].iter().find(|f| exists(worktree, f)) {
+        if let Some(file) = [".env.local", ".env"].iter().find(|f| exists(checkout, f)) {
             rows.push(DetectedRow::new(
                 "env",
                 RowGroup::Server,
                 "Env file",
                 *file,
-                "present in worktree",
+                "present in checkout",
             ));
         }
 

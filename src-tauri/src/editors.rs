@@ -1,5 +1,5 @@
 //! Detecting the code editors and terminals installed on the user's machine and
-//! opening an agent's worktree in one. Detection is real — we resolve each
+//! opening an agent's checkout in one. Detection is real — we resolve each
 //! tool's CLI on the login-shell PATH and, on macOS, look for its `.app` bundle
 //! — so the launcher only ever offers tools that are actually present.
 
@@ -77,7 +77,7 @@ const KNOWN: &[KnownEditor] = &[
     editor("clion", "CLion", &["clion"], "CLion"),
     editor("rider", "Rider", &["rider"], "Rider"),
     editor("androidstudio", "Android Studio", &["studio"], "Android Studio"),
-    // ── terminals ── (all open a worktree folder via `open -a`)
+    // ── terminals ── (all open a checkout folder via `open -a`)
     terminal("terminal", "Terminal", &[], "Terminal"),
     terminal("iterm", "iTerm", &[], "iTerm"),
     terminal("warp", "Warp", &[], "Warp"),
@@ -116,14 +116,14 @@ impl From<&KnownEditor> for DetectedEditor {
     }
 }
 
-/// Open `worktree` in the tool identified by `editor_id`.
+/// Open `checkout` in the tool identified by `editor_id`.
 ///
 /// On macOS we launch the specific `.app` by name via LaunchServices — an
 /// unambiguous target, so a shared/hijacked CLI can't open the wrong editor
 /// (Cursor, a VS Code fork, symlinks its own binary onto the `code` command;
 /// launching VS Code through that CLI would open Cursor). The CLI is only a
 /// fallback: when the app-launch fails, or off macOS.
-pub fn open(editor_id: &str, worktree: &Path) -> Result<()> {
+pub fn open(editor_id: &str, checkout: &Path) -> Result<()> {
     let ed = KNOWN
         .iter()
         .find(|e| e.id == editor_id)
@@ -135,7 +135,7 @@ pub fn open(editor_id: &str, worktree: &Path) -> Result<()> {
         // registered, in which case we fall through to the CLI.
         let launched = Command::new("open")
             .args(["-a", app])
-            .arg(worktree)
+            .arg(checkout)
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
@@ -151,7 +151,7 @@ pub fn open(editor_id: &str, worktree: &Path) -> Result<()> {
     {
         let mut cmd = Command::new(&cli);
         bin_resolve::apply_login_shell_env(&mut cmd);
-        cmd.arg(worktree);
+        cmd.arg(checkout);
         return spawn(cmd, ed.label);
     }
 
