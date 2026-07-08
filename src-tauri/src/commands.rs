@@ -737,6 +737,17 @@ pub fn detect_run_config(
     supervisor.detect_run_config(&agent_id)
 }
 
+/// Detect the run configuration for a project by repo path (as the sidebar
+/// keys its groups), bundled with the resolved project_id. Powers the
+/// Project Settings surface, which can open for a repo that has no live agent.
+#[tauri::command]
+pub fn project_run_config(
+    supervisor: State<'_, Arc<Supervisor>>,
+    repo_path: String,
+) -> Result<crate::supervisor::ProjectRunConfig> {
+    supervisor.project_run_config(&repo_path)
+}
+
 /// Returns git state for the agent's primary repo.
 /// For multi-repo agents only the first repo's state is returned.
 #[tauri::command]

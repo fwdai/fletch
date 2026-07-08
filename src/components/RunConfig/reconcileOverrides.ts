@@ -1,4 +1,4 @@
-import type { SetupRow } from "./RunSettingsSheet";
+import type { SetupRow } from "./types";
 
 /** The outcome of reconciling a draft against the detected rows. */
 export interface OverrideReconciliation {

@@ -17,6 +17,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   onboardingComplete: false,
   historyOpen: false,
   selectedHistoryAgentId: null,
+  projectSettingsRepoPath: null,
   leftCollapsed: false,
   rightCollapsed: false,
   leftWidth: DEFAULT_LEFT_WIDTH,
@@ -56,6 +57,8 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       return next ? { historyOpen: true } : { historyOpen: false, selectedHistoryAgentId: null };
     }),
   selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
+  openProjectSettings: (repoPath) => set({ projectSettingsRepoPath: repoPath }),
+  closeProjectSettings: () => set({ projectSettingsRepoPath: null }),
   toggleLeft: () =>
     set((s) => {
       const leftCollapsed = !s.leftCollapsed;

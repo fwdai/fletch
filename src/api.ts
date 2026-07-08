@@ -304,6 +304,13 @@ export interface DetectedConfig {
   rows: DetectedRow[];
 }
 
+/** Project-scoped run config resolved from a repo path: the detected configs
+ *  plus the project_id they belong to (see Rust `supervisor::ProjectRunConfig`). */
+export interface ProjectRunConfig {
+  project_id: string;
+  configs: DetectedConfig[];
+}
+
 export interface RunOutputEvent {
   agent_id: string;
   bytes: number[];
@@ -565,6 +572,8 @@ export const api = {
   runStop: (agentId: string) => invoke<void>("run_stop", { agentId }),
   runState: (agentId: string) => invoke<RunStateSnapshot>("run_state", { agentId }),
   detectRunConfig: (agentId: string) => invoke<DetectedConfig[]>("detect_run_config", { agentId }),
+  projectRunConfig: (repoPath: string) =>
+    invoke<ProjectRunConfig>("project_run_config", { repoPath }),
   listWorktreeTree: (agentId: string) => invoke<WorktreeFile[]>("list_worktree_tree", { agentId }),
   listDir: (path: string) => invoke<DirListing>("list_dir", { path }),
   listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),

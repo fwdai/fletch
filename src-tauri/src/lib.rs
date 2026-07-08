@@ -1053,6 +1053,7 @@ pub fn run() {
             commands::run_stop,
             commands::run_state,
             commands::detect_run_config,
+            commands::project_run_config,
             commands::list_worktree_tree,
             commands::list_dir,
             commands::list_prs,

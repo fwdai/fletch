@@ -10,6 +10,7 @@ mod session_sync;
 mod shell;
 
 pub use lifecycle::SpawnRequest;
+pub use run::ProjectRunConfig;
 
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};

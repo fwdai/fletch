@@ -295,6 +295,10 @@ export interface UiSlice {
   /** When in history mode, the archived agent whose chat preview is
    *  being shown. `null` = list view. */
   selectedHistoryAgentId: string | null;
+  /** Project Settings modal: a centered overlay (History-style) for editing
+   *  per-project defaults. Keyed by the sidebar's repo path — the modal
+   *  resolves the project_id on open. Open iff non-null. */
+  projectSettingsRepoPath: string | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   leftWidth: number;
@@ -319,6 +323,9 @@ export interface UiSlice {
   closeOnboarding: () => void;
   toggleHistory: (open?: boolean) => void;
   selectHistoryAgent: (id: string | null) => void;
+  /** Open the Project Settings modal for a sidebar repo group. */
+  openProjectSettings: (repoPath: string) => void;
+  closeProjectSettings: () => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   /** Live (in-memory) width update during a splitter drag. */
