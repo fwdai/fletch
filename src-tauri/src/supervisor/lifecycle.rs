@@ -193,6 +193,12 @@ impl Supervisor {
                 repo_path.display()
             )));
         }
+        // Provisioning forks a workspace (a `--shared` clone by default) from
+        // this repo, which needs a resolvable HEAD. Adopting a folder normally
+        // seeds one, but a repo added while it had no commits — or before that
+        // guarantee existed — still has an unborn HEAD; seed it here so the fork
+        // can't fail with a missing working directory downstream.
+        git::ensure_head_commit(&repo_path).await?;
 
         // The engine this agent will be stamped with, resolved once so the
         // provider gate, the stamp, and the provisioning mode below all agree.
@@ -361,6 +367,9 @@ impl Supervisor {
                 repo_path.display()
             )));
         }
+        // Same forkability guarantee as the primary repo: a commit-less repo has
+        // an unborn HEAD that the workspace clone/worktree can't fork.
+        git::ensure_head_commit(&repo_path).await?;
         let record = self.workspace.agent(agent_id)?;
         if record.repos.iter().any(|r| r.repo_path == repo_path) {
             return Err(Error::Other(

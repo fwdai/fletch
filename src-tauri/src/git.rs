@@ -762,6 +762,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ensure_head_commit_seeds_unborn_head_and_is_idempotent() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+
+        // Unborn HEAD: no commit yet.
+        assert!(rev_parse(repo, "HEAD").await.is_err());
+
+        ensure_head_commit(repo).await.unwrap();
+        let first = rev_parse(repo, "HEAD").await.unwrap();
+
+        // No-op on a repo that already has a HEAD — same commit, no error.
+        ensure_head_commit(repo).await.unwrap();
+        assert_eq!(first, rev_parse(repo, "HEAD").await.unwrap());
+    }
+
+    /// Overlapping spawns against the same commit-less repo must seed exactly one
+    /// commit and none may fail. Without the internal lock the check-then-act
+    /// race lets multiple callers each commit (a stray empty "Initial commit") or
+    /// fail one on `.git/index.lock` contention.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn ensure_head_commit_concurrent_seeds_exactly_one_commit() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().to_path_buf();
+        init_repo(&repo).await.unwrap();
+        config(&repo, "user.email", "t@example.com").await;
+        config(&repo, "user.name", "Tester").await;
+        assert!(rev_parse(&repo, "HEAD").await.is_err());
+
+        // Fire many concurrent calls at the unborn-HEAD repo at once.
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let r = repo.clone();
+            set.spawn(async move { ensure_head_commit(&r).await });
+        }
+        while let Some(joined) = set.join_next().await {
+            // No task panicked, and no call returned Err (no lock-contention
+            // failure surfaced to a spawn).
+            joined.unwrap().unwrap();
+        }
+
+        // Exactly one commit — no duplicate from a lost race.
+        let out = run_git(&repo, &["rev-list", "--count", "HEAD"], "rev-list")
+            .await
+            .unwrap();
+        let count = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(count, "1", "expected exactly one commit, got {count}");
+    }
+
+    #[tokio::test]
     async fn fetch_fork_point_without_remote_is_none() {
         // No `origin` configured → best-effort fetch fails and we fall back to
         // local HEAD (None), never an error.
@@ -1153,6 +1205,40 @@ pub async fn commit_initial(repo: &Path) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Process-wide lock serializing the unborn-HEAD seed in `ensure_head_commit`.
+/// Contended only when a repo has no commits yet and two spawns race to seed it;
+/// the common HEAD-already-exists path never acquires it (see the double-check).
+static HEAD_SEED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Guarantee `repo` has a resolvable `HEAD` so a workspace can fork from it.
+/// A repo that's been `git init`'d but never committed has an unborn HEAD, and
+/// neither `git clone --shared` (the default workspace mode) nor `worktree add`
+/// can fork a repo without one — the fork fails and the agent never launches.
+/// Seed the repo's first commit in that case; no-op when HEAD already resolves.
+/// Idempotent, so it's safe to call on every provisioning.
+///
+/// Concurrency: the check (`rev_parse`) and the act (`commit_initial`) are
+/// guarded by a process-wide lock, with a double-check inside it. Without the
+/// lock two overlapping spawns against the same commit-less repo could both pass
+/// the check and each seed — leaving a stray empty "Initial commit", or failing
+/// one spawn on `.git/index.lock` contention. The lock is taken only once HEAD
+/// is confirmed unborn, so the common case stays lock-free. This serializes
+/// within one Fletch process; two separate processes seeding the same brand-new
+/// repo at the same instant still fall back to git's own index locking — a
+/// vanishingly small, self-limiting window that closes the moment a commit lands.
+pub async fn ensure_head_commit(repo: &Path) -> Result<()> {
+    if rev_parse(repo, "HEAD").await.is_ok() {
+        return Ok(());
+    }
+    // Unborn HEAD — serialize the seed so racing spawns don't double-commit.
+    let _guard = HEAD_SEED_LOCK.lock().await;
+    // A racer may have seeded HEAD while we waited for the lock; re-check.
+    if rev_parse(repo, "HEAD").await.is_ok() {
+        return Ok(());
+    }
+    commit_initial(repo).await
 }
 
 /// Add a remote. Used when publishing a fresh local repo to GitHub.
