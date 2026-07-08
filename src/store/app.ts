@@ -32,6 +32,7 @@ import {
 import { pushAgentOutput, pushShellOutput } from "@/pty/buffers";
 import { decodeBase64 } from "@/pty/decode";
 import { getOrCreateAccount, toProfile } from "@/storage/accounts";
+import { recordUsageSnapshot } from "@/storage/usageDaily";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
@@ -263,6 +264,10 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
           // live, so an empty records result must not wipe it.
           usage: hasUsage(usage) ? { ...state.usage, [id]: usage } : state.usage,
         }));
+        if (hasUsage(usage)) {
+          const projectId = get().workspace?.agents.find((a) => a.id === id)?.project_id;
+          recordUsageSnapshot(id, projectId, usage);
+        }
         // The first turn captures the agent's session id in the DB; pull it
         // into the live workspace so the Native toggle unblocks without a
         // reload. Only when still missing locally — avoids per-turn re-fetch.

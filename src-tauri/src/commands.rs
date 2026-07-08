@@ -625,7 +625,14 @@ pub async fn get_pr_state(
     if repo.branch.is_none() {
         return Ok(None);
     }
-    gh::pr_view(&checkout).await
+    let state = gh::pr_view(&checkout).await?;
+    // Accrue PR history: stamp GitHub's open/merge times when reported.
+    if let Some(pr) = &state {
+        let _ = supervisor
+            .workspace
+            .set_repo_pr_times(&agent_id, &repo.subdir, pr.opened_at, pr.merged_at);
+    }
+    Ok(state)
 }
 
 /// List the open PRs for the agent's repo, for the composer's "#" mention
@@ -864,16 +871,23 @@ pub async fn refresh_all_pr_states(
         let Some(number) = repo.pr_number else { continue };
         let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else { continue };
         let agent_id = agent.id.clone();
+        let subdir = repo.subdir.clone();
         set.spawn(async move {
             let state = gh::pr_view_number(&checkout, number as u32)
                 .await
                 .unwrap_or(None);
-            (agent_id, state)
+            (agent_id, subdir, state)
         });
     }
     let mut out = std::collections::HashMap::new();
     while let Some(res) = set.join_next().await {
-        if let Ok((id, state)) = res {
+        if let Ok((id, subdir, state)) = res {
+            // Accrue PR history: stamp GitHub's open/merge times when reported.
+            if let Some(pr) = &state {
+                let _ = supervisor
+                    .workspace
+                    .set_repo_pr_times(&id, &subdir, pr.opened_at, pr.merged_at);
+            }
             out.insert(id, state);
         }
     }

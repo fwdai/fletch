@@ -44,6 +44,15 @@ export function accountInitials(first: string, last: string, email = ""): string
   return e ? e.toUpperCase() : "?";
 }
 
+/** Local calendar date key (YYYY-MM-DD) — matches SQLite's
+ *  `date(…, 'localtime')`, so frontend-derived days join cleanly against
+ *  SQL-bucketed ones. */
+export function localDay(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 export function formatTokens(n: number): string {
   if (n < 1_000) return `${n}`;
   if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;

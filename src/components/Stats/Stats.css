@@ -1,0 +1,204 @@
+/* ── Stats primitives: activity heatmap + stat tiles ─────────────────────
+ * The heat ramp is a sequential scale mixed from the live --accent into
+ * --bg-2, so it recolors with the user's palette and theme for free. Mixed
+ * in oklab, not oklch: oklch would rotate hue from the accent toward the
+ * background's (near-gray but hued) angle, tinting low levels purple.
+ * Mix stops (35/56/78/100%) were validated for monotonic lightness and
+ * adjacent-step CVD separation (ΔE ≥ 13) on both themes' surfaces; exact
+ * values are always available via tooltip/aria, never color alone. */
+
+.heat {
+  --heat-cell: 10px;
+  --heat-gap: 3px;
+  --heat-1: color-mix(in oklab, var(--accent) 35%, var(--bg-2));
+  --heat-2: color-mix(in oklab, var(--accent) 56%, var(--bg-2));
+  --heat-3: color-mix(in oklab, var(--accent) 78%, var(--bg-2));
+  --heat-4: var(--accent);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Columns flex to fill the container width, so the grid's right edge is
+ * flush with the legend below it; --heat-cell is the fixed row height and
+ * the minimum column width. The months row mirrors the same flex layout so
+ * labels stay over their columns. */
+.heat-months {
+  display: flex;
+  gap: var(--heat-gap);
+  margin-left: 30px; /* day-label gutter */
+  color: var(--fg-3);
+  height: 14px;
+}
+.heat-mlabel {
+  flex: 1 1 var(--heat-cell);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.heat-body {
+  display: flex;
+  gap: 6px;
+}
+.heat-daylabels {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 0 0 1px;
+  width: 24px;
+  color: var(--fg-3);
+  line-height: 1;
+}
+.heat-daylabels span {
+  height: var(--heat-cell);
+  display: flex;
+  align-items: center;
+}
+
+.heat-grid {
+  display: flex;
+  gap: var(--heat-gap);
+  flex: 1;
+  min-width: 0;
+}
+.heat-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--heat-gap);
+  flex: 1 1 var(--heat-cell);
+  min-width: 0;
+}
+.heat-cell {
+  width: var(--heat-cell);
+  height: var(--heat-cell);
+  border-radius: 2px;
+  background: var(--bg-2);
+  box-shadow: inset 0 0 0 1px var(--bd-soft);
+  transition: transform 0.08s var(--ease);
+}
+.heat-col .heat-cell {
+  width: auto; /* stretch to the flexed column */
+}
+.heat-cell[data-level="1"] {
+  background: var(--heat-1);
+  box-shadow: none;
+}
+.heat-cell[data-level="2"] {
+  background: var(--heat-2);
+  box-shadow: none;
+}
+.heat-cell[data-level="3"] {
+  background: var(--heat-3);
+  box-shadow: none;
+}
+.heat-cell[data-level="4"] {
+  background: var(--heat-4);
+  box-shadow: none;
+}
+.heat-grid .heat-cell:hover {
+  transform: scale(1.25);
+}
+.heat-cell.today {
+  box-shadow:
+    0 0 0 1px var(--bg-1),
+    0 0 0 2px var(--accent);
+}
+.heat-cell.out {
+  visibility: hidden;
+}
+
+.heat-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+.heat-foot-l {
+  color: var(--fg-2);
+}
+.heat-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--heat-gap);
+  justify-content: flex-end;
+  color: var(--fg-3);
+}
+.heat-legend .heat-cell {
+  cursor: default;
+}
+.heat-legend :first-child {
+  margin-right: 3px;
+}
+
+/* Fixed-position so the modal's scroll container can't clip it. */
+.heat-tip {
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: var(--z-popover);
+  padding: 4px 8px;
+  background: var(--bg-3);
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--r-sm);
+  color: var(--fg-0);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--shadow-2);
+}
+
+/* ── Stat strip: one text line of value–label pairs, detail on hover ── */
+.stat-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.stat {
+  gap: 6px;
+}
+.stat-sep {
+  width: 1px;
+  height: 12px;
+  background: var(--bd-soft);
+}
+.stat-v {
+  color: var(--fg-0);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.stat-l {
+  color: var(--fg-3);
+}
+.stat-add {
+  color: var(--success);
+}
+.stat-del {
+  color: var(--danger);
+}
+
+.stat-shimmer {
+  display: inline-block;
+  width: 36px;
+  height: 12px;
+  border-radius: var(--r-xs);
+  background: linear-gradient(90deg, var(--bg-2) 25%, var(--bg-3) 50%, var(--bg-2) 75%);
+  background-size: 200% 100%;
+  animation: stat-shimmer 1.2s linear infinite;
+}
+@keyframes stat-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stat-shimmer {
+    animation: none;
+  }
+  .heat-grid .heat-cell:hover {
+    transform: none;
+  }
+}

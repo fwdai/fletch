@@ -689,6 +689,32 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Stamp the PR's GitHub-reported open/merge times onto a tracked repo,
+    /// identified by subdir. Called from every PR-state fetch path; GitHub is
+    /// the source of truth, so values overwrite (COALESCE keeps an existing
+    /// stamp when a fetch reports none). NULL until first observed — a PR
+    /// merged while the app was closed still gets its real merge time on the
+    /// next fetch.
+    pub fn set_repo_pr_times(
+        &self,
+        agent_id: &str,
+        subdir: &str,
+        opened_at: Option<i64>,
+        merged_at: Option<i64>,
+    ) -> Result<()> {
+        if opened_at.is_none() && merged_at.is_none() {
+            return Ok(());
+        }
+        let conn = self.db.lock();
+        conn.execute(
+            "UPDATE worktrees SET pr_opened_at = COALESCE(?1, pr_opened_at),
+                                  pr_merged_at = COALESCE(?2, pr_merged_at)
+             WHERE workspace_id = ?3 AND subdir = ?4",
+            rusqlite::params![opened_at, merged_at, agent_id, subdir],
+        )?;
+        Ok(())
+    }
+
     pub fn append_tracked_repo(&self, agent_id: &str, repo: TrackedRepo) -> Result<()> {
         let conn = self.db.lock();
         Self::insert_worktree(&conn, agent_id, &repo)?;

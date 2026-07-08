@@ -115,6 +115,15 @@ impl Supervisor {
                     _ => None,
                 }
             };
+            // Accrue PR history: stamp GitHub's own open/merge times whenever
+            // a fetch reports them (feeds per-day PR stats).
+            if let Some(pr) = &state {
+                if let Err(e) =
+                    workspace.set_repo_pr_times(&agent_id, &subdir, pr.opened_at, pr.merged_at)
+                {
+                    tracing::warn!(error = %e, agent_id, "failed to stamp PR times");
+                }
+            }
             emit_pr_state(&app, &agent_id, state);
         });
     }
