@@ -1,11 +1,5 @@
 import { useEffect, useState } from "react";
-import {
-  ActivityHeatmap,
-  CountUp,
-  computeStreak,
-  formatHeatDay,
-  Stat,
-} from "@/components/Stats";
+import { ActivityHeatmap, CountUp, computeStreak, formatHeatDay, Stat } from "@/components/Stats";
 import { formatCost, formatTokens } from "@/util/format";
 import {
   loadPulseActivity,
@@ -93,9 +87,7 @@ export function ProjectPulse({ projectId }: { projectId: string }) {
         <Stat
           label="agents"
           loading={!totals}
-          tip={
-            totals && totals.agents7d > 0 ? `${totals.agents7d} in the last 7 days` : undefined
-          }
+          tip={totals && totals.agents7d > 0 ? `${totals.agents7d} in the last 7 days` : undefined}
         >
           {totals && <CountUp value={totals.agents} />}
         </Stat>

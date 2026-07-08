@@ -96,6 +96,12 @@ export function ConfigRow({ row, override, scope, onChange, onRevert }: ConfigRo
                 return;
               }
               const v = e.currentTarget.value.trim();
+              // Unchanged from what's shown — don't fire onChange/onRevert.
+              // Comparing against `display` (the effective value: override if
+              // set, else detected) rather than `row.value` (detected only) is
+              // what keeps a no-op focus→blur on an already-overridden field
+              // from re-committing the identical override.
+              if (v === display) return;
               if (v === "" || v === row.value) onRevert();
               else onChange(v);
             }}

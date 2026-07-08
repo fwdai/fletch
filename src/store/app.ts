@@ -33,7 +33,6 @@ import {
 import { pushAgentOutput, pushShellOutput } from "@/pty/buffers";
 import { decodeBase64 } from "@/pty/decode";
 import { getOrCreateAccount, toProfile } from "@/storage/accounts";
-import { recordUsageSnapshot } from "@/storage/usageDaily";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
@@ -48,6 +47,7 @@ import {
   type WorkspaceView,
 } from "@/storage/preferences";
 import { getAllSettings } from "@/storage/settings";
+import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { checkForUpdate } from "@/util/autoUpdate";
 import { notify } from "@/util/notify";
 import { playAgentDone } from "@/util/sound";
