@@ -319,9 +319,17 @@ async fn is_registered_worktree(repo: &Path, path: &Path) -> bool {
 
 /// Best-effort fetch of `branch` from `origin` so a freshly-spawned checkout
 /// can fork from the latest remote state rather than a stale local ref.
-/// Returns the commit-ish a checkout should be based on — `origin/<branch>`
-/// when the fetch succeeded and the remote branch resolves — otherwise `None`,
-/// signalling the caller to fall back to local HEAD.
+/// Returns the commit-ish a checkout should be based on — the SHA that
+/// `origin/<branch>` resolves to **in this repo** when the fetch succeeded —
+/// otherwise `None`, signalling the caller to fall back to local HEAD.
+///
+/// The SHA (not the symbolic `origin/<branch>`) is essential for Clone-mode
+/// provisioning: the checkout is a `git clone --shared` of this repo, so
+/// inside the clone `origin/<branch>` resolves to this repo's *local*
+/// `refs/heads/<branch>` — potentially stale — not the remote-tracking ref
+/// the fetch just updated. A SHA resolves identically everywhere, and its
+/// objects are reachable from the clone via alternates (shared clones) or
+/// the copied object store (self-contained clones).
 ///
 /// Never errors: a missing `origin`, an offline machine, or a purely local
 /// branch are all expected and simply mean "use local state".
@@ -340,11 +348,12 @@ pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
         Ok(Ok(out)) if out.status.success() => {}
         _ => return None,
     }
-    // Confirm the remote-tracking ref resolves before handing it back — a
-    // refspec that doesn't map this branch into refs/remotes would otherwise
-    // leave us pointing at a ref that `worktree add` can't use.
+    // Resolve the remote-tracking ref to a SHA here, in the repo the fetch
+    // updated. This both confirms the refspec mapped the branch into
+    // refs/remotes and pins the base to the fetched tip regardless of which
+    // repo (source or clone) later checks it out.
     let remote_ref = format!("origin/{branch}");
-    rev_parse(repo, &remote_ref).await.ok().map(|_| remote_ref)
+    rev_parse(repo, &remote_ref).await.ok()
 }
 
 /// Inside an existing checkout, create a new branch at the current
@@ -765,6 +774,47 @@ mod tests {
         commit_all(repo, "first").await.unwrap();
 
         assert_eq!(fetch_fork_point(repo, "main").await, None);
+    }
+
+    #[tokio::test]
+    async fn fetch_fork_point_returns_fetched_tip_sha_not_stale_local_head() {
+        // Clone-mode workspaces are `git clone --shared` of the source repo,
+        // where `origin/<branch>` resolves to the source's *local* head —
+        // stale when the user hasn't pulled. The fork point must therefore be
+        // the SHA of the freshly-fetched remote tip, resolved in the source
+        // repo, never the symbolic `origin/<branch>`.
+        let td = tempfile::tempdir().unwrap();
+
+        // `upstream` plays the true remote.
+        let upstream = td.path().join("upstream");
+        init_repo(&upstream).await.unwrap();
+        config(&upstream, "user.email", "t@example.com").await;
+        config(&upstream, "user.name", "Tester").await;
+        std::fs::write(upstream.join("a.txt"), b"one").unwrap();
+        commit_all(&upstream, "first").await.unwrap();
+        run_git(&upstream, &["checkout", "-B", "main"], "checkout -B main")
+            .await
+            .unwrap();
+
+        // `source` is the user's repo, cloned before upstream advanced.
+        let source = td.path().join("source");
+        let out = Command::new("git")
+            .current_dir(td.path())
+            .args(["clone", upstream.to_str().unwrap(), "source"])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success());
+
+        // Upstream advances; the source's local `main` is now stale.
+        std::fs::write(upstream.join("b.txt"), b"two").unwrap();
+        commit_all(&upstream, "second").await.unwrap();
+        let upstream_tip = rev_parse(&upstream, "main").await.unwrap();
+        let stale_local = rev_parse(&source, "main").await.unwrap();
+        assert_ne!(stale_local, upstream_tip);
+
+        let base = fetch_fork_point(&source, "main").await.unwrap();
+        assert_eq!(base, upstream_tip);
     }
 
     #[tokio::test]

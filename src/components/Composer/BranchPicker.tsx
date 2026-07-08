@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/api";
 import { Icon } from "@/components/Icon";
 import { DropdownItem, DropdownMenu, DropdownSection } from "@/components/ui/Dropdown";
@@ -22,6 +22,15 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
   const [canScrollDown, setCanScrollDown] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Stable (reads only the ref + setters) so it can be an honest effect dep
+  // without re-running the fetch every render.
+  const updateScrollState = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    setCanScrollUp(el.scrollTop > 0);
+    setCanScrollDown(el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     api
@@ -32,14 +41,7 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
         requestAnimationFrame(() => updateScrollState());
       })
       .catch(() => setBranches([]));
-  }, [open, repoPath]);
-
-  function updateScrollState() {
-    const el = listRef.current;
-    if (!el) return;
-    setCanScrollUp(el.scrollTop > 0);
-    setCanScrollDown(el.scrollTop + el.clientHeight < el.scrollHeight - 1);
-  }
+  }, [open, repoPath, updateScrollState]);
 
   function scrollBy(delta: number) {
     listRef.current?.scrollBy({ top: delta, behavior: "smooth" });

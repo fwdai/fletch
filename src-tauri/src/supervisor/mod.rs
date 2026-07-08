@@ -10,6 +10,7 @@ mod session_sync;
 mod shell;
 
 pub use lifecycle::SpawnRequest;
+pub use run::ProjectRunConfig;
 
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
@@ -282,6 +283,14 @@ impl Supervisor {
 
     pub fn remove_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
         self.workspace.remove_workspace_repo(&repo_path)
+    }
+
+    pub fn rename_project(&self, project_id: &str, name: &str) -> Result<Workspace> {
+        self.workspace.rename_project(project_id, name)
+    }
+
+    pub fn relocate_repo(&self, old_path: PathBuf, new_path: PathBuf) -> Result<Workspace> {
+        self.workspace.relocate_repo(&old_path, &new_path)
     }
 }
 

@@ -1,7 +1,8 @@
 import { api } from "@/api";
+import { remapProjectOrder } from "@/storage/projectOrder";
 import type { ReposSlice, SliceCreator } from "./types";
 
-export const createReposSlice: SliceCreator<ReposSlice> = (set) => ({
+export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
   addWorkspaceRepo: async (path) => {
     set({ busy: true, lastError: null });
     try {
@@ -21,6 +22,21 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set) => ({
     } catch (e) {
       set({ lastError: String(e) });
     }
+  },
+
+  renameProject: async (projectId, name) => {
+    // Errors propagate to the modal for inline display.
+    const ws = await api.renameProject(projectId, name);
+    set({ workspace: ws });
+  },
+
+  relocateProject: async (oldPath, newPath) => {
+    const ws = await api.relocateRepo(oldPath, newPath);
+    // Keep the project's manual sidebar position, and repoint the open settings
+    // modal (keyed by repo path) at the new location so it doesn't go stale.
+    remapProjectOrder(oldPath, newPath);
+    set({ workspace: ws });
+    if (get().projectSettingsRepoPath === oldPath) get().openProjectSettings(newPath);
   },
 
   revealLogs: async () => {

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SetupRow } from "@/components/RightPanel/RunSettingsSheet";
-import { reconcileOverrides } from "@/components/RightPanel/reconcileOverrides";
+import { reconcileOverrides, type SetupRow } from "@/components/RunConfig";
 
 const row = (id: string, value: string): SetupRow => ({
   id,

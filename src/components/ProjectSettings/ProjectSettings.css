@@ -1,0 +1,250 @@
+/* ─── project settings modal ─────────────────────────────────────────
+ * Centered overlay, modeled on the History sheet (see History.css) for
+ * consistency with the app's existing full-screen modal. */
+.ps-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  animation: psOverlayIn 0.18s var(--ease);
+}
+.theme-light .ps-overlay {
+  background: rgba(40, 40, 40, 0.35);
+}
+@keyframes psOverlayIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.ps-modal {
+  margin: 36px auto;
+  width: min(1180px, calc(100vw - 64px));
+  /* Fixed full height so the modal fills the viewport regardless of how much
+   * content a section has — short sections leave the content area empty below
+   * rather than shrinking the modal. */
+  height: calc(100vh - 72px);
+  background: var(--bg-1);
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--r-lg);
+  box-shadow: 0 36px 96px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  animation: psModalIn 0.22s var(--ease);
+}
+.theme-light .ps-modal {
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.18);
+}
+@keyframes psModalIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* header — project identity */
+.ps-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px 20px 16px 24px;
+  border-bottom: 1px solid var(--bd-soft);
+  flex-shrink: 0;
+}
+.ps-id {
+  flex: 1;
+  min-width: 0;
+}
+.ps-title {
+  font-weight: 600;
+  color: var(--fg-0);
+  letter-spacing: -0.01em;
+}
+.ps-path {
+  margin-top: 3px;
+  color: var(--fg-3);
+}
+.ps-x {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  background: transparent;
+  border: 0;
+  color: var(--fg-3);
+  justify-content: center;
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+.ps-x:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+
+/* body — one scrollable page; sections stack in a centered column */
+.ps-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 28px 32px 44px;
+}
+.ps-sections {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+.ps-state {
+  gap: 8px;
+  color: var(--fg-3);
+  padding: 24px 2px;
+}
+
+/* sections */
+.ps-section-h {
+  margin-bottom: 16px;
+}
+.ps-section-t {
+  font-weight: 600;
+  color: var(--fg-0);
+  letter-spacing: -0.01em;
+}
+.ps-section-lead {
+  margin-top: 6px;
+  color: var(--fg-2);
+  max-width: 62ch;
+  line-height: 1.5;
+}
+.ps-eco {
+  color: var(--fg-3);
+  padding: 2px 2px 2px;
+}
+.ps-eco code {
+  font-family: var(--font-mono);
+  color: var(--fg-1);
+  padding: 0 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: 3px;
+}
+.ps-eco-count b {
+  color: var(--fg-0);
+}
+
+/* general section — name + location */
+.ps-field {
+  margin-top: 18px;
+}
+.ps-field:first-of-type {
+  margin-top: 0;
+}
+.ps-label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--fg-1);
+  font-weight: 500;
+}
+.ps-name-row {
+  display: flex;
+  gap: 8px;
+}
+.ps-input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 11px;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  transition:
+    border-color 0.1s,
+    background 0.1s;
+}
+.ps-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg-1);
+}
+.ps-btn {
+  flex-shrink: 0;
+  height: 34px;
+  padding: 0 16px;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  font-weight: 500;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    opacity 0.1s;
+}
+.ps-btn:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--bd-strong);
+}
+.ps-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ps-path-row {
+  width: 100%;
+  gap: 9px;
+  height: 34px;
+  padding: 0 11px;
+  text-align: left;
+  color: var(--fg-1);
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+}
+.ps-path-row:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--bd-strong);
+}
+.ps-path-row:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.ps-path-val {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-2);
+}
+.ps-path-change {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-weight: 500;
+}
+.ps-hint {
+  margin-top: 7px;
+  color: var(--fg-3);
+  line-height: 1.45;
+}
+.ps-error {
+  margin-top: 16px;
+  padding: 9px 12px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger), var(--bg-0) 86%);
+  border: 1px solid color-mix(in srgb, var(--danger), var(--bg-0) 70%);
+  border-radius: var(--r-sm);
+}

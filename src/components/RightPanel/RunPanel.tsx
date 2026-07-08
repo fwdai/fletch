@@ -2,28 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { type AgentRecord, api, onRunOutput, onRunState } from "@/api";
 import { Icon } from "@/components/Icon";
 import {
-  deleteProjectSetting,
-  getProjectSettings,
-  setProjectSetting,
-} from "@/storage/projectSettings";
+  loadRunOverrides,
+  persistRunOverrides,
+  reconcileOverrides,
+  type SetupRow,
+  toSetupRows,
+} from "@/components/RunConfig";
 import { useAppStore } from "@/store";
-import { RunSettingsSheet, type SetupRow } from "./RunSettingsSheet";
-import { reconcileOverrides } from "./reconcileOverrides";
-
-// Settings keys are namespaced under `run.` so the project_settings
-// table can hold overrides from other panels without colliding.
-const RUN_KEY_PREFIX = "run.";
-const runKey = (id: string) => `${RUN_KEY_PREFIX}${id}`;
+import { RunSettingsSheet } from "./RunSettingsSheet";
 
 // Detected run config replaces the old hardcoded defaults. The backend
 // (`detect_run_config`) returns rows per ecosystem; the panel shows the
-// highest-confidence one. The `run.*` overrides in project_settings layer
-// on top of these detected values.
-const GROUP_LABEL: Record<string, string> = {
-  environment: "Environment",
-  scripts: "Scripts",
-  server: "Server",
-};
+// highest-confidence one. The `run.*` overrides in project_settings — the
+// per-project defaults, also editable from Project settings — layer on top
+// of these detected values.
 
 // Strip ANSI escape sequences before rendering. v1 keeps log rendering
 // dead-simple (plain text with pre-wrap); colorization can come later.
@@ -68,14 +60,8 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       setOverrides({});
       return;
     }
-    getProjectSettings(agent.project_id).then((all) => {
+    loadRunOverrides(agent.project_id).then((loaded) => {
       if (cancelled) return;
-      const loaded: Record<string, string> = {};
-      for (const [k, v] of Object.entries(all)) {
-        if (k.startsWith(RUN_KEY_PREFIX)) {
-          loaded[k.slice(RUN_KEY_PREFIX.length)] = v;
-        }
-      }
       setOverrides(loaded);
     });
     return () => {
@@ -94,15 +80,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         if (cancelled) return;
         const primary = configs[0];
         setEcosystem(primary?.ecosystem ?? null);
-        setRows(
-          (primary?.rows ?? []).map((r) => ({
-            id: r.id,
-            group: GROUP_LABEL[r.group] ?? r.group,
-            key: r.key,
-            value: r.value,
-            source: r.source,
-          })),
-        );
+        setRows(toSetupRows(primary?.rows ?? []));
       })
       .catch((err) => {
         if (cancelled) return;
@@ -214,18 +192,8 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     // exists after an ecosystem change) from the DB so the override
     // indicator can't get stuck lit.
     const { cleaned, toSet, toDelete } = reconcileOverrides(rows, overrides, next);
-    const projectId = agent.project_id;
-    if (projectId) {
-      for (const { id, value } of toSet) {
-        setProjectSetting(projectId, runKey(id), value).catch((err) =>
-          console.error("setProjectSetting failed", err),
-        );
-      }
-      for (const id of toDelete) {
-        deleteProjectSetting(projectId, runKey(id)).catch((err) =>
-          console.error("deleteProjectSetting failed", err),
-        );
-      }
+    if (agent.project_id) {
+      persistRunOverrides(agent.project_id, toSet, toDelete);
     }
 
     setOverrides(cleaned);

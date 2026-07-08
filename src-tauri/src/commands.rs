@@ -165,6 +165,28 @@ pub fn remove_workspace_repo(
     supervisor.remove_workspace_repo(PathBuf::from(repo_path))
 }
 
+/// Rename a project — a custom display label independent of its folder name.
+/// The sidebar and Project Settings header show this instead of the basename.
+#[tauri::command]
+pub fn rename_project(
+    supervisor: State<'_, Arc<Supervisor>>,
+    project_id: String,
+    name: String,
+) -> Result<Workspace> {
+    supervisor.rename_project(&project_id, &name)
+}
+
+/// Repoint a pinned repo at a folder the user has moved on disk. Validates the
+/// destination is a git repo; existing agents' worktrees are not relinked.
+#[tauri::command]
+pub fn relocate_repo(
+    supervisor: State<'_, Arc<Supervisor>>,
+    old_path: String,
+    new_path: String,
+) -> Result<Workspace> {
+    supervisor.relocate_repo(PathBuf::from(old_path), PathBuf::from(new_path))
+}
+
 /// Whether the app has a working GitHub connection — drives the New Project
 /// flow's gating (clone and create both need the API).
 #[tauri::command]
@@ -735,6 +757,17 @@ pub fn detect_run_config(
     agent_id: String,
 ) -> Result<Vec<crate::run_detect::DetectedConfig>> {
     supervisor.detect_run_config(&agent_id)
+}
+
+/// Detect the run configuration for a project by repo path (as the sidebar
+/// keys its groups), bundled with the resolved project_id. Powers the
+/// Project Settings surface, which can open for a repo that has no live agent.
+#[tauri::command]
+pub fn project_run_config(
+    supervisor: State<'_, Arc<Supervisor>>,
+    repo_path: String,
+) -> Result<crate::supervisor::ProjectRunConfig> {
+    supervisor.project_run_config(&repo_path)
 }
 
 /// Returns git state for the agent's primary repo.

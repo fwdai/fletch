@@ -154,6 +154,13 @@ export interface WorkspaceSlice {
 export interface ReposSlice {
   addWorkspaceRepo: (path: string) => Promise<void>;
   removeWorkspaceRepo: (path: string) => Promise<void>;
+  // Rename/relocate resolve on success and throw on failure, so the Project
+  // Settings modal can show the error inline rather than in the global banner.
+  /** Set a project's custom display name (independent of its folder). */
+  renameProject: (projectId: string, name: string) => Promise<void>;
+  /** Repoint a pinned repo at a moved folder, migrating its sidebar order and
+   *  the open settings modal to the new path. */
+  relocateProject: (oldPath: string, newPath: string) => Promise<void>;
   /** Open the log folder in the OS file manager; surfaces failures via
    *  `lastError` rather than swallowing them. */
   revealLogs: () => Promise<void>;
@@ -295,6 +302,10 @@ export interface UiSlice {
   /** When in history mode, the archived agent whose chat preview is
    *  being shown. `null` = list view. */
   selectedHistoryAgentId: string | null;
+  /** Project Settings modal: a centered overlay (History-style) for editing
+   *  per-project defaults. Keyed by the sidebar's repo path — the modal
+   *  resolves the project_id on open. Open iff non-null. */
+  projectSettingsRepoPath: string | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   leftWidth: number;
@@ -319,6 +330,9 @@ export interface UiSlice {
   closeOnboarding: () => void;
   toggleHistory: (open?: boolean) => void;
   selectHistoryAgent: (id: string | null) => void;
+  /** Open the Project Settings modal for a sidebar repo group. */
+  openProjectSettings: (repoPath: string) => void;
+  closeProjectSettings: () => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   /** Live (in-memory) width update during a splitter drag. */

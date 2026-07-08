@@ -44,7 +44,11 @@ function groupByRepo(
   return Array.from(map.values());
 }
 
-function applySearch(groups: RepoGroup[], q: string): RepoGroup[] {
+function applySearch(
+  groups: RepoGroup[],
+  q: string,
+  labelOf: (path: string) => string,
+): RepoGroup[] {
   if (!q.trim()) return groups;
   const needle = q.toLowerCase();
   return groups
@@ -62,7 +66,7 @@ function applySearch(groups: RepoGroup[], q: string): RepoGroup[] {
       (g) =>
         g.agents.length > 0 ||
         g.drafts.length > 0 ||
-        basename(g.repoPath).toLowerCase().includes(needle),
+        labelOf(g.repoPath).toLowerCase().includes(needle),
     );
 }
 
@@ -110,7 +114,13 @@ export function Sidebar() {
     const byPath = new Map(built.map((g) => [g.repoPath, g]));
     return order.map((p) => byPath.get(p)).filter((g): g is RepoGroup => g !== undefined);
   }, [workspace?.repos, liveAgents, drafts, sortPaths]);
-  const filtered = useMemo(() => applySearch(groups, query), [groups, query]);
+  // Custom display name per pinned repo. Groups derived only from an agent's
+  // repo (never pinned) have no entry and fall back to the folder basename.
+  const labelOf = useMemo(() => {
+    const byPath = new Map((workspace?.projects ?? []).map((p) => [p.path, p.name]));
+    return (path: string) => byPath.get(path) ?? basename(path);
+  }, [workspace?.projects]);
+  const filtered = useMemo(() => applySearch(groups, query, labelOf), [groups, query, labelOf]);
 
   // Reordering is only meaningful over the full, unfiltered list.
   const reorderable = !query.trim();
@@ -219,7 +229,7 @@ export function Sidebar() {
               return (
                 <ProjectGroup
                   key={g.repoPath}
-                  label={basename(g.repoPath)}
+                  label={labelOf(g.repoPath)}
                   repoPath={g.repoPath}
                   agents={g.agents}
                   drafts={g.drafts}

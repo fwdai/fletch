@@ -26,6 +26,15 @@ export function saveProjectOrder(order: string[]): void {
   }
 }
 
+/** Rewrite a path in the saved order after a relocate, so the project keeps its
+ *  manual position instead of dropping to the bottom under its new path. No-op
+ *  when the old path isn't in the saved order. */
+export function remapProjectOrder(oldPath: string, newPath: string): void {
+  const order = loadProjectOrder();
+  if (!order.includes(oldPath)) return;
+  saveProjectOrder(order.map((p) => (p === oldPath ? newPath : p)));
+}
+
 /** Order `paths` by their index in the saved `order`. Paths absent from `order`
  *  keep their incoming relative order and sort after all known paths, so a
  *  newly-added project appears at the bottom rather than jumping to the top. */

@@ -188,8 +188,23 @@ pub struct Workspace {
     /// these; the sidebar groups agents by primary repo.
     #[serde(default)]
     pub repos: Vec<PathBuf>,
+    /// Per-repo project metadata (custom display name + project id), parallel
+    /// to `repos`. The sidebar shows `name` — a user-editable label that
+    /// defaults to the folder basename but survives renames and relocations.
+    #[serde(default)]
+    pub projects: Vec<ProjectRef>,
     #[serde(default)]
     pub agents: Vec<AgentRecord>,
+}
+
+/// A pinned repo joined with its owning project, so the frontend can show a
+/// custom name (independent of the folder basename) and address the project
+/// for rename / relocate without a second round-trip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectRef {
+    pub path: PathBuf,
+    pub name: String,
+    pub project_id: String,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -358,10 +373,17 @@ impl WorkspaceManager {
         // Collect all unique repo paths.
         let repos = Self::query_all_repo_paths(&conn);
 
+        // Project metadata (custom name + id) for each pinned repo.
+        let projects = Self::query_project_refs(&conn);
+
         // Collect all agents.
         let agents = Self::query_all_agents(&conn);
 
-        Some(Workspace { repos, agents })
+        Some(Workspace {
+            repos,
+            projects,
+            agents,
+        })
     }
 
     /// Append a repo to the sidebar's pinned list. Idempotent — adding
@@ -415,6 +437,75 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         let path_str = repo_path.to_string_lossy().to_string();
         conn.execute("DELETE FROM repos WHERE path = ?1", [&path_str])?;
+        drop(conn);
+        Ok(self.current().expect("workspace initialized"))
+    }
+
+    /// Set a project's display name, decoupled from its folder basename. The
+    /// name is trimmed; an empty name is rejected so a project always has a
+    /// label. Does not touch the repo path or anything on disk.
+    pub fn rename_project(&self, project_id: &str, name: &str) -> Result<Workspace> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(Error::Other("project name cannot be empty".into()));
+        }
+
+        let conn = self.db.lock();
+        let changed = conn.execute(
+            "UPDATE projects SET name = ?1 WHERE id = ?2",
+            rusqlite::params![trimmed, project_id],
+        )?;
+        if changed == 0 {
+            return Err(Error::Other(format!("project not found: {project_id}")));
+        }
+        drop(conn);
+        Ok(self.current().expect("workspace initialized"))
+    }
+
+    /// Repoint a pinned repo at a new location on disk. The user has already
+    /// moved the folder; this only updates the stored reference so future
+    /// agents spawn from the right place. Validates the new path is a git repo
+    /// and isn't already pinned. Existing agents' worktrees are NOT relinked —
+    /// they were forked from the old location and keep pointing there.
+    pub fn relocate_repo(&self, old_path: &Path, new_path: &Path) -> Result<Workspace> {
+        if !new_path.join(".git").exists() {
+            return Err(Error::InvalidPath(format!(
+                "not a git repository: {}",
+                new_path.display()
+            )));
+        }
+
+        let conn = self.db.lock();
+        let old_str = old_path.to_string_lossy().to_string();
+        let new_str = new_path.to_string_lossy().to_string();
+
+        if old_str == new_str {
+            drop(conn);
+            return Ok(self.current().expect("workspace initialized"));
+        }
+
+        // `repos.path` is UNIQUE — refuse to collide with a repo already pinned
+        // at the destination rather than fail with an opaque constraint error.
+        let taken: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM repos WHERE path = ?1",
+                [&new_str],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)?;
+        if taken {
+            return Err(Error::Other(format!(
+                "a project is already pinned at {new_str}"
+            )));
+        }
+
+        let changed = conn.execute(
+            "UPDATE repos SET path = ?1 WHERE path = ?2",
+            rusqlite::params![new_str, old_str],
+        )?;
+        if changed == 0 {
+            return Err(Error::Other(format!("repo not found: {old_str}")));
+        }
         drop(conn);
         Ok(self.current().expect("workspace initialized"))
     }
@@ -729,6 +820,16 @@ impl WorkspaceManager {
             |row| row.get::<_, String>(0),
         )
         .ok()
+    }
+
+    /// Resolve the project_id for a repo path (creating the project/repo
+    /// record if it doesn't exist yet — idempotent). The sidebar keys its
+    /// project groups by repo path, so the Project Settings surface uses
+    /// this to reach the `project_settings` rows, which are keyed by
+    /// project_id.
+    pub fn project_id_for_repo(&self, repo_path: &str) -> Result<String> {
+        let conn = self.db.lock();
+        Self::project_id_for_repo_path(&conn, repo_path)
     }
 
     /// Stamp the setup command as having succeeded. Idempotent.
@@ -1176,6 +1277,41 @@ impl WorkspaceManager {
             AgentStatus::Idle => {}
         }
         Ok(())
+    }
+
+    /// One `ProjectRef` per repo, keyed by path (the frontend looks these up by
+    /// path, not by index). A LEFT JOIN keeps a repo even if its project row is
+    /// somehow missing — the name then falls back to the folder basename rather
+    /// than the repo silently vanishing from the sidebar.
+    fn query_project_refs(conn: &Connection) -> Vec<ProjectRef> {
+        let mut stmt = match conn.prepare(
+            "SELECT r.path, p.name, p.id
+             FROM repos r LEFT JOIN projects p ON p.id = r.project_id
+             ORDER BY r.created_at",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([], |row| {
+            let path: String = row.get(0)?;
+            let name: Option<String> = row.get(1)?;
+            let project_id: Option<String> = row.get(2)?;
+            let name = name.unwrap_or_else(|| {
+                Path::new(&path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&path)
+                    .to_string()
+            });
+            Ok(ProjectRef {
+                path: PathBuf::from(path),
+                name,
+                project_id: project_id.unwrap_or_default(),
+            })
+        })
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
     }
 
     fn query_all_repo_paths(conn: &Connection) -> Vec<PathBuf> {
@@ -1870,6 +2006,84 @@ mod tests {
         wm.add_workspace_repo(repo.clone()).unwrap();
         let cur = wm.current().unwrap();
         assert_eq!(cur.repos.iter().filter(|p| **p == repo).count(), 1);
+    }
+
+    #[test]
+    fn rename_project_updates_display_name() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let repo = init_repo(td.path());
+        let wm = WorkspaceManager::new(db);
+        wm.add_workspace_repo(repo.clone()).unwrap();
+
+        let pid = wm.current().unwrap().projects[0].project_id.clone();
+        let ws = wm.rename_project(&pid, "  My Project  ").unwrap();
+
+        // Name is trimmed and decoupled from the folder path, which is untouched.
+        assert_eq!(ws.projects[0].name, "My Project");
+        assert_eq!(ws.projects[0].path, repo);
+        assert!(ws.repos.contains(&repo));
+    }
+
+    #[test]
+    fn rename_project_rejects_empty_name() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let repo = init_repo(td.path());
+        let wm = WorkspaceManager::new(db);
+        wm.add_workspace_repo(repo).unwrap();
+        let pid = wm.current().unwrap().projects[0].project_id.clone();
+
+        let err = wm.rename_project(&pid, "   ").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn relocate_repo_repoints_path() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let old = init_repo(td.path());
+        let new = td.path().join("moved");
+        std::fs::create_dir_all(new.join(".git")).unwrap();
+
+        let wm = WorkspaceManager::new(db);
+        wm.add_workspace_repo(old.clone()).unwrap();
+        let pid = wm.current().unwrap().projects[0].project_id.clone();
+
+        let ws = wm.relocate_repo(&old, &new).unwrap();
+        assert!(ws.repos.contains(&new));
+        assert!(!ws.repos.contains(&old));
+        // Same project — relocate keeps the id (and any per-project settings).
+        assert_eq!(ws.projects[0].project_id, pid);
+    }
+
+    #[test]
+    fn relocate_repo_rejects_non_git_dest() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let old = init_repo(td.path());
+        let wm = WorkspaceManager::new(db);
+        wm.add_workspace_repo(old.clone()).unwrap();
+
+        let err = wm.relocate_repo(&old, &td.path().join("nope")).unwrap_err();
+        assert!(err.to_string().contains("not a git repository"));
+    }
+
+    #[test]
+    fn relocate_repo_rejects_pinned_collision() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let a = init_repo(td.path());
+        let b = td.path().join("b");
+        std::fs::create_dir_all(b.join(".git")).unwrap();
+
+        let wm = WorkspaceManager::new(db);
+        wm.add_workspace_repo(a.clone()).unwrap();
+        wm.add_workspace_repo(b.clone()).unwrap();
+
+        // Moving `a` onto `b`'s already-pinned path is refused, not silently merged.
+        let err = wm.relocate_repo(&a, &b).unwrap_err();
+        assert!(err.to_string().contains("already pinned"));
     }
 
     #[test]
