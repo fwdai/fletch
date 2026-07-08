@@ -333,6 +333,14 @@ export interface RunStateEvent {
   last_error: string | null;
 }
 
+/** The port the dev server is actually launching on — emitted just before the
+ *  run phase spawns. May differ from the configured port when port-safety
+ *  bumped it to the next free one. */
+export interface RunPortEvent {
+  agent_id: string;
+  port: number;
+}
+
 export interface ProviderProbe {
   id: string;
   version: string | null;
@@ -734,6 +742,10 @@ export function onRunOutput(cb: (e: RunOutputEvent) => void): Promise<UnlistenFn
 
 export function onRunState(cb: (e: RunStateEvent) => void): Promise<UnlistenFn> {
   return listen<RunStateEvent>("run:state", (event) => cb(event.payload));
+}
+
+export function onRunPort(cb: (e: RunPortEvent) => void): Promise<UnlistenFn> {
+  return listen<RunPortEvent>("run:port", (event) => cb(event.payload));
 }
 
 /** Fires per line (and at start/finish/failure) while the embedded docker agent

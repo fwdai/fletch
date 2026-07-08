@@ -171,12 +171,19 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   const isActive = phase === "setup" || phase === "running";
   const linkLive = phase === "running";
 
-  // Publish the resolved port to the store so the sidebar's running indicator
-  // can show `:port`. The port isn't on the `run:state` event, so the panel —
-  // which already resolves detected value + overrides — is the source.
+  // While running, the backend owns the port (it may have bumped the configured
+  // one to the next free port and emits the real value via `run:port`). Prefer
+  // that store value for the link/label; fall back to the locally resolved
+  // (configured) port when idle.
+  const storePort = useAppStore((s) => s.runPorts[agent.id]);
+  const displayPort = storePort ?? port;
+
+  // Seed the store with the configured port so the sidebar indicator can show
+  // `:port` before a run starts — but only while idle, so we never clobber the
+  // backend's authoritative (possibly bumped) port during an active run.
   useEffect(() => {
-    if (port) setRunPort(agent.id, port);
-  }, [agent.id, port, setRunPort]);
+    if (port && !isActive) setRunPort(agent.id, port);
+  }, [agent.id, port, isActive, setRunPort]);
 
   const onPlay = () => {
     if (isActive) {
@@ -222,7 +229,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         </div>
 
         <a
-          href={`http://localhost:${port}`}
+          href={`http://localhost:${displayPort}`}
           target="_blank"
           rel="noreferrer"
           className={`run-link text-xs${linkLive ? "" : " disabled"}`}
@@ -231,7 +238,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           }}
         >
           <span className="colon">:</span>
-          <span className="port">{port}</span>
+          <span className="port">{displayPort}</span>
           <Icon name="external" size={10} />
         </a>
 

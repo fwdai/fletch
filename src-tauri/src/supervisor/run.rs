@@ -9,8 +9,11 @@ use crate::error::{Error, Result};
 use crate::run_session::{self, shell_args, user_shell, RunPhase, RunSession, RunStateSnapshot};
 use crate::workspace::repo_checkout_path;
 
-use super::events::{emit_run_output, emit_run_state};
+use super::events::{emit_run_output, emit_run_port, emit_run_state};
 use super::Supervisor;
+
+/// How far past the configured port to scan for a free one before giving up.
+const PORT_SCAN_CAP: u16 = 30;
 
 impl Supervisor {
     /// Start the Run-panel process for an agent.
@@ -52,9 +55,32 @@ impl Supervisor {
             return Ok(());
         };
 
+        // Secure a free port for the dev phase *before* flipping the session
+        // active, so a "no free port" failure surfaces cleanly without leaving
+        // the button stuck. Setup runs unchanged; its chained run is prepared
+        // later, in handle_run_phase_exit, closer to its own spawn.
+        let prepared = if plan.first_phase == RunPhase::Running {
+            match self.prepare_run(&record.project_id, &cwd, &plan.first_cmd) {
+                Ok(p) => p,
+                Err(e) => {
+                    let msg = format!("Failed to start command: {e}");
+                    emit_run_state(&app, agent_id, RunPhase::Stopped, Some(msg));
+                    return Err(e);
+                }
+            }
+        } else {
+            PreparedRun::passthrough(plan.first_cmd.clone())
+        };
+
         let gen = session.begin_phase(plan.first_phase);
         emit_run_state(&app, agent_id, plan.first_phase, None);
-        write_header(&app, agent_id, &session, &plan.first_cmd);
+        if let Some(port) = prepared.port {
+            emit_run_port(&app, agent_id, port);
+        }
+        write_header(&app, agent_id, &session, &prepared.cmd);
+        if let Some(note) = &prepared.note {
+            write_note(&app, agent_id, &session, note);
+        }
 
         // begin_phase already flipped the session active. If the spawn fails we
         // must reset to Stopped — otherwise is_active() stays true and every
@@ -67,8 +93,10 @@ impl Supervisor {
             session.clone(),
             gen,
             cwd,
+            record.project_id.clone(),
             plan.first_phase,
-            plan.first_cmd,
+            prepared.cmd,
+            prepared.extra_env,
             plan.chained_run_cmd,
         ) {
             let msg = format!("Failed to start command: {e}");
@@ -141,6 +169,63 @@ impl Supervisor {
         )
     }
 
+    /// Resolve the intended dev-server port the same way the panel does:
+    /// the detected `port` row, overridden by the `run.port` project setting
+    /// when present. `None` when no port can be inferred (e.g. a plain script
+    /// or an ecosystem with no port concept) — port safety is then a no-op.
+    fn read_run_port(&self, project_id: &str, checkout: &Path) -> Option<u16> {
+        let configs = crate::run_detect::detect_all(checkout);
+        let detected = configs
+            .first()
+            .and_then(|c| c.rows.iter().find(|r| r.id == "port"))
+            .map(|r| r.value.clone());
+        let raw = if project_id.is_empty() {
+            detected
+        } else {
+            self.workspace
+                .project_setting(project_id, "run.port")
+                .or(detected)
+        };
+        raw.and_then(|s| s.trim().parse::<u16>().ok())
+    }
+
+    /// Prepare a dev command for spawn with port safety: find a free port at or
+    /// after the configured one (scanning up to [`PORT_SCAN_CAP`] past it) and
+    /// force the dev server onto it — via a `PORT` env var and, when the command
+    /// carries an explicit port token, by rewriting that token too. When the
+    /// configured port is already free the command is unchanged (only `PORT` is
+    /// pinned). Returns a passthrough when no port is inferred, and errors when
+    /// every port in range is taken.
+    fn prepare_run(&self, project_id: &str, cwd: &Path, run_cmd: &str) -> Result<PreparedRun> {
+        let Some(intended) = self.read_run_port(project_id, cwd) else {
+            return Ok(PreparedRun::passthrough(run_cmd.to_string()));
+        };
+        let chosen = crate::run_detect::port::find_free_port(intended, PORT_SCAN_CAP)
+            .ok_or_else(|| {
+                Error::Other(format!(
+                    "No free port available in {}\u{2013}{}",
+                    intended,
+                    intended.saturating_add(PORT_SCAN_CAP)
+                ))
+            })?;
+
+        let mut cmd = run_cmd.to_string();
+        let mut note = None;
+        if chosen != intended {
+            if let Some(rewritten) = crate::run_detect::port::rewrite_explicit_port(run_cmd, chosen)
+            {
+                cmd = rewritten;
+            }
+            note = Some(format!("Port {intended} in use — using {chosen}"));
+        }
+        Ok(PreparedRun {
+            cmd,
+            extra_env: vec![("PORT".to_string(), chosen.to_string())],
+            note,
+            port: Some(chosen),
+        })
+    }
+
     /// Detect the run configuration for an agent's primary repo,
     /// ranked by confidence. The panel renders the first (highest
     /// confidence) entry; the rest are returned for future
@@ -194,6 +279,38 @@ fn write_header(app: &AppHandle, agent_id: &str, session: &Arc<RunSession>, cmd:
     emit_run_output(app, agent_id, bytes);
 }
 
+/// Inject a port-safety note (e.g. "Port 3000 in use — using 3001") into the
+/// log so the user understands why the dev server bound a different port.
+fn write_note(app: &AppHandle, agent_id: &str, session: &Arc<RunSession>, note: &str) {
+    let line = format!("\x1b[2m{note}\x1b[0m\r\n");
+    let bytes = line.into_bytes();
+    session.append_log(&bytes);
+    emit_run_output(app, agent_id, bytes);
+}
+
+/// A dev command prepared for spawn: the (possibly port-rewritten) command,
+/// extra env vars to inject (the pinned `PORT`), an optional user-facing note
+/// when the port was bumped, and the actual port to advertise to the UI.
+struct PreparedRun {
+    cmd: String,
+    extra_env: Vec<(String, String)>,
+    note: Option<String>,
+    port: Option<u16>,
+}
+
+impl PreparedRun {
+    /// A no-op preparation: run the command as-is, no port injection. Used for
+    /// the setup phase and for commands with no inferable port.
+    fn passthrough(cmd: String) -> Self {
+        Self {
+            cmd,
+            extra_env: Vec::new(),
+            note: None,
+            port: None,
+        }
+    }
+}
+
 /// The phases to spawn for a single `run_start`, derived from the
 /// resolved commands and whether setup has already completed.
 #[derive(Debug)]
@@ -234,6 +351,7 @@ fn plan_run_phases(setup_done: bool, setup_cmd: &str, run_cmd: &str) -> Option<R
 /// and the exit handler that chains setup→run or transitions to
 /// Stopped on natural exit. Out-of-band stops are handled via the
 /// generation check.
+#[allow(clippy::too_many_arguments)]
 fn spawn_run_phase(
     sup: Arc<Supervisor>,
     app: AppHandle,
@@ -241,8 +359,10 @@ fn spawn_run_phase(
     session: Arc<RunSession>,
     gen: u64,
     cwd: std::path::PathBuf,
+    project_id: String,
     phase: RunPhase,
     cmd: String,
+    extra_env: Vec<(String, String)>,
     chain_run_cmd: Option<String>,
 ) -> Result<()> {
     // Confine the run command to the checkout + toolchain caches. The command
@@ -250,7 +370,10 @@ fn spawn_run_phase(
     // config), so a malicious agent could otherwise plant a script that runs
     // unsandboxed with full user privilege the moment the user clicks ▶. Reads
     // and network stay open (dev servers need them); only writes are fenced.
-    let (program, args, env, profile_file) = sandboxed_run_command(&cwd, &cmd)?;
+    let (program, args, mut env, profile_file) = sandboxed_run_command(&cwd, &cmd)?;
+    // Pin the resolved (port-safe) PORT last so it wins over anything the
+    // sandbox layer set.
+    env.extend(extra_env);
 
     let session_out = session.clone();
     let app_out = app.clone();
@@ -278,9 +401,10 @@ fn spawn_run_phase(
                 id_exit.clone(),
                 session_exit.clone(),
                 gen,
+                cwd_exit.clone(),
+                project_id.clone(),
                 phase,
                 exit,
-                cwd_exit.clone(),
                 chain_run_cmd.clone(),
             );
         },
@@ -391,15 +515,17 @@ fn run_target_git_common_dir(cwd: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(&abs).ok()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_run_phase_exit(
     sup: Arc<Supervisor>,
     app: AppHandle,
     agent_id: String,
     session: Arc<RunSession>,
     gen: u64,
+    cwd: std::path::PathBuf,
+    project_id: String,
     phase: RunPhase,
     exit: crate::pty_session::PtyExit,
-    cwd: std::path::PathBuf,
     chain_run_cmd: Option<String>,
 ) {
     // If the user clicked Stop (or started a fresh run), our
@@ -420,9 +546,26 @@ fn handle_run_phase_exit(
             tracing::warn!(error = %e, agent_id = %agent_id, "mark_setup_completed failed");
         }
         if let Some(run_cmd) = chain_run_cmd {
+            // Secure a free port now — install may have run for minutes, so the
+            // port could have been taken since the click.
+            let prepared = match sup.prepare_run(&project_id, &cwd, &run_cmd) {
+                Ok(p) => p,
+                Err(e) => {
+                    let msg = format!("Failed to start run command: {e}");
+                    session.mark_stopped(Some(msg.clone()));
+                    emit_run_state(&app, &agent_id, RunPhase::Stopped, Some(msg));
+                    return;
+                }
+            };
             session.transition_phase(RunPhase::Running);
             emit_run_state(&app, &agent_id, RunPhase::Running, None);
-            write_header(&app, &agent_id, &session, &run_cmd);
+            if let Some(port) = prepared.port {
+                emit_run_port(&app, &agent_id, port);
+            }
+            write_header(&app, &agent_id, &session, &prepared.cmd);
+            if let Some(note) = &prepared.note {
+                write_note(&app, &agent_id, &session, note);
+            }
             if let Err(e) = spawn_run_phase(
                 sup,
                 app.clone(),
@@ -430,8 +573,10 @@ fn handle_run_phase_exit(
                 session.clone(),
                 gen,
                 cwd,
+                project_id.clone(),
                 RunPhase::Running,
-                run_cmd,
+                prepared.cmd,
+                prepared.extra_env,
                 None,
             ) {
                 let msg = format!("Failed to start run command: {e}");
