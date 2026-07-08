@@ -13,40 +13,64 @@ pub const PLACES: &[&str] = &[
     // Mountains & ranges
     "everest", "kilimanjaro", "denali", "fuji", "etna", "vesuvius", "olympus",
     "rainier", "matterhorn", "jungfrau", "dolomites", "atlas", "andes",
-    "pyrenees", "urals", "carpathians", "caucasus", "himalaya", "karakoram",
-    "sierras", "rockies", "appalachians", "balkans", "taurus", "zagros",
-    "alps",
+    "pyrenees", "carpathians", "caucasus", "himalaya", "karakoram", "rockies",
+    "appalachians", "alps", "fitzroy", "blanc", "aconcagua", "cotopaxi",
+    "shasta", "annapurna", "blue-ridge", "blue-mountains", "langtang",
+    "nilgiri", "ruwenzori", "seorak",
     // Volcanoes
     "krakatoa", "tambora", "mauna-loa", "mauna-kea", "sakurajima",
-    "popocatepetl", "cotopaxi", "aconcagua", "kilauea",
+    "popocatepetl", "kilauea", "arenal", "chimborazo", "hallasan",
     // National parks & wildernesses
-    "yosemite", "yellowstone", "zion", "banff", "jasper", "glacier",
-    "sequoia", "arches", "bryce", "redwood", "olympic", "kruger", "serengeti",
-    "plitvice", "fiordland", "daintree", "etosha", "ngorongoro",
+    "yosemite", "yellowstone", "zion", "banff", "jasper", "sequoia",
+    "redwood", "bryce", "kruger", "serengeti", "plitvice", "fiordland",
+    "daintree", "etosha", "ngorongoro", "acadia", "everglades", "kakadu",
+    "komodo", "tongariro", "jiuzhaigou", "bromo", "bwindi", "glacier-bay",
+    "manuel-antonio", "masaimara", "monteverde", "samburu", "snowdonia",
+    "virunga",
     // Deserts
     "sahara", "gobi", "kalahari", "atacama", "mojave", "sonoran", "namib",
-    "taklamakan", "thar", "karakum",
+    "thar", "negev", "danakil", "sossusvlei", "wadi-rum", "death-valley",
     // Lakes & inland seas
-    "baikal", "caspian", "titicaca", "tanganyika", "balkhash", "victoria",
-    "malawi", "eyre", "ladoga", "garda",
+    "titicaca", "tanganyika", "victoria", "malawi", "garda", "dead-sea",
+    "galilee", "inle", "tekapo", "wanaka",
     // Islands & archipelagos
-    "borneo", "sumatra", "java", "madagascar", "iceland", "greenland",
-    "sardinia", "sicily", "corsica", "crete", "cyprus", "malta", "mallorca",
-    "santorini", "capri", "zanzibar", "mauritius", "seychelles", "maldives",
-    "galapagos", "hawaii", "tahiti", "fiji", "faroe", "lofoten", "orkney",
-    "hebrides", "aleutians",
+    "borneo", "sumatra", "bali", "madagascar", "sardinia", "sicily",
+    "corsica", "crete", "mallorca", "santorini", "capri", "zanzibar",
+    "mauritius", "seychelles", "maldives", "galapagos", "hawaii", "tahiti",
+    "fiji", "faroe", "lofoten", "hebrides", "aleutians", "palawan", "socotra",
+    "jeju", "skye", "madeira", "azores", "canaries", "okinawa", "yakushima",
+    "tasmania", "whitsunday", "baffin", "bohol", "boracay", "easter",
+    "gomera", "ibiza", "kangaroo", "lombok", "raja-ampat", "phi-phi",
+    "phuket", "svalbard",
     // Rivers & valleys
     "napa", "sonoma", "douro", "loire", "rhone", "yangtze", "mekong", "nile",
     "amazon", "mississippi", "colorado", "columbia", "danube", "hudson",
-    "mosel",
-    // Plateaus & highlands
-    "altiplano", "deccan", "anatolia", "cappadocia", "ozarks",
-    // Regions & coasts
-    "patagonia", "kamchatka", "siberia", "lapland", "tuscany", "andalusia",
-    "provence", "cornwall", "brittany", "normandy", "galicia", "basque",
-    "tibet", "transylvania",
+    "mosel", "iguazu", "okavango", "guilin", "hunza", "uyuni", "orinoco",
+    "rubicon",
+    // Regions, plateaus & coasts
+    "patagonia", "tuscany", "andalusia", "provence", "cornwall", "brittany",
+    "normandy", "galicia", "basque", "tibet", "transylvania", "cappadocia",
+    "altiplano", "deccan", "anatolia", "ozarks", "yucatan", "cascadia",
+    "badlands", "adirondacks", "chesapeake", "pantanal", "pampas", "cerrado",
+    "maghreb", "sahel", "levant", "sinai", "arabia", "pamir", "ladakh",
+    "kerala", "goa", "konkan", "malabar", "sundarbans", "hokkaido", "kansai",
+    "annamite", "cardamom", "kimberley", "pilbara", "outback", "algarve",
+    "alentejo", "alsace", "burgundy", "champagne", "bavaria", "blackforest",
+    "bohemia", "moravia", "umbria", "liguria", "piedmont", "apulia",
+    "asturias", "cantabria", "occitania", "lombardy", "savoy", "assam",
+    "camargue", "cancun", "chiapas", "cotswolds", "dordogne", "flanders",
+    "great-ocean", "hakone", "highlands", "jericho", "kashmir", "kamakura",
+    "krabi", "kyoto", "lake-district", "lijiang", "lorraine", "luang-prabang",
+    "monterey", "mustang", "nara", "nunavut", "oaxaca", "rajasthan",
+    "sichuan", "ventura", "wallonia", "xinjiang", "yunnan", "yukon",
     // Iconic landforms
-    "gibraltar", "uluru", "halong",
+    "gibraltar", "uluru", "halong", "amalfi", "petra", "angkor",
+    "machu-picchu", "grand-canyon", "grand-teton", "big-sur", "cinque-terre",
+    "el-capitan", "halfdome", "monument", "antelope", "canyonlands",
+    "huangshan", "zhangjiajie", "nikko", "belize", "palau", "ningaloo",
+    "great-barrier", "milford", "geiranger", "naeroy", "bagan",
+    "copper-canyon", "ellora", "fox", "franz-josef", "goreme", "meteora",
+    "pamukkale", "sigiriya", "tepui", "tikal", "torres",
 ];
 
 /// Allocate a unique id from the city pool.
@@ -75,10 +99,16 @@ pub fn allocate(used: &HashSet<String>) -> String {
     }
 }
 
-/// Cheap random pick — uses the first byte of a fresh UUID as the
-/// index. Avoids pulling in the `rand` crate for a single use.
+/// Cheap random pick — folds the first 8 bytes of a fresh UUID into a
+/// `u64` index. Avoids pulling in the `rand` crate for a single use.
+///
+/// (A single byte only spans 0–255, so it couldn't reach a pool larger
+/// than 256 entries; a `u64` keeps every place reachable with negligible
+/// modulo bias as the pool grows.)
 fn pick_random() -> &'static str {
-    let idx = uuid::Uuid::new_v4().as_bytes()[0] as usize % PLACES.len();
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    let n = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+    let idx = (n % PLACES.len() as u64) as usize;
     PLACES[idx]
 }
 
@@ -91,6 +121,24 @@ mod tests {
         let used = HashSet::new();
         let id = allocate(&used);
         assert!(PLACES.contains(&id.as_str()), "got {id}");
+    }
+
+    #[test]
+    fn pick_random_reaches_entire_pool() {
+        // Regression guard: a single UUID byte only spans 0–255, so it
+        // could never index a pool larger than 256 entries (the tail was
+        // silently unreachable). Confirm every place can be drawn.
+        let mut seen: HashSet<&str> = HashSet::new();
+        for _ in 0..100_000 {
+            seen.insert(pick_random());
+        }
+        assert_eq!(seen.len(), PLACES.len(), "some places are unreachable");
+    }
+
+    #[test]
+    fn pool_has_no_duplicates() {
+        let unique: HashSet<&&str> = PLACES.iter().collect();
+        assert_eq!(unique.len(), PLACES.len(), "PLACES contains duplicates");
     }
 
     #[test]
