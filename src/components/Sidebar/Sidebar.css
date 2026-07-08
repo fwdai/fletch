@@ -103,7 +103,7 @@
   gap: 6px;
   /* name column aligned to the agents' 13px text rail; chevron lives in the
    * gutter (absolute, like .ag-rail), so the header reads as the list's label */
-  padding: 0 8px 0 13px;
+  padding: 0 4px 0 13px;
   height: 28px;
   border-radius: var(--r-sm);
   font-size: var(--fs-xs);
@@ -165,9 +165,9 @@
   content: "·";
   margin-right: 4px;
 }
-/* Ghost affordance: always visible so "add an agent" is discoverable without
- * hovering, but borderless + muted so it never competes with the label. It
- * earns the accent fill only on hover. */
+/* Always visible so "add an agent" is discoverable without hovering;
+ * borderless so it doesn't compete with the label, earning the accent fill
+ * only on hover. */
 .proj-h .padd {
   width: 22px;
   height: 22px;
@@ -175,36 +175,51 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--fg-3);
+  color: var(--fg-2);
   background: transparent;
-  opacity: 0.6;
   transition: var(--transition-ui);
 }
 .proj-h .padd:hover {
   background: var(--accent-soft);
   color: var(--accent);
-  opacity: 1;
 }
-/* Remove (empty projects only) is destructive and rare — hidden until the row
- * is engaged. */
-.proj-h .padd-remove {
+/* Settings gear and Remove are revealed only when the row is engaged, so they
+ * don't compete with the label or shift the always-visible "add agent" button.
+ * They sit at the trailing edge, so revealing them adds no layout shift. */
+.proj-h .padd-remove,
+.proj-h .padd-settings {
   opacity: 0;
   pointer-events: none;
+}
+/* Gear is a normal action like "add", so it reveals at full strength to match
+ * the + button. Remove stays subdued — it's destructive and rare. */
+.proj-h:hover .padd-settings {
+  opacity: 1;
+  pointer-events: auto;
 }
 .proj-h:hover .padd-remove {
   opacity: 0.6;
   pointer-events: auto;
 }
-/* Keyboard focus reveals it too — a focused button at opacity:0 would make the
- * focus ring vanish and hide the action from keyboard users. */
+/* Keyboard focus reveals them too — a focused button at opacity:0 would make
+ * the focus ring vanish and hide the action from keyboard users. */
 .proj-h:hover .padd-remove:hover,
-.proj-h .padd-remove:focus-visible {
+.proj-h:hover .padd-settings:hover,
+.proj-h .padd-remove:focus-visible,
+.proj-h .padd-settings:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
 .proj-h .padd[aria-label="New agent"] svg {
   width: 15px;
   height: 15px;
+  flex-shrink: 0;
+}
+/* Icon size is driven by CSS here (like the + above), so it doesn't depend on
+ * the size prop. Gear reads a touch larger than the +. */
+.proj-h .padd-settings svg {
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
 }
 .proj-h .padd.tip[data-tip]:hover::after {

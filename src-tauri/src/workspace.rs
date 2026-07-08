@@ -731,6 +731,16 @@ impl WorkspaceManager {
         .ok()
     }
 
+    /// Resolve the project_id for a repo path (creating the project/repo
+    /// record if it doesn't exist yet — idempotent). The sidebar keys its
+    /// project groups by repo path, so the Project Settings surface uses
+    /// this to reach the `project_settings` rows, which are keyed by
+    /// project_id.
+    pub fn project_id_for_repo(&self, repo_path: &str) -> Result<String> {
+        let conn = self.db.lock();
+        Self::project_id_for_repo_path(&conn, repo_path)
+    }
+
     /// Stamp the setup command as having succeeded. Idempotent.
     pub fn mark_setup_completed(&self, id: &str) -> Result<()> {
         let conn = self.db.lock();

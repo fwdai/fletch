@@ -49,6 +49,7 @@ export function ProjectGroup({
   const selectDraft = useAppStore((s) => s.selectDraft);
   const createDraft = useAppStore((s) => s.createDraft);
   const removeWorkspaceRepo = useAppStore((s) => s.removeWorkspaceRepo);
+  const openProjectSettings = useAppStore((s) => s.openProjectSettings);
 
   const count = agents.length + drafts.length;
 
@@ -64,6 +65,11 @@ export function ProjectGroup({
   function onAddAgent(e: React.MouseEvent) {
     e.stopPropagation();
     createDraft(repoPath);
+  }
+
+  function onOpenSettings(e: React.MouseEvent) {
+    e.stopPropagation();
+    openProjectSettings(repoPath);
   }
 
   const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";
@@ -98,6 +104,15 @@ export function ProjectGroup({
         <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
+        <button
+          className="padd padd-settings tip"
+          data-tip="Project settings"
+          data-tip-down=""
+          onClick={onOpenSettings}
+          aria-label="Project settings"
+        >
+          <Icon name="settings" size={14} />
+        </button>
         <button
           className="padd tip"
           data-tip="New agent  ⌘N"

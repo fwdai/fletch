@@ -4,6 +4,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
 import { Onboarding } from "./components/Onboarding";
+import { ProjectSettings } from "./components/ProjectSettings";
 import { RightPanel } from "./components/RightPanel";
 import { Settings } from "./components/Settings";
 import { SettingsScreen } from "./components/SettingsScreen";
@@ -47,6 +48,7 @@ export function App() {
   const historyOpen = useAppStore((s) => s.historyOpen);
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
   const onboardingOpen = useAppStore((s) => s.onboardingOpen);
+  const projectSettingsRepoPath = useAppStore((s) => s.projectSettingsRepoPath);
   // Count of agents that finished a turn while the user wasn't looking at them
   // (set on completion, cleared when the agent is opened). This is the same
   // signal behind the sidebar "new" dots — mirror it onto the app icon badge.
@@ -161,6 +163,7 @@ export function App() {
       </div>
 
       {historyOpen && <History />}
+      {projectSettingsRepoPath && <ProjectSettings repoPath={projectSettingsRepoPath} />}
       <Settings />
       {onboardingOpen && <Onboarding />}
       <GithubConnectModal />

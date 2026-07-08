@@ -157,6 +157,30 @@ impl Supervisor {
         let worktree = repo_worktree_path(agent_id, &primary.subdir)?;
         Ok(crate::run_detect::detect_all(&worktree))
     }
+
+    /// Detect the run configuration for a project, keyed by repo path
+    /// rather than an agent. The Project Settings surface is reachable
+    /// from the sidebar's repo groups — including pinned repos with no
+    /// live agent — so it can't resolve a worktree the way the Run panel
+    /// does. Detection runs against the repo checkout root, and the
+    /// resolved `project_id` is bundled in so the frontend can read and
+    /// write `project_settings` without a second round-trip.
+    pub fn project_run_config(&self, repo_path: &str) -> Result<ProjectRunConfig> {
+        let project_id = self.workspace.project_id_for_repo(repo_path)?;
+        let configs = crate::run_detect::detect_all(Path::new(repo_path));
+        Ok(ProjectRunConfig {
+            project_id,
+            configs,
+        })
+    }
+}
+
+/// Run configuration for a project resolved from a repo path: the detected
+/// configs plus the `project_id` they belong to. See [`Supervisor::project_run_config`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProjectRunConfig {
+    pub project_id: String,
+    pub configs: Vec<crate::run_detect::DetectedConfig>,
 }
 
 /// Inject a "$ <cmd>" header line into the log so each phase has a
