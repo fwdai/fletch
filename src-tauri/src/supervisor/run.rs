@@ -35,7 +35,8 @@ impl Supervisor {
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
         let cwd = repo_checkout_path(agent_id, &primary.subdir)?;
 
-        let (setup_cmd, run_cmd) = self.read_run_commands(&record.project_id, &cwd);
+        let (setup_cmd, run_cmd, intended_port) =
+            self.read_run_config(&record.project_id, &cwd);
         let setup_done = self.workspace.is_setup_completed(agent_id)?;
 
         let session = {
@@ -58,9 +59,10 @@ impl Supervisor {
         // Secure a free port for the dev phase *before* flipping the session
         // active, so a "no free port" failure surfaces cleanly without leaving
         // the button stuck. Setup runs unchanged; its chained run is prepared
-        // later, in handle_run_phase_exit, closer to its own spawn.
+        // later, in handle_run_phase_exit, closer to its own spawn — the
+        // intended port rides along so that pass reuses this detection.
         let prepared = if plan.first_phase == RunPhase::Running {
-            match self.prepare_run(&record.project_id, &cwd, &plan.first_cmd) {
+            match prepare_run(&plan.first_cmd, intended_port) {
                 Ok(p) => p,
                 Err(e) => {
                     let msg = format!("Failed to start command: {e}");
@@ -73,10 +75,13 @@ impl Supervisor {
         };
 
         let gen = session.begin_phase(plan.first_phase);
-        emit_run_state(&app, agent_id, plan.first_phase, None);
+        // Emit the resolved port *before* the state flips to running, so the
+        // store already holds the correct port when the UI reacts to
+        // `run:state` — otherwise the link/label briefly shows the old port.
         if let Some(port) = prepared.port {
             emit_run_port(&app, agent_id, port);
         }
+        emit_run_state(&app, agent_id, plan.first_phase, None);
         write_header(&app, agent_id, &session, &prepared.cmd);
         if let Some(note) = &prepared.note {
             write_note(&app, agent_id, &session, note);
@@ -93,7 +98,7 @@ impl Supervisor {
             session.clone(),
             gen,
             cwd,
-            record.project_id.clone(),
+            intended_port,
             plan.first_phase,
             prepared.cmd,
             prepared.extra_env,
@@ -140,90 +145,41 @@ impl Supervisor {
         }
     }
 
-    /// Read the setup + run commands for an agent. The detector provides
-    /// the baseline (same values the panel shows), and any persisted
-    /// `run.install` / `run.dev` overrides in project_settings take
-    /// precedence. One detector feeds both the panel and the runner, so
-    /// there is no hardcoded default to keep in sync.
-    fn read_run_commands(&self, project_id: &str, checkout: &Path) -> (String, String) {
+    /// Read the setup + run commands and the intended dev-server port for an
+    /// agent, from a single detection pass. The detector provides the baseline
+    /// (same values the panel shows), and any persisted `run.install` /
+    /// `run.dev` / `run.port` overrides in project_settings take precedence. One
+    /// detector feeds both the panel and the runner, so there is no hardcoded
+    /// default to keep in sync. The port is `None` when none can be inferred
+    /// (e.g. a plain script) — port safety is then a no-op.
+    fn read_run_config(&self, project_id: &str, checkout: &Path) -> (String, String, Option<u16>) {
         let configs = crate::run_detect::detect_all(checkout);
-        let detected = |id: &str| -> String {
+        let detected = |id: &str| -> Option<String> {
             configs
                 .first()
                 .and_then(|c| c.rows.iter().find(|r| r.id == id))
                 .map(|r| r.value.clone())
-                .unwrap_or_default()
         };
-        let install_default = detected("install");
-        let dev_default = detected("dev");
-        if project_id.is_empty() {
-            return (install_default, dev_default);
-        }
-        (
-            self.workspace
-                .project_setting(project_id, "run.install")
-                .unwrap_or(install_default),
-            self.workspace
-                .project_setting(project_id, "run.dev")
-                .unwrap_or(dev_default),
-        )
-    }
+        let install_default = detected("install").unwrap_or_default();
+        let dev_default = detected("dev").unwrap_or_default();
+        let port_default = detected("port");
 
-    /// Resolve the intended dev-server port the same way the panel does:
-    /// the detected `port` row, overridden by the `run.port` project setting
-    /// when present. `None` when no port can be inferred (e.g. a plain script
-    /// or an ecosystem with no port concept) — port safety is then a no-op.
-    fn read_run_port(&self, project_id: &str, checkout: &Path) -> Option<u16> {
-        let configs = crate::run_detect::detect_all(checkout);
-        let detected = configs
-            .first()
-            .and_then(|c| c.rows.iter().find(|r| r.id == "port"))
-            .map(|r| r.value.clone());
-        let raw = if project_id.is_empty() {
-            detected
+        let (install, dev, port_raw) = if project_id.is_empty() {
+            (install_default, dev_default, port_default)
         } else {
-            self.workspace
-                .project_setting(project_id, "run.port")
-                .or(detected)
+            (
+                self.workspace
+                    .project_setting(project_id, "run.install")
+                    .unwrap_or(install_default),
+                self.workspace
+                    .project_setting(project_id, "run.dev")
+                    .unwrap_or(dev_default),
+                self.workspace
+                    .project_setting(project_id, "run.port")
+                    .or(port_default),
+            )
         };
-        raw.and_then(|s| s.trim().parse::<u16>().ok())
-    }
-
-    /// Prepare a dev command for spawn with port safety: find a free port at or
-    /// after the configured one (scanning up to [`PORT_SCAN_CAP`] past it) and
-    /// force the dev server onto it — via a `PORT` env var and, when the command
-    /// carries an explicit port token, by rewriting that token too. When the
-    /// configured port is already free the command is unchanged (only `PORT` is
-    /// pinned). Returns a passthrough when no port is inferred, and errors when
-    /// every port in range is taken.
-    fn prepare_run(&self, project_id: &str, cwd: &Path, run_cmd: &str) -> Result<PreparedRun> {
-        let Some(intended) = self.read_run_port(project_id, cwd) else {
-            return Ok(PreparedRun::passthrough(run_cmd.to_string()));
-        };
-        let chosen = crate::run_detect::port::find_free_port(intended, PORT_SCAN_CAP)
-            .ok_or_else(|| {
-                Error::Other(format!(
-                    "No free port available in {}\u{2013}{}",
-                    intended,
-                    intended.saturating_add(PORT_SCAN_CAP)
-                ))
-            })?;
-
-        let mut cmd = run_cmd.to_string();
-        let mut note = None;
-        if chosen != intended {
-            if let Some(rewritten) = crate::run_detect::port::rewrite_explicit_port(run_cmd, chosen)
-            {
-                cmd = rewritten;
-            }
-            note = Some(format!("Port {intended} in use — using {chosen}"));
-        }
-        Ok(PreparedRun {
-            cmd,
-            extra_env: vec![("PORT".to_string(), chosen.to_string())],
-            note,
-            port: Some(chosen),
-        })
+        (install, dev, port_raw.and_then(|s| s.trim().parse::<u16>().ok()))
     }
 
     /// Detect the run configuration for an agent's primary repo,
@@ -311,6 +267,45 @@ impl PreparedRun {
     }
 }
 
+/// Prepare a dev command for spawn with port safety: given the already-resolved
+/// `intended` port (see [`Supervisor::read_run_config`]), find a free port at or
+/// after it (scanning up to [`PORT_SCAN_CAP`] past it) and force the dev server
+/// onto it — via a `PORT` env var and, when the command carries an explicit port
+/// token, by rewriting that token too. When the intended port is already free
+/// the command is unchanged (only `PORT` is pinned). Returns a passthrough when
+/// no port was inferred, and errors when every port in range is taken.
+///
+/// The free-port probe runs here, right before spawn, rather than at click time:
+/// setup/install can take minutes, so a port checked earlier may be gone by the
+/// time the dev server actually binds.
+fn prepare_run(run_cmd: &str, intended: Option<u16>) -> Result<PreparedRun> {
+    let Some(intended) = intended else {
+        return Ok(PreparedRun::passthrough(run_cmd.to_string()));
+    };
+    let chosen = crate::run_detect::port::find_free_port(intended, PORT_SCAN_CAP).ok_or_else(|| {
+        Error::Other(format!(
+            "No free port available in {}\u{2013}{}",
+            intended,
+            intended.saturating_add(PORT_SCAN_CAP)
+        ))
+    })?;
+
+    let mut cmd = run_cmd.to_string();
+    let mut note = None;
+    if chosen != intended {
+        if let Some(rewritten) = crate::run_detect::port::rewrite_explicit_port(run_cmd, chosen) {
+            cmd = rewritten;
+        }
+        note = Some(format!("Port {intended} in use — using {chosen}"));
+    }
+    Ok(PreparedRun {
+        cmd,
+        extra_env: vec![("PORT".to_string(), chosen.to_string())],
+        note,
+        port: Some(chosen),
+    })
+}
+
 /// The phases to spawn for a single `run_start`, derived from the
 /// resolved commands and whether setup has already completed.
 #[derive(Debug)]
@@ -359,7 +354,7 @@ fn spawn_run_phase(
     session: Arc<RunSession>,
     gen: u64,
     cwd: std::path::PathBuf,
-    project_id: String,
+    chain_port: Option<u16>,
     phase: RunPhase,
     cmd: String,
     extra_env: Vec<(String, String)>,
@@ -402,7 +397,7 @@ fn spawn_run_phase(
                 session_exit.clone(),
                 gen,
                 cwd_exit.clone(),
-                project_id.clone(),
+                chain_port,
                 phase,
                 exit,
                 chain_run_cmd.clone(),
@@ -523,7 +518,7 @@ fn handle_run_phase_exit(
     session: Arc<RunSession>,
     gen: u64,
     cwd: std::path::PathBuf,
-    project_id: String,
+    chain_port: Option<u16>,
     phase: RunPhase,
     exit: crate::pty_session::PtyExit,
     chain_run_cmd: Option<String>,
@@ -547,8 +542,9 @@ fn handle_run_phase_exit(
         }
         if let Some(run_cmd) = chain_run_cmd {
             // Secure a free port now — install may have run for minutes, so the
-            // port could have been taken since the click.
-            let prepared = match sup.prepare_run(&project_id, &cwd, &run_cmd) {
+            // port could have been taken since the click. The intended port was
+            // resolved at run_start and threaded here, so no re-detection.
+            let prepared = match prepare_run(&run_cmd, chain_port) {
                 Ok(p) => p,
                 Err(e) => {
                     let msg = format!("Failed to start run command: {e}");
@@ -558,10 +554,12 @@ fn handle_run_phase_exit(
                 }
             };
             session.transition_phase(RunPhase::Running);
-            emit_run_state(&app, &agent_id, RunPhase::Running, None);
+            // Emit the resolved port before the running state so the store holds
+            // it before the UI reacts (see run_start for the same ordering).
             if let Some(port) = prepared.port {
                 emit_run_port(&app, &agent_id, port);
             }
+            emit_run_state(&app, &agent_id, RunPhase::Running, None);
             write_header(&app, &agent_id, &session, &prepared.cmd);
             if let Some(note) = &prepared.note {
                 write_note(&app, &agent_id, &session, note);
@@ -573,7 +571,7 @@ fn handle_run_phase_exit(
                 session.clone(),
                 gen,
                 cwd,
-                project_id.clone(),
+                None,
                 RunPhase::Running,
                 prepared.cmd,
                 prepared.extra_env,
