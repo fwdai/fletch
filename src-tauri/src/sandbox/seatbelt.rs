@@ -529,22 +529,22 @@ mod tests {
     }
 
     #[test]
-    fn run_profile_confines_writes_to_worktree_and_toolchains() {
+    fn run_profile_confines_writes_to_checkout_and_toolchains() {
         let td = tempfile::tempdir().unwrap();
-        let checkout = td.path().join("repo-worktree");
+        let checkout = td.path().join("repo-checkout");
         let home = td.path().join("home");
         std::fs::create_dir_all(&checkout).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
         let profile = build_run_profile(&checkout, &home, &[]).unwrap();
-        let canonical_worktree = std::fs::canonicalize(&checkout).unwrap();
+        let canonical_checkout = std::fs::canonicalize(&checkout).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
 
         // Same deny-by-default posture as the agent profile.
         assert!(profile.contains("(allow default)"));
         assert!(profile.contains("(deny file-write*)"));
         // The run command writes freely inside its checkout.
-        assert!(profile.contains(&format!("\"{}\"", canonical_worktree.display())));
+        assert!(profile.contains(&format!("\"{}\"", canonical_checkout.display())));
         // Toolchain dirs the default detected commands need (cargo/go/pnpm/bundler).
         for dir in [".cargo", "go", "Library/pnpm", ".bundle", ".rustup", ".bun"] {
             let expected = format!("(subpath \"{}/{dir}\")", canonical_home.display());
@@ -560,7 +560,7 @@ mod tests {
         // A Run process neither speaks RPC nor persists agent transcripts, so
         // the agent-CLI state dirs must not be on its write allow-list.
         let td = tempfile::tempdir().unwrap();
-        let checkout = td.path().join("repo-worktree");
+        let checkout = td.path().join("repo-checkout");
         let home = td.path().join("home");
         std::fs::create_dir_all(&checkout).unwrap();
         std::fs::create_dir_all(&home).unwrap();
@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn run_profile_grants_extra_writable_common_dir() {
         let td = tempfile::tempdir().unwrap();
-        let checkout = td.path().join("repo-worktree");
+        let checkout = td.path().join("repo-checkout");
         let home = td.path().join("home");
         let common = td.path().join("source-repo/.git");
         for p in [&checkout, &home, &common] {

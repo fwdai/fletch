@@ -1782,17 +1782,26 @@ pub fn repo_checkout_path(agent_id: &str, subdir: &str) -> Result<PathBuf> {
 pub fn migrate_default_checkouts_root() {
     // An explicit override means the caller manages the location themselves
     // (e.g. the nested-Fletch Run redirect) — don't touch anything.
-    if std::env::var_os(WORKSPACES_ROOT_ENV)
+    let overridden = std::env::var_os(WORKSPACES_ROOT_ENV)
         .filter(|v| !v.is_empty())
-        .is_some()
-    {
-        return;
-    }
+        .is_some();
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    let old = home.join(".fletch").join("worktrees");
-    let new = home.join(".fletch").join("workspaces");
+    migrate_checkouts_root_in(&home.join(".fletch"), overridden);
+}
+
+/// Testable core of [`migrate_default_checkouts_root`]: within `fletch_dir`
+/// (i.e. `~/.fletch`), rename the legacy `worktrees` root to `workspaces`.
+/// No-ops when the root is overridden, when the legacy dir is absent, or when
+/// the new dir already exists (never merges into a live root). Errors are
+/// logged and swallowed so a failed move never blocks launch.
+fn migrate_checkouts_root_in(fletch_dir: &Path, overridden: bool) {
+    if overridden {
+        return;
+    }
+    let old = fletch_dir.join("worktrees");
+    let new = fletch_dir.join("workspaces");
     if old.is_dir() && !new.exists() {
         match std::fs::rename(&old, &new) {
             Ok(()) => tracing::info!(
@@ -1813,6 +1822,68 @@ pub fn migrate_default_checkouts_root() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one branch that mutates on-disk state: legacy dir present, new dir
+    /// absent, not overridden → the whole tree moves, old path gone.
+    #[test]
+    fn migrate_moves_legacy_dir_when_present_and_new_absent() {
+        let td = tempfile::tempdir().unwrap();
+        let fletch = td.path().join(".fletch");
+        std::fs::create_dir_all(fletch.join("worktrees").join("agent-1").join("repo")).unwrap();
+
+        migrate_checkouts_root_in(&fletch, false);
+
+        assert!(!fletch.join("worktrees").exists(), "legacy dir should be gone");
+        assert!(
+            fletch.join("workspaces").join("agent-1").join("repo").is_dir(),
+            "contents should have moved under the new root"
+        );
+    }
+
+    /// Override present → never touch anything, even with a legacy dir sitting
+    /// there (the caller manages the location, e.g. nested-Fletch Run).
+    #[test]
+    fn migrate_is_noop_when_overridden() {
+        let td = tempfile::tempdir().unwrap();
+        let fletch = td.path().join(".fletch");
+        std::fs::create_dir_all(fletch.join("worktrees")).unwrap();
+
+        migrate_checkouts_root_in(&fletch, true);
+
+        assert!(fletch.join("worktrees").is_dir(), "override must leave legacy dir");
+        assert!(!fletch.join("workspaces").exists(), "override must not create new dir");
+    }
+
+    /// No legacy dir (a fresh install) → nothing to migrate, no new dir created.
+    #[test]
+    fn migrate_is_noop_when_legacy_absent() {
+        let td = tempfile::tempdir().unwrap();
+        let fletch = td.path().join(".fletch");
+        std::fs::create_dir_all(&fletch).unwrap();
+
+        migrate_checkouts_root_in(&fletch, false);
+
+        assert!(!fletch.join("workspaces").exists(), "nothing to migrate");
+    }
+
+    /// New dir already exists → leave both untouched; never merge a legacy dir
+    /// into a live workspaces root.
+    #[test]
+    fn migrate_is_noop_when_new_already_exists() {
+        let td = tempfile::tempdir().unwrap();
+        let fletch = td.path().join(".fletch");
+        std::fs::create_dir_all(fletch.join("worktrees").join("old-agent")).unwrap();
+        std::fs::create_dir_all(fletch.join("workspaces").join("live-agent")).unwrap();
+
+        migrate_checkouts_root_in(&fletch, false);
+
+        assert!(fletch.join("worktrees").join("old-agent").is_dir(), "legacy left as-is");
+        assert!(fletch.join("workspaces").join("live-agent").is_dir(), "live root untouched");
+        assert!(
+            !fletch.join("workspaces").join("old-agent").exists(),
+            "must not merge legacy contents into the existing new root"
+        );
+    }
 
     fn test_db() -> Arc<Mutex<Connection>> {
         let dir = tempfile::tempdir().unwrap();
