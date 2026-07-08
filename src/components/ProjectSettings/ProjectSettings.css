@@ -145,3 +145,106 @@
 .ps-eco-count b {
   color: var(--fg-0);
 }
+
+/* general section — name + location */
+.ps-field {
+  margin-top: 18px;
+}
+.ps-field:first-of-type {
+  margin-top: 0;
+}
+.ps-label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--fg-1);
+  font-weight: 500;
+}
+.ps-name-row {
+  display: flex;
+  gap: 8px;
+}
+.ps-input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 11px;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  transition:
+    border-color 0.1s,
+    background 0.1s;
+}
+.ps-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg-1);
+}
+.ps-btn {
+  flex-shrink: 0;
+  height: 34px;
+  padding: 0 16px;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  font-weight: 500;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    opacity 0.1s;
+}
+.ps-btn:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--bd-strong);
+}
+.ps-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ps-path-row {
+  width: 100%;
+  gap: 9px;
+  height: 34px;
+  padding: 0 11px;
+  text-align: left;
+  color: var(--fg-1);
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+}
+.ps-path-row:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--bd-strong);
+}
+.ps-path-row:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.ps-path-val {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-2);
+}
+.ps-path-change {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-weight: 500;
+}
+.ps-hint {
+  margin-top: 7px;
+  color: var(--fg-3);
+  line-height: 1.45;
+}
+.ps-error {
+  margin-top: 16px;
+  padding: 9px 12px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger), var(--bg-0) 86%);
+  border: 1px solid color-mix(in srgb, var(--danger), var(--bg-0) 70%);
+  border-radius: var(--r-sm);
+}
