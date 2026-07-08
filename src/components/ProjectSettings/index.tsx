@@ -5,6 +5,7 @@ import { loadRunOverrides, type SetupRow, toSetupRows } from "@/components/RunCo
 import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
+import { GeneralSection } from "./GeneralSection";
 import { RunEnvSection } from "./RunEnvSection";
 
 interface Loaded {
@@ -20,10 +21,12 @@ interface Loaded {
  *  sidebar's repo path; resolves the project_id and detected run config on open. */
 export function ProjectSettings({ repoPath }: { repoPath: string }) {
   const close = useAppStore((s) => s.closeProjectSettings);
+  const projects = useAppStore((s) => s.workspace?.projects);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const name = basename(repoPath);
+  // Custom display name for this repo, falling back to the folder basename.
+  const name = projects?.find((p) => p.path === repoPath)?.name ?? basename(repoPath);
 
   // Resolve project_id + detected run config for the repo, then load the
   // persisted overrides. Both must be ready before the editor mounts so the
@@ -92,6 +95,7 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
             </div>
           ) : (
             <div className="ps-sections">
+              <GeneralSection projectId={loaded.projectId} currentName={name} repoPath={repoPath} />
               <RunEnvSection
                 projectId={loaded.projectId}
                 rows={loaded.rows}

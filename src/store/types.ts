@@ -154,6 +154,13 @@ export interface WorkspaceSlice {
 export interface ReposSlice {
   addWorkspaceRepo: (path: string) => Promise<void>;
   removeWorkspaceRepo: (path: string) => Promise<void>;
+  // Rename/relocate resolve on success and throw on failure, so the Project
+  // Settings modal can show the error inline rather than in the global banner.
+  /** Set a project's custom display name (independent of its folder). */
+  renameProject: (projectId: string, name: string) => Promise<void>;
+  /** Repoint a pinned repo at a moved folder, migrating its sidebar order and
+   *  the open settings modal to the new path. */
+  relocateProject: (oldPath: string, newPath: string) => Promise<void>;
   /** Open the log folder in the OS file manager; surfaces failures via
    *  `lastError` rather than swallowing them. */
   revealLogs: () => Promise<void>;

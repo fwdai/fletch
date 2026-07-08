@@ -69,9 +69,20 @@ export interface AgentRecord {
   sandbox_engine?: string | null;
 }
 
+/** A pinned repo joined with its owning project. `name` is the user-editable
+ *  display label (defaults to the folder basename, survives rename/relocate);
+ *  `project_id` addresses the project for rename/relocate + per-project settings. */
+export interface ProjectRef {
+  path: string;
+  name: string;
+  project_id: string;
+}
+
 export interface Workspace {
   /** Repos pinned in the sidebar. Empty on first launch. */
   repos: string[];
+  /** Per-repo project metadata, parallel to `repos`. */
+  projects: ProjectRef[];
   agents: AgentRecord[];
 }
 
@@ -440,6 +451,13 @@ export const api = {
   addWorkspaceRepo: (repoPath: string) => invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>
     invoke<Workspace>("remove_workspace_repo", { repoPath }),
+  /** Set a project's custom display name (independent of its folder). */
+  renameProject: (projectId: string, name: string) =>
+    invoke<Workspace>("rename_project", { projectId, name }),
+  /** Repoint a pinned repo at a moved folder. Rejects a non-git or
+   *  already-pinned destination. */
+  relocateRepo: (oldPath: string, newPath: string) =>
+    invoke<Workspace>("relocate_repo", { oldPath, newPath }),
   ghStatus: () => invoke<GhStatus>("gh_status"),
   ghRepoList: () => invoke<GhRepoSummary[]>("gh_repo_list"),
   cloneRepo: (spec: string, destParent: string) =>

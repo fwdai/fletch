@@ -1004,6 +1004,8 @@ pub fn run() {
             commands::get_agent_diff_stats,
             commands::add_workspace_repo,
             commands::remove_workspace_repo,
+            commands::rename_project,
+            commands::relocate_repo,
             commands::gh_status,
             commands::gh_repo_list,
             commands::clone_repo,
