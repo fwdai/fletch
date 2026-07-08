@@ -61,7 +61,7 @@ pub struct PerTurnAgent {
 pub struct PerTurnSpec {
     /// The agent's id, forwarded to the sandbox engine's launch context.
     pub agent_id: String,
-    /// The agent's working directory — the primary repo's worktree.
+    /// The agent's working directory — the primary repo's checkout.
     pub cwd: PathBuf,
     /// Sandbox writable root — the agent's parent dir (same role as
     /// `SpawnSpec::sandbox_root`). Per-turn agents now run under sandbox-exec
@@ -135,7 +135,7 @@ pub struct PerTurnDescriptor {
     /// session id is captured via `session_id_from_cwd` instead of events.
     plaintext: bool,
     /// For agents whose session id isn't in their event stream (e.g. agy), read
-    /// it from the filesystem at turn-end given the worktree cwd. `None` =
+    /// it from the filesystem at turn-end given the checkout cwd. `None` =
     /// session id comes from events via `session_id`.
     pub session_id_from_cwd: Option<fn(&Path) -> Option<String>>,
     /// Reader for this agent's on-disk transcript, used by `sync_session` to
@@ -665,7 +665,7 @@ fn antigravity_pty_args(session_id: Option<&str>, _model: Option<&str>, _extra: 
 }
 
 /// agy stores `cwd → conversationId` in
-/// `~/.gemini/antigravity-cli/cache/last_conversations.json` (the worktree cwd
+/// `~/.gemini/antigravity-cli/cache/last_conversations.json` (the checkout cwd
 /// is the key). Read it at turn-end to capture the id for resume + transcript.
 fn antigravity_session_id_from_cwd(cwd: &Path) -> Option<String> {
     let home = dirs::home_dir()?;
@@ -768,10 +768,10 @@ pub fn cached_provider_version(provider: &str) -> Option<String> {
 
 pub struct SpawnSpec<'a> {
     pub agent_id: &'a str,
-    /// Claude's working directory — the primary repo's worktree.
+    /// Claude's working directory — the primary repo's checkout.
     pub cwd: PathBuf,
     /// Sandbox writable root — the agent's parent dir, which may
-    /// contain multiple per-repo worktrees as siblings of `cwd`. Writes
+    /// contain multiple per-repo checkouts as siblings of `cwd`. Writes
     /// are allowed anywhere under this path.
     pub sandbox_root: PathBuf,
     pub session_id: &'a str,
@@ -1337,7 +1337,7 @@ fn agent_bin_for(
 /// `exec resume`, unlike the `-s`/`-a` flags). Fletch now runs codex under
 /// sandbox-exec like every other agent, so codex's own confinement is disabled
 /// to leave a single boundary — and so codex can reach its RPC mailbox, which
-/// lives outside the worktree that `workspace-write` would have confined it to.
+/// lives outside the checkout that `workspace-write` would have confined it to.
 fn codex_build_args(turn: &TurnArgs) -> Vec<String> {
     let &TurnArgs { prompt, session_id, thinking, model, extra } = turn;
     let mut args: Vec<String> = vec!["exec".into()];
@@ -1484,7 +1484,7 @@ fn pi_session_id(event: &Value) -> Option<String> {
 
 /// Codex: bare `codex` launches the interactive TUI;
 /// `--dangerously-bypass-approvals-and-sandbox` runs it unattended (Fletch
-/// already isolates the worktree). `resume <id>` continues a prior session.
+/// already isolates the checkout). `resume <id>` continues a prior session.
 fn codex_pty_args(session_id: Option<&str>, model: Option<&str>, extra: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["--dangerously-bypass-approvals-and-sandbox".into()];
     args.extend(model_args(model));
@@ -2027,7 +2027,7 @@ mod tests {
     fn codex_args_disable_codex_own_sandbox() {
         // Fletch now wraps codex in sandbox-exec, so codex's own confinement is
         // turned fully off — otherwise its workspace-write sandbox would block
-        // the RPC mailbox, which lives outside the worktree.
+        // the RPC mailbox, which lives outside the checkout.
         let args = codex_build_args(&TurnArgs { prompt: "hi", ..Default::default() });
         assert!(args.contains(&"sandbox_mode=\"danger-full-access\"".to_string()));
         assert!(!args.iter().any(|a| a.contains("workspace-write")));

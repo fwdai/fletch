@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
  *  leave no visible trace:
  *  - `busy`: the in-flight async verb (dimmed body, spinner, busy CTA),
  *  - `notice`: a transient confirmation toast (push/pull/rebase, delegation).
- *  Both reset on agent switch so they don't leak between worktrees. */
+ *  Both reset on agent switch so they don't leak between checkouts. */
 export function useTransientFeedback(agentId: string) {
   // In-flight async action — holds the present-tense verb to show.
   const [busy, setBusy] = useState<string | null>(null);

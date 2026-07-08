@@ -9,11 +9,11 @@ use std::path::Path;
 pub struct RustDetector;
 
 impl RunDetector for RustDetector {
-    fn detect(&self, worktree: &Path) -> Option<DetectedConfig> {
-        if !exists(worktree, "Cargo.toml") {
+    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
+        if !exists(checkout, "Cargo.toml") {
             return None;
         }
-        let confidence = if exists(worktree, "Cargo.lock") {
+        let confidence = if exists(checkout, "Cargo.lock") {
             CONFIDENCE_LOCKFILE
         } else {
             CONFIDENCE_MANIFEST
@@ -23,7 +23,7 @@ impl RunDetector for RustDetector {
 
         // version: rust-toolchain.toml `channel`, or legacy bare
         // rust-toolchain file.
-        if let Some(channel) = read_trimmed(worktree, "rust-toolchain.toml")
+        if let Some(channel) = read_trimmed(checkout, "rust-toolchain.toml")
             .and_then(|s| toml_string_value(&s, "channel"))
         {
             rows.push(DetectedRow::new(
@@ -33,7 +33,7 @@ impl RunDetector for RustDetector {
                 channel,
                 "rust-toolchain.toml · channel",
             ));
-        } else if let Some(channel) = read_trimmed(worktree, "rust-toolchain") {
+        } else if let Some(channel) = read_trimmed(checkout, "rust-toolchain") {
             rows.push(DetectedRow::new(
                 "version",
                 RowGroup::Environment,

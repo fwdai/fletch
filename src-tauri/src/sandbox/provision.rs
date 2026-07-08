@@ -54,7 +54,7 @@ pub struct CheckoutSpec<'a> {
     pub source_repo: &'a Path,
     /// Commit-ish the workspace starts from, checked out detached.
     pub base_ref: &'a str,
-    /// Workspace path (`workspace::repo_worktree_path(agent_id, subdir)`).
+    /// Workspace path (`workspace::repo_checkout_path(agent_id, subdir)`).
     pub dest: &'a Path,
 }
 
@@ -214,8 +214,8 @@ async fn clone_base(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
     let dest = path_str(spec.dest)?;
 
     // A leftover directory at the target can only be an orphan from a crashed
-    // spawn: agent-id allocation refuses ids whose worktree dir physically
-    // exists (`occupied_worktree_dirs`), so no live workspace can be here.
+    // spawn: agent-id allocation refuses ids whose checkout dir physically
+    // exists (`occupied_checkout_dirs`), so no live workspace can be here.
     // Clear it rather than letting `git clone` fail on a non-empty dir.
     if spec.dest.exists() {
         tracing::warn!(path = %spec.dest.display(), "clearing orphan dir at clone target");
@@ -272,7 +272,7 @@ where
 }
 
 /// Point the clone's `origin` at the source repo's real remote so push/PR/
-/// fetch behave exactly as they would from a worktree. When the source has no
+/// fetch behave exactly as they would from a checkout. When the source has no
 /// `origin`, the clone's implicit local-path `origin` is *removed*: keeping it
 /// would let `git push -u origin <branch>` silently create branches and
 /// objects inside the user's source repo. With no remote at all, push fails
@@ -974,14 +974,14 @@ mod tests {
     async fn clone_provision_on_branch_restores_unreachable_source_tip_offline() {
         // Regression guard for the seatbelt Clone default. A pre-existing agent
         // archived under the old Worktree default made its commits in the
-        // *source* repo's object store; archive teardown deleted the worktree
+        // *source* repo's object store; archive teardown deleted the checkout
         // branch, leaving the tip present but unreachable. Restoring it under
         // Clone mode must recover it offline via alternates — no origin, no
         // fetch — so flipping the default doesn't regress legacy archives.
         let td = tempfile::tempdir().unwrap();
         let (repo, _first, _head) = fixture_repo(td.path());
 
-        // Simulate the archived worktree agent's commit landing in the source
+        // Simulate the archived checkout agent's commit landing in the source
         // store, then teardown deleting the branch (tip now unreachable).
         run(&repo, &["checkout", "-q", "-b", "feat"]);
         std::fs::write(repo.join("feat.txt"), b"agent work").unwrap();

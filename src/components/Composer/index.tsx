@@ -53,14 +53,14 @@ interface Props {
   /** Fired when a new-agent draft changes its provider/model/custom-agent
    *  selection. `customAgentId` is set when a custom agent is picked. */
   onChangeSelection?: (provider: string, model?: string, customAgentId?: string) => void;
-  /** Supplies candidate worktree-relative file paths for the "@" mention
+  /** Supplies candidate checkout-relative file paths for the "@" mention
    *  autocomplete. Called each time a mention opens, so the list stays fresh
-   *  as the agent edits files. Omit it (e.g. new sessions with no worktree
+   *  as the agent edits files. Omit it (e.g. new sessions with no checkout
    *  yet) to disable "@" mentions; drag-drop / browse attach still work. */
   mentionSource?: () => Promise<string[]>;
   /** Lists an arbitrary directory so "@" can complete filesystem paths the
-   *  user types (e.g. `@~/Downloads/`), attaching files outside the worktree
-   *  by absolute path. Omit to restrict "@" to worktree files. */
+   *  user types (e.g. `@~/Downloads/`), attaching files outside the checkout
+   *  by absolute path. Omit to restrict "@" to checkout files. */
   listDir?: (path: string) => Promise<DirListing>;
   /** Lists the repo's open PRs for the "#" mention autocomplete, which
    *  inserts a `#<number>` reference. Omit to disable "#" mentions. */

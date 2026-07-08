@@ -17,7 +17,7 @@ use crate::names;
 use crate::run_session::RunStateSnapshot;
 use crate::supervisor::{SpawnRequest, Supervisor};
 use crate::workspace::{
-    repo_worktree_path, AgentRecord, AgentView, DiffStats, TrackedRepo, Workspace,
+    repo_checkout_path, AgentRecord, AgentView, DiffStats, TrackedRepo, Workspace,
 };
 
 #[tauri::command]
@@ -75,18 +75,18 @@ pub fn detect_editors() -> Vec<crate::editors::DetectedEditor> {
     crate::editors::detect()
 }
 
-/// Open an agent's primary worktree in the chosen editor.
+/// Open an agent's primary checkout in the chosen editor.
 #[tauri::command]
 pub fn open_in_editor(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     editor_id: String,
 ) -> Result<()> {
-    let (_, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
-    crate::editors::open(&editor_id, &worktree)
+    let (_, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    crate::editors::open(&editor_id, &checkout)
 }
 
-/// The ref a worktree's *committed* changes are diffed against: the immutable
+/// The ref a checkout's *committed* changes are diffed against: the immutable
 /// fork-point SHA captured at spawn when known, else the parent branch name
 /// (pre-migration agents), which may have drifted from the actual fork point.
 /// PR/merge/rebase bases and ahead/behind use `parent_branch` directly instead,
@@ -106,10 +106,10 @@ pub async fn get_agent_diff_stats(
     let mut stats = DiffStats::default();
 
     for repo in &record.repos {
-        let worktree = repo_worktree_path(&agent_id, &repo.subdir)?;
+        let checkout = repo_checkout_path(&agent_id, &repo.subdir)?;
         let base = diff_base(repo);
         let base_ref = base.as_deref().unwrap_or("HEAD");
-        let diff = match git::worktree_diff_shortstat(&worktree, base_ref).await {
+        let diff = match git::checkout_diff_shortstat(&checkout, base_ref).await {
             Ok(diff) => diff,
             Err(err) if base_ref != "HEAD" => {
                 tracing::warn!(
@@ -119,7 +119,7 @@ pub async fn get_agent_diff_stats(
                     base_ref = %base_ref,
                     "agent diff: falling back to HEAD"
                 );
-                git::worktree_diff_shortstat(&worktree, "HEAD").await?
+                git::checkout_diff_shortstat(&checkout, "HEAD").await?
             }
             Err(err) => return Err(err),
         };
@@ -135,17 +135,17 @@ pub async fn get_agent_diff_stats(
 /// the picker avoids collisions.
 #[tauri::command]
 pub fn allocate_draft_name(used: Vec<String>) -> String {
-    // Fold in the names already on disk (other instances, stale worktrees) so a
+    // Fold in the names already on disk (other instances, stale checkouts) so a
     // draft never previews a name that `git worktree add` would later reject.
     let mut reserved: std::collections::HashSet<String> = used.into_iter().collect();
-    reserved.extend(crate::workspace::occupied_worktree_dirs());
+    reserved.extend(crate::workspace::occupied_checkout_dirs());
     names::allocate(&reserved)
 }
 
 /// Pin a folder as a workspace project. A folder that isn't a git repository
 /// yet is initialized (with an initial commit) first, so users who've never
 /// heard of git can still point the app at any project folder and get working
-/// agents, worktrees, and history.
+/// agents, checkouts, and history.
 #[tauri::command]
 pub async fn add_workspace_repo(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -239,7 +239,7 @@ pub async fn create_repo(
 /// Publish a local-only project to GitHub: create the remote repo from the
 /// project's *root* (so its default branch — e.g. `main` — becomes the GitHub
 /// default, not the agent's working branch), wire `origin`, and push. The
-/// worktree shares the new remote, so the agent can push its branch afterward.
+/// checkout shares the new remote, so the agent can push its branch afterward.
 /// The repo name is the project directory's basename. Returns the web URL.
 #[tauri::command]
 pub async fn publish_agent(
@@ -482,9 +482,9 @@ pub async fn push_agent(
     app: AppHandle,
     agent_id: String,
 ) -> Result<String> {
-    let (repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
+    let (repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     let branch = repo_branch(&repo)?.to_string();
-    let summary = git::push(&worktree, &branch).await?;
+    let summary = git::push(&checkout, &branch).await?;
     // After successful push, fetch PR state in background
     supervisor.inner().fetch_and_emit_pr_state(app, agent_id);
     Ok(summary)
@@ -497,18 +497,18 @@ pub async fn commit_agent(
     agent_id: String,
     message: String,
 ) -> Result<()> {
-    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
-    git::commit(&worktree, &message).await
+    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    git::commit(&checkout, &message).await
 }
 
-/// Discard every uncommitted change in the worktree (destructive).
+/// Discard every uncommitted change in the checkout (destructive).
 #[tauri::command]
 pub async fn discard_agent_changes(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
-    git::discard_all(&worktree).await
+    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    git::discard_all(&checkout).await
 }
 
 /// Stash all working-tree changes including untracked files.
@@ -517,18 +517,18 @@ pub async fn stash_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
-    git::stash_push(&worktree).await
+    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    git::stash_push(&checkout).await
 }
 
-/// Abort an in-progress merge in the agent's worktree.
+/// Abort an in-progress merge in the agent's checkout.
 #[tauri::command]
 pub async fn abort_merge_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
-    git::merge_abort(&worktree).await
+    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    git::merge_abort(&checkout).await
 }
 
 /// List all local branches in a repo. Used by the new-agent composer to
@@ -551,14 +551,14 @@ pub async fn delete_branch_agent(
     git::branch_delete(&repo.repo_path, branch).await
 }
 
-/// Pull latest into the primary repo's worktree.
+/// Pull latest into the primary repo's checkout.
 #[tauri::command]
 pub async fn pull_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
-    git::pull(&worktree).await
+    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    git::pull(&checkout).await
 }
 
 /// Rebase the agent's branch onto its parent (base) branch. Used by the
@@ -568,9 +568,9 @@ pub async fn rebase_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let (repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
+    let (repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
-    git::rebase_onto(&worktree, base).await
+    git::rebase_onto(&checkout, base).await
 }
 
 /// Create a PR for the agent's current branch.
@@ -582,9 +582,9 @@ pub async fn create_pr(
     title: String,
     body: String,
 ) -> Result<PrState> {
-    let (repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
+    let (repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
-    let pr = gh::pr_create(&worktree, &title, &body, base).await?;
+    let pr = gh::pr_create(&checkout, &title, &body, base).await?;
     crate::telemetry::track("pr_opened", serde_json::json!({ "source": "manual" }));
     // Bind the PR to this agent by number so later lookups don't rely on the
     // (recyclable) branch name. A failure here isn't fatal — the next idle/push
@@ -610,8 +610,8 @@ pub async fn merge_pr(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<()> {
-    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
-    gh::pr_merge(&worktree).await
+    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    gh::pr_merge(&checkout).await
 }
 
 /// Fetch and return the current PR state for the agent's branch.
@@ -620,12 +620,12 @@ pub async fn get_pr_state(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Option<PrState>> {
-    let (repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
+    let (repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     // Only fetch if the agent has a branch
     if repo.branch.is_none() {
         return Ok(None);
     }
-    gh::pr_view(&worktree).await
+    gh::pr_view(&checkout).await
 }
 
 /// List the open PRs for the agent's repo, for the composer's "#" mention
@@ -635,8 +635,8 @@ pub async fn list_prs(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Vec<gh::PrSummary>> {
-    let (_repo, worktree) = primary_repo_worktree(&supervisor, &agent_id)?;
-    gh::pr_list(&worktree, 50).await
+    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    gh::pr_list(&checkout, 50).await
 }
 
 /// Fetch the PR merge gate + per-check detail (spec §6). Best-effort: any
@@ -647,13 +647,13 @@ pub async fn get_pr_checks(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Option<gh::PrChecks>> {
-    let Some((repo, worktree)) = primary_repo_worktree_opt(&supervisor, &agent_id)? else {
+    let Some((repo, checkout)) = primary_repo_checkout_opt(&supervisor, &agent_id)? else {
         return Ok(None);
     };
     if repo.branch.is_none() {
         return Ok(None);
     }
-    Ok(gh::pr_checks(&worktree).await.unwrap_or(None))
+    Ok(gh::pr_checks(&checkout).await.unwrap_or(None))
 }
 
 /// Fetch the unresolved PR review threads (Greptile / other bots / humans),
@@ -664,16 +664,16 @@ pub async fn get_pr_comments(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Option<gh::PrComments>> {
-    let Some((repo, worktree)) = primary_repo_worktree_opt(&supervisor, &agent_id)? else {
+    let Some((repo, checkout)) = primary_repo_checkout_opt(&supervisor, &agent_id)? else {
         return Ok(None);
     };
     if repo.branch.is_none() {
         return Ok(None);
     }
-    Ok(gh::pr_comments(&worktree).await.unwrap_or(None))
+    Ok(gh::pr_comments(&checkout).await.unwrap_or(None))
 }
 
-/// Open an interactive shell PTY in the agent's primary worktree.
+/// Open an interactive shell PTY in the agent's primary checkout.
 /// Idempotent: if a shell is already running for this agent, does nothing.
 #[tauri::command]
 pub fn open_agent_shell(
@@ -777,11 +777,11 @@ pub async fn get_git_state(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Option<GitState>> {
-    let Some((repo, worktree)) = primary_repo_worktree_opt(&supervisor, &agent_id)? else {
+    let Some((repo, checkout)) = primary_repo_checkout_opt(&supervisor, &agent_id)? else {
         return Ok(None);
     };
     let parent = repo.parent_branch.as_deref().unwrap_or("main");
-    let state = git_state::query(&worktree, parent).await?;
+    let state = git_state::query(&checkout, parent).await?;
     Ok(Some(state))
 }
 
@@ -812,9 +812,9 @@ pub async fn get_all_shortstats(
             continue;
         }
         let Some(repo) = agent.repos.first() else { continue };
-        let Ok(worktree) = repo_worktree_path(&agent.id, &repo.subdir) else { continue };
+        let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else { continue };
         let agent_id = agent.id.clone();
-        set.spawn(async move { (agent_id, git_state::shortstats(&worktree).await) });
+        set.spawn(async move { (agent_id, git_state::shortstats(&checkout).await) });
     }
     let mut out = std::collections::HashMap::new();
     while let Some(res) = set.join_next().await {
@@ -862,10 +862,10 @@ pub async fn refresh_all_pr_states(
             continue;
         }
         let Some(number) = repo.pr_number else { continue };
-        let Ok(worktree) = repo_worktree_path(&agent.id, &repo.subdir) else { continue };
+        let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else { continue };
         let agent_id = agent.id.clone();
         set.spawn(async move {
-            let state = gh::pr_view_number(&worktree, number as u32)
+            let state = gh::pr_view_number(&checkout, number as u32)
                 .await
                 .unwrap_or(None);
             (agent_id, state)
@@ -905,9 +905,9 @@ pub async fn refresh_all_pr_checks(
         if repo.branch.is_none() || repo.pr_number.is_none() {
             continue;
         }
-        let Ok(worktree) = repo_worktree_path(&agent.id, &repo.subdir) else { continue };
+        let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else { continue };
         let agent_id = agent.id.clone();
-        set.spawn(async move { (agent_id, gh::pr_checks(&worktree).await) });
+        set.spawn(async move { (agent_id, gh::pr_checks(&checkout).await) });
     }
     let mut out = std::collections::HashMap::new();
     while let Some(res) = set.join_next().await {
@@ -921,7 +921,7 @@ pub async fn refresh_all_pr_checks(
 }
 
 // ---------------------------------------------------------------------------
-// File panel — browse the worktree, view & edit file contents.
+// File panel — browse the checkout, view & edit file contents.
 // ---------------------------------------------------------------------------
 
 /// Largest file the viewer will load. Bigger files report `too_large` so
@@ -945,10 +945,10 @@ pub struct DirListing {
     pub entries: Vec<DirEntry>,
 }
 
-/// One entry in the worktree file list. Directories are derived on the
+/// One entry in the checkout file list. Directories are derived on the
 /// frontend from the path segments; only files are sent over IPC.
 #[derive(Serialize)]
-pub struct WorktreeFile {
+pub struct CheckoutFile {
     pub path: String,
     /// Git status vs the parent branch: "M" | "A" | "D" | "R" (None = clean).
     pub status: Option<String>,
@@ -958,7 +958,7 @@ pub struct WorktreeFile {
 
 /// A single file's contents plus the metadata the editor needs.
 #[derive(Serialize)]
-pub struct WorktreeFileContents {
+pub struct CheckoutFileContents {
     pub text: String,
     /// File-extension hint (e.g. "ts", "rs", "py"); "" when unknown.
     pub lang: String,
@@ -990,9 +990,9 @@ fn lang_for(path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Join a caller-supplied relative path onto the worktree root, rejecting
+/// Join a caller-supplied relative path onto the checkout root, rejecting
 /// anything that could escape it (absolute paths, `..`, drive prefixes).
-fn safe_join(worktree: &Path, rel: &str) -> Result<PathBuf> {
+fn safe_join(checkout: &Path, rel: &str) -> Result<PathBuf> {
     let p = Path::new(rel);
     let escapes = p.components().any(|c| {
         matches!(
@@ -1003,10 +1003,10 @@ fn safe_join(worktree: &Path, rel: &str) -> Result<PathBuf> {
     if p.is_absolute() || escapes || rel.is_empty() {
         return Err(Error::InvalidPath(rel.to_string()));
     }
-    Ok(worktree.join(p))
+    Ok(checkout.join(p))
 }
 
-// ── Agent → repo → worktree resolution ────────────────────────────
+// ── Agent → repo → checkout resolution ────────────────────────────
 // Nearly every git/PR command operates on the agent's *primary* (first) repo.
 // These helpers centralize that resolution — and its error strings — so the
 // command bodies stay focused on the git/gh call they actually make.
@@ -1022,20 +1022,20 @@ fn primary_repo(supervisor: &Supervisor, agent_id: &str) -> Result<TrackedRepo> 
         .ok_or_else(|| Error::Other("agent has no repos".into()))
 }
 
-/// The agent's primary repo paired with its worktree path.
-fn primary_repo_worktree(
+/// The agent's primary repo paired with its checkout path.
+fn primary_repo_checkout(
     supervisor: &Supervisor,
     agent_id: &str,
 ) -> Result<(TrackedRepo, PathBuf)> {
     let repo = primary_repo(supervisor, agent_id)?;
-    let worktree = repo_worktree_path(agent_id, &repo.subdir)?;
-    Ok((repo, worktree))
+    let checkout = repo_checkout_path(agent_id, &repo.subdir)?;
+    Ok((repo, checkout))
 }
 
 /// Best-effort variant for read-only lookups (git / PR state): returns `None`
 /// instead of an error when the agent or its repo can't be resolved, so callers
 /// can degrade gracefully rather than surfacing a failure.
-fn primary_repo_worktree_opt(
+fn primary_repo_checkout_opt(
     supervisor: &Supervisor,
     agent_id: &str,
 ) -> Result<Option<(TrackedRepo, PathBuf)>> {
@@ -1045,44 +1045,44 @@ fn primary_repo_worktree_opt(
     let Some(repo) = record.repos.into_iter().next() else {
         return Ok(None);
     };
-    let worktree = repo_worktree_path(agent_id, &repo.subdir)?;
-    Ok(Some((repo, worktree)))
+    let checkout = repo_checkout_path(agent_id, &repo.subdir)?;
+    Ok(Some((repo, checkout)))
 }
 
-/// The agent's branch name, or an error if the worktree has no branch yet.
+/// The agent's branch name, or an error if the checkout has no branch yet.
 fn repo_branch(repo: &TrackedRepo) -> Result<&str> {
     repo.branch
         .as_deref()
         .ok_or_else(|| Error::Other("agent has no branch yet".into()))
 }
 
-/// Resolve the agent's primary worktree and its parent ref (the fork point
+/// Resolve the agent's primary checkout and its parent ref (the fork point
 /// used for file-tree / per-file diffs).
-fn primary_worktree(supervisor: &Supervisor, agent_id: &str) -> Result<(PathBuf, String)> {
-    let (repo, worktree) = primary_repo_worktree(supervisor, agent_id)?;
+fn primary_checkout(supervisor: &Supervisor, agent_id: &str) -> Result<(PathBuf, String)> {
+    let (repo, checkout) = primary_repo_checkout(supervisor, agent_id)?;
     // File tree / per-file diffs compare committed work against the fork point.
     let parent = diff_base(&repo).unwrap_or_else(|| "main".to_string());
-    Ok((worktree, parent))
+    Ok((checkout, parent))
 }
 
-/// List the agent's worktree files (tracked + untracked), each tagged with
+/// List the agent's checkout files (tracked + untracked), each tagged with
 /// its git status vs the parent branch. This mirrors what's actually on disk
 /// — like a regular file explorer — so files the agent deleted are dropped
 /// rather than lingering as struck-through entries.
 #[tauri::command]
-pub async fn list_worktree_tree(
+pub async fn list_checkout_tree(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
-) -> Result<Vec<WorktreeFile>> {
-    let (worktree, parent) = primary_worktree(&supervisor, &agent_id)?;
+) -> Result<Vec<CheckoutFile>> {
+    let (checkout, parent) = primary_checkout(&supervisor, &agent_id)?;
 
-    let state = git_state::query(&worktree, &parent).await.ok();
+    let state = git_state::query(&checkout, &parent).await.ok();
     let status_for = |path: &str| -> Option<&FileStatus> {
         state.as_ref()?.files.iter().find(|f| f.path == path)
     };
 
     let mut paths: BTreeSet<String> =
-        git::list_files(&worktree).await.unwrap_or_default().into_iter().collect();
+        git::list_files(&checkout).await.unwrap_or_default().into_iter().collect();
     if let Some(s) = &state {
         for f in &s.files {
             // A deleted file is gone from disk, so a file tree shouldn't show
@@ -1101,7 +1101,7 @@ pub async fn list_worktree_tree(
         .into_iter()
         .map(|path| {
             let st = status_for(&path);
-            WorktreeFile {
+            CheckoutFile {
                 status: st.map(|f| status_code(&f.kind).to_string()),
                 additions: st.map(|f| f.additions).unwrap_or(0),
                 deletions: st.map(|f| f.deletions).unwrap_or(0),
@@ -1154,25 +1154,25 @@ pub async fn list_dir(path: String) -> Result<DirListing> {
     })
 }
 
-/// Read a worktree file for the viewer/editor: contents, language hint,
+/// Read a checkout file for the viewer/editor: contents, language hint,
 /// git status, and the changed-line numbers driving the gutter.
 #[tauri::command]
-pub async fn read_worktree_file(
+pub async fn read_checkout_file(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     path: String,
-) -> Result<WorktreeFileContents> {
-    let (worktree, parent) = primary_worktree(&supervisor, &agent_id)?;
-    let abs = safe_join(&worktree, &path)?;
+) -> Result<CheckoutFileContents> {
+    let (checkout, parent) = primary_checkout(&supervisor, &agent_id)?;
+    let abs = safe_join(&checkout, &path)?;
     let lang = lang_for(&path);
 
-    let state = git_state::query(&worktree, &parent).await.ok();
+    let state = git_state::query(&checkout, &parent).await.ok();
     let status = state
         .as_ref()
         .and_then(|s| s.files.iter().find(|f| f.path == path))
         .map(|f| status_code(&f.kind).to_string());
 
-    let empty = |text: String, binary: bool, too_large: bool| WorktreeFileContents {
+    let empty = |text: String, binary: bool, too_large: bool| CheckoutFileContents {
         text,
         lang: lang.clone(),
         status: status.clone(),
@@ -1185,7 +1185,7 @@ pub async fn read_worktree_file(
     // Deleted by the agent: the file is gone from disk, so show its prior
     // contents from the parent ref (the design lets you re-create it).
     if status.as_deref() == Some("D") {
-        let text = git::show_file(&worktree, &parent, &path).await.unwrap_or_default();
+        let text = git::show_file(&checkout, &parent, &path).await.unwrap_or_default();
         return Ok(empty(text, false, false));
     }
 
@@ -1202,14 +1202,14 @@ pub async fn read_worktree_file(
     let text = String::from_utf8_lossy(&bytes).into_owned();
 
     let (chg_add, chg_mod) = if matches!(status.as_deref(), Some("M") | Some("R")) {
-        git::file_changed_lines(&worktree, &parent, &path)
+        git::file_changed_lines(&checkout, &parent, &path)
             .await
             .unwrap_or_default()
     } else {
         (vec![], vec![])
     };
 
-    Ok(WorktreeFileContents {
+    Ok(CheckoutFileContents {
         text,
         lang,
         status,
@@ -1220,7 +1220,7 @@ pub async fn read_worktree_file(
     })
 }
 
-/// Full unified diff of one worktree file versus the parent branch — the data
+/// Full unified diff of one checkout file versus the parent branch — the data
 /// behind the Code panel's Live view. Returns "" when the file is unchanged.
 #[tauri::command]
 pub async fn get_file_diff(
@@ -1228,20 +1228,20 @@ pub async fn get_file_diff(
     agent_id: String,
     path: String,
 ) -> Result<String> {
-    let (worktree, parent) = primary_worktree(&supervisor, &agent_id)?;
-    git::file_diff(&worktree, &parent, &path).await
+    let (checkout, parent) = primary_checkout(&supervisor, &agent_id)?;
+    git::file_diff(&checkout, &parent, &path).await
 }
 
-/// Overwrite a worktree file with new contents (the editor's Save / Revert).
+/// Overwrite a checkout file with new contents (the editor's Save / Revert).
 #[tauri::command]
-pub async fn write_worktree_file(
+pub async fn write_checkout_file(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     path: String,
     contents: String,
 ) -> Result<()> {
-    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
-    let abs = safe_join(&worktree, &path)?;
+    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
+    let abs = safe_join(&checkout, &path)?;
     if let Some(dir) = abs.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -1249,12 +1249,12 @@ pub async fn write_worktree_file(
     Ok(())
 }
 
-/// Resolve a not-yet-existing destination inside the worktree: reject path
+/// Resolve a not-yet-existing destination inside the checkout: reject path
 /// traversal, refuse to clobber an existing entry, and create its parent
 /// directory. The create / rename / copy commands all share this so the
 /// no-clobber + path-safety contract lives in exactly one place.
-fn resolve_new_path(worktree: &Path, rel: &str) -> Result<PathBuf> {
-    let abs = safe_join(worktree, rel)?;
+fn resolve_new_path(checkout: &Path, rel: &str) -> Result<PathBuf> {
+    let abs = safe_join(checkout, rel)?;
     if abs.exists() {
         return Err(Error::Other(format!("\"{rel}\" already exists")));
     }
@@ -1264,33 +1264,33 @@ fn resolve_new_path(worktree: &Path, rel: &str) -> Result<PathBuf> {
     Ok(abs)
 }
 
-/// Rename/move a worktree path (file or directory). Refuses to clobber an
+/// Rename/move a checkout path (file or directory). Refuses to clobber an
 /// existing destination so a rename can never silently overwrite a sibling.
 #[tauri::command]
-pub async fn rename_worktree_path(
+pub async fn rename_checkout_path(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     from: String,
     to: String,
 ) -> Result<()> {
-    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
-    let src = safe_join(&worktree, &from)?;
-    let dst = resolve_new_path(&worktree, &to)?;
+    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
+    let src = safe_join(&checkout, &from)?;
+    let dst = resolve_new_path(&checkout, &to)?;
     std::fs::rename(&src, &dst)?;
     Ok(())
 }
 
-/// Delete a worktree path. Files are removed directly; directories are
+/// Delete a checkout path. Files are removed directly; directories are
 /// removed recursively (the UI guards this behind a confirm step). Deleting a
 /// path that's already gone is a no-op, so concurrent deletes don't error.
 #[tauri::command]
-pub async fn delete_worktree_path(
+pub async fn delete_checkout_path(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
-    let abs = safe_join(&worktree, &path)?;
+    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
+    let abs = safe_join(&checkout, &path)?;
     if abs.is_dir() {
         std::fs::remove_dir_all(&abs)?;
     } else if abs.exists() {
@@ -1302,42 +1302,42 @@ pub async fn delete_worktree_path(
 /// Create a new empty file, making parent directories as needed. Refuses to
 /// overwrite an existing path.
 #[tauri::command]
-pub async fn create_worktree_file(
+pub async fn create_checkout_file(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
-    let abs = resolve_new_path(&worktree, &path)?;
+    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
+    let abs = resolve_new_path(&checkout, &path)?;
     std::fs::write(&abs, "")?;
     Ok(())
 }
 
 /// Create a new directory. Refuses to clobber an existing path.
 #[tauri::command]
-pub async fn create_worktree_dir(
+pub async fn create_checkout_dir(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
-    let abs = resolve_new_path(&worktree, &path)?;
+    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
+    let abs = resolve_new_path(&checkout, &path)?;
     std::fs::create_dir_all(&abs)?;
     Ok(())
 }
 
-/// Copy a worktree file to a new path (the explorer's "Duplicate"). Refuses
+/// Copy a checkout file to a new path (the explorer's "Duplicate"). Refuses
 /// to overwrite an existing destination.
 #[tauri::command]
-pub async fn copy_worktree_file(
+pub async fn copy_checkout_file(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     from: String,
     to: String,
 ) -> Result<()> {
-    let (worktree, _parent) = primary_worktree(&supervisor, &agent_id)?;
-    let src = safe_join(&worktree, &from)?;
-    let dst = resolve_new_path(&worktree, &to)?;
+    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
+    let src = safe_join(&checkout, &from)?;
+    let dst = resolve_new_path(&checkout, &to)?;
     std::fs::copy(&src, &dst)?;
     Ok(())
 }

@@ -3,7 +3,7 @@
 // Edit, ⌘S to save, Revert to restore the agent's version. The "Diff" toggle
 // swaps the editor for a read-only unified diff of the agent's changes.
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { type AgentRecord, api, type WorktreeFileContents } from "@/api";
+import { type AgentRecord, api, type CheckoutFileContents } from "@/api";
 import { Icon } from "@/components/Icon";
 import { FileDiff } from "@/components/RightPanel/Code/DiffView";
 import { CODE_THEMES } from "@/data/codeThemes";
@@ -18,7 +18,7 @@ interface FileEditorProps {
   path: string;
   name: string;
   dir: string;
-  file: WorktreeFileContents;
+  file: CheckoutFileContents;
   onBack: () => void;
 }
 
@@ -105,7 +105,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
     if (text === savedRef.current) return;
     setSaveState("saving");
     try {
-      await api.writeWorktreeFile(agent.id, path, text);
+      await api.writeCheckoutFile(agent.id, path, text);
       savedRef.current = text;
       // Only settle to "saved" if no newer keystroke landed mid-write.
       setSaveState(valueRef.current === text ? "saved" : "saving");
@@ -140,7 +140,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
         // The component is unmounting, so local state is gone — surface a
         // failed final save through the global banner instead of losing it
         // silently. `getState()` avoids a stale closure in cleanup.
-        void api.writeWorktreeFile(agent.id, path, text).catch((e) => {
+        void api.writeCheckoutFile(agent.id, path, text).catch((e) => {
           useAppStore.getState().setLastError(`Couldn't save ${path}: ${String(e)}`);
         });
       }
@@ -155,7 +155,7 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
     }
     setSaveState("saving");
     try {
-      await api.writeWorktreeFile(agent.id, path, originalText);
+      await api.writeCheckoutFile(agent.id, path, originalText);
       savedRef.current = originalText;
       setValue(originalText);
       setSaveState("idle");

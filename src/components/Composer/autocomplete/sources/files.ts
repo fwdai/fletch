@@ -11,7 +11,7 @@ import {
 
 interface Args {
   query: string | null;
-  /** Worktree-relative file paths for "@" search. Omit to disable. */
+  /** Checkout-relative file paths for "@" search. Omit to disable. */
   mentionSource?: () => Promise<string[]>;
   /** Lists an arbitrary directory so "@~/…" completes real filesystem paths. */
   listDir?: (path: string) => Promise<DirListing>;
@@ -20,7 +20,7 @@ interface Args {
 
 type Action = { kind: "attach"; path: string } | { kind: "navigate"; query: string };
 
-/** The "@" source: searches the agent's worktree files, or — when the query
+/** The "@" source: searches the agent's checkout files, or — when the query
  *  looks like a path (`~/…`, `/…`) — navigates the real filesystem. Picking a
  *  file attaches it; picking a directory rewrites the token to drill in. */
 export function useFileSource({ query, mentionSource, listDir, addPaths }: Args): AcSource {
@@ -74,13 +74,13 @@ export function useFileSource({ query, mentionSource, listDir, addPaths }: Args)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, fs?.dir, fs?.partial, fsListing, files, mentionSource]);
 
-  // Worktree mode: refetch the list each time the source opens (ref-held so
+  // Checkout mode: refetch the list each time the source opens (ref-held so
   // an inline `mentionSource` prop doesn't refire the effect).
-  const worktreeActive = active !== null && !fs && !!mentionSource;
+  const checkoutActive = active !== null && !fs && !!mentionSource;
   const srcRef = useRef(mentionSource);
   srcRef.current = mentionSource;
   useEffect(() => {
-    if (!worktreeActive || !srcRef.current) return;
+    if (!checkoutActive || !srcRef.current) return;
     let alive = true;
     srcRef
       .current()
@@ -91,7 +91,7 @@ export function useFileSource({ query, mentionSource, listDir, addPaths }: Args)
     return () => {
       alive = false;
     };
-  }, [worktreeActive]);
+  }, [checkoutActive]);
 
   // Filesystem mode: re-list only when the typed directory changes.
   const fsDir = fs?.dir ?? null;

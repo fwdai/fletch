@@ -1,4 +1,4 @@
-//! Read-only git state queries for a worktree.
+//! Read-only git state queries for a checkout.
 //!
 //! Companion to `git.rs` which handles mutations. This module only reads.
 
@@ -71,10 +71,10 @@ pub enum StatusKind {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Query the read-only git state for a worktree.
-pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState> {
+/// Query the read-only git state for a checkout.
+pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState> {
     // 1. Branch name
-    let branch = match crate::git::current_branch(worktree_path).await {
+    let branch = match crate::git::current_branch(checkout_path).await {
         Ok(Some(b)) => b,
         Ok(None) => String::new(),
         // Empty repo / no HEAD — return a zero-state
@@ -96,19 +96,19 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
     };
 
     // 2. Ahead / behind (vs base), and unpushed (vs upstream)
-    let (ahead, behind) = query_ahead_behind(worktree_path, parent_branch).await;
+    let (ahead, behind) = query_ahead_behind(checkout_path, parent_branch).await;
     // No upstream yet → nothing has been pushed, so every base-ahead commit is
     // effectively unpushed.
-    let unpushed = query_unpushed(worktree_path).await.unwrap_or(ahead);
+    let unpushed = query_unpushed(checkout_path).await.unwrap_or(ahead);
 
     // 3. File list from `git status --porcelain=v1`
-    let mut files = match run_status(worktree_path).await {
+    let mut files = match run_status(checkout_path).await {
         Ok(output) => parse_porcelain(&output),
         Err(_) => vec![],
     };
 
     // 4. Per-file diff stats from `git diff --numstat HEAD`
-    let numstat = match run_numstat(worktree_path).await {
+    let numstat = match run_numstat(checkout_path).await {
         Ok(output) => parse_numstat(&output),
         Err(_) => HashMap::new(),
     };
@@ -127,8 +127,8 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
     // 5. Link targets — the origin web base (for commit / compare links) and the
     //    HEAD sha (for a single-commit link). Both are cheap reads; failures are
     //    non-fatal (the UI just omits the link).
-    let (has_origin, remote_url) = query_origin(worktree_path).await;
-    let head_sha = query_head_sha(worktree_path).await;
+    let (has_origin, remote_url) = query_origin(checkout_path).await;
+    let head_sha = query_head_sha(checkout_path).await;
 
     Ok(GitState {
         branch,
@@ -151,8 +151,8 @@ pub async fn query(worktree_path: &Path, parent_branch: &str) -> Result<GitState
 /// --numstat` for the line totals. The two run concurrently, so latency is a
 /// single git invocation. Failures degrade to zeroes rather than dropping the
 /// agent, matching the badge's "no news is zero" contract.
-pub async fn shortstats(worktree_path: &Path) -> ShortStats {
-    let (status, numstat) = tokio::join!(run_status(worktree_path), run_numstat(worktree_path));
+pub async fn shortstats(checkout_path: &Path) -> ShortStats {
+    let (status, numstat) = tokio::join!(run_status(checkout_path), run_numstat(checkout_path));
     let file_count = status.map(|o| parse_porcelain(&o).len() as u32).unwrap_or(0);
     let (additions, deletions) = numstat
         .map(|o| {
@@ -165,8 +165,8 @@ pub async fn shortstats(worktree_path: &Path) -> ShortStats {
 }
 
 /// HEAD commit SHA, or `None` when it can't be read.
-async fn query_head_sha(worktree_path: &Path) -> Option<String> {
-    let out = crate::git_dist::command(worktree_path)
+async fn query_head_sha(checkout_path: &Path) -> Option<String> {
+    let out = crate::git_dist::command(checkout_path)
         .args(["rev-parse", "HEAD"])
         .output()
         .await
@@ -180,8 +180,8 @@ async fn query_head_sha(worktree_path: &Path) -> Option<String> {
 
 /// The `origin` remote: whether one exists at all, and its GitHub web base
 /// (`None` when missing or not a github.com remote).
-async fn query_origin(worktree_path: &Path) -> (bool, Option<String>) {
-    let out = match crate::git_dist::command(worktree_path)
+async fn query_origin(checkout_path: &Path) -> (bool, Option<String>) {
+    let out = match crate::git_dist::command(checkout_path)
         .args(["remote", "get-url", "origin"])
         .output()
         .await
@@ -228,8 +228,8 @@ pub(crate) fn github_web_url(remote: &str) -> Option<String> {
 /// Count commits on HEAD not yet on the upstream branch. Returns `None` when
 /// there is no upstream configured (branch never pushed), so the caller can
 /// fall back appropriately.
-async fn query_unpushed(worktree_path: &Path) -> Option<u32> {
-    let out = crate::git_dist::command(worktree_path)
+async fn query_unpushed(checkout_path: &Path) -> Option<u32> {
+    let out = crate::git_dist::command(checkout_path)
         .args(["rev-list", "--count", "@{upstream}..HEAD"])
         .output()
         .await
@@ -241,8 +241,8 @@ async fn query_unpushed(worktree_path: &Path) -> Option<u32> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
-async fn query_ahead_behind(worktree_path: &Path, parent_branch: &str) -> (u32, u32) {
-    if let Some(counts) = rev_list_counts(worktree_path, parent_branch).await {
+async fn query_ahead_behind(checkout_path: &Path, parent_branch: &str) -> (u32, u32) {
+    if let Some(counts) = rev_list_counts(checkout_path, parent_branch).await {
         return counts;
     }
     // In a clone workspace (`workspace_mode = clone`) the parent branch may
@@ -252,7 +252,7 @@ async fn query_ahead_behind(worktree_path: &Path, parent_branch: &str) -> (u32, 
     // the source repo's refs.
     if !parent_branch.starts_with("origin/") {
         if let Some(counts) =
-            rev_list_counts(worktree_path, &format!("origin/{parent_branch}")).await
+            rev_list_counts(checkout_path, &format!("origin/{parent_branch}")).await
         {
             return counts;
         }
@@ -262,8 +262,8 @@ async fn query_ahead_behind(worktree_path: &Path, parent_branch: &str) -> (u32, 
 
 /// `git rev-list --left-right --count HEAD...<base>`, or `None` when the base
 /// doesn't resolve — so the caller can try an alternate ref spelling.
-async fn rev_list_counts(worktree_path: &Path, base: &str) -> Option<(u32, u32)> {
-    let out = crate::git_dist::command(worktree_path)
+async fn rev_list_counts(checkout_path: &Path, base: &str) -> Option<(u32, u32)> {
+    let out = crate::git_dist::command(checkout_path)
         .args(["rev-list", "--left-right", "--count", &format!("HEAD...{base}")])
         .output()
         .await
@@ -275,8 +275,8 @@ async fn rev_list_counts(worktree_path: &Path, base: &str) -> Option<(u32, u32)>
     Some(parse_ahead_behind(s.trim()))
 }
 
-async fn run_status(worktree_path: &Path) -> Result<String> {
-    let out = crate::git_dist::command(worktree_path)
+async fn run_status(checkout_path: &Path) -> Result<String> {
+    let out = crate::git_dist::command(checkout_path)
         .args(["status", "--porcelain=v1"])
         .output()
         .await?;
@@ -287,8 +287,8 @@ async fn run_status(worktree_path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-async fn run_numstat(worktree_path: &Path) -> Result<String> {
-    let out = crate::git_dist::command(worktree_path)
+async fn run_numstat(checkout_path: &Path) -> Result<String> {
+    let out = crate::git_dist::command(checkout_path)
         .args(["diff", "--numstat", "HEAD"])
         .output()
         .await?;

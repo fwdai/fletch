@@ -9,9 +9,9 @@ use std::path::Path;
 pub struct RubyDetector;
 
 impl RunDetector for RubyDetector {
-    fn detect(&self, worktree: &Path) -> Option<DetectedConfig> {
-        let gemfile = read_trimmed(worktree, "Gemfile")?;
-        let confidence = if exists(worktree, "Gemfile.lock") {
+    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
+        let gemfile = read_trimmed(checkout, "Gemfile")?;
+        let confidence = if exists(checkout, "Gemfile.lock") {
             CONFIDENCE_LOCKFILE
         } else {
             CONFIDENCE_MANIFEST
@@ -24,7 +24,7 @@ impl RunDetector for RubyDetector {
 
         // version: .ruby-version → `ruby "x"` line in the Gemfile. The
         // source reflects whichever branch actually supplied the value.
-        if let Some((version, source)) = read_trimmed(worktree, ".ruby-version")
+        if let Some((version, source)) = read_trimmed(checkout, ".ruby-version")
             .map(|v| (v, ".ruby-version"))
             .or_else(|| {
                 gemfile

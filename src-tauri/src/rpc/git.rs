@@ -285,8 +285,8 @@ fn arg_branch_named(args: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-async fn materialize_branch(worktree: &Path, desired: &str) -> std::result::Result<String, String> {
-    crate::git::checkout_new_unique_branch(worktree, desired)
+async fn materialize_branch(checkout: &Path, desired: &str) -> std::result::Result<String, String> {
+    crate::git::checkout_new_unique_branch(checkout, desired)
         .await
         .map_err(|e| e.to_string())
 }

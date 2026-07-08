@@ -43,12 +43,12 @@ impl Default for AgentView {
     }
 }
 
-/// One repo an agent has a worktree in.
+/// One repo an agent has a checkout in.
 ///
 /// At spawn time every agent gets `repos[0]` populated from the
 /// repo the user spawned it against. The user can extend this list
 /// mid-session via `add_repo_to_agent`, which creates a sibling
-/// worktree under the same parent dir.
+/// checkout under the same parent dir.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackedRepo {
     pub repo_path: PathBuf,
@@ -57,7 +57,7 @@ pub struct TrackedRepo {
     pub branch: Option<String>,
     #[serde(default)]
     pub parent_branch: Option<String>,
-    /// The immutable fork-point commit this worktree was created from,
+    /// The immutable fork-point commit this checkout was created from,
     /// captured at spawn after a best-effort fetch. Used as the diff base so
     /// agent changes are measured against the exact starting commit rather
     /// than a branch name that may drift. `None` for pre-migration agents and
@@ -66,7 +66,7 @@ pub struct TrackedRepo {
     /// for PR/merge bases.
     #[serde(default)]
     pub base_sha: Option<String>,
-    /// The GitHub PR number this worktree's branch was opened as, once known.
+    /// The GitHub PR number this checkout's branch was opened as, once known.
     /// Set when a PR is created through the app or adopted from an OPEN
     /// out-of-band PR. PR state is fetched by this number, not by branch name,
     /// so a recycled workspace name can't resolve to a prior agent's PR.
@@ -84,7 +84,7 @@ pub struct DiffStats {
 }
 
 /// Snapshot of one tracked repo at archive time. Captures enough to
-/// recreate the worktree and branch on restore.
+/// recreate the checkout and branch on restore.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchivedRepoSnapshot {
     pub repo_path: PathBuf,
@@ -130,7 +130,7 @@ pub struct AgentRecord {
     /// ship. Missing in older workspace JSON → defaults to "claude".
     #[serde(default = "default_provider")]
     pub provider: String,
-    /// The repos this agent has worktrees in. Always non-empty;
+    /// The repos this agent has checkouts in. Always non-empty;
     /// `repos[0]` is the primary (the repo the user spawned against).
     #[serde(default)]
     pub repos: Vec<TrackedRepo>,
@@ -175,7 +175,7 @@ pub struct AgentRecord {
     #[serde(default)]
     pub last_error: Option<String>,
     /// Some when the agent has been archived. Live agents have None.
-    /// Archived agents have no worktree, no branch, and no live process —
+    /// Archived agents have no checkout, no branch, and no live process —
     /// only a record (and claude's session JSONL on disk).
     #[serde(default)]
     pub archive: Option<ArchiveMetadata>,
@@ -513,10 +513,10 @@ impl WorkspaceManager {
     pub fn allocate_agent_id(&self) -> Result<String> {
         let conn = self.db.lock();
         // Only *live* (non-archived) agents reserve their name. Once an agent
-        // is archived its worktree is torn down, so the name is free to reuse —
+        // is archived its checkout is torn down, so the name is free to reuse —
         // unless a directory still lingers on disk (cleanup failed, or it
         // belongs to another running instance such as a dev build, which shares
-        // this same worktrees root). The on-disk listing closes that gap: it's
+        // this same checkouts root). The on-disk listing closes that gap: it's
         // the only namespace shared across every Fletch process on the machine,
         // so a collision there is what actually breaks `git worktree add`.
         let mut stmt =
@@ -525,7 +525,7 @@ impl WorkspaceManager {
             .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
             .collect();
-        used.extend(occupied_worktree_dirs());
+        used.extend(occupied_checkout_dirs());
         Ok(names::allocate(&used))
     }
 
@@ -555,7 +555,7 @@ impl WorkspaceManager {
         let tx = conn.unchecked_transaction()?;
 
         // Recycling a freed name: the allocator only hands back ids held by
-        // *archived* agents (live ones and on-disk worktrees are excluded), but
+        // *archived* agents (live ones and on-disk checkouts are excluded), but
         // the archived row still owns this primary key. Evict it so the INSERT
         // below doesn't trip the PK constraint. Cascades clear its sessions,
         // worktrees, and session records. A *live* row with this id would be a
@@ -607,7 +607,7 @@ impl WorkspaceManager {
             ],
         )?;
 
-        // Insert worktree records for each TrackedRepo.
+        // Insert checkout records for each TrackedRepo.
         for repo in &record.repos {
             Self::insert_worktree(&tx, &record.id, repo)?;
         }
@@ -640,10 +640,10 @@ impl WorkspaceManager {
     /// Set the branch on a specific tracked repo within an agent — but
     /// only if it isn't set yet. Identified by subdir (unique per
     /// agent). Returns true iff it actually wrote.
-    /// Record the branch a tracked repo's worktree is on, identified by subdir.
+    /// Record the branch a tracked repo's checkout is on, identified by subdir.
     /// Written when the agent materializes its branch at first push (see
     /// `open_pr`/`git_push`). Overwrites unconditionally — a second PR cuts a
-    /// fresh branch in the same worktree, so the recorded name can change.
+    /// fresh branch in the same checkout, so the recorded name can change.
     pub fn set_repo_branch(&self, agent_id: &str, subdir: &str, branch: &str) -> Result<()> {
         let conn = self.db.lock();
         conn.execute(
@@ -654,9 +654,9 @@ impl WorkspaceManager {
     }
 
     /// Record the fork-point SHA for a tracked repo, identified by subdir.
-    /// Written once the spawn task has created the worktree and resolved its
+    /// Written once the spawn task has created the checkout and resolved its
     /// HEAD. Overwrites unconditionally — the fork point is fixed for the
-    /// worktree's life, so a re-write only ever sets the same value.
+    /// checkout's life, so a re-write only ever sets the same value.
     pub fn set_repo_base_sha(
         &self,
         agent_id: &str,
@@ -725,7 +725,7 @@ impl WorkspaceManager {
 
     /// Mark an agent as archived. Stamps `archived_at`, stores the
     /// snapshot of every tracked repo, and clears `repos` so the
-    /// frontend doesn't treat the (now-deleted) worktrees as live.
+    /// frontend doesn't treat the (now-deleted) checkouts as live.
     /// Status moves to `Stopped` so resume-on-launch ignores it.
     pub fn archive_agent(&self, id: &str, archive: ArchiveMetadata) -> Result<()> {
         let conn = self.db.lock();
@@ -736,7 +736,7 @@ impl WorkspaceManager {
             .map(|dt| dt.timestamp_millis())
             .unwrap_or_else(|_| now_millis());
 
-        // Clear setup_completed_at too — restore recreates the worktree
+        // Clear setup_completed_at too — restore recreates the checkout
         // from scratch, so node_modules etc. won't be there. Stamping
         // archived_at is enough to derive `Stopped`; there is no status
         // column to flip.
@@ -746,7 +746,7 @@ impl WorkspaceManager {
             rusqlite::params![archived_millis, id],
         )?;
 
-        // Update worktree rows with snapshot data from ArchiveMetadata.repos.
+        // Update checkout rows with snapshot data from ArchiveMetadata.repos.
         for snap in &archive.repos {
             conn.execute(
                 "UPDATE worktrees SET branch_tip_sha = ?1, parent_branch_sha = ?2,
@@ -781,7 +781,7 @@ impl WorkspaceManager {
             [id],
         )?;
 
-        // Update worktree records with new branch info and clear snapshot fields.
+        // Update checkout records with new branch info and clear snapshot fields.
         for repo in &repos {
             conn.execute(
                 "UPDATE worktrees SET branch = ?1, parent_branch = ?2,
@@ -797,7 +797,7 @@ impl WorkspaceManager {
 
     /// Has the Run panel's setup command ever succeeded for this agent?
     /// Cleared on archive so a restored agent re-runs setup against the
-    /// freshly-recreated worktree.
+    /// freshly-recreated checkout.
     pub fn is_setup_completed(&self, id: &str) -> Result<bool> {
         let conn = self.db.lock();
         let value: Option<i64> = conn
@@ -1605,7 +1605,7 @@ impl WorkspaceManager {
         let is_archived = archived_millis.is_some();
 
         let (repos, archive) = if is_archived {
-            // Build ArchiveMetadata from worktree snapshot fields.
+            // Build ArchiveMetadata from checkout snapshot fields.
             let archive_meta = Self::build_archive_metadata(conn, &id, archived_millis.unwrap());
             (Vec::new(), Some(archive_meta))
         } else {
@@ -1717,39 +1717,39 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
     }
 }
 
-/// Env var overriding the worktrees root (default `~/.fletch/worktrees`). The
-/// Run sandbox forbids writes to the host's `~/.fletch/worktrees`, so a nested
+/// Env var overriding the checkouts root (default `~/.fletch/workspaces`). The
+/// Run sandbox forbids writes to the host's `~/.fletch/workspaces`, so a nested
 /// Fletch launched as a Run process (dogfooding: Fletch running Fletch) is
 /// pointed at a sandbox-writable root instead — see
-/// `sandbox::nested_worktrees_root`. Mirrors `rpc::RPC_ROOT_ENV`.
-pub const WORKTREES_ROOT_ENV: &str = "FLETCH_WORKTREES_ROOT";
+/// `sandbox::nested_checkouts_root`. Mirrors `rpc::RPC_ROOT_ENV`.
+pub const WORKSPACES_ROOT_ENV: &str = "FLETCH_WORKSPACES_ROOT";
 
-/// Absolute path to the root holding every agent's worktrees:
-/// `~/.fletch/worktrees/`. Shared by *all* Fletch processes on the machine
+/// Absolute path to the root holding every agent's checkouts:
+/// `~/.fletch/workspaces/`. Shared by *all* Fletch processes on the machine
 /// (release and dev builds alike — only the database is namespaced per build),
-/// which is why name allocation has to consult it directly. `$FLETCH_WORKTREES_ROOT`
+/// which is why name allocation has to consult it directly. `$FLETCH_WORKSPACES_ROOT`
 /// overrides it when set and non-empty (nested-Fletch Run redirect).
-pub fn worktrees_root() -> Result<PathBuf> {
-    if let Some(root) = std::env::var_os(WORKTREES_ROOT_ENV).filter(|v| !v.is_empty()) {
+pub fn checkouts_root() -> Result<PathBuf> {
+    if let Some(root) = std::env::var_os(WORKSPACES_ROOT_ENV).filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(root));
     }
     let home = dirs::home_dir()
         .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    Ok(home.join(".fletch").join("worktrees"))
+    Ok(home.join(".fletch").join("workspaces"))
 }
 
-/// The set of agent-id directories that physically exist under the worktrees
+/// The set of agent-id directories that physically exist under the checkouts
 /// root. These are off-limits as new agent ids regardless of what any single
 /// database knows: the directory is the resource `git worktree add` collides
 /// on. Best-effort — a missing or unreadable root just yields an empty set.
-pub fn occupied_worktree_dirs() -> HashSet<String> {
-    match worktrees_root() {
-        Ok(root) => occupied_worktree_dirs_in(&root),
+pub fn occupied_checkout_dirs() -> HashSet<String> {
+    match checkouts_root() {
+        Ok(root) => occupied_checkout_dirs_in(&root),
         Err(_) => HashSet::new(),
     }
 }
 
-fn occupied_worktree_dirs_in(root: &Path) -> HashSet<String> {
+fn occupied_checkout_dirs_in(root: &Path) -> HashSet<String> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return HashSet::new();
     };
@@ -1760,21 +1760,130 @@ fn occupied_worktree_dirs_in(root: &Path) -> HashSet<String> {
         .collect()
 }
 
-/// Absolute path to the dir holding all of one agent's worktrees:
-/// `~/.fletch/worktrees/<agent-id>/`.
+/// Absolute path to the dir holding all of one agent's checkouts:
+/// `~/.fletch/workspaces/<agent-id>/`.
 pub fn agent_parent_dir(agent_id: &str) -> Result<PathBuf> {
-    Ok(worktrees_root()?.join(agent_id))
+    Ok(checkouts_root()?.join(agent_id))
 }
 
-/// Absolute path to one tracked repo's worktree:
-/// `~/.fletch/worktrees/<agent-id>/<subdir>/`.
-pub fn repo_worktree_path(agent_id: &str, subdir: &str) -> Result<PathBuf> {
+/// Absolute path to one tracked repo's checkout:
+/// `~/.fletch/workspaces/<agent-id>/<subdir>/`.
+pub fn repo_checkout_path(agent_id: &str, subdir: &str) -> Result<PathBuf> {
     Ok(agent_parent_dir(agent_id)?.join(subdir))
+}
+
+/// One-time rename of the legacy on-disk root. The provisioned-checkout root
+/// used to live at `~/.fletch/worktrees`; the default is now
+/// `~/.fletch/workspaces`. Existing installs still have their checkouts under
+/// the old path, so move them once at startup. Best-effort and non-fatal: only
+/// runs when the root isn't overridden by `WORKSPACES_ROOT_ENV`, only when the
+/// old dir exists and the new one doesn't, and any error is logged and swallowed
+/// so a failed move never blocks launch.
+pub fn migrate_default_checkouts_root() {
+    // An explicit override means the caller manages the location themselves
+    // (e.g. the nested-Fletch Run redirect) — don't touch anything.
+    let overridden = std::env::var_os(WORKSPACES_ROOT_ENV)
+        .filter(|v| !v.is_empty())
+        .is_some();
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    migrate_checkouts_root_in(&home.join(".fletch"), overridden);
+}
+
+/// Testable core of [`migrate_default_checkouts_root`]: within `fletch_dir`
+/// (i.e. `~/.fletch`), rename the legacy `worktrees` root to `workspaces`.
+/// No-ops when the root is overridden, when the legacy dir is absent, or when
+/// the new dir already exists (never merges into a live root). Errors are
+/// logged and swallowed so a failed move never blocks launch.
+fn migrate_checkouts_root_in(fletch_dir: &Path, overridden: bool) {
+    if overridden {
+        return;
+    }
+    let old = fletch_dir.join("worktrees");
+    let new = fletch_dir.join("workspaces");
+    if old.is_dir() && !new.exists() {
+        match std::fs::rename(&old, &new) {
+            Ok(()) => tracing::info!(
+                old = %old.display(),
+                new = %new.display(),
+                "migrated legacy checkouts root to workspaces",
+            ),
+            Err(e) => tracing::warn!(
+                old = %old.display(),
+                new = %new.display(),
+                error = %e,
+                "failed to migrate legacy checkouts root; continuing",
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one branch that mutates on-disk state: legacy dir present, new dir
+    /// absent, not overridden → the whole tree moves, old path gone.
+    #[test]
+    fn migrate_moves_legacy_dir_when_present_and_new_absent() {
+        let td = tempfile::tempdir().unwrap();
+        let fletch = td.path().join(".fletch");
+        std::fs::create_dir_all(fletch.join("worktrees").join("agent-1").join("repo")).unwrap();
+
+        migrate_checkouts_root_in(&fletch, false);
+
+        assert!(!fletch.join("worktrees").exists(), "legacy dir should be gone");
+        assert!(
+            fletch.join("workspaces").join("agent-1").join("repo").is_dir(),
+            "contents should have moved under the new root"
+        );
+    }
+
+    /// Override present → never touch anything, even with a legacy dir sitting
+    /// there (the caller manages the location, e.g. nested-Fletch Run).
+    #[test]
+    fn migrate_is_noop_when_overridden() {
+        let td = tempfile::tempdir().unwrap();
+        let fletch = td.path().join(".fletch");
+        std::fs::create_dir_all(fletch.join("worktrees")).unwrap();
+
+        migrate_checkouts_root_in(&fletch, true);
+
+        assert!(fletch.join("worktrees").is_dir(), "override must leave legacy dir");
+        assert!(!fletch.join("workspaces").exists(), "override must not create new dir");
+    }
+
+    /// No legacy dir (a fresh install) → nothing to migrate, no new dir created.
+    #[test]
+    fn migrate_is_noop_when_legacy_absent() {
+        let td = tempfile::tempdir().unwrap();
+        let fletch = td.path().join(".fletch");
+        std::fs::create_dir_all(&fletch).unwrap();
+
+        migrate_checkouts_root_in(&fletch, false);
+
+        assert!(!fletch.join("workspaces").exists(), "nothing to migrate");
+    }
+
+    /// New dir already exists → leave both untouched; never merge a legacy dir
+    /// into a live workspaces root.
+    #[test]
+    fn migrate_is_noop_when_new_already_exists() {
+        let td = tempfile::tempdir().unwrap();
+        let fletch = td.path().join(".fletch");
+        std::fs::create_dir_all(fletch.join("worktrees").join("old-agent")).unwrap();
+        std::fs::create_dir_all(fletch.join("workspaces").join("live-agent")).unwrap();
+
+        migrate_checkouts_root_in(&fletch, false);
+
+        assert!(fletch.join("worktrees").join("old-agent").is_dir(), "legacy left as-is");
+        assert!(fletch.join("workspaces").join("live-agent").is_dir(), "live root untouched");
+        assert!(
+            !fletch.join("workspaces").join("old-agent").exists(),
+            "must not merge legacy contents into the existing new root"
+        );
+    }
 
     fn test_db() -> Arc<Mutex<Connection>> {
         let dir = tempfile::tempdir().unwrap();
@@ -2068,7 +2177,7 @@ mod tests {
         wm.add_agent(&mut rec).unwrap();
         wm.remove_workspace_repo(&repo).unwrap();
         let cur = wm.current().unwrap();
-        // The repo record is deleted, but the agent remains (its worktree
+        // The repo record is deleted, but the agent remains (its checkout
         // may reference a now-deleted repo — that's fine, the sidebar
         // union logic handles it).
         assert_eq!(cur.agents.len(), 1);
@@ -2148,10 +2257,10 @@ mod tests {
         wm.set_repo_pr_number(&id, &subdir, 42).unwrap();
         assert_eq!(wm.agent(&id).unwrap().repos[0].pr_number, Some(42));
 
-        // Deleting the agent drops its worktree row. A future agent that reuses
+        // Deleting the agent drops its checkout row. A future agent that reuses
         // the same name (and therefore the same branch) starts with no PR — so
         // it can't resolve to the deleted agent's now-merged PR. This is the
-        // crux of binding PR identity to the worktree row, not the branch name.
+        // crux of binding PR identity to the checkout row, not the branch name.
         wm.remove_agent(&id).unwrap();
         let mut reused = new_agent_record(
             "denali".into(),
@@ -2346,7 +2455,7 @@ mod tests {
         );
         // add_agent needs the repo pre-seeded in repos; add_workspace_repo
         // handles that above. But we also need the repo in the repos table
-        // for the worktree join — seed it explicitly so the lookup succeeds.
+        // for the checkout join — seed it explicitly so the lookup succeeds.
         let _ = seed_repo_path(db, &repo_str);
         wm.add_agent(&mut rec).unwrap();
         let id = rec.id.clone();
@@ -2355,7 +2464,7 @@ mod tests {
 
     fn seed_repo_path(db: &Arc<Mutex<Connection>>, repo_path: &str) {
         // No-op if already there; used to guarantee the row exists for the
-        // worktree FK before add_agent runs the lookup.
+        // checkout FK before add_agent runs the lookup.
         let conn = db.lock();
         let path = std::path::Path::new(repo_path);
         let project_name = path
@@ -2797,14 +2906,14 @@ mod tests {
     }
 
     #[test]
-    fn occupied_worktree_dirs_lists_only_subdirs() {
+    fn occupied_checkout_dirs_lists_only_subdirs() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("kilimanjaro")).unwrap();
         std::fs::create_dir_all(root.path().join("seychelles")).unwrap();
         // A stray file (not a dir) must not be reported as an occupied name.
         std::fs::write(root.path().join("notes.txt"), b"x").unwrap();
 
-        let found = occupied_worktree_dirs_in(root.path());
+        let found = occupied_checkout_dirs_in(root.path());
         assert_eq!(found.len(), 2);
         assert!(found.contains("kilimanjaro"));
         assert!(found.contains("seychelles"));
@@ -2812,14 +2921,14 @@ mod tests {
     }
 
     #[test]
-    fn occupied_worktree_dirs_empty_when_root_missing() {
+    fn occupied_checkout_dirs_empty_when_root_missing() {
         let root = tempfile::tempdir().unwrap();
         let missing = root.path().join("does-not-exist");
-        assert!(occupied_worktree_dirs_in(&missing).is_empty());
+        assert!(occupied_checkout_dirs_in(&missing).is_empty());
     }
 
     /// Mark a workspace archived directly (tests don't go through the full
-    /// archive flow, which needs live worktrees on disk).
+    /// archive flow, which needs live checkouts on disk).
     fn mark_archived(db: &Arc<Mutex<Connection>>, id: &str) {
         let conn = db.lock();
         conn.execute(

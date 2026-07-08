@@ -2,7 +2,7 @@
 //!
 //! Random short hashes (`b5a471ff`) were unique but anonymous —
 //! impossible to refer to in conversation, hard to spot in a directory
-//! listing of `.worktrees/`. Names of mountains, deserts, parks, and
+//! listing of `workspaces/`. Names of mountains, deserts, parks, and
 //! seas give every agent a distinct identity that's easy to read,
 //! type, and remember. (We avoid city names because Conductor already
 //! uses them.) On the rare collision we suffix `-2`, `-3`, …

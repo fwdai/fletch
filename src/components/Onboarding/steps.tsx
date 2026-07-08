@@ -76,7 +76,7 @@ export function WelcomeStep({
           A new era of <em>agentic</em> engineering.
         </h1>
         <p className="ob-lede ob-reveal" style={{ "--d": ".30s" } as CSSProperties}>
-          Direct a fleet of coding agents in parallel — each in its own worktree. Review, refine,
+          Direct a fleet of coding agents in parallel — each in its own checkout. Review, refine,
           and ship from one quiet control room.
         </p>
 

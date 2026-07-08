@@ -9,7 +9,7 @@ interface Props {
   stats: ShortStats | null;
 }
 
-/** The one badge that summarizes the worktree: PR (state-tinted, with number)
+/** The one badge that summarizes the checkout: PR (state-tinted, with number)
  *  once one exists, else the uncommitted diff, else a clean-tree check. */
 export function GitBadge({ pr, git, checks, stats }: Props) {
   if (pr) {

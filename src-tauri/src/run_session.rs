@@ -1,5 +1,5 @@
 //! Per-agent "Run" process: spawns the project's setup + dev command
-//! inside the agent's worktree, streams output to the frontend, and
+//! inside the agent's checkout, streams output to the frontend, and
 //! tracks state across panel mounts.
 //!
 //! Separate from the agent's claude PTY (`agent.rs`) and from the

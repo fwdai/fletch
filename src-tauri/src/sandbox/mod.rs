@@ -12,8 +12,8 @@ use crate::error::{Error, Result};
 pub use docker::{availability as docker_availability, DockerAvailability};
 pub use engine::{AgentLaunchCtx, EngineKind, Keepalive, KillHandle, LaunchPlan, SandboxEngine};
 pub use seatbelt::{
-    build_run_profile, cleanup_nested_rpc_roots, cleanup_nested_worktrees_roots, nested_rpc_root,
-    nested_worktrees_root, profile_tempfile, SANDBOX_EXEC,
+    build_run_profile, cleanup_nested_rpc_roots, cleanup_nested_checkouts_roots, nested_rpc_root,
+    nested_checkouts_root, profile_tempfile, SANDBOX_EXEC,
 };
 
 /// The `settings` key holding the user's engine choice; values are

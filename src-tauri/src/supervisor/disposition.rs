@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::sandbox::provision::{self, CheckoutSpec, WorkspaceMode};
 use crate::workspace::{
-    agent_parent_dir, repo_worktree_path, AgentStatus, ArchiveMetadata, ArchivedRepoSnapshot,
+    agent_parent_dir, repo_checkout_path, AgentStatus, ArchiveMetadata, ArchivedRepoSnapshot,
     DiffStats, TrackedRepo,
 };
 
@@ -20,7 +20,7 @@ use super::Supervisor;
 impl Supervisor {
     /// Move an agent into the History view: stop the process if any,
     /// snapshot each tracked repo's SHA + diff stats, then tear down
-    /// the worktrees and branches. The claude session JSONL is left
+    /// the checkouts and branches. The claude session JSONL is left
     /// alone — that's what makes restore possible.
     ///
     /// Rejects while the agent is actively spawning or running a turn.
@@ -43,7 +43,7 @@ impl Supervisor {
         self.detach_runtime(agent_id);
 
         // Snapshot SHAs + diff stats before any destructive step, then tear
-        // down the worktrees/branches (best-effort — a single git failure
+        // down the checkouts/branches (best-effort — a single git failure
         // shouldn't block archive, since the user's intent is "get rid of
         // this").
         let (snapshots, diff_stats) = capture_repo_snapshots(agent_id, &record.repos).await;
@@ -57,7 +57,7 @@ impl Supervisor {
             let Some(tip) = snap.branch_tip_sha.as_deref() else {
                 continue;
             };
-            let Ok(wt) = repo_worktree_path(agent_id, &snap.subdir) else {
+            let Ok(wt) = repo_checkout_path(agent_id, &snap.subdir) else {
                 continue;
             };
             if provision::detect_mode(&wt) == Some(WorkspaceMode::Clone)
@@ -73,7 +73,7 @@ impl Supervisor {
             }
         }
 
-        teardown_agent_worktrees(agent_id, &record.repos, "archive").await;
+        teardown_agent_checkouts(agent_id, &record.repos, "archive").await;
 
         let archive = ArchiveMetadata {
             archived_at: chrono::Utc::now().to_rfc3339(),
@@ -91,7 +91,7 @@ impl Supervisor {
     }
 
     /// Pull an archived agent back into the live sidebar: recreate
-    /// branches and worktrees from snapshot SHAs, clear archive
+    /// branches and checkouts from snapshot SHAs, clear archive
     /// metadata, transition to Spawning so the supervisor's start path
     /// attaches to the existing claude session.
     pub async fn restore_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
@@ -160,17 +160,17 @@ impl Supervisor {
         for snap in &archive.repos {
             let tip_sha = snap.branch_tip_sha.as_deref().expect("checked above");
 
-            let worktree = repo_worktree_path(agent_id, &snap.subdir)?;
-            if let Some(parent) = worktree.parent() {
+            let checkout = repo_checkout_path(agent_id, &snap.subdir)?;
+            if let Some(parent) = checkout.parent() {
                 tokio::fs::create_dir_all(parent)
                     .await
-                    .map_err(|e| Error::Other(format!("create worktree parent: {e}")))?;
+                    .map_err(|e| Error::Other(format!("create checkout parent: {e}")))?;
             }
 
             let spec = CheckoutSpec {
                 source_repo: &snap.repo_path,
                 base_ref: tip_sha,
-                dest: &worktree,
+                dest: &checkout,
             };
             let branch = match &snap.branch_name {
                 // The agent had pushed a branch → recreate it at the tip,
@@ -232,7 +232,7 @@ impl Supervisor {
         let repos = record.as_ref().map(|r| r.repos.clone()).unwrap_or_default();
 
         self.detach_runtime(agent_id);
-        teardown_agent_worktrees(agent_id, &repos, "discard").await;
+        teardown_agent_checkouts(agent_id, &repos, "discard").await;
 
         self.workspace.remove_agent(agent_id)?;
         Ok(())
@@ -265,7 +265,7 @@ impl Supervisor {
 /// returning the per-repo snapshots plus the aggregate add/delete totals.
 ///
 /// Resolves SHAs without mutating anything, so callers can capture state before
-/// any destructive teardown. The tip is the worktree's HEAD — works whether the
+/// any destructive teardown. The tip is the checkout's HEAD — works whether the
 /// agent is on a branch or still detached (never pushed), so both restore from
 /// the exact committed tip.
 async fn capture_repo_snapshots(
@@ -277,8 +277,8 @@ async fn capture_repo_snapshots(
     let mut total_dels: u32 = 0;
 
     for repo in repos {
-        let worktree = repo_worktree_path(agent_id, &repo.subdir).ok();
-        let branch_tip_sha = match &worktree {
+        let checkout = repo_checkout_path(agent_id, &repo.subdir).ok();
+        let branch_tip_sha = match &checkout {
             Some(wt) => git::rev_parse(wt, "HEAD").await.ok(),
             None => None,
         };
@@ -298,7 +298,7 @@ async fn capture_repo_snapshots(
         // The diff runs inside the workspace, not the source repo: a clone's
         // commits exist only in the clone's object store, while a worktree
         // shares its store with the source — so the workspace resolves both.
-        if let (Some(wt), Some(from), Some(to)) = (&worktree, &parent_branch_sha, &branch_tip_sha) {
+        if let (Some(wt), Some(from), Some(to)) = (&checkout, &parent_branch_sha, &branch_tip_sha) {
             if from != to {
                 if let Ok((a, d)) = git::diff_shortstat(wt, from, to).await {
                     adds = a;
@@ -362,16 +362,16 @@ async fn choose_restore_branch_name(repo_path: &Path, desired: &str) -> String {
     }
 }
 
-/// Best-effort teardown of every tracked repo's worktree + branch, plus the
+/// Best-effort teardown of every tracked repo's checkout + branch, plus the
 /// agent's parent dir. Failures are logged (tagged with `op` for context) but
 /// never abort the sweep — the caller's intent is to get rid of the agent.
 /// Shared by archive and discard.
-async fn teardown_agent_worktrees(agent_id: &str, repos: &[TrackedRepo], op: &str) {
+async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &str) {
     for repo in repos {
-        let worktree = match repo_worktree_path(agent_id, &repo.subdir) {
+        let checkout = match repo_checkout_path(agent_id, &repo.subdir) {
             Ok(p) => p,
             Err(e) => {
-                tracing::warn!(error = %e, subdir = %repo.subdir, op, "worktree_path failed");
+                tracing::warn!(error = %e, subdir = %repo.subdir, op, "checkout path resolution failed");
                 continue;
             }
         };
@@ -379,12 +379,12 @@ async fn teardown_agent_worktrees(agent_id: &str, repos: &[TrackedRepo], op: &st
         // settings key: a dev-flag flip between spawn and teardown must not
         // run the wrong arm. A missing/empty dir defaults to the worktree
         // arm, whose prune+remove degrade to the pre-existing warnings.
-        let detected = provision::detect_mode(&worktree);
+        let detected = provision::detect_mode(&checkout);
         let mode = detected.unwrap_or(WorkspaceMode::Worktree);
         let spec = CheckoutSpec {
             source_repo: &repo.repo_path,
             base_ref: "HEAD", // unused by teardown
-            dest: &worktree,
+            dest: &checkout,
         };
         if let Err(e) = provision::teardown(mode, &spec).await {
             tracing::warn!(error = %e, subdir = %repo.subdir, op, "workspace teardown failed");
@@ -410,7 +410,7 @@ async fn teardown_agent_worktrees(agent_id: &str, repos: &[TrackedRepo], op: &st
         }
     }
 
-    // Remove the parent dir (may still hold orphan files if any worktree
+    // Remove the parent dir (may still hold orphan files if any checkout
     // removal failed). Best-effort.
     if let Ok(parent) = agent_parent_dir(agent_id) {
         if parent.exists() {

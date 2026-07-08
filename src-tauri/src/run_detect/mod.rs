@@ -1,7 +1,7 @@
 //! Multi-language run-config detection.
 //!
 //! Each ecosystem has a [`RunDetector`] that reads a few files at a
-//! worktree root and, if it recognizes the project, returns a
+//! checkout root and, if it recognizes the project, returns a
 //! [`DetectedConfig`] with a confidence score. [`detect_all`] runs every
 //! detector and returns the surviving configs ranked by confidence.
 //!
@@ -82,7 +82,7 @@ const CONFIDENCE_LOCKFILE: u8 = 90;
 const CONFIDENCE_MANIFEST: u8 = 60;
 
 pub trait RunDetector {
-    fn detect(&self, worktree: &Path) -> Option<DetectedConfig>;
+    fn detect(&self, checkout: &Path) -> Option<DetectedConfig>;
 }
 
 fn detectors() -> Vec<Box<dyn RunDetector>> {
@@ -95,13 +95,13 @@ fn detectors() -> Vec<Box<dyn RunDetector>> {
     ]
 }
 
-/// Run every detector over `worktree` and return the recognized configs
+/// Run every detector over `checkout` and return the recognized configs
 /// ranked by confidence (highest first). Empty when nothing matched —
 /// callers treat that as the no-op fallback.
-pub fn detect_all(worktree: &Path) -> Vec<DetectedConfig> {
+pub fn detect_all(checkout: &Path) -> Vec<DetectedConfig> {
     let mut configs: Vec<DetectedConfig> = detectors()
         .iter()
-        .filter_map(|d| d.detect(worktree))
+        .filter_map(|d| d.detect(checkout))
         .collect();
     // Stable sort by confidence desc so ties keep detector registration
     // order (node before python before … — a deterministic primary).
@@ -111,16 +111,16 @@ pub fn detect_all(worktree: &Path) -> Vec<DetectedConfig> {
 
 // ── shared file helpers ──────────────────────────────────────────────────────
 
-/// Read a file at `worktree/name`, trimmed. None if absent/unreadable.
-fn read_trimmed(worktree: &Path, name: &str) -> Option<String> {
-    std::fs::read_to_string(worktree.join(name))
+/// Read a file at `checkout/name`, trimmed. None if absent/unreadable.
+fn read_trimmed(checkout: &Path, name: &str) -> Option<String> {
+    std::fs::read_to_string(checkout.join(name))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
 
-fn exists(worktree: &Path, name: &str) -> bool {
-    worktree.join(name).exists()
+fn exists(checkout: &Path, name: &str) -> bool {
+    checkout.join(name).exists()
 }
 
 /// Shared fixture/assertion helpers for the per-detector test modules.
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn node_root_outranks_rust_subdir() {
         // This repo's own shape: Node at root, Rust under src-tauri/.
-        // Detection runs at the worktree root, so only the root Node
+        // Detection runs at the checkout root, so only the root Node
         // project is seen — but even a root Cargo.toml must lose to the
         // root lockfile-backed Node project.
         let dir = fixture(&[

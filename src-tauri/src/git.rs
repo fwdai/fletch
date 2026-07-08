@@ -217,14 +217,14 @@ pub(crate) async fn identity_env(dir: &Path) -> Vec<(String, String)> {
     env
 }
 
-/// Create a worktree on detached HEAD (no branch yet). The worktree
+/// Create a checkout on detached HEAD (no branch yet). The checkout
 /// stays detached for its whole working life; a branch is materialized
 /// only at the first push (via `checkout_new_unique_branch`), named by
 /// the agent. This keeps `git branch` clean for agents that never push
 /// and lets the branch carry a meaningful, conventional name chosen with
 /// full task context rather than a placeholder allocated up front.
 ///
-/// `base` is the commit-ish the worktree starts from (e.g. `origin/main`
+/// `base` is the commit-ish the checkout starts from (e.g. `origin/main`
 /// after a fresh fetch). When `None`, it starts from the repo's current
 /// HEAD — the legacy behavior.
 pub async fn worktree_add_detached(
@@ -265,13 +265,13 @@ pub async fn worktree_add_detached(
         let _ = worktree_prune(repo).await;
         if !is_registered_worktree(repo, worktree_path).await && worktree_path.exists() {
             if let Err(e) = tokio::fs::remove_dir_all(worktree_path).await {
-                tracing::warn!(path = %worktree_path.display(), error = %e, "orphan worktree dir cleanup failed");
+                tracing::warn!(path = %worktree_path.display(), error = %e, "orphan checkout dir cleanup failed");
             }
         }
         if !worktree_path.exists() {
             let retry = git_output_env(repo, &args, &hooks).await?;
             if retry.status.success() {
-                tracing::info!(path = %worktree_path.display(), "recovered orphan worktree path on spawn");
+                tracing::info!(path = %worktree_path.display(), "recovered orphan checkout path on spawn");
                 return Ok(());
             }
             return Err(Error::Git(format!(
@@ -317,14 +317,14 @@ async fn is_registered_worktree(repo: &Path, path: &Path) -> bool {
     false
 }
 
-/// Best-effort fetch of `branch` from `origin` so a freshly-spawned worktree
+/// Best-effort fetch of `branch` from `origin` so a freshly-spawned checkout
 /// can fork from the latest remote state rather than a stale local ref.
-/// Returns the commit-ish a worktree should be based on — the SHA that
+/// Returns the commit-ish a checkout should be based on — the SHA that
 /// `origin/<branch>` resolves to **in this repo** when the fetch succeeded —
 /// otherwise `None`, signalling the caller to fall back to local HEAD.
 ///
 /// The SHA (not the symbolic `origin/<branch>`) is essential for Clone-mode
-/// provisioning: the workspace is a `git clone --shared` of this repo, so
+/// provisioning: the checkout is a `git clone --shared` of this repo, so
 /// inside the clone `origin/<branch>` resolves to this repo's *local*
 /// `refs/heads/<branch>` — potentially stale — not the remote-tracking ref
 /// the fetch just updated. A SHA resolves identically everywhere, and its
@@ -356,15 +356,15 @@ pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
     rev_parse(repo, &remote_ref).await.ok()
 }
 
-/// Inside an existing worktree, create a new branch at the current
+/// Inside an existing checkout, create a new branch at the current
 /// commit and check it out (`git checkout -b <branch>`). Used to
-/// promote a detached-HEAD worktree onto a named branch once the
+/// promote a detached-HEAD checkout onto a named branch once the
 /// first user message gives us a slug.
-pub async fn checkout_new_branch(worktree: &Path, branch: &str) -> Result<()> {
+pub async fn checkout_new_branch(checkout: &Path, branch: &str) -> Result<()> {
     // `checkout` fires `post-checkout`, which would run on the host against an
     // agent-writable workspace — disable workspace hooks for this invocation.
     run_git_env(
-        worktree,
+        checkout,
         &["checkout", "-b", branch],
         &no_hooks_env(),
         &format!("checkout -b {branch}"),
@@ -386,12 +386,12 @@ const MAX_BRANCH_SUFFIX: u32 = 1000;
 /// last fetch rather than a live `ls-remote` — a branch created on the remote
 /// since then isn't seen, and `git push` would update it. That race is rare
 /// and acceptable; avoiding a network round-trip on every push isn't.
-pub async fn branch_name_taken(worktree: &Path, branch: &str) -> Result<bool> {
-    if branch_exists(worktree, branch).await? {
+pub async fn branch_name_taken(checkout: &Path, branch: &str) -> Result<bool> {
+    if branch_exists(checkout, branch).await? {
         return Ok(true);
     }
     let refname = format!("refs/remotes/origin/{branch}");
-    let out = git_output(worktree, &["show-ref", "--verify", "--quiet", &refname]).await?;
+    let out = git_output(checkout, &["show-ref", "--verify", "--quiet", &refname]).await?;
     match out.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -399,14 +399,14 @@ pub async fn branch_name_taken(worktree: &Path, branch: &str) -> Result<bool> {
     }
 }
 
-/// Materialize a branch on a (typically detached) worktree at its current
+/// Materialize a branch on a (typically detached) checkout at its current
 /// HEAD, picking the first collision-free name from `desired`, `desired-2`,
 /// `desired-3`, … and checking it out. Returns the name actually used.
 ///
 /// This is the single point where an agent's branch is born — at the first
 /// push, named from the agent's conventional choice (`fix/…`, `feat/…`,
 /// `chore/…`) rather than a placeholder allocated at spawn.
-pub async fn checkout_new_unique_branch(worktree: &Path, desired: &str) -> Result<String> {
+pub async fn checkout_new_unique_branch(checkout: &Path, desired: &str) -> Result<String> {
     for n in 1..=MAX_BRANCH_SUFFIX {
         let candidate = if n == 1 {
             desired.to_string()
@@ -416,8 +416,8 @@ pub async fn checkout_new_unique_branch(worktree: &Path, desired: &str) -> Resul
         // Propagate a probe error rather than masking it as "free": treating a
         // transient show-ref failure as an open name would attempt a checkout
         // that fails confusingly. Surfacing it lets the caller report honestly.
-        if !branch_name_taken(worktree, &candidate).await? {
-            checkout_new_branch(worktree, &candidate).await?;
+        if !branch_name_taken(checkout, &candidate).await? {
+            checkout_new_branch(checkout, &candidate).await?;
             return Ok(candidate);
         }
     }
@@ -494,7 +494,7 @@ pub async fn worktree_prune(repo: &Path) -> Result<()> {
 
 /// Return the name of the currently-checked-out branch in the repo,
 /// or `None` if HEAD is detached. Used by the supervisor to record
-/// the parent branch when spawning an agent worktree.
+/// the parent branch when spawning an agent checkout.
 pub async fn current_branch(repo: &Path) -> Result<Option<String>> {
     let out = git_output(repo, &["symbolic-ref", "--short", "-q", "HEAD"]).await?;
     match out.status.code() {
@@ -518,7 +518,7 @@ pub async fn current_branch(repo: &Path) -> Result<Option<String>> {
 
 /// Whether a local branch with this name exists in the repo. Used by
 /// the supervisor to disambiguate auto-generated branch names before
-/// spawning a worktree — on collision it falls back to a name that
+/// spawning a checkout — on collision it falls back to a name that
 /// includes the agent's place id.
 pub async fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
     let refname = format!("refs/heads/{branch}");
@@ -555,13 +555,13 @@ pub async fn diff_shortstat(
     Ok(parse_shortstat(&line))
 }
 
-/// Run `git diff --shortstat <base>` from a live worktree. This compares the
+/// Run `git diff --shortstat <base>` from a live checkout. This compares the
 /// current working tree, including uncommitted changes, against the base ref.
-pub async fn worktree_diff_shortstat(
-    worktree: &Path,
+pub async fn checkout_diff_shortstat(
+    checkout: &Path,
     base_ref: &str,
 ) -> Result<(u32, u32)> {
-    let out = run_git(worktree, &["diff", "--shortstat", base_ref], &format!("diff --shortstat {base_ref}")).await?;
+    let out = run_git(checkout, &["diff", "--shortstat", base_ref], &format!("diff --shortstat {base_ref}")).await?;
     let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok(parse_shortstat(&line))
 }
@@ -871,7 +871,7 @@ mod tests {
 
     #[tokio::test]
     async fn worktree_add_detached_uses_base_commit_when_given() {
-        // A worktree forked from an explicit commit-ish starts at that commit,
+        // A checkout forked from an explicit commit-ish starts at that commit,
         // not at the repo's current HEAD.
         let td = tempfile::tempdir().unwrap();
         let repo = td.path();
@@ -885,7 +885,7 @@ mod tests {
         std::fs::write(repo.join("b.txt"), b"two").unwrap();
         commit_all(repo, "second").await.unwrap();
 
-        // Base the worktree on the first commit even though HEAD is now `second`.
+        // Base the checkout on the first commit even though HEAD is now `second`.
         let wt = td.path().join("wt");
         worktree_add_detached(repo, &wt, Some(&first)).await.unwrap();
         assert_eq!(rev_parse(&wt, "HEAD").await.unwrap(), first);
@@ -1003,7 +1003,7 @@ mod tests {
 
         // No workspace hook ran during any host-side step of the rebase.
         assert!(!sentinel.exists(), "workspace post-checkout hook must not run");
-        // And the abort left the worktree clean, not mid-rebase.
+        // And the abort left the checkout clean, not mid-rebase.
         assert!(!repo.join(".git/rebase-merge").exists());
         assert!(!repo.join(".git/rebase-apply").exists());
     }
@@ -1062,8 +1062,8 @@ pub async fn worktree_add_branch(
 /// Returns `"up-to-date"` when the remote already had everything (a no-op
 /// push), otherwise `"pushed"`. Lets the UI confirm the outcome instead of
 /// silently doing nothing when there was nothing to send.
-pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
-    let mut cmd = crate::git_dist::command(worktree);
+pub async fn push(checkout: &Path, branch: &str) -> Result<String> {
+    let mut cmd = crate::git_dist::command(checkout);
     cmd.args(["push", "-u", "origin", branch]);
     // Auth for the https transport *and* hook-disabling — `pre-push` fires on
     // the host, so a workspace-planted hook must not run. Merge so neither
@@ -1093,8 +1093,8 @@ pub async fn push(worktree: &Path, branch: &str) -> Result<String> {
 
 /// Pull latest from the tracking remote branch.
 /// Requires `push -u` to have been called first to establish an upstream.
-pub async fn pull(worktree: &Path) -> Result<()> {
-    let mut cmd = crate::git_dist::command(worktree);
+pub async fn pull(checkout: &Path) -> Result<()> {
+    let mut cmd = crate::git_dist::command(checkout);
     cmd.args(["pull"]);
     // Auth for the https transport; identity because a pull may create a merge
     // commit; no-hooks because the merge fires `post-merge`/`prepare-commit-msg`
@@ -1103,7 +1103,7 @@ pub async fn pull(worktree: &Path) -> Result<()> {
     for (k, v) in merge_git_env(&[
         &crate::github::git_auth_env(),
         &no_hooks_env(),
-        &identity_env(worktree).await,
+        &identity_env(checkout).await,
     ]) {
         cmd.env(k, v);
     }
@@ -1118,28 +1118,28 @@ pub async fn pull(worktree: &Path) -> Result<()> {
 }
 
 /// Rebase the current branch onto `base` (e.g. "main"). Used by the clean-state
-/// panel action to bring the worktree up to date with its base branch when the
-/// base has moved ahead. Aborts the rebase on conflict so the worktree is never
+/// panel action to bring the checkout up to date with its base branch when the
+/// base has moved ahead. Aborts the rebase on conflict so the checkout is never
 /// left mid-rebase — the caller surfaces the error.
-pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
+pub async fn rebase_onto(checkout: &Path, base: &str) -> Result<()> {
     // Rebasing rewrites commits, which needs a committer identity; it also
     // fires `pre-rebase`/`post-rewrite`, so disable workspace hooks too.
-    let env = merge_git_env(&[&identity_env(worktree).await, &no_hooks_env()]);
-    let out = git_output_env(worktree, &["rebase", base], &env).await?;
+    let env = merge_git_env(&[&identity_env(checkout).await, &no_hooks_env()]);
+    let out = git_output_env(checkout, &["rebase", base], &env).await?;
     if !out.status.success() {
         let conflict = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        // Don't leave the worktree mid-rebase. `rebase --abort` checks out the
+        // Don't leave the checkout mid-rebase. `rebase --abort` checks out the
         // original HEAD, firing `post-checkout` — so it too must run with hooks
         // disabled, else the failure path reopens the very host-execution hole
         // the success path closes. If the abort *itself* fails or times out, the
-        // worktree is stuck mid-rebase and needs manual recovery — surface that
+        // checkout is stuck mid-rebase and needs manual recovery — surface that
         // alongside the original conflict rather than silently swallowing it and
         // reporting only the conflict.
         if let Err(abort_err) =
-            run_git_env(worktree, &["rebase", "--abort"], &no_hooks_env(), "rebase --abort").await
+            run_git_env(checkout, &["rebase", "--abort"], &no_hooks_env(), "rebase --abort").await
         {
             return Err(Error::Git(format!(
-                "rebase onto {base} failed: {conflict}; the worktree is left \
+                "rebase onto {base} failed: {conflict}; the checkout is left \
                  mid-rebase because cleanup also failed ({abort_err}) — run \
                  `git rebase --abort` manually"
             )));
@@ -1151,10 +1151,10 @@ pub async fn rebase_onto(worktree: &Path, base: &str) -> Result<()> {
 
 /// Stage all working-tree changes (including untracked) and create a commit.
 /// Errors if there is nothing to commit or if git is unhappy.
-pub async fn commit(worktree: &Path, message: &str) -> Result<()> {
-    run_git(worktree, &["add", "-A"], "add -A").await?;
-    let env = merge_git_env(&[&identity_env(worktree).await, &no_hooks_env()]);
-    let out = git_output_env(worktree, &["commit", "-m", message], &env).await?;
+pub async fn commit(checkout: &Path, message: &str) -> Result<()> {
+    run_git(checkout, &["add", "-A"], "add -A").await?;
+    let env = merge_git_env(&[&identity_env(checkout).await, &no_hooks_env()]);
+    let out = git_output_env(checkout, &["commit", "-m", message], &env).await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "commit failed: {}",
@@ -1167,22 +1167,22 @@ pub async fn commit(worktree: &Path, message: &str) -> Result<()> {
 /// Discard every uncommitted change in the working tree, including
 /// untracked files and directories. Equivalent to a hard reset plus a
 /// `clean -fd`. Destructive — caller is responsible for confirming.
-pub async fn discard_all(worktree: &Path) -> Result<()> {
-    run_git(worktree, &["reset", "--hard", "HEAD"], "reset --hard").await?;
-    run_git(worktree, &["clean", "-fd"], "clean -fd").await?;
+pub async fn discard_all(checkout: &Path) -> Result<()> {
+    run_git(checkout, &["reset", "--hard", "HEAD"], "reset --hard").await?;
+    run_git(checkout, &["clean", "-fd"], "clean -fd").await?;
     Ok(())
 }
 
 /// Stash all working-tree changes including untracked files. No message —
 /// git generates the default "WIP on <branch>" label.
-pub async fn stash_push(worktree: &Path) -> Result<()> {
-    run_git(worktree, &["stash", "push", "--include-untracked"], "stash push").await?;
+pub async fn stash_push(checkout: &Path) -> Result<()> {
+    run_git(checkout, &["stash", "push", "--include-untracked"], "stash push").await?;
     Ok(())
 }
 
 /// Abort an in-progress merge, restoring the pre-merge working tree.
-pub async fn merge_abort(worktree: &Path) -> Result<()> {
-    run_git(worktree, &["merge", "--abort"], "merge --abort").await?;
+pub async fn merge_abort(checkout: &Path) -> Result<()> {
+    run_git(checkout, &["merge", "--abort"], "merge --abort").await?;
     Ok(())
 }
 
@@ -1242,16 +1242,16 @@ pub async fn ensure_head_commit(repo: &Path) -> Result<()> {
 }
 
 /// Add a remote. Used when publishing a fresh local repo to GitHub.
-pub async fn remote_add(worktree: &Path, name: &str, url: &str) -> Result<()> {
-    run_git(worktree, &["remote", "add", name, url], &format!("remote add {name}")).await?;
+pub async fn remote_add(checkout: &Path, name: &str, url: &str) -> Result<()> {
+    run_git(checkout, &["remote", "add", name, url], &format!("remote add {name}")).await?;
     Ok(())
 }
 
-/// Subject and body of the worktree's last commit — the source for a PR's
+/// Subject and body of the checkout's last commit — the source for a PR's
 /// title/body when the caller didn't supply one (what `gh pr create --fill`
 /// did).
-pub async fn last_commit_message(worktree: &Path) -> Result<(String, String)> {
-    let out = run_git(worktree, &["log", "-1", "--format=%s%n%b"], "log -1").await?;
+pub async fn last_commit_message(checkout: &Path) -> Result<(String, String)> {
+    let out = run_git(checkout, &["log", "-1", "--format=%s%n%b"], "log -1").await?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut lines = text.lines();
     let subject = lines.next().unwrap_or("").trim().to_string();
@@ -1262,7 +1262,7 @@ pub async fn last_commit_message(worktree: &Path) -> Result<(String, String)> {
 /// Force-delete a local branch. Returns Ok even if the branch never
 /// existed in the first place — that's exactly the state the caller
 /// usually wants to converge on. Errors only for genuine git failures
-/// (e.g. branch checked out in another live worktree).
+/// (e.g. branch checked out in another live checkout).
 pub async fn branch_delete(repo: &Path, branch: &str) -> Result<()> {
     let out = git_output(repo, &["branch", "-D", branch]).await?;
     if out.status.success() {
@@ -1296,13 +1296,13 @@ pub async fn list_local_branches(repo: &Path) -> Result<Vec<String>> {
     Ok(branches)
 }
 
-/// List the worktree's relevant files: everything tracked plus untracked
+/// List the checkout's relevant files: everything tracked plus untracked
 /// files that aren't gitignored. Paths are repo-relative with forward
 /// slashes (git's native form). This is what the File panel browses — it
 /// naturally excludes `node_modules`, build output, etc.
-pub async fn list_files(worktree: &Path) -> Result<Vec<String>> {
+pub async fn list_files(checkout: &Path) -> Result<Vec<String>> {
     let out = run_git(
-        worktree,
+        checkout,
         &["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         "ls-files",
     )
@@ -1316,9 +1316,9 @@ pub async fn list_files(worktree: &Path) -> Result<Vec<String>> {
 
 /// Read a single file's contents at a given ref (e.g. the parent branch),
 /// used to show the prior contents of a file the agent deleted.
-pub async fn show_file(worktree: &Path, base_ref: &str, path: &str) -> Result<String> {
+pub async fn show_file(checkout: &Path, base_ref: &str, path: &str) -> Result<String> {
     let spec = format!("{base_ref}:{path}");
-    let out = run_git(worktree, &["show", &spec], &format!("show {base_ref}:{path}")).await?;
+    let out = run_git(checkout, &["show", &spec], &format!("show {base_ref}:{path}")).await?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -1326,12 +1326,12 @@ pub async fn show_file(worktree: &Path, base_ref: &str, path: &str) -> Result<St
 /// agent changed versus `base_ref`, split into purely-added lines and
 /// modified lines. Drives the File panel's VS Code-style change gutter.
 pub async fn file_changed_lines(
-    worktree: &Path,
+    checkout: &Path,
     base_ref: &str,
     path: &str,
 ) -> Result<(Vec<u32>, Vec<u32>)> {
     let out = run_git(
-        worktree,
+        checkout,
         &["diff", "--no-color", "-U0", base_ref, "--", path],
         &format!("diff -U0 {base_ref} -- {path}"),
     )
@@ -1341,9 +1341,9 @@ pub async fn file_changed_lines(
 
 /// Return the full unified diff of `path` versus `base_ref`, for the Code
 /// panel's live view. `-U3` gives three lines of surrounding context per hunk.
-pub async fn file_diff(worktree: &Path, base_ref: &str, path: &str) -> Result<String> {
+pub async fn file_diff(checkout: &Path, base_ref: &str, path: &str) -> Result<String> {
     let out = run_git(
-        worktree,
+        checkout,
         &["diff", "--no-color", "-U3", base_ref, "--", path],
         &format!("diff -U3 {base_ref} -- {path}"),
     )

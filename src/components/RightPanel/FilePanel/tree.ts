@@ -1,5 +1,5 @@
 // Tree model + pure helpers for the Files panel explorer.
-import type { WorktreeFile } from "@/api";
+import type { CheckoutFile } from "@/api";
 import { basename, joinPath, parentDir } from "@/util/format";
 
 // ── tree model ──────────────────────────────────────────────────────────
@@ -55,9 +55,9 @@ export function errMsg(e: unknown): string {
 }
 
 /** Build a sorted nested tree (dirs first, then files; alpha within each)
- *  from a flat list of worktree files. `extraDirs` injects directories that
+ *  from a flat list of checkout files. `extraDirs` injects directories that
  *  carry no files yet (freshly-created empty folders). */
-export function buildTree(files: WorktreeFile[], extraDirs: string[] = []): TreeNode[] {
+export function buildTree(files: CheckoutFile[], extraDirs: string[] = []): TreeNode[] {
   const roots: TreeNode[] = [];
   // path → DirNode, so we can attach children as we walk each file's segments.
   const dirIndex = new Map<string, DirNode>();

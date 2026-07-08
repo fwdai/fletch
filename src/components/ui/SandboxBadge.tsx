@@ -5,7 +5,7 @@ const NAME = "Docker sandbox";
 
 /** Why the path looks like the host: docker agents bind-mount the workspace at
  *  its exact host path ("path identity"), so `find`/diff output shows
- *  `/Users/.../worktrees/…` even though the process is confined to the
+ *  `/Users/.../workspaces/…` even though the process is confined to the
  *  container. This explanation makes that non-obvious design legible. It rides
  *  on the native `title` tooltip (via Badge's `hint`) so the OS positions it and
  *  it can't clip at a window edge like a hand-placed CSS tooltip would. */

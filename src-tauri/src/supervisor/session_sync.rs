@@ -5,7 +5,7 @@ use std::time::Duration;
 use tauri::AppHandle;
 
 use crate::agent::per_turn_descriptor;
-use crate::workspace::{repo_worktree_path, AgentRecord, AgentView, WorkspaceManager};
+use crate::workspace::{repo_checkout_path, AgentRecord, AgentView, WorkspaceManager};
 
 use super::events::{emit_pr_state, emit_session_records_appended};
 use super::Supervisor;
@@ -81,7 +81,7 @@ impl Supervisor {
                 return;
             }
             let subdir = repo.subdir.clone();
-            let worktree = match crate::workspace::repo_worktree_path(&agent_id, &subdir) {
+            let checkout = match crate::workspace::repo_checkout_path(&agent_id, &subdir) {
                 Ok(p) => p,
                 Err(_) => return,
             };
@@ -89,7 +89,7 @@ impl Supervisor {
                 // Known PR: fetch by number, never by branch. This is what keeps
                 // PR identity bound to the agent rather than the recyclable
                 // branch name.
-                crate::github::pr_view_number(&worktree, number as u32)
+                crate::github::pr_view_number(&checkout, number as u32)
                     .await
                     .unwrap_or(None)
             } else {
@@ -98,7 +98,7 @@ impl Supervisor {
                 // it if it's OPEN — a stale merged/closed PR sitting on a recycled
                 // branch must not be claimed as this agent's. Once adopted we
                 // persist the number so all later lookups go by number.
-                match crate::github::pr_view(&worktree).await.unwrap_or(None) {
+                match crate::github::pr_view(&checkout).await.unwrap_or(None) {
                     Some(pr) if matches!(pr.state, crate::github::PrStatus::Open) => {
                         if let Err(e) =
                             workspace.set_repo_pr_number(&agent_id, &subdir, pr.number as i64)
@@ -219,7 +219,7 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
     let Some(repo) = record.repos.first() else {
         return Some(0);
     };
-    let Ok(cwd) = repo_worktree_path(agent_id, &repo.subdir) else {
+    let Ok(cwd) = repo_checkout_path(agent_id, &repo.subdir) else {
         return Some(0);
     };
 

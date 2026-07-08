@@ -47,7 +47,7 @@ pub struct ExecSpawn {
     /// engine embedded in `prefix_args` (e.g. a profile path) stays valid across
     /// the per-turn respawns.
     pub keepalive: Keepalive,
-    /// The agent's primary worktree — set as the child's cwd.
+    /// The agent's primary checkout — set as the child's cwd.
     pub cwd: PathBuf,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,

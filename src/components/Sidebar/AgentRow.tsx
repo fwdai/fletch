@@ -58,7 +58,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const prChecks = useAppStore((s) => s.prChecks[agent.id] ?? null);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
-  // Dev-server state for this worktree — orthogonal to the agent's turn status,
+  // Dev-server state for this checkout — orthogonal to the agent's turn status,
   // so it shows as its own play chip beside the identity chip, not among the
   // activity cues (rail / loader / shimmer). Fed by the app-wide `run:state`
   // subscription (see store/app.ts), so it stays correct from any tab.
