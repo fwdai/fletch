@@ -299,14 +299,17 @@ impl Supervisor {
 
             // Fork point: prefer the freshest remote state of the parent branch
             // (the user's chosen base, or the repo's current branch) so the agent
-            // never starts on stale local refs. Best-effort — if the remote is
+            // never starts on stale local refs — as the fetched tip's SHA, which
+            // resolves the same in the source repo and in a clone-mode workspace
+            // (a symbolic `origin/<branch>` would resolve against the source's
+            // stale local head inside the clone). Best-effort — if the remote is
             // unavailable (offline, no remote, a local-only branch, or a workflow
             // commit-ish), use the ref directly when it resolves, otherwise fall
             // through to HEAD so an unresolvable base degrades instead of failing
             // the spawn.
             let base = match &parent_for_fork {
                 Some(b) => match git::fetch_fork_point(&repo_path, b).await {
-                    Some(remote) => Some(remote),
+                    Some(sha) => Some(sha),
                     None => git::rev_parse(&repo_path, b).await.ok().map(|_| b.clone()),
                 },
                 None => None,
