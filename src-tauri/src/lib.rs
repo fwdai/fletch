@@ -41,15 +41,18 @@ use crate::workspace::WorkspaceManager;
 
 type DbState = Arc<Mutex<Connection>>;
 
+/// The app's bundle identifier. Must match `identifier` in `tauri.conf.json`;
+/// macOS derives the app's on-disk folder names from it.
+pub(crate) const BUNDLE_ID: &str = "com.fletch.desktop";
+
 /// Fletch's on-disk data directory — `~/Library/Application Support/
-/// com.fletch.desktop` (with a `dev` subfolder under debug builds), matching
+/// <BUNDLE_ID>` (with a `dev` subfolder under debug builds), matching
 /// what `app.path().app_data_dir()` resolves to in `setup`. Computed without
-/// an `AppHandle` so logging can be initialized before the Tauri app is built,
-/// and reused by the `reveal_logs` command.
+/// an `AppHandle` so logging can be initialized before the Tauri app is built.
 pub(crate) fn data_dir() -> PathBuf {
     let base = dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("com.fletch.desktop");
+        .join(BUNDLE_ID);
     if cfg!(debug_assertions) {
         base.join("dev")
     } else {
@@ -57,7 +60,23 @@ pub(crate) fn data_dir() -> PathBuf {
     }
 }
 
+/// Fletch's log directory. On macOS this is `~/Library/Logs/<BUNDLE_ID>`
+/// (with a `dev` subfolder under debug builds, mirroring `data_dir`) — the
+/// platform convention, where Console.app indexes per-app logs. Elsewhere (the
+/// Linux CI build) it stays nested under `data_dir()`. Computed without an
+/// `AppHandle` so logging can be initialized before the Tauri app is built,
+/// and reused by the `reveal_logs` command.
 pub(crate) fn logs_dir() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        if let Some(home) = dirs::home_dir() {
+            let base = home.join("Library").join("Logs").join(BUNDLE_ID);
+            return if cfg!(debug_assertions) {
+                base.join("dev")
+            } else {
+                base
+            };
+        }
+    }
     data_dir().join("logs")
 }
 
@@ -66,14 +85,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn data_dir_is_under_the_bundle_id_and_logs_nest_within() {
+    fn data_dir_is_under_the_bundle_id() {
         let dir = data_dir();
-        assert!(dir.to_string_lossy().contains("com.fletch.desktop"));
+        assert!(dir.to_string_lossy().contains(BUNDLE_ID));
         // Tests build in debug, so the dev sandbox subfolder is used.
         assert_eq!(dir.file_name().unwrap(), "dev");
-        assert!(logs_dir().starts_with(&dir));
-        assert_eq!(logs_dir().file_name().unwrap(), "logs");
     }
+
+    #[test]
+    fn logs_dir_follows_the_platform_convention() {
+        let dir = logs_dir();
+        if cfg!(target_os = "macos") {
+            // ~/Library/Logs/<BUNDLE_ID>, plus the dev subfolder in debug
+            // builds (tests build in debug).
+            assert!(dir
+                .to_string_lossy()
+                .contains(&format!("Library/Logs/{BUNDLE_ID}")));
+            assert_eq!(dir.file_name().unwrap(), "dev");
+            assert!(!dir.starts_with(data_dir()));
+        } else {
+            // Linux CI fallback: nested under the data dir, as before.
+            assert!(dir.starts_with(data_dir()));
+            assert_eq!(dir.file_name().unwrap(), "logs");
+        }
+    }
+
 
     #[test]
     fn db_basenames_lists_current_before_legacy() {

@@ -16,6 +16,16 @@ pub fn detect_port(dev_cmd: &str, deps: &[String]) -> Option<(u16, String)> {
 /// forms: `--port 3001`, `--port=3001`, `-p 3001`, `PORT=3001`, `:3001`.
 fn explicit_port(cmd: &str) -> Option<u16> {
     let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    find_port_token(&tokens).map(|(_, port)| port)
+}
+
+/// Locate the first explicit port token in `tokens`, returning the index of
+/// the token that carries the numeric value and the parsed port. For the
+/// space-separated forms (`--port N`, `-p N`) that's the *value* token
+/// (`i + 1`), not the flag; for the fused forms (`--port=N`, `:N`) it's the
+/// token itself. Shared by [`explicit_port`] and [`rewrite_explicit_port`] so
+/// the recognized forms never drift.
+fn find_port_token(tokens: &[&str]) -> Option<(usize, u16)> {
     for (i, tok) in tokens.iter().enumerate() {
         // --port=N / -p=N / PORT=N
         if let Some(rest) = tok
@@ -24,20 +34,65 @@ fn explicit_port(cmd: &str) -> Option<u16> {
             .or_else(|| tok.strip_prefix("PORT="))
         {
             if let Ok(p) = rest.parse() {
-                return Some(p);
+                return Some((i, p));
             }
         }
         // --port N / -p N (value in the next token)
         if (*tok == "--port" || *tok == "-p") && i + 1 < tokens.len() {
             if let Ok(p) = tokens[i + 1].parse() {
-                return Some(p);
+                return Some((i + 1, p));
             }
         }
         // bare :N (e.g. "serve :8080")
         if let Some(rest) = tok.strip_prefix(':') {
             if let Ok(p) = rest.parse() {
-                return Some(p);
+                return Some((i, p));
             }
+        }
+    }
+    None
+}
+
+/// Rewrite the first explicit port token in `cmd` to `new_port`, preserving the
+/// token's form (`--port=N`, `-p N`, `:N`, `PORT=N`, …). Returns `None` when
+/// `cmd` has no explicit port token — the caller then relies on the `PORT` env
+/// var alone. Tokens are rejoined on single spaces, which is fine for the
+/// simple dev commands detection targets.
+pub fn rewrite_explicit_port(cmd: &str, new_port: u16) -> Option<String> {
+    let mut tokens: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
+    let refs: Vec<&str> = tokens.iter().map(|s| s.as_str()).collect();
+    let (idx, _) = find_port_token(&refs)?;
+    let tok = &tokens[idx];
+    // Rebuild the value token in its original form. The value token is either a
+    // bare number (space-separated form) or `<prefix>=<n>` / `:<n>`.
+    let rewritten = if let Some(prefix) = tok
+        .strip_prefix("--port=")
+        .map(|_| "--port=")
+        .or_else(|| tok.strip_prefix("-p=").map(|_| "-p="))
+        .or_else(|| tok.strip_prefix("PORT=").map(|_| "PORT="))
+    {
+        format!("{prefix}{new_port}")
+    } else if tok.starts_with(':') {
+        format!(":{new_port}")
+    } else {
+        // Space-separated form: the token is the bare number.
+        new_port.to_string()
+    };
+    tokens[idx] = rewritten;
+    Some(tokens.join(" "))
+}
+
+/// Find the first free TCP port at or after `start`, scanning `start`,
+/// `start + 1`, … up to and including `start + cap`. "Free" means we can bind
+/// `127.0.0.1:<port>` right now (the listener is dropped immediately, releasing
+/// it for the dev server to claim). Returns `None` if every port in the range
+/// is taken. Binding-to-test is the standard technique; there is no lighter
+/// primitive that also honors the "your port, then +1, +2, …" order.
+pub fn find_free_port(start: u16, cap: u16) -> Option<u16> {
+    for offset in 0..=cap {
+        let port = start.checked_add(offset)?;
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Some(port);
         }
     }
     None
@@ -129,5 +184,76 @@ mod tests {
     #[test]
     fn empty_is_none() {
         assert!(detect_port("", &[]).is_none());
+    }
+
+    // ── rewrite_explicit_port ──────────────────────────────────────────────
+
+    #[test]
+    fn rewrite_space_separated() {
+        assert_eq!(
+            rewrite_explicit_port("vite --port 3000", 3001).unwrap(),
+            "vite --port 3001"
+        );
+    }
+
+    #[test]
+    fn rewrite_short_flag() {
+        assert_eq!(
+            rewrite_explicit_port("next dev -p 3000", 3005).unwrap(),
+            "next dev -p 3005"
+        );
+    }
+
+    #[test]
+    fn rewrite_equals_form() {
+        assert_eq!(
+            rewrite_explicit_port("vite --port=3000", 3002).unwrap(),
+            "vite --port=3002"
+        );
+    }
+
+    #[test]
+    fn rewrite_env_assignment() {
+        assert_eq!(
+            rewrite_explicit_port("PORT=3000 node server.js", 3003).unwrap(),
+            "PORT=3003 node server.js"
+        );
+    }
+
+    #[test]
+    fn rewrite_colon_form() {
+        assert_eq!(
+            rewrite_explicit_port("serve :8080", 8081).unwrap(),
+            "serve :8081"
+        );
+    }
+
+    #[test]
+    fn rewrite_none_when_no_token() {
+        assert!(rewrite_explicit_port("pnpm dev", 3001).is_none());
+    }
+
+    // ── find_free_port ─────────────────────────────────────────────────────
+
+    #[test]
+    fn free_port_returns_start_when_open() {
+        // Bind an ephemeral port to learn a definitely-free number, release it,
+        // then confirm the finder returns it as the start.
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        assert_eq!(find_free_port(port, 30), Some(port));
+    }
+
+    #[test]
+    fn free_port_skips_occupied() {
+        // Hold a listener open on `port`, so the finder must skip to `port + 1`.
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        // Guard against the (rare) chance port+1 is also busy on the test host.
+        assert!(port < u16::MAX);
+        let found = find_free_port(port, 30).unwrap();
+        assert_ne!(found, port);
+        assert!(found > port);
     }
 }

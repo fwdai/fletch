@@ -297,6 +297,27 @@ pub(super) fn emit_run_state(
     );
 }
 
+#[derive(Clone, serde::Serialize)]
+struct RunPortPayload {
+    agent_id: String,
+    port: u16,
+}
+
+/// The port the dev server is actually being launched on — emitted just before
+/// the Run panel's dev phase spawns. May differ from the configured port when
+/// port-safety bumped it to the next free one; the frontend uses this to render
+/// the correct `localhost:<port>` link and sidebar indicator.
+pub(super) fn emit_run_port(app: &AppHandle, agent_id: &str, port: u16) {
+    emit(
+        app,
+        "run:port",
+        RunPortPayload {
+            agent_id: agent_id.to_string(),
+            port,
+        },
+    );
+}
+
 /// Structural workspace change (archive/restore) — the frontend reloads the
 /// whole workspace on this signal rather than patching from finer events.
 pub(super) fn emit_workspace_changed(app: &AppHandle) {

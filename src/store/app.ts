@@ -13,6 +13,7 @@ import {
   onAgentView,
   onDockerBuildProgress,
   onPrStateChanged,
+  onRunPort,
   onRunState,
   onSessionRecordsAppended,
   onShellOutput,
@@ -385,6 +386,13 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // dot lit from another tab — this always-on listener owns `runPhases`.
   await onRunState((e) => {
     set((s) => ({ runPhases: { ...s.runPhases, [e.agent_id]: e.phase } }));
+  });
+
+  // The actual (possibly port-safety-bumped) port the dev server bound. Owns
+  // `runPorts` so the sidebar indicator and Run pane link reflect the real port
+  // even after a bump, and survive the RunPanel unmounting on a tab switch.
+  await onRunPort((e) => {
+    set((s) => ({ runPorts: { ...s.runPorts, [e.agent_id]: String(e.port) } }));
   });
 
   // Docker image-build progress (first docker spawn). Drives the build toast:

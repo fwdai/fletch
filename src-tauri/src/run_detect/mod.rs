@@ -18,7 +18,7 @@ use std::path::Path;
 
 mod go;
 mod node;
-mod port;
+pub(crate) mod port;
 mod python;
 mod ruby;
 mod rust;
