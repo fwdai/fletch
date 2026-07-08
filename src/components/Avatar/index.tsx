@@ -16,7 +16,10 @@ interface AvatarProps {
  *  still holds an unreachable remote URL. */
 export function Avatar({ avatarUrl, initials, className, alt = "" }: AvatarProps) {
   const [failed, setFailed] = useState(false);
-  // Re-attempt loading when the source changes (e.g. after re-login).
+  // Re-attempt loading when the source changes (e.g. after re-login). avatarUrl
+  // isn't read in the body, but it's the intended trigger — the effect exists to
+  // reset `failed` whenever the source changes, so it must stay in the deps.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: avatarUrl is the intended re-run trigger, not an unused dep
   useEffect(() => setFailed(false), [avatarUrl]);
 
   return (
