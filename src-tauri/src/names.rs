@@ -99,10 +99,16 @@ pub fn allocate(used: &HashSet<String>) -> String {
     }
 }
 
-/// Cheap random pick — uses the first byte of a fresh UUID as the
-/// index. Avoids pulling in the `rand` crate for a single use.
+/// Cheap random pick — folds the first 8 bytes of a fresh UUID into a
+/// `u64` index. Avoids pulling in the `rand` crate for a single use.
+///
+/// (A single byte only spans 0–255, so it couldn't reach a pool larger
+/// than 256 entries; a `u64` keeps every place reachable with negligible
+/// modulo bias as the pool grows.)
 fn pick_random() -> &'static str {
-    let idx = uuid::Uuid::new_v4().as_bytes()[0] as usize % PLACES.len();
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    let n = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+    let idx = (n % PLACES.len() as u64) as usize;
     PLACES[idx]
 }
 
@@ -115,6 +121,24 @@ mod tests {
         let used = HashSet::new();
         let id = allocate(&used);
         assert!(PLACES.contains(&id.as_str()), "got {id}");
+    }
+
+    #[test]
+    fn pick_random_reaches_entire_pool() {
+        // Regression guard: a single UUID byte only spans 0–255, so it
+        // could never index a pool larger than 256 entries (the tail was
+        // silently unreachable). Confirm every place can be drawn.
+        let mut seen: HashSet<&str> = HashSet::new();
+        for _ in 0..100_000 {
+            seen.insert(pick_random());
+        }
+        assert_eq!(seen.len(), PLACES.len(), "some places are unreachable");
+    }
+
+    #[test]
+    fn pool_has_no_duplicates() {
+        let unique: HashSet<&&str> = PLACES.iter().collect();
+        assert_eq!(unique.len(), PLACES.len(), "PLACES contains duplicates");
     }
 
     #[test]
