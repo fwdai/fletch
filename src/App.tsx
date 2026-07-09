@@ -27,6 +27,13 @@ export function App() {
   // PR polls hit the GitHub API — skip them entirely in local-only mode
   // (no connection) so a GitHub-unaware user generates zero network chatter.
   const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
+  // Drive adaptive poll cadence: poll fast while there's something changing
+  // (an open PR, or checks still in flight) and back off hard once everything
+  // has settled, so an idle workspace of merged PRs stops hitting the API.
+  const anyOpenPr = useAppStore((s) => Object.values(s.prStates).some((p) => p?.state === "open"));
+  const anyChecksPending = useAppStore((s) =>
+    Object.values(s.prChecks).some((c) => c?.rollup === "pending"),
+  );
 
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
@@ -72,28 +79,29 @@ export function App() {
 
   // App-wide poll for remote PR state (open → merged / closed, mergeability)
   // so the sidebar PR badge tracks changes made on GitHub — a merge by a
-  // teammate, CI, or the web UI — without the user opening the Git panel. Each
-  // refresh is a `gh` network call, so this runs at a far gentler cadence than
-  // the local shortstats poll, and the backend only touches agents that
-  // actually have a PR.
+  // teammate, CI, or the web UI — without the user opening the Git panel. The
+  // whole sweep is now one batched `gh` call. Cadence adapts: 45s while any PR
+  // is open (a merge/close is worth catching quickly), backing off to 5min once
+  // every PR has settled — merged PRs answer from the local snapshot anyway, so
+  // the slow tick just watches for a rare reopen.
   usePoll(
     async () => {
       if (githubConnected) await refreshAllPrStates();
     },
-    45000,
-    [refreshAllPrStates, githubConnected],
+    anyOpenPr ? 45000 : 300000,
+    [refreshAllPrStates, githubConnected, anyOpenPr],
   );
 
   // App-wide poll for CI checks so each sidebar PR pill can be tinted pass/fail
-  // at a glance. One `gh` call per open PR, so this rides an even gentler
-  // cadence than PR state — checks flip over minutes, not seconds, and the
-  // focused Git panel keeps its own faster per-agent checks poll.
+  // at a glance — one batched `gh` call. Cadence follows the checks themselves:
+  // 60s while any are in flight, 2min while PRs are open but settled (still
+  // catches a fresh push kicking off new checks), and 5min once nothing is open.
   usePoll(
     async () => {
       if (githubConnected) await refreshAllPrChecks();
     },
-    60000,
-    [refreshAllPrChecks, githubConnected],
+    anyChecksPending ? 60000 : anyOpenPr ? 120000 : 300000,
+    [refreshAllPrChecks, githubConnected, anyChecksPending, anyOpenPr],
   );
 
   // Apply theme + density via html classes; accent via CSS vars.

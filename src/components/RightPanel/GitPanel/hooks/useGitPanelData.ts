@@ -30,11 +30,16 @@ export function useGitPanelData(agentId: string) {
   const prOpen = prState?.state === "open";
   const pollChecks = useCallback(async () => {
     if (!prOpen) return;
-    // Checks + review comments share the slow cadence: both are heavier gh
-    // reads that only matter while a PR is open.
+    // Checks + review comments share a cadence: both are heavier gh reads that
+    // only matter while a PR is open.
     await Promise.all([fetchPrChecks(agentId), fetchPrComments(agentId)]);
   }, [agentId, prOpen, fetchPrChecks, fetchPrComments]);
-  usePoll(pollChecks, 5000, [pollChecks]);
+  // Adaptive: 5s while checks are still in flight (or not yet fetched), backing
+  // off to 15s once they've settled pass/fail — a settled PR rarely changes, and
+  // the app-wide poll still covers it. `undefined` (first fetch pending) counts
+  // as in-flight so the initial read lands promptly.
+  const checksSettled = prOpen && prChecksEntry != null && prChecksEntry.rollup !== "pending";
+  usePoll(pollChecks, checksSettled ? 15000 : 5000, [pollChecks, checksSettled]);
 
   const checks = prChecksEntry ?? null;
   const comments = prCommentsEntry ?? null;

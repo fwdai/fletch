@@ -170,6 +170,131 @@ pub(crate) async fn resolve_pr_state(
     }
 }
 
+/// Resolve PR state for *every* bound agent in one batched round-trip — the
+/// app-wide poll behind `refresh_all_pr_states`. Same per-agent policy as
+/// [`resolve_pr_state`], but the live lookups are collapsed into a single
+/// aliased GraphQL query instead of a per-agent fan-out:
+///
+/// - **Merged** PRs are served from the persisted snapshot (terminal — never
+///   re-fetched).
+/// - **Closed** PRs are served from the snapshot too, *except* on the slow
+///   re-verify tick (`reverify_closed`), so a reopen is still eventually caught
+///   without paying a poll every cycle.
+/// - Everything else is fetched live by number and its snapshot refreshed.
+///
+/// A paused backoff, an unresolvable slug, a not-found alias, or a whole-batch
+/// failure all degrade to the last persisted snapshot rather than wiping the
+/// badge. Agents that resolve to nothing are omitted from the map (never
+/// written as absent state), matching the command's contract.
+pub(crate) async fn resolve_all_pr_states(
+    workspace: &WorkspaceManager,
+    reverify_closed: bool,
+) -> std::collections::HashMap<String, PrState> {
+    use crate::github::{client, PrRef};
+    use std::collections::HashMap;
+
+    let mut out: HashMap<String, PrState> = HashMap::new();
+    let Some(ws) = workspace.current() else {
+        return out;
+    };
+    // Paused → touch no network; every bound PR renders from its snapshot.
+    let paused = client::is_backing_off();
+
+    // A network-bound agent: what to fetch, plus the snapshot to fall back to.
+    struct Pending {
+        agent_id: String,
+        subdir: String,
+        snapshot: Option<PrState>,
+        pr_ref: PrRef,
+    }
+    let mut pending: Vec<Pending> = Vec::new();
+
+    for agent in ws.agents {
+        if agent.archive.is_some() {
+            continue;
+        }
+        let Some(repo) = agent.repos.first() else { continue };
+        // No branch → nothing pushed; no number → discovery isn't this poll's job.
+        if repo.branch.is_none() {
+            continue;
+        }
+        let Some(number) = repo.pr_number else { continue };
+        let snapshot = pr_snapshot(repo);
+
+        let terminal = repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str());
+        let closed = repo.pr_state.as_deref() == Some(PrStatus::Closed.as_str());
+        // Merged never re-fetches; closed only on the slow re-verify tick.
+        let fetch = !paused && !terminal && (!closed || reverify_closed);
+        if !fetch {
+            if let Some(snap) = snapshot {
+                out.insert(agent.id.clone(), snap);
+            }
+            continue;
+        }
+
+        // Resolve the slug now (local git); the network cost is deferred to the
+        // one batched query below. A broken checkout / non-GitHub origin can't
+        // be fetched — hold the snapshot instead.
+        let slug = match repo_checkout_path(&agent.id, &repo.subdir) {
+            Ok(checkout) => crate::github::resolve_slug(&checkout, Some(&repo.repo_path)).await,
+            Err(_) => None,
+        };
+        match slug {
+            Some((owner, repo_name)) => pending.push(Pending {
+                agent_id: agent.id.clone(),
+                subdir: repo.subdir.clone(),
+                snapshot,
+                pr_ref: PrRef { owner, repo: repo_name, number: number as u32 },
+            }),
+            None => {
+                if let Some(snap) = snapshot {
+                    out.insert(agent.id.clone(), snap);
+                }
+            }
+        }
+    }
+
+    if pending.is_empty() {
+        return out;
+    }
+
+    let refs: Vec<PrRef> = pending.iter().map(|p| p.pr_ref.clone()).collect();
+    match crate::github::pr_states_batch(&refs).await {
+        Ok(results) => {
+            for (p, res) in pending.into_iter().zip(results) {
+                match res {
+                    Some(pr) => {
+                        if let Err(e) = workspace.set_repo_pr_snapshot(&p.agent_id, &p.subdir, &pr) {
+                            tracing::warn!(
+                                error = %e,
+                                agent_id = %p.agent_id,
+                                pr = pr.number,
+                                "failed to persist PR snapshot"
+                            );
+                        }
+                        out.insert(p.agent_id, pr);
+                    }
+                    // Not found this round / partial error — keep last-known.
+                    None => {
+                        if let Some(snap) = p.snapshot {
+                            out.insert(p.agent_id, snap);
+                        }
+                    }
+                }
+            }
+        }
+        // Whole-batch failure — degrade every bound agent to its snapshot.
+        Err(_) => {
+            for p in pending {
+                if let Some(snap) = p.snapshot {
+                    out.insert(p.agent_id, snap);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Does this agent keep its transcript file open across turns? Per-turn agents
 /// in the custom view *exit* at each turn-end, so the file is complete and
 /// quiescent the moment we sync. Everything else — claude, and any agent in the

@@ -11,7 +11,7 @@ mod shell;
 
 pub use lifecycle::SpawnRequest;
 pub use run::ProjectRunConfig;
-pub(crate) use session_sync::resolve_pr_state;
+pub(crate) use session_sync::{resolve_all_pr_states, resolve_pr_state};
 
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};

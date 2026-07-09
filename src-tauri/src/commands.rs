@@ -857,35 +857,23 @@ pub async fn get_all_shortstats(
 pub async fn refresh_all_pr_states(
     supervisor: State<'_, Arc<Supervisor>>,
 ) -> Result<std::collections::HashMap<String, Option<PrState>>> {
-    let Some(workspace) = supervisor.workspace.current() else {
-        return Ok(Default::default());
-    };
-    let mut set = tokio::task::JoinSet::new();
-    for agent in workspace.agents {
-        if agent.archive.is_some() {
-            continue;
-        }
-        let Some(repo) = agent.repos.first() else { continue };
-        if repo.pr_number.is_none() {
-            continue;
-        }
-        let ws = supervisor.workspace.clone();
-        let agent_id = agent.id.clone();
-        set.spawn(async move {
-            let state = crate::supervisor::resolve_pr_state(&ws, &agent_id).await;
-            (agent_id, state)
-        });
-    }
-    let mut out = std::collections::HashMap::new();
-    while let Some(res) = set.join_next().await {
-        // Bound is a given here (every polled agent has a pr_number); a None
-        // resolve means the fetch failed with nothing persisted yet — skip it.
-        if let Ok((id, Some((pr, _bound)))) = res {
-            out.insert(id, Some(pr));
-        }
-    }
-    Ok(out)
+    // Closed PRs are served from the DB snapshot most cycles and only re-verified
+    // live on every Nth tick (they can reopen) — cheap coverage of a rare event.
+    // Tick 0 (first poll after launch) re-verifies so freshly-adopted state is
+    // confirmed right away.
+    let tick = PR_STATE_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let reverify_closed = tick % CLOSED_REVERIFY_EVERY == 0;
+    let states = crate::supervisor::resolve_all_pr_states(&supervisor.workspace, reverify_closed).await;
+    // Only present states land in the map — an omitted agent keeps its
+    // last-known badge on the frontend merge (never wiped to null).
+    Ok(states.into_iter().map(|(id, pr)| (id, Some(pr))).collect())
 }
+
+/// Monotonic tick for `refresh_all_pr_states`, driving the slow closed-PR
+/// re-verify cadence.
+static PR_STATE_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Re-verify closed PRs live on every Nth `refresh_all_pr_states` tick.
+const CLOSED_REVERIFY_EVERY: u64 = 6;
 
 /// Refresh CI checks for every agent with an open PR in one round-trip, so the
 /// sidebar can tint each PR pill pass/fail without opening the Git panel. Mirror
@@ -903,25 +891,43 @@ pub async fn refresh_all_pr_checks(
     let Some(workspace) = supervisor.workspace.current() else {
         return Ok(Default::default());
     };
-    let mut set = tokio::task::JoinSet::new();
+    // Paused for rate-limit backoff → return nothing so the frontend merge keeps
+    // every agent's last-known tint instead of wiping it.
+    if gh::client::is_backing_off() {
+        return Ok(Default::default());
+    }
+
+    // Gather one (agent, PR ref) per agent with a branch + PR number, resolving
+    // the slug via local git (the network cost is deferred to the single batched
+    // query below, not fanned out per agent).
+    let mut agent_ids: Vec<String> = Vec::new();
+    let mut refs: Vec<gh::PrRef> = Vec::new();
     for agent in workspace.agents {
         if agent.archive.is_some() {
             continue;
         }
         let Some(repo) = agent.repos.first() else { continue };
-        if repo.branch.is_none() || repo.pr_number.is_none() {
+        let (Some(_branch), Some(number)) = (repo.branch.as_ref(), repo.pr_number) else {
             continue;
-        }
+        };
         let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else { continue };
-        let agent_id = agent.id.clone();
-        set.spawn(async move { (agent_id, gh::pr_checks(&checkout).await) });
+        let Some((owner, repo_name)) = gh::resolve_slug(&checkout, Some(&repo.repo_path)).await
+        else {
+            continue;
+        };
+        agent_ids.push(agent.id.clone());
+        refs.push(gh::PrRef { owner, repo: repo_name, number: number as u32 });
     }
+
     let mut out = std::collections::HashMap::new();
-    while let Some(res) = set.join_next().await {
-        // Record only definitive outcomes; drop errored agents so their prior
-        // value survives the frontend merge.
-        if let Ok((id, Ok(checks))) = res {
-            out.insert(id, checks);
+    // A whole-batch failure leaves the map empty (all agents keep last-known);
+    // per-alias `None` (PR not found / partial error) is dropped for the same
+    // reason. Only a resolved rollup — including "no checks" — is recorded.
+    if let Ok(results) = gh::pr_checks_batch(&refs).await {
+        for (id, checks) in agent_ids.into_iter().zip(results) {
+            if let Some(checks) = checks {
+                out.insert(id, Some(checks));
+            }
         }
     }
     Ok(out)
