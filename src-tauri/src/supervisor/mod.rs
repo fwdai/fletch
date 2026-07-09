@@ -11,6 +11,7 @@ mod shell;
 
 pub use lifecycle::SpawnRequest;
 pub use run::ProjectRunConfig;
+pub(crate) use session_sync::resolve_pr_state;
 
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
@@ -480,6 +481,9 @@ mod tests {
                 parent_branch: None,
                 base_sha: None,
                 pr_number: None,
+                pr_url: None,
+                pr_title: None,
+                pr_state: None,
             },
             String::new(),
             AgentView::Custom,

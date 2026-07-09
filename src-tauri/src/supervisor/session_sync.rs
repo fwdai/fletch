@@ -5,7 +5,8 @@ use std::time::Duration;
 use tauri::AppHandle;
 
 use crate::agent::per_turn_descriptor;
-use crate::workspace::{repo_checkout_path, AgentRecord, AgentView, WorkspaceManager};
+use crate::github::{PrState, PrStatus};
+use crate::workspace::{repo_checkout_path, AgentRecord, AgentView, TrackedRepo, WorkspaceManager};
 
 use super::events::{emit_pr_state, emit_session_records_appended};
 use super::Supervisor;
@@ -68,64 +69,99 @@ impl Supervisor {
     pub fn fetch_and_emit_pr_state(&self, app: AppHandle, agent_id: String) {
         let workspace = self.workspace.clone();
         tauri::async_runtime::spawn(async move {
-            let record = match workspace.agent(&agent_id) {
-                Ok(r) => r,
-                Err(_) => return,
-            };
-            let repo = match record.repos.first() {
-                Some(r) => r,
-                None => return,
-            };
-            // Only fetch if there's a branch (agent may still be on detached HEAD)
-            if repo.branch.is_none() {
-                return;
-            }
-            let subdir = repo.subdir.clone();
-            let checkout = match crate::workspace::repo_checkout_path(&agent_id, &subdir) {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-            let state = if let Some(number) = repo.pr_number {
-                // Known PR: fetch by number, never by branch. This is what keeps
-                // PR identity bound to the agent rather than the recyclable
-                // branch name.
-                crate::github::pr_view_number(&checkout, number as u32)
-                    .await
-                    .unwrap_or(None)
-            } else {
-                // No PR recorded yet. Discover one created out-of-band (agent ran
-                // `gh pr create`, or it was opened on github.com), but only adopt
-                // it if it's OPEN — a stale merged/closed PR sitting on a recycled
-                // branch must not be claimed as this agent's. Once adopted we
-                // persist the number so all later lookups go by number.
-                match crate::github::pr_view(&checkout).await.unwrap_or(None) {
-                    Some(pr) if matches!(pr.state, crate::github::PrStatus::Open) => {
-                        if let Err(e) =
-                            workspace.set_repo_pr_number(&agent_id, &subdir, pr.number as i64)
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                agent_id = %agent_id,
-                                pr = pr.number,
-                                "pr discovery: failed to persist PR number"
-                            );
-                        }
-                        Some(pr)
-                    }
-                    _ => None,
-                }
-            };
-            // Accrue PR history: stamp GitHub's own open/merge times whenever
-            // a fetch reports them (feeds per-day PR stats).
-            if let Some(pr) = &state {
-                if let Err(e) =
-                    workspace.set_repo_pr_times(&agent_id, &subdir, pr.opened_at, pr.merged_at)
-                {
-                    tracing::warn!(error = %e, agent_id, "failed to stamp PR times");
-                }
-            }
+            // Only bound PRs are emitted app-wide: an unbound merged/closed PR
+            // discovered on a recycled branch name is focused-panel display
+            // (`get_pr_state`), not this agent's state.
+            let state = resolve_pr_state(&workspace, &agent_id)
+                .await
+                .and_then(|(pr, bound)| bound.then_some(pr));
             emit_pr_state(&app, &agent_id, state);
         });
+    }
+}
+
+/// The last persisted state of a repo's bound PR, rebuilt from its database
+/// columns — what the UI shows when GitHub or the checkout is unavailable.
+/// `None` when no PR is bound or no fetch has ever succeeded (state column
+/// still NULL). `mergeable` isn't persisted and reads `false`; it only means
+/// anything while an open PR is being polled live.
+pub(crate) fn pr_snapshot(repo: &TrackedRepo) -> Option<PrState> {
+    let number = repo.pr_number?;
+    let state = PrStatus::parse(repo.pr_state.as_deref()?)?;
+    Some(PrState {
+        number: number as u32,
+        url: repo.pr_url.clone().unwrap_or_default(),
+        state,
+        title: repo.pr_title.clone().unwrap_or_default(),
+        mergeable: false,
+        opened_at: None,
+        merged_at: None,
+    })
+}
+
+/// Resolve the current PR state for an agent's primary repo, persisting what
+/// it learns. Returns the state plus whether that PR is *bound* to the agent
+/// by number. The single implementation behind the focused panel
+/// (`get_pr_state`), the app-wide poll (`refresh_all_pr_states`), and the
+/// per-trigger emit (`fetch_and_emit_pr_state`).
+///
+/// - **Bound PR** (`pr_number` recorded): a persisted `merged` state returns
+///   straight from the database — merges don't un-happen, so no network or
+///   git access is spent re-confirming them. Otherwise fetch by number
+///   (resolving owner/repo from the checkout, or from the source repo when
+///   the checkout is broken), persist the result, and on failure degrade to
+///   the last persisted snapshot — a failed fetch must never erase state
+///   GitHub already confirmed.
+/// - **No bound PR**: discover one by branch name. An OPEN PR is adopted
+///   (persisted, becoming bound); a merged/closed one is returned unbound —
+///   displayable, but never claimed as this agent's, so a recycled branch
+///   name can't inherit a prior agent's PR.
+pub(crate) async fn resolve_pr_state(
+    workspace: &WorkspaceManager,
+    agent_id: &str,
+) -> Option<(PrState, bool)> {
+    let record = workspace.agent(agent_id).ok()?;
+    let repo = record.repos.first()?;
+    // No branch yet → nothing pushed, so no PR to find or bind.
+    repo.branch.as_ref()?;
+    let checkout = repo_checkout_path(agent_id, &repo.subdir).ok()?;
+
+    if let Some(number) = repo.pr_number {
+        if repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str()) {
+            return pr_snapshot(repo).map(|pr| (pr, true));
+        }
+        match crate::github::pr_view_number(&checkout, Some(&repo.repo_path), number as u32).await
+        {
+            Ok(Some(pr)) => {
+                if let Err(e) = workspace.set_repo_pr_snapshot(agent_id, &repo.subdir, &pr) {
+                    tracing::warn!(
+                        error = %e,
+                        agent_id,
+                        pr = pr.number,
+                        "failed to persist PR snapshot"
+                    );
+                }
+                Some((pr, true))
+            }
+            // Unreachable or not found — fall back to the last confirmed state.
+            _ => pr_snapshot(repo).map(|pr| (pr, true)),
+        }
+    } else {
+        match crate::github::pr_view(&checkout).await.unwrap_or(None) {
+            Some(pr) if matches!(pr.state, PrStatus::Open) => {
+                if let Err(e) = workspace.set_repo_pr_snapshot(agent_id, &repo.subdir, &pr) {
+                    tracing::warn!(
+                        error = %e,
+                        agent_id,
+                        pr = pr.number,
+                        "pr discovery: failed to persist PR snapshot"
+                    );
+                }
+                Some((pr, true))
+            }
+            Some(pr) => Some((pr, false)),
+            None => None,
+        }
     }
 }
 
@@ -375,5 +411,47 @@ mod tests {
         }
         assert!(!poll.should_emit());
         assert!(poll.reader_ingested_nothing());
+    }
+
+    fn snapshot_repo() -> TrackedRepo {
+        TrackedRepo {
+            repo_path: std::path::PathBuf::from("/r"),
+            subdir: "repo".into(),
+            branch: Some("feat/x".into()),
+            parent_branch: Some("main".into()),
+            base_sha: None,
+            pr_number: Some(42),
+            pr_url: Some("https://github.com/o/r/pull/42".into()),
+            pr_title: Some("feat: x".into()),
+            pr_state: Some("merged".into()),
+        }
+    }
+
+    /// The persisted columns rebuild into a renderable PrState.
+    #[test]
+    fn pr_snapshot_rebuilds_from_columns() {
+        let pr = pr_snapshot(&snapshot_repo()).expect("snapshot");
+        assert_eq!(pr.number, 42);
+        assert_eq!(pr.url, "https://github.com/o/r/pull/42");
+        assert_eq!(pr.title, "feat: x");
+        assert!(matches!(pr.state, PrStatus::Merged));
+        assert!(!pr.mergeable, "mergeable isn't persisted — must read false");
+    }
+
+    /// No bound number, no persisted state, or an unknown state string all
+    /// mean "no snapshot" — never a fabricated badge.
+    #[test]
+    fn pr_snapshot_requires_number_and_valid_state() {
+        let mut no_number = snapshot_repo();
+        no_number.pr_number = None;
+        assert!(pr_snapshot(&no_number).is_none());
+
+        let mut no_state = snapshot_repo();
+        no_state.pr_state = None;
+        assert!(pr_snapshot(&no_state).is_none());
+
+        let mut bad_state = snapshot_repo();
+        bad_state.pr_state = Some("weird".into());
+        assert!(pr_snapshot(&bad_state).is_none());
     }
 }

@@ -73,6 +73,16 @@ pub struct TrackedRepo {
     /// `None` until a PR exists.
     #[serde(default)]
     pub pr_number: Option<i64>,
+    /// Last-known snapshot of the bound PR (url / title / open|merged|closed),
+    /// stamped by every successful PR fetch. This is what the UI falls back to
+    /// when GitHub can't be reached or the checkout is broken — database truth
+    /// outlives git state. `None` until a fetch has succeeded.
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    #[serde(default)]
+    pub pr_title: Option<String>,
+    #[serde(default)]
+    pub pr_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -695,22 +705,33 @@ impl WorkspaceManager {
     /// stamp when a fetch reports none). NULL until first observed — a PR
     /// merged while the app was closed still gets its real merge time on the
     /// next fetch.
-    pub fn set_repo_pr_times(
+    /// Persist a successful PR fetch: identity (number), the display snapshot
+    /// (url / title / state), and GitHub's own lifecycle times. One write per
+    /// fetch keeps the database the durable source of truth the UI can render
+    /// from when GitHub or the checkout is unavailable. Times COALESCE so an
+    /// earlier-observed value is never erased by a payload that omits it.
+    pub fn set_repo_pr_snapshot(
         &self,
         agent_id: &str,
         subdir: &str,
-        opened_at: Option<i64>,
-        merged_at: Option<i64>,
+        pr: &crate::github::PrState,
     ) -> Result<()> {
-        if opened_at.is_none() && merged_at.is_none() {
-            return Ok(());
-        }
         let conn = self.db.lock();
         conn.execute(
-            "UPDATE worktrees SET pr_opened_at = COALESCE(?1, pr_opened_at),
-                                  pr_merged_at = COALESCE(?2, pr_merged_at)
-             WHERE workspace_id = ?3 AND subdir = ?4",
-            rusqlite::params![opened_at, merged_at, agent_id, subdir],
+            "UPDATE worktrees SET pr_number = ?1, pr_url = ?2, pr_title = ?3, pr_state = ?4,
+                                  pr_opened_at = COALESCE(?5, pr_opened_at),
+                                  pr_merged_at = COALESCE(?6, pr_merged_at)
+             WHERE workspace_id = ?7 AND subdir = ?8",
+            rusqlite::params![
+                pr.number as i64,
+                pr.url,
+                pr.title,
+                pr.state.as_str(),
+                pr.opened_at,
+                pr.merged_at,
+                agent_id,
+                subdir,
+            ],
         )?;
         Ok(())
     }
@@ -1373,7 +1394,8 @@ impl WorkspaceManager {
 
     fn query_tracked_repos(conn: &Connection, agent_id: &str) -> Vec<TrackedRepo> {
         let mut stmt = match conn.prepare(
-            "SELECT r.path, w.subdir, w.branch, w.parent_branch, w.base_sha, w.pr_number
+            "SELECT r.path, w.subdir, w.branch, w.parent_branch, w.base_sha, w.pr_number,
+                    w.pr_url, w.pr_title, w.pr_state
              FROM worktrees w
              JOIN repos r ON r.id = w.repo_id
              WHERE w.workspace_id = ?1
@@ -1390,6 +1412,9 @@ impl WorkspaceManager {
             let parent_branch: Option<String> = row.get(3)?;
             let base_sha: Option<String> = row.get(4)?;
             let pr_number: Option<i64> = row.get(5)?;
+            let pr_url: Option<String> = row.get(6)?;
+            let pr_title: Option<String> = row.get(7)?;
+            let pr_state: Option<String> = row.get(8)?;
             Ok(TrackedRepo {
                 repo_path: PathBuf::from(path),
                 subdir,
@@ -1397,6 +1422,9 @@ impl WorkspaceManager {
                 parent_branch,
                 base_sha,
                 pr_number,
+                pr_url,
+                pr_title,
+                pr_state,
             })
         })
         .ok()
@@ -1931,6 +1959,9 @@ mod tests {
             parent_branch: None,
             base_sha: None,
             pr_number: None,
+            pr_url: None,
+            pr_title: None,
+            pr_state: None,
         }
     }
 
@@ -2301,6 +2332,67 @@ mod tests {
         assert_eq!(wm.agent(&reused_id).unwrap().repos[0].pr_number, None);
     }
 
+    /// A successful PR fetch persists the full snapshot (number, url, title,
+    /// state, times) and it loads back on the repo record — the database copy
+    /// the UI falls back to when GitHub or the checkout is unavailable. A
+    /// later fetch that omits times must not erase the earlier-observed ones.
+    #[test]
+    fn pr_snapshot_persists_and_loads() {
+        let db = test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        seed_repo(&db, "/r");
+
+        let mut rec = new_agent_record(
+            "denali".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        let id = rec.id.clone();
+        wm.add_agent(&mut rec).unwrap();
+        let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+
+        let open = crate::github::PrState {
+            number: 42,
+            url: "https://github.com/o/r/pull/42".into(),
+            title: "feat: thing".into(),
+            state: crate::github::PrStatus::Open,
+            mergeable: true,
+            opened_at: Some(1_000),
+            merged_at: None,
+        };
+        wm.set_repo_pr_snapshot(&id, &subdir, &open).unwrap();
+        let repo = wm.agent(&id).unwrap().repos[0].clone();
+        assert_eq!(repo.pr_number, Some(42));
+        assert_eq!(repo.pr_url.as_deref(), Some("https://github.com/o/r/pull/42"));
+        assert_eq!(repo.pr_title.as_deref(), Some("feat: thing"));
+        assert_eq!(repo.pr_state.as_deref(), Some("open"));
+
+        // Merge lands; a payload without opened_at keeps the earlier value.
+        let merged = crate::github::PrState {
+            state: crate::github::PrStatus::Merged,
+            mergeable: false,
+            opened_at: None,
+            merged_at: Some(2_000),
+            ..open
+        };
+        wm.set_repo_pr_snapshot(&id, &subdir, &merged).unwrap();
+        let repo = wm.agent(&id).unwrap().repos[0].clone();
+        assert_eq!(repo.pr_state.as_deref(), Some("merged"));
+        let conn = db.lock();
+        let (opened, merged_at): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT pr_opened_at, pr_merged_at FROM worktrees WHERE workspace_id = ?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(opened, Some(1_000), "COALESCE must keep the earlier opened_at");
+        assert_eq!(merged_at, Some(2_000));
+    }
+
     #[test]
     fn agent_status_transitions() {
         let db = test_db();
@@ -2410,6 +2502,9 @@ mod tests {
             parent_branch: Some("main".into()),
             base_sha: None,
             pr_number: None,
+            pr_url: None,
+            pr_title: None,
+            pr_state: None,
         }];
         wm.restore_agent(&id, restored).unwrap();
         let a = wm.agent(&id).unwrap();
@@ -2475,6 +2570,9 @@ mod tests {
                 parent_branch: None,
                 base_sha: None,
                 pr_number: None,
+                pr_url: None,
+                pr_title: None,
+                pr_state: None,
             },
             "task".into(),
             AgentView::Custom,

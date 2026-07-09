@@ -586,19 +586,19 @@ pub async fn create_pr(
     let base = repo.parent_branch.as_deref().unwrap_or("main");
     let pr = gh::pr_create(&checkout, &title, &body, base).await?;
     crate::telemetry::track("pr_opened", serde_json::json!({ "source": "manual" }));
-    // Bind the PR to this agent by number so later lookups don't rely on the
-    // (recyclable) branch name. A failure here isn't fatal — the next idle/push
-    // poll re-binds it via guarded discovery once the PR shows OPEN — but log it
-    // so the gap is observable rather than silent.
+    // Bind the PR to this agent (number + state snapshot) so later lookups
+    // don't rely on the (recyclable) branch name. A failure here isn't fatal —
+    // the next idle/push poll re-binds it via guarded discovery once the PR
+    // shows OPEN — but log it so the gap is observable rather than silent.
     if let Err(e) = supervisor
         .workspace
-        .set_repo_pr_number(&agent_id, &repo.subdir, pr.number as i64)
+        .set_repo_pr_snapshot(&agent_id, &repo.subdir, &pr)
     {
         tracing::warn!(
             error = %e,
             agent_id = %agent_id,
             pr = pr.number,
-            "create_pr: failed to persist PR number"
+            "create_pr: failed to persist PR snapshot"
         );
     }
     Ok(pr)
@@ -614,25 +614,21 @@ pub async fn merge_pr(
     gh::pr_merge(&checkout).await
 }
 
-/// Fetch and return the current PR state for the agent's branch.
+/// Fetch and return the current PR state for the agent's primary repo: by
+/// bound number when one is recorded (with the persisted snapshot as the
+/// fallback when GitHub is unreachable), else discovered by branch. Unbound
+/// merged/closed PRs on a recycled branch are included here for panel
+/// display, though the app-wide paths never claim them as the agent's.
 #[tauri::command]
 pub async fn get_pr_state(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Option<PrState>> {
-    let (repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
-    // Only fetch if the agent has a branch
-    if repo.branch.is_none() {
-        return Ok(None);
-    }
-    let state = gh::pr_view(&checkout).await?;
-    // Accrue PR history: stamp GitHub's open/merge times when reported.
-    if let Some(pr) = &state {
-        let _ = supervisor
-            .workspace
-            .set_repo_pr_times(&agent_id, &repo.subdir, pr.opened_at, pr.merged_at);
-    }
-    Ok(state)
+    Ok(
+        crate::supervisor::resolve_pr_state(&supervisor.workspace, &agent_id)
+            .await
+            .map(|(pr, _bound)| pr),
+    )
 }
 
 /// List the open PRs for the agent's repo, for the composer's "#" mention
@@ -845,9 +841,14 @@ pub async fn get_all_shortstats(
 ///
 /// Only agents with a known PR *number* are polled: discovery of a brand-new PR
 /// still rides the existing turn-end / push / git-action triggers, so this poll
-/// never fans a `gh` call out to an agent that has no PR. Lookup is by number
-/// (not branch), keeping PR identity bound to the agent. Like
-/// `get_all_shortstats`, queries run in parallel via a `JoinSet`.
+/// never fans a `gh` call out to an agent that has no PR. Resolution goes
+/// through `resolve_pr_state`: by number (never branch), served straight from
+/// the persisted snapshot for already-merged PRs, and degrading to that
+/// snapshot when GitHub is unreachable. An agent that resolves to nothing is
+/// *omitted* from the map — not written as null — so the frontend merge keeps
+/// its last-known badge instead of wiping it (same contract as
+/// `refresh_all_pr_checks`). Like `get_all_shortstats`, queries run in
+/// parallel via a `JoinSet`.
 ///
 /// Each agent's *first* repo is used, matching the rest of the PR subsystem
 /// (`get_pr_state`, `fetch_and_emit_pr_state`) and the one-PR-per-agent shape of
@@ -865,30 +866,22 @@ pub async fn refresh_all_pr_states(
             continue;
         }
         let Some(repo) = agent.repos.first() else { continue };
-        if repo.branch.is_none() {
+        if repo.pr_number.is_none() {
             continue;
         }
-        let Some(number) = repo.pr_number else { continue };
-        let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else { continue };
+        let ws = supervisor.workspace.clone();
         let agent_id = agent.id.clone();
-        let subdir = repo.subdir.clone();
         set.spawn(async move {
-            let state = gh::pr_view_number(&checkout, number as u32)
-                .await
-                .unwrap_or(None);
-            (agent_id, subdir, state)
+            let state = crate::supervisor::resolve_pr_state(&ws, &agent_id).await;
+            (agent_id, state)
         });
     }
     let mut out = std::collections::HashMap::new();
     while let Some(res) = set.join_next().await {
-        if let Ok((id, subdir, state)) = res {
-            // Accrue PR history: stamp GitHub's open/merge times when reported.
-            if let Some(pr) = &state {
-                let _ = supervisor
-                    .workspace
-                    .set_repo_pr_times(&id, &subdir, pr.opened_at, pr.merged_at);
-            }
-            out.insert(id, state);
+        // Bound is a given here (every polled agent has a pr_number); a None
+        // resolve means the fetch failed with nothing persisted yet — skip it.
+        if let Ok((id, Some((pr, _bound)))) = res {
+            out.insert(id, Some(pr));
         }
     }
     Ok(out)

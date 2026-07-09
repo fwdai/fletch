@@ -244,6 +244,9 @@ impl Supervisor {
             parent_branch,
             base_sha: None,  // captured by the fork task once HEAD is known
             pr_number: None, // set when a PR is opened for this branch
+            pr_url: None,
+            pr_title: None,
+            pr_state: None,
         };
 
         let mut record = new_agent_record(
@@ -423,6 +426,9 @@ impl Supervisor {
             parent_branch,
             base_sha,
             pr_number: None,
+            pr_url: None,
+            pr_title: None,
+            pr_state: None,
         };
         self.workspace.append_tracked_repo(agent_id, repo.clone())?;
         emit_repo_added(&app, agent_id, repo.clone());
