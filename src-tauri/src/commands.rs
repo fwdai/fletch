@@ -842,13 +842,14 @@ pub async fn get_all_shortstats(
 /// Only agents with a known PR *number* are polled: discovery of a brand-new PR
 /// still rides the existing turn-end / push / git-action triggers, so this poll
 /// never fans a `gh` call out to an agent that has no PR. Resolution goes
-/// through `resolve_pr_state`: by number (never branch), served straight from
-/// the persisted snapshot for already-merged PRs, and degrading to that
-/// snapshot when GitHub is unreachable. An agent that resolves to nothing is
-/// *omitted* from the map — not written as null — so the frontend merge keeps
-/// its last-known badge instead of wiping it (same contract as
-/// `refresh_all_pr_checks`). Like `get_all_shortstats`, queries run in
-/// parallel via a `JoinSet`.
+/// through `resolve_all_pr_states`, which collapses every live lookup into a
+/// single batched GraphQL query rather than a per-agent fan-out: by number
+/// (never branch), served straight from the persisted snapshot for merged PRs
+/// (and closed ones except on the slow re-verify tick), and degrading to that
+/// snapshot when GitHub is unreachable or a rate-limit backoff is active. An
+/// agent that resolves to nothing is *omitted* from the map — not written as
+/// null — so the frontend merge keeps its last-known badge instead of wiping it
+/// (same contract as `refresh_all_pr_checks`).
 ///
 /// Each agent's *first* repo is used, matching the rest of the PR subsystem
 /// (`get_pr_state`, `fetch_and_emit_pr_state`) and the one-PR-per-agent shape of
@@ -875,15 +876,15 @@ static PR_STATE_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// Re-verify closed PRs live on every Nth `refresh_all_pr_states` tick.
 const CLOSED_REVERIFY_EVERY: u64 = 6;
 
-/// Refresh CI checks for every agent with an open PR in one round-trip, so the
-/// sidebar can tint each PR pill pass/fail without opening the Git panel. Mirror
-/// of `refresh_all_pr_states`: skips archived agents and any without a PR so we
-/// never fan a `gh` call out needlessly, and runs the per-agent `pr_checks`
-/// queries in parallel via a `JoinSet`. Best-effort per agent: only *definitive*
-/// results land in the map — `Ok(Some)` (checks) and `Ok(None)` (no PR / none
-/// configured). A transient `gh` failure (network, rate-limit, missing binary)
-/// is omitted entirely, so the frontend's merge keeps that agent's last-known
-/// tint instead of wiping it — matching `fetchPrAux`'s per-agent contract.
+/// Refresh CI checks for every agent with an open PR, so the sidebar can tint
+/// each PR pill pass/fail without opening the Git panel. Mirror of
+/// `refresh_all_pr_states`: skips archived agents and any without a PR, and
+/// collapses the lookups into a single batched GraphQL query rather than a
+/// per-agent fan-out. Best-effort: only a resolved rollup lands in the map
+/// (including "no checks configured"); a not-found/partial-error alias, a
+/// whole-batch failure, or an active rate-limit backoff omits the agent, so the
+/// frontend's merge keeps its last-known tint instead of wiping it — matching
+/// `fetchPrAux`'s contract.
 #[tauri::command]
 pub async fn refresh_all_pr_checks(
     supervisor: State<'_, Arc<Supervisor>>,

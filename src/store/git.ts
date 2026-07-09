@@ -106,8 +106,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   refreshAllPrChecks: async () => {
     try {
       // Merge (like refreshAllPrStates) so the focused panel's per-agent
-      // checks poll isn't clobbered between bulk ticks. Absent agents keep
-      // their last value; agents with a `null` reply record "no checks".
+      // checks poll isn't clobbered between bulk ticks. The batched reply only
+      // carries resolved rollups, so absent agents keep their last value rather
+      // than being wiped.
       const map = await api.refreshAllPrChecks();
       set((s) => ({ prChecks: { ...s.prChecks, ...map } }));
     } catch {
