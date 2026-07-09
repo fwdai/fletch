@@ -10,7 +10,7 @@
 //! never appear in logs, telemetry, or error strings.
 
 use std::sync::{OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -43,6 +43,110 @@ pub fn set_token(token: Option<String>) {
 
 pub fn token() -> Option<String> {
     token_registry().read().unwrap().clone()
+}
+
+// ---------------------------------------------------------------------------
+// Rate-limit backoff
+//
+// GitHub enforces two ceilings the poll paths can trip: the primary hourly
+// points budget (5000 for authenticated GraphQL) and a *secondary* limit on
+// bursts/concurrency that answers with `403` + `Retry-After`. Rather than keep
+// hammering, we honor those signals with a single process-global "don't call
+// until" instant. Poll paths (`graphql_opt`, the batch fetchers) check
+// [`is_backing_off`] and serve the persisted PR snapshot instead; user-driven
+// mutations (create/merge) skip the gate so an explicit action still errors
+// loudly instead of silently no-op'ing.
+// ---------------------------------------------------------------------------
+
+/// GraphQL points remaining (of ~5000/hr) at or below which we stop polling
+/// until the window resets — a cushion so an in-flight batch can't overrun.
+const RATE_BUDGET_FLOOR: i64 = 50;
+/// Fallback pause when GitHub signals a secondary limit without a `Retry-After`.
+const DEFAULT_BACKOFF: Duration = Duration::from_secs(60);
+
+fn backoff_registry() -> &'static RwLock<Option<Instant>> {
+    static BACKOFF: OnceLock<RwLock<Option<Instant>>> = OnceLock::new();
+    BACKOFF.get_or_init(|| RwLock::new(None))
+}
+
+/// Pause API polling for `dur`. Extends an existing pause, never shortens it —
+/// two overlapping signals settle on the later deadline.
+fn set_backoff(dur: Duration) {
+    let until = Instant::now() + dur;
+    let mut w = backoff_registry().write().unwrap();
+    if w.map_or(true, |cur| until > cur) {
+        *w = Some(until);
+    }
+}
+
+/// True while a rate-limit pause is in effect. Poll paths short-circuit to the
+/// last persisted state instead of spending a request that would likely 403.
+pub fn is_backing_off() -> bool {
+    backoff_registry()
+        .read()
+        .unwrap()
+        .is_some_and(|until| Instant::now() < until)
+}
+
+/// Feed the queried GraphQL `rateLimit` budget back into the gate: when the
+/// remaining points fall to the floor, pause until the window resets
+/// (`reset_at_ms` is GitHub's `resetAt` as ms-epoch).
+pub fn note_rate_budget(remaining: i64, reset_at_ms: Option<i64>) {
+    if remaining > RATE_BUDGET_FLOOR {
+        return;
+    }
+    let dur = reset_at_ms
+        .and_then(|reset| {
+            let now = chrono::Utc::now().timestamp_millis();
+            (reset > now).then(|| Duration::from_millis((reset - now) as u64))
+        })
+        .unwrap_or(DEFAULT_BACKOFF);
+    set_backoff(dur);
+}
+
+/// Inspect a response for rate-limit signals and arm the backoff gate:
+/// a secondary-limit `403`/`429` (honoring `Retry-After`), a GraphQL
+/// `RATE_LIMITED` error, or an exhausted `x-ratelimit-remaining` header.
+fn observe_rate_limit(status: reqwest::StatusCode, headers: &reqwest::header::HeaderMap, body: &Value) {
+    let header_secs = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<i64>().ok())
+    };
+
+    // Secondary (burst/concurrency) limit: back off for Retry-After, or a
+    // conservative default when the header is absent.
+    if matches!(status.as_u16(), 403 | 429) {
+        let secs = header_secs("retry-after").filter(|s| *s > 0);
+        set_backoff(secs.map_or(DEFAULT_BACKOFF, |s| Duration::from_secs(s as u64)));
+        return;
+    }
+
+    // GraphQL reports its secondary limit as 200 + a RATE_LIMITED error.
+    let rate_limited_error = body
+        .get("errors")
+        .and_then(Value::as_array)
+        .is_some_and(|errs| {
+            errs.iter().any(|e| {
+                e.get("type").and_then(Value::as_str) == Some("RATE_LIMITED")
+                    || e.get("message")
+                        .and_then(Value::as_str)
+                        .is_some_and(|m| m.to_lowercase().contains("rate limit"))
+            })
+        });
+    if rate_limited_error {
+        set_backoff(DEFAULT_BACKOFF);
+        return;
+    }
+
+    // Primary budget exhausted: pause until the reset the header names.
+    if header_secs("x-ratelimit-remaining") == Some(0) {
+        let dur = header_secs("x-ratelimit-reset")
+            .map(|reset| Duration::from_secs((reset - chrono::Utc::now().timestamp()).max(1) as u64))
+            .unwrap_or(DEFAULT_BACKOFF);
+        set_backoff(dur);
+    }
 }
 
 /// Git-config env authenticating git's https transport to github.com with the
@@ -123,6 +227,19 @@ impl Client {
     /// server's messages — callers match on the text for expected cases
     /// (e.g. auto-merge's "clean status").
     pub async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
+        self.graphql_inner(query, variables, false).await
+    }
+
+    /// Like [`graphql`](Self::graphql) but tolerant of a partial `errors[]`:
+    /// returns whatever `data` came back even when some fields errored. For
+    /// *batched* queries, one inaccessible repo/PR must null just its own alias
+    /// (`data.aN == null`), not fail the whole round-trip and blank every other
+    /// agent's state.
+    pub async fn graphql_partial(&self, query: &str, variables: Value) -> Result<Value> {
+        self.graphql_inner(query, variables, true).await
+    }
+
+    async fn graphql_inner(&self, query: &str, variables: Value, allow_partial: bool) -> Result<Value> {
         let resp = self
             .request(reqwest::Method::POST, GRAPHQL_URL.to_string())
             .json(&json!({ "query": query, "variables": variables }))
@@ -130,7 +247,9 @@ impl Client {
             .await
             .map_err(request_error)?;
         let status = resp.status();
+        let headers = resp.headers().clone();
         let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+        observe_rate_limit(status, &headers, &body);
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(Error::Gh(
                 "GitHub token is no longer valid — sign in with GitHub again".into(),
@@ -148,7 +267,13 @@ impl Client {
                     .iter()
                     .filter_map(|e| e.get("message").and_then(Value::as_str))
                     .collect();
-                return Err(Error::Gh(msgs.join("; ")));
+                // Partial mode keeps the good aliases; note the rest at debug
+                // (never at a level that could leak a token-bearing message).
+                if allow_partial && body.get("data").is_some_and(|d| !d.is_null()) {
+                    tracing::debug!(errors = %msgs.join("; "), "graphql partial errors");
+                } else {
+                    return Err(Error::Gh(msgs.join("; ")));
+                }
             }
         }
         Ok(body.get("data").cloned().unwrap_or(Value::Null))
@@ -181,9 +306,84 @@ pub(crate) fn test_token_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+/// Clear the backoff gate. Tests only — keeps a rate-limit signal from one
+/// test leaking into the next (the registry is process-global).
+#[cfg(test)]
+pub(crate) fn clear_backoff() {
+    *backoff_registry().write().unwrap() = None;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        h
+    }
+
+    /// Serializes the tests that mutate the process-global backoff registry, so
+    /// one test's arming can't race another's `clear_backoff()` → `assert!`
+    /// window under `cargo test`'s parallel threads (mirrors `test_token_lock`).
+    fn test_backoff_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn retry_after_arms_backoff() {
+        let _guard = test_backoff_lock();
+        clear_backoff();
+        assert!(!is_backing_off());
+        observe_rate_limit(
+            reqwest::StatusCode::FORBIDDEN,
+            &headers(&[("retry-after", "30")]),
+            &Value::Null,
+        );
+        assert!(is_backing_off(), "403 + Retry-After must pause polling");
+        clear_backoff();
+    }
+
+    #[test]
+    fn graphql_rate_limited_error_arms_backoff() {
+        let _guard = test_backoff_lock();
+        clear_backoff();
+        let body = json!({ "errors": [{ "type": "RATE_LIMITED", "message": "API rate limit exceeded" }] });
+        observe_rate_limit(reqwest::StatusCode::OK, &headers(&[]), &body);
+        assert!(is_backing_off(), "GraphQL RATE_LIMITED must pause polling");
+        clear_backoff();
+    }
+
+    #[test]
+    fn healthy_response_does_not_arm_backoff() {
+        let _guard = test_backoff_lock();
+        clear_backoff();
+        observe_rate_limit(
+            reqwest::StatusCode::OK,
+            &headers(&[("x-ratelimit-remaining", "4999")]),
+            &json!({ "data": {} }),
+        );
+        assert!(!is_backing_off(), "a normal response must not pause polling");
+    }
+
+    #[test]
+    fn budget_floor_arms_backoff_only_when_low() {
+        let _guard = test_backoff_lock();
+        clear_backoff();
+        note_rate_budget(500, None);
+        assert!(!is_backing_off(), "ample budget must not pause");
+        note_rate_budget(1, None);
+        assert!(is_backing_off(), "budget at the floor must pause");
+        clear_backoff();
+    }
 
     /// The git auth header is the documented actions/checkout form: basic
     /// base64("x-access-token:<token>"), scoped to github.com https only.

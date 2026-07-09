@@ -210,6 +210,20 @@ async fn require_repo_ref(checkout: &Path) -> Result<(String, String)> {
     })
 }
 
+/// Resolve `owner/repo` from the checkout's origin, falling back to the source
+/// repo when the checkout is broken or gone (they share an origin). `None` when
+/// neither resolves to a github.com remote. Shared by the by-number lookups
+/// (single and batched) that must survive a checkout casualty.
+pub(crate) async fn resolve_slug(checkout: &Path, source: Option<&Path>) -> Option<(String, String)> {
+    match repo_ref(checkout).await {
+        Some(slug) => Some(slug),
+        None => match source {
+            Some(src) => repo_ref(src).await,
+            None => None,
+        },
+    }
+}
+
 async fn require_current_branch(checkout: &Path, what: &str) -> Result<String> {
     crate::git::current_branch(checkout)
         .await?
@@ -245,6 +259,11 @@ fn pick_branch_pr(nodes: &[Value]) -> Option<&Value> {
 /// the same degradation the gh wrapper applied to its stderr ("could not
 /// resolve to a PullRequest", "...not found").
 async fn graphql_opt(query: &str, variables: Value) -> Result<Option<Value>> {
+    // A rate-limit pause is in effect — skip the request so callers degrade to
+    // the persisted snapshot instead of spending one that would likely 403.
+    if client::is_backing_off() {
+        return Ok(None);
+    }
     let client = match client::Client::new() {
         Ok(c) => c,
         // Read paths poll in the background; not being connected is a normal
@@ -340,13 +359,7 @@ pub async fn pr_view_number(
     source_repo: Option<&Path>,
     number: u32,
 ) -> Result<Option<PrState>> {
-    let mut slug = repo_ref(checkout).await;
-    if slug.is_none() {
-        if let Some(source) = source_repo {
-            slug = repo_ref(source).await;
-        }
-    }
-    let Some((owner, repo)) = slug else {
+    let Some((owner, repo)) = resolve_slug(checkout, source_repo).await else {
         return Ok(None);
     };
     let query = format!(
@@ -408,6 +421,27 @@ pub async fn pr_list(checkout: &Path, limit: u32) -> Result<Vec<PrSummary>> {
 // PR checks
 // ---------------------------------------------------------------------------
 
+/// GraphQL selection for the merge gate + per-check rollup on a PR node.
+/// `startedAt: createdAt` aliases StatusContext's field to the name the parser
+/// (shared with the CheckRun arm) expects. Reused by the branch lookup
+/// (`pr_checks`) and the by-number batch (`pr_checks_batch`).
+const PR_CHECKS_FIELDS: &str = r#"mergeStateStatus
+           commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{
+             __typename
+             ... on CheckRun { name status conclusion detailsUrl startedAt completedAt }
+             ... on StatusContext { context state targetUrl startedAt: createdAt }
+           }}}}}}"#;
+
+/// Extract [`PrChecks`] from a PR node carrying [`PR_CHECKS_FIELDS`].
+fn pr_checks_from_node(pr: &Value) -> PrChecks {
+    let merge_state = pr["mergeStateStatus"].as_str().unwrap_or("UNKNOWN").to_string();
+    let rollup = pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    parse_pr_checks(&merge_state, &rollup)
+}
+
 /// Fetch the merge gate + per-check detail for the current branch's PR in one
 /// GraphQL call. `Ok(None)` when there is no PR; other failures surface as
 /// `Err` — the command layer treats both as "checks unavailable" and the
@@ -419,16 +453,7 @@ pub async fn pr_checks(checkout: &Path) -> Result<Option<PrChecks>> {
     let Some(branch) = crate::git::current_branch(checkout).await? else {
         return Ok(None);
     };
-    // `startedAt: createdAt` aliases StatusContext's field to the name the
-    // parser (shared with the CheckRun arm) expects.
-    let query = branch_prs_query(
-        r#"mergeStateStatus
-           commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{
-             __typename
-             ... on CheckRun { name status conclusion detailsUrl startedAt completedAt }
-             ... on StatusContext { context state targetUrl startedAt: createdAt }
-           }}}}}}"#,
-    );
+    let query = branch_prs_query(PR_CHECKS_FIELDS);
     let Some(data) = graphql_opt(
         &query,
         json!({ "owner": owner, "repo": repo, "branch": branch }),
@@ -441,12 +466,7 @@ pub async fn pr_checks(checkout: &Path) -> Result<Option<PrChecks>> {
     let Some(pr) = pick_branch_pr(&nodes) else {
         return Ok(None);
     };
-    let merge_state = pr["mergeStateStatus"].as_str().unwrap_or("UNKNOWN").to_string();
-    let rollup = pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    Ok(Some(parse_pr_checks(&merge_state, &rollup)))
+    Ok(Some(pr_checks_from_node(pr)))
 }
 
 /// Normalize the UPPERCASE rollup payload into the spec §6 shape. Pure — unit
@@ -544,6 +564,112 @@ fn parse_pr_checks(merge_state_status: &str, rollup: &[Value]) -> PrChecks {
         required_failing,
         runs,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Batched multi-PR queries
+//
+// The app-wide polls (`refresh_all_pr_states`/`refresh_all_pr_checks`) used to
+// fan one GraphQL request out per agent, concurrently — the burst that trips
+// GitHub's secondary rate limit. Instead we collapse them into a single aliased
+// query (`a0: repository(...){pullRequest(number:…){…}} a1: …`), chunked, so N
+// agents cost ⌈N/50⌉ *sequential* requests rather than N concurrent ones.
+// ---------------------------------------------------------------------------
+
+/// One PR to look up by number in a batched query.
+#[derive(Debug, Clone)]
+pub(crate) struct PrRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u32,
+}
+
+/// Max PRs per batched request — each adds a top-level `repository` alias, so
+/// chunking keeps the query under GitHub's node/complexity limits.
+const BATCH_CHUNK: usize = 50;
+
+/// Build an aliased multi-PR query with a trailing `rateLimit` probe. Values
+/// ride in as variables (`$oN/$rN/$nN`) so nothing user-derived is interpolated
+/// into the query text.
+fn build_batch_query(chunk: &[PrRef], inner_fields: &str) -> (String, Value) {
+    let mut decls = Vec::with_capacity(chunk.len());
+    let mut aliases = Vec::with_capacity(chunk.len());
+    let mut vars = serde_json::Map::new();
+    for (i, r) in chunk.iter().enumerate() {
+        decls.push(format!("$o{i}:String!,$r{i}:String!,$n{i}:Int!"));
+        aliases.push(format!(
+            "a{i}:repository(owner:$o{i},name:$r{i}){{pullRequest(number:$n{i}){{{inner_fields}}}}}"
+        ));
+        vars.insert(format!("o{i}"), json!(r.owner));
+        vars.insert(format!("r{i}"), json!(r.repo));
+        vars.insert(format!("n{i}"), json!(r.number));
+    }
+    let query = format!(
+        "query({}){{{} rateLimit{{cost remaining resetAt}}}}",
+        decls.join(","),
+        aliases.join(" "),
+    );
+    (query, Value::Object(vars))
+}
+
+/// Feed the queried `rateLimit` budget into the client's backoff gate.
+fn note_budget(data: &Value) {
+    let rl = &data["rateLimit"];
+    if let Some(remaining) = rl["remaining"].as_i64() {
+        let reset = rl["resetAt"]
+            .as_str()
+            .and_then(|iso| chrono::DateTime::parse_from_rfc3339(iso).ok())
+            .map(|t| t.timestamp_millis());
+        client::note_rate_budget(remaining, reset);
+    }
+}
+
+/// Run `refs` through one or more batched queries, mapping each alias's
+/// `pullRequest` node with `parse`. Results align 1:1 with `refs`; a
+/// missing/inaccessible PR yields `None` for its slot (partial-error tolerant).
+/// `Ok(vec![])` for empty input; an active backoff short-circuits to all-`None`
+/// so callers fall back to the persisted snapshot without spending a request.
+async fn pr_batch<T>(
+    refs: &[PrRef],
+    inner_fields: &str,
+    parse: impl Fn(&Value) -> T,
+) -> Result<Vec<Option<T>>> {
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    if client::is_backing_off() {
+        return Ok(refs.iter().map(|_| None).collect());
+    }
+    let client = client::Client::new()?;
+    let mut out = Vec::with_capacity(refs.len());
+    for chunk in refs.chunks(BATCH_CHUNK) {
+        let (query, vars) = build_batch_query(chunk, inner_fields);
+        let data = client.graphql_partial(&query, vars).await?;
+        note_budget(&data);
+        for i in 0..chunk.len() {
+            let node = &data[format!("a{i}")]["pullRequest"];
+            out.push((!node.is_null()).then(|| parse(node)));
+        }
+        // A signal in this chunk's response — the budget crossing its floor, a
+        // Retry-After, or a RATE_LIMITED error — armed the gate. Stop before the
+        // next chunk spends the reserve, padding the unfetched refs with `None`
+        // so the result stays aligned 1:1 with `refs` (callers zip on that).
+        if client::is_backing_off() {
+            out.resize_with(refs.len(), || None);
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Fetch PR state for many PRs by number in one (chunked) round-trip.
+pub(crate) async fn pr_states_batch(refs: &[PrRef]) -> Result<Vec<Option<PrState>>> {
+    pr_batch(refs, &format!("state {PR_STATE_FIELDS}"), parse_pr_state).await
+}
+
+/// Fetch the merge gate + checks for many PRs by number in one round-trip.
+pub(crate) async fn pr_checks_batch(refs: &[PrRef]) -> Result<Vec<Option<PrChecks>>> {
+    pr_batch(refs, PR_CHECKS_FIELDS, pr_checks_from_node).await
 }
 
 // ---------------------------------------------------------------------------
@@ -918,6 +1044,24 @@ mod tests {
         let no_open = vec![pr_node("MERGED", 9, "UNKNOWN"), pr_node("CLOSED", 5, "UNKNOWN")];
         assert_eq!(pick_branch_pr(&no_open).unwrap()["number"].as_u64(), Some(9));
         assert!(pick_branch_pr(&[]).is_none());
+    }
+
+    #[test]
+    fn batch_query_builds_aliases_and_variables() {
+        let refs = vec![
+            PrRef { owner: "acme".into(), repo: "web".into(), number: 7 },
+            PrRef { owner: "acme".into(), repo: "api".into(), number: 12 },
+        ];
+        let (query, vars) = build_batch_query(&refs, "state number");
+        // One aliased repository/pullRequest per ref, values via variables.
+        assert!(query.contains("a0:repository(owner:$o0,name:$r0)"), "{query}");
+        assert!(query.contains("a1:repository(owner:$o1,name:$r1)"), "{query}");
+        assert!(query.contains("pullRequest(number:$n1)"), "{query}");
+        // The budget probe rides along on every batch.
+        assert!(query.contains("rateLimit"), "{query}");
+        assert_eq!(vars["o0"], json!("acme"));
+        assert_eq!(vars["r1"], json!("api"));
+        assert_eq!(vars["n1"], json!(12));
     }
 
     #[test]
