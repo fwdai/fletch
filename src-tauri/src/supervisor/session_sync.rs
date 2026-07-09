@@ -127,6 +127,11 @@ pub(crate) async fn resolve_pr_state(
     let checkout = repo_checkout_path(agent_id, &repo.subdir).ok()?;
 
     if let Some(number) = repo.pr_number {
+        // Merged is the one terminal state — it can't be undone, so it's
+        // served from the database with no network spent re-confirming it.
+        // Closed is deliberately NOT short-circuited: a closed PR can be
+        // reopened, so it stays on the live-fetch path (and keeps costing a
+        // poll per cycle) to catch that transition.
         if repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str()) {
             return pr_snapshot(repo).map(|pr| (pr, true));
         }

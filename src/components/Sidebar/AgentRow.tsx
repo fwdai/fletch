@@ -54,7 +54,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const usage = useAppStore((s) => s.usage[agent.id]);
   // Live PR state with the persisted database snapshot as fallback, so a
   // merged badge survives restarts, offline stretches, and broken checkouts.
-  const prState = usePrState(agent.id);
+  const prState = usePrState(agent.id, agent.repos[0]);
   // CI rollup for this agent's PR, fed by the app-wide refreshAllPrChecks poll
   // (see App.tsx) — lets the PR pill tint pass/fail across every row, not just
   // the focused one. Null until the first poll lands or when there's no PR.

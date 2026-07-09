@@ -26,9 +26,17 @@ export function prSnapshot(repo: TrackedRepo | undefined): PrState | null {
 }
 
 /** The PR state to render for an agent: live store value, else the database
- *  snapshot from the agent's primary repo. */
-export function usePrState(agentId: string): PrState | null {
+ *  snapshot from the agent's primary repo.
+ *
+ *  Callers that already hold the agent record (the sidebar mounts one row per
+ *  agent) should pass its primary repo — the selector then skips the O(n)
+ *  agents scan that would otherwise run in every mounted row on every store
+ *  update. Singleton consumers (title-bar capsule, Git panel) can omit it and
+ *  let the selector look the repo up. */
+export function usePrState(agentId: string, repo?: TrackedRepo): PrState | null {
   const live = useAppStore((s) => s.prStates[agentId] ?? null);
-  const repo = useAppStore((s) => s.workspace?.agents.find((a) => a.id === agentId)?.repos[0]);
-  return useMemo(() => live ?? prSnapshot(repo), [live, repo]);
+  const found = useAppStore(
+    (s) => repo ?? s.workspace?.agents.find((a) => a.id === agentId)?.repos[0],
+  );
+  return useMemo(() => live ?? prSnapshot(found), [live, found]);
 }
