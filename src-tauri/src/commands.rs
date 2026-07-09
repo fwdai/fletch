@@ -589,18 +589,8 @@ pub async fn create_pr(
     // Bind the PR to this agent (number + state snapshot) so later lookups
     // don't rely on the (recyclable) branch name. A failure here isn't fatal —
     // the next idle/push poll re-binds it via guarded discovery once the PR
-    // shows OPEN — but log it so the gap is observable rather than silent.
-    if let Err(e) = supervisor
-        .workspace
-        .set_repo_pr_snapshot(&agent_id, &repo.subdir, &pr)
-    {
-        tracing::warn!(
-            error = %e,
-            agent_id = %agent_id,
-            pr = pr.number,
-            "create_pr: failed to persist PR snapshot"
-        );
-    }
+    // shows OPEN — but the helper logs it so the gap is observable, not silent.
+    crate::supervisor::persist_pr_snapshot(&supervisor.workspace, &agent_id, &repo.subdir, &pr);
     Ok(pr)
 }
 

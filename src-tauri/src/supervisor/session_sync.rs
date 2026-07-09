@@ -99,6 +99,21 @@ pub(crate) fn pr_snapshot(repo: &TrackedRepo) -> Option<PrState> {
     })
 }
 
+/// Persist a freshly-fetched PR state to its repo's snapshot columns, logging
+/// (never propagating) a write failure. Every path that learns a PR's state —
+/// the single and batched polls and `create_pr` — funnels through here so the
+/// persistence contract lives in one place.
+pub(crate) fn persist_pr_snapshot(
+    workspace: &WorkspaceManager,
+    agent_id: &str,
+    subdir: &str,
+    pr: &PrState,
+) {
+    if let Err(e) = workspace.set_repo_pr_snapshot(agent_id, subdir, pr) {
+        tracing::warn!(error = %e, agent_id, pr = pr.number, "failed to persist PR snapshot");
+    }
+}
+
 /// Resolve the current PR state for an agent's primary repo, persisting what
 /// it learns. Returns the state plus whether that PR is *bound* to the agent
 /// by number. The single implementation behind the focused panel
@@ -138,14 +153,7 @@ pub(crate) async fn resolve_pr_state(
         match crate::github::pr_view_number(&checkout, Some(&repo.repo_path), number as u32).await
         {
             Ok(Some(pr)) => {
-                if let Err(e) = workspace.set_repo_pr_snapshot(agent_id, &repo.subdir, &pr) {
-                    tracing::warn!(
-                        error = %e,
-                        agent_id,
-                        pr = pr.number,
-                        "failed to persist PR snapshot"
-                    );
-                }
+                persist_pr_snapshot(workspace, agent_id, &repo.subdir, &pr);
                 Some((pr, true))
             }
             // Unreachable or not found — fall back to the last confirmed state.
@@ -154,14 +162,7 @@ pub(crate) async fn resolve_pr_state(
     } else {
         match crate::github::pr_view(&checkout).await.unwrap_or(None) {
             Some(pr) if matches!(pr.state, PrStatus::Open) => {
-                if let Err(e) = workspace.set_repo_pr_snapshot(agent_id, &repo.subdir, &pr) {
-                    tracing::warn!(
-                        error = %e,
-                        agent_id,
-                        pr = pr.number,
-                        "pr discovery: failed to persist PR snapshot"
-                    );
-                }
+                persist_pr_snapshot(workspace, agent_id, &repo.subdir, &pr);
                 Some((pr, true))
             }
             Some(pr) => Some((pr, false)),
@@ -264,14 +265,7 @@ pub(crate) async fn resolve_all_pr_states(
             for (p, res) in pending.into_iter().zip(results) {
                 match res {
                     Some(pr) => {
-                        if let Err(e) = workspace.set_repo_pr_snapshot(&p.agent_id, &p.subdir, &pr) {
-                            tracing::warn!(
-                                error = %e,
-                                agent_id = %p.agent_id,
-                                pr = pr.number,
-                                "failed to persist PR snapshot"
-                            );
-                        }
+                        persist_pr_snapshot(workspace, &p.agent_id, &p.subdir, &pr);
                         out.insert(p.agent_id, pr);
                     }
                     // Not found this round / partial error — keep last-known.
