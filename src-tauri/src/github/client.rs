@@ -328,8 +328,19 @@ mod tests {
         h
     }
 
+    /// Serializes the tests that mutate the process-global backoff registry, so
+    /// one test's arming can't race another's `clear_backoff()` → `assert!`
+    /// window under `cargo test`'s parallel threads (mirrors `test_token_lock`).
+    fn test_backoff_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn retry_after_arms_backoff() {
+        let _guard = test_backoff_lock();
         clear_backoff();
         assert!(!is_backing_off());
         observe_rate_limit(
@@ -343,6 +354,7 @@ mod tests {
 
     #[test]
     fn graphql_rate_limited_error_arms_backoff() {
+        let _guard = test_backoff_lock();
         clear_backoff();
         let body = json!({ "errors": [{ "type": "RATE_LIMITED", "message": "API rate limit exceeded" }] });
         observe_rate_limit(reqwest::StatusCode::OK, &headers(&[]), &body);
@@ -352,6 +364,7 @@ mod tests {
 
     #[test]
     fn healthy_response_does_not_arm_backoff() {
+        let _guard = test_backoff_lock();
         clear_backoff();
         observe_rate_limit(
             reqwest::StatusCode::OK,
@@ -363,6 +376,7 @@ mod tests {
 
     #[test]
     fn budget_floor_arms_backoff_only_when_low() {
+        let _guard = test_backoff_lock();
         clear_backoff();
         note_rate_budget(500, None);
         assert!(!is_backing_off(), "ample budget must not pause");

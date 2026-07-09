@@ -650,6 +650,14 @@ async fn pr_batch<T>(
             let node = &data[format!("a{i}")]["pullRequest"];
             out.push((!node.is_null()).then(|| parse(node)));
         }
+        // A signal in this chunk's response — the budget crossing its floor, a
+        // Retry-After, or a RATE_LIMITED error — armed the gate. Stop before the
+        // next chunk spends the reserve, padding the unfetched refs with `None`
+        // so the result stays aligned 1:1 with `refs` (callers zip on that).
+        if client::is_backing_off() {
+            out.resize_with(refs.len(), || None);
+            break;
+        }
     }
     Ok(out)
 }
