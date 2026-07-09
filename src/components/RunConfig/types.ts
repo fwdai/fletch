@@ -32,11 +32,11 @@ const GROUP_LABEL: Record<string, string> = {
  *  up by `read_run_commands` at run time. Rendered empty (no default,
  *  `source: ""`) with a hint so the user can type their own command. */
 const FALLBACK_ROWS: readonly SetupRow[] = [
-  row("version", "environment", "Version", "e.g. 22.4.0"),
-  row("install", "environment", "Install", "e.g. npm install"),
-  row("dev", "scripts", "Dev", "e.g. npm run dev"),
-  row("test", "scripts", "Test", "e.g. npm test"),
-  row("build", "scripts", "Build", "e.g. npm run build"),
+  row("version", "environment", "Version", "Language / runtime version"),
+  row("install", "environment", "Install", "Command to install dependencies"),
+  row("dev", "scripts", "Dev", "Command to start the dev server"),
+  row("test", "scripts", "Test", "Command to run the tests"),
+  row("build", "scripts", "Build", "Command to build the project"),
   row("port", "server", "Port", "e.g. 3000"),
 ];
 
