@@ -34,6 +34,9 @@ export function ConfigRow({ row, override, scope, onChange, onRevert }: ConfigRo
 
   const hasOverride = override != null;
   const display = hasOverride ? override : row.value;
+  // The detected default seeds the placeholder; a fallback row has none, so
+  // it carries its own hint instead.
+  const placeholder = row.value || row.placeholder || "";
 
   const [text, setText] = useState(display);
   useEffect(() => {
@@ -44,7 +47,9 @@ export function ConfigRow({ row, override, scope, onChange, onRevert }: ConfigRo
   // rendered width is exactly length × 1ch — sized in ch units the width is
   // always right, with no DOM measurement to go stale when the font loads.
   // Keeping the width explicit in both states is what lets it transition.
-  const viewWidth = `min(${Math.max(display.length, 1)}ch + 2px, ${VIEW_MAX_WIDTH}px)`;
+  // Fall back to the placeholder when empty so the hint isn't clipped.
+  const widthBasis = display || placeholder;
+  const viewWidth = `min(${Math.max(widthBasis.length, 1)}ch + 2px, ${VIEW_MAX_WIDTH}px)`;
 
   // Project Settings edits ARE the project setting — no override framing
   // there, in label or styling. Only the agent surface marks a row that
@@ -61,10 +66,12 @@ export function ConfigRow({ row, override, scope, onChange, onRevert }: ConfigRo
     </>
   ) : hasOverride ? null : fromProject ? (
     <>Project setting</>
-  ) : (
+  ) : row.source ? (
     <>
       Detected · <code>{row.source}</code>
     </>
+  ) : (
+    <>Not set</>
   );
 
   return (
@@ -84,7 +91,7 @@ export function ConfigRow({ row, override, scope, onChange, onRevert }: ConfigRo
             type="text"
             value={text}
             readOnly={!editing}
-            placeholder={row.value}
+            placeholder={placeholder}
             style={{ width: editing ? EDIT_WIDTH : viewWidth }}
             onFocus={() => setEditing(true)}
             onChange={(e) => setText(e.target.value)}
