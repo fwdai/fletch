@@ -203,8 +203,11 @@ impl Supervisor {
                 // placeholder to satisfy the struct.
                 base_sha: None,
                 // Likewise preserved in the worktrees row across restore;
-                // placeholder to satisfy the struct.
+                // placeholders to satisfy the struct.
                 pr_number: None,
+                pr_url: None,
+                pr_title: None,
+                pr_state: None,
             });
         }
 

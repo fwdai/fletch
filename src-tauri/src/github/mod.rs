@@ -36,6 +36,28 @@ pub enum PrStatus {
     Closed,
 }
 
+impl PrStatus {
+    /// Stable lowercase form, matching the serde serialization. Used as the
+    /// on-disk value in `worktrees.pr_state`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PrStatus::Open => "open",
+            PrStatus::Merged => "merged",
+            PrStatus::Closed => "closed",
+        }
+    }
+
+    /// Inverse of [`as_str`](Self::as_str), for rows written by this app.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "open" => Some(PrStatus::Open),
+            "merged" => Some(PrStatus::Merged),
+            "closed" => Some(PrStatus::Closed),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PrState {
     pub number: u32,
@@ -307,8 +329,24 @@ pub async fn pr_view(checkout: &Path) -> Result<Option<PrState>> {
 /// identity: once we've recorded a PR number for an agent we fetch by it, so a
 /// recycled workspace/branch name can't resolve to a different (e.g. a prior
 /// agent's merged) PR. `Ok(None)` when the PR can't be found.
-pub async fn pr_view_number(checkout: &Path, number: u32) -> Result<Option<PrState>> {
-    let Some((owner, repo)) = repo_ref(checkout).await else {
+///
+/// `owner/repo` resolves from the checkout's origin, falling back to
+/// `source_repo` (the repo the agent was spawned against — it shares the same
+/// origin) when the checkout is broken or gone. A checkout casualty — a moved
+/// root, a pruned linked worktree — must not sever a by-number lookup that
+/// never needed the checkout's git state in the first place.
+pub async fn pr_view_number(
+    checkout: &Path,
+    source_repo: Option<&Path>,
+    number: u32,
+) -> Result<Option<PrState>> {
+    let mut slug = repo_ref(checkout).await;
+    if slug.is_none() {
+        if let Some(source) = source_repo {
+            slug = repo_ref(source).await;
+        }
+    }
+    let Some((owner, repo)) = slug else {
         return Ok(None);
     };
     let query = format!(
@@ -629,7 +667,7 @@ pub async fn pr_create(checkout: &Path, title: &str, body: &str, base: &str) -> 
     // The create response carries no `mergeable` verdict yet (GitHub computes
     // it async) — fetch the same shape every other path returns.
     let number = resp["number"].as_u64().unwrap_or_default() as u32;
-    match pr_view_number(checkout, number).await? {
+    match pr_view_number(checkout, None, number).await? {
         Some(pr) => Ok(pr),
         None => Err(Error::Gh("PR was created but could not be fetched".into())),
     }
@@ -1082,7 +1120,7 @@ mod tests {
         if let Some(pr) = pr_view(&repo).await.unwrap() {
             assert!(pr.number > 0);
             assert!(pr.url.starts_with("https://github.com/"));
-            let by_number = pr_view_number(&repo, pr.number).await.unwrap().unwrap();
+            let by_number = pr_view_number(&repo, None, pr.number).await.unwrap().unwrap();
             assert_eq!(by_number.number, pr.number);
             let checks = pr_checks(&repo).await.unwrap();
             assert!(checks.is_some(), "checks must resolve for an existing PR");
@@ -1090,7 +1128,7 @@ mod tests {
         }
 
         // A PR number that can't exist maps to None, not an error.
-        assert!(pr_view_number(&repo, 999_999_999).await.unwrap().is_none());
+        assert!(pr_view_number(&repo, None, 999_999_999).await.unwrap().is_none());
 
         let prs = pr_list(&repo, 5).await.unwrap();
         assert!(prs.len() <= 5);

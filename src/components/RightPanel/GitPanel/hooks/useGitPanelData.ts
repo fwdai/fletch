@@ -3,6 +3,7 @@ import type { MergeState } from "@/api";
 import { deriveState } from "@/components/RightPanel/primaryActions";
 import { useAppStore } from "@/store";
 import { usePoll } from "@/util/hooks";
+import { usePrState } from "@/util/prState";
 
 /** All the live git/PR reads the panel renders from, plus the polling that
  *  keeps them fresh while the panel is mounted:
@@ -12,7 +13,7 @@ import { usePoll } from "@/util/hooks";
  *  usePoll fires immediately, so the first read of each still lands on mount. */
 export function useGitPanelData(agentId: string) {
   const gitState = useAppStore((s) => s.gitStates[agentId] ?? null);
-  const prState = useAppStore((s) => s.prStates[agentId] ?? null);
+  const prState = usePrState(agentId);
   const fetchGitState = useAppStore((s) => s.fetchGitState);
   const fetchPrState = useAppStore((s) => s.fetchPrState);
   const prChecksEntry = useAppStore((s) => s.prChecks[agentId]);

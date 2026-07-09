@@ -12,6 +12,13 @@ export interface TrackedRepo {
   subdir: string;
   branch?: string | null;
   parent_branch?: string | null;
+  /** Bound PR identity + last persisted snapshot (see prSnapshot in
+   *  util/prState.ts). Written by the backend on every successful PR fetch;
+   *  what the UI renders when GitHub or the checkout is unavailable. */
+  pr_number?: number | null;
+  pr_url?: string | null;
+  pr_title?: string | null;
+  pr_state?: string | null;
 }
 
 export interface DiffStats {
