@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
-import { ECOSYSTEM_LABEL, RunConfigEditor, type SetupRow } from "@/components/RunConfig";
+import { EcosystemBadge, RunConfigEditor, type SetupRow } from "@/components/RunConfig";
 import { Button } from "@/components/ui/Button";
 
 interface Props {
@@ -52,13 +52,7 @@ export function RunSettingsSheet({ rows, overrides, ecosystem, onClose, onApply 
           <div className="rsh-left">
             <div className="rsh-title text-base">Run configuration</div>
             <div className="rsh-sub text-sm">
-              {ecosystem ? (
-                <>
-                  Detected · <code>{ECOSYSTEM_LABEL[ecosystem] ?? ecosystem}</code>
-                </>
-              ) : (
-                <>No ecosystem detected — edit values below</>
-              )}
+              <EcosystemBadge ecosystem={ecosystem} />
             </div>
           </div>
           <button className="run-sheet-x iflex-center" onClick={onClose} aria-label="Close">

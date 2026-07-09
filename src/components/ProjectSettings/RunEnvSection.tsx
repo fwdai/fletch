@@ -1,9 +1,10 @@
 import { useState } from "react";
 import {
-  ECOSYSTEM_LABEL,
+  EcosystemBadge,
   persistRunOverrides,
   RunConfigEditor,
   reconcileOverrides,
+  rowsOrFallback,
   type SetupRow,
 } from "@/components/RunConfig";
 
@@ -17,7 +18,10 @@ interface Props {
 /** The run configuration every agent in the project inherits. Unlike the Run
  *  panel sheet — which stages a draft and applies on restart — this edits the
  *  project defaults directly, so changes autosave per row. */
-export function RunEnvSection({ projectId, rows, ecosystem, initialOverrides }: Props) {
+export function RunEnvSection({ projectId, rows: detected, ecosystem, initialOverrides }: Props) {
+  // Nothing detected still gets the empty fallback fields — a project with an
+  // unrecognized stack should be configurable, not hidden.
+  const rows = rowsOrFallback(detected);
   const [overrides, setOverrides] = useState<Record<string, string>>(initialOverrides);
 
   // Reconcile a single edit against the detected rows and persist it. Same
@@ -46,30 +50,16 @@ export function RunEnvSection({ projectId, rows, ecosystem, initialOverrides }: 
         </p>
       </header>
 
-      {rows.length === 0 ? (
-        <div className="ps-state text-sm">
-          No run configuration detected for this project — nothing to configure yet.
-        </div>
-      ) : (
-        <>
-          <div className="ps-eco text-xs">
-            {ecosystem ? (
-              <>
-                Detected · <code>{ECOSYSTEM_LABEL[ecosystem] ?? ecosystem}</code>
-              </>
-            ) : (
-              <>No ecosystem detected — edit values below</>
-            )}
-          </div>
-          <RunConfigEditor
-            rows={rows}
-            draft={overrides}
-            scope="project"
-            onChange={onChange}
-            onRevert={onRevert}
-          />
-        </>
-      )}
+      <div className="ps-eco text-xs">
+        <EcosystemBadge ecosystem={ecosystem} />
+      </div>
+      <RunConfigEditor
+        rows={rows}
+        draft={overrides}
+        scope="project"
+        onChange={onChange}
+        onRevert={onRevert}
+      />
     </section>
   );
 }
