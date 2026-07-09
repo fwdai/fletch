@@ -529,6 +529,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clone_provision_detaches_at_sha_of_non_checked_out_branch() {
+        // The spawn fork-point fallback resolves the base branch to a SHA
+        // (lifecycle.rs) precisely because a name can't work here: a clone's
+        // only local branch is the source's HEAD branch, so `checkout --detach
+        // <other-branch-name>` trips git's remote-DWIM (an implicit `-b`) and
+        // dies with "'--detach' cannot be used with '-b/-B/--orphan'". Model
+        // that spawn: source checked out on a side branch, base = the SHA of
+        // `main`'s tip.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, main_tip) = fixture_repo(td.path());
+        run(&repo, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repo.join("s.txt"), b"side").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "side work"]);
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &main_tip,
+            dest: &dest,
+        };
+        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), main_tip);
+        // Detached, not on a DWIM-created local branch.
+        let out = std::process::Command::new("git")
+            .current_dir(&dest)
+            .args(["symbolic-ref", "-q", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "clone HEAD should be detached");
+    }
+
+    #[tokio::test]
     async fn clone_rewrites_origin_to_source_remote() {
         let td = tempfile::tempdir().unwrap();
         let (repo, _first, head) = fixture_repo(td.path());

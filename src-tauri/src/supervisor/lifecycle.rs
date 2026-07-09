@@ -313,13 +313,17 @@ impl Supervisor {
             // (a symbolic `origin/<branch>` would resolve against the source's
             // stale local head inside the clone). Best-effort — if the remote is
             // unavailable (offline, no remote, a local-only branch, or a workflow
-            // commit-ish), use the ref directly when it resolves, otherwise fall
+            // commit-ish), resolve the ref to its local SHA, otherwise fall
             // through to HEAD so an unresolvable base degrades instead of failing
-            // the spawn.
+            // the spawn. The SHA (never the branch name) matters even in the
+            // fallback: a clone-mode workspace only has the source's HEAD branch
+            // as a local branch, so checking out any *other* branch by name
+            // trips git's remote-DWIM (an implicit `-b`), which is fatal
+            // combined with `--detach`.
             let base = match &parent_for_fork {
                 Some(b) => match git::fetch_fork_point(&repo_path, b).await {
                     Some(sha) => Some(sha),
-                    None => git::rev_parse(&repo_path, b).await.ok().map(|_| b.clone()),
+                    None => git::rev_parse(&repo_path, b).await.ok(),
                 },
                 None => None,
             };
