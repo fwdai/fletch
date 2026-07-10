@@ -254,7 +254,8 @@
   background: color-mix(in oklch, var(--info), transparent 80%);
   color: var(--info);
 }
-.code-tab.status-a .ct-status {
+.code-tab.status-a .ct-status,
+.code-tab.status-u .ct-status {
   background: color-mix(in oklch, var(--success), transparent 80%);
   color: var(--success);
 }

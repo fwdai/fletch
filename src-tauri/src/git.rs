@@ -1330,25 +1330,59 @@ pub async fn file_changed_lines(
     base_ref: &str,
     path: &str,
 ) -> Result<(Vec<u32>, Vec<u32>)> {
-    let out = run_git(
-        checkout,
-        &["diff", "--no-color", "-U0", base_ref, "--", path],
-        &format!("diff -U0 {base_ref} -- {path}"),
-    )
-    .await?;
-    Ok(parse_changed_lines(&String::from_utf8_lossy(&out.stdout)))
+    let diff = file_diff_unified(checkout, base_ref, path, "-U0").await?;
+    Ok(parse_changed_lines(&diff))
 }
 
 /// Return the full unified diff of `path` versus `base_ref`, for the Code
 /// panel's live view. `-U3` gives three lines of surrounding context per hunk.
 pub async fn file_diff(checkout: &Path, base_ref: &str, path: &str) -> Result<String> {
+    file_diff_unified(checkout, base_ref, path, "-U3").await
+}
+
+/// Unified diff of `path` versus `base_ref` with the given `-U<n>` context
+/// flag. `git diff <ref>` only covers files in the index, so an untracked
+/// (agent-created, never `git add`ed) file diffs as empty; when that happens,
+/// re-diff it against /dev/null with `--no-index`, which renders the whole
+/// file as one added hunk.
+async fn file_diff_unified(
+    checkout: &Path,
+    base_ref: &str,
+    path: &str,
+    unified: &str,
+) -> Result<String> {
     let out = run_git(
         checkout,
-        &["diff", "--no-color", "-U3", base_ref, "--", path],
-        &format!("diff -U3 {base_ref} -- {path}"),
+        &["diff", "--no-color", unified, base_ref, "--", path],
+        &format!("diff {unified} {base_ref} -- {path}"),
     )
     .await?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    if !out.stdout.is_empty() || is_tracked(checkout, path).await {
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    // `--no-index` exits 1 whenever the two sides differ, so accept 0 and 1.
+    let out = git_output(
+        checkout,
+        &["diff", "--no-color", unified, "--no-index", "--", "/dev/null", path],
+    )
+    .await?;
+    match out.status.code() {
+        Some(0) | Some(1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        _ => Err(Error::Git(format!(
+            "diff --no-index -- /dev/null {path} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+    }
+}
+
+/// Whether `path` is in the index. `ls-files --error-unmatch` exits 0 for
+/// tracked paths; a spawn failure counts as tracked so callers fall back to
+/// the plain-diff result rather than a second diff that would also fail.
+async fn is_tracked(checkout: &Path, path: &str) -> bool {
+    git_output(checkout, &["ls-files", "--error-unmatch", "--", path])
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(true)
 }
 
 /// Parse `git diff -U0` output into (added, modified) new-file line numbers.

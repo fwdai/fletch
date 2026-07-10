@@ -113,11 +113,15 @@ pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState
         Err(_) => HashMap::new(),
     };
 
-    // Merge numstat into file list
+    // Merge numstat into file list. `git diff --numstat HEAD` only covers
+    // tracked files, so untracked (agent-created, never-added) ones fall back
+    // to a direct line count of their on-disk contents.
     for f in &mut files {
         if let Some(&(adds, dels)) = numstat.get(&f.path) {
             f.additions = adds;
             f.deletions = dels;
+        } else if matches!(f.kind, StatusKind::Untracked) {
+            f.additions = untracked_additions(checkout_path, &f.path).await;
         }
     }
 
@@ -153,15 +157,41 @@ pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState
 /// agent, matching the badge's "no news is zero" contract.
 pub async fn shortstats(checkout_path: &Path) -> ShortStats {
     let (status, numstat) = tokio::join!(run_status(checkout_path), run_numstat(checkout_path));
-    let file_count = status.map(|o| parse_porcelain(&o).len() as u32).unwrap_or(0);
-    let (additions, deletions) = numstat
+    let files = status.map(|o| parse_porcelain(&o)).unwrap_or_default();
+    let file_count = files.len() as u32;
+    let (mut additions, deletions) = numstat
         .map(|o| {
             parse_numstat(&o)
                 .values()
                 .fold((0, 0), |(a, d), &(adds, dels)| (a + adds, d + dels))
         })
         .unwrap_or((0, 0));
+    // Numstat misses untracked files (see `query`); count their lines too.
+    for f in &files {
+        if matches!(f.kind, StatusKind::Untracked) {
+            additions += untracked_additions(checkout_path, &f.path).await;
+        }
+    }
     ShortStats { additions, deletions, file_count }
+}
+
+/// Additions for an untracked file: the line count of its on-disk contents —
+/// what `git diff --numstat` would report once the file is added. Binary,
+/// oversized, or unreadable files count 0, mirroring numstat's `-` markers.
+async fn untracked_additions(checkout_path: &Path, rel: &str) -> u32 {
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+    let abs = checkout_path.join(rel);
+    let Ok(meta) = tokio::fs::metadata(&abs).await else { return 0 };
+    if !meta.is_file() || meta.len() > MAX_BYTES {
+        return 0;
+    }
+    let Ok(bytes) = tokio::fs::read(&abs).await else { return 0 };
+    if bytes.is_empty() || bytes.contains(&0) {
+        return 0;
+    }
+    let newlines = bytes.iter().filter(|&&b| b == b'\n').count() as u32;
+    // A final line without a trailing newline still counts as a line.
+    if bytes.ends_with(b"\n") { newlines } else { newlines + 1 }
 }
 
 /// HEAD commit SHA, or `None` when it can't be read.
@@ -277,7 +307,10 @@ async fn rev_list_counts(checkout_path: &Path, base: &str) -> Option<(u32, u32)>
 
 async fn run_status(checkout_path: &Path) -> Result<String> {
     let out = crate::git_dist::command(checkout_path)
-        .args(["status", "--porcelain=v1"])
+        // `-uall` lists each file inside an untracked directory individually
+        // (the default collapses them into one `dir/` entry, which can't be
+        // diffed or counted per-file).
+        .args(["status", "--porcelain=v1", "-uall"])
         .output()
         .await?;
     if !out.status.success() {
