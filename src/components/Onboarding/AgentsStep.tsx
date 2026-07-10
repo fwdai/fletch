@@ -44,18 +44,19 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
 
   const install = (id: ProviderId) => {
     setInstalls((m) => ({ ...m, [id]: { phase: "running" } }));
-    void api
-      .installAgent(id)
-      .then(() => setup.refreshProviders())
-      .then(() =>
+    void api.installAgent(id).then(
+      async () => {
+        // The install itself succeeded — the probe refresh is best-effort.
+        // If it throws, clear the tile anyway rather than masking a good
+        // install as "failed"; the 4s auto-poll picks the binary up.
+        await setup.refreshProviders().catch(() => {});
         setInstalls((m) => {
           const { [id]: _done, ...rest } = m;
           return rest;
-        }),
-      )
-      .catch((err) =>
-        setInstalls((m) => ({ ...m, [id]: { phase: "failed", error: String(err) } })),
-      );
+        });
+      },
+      (err) => setInstalls((m) => ({ ...m, [id]: { phase: "failed", error: String(err) } })),
+    );
   };
 
   return (
