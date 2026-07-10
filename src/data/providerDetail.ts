@@ -5,6 +5,7 @@
 // `models` describes the tool's model routing (not user-specific).
 // `installed: false` keeps a provider out of the "Installed" list.
 
+import { IS_WINDOWS } from "@/util/platform";
 import type { ProviderId } from "./providers";
 
 export interface ThinkingLevel {
@@ -20,13 +21,17 @@ export interface ProviderDetail {
   models: string;
   /** Detected & configured on this machine — drives the "Installed" list. */
   installed: boolean;
-  /** Shell command to install the CLI, shown in the readiness check when the
-   *  binary isn't found — the official native installer (standalone binary,
-   *  no Node/npm), so it doubles as the manual copy-paste fallback for the
-   *  one-click install. Must mirror the pinned command the backend runs
-   *  (src-tauri/src/agent_install.rs). Omit when there's no reliable
-   *  one-liner — the UI falls back to the `docs` link. */
+  /** Shell command to install the CLI on macOS/Linux, shown in the readiness
+   *  check when the binary isn't found — the official native installer
+   *  (standalone binary, no Node/npm), so it doubles as the manual copy-paste
+   *  fallback for the one-click install. Omit when there's no reliable
+   *  one-liner — the UI falls back to the `docs` link. Consumers should read
+   *  these through `installCommand()`, which picks per platform; both fields
+   *  must mirror the pinned commands the backend runs
+   *  (src-tauri/src/agent_install.rs). */
   install?: string;
+  /** PowerShell equivalent of `install` for Windows, where one exists. */
+  installWindows?: string;
   /** Setup / docs URL — always offered as "learn more" and the fallback when
    *  there's no `install` command. */
   docs: string;
@@ -45,12 +50,22 @@ export interface ProviderDetail {
   effortAtSpawn?: boolean;
 }
 
+/** The install one-liner to show (and copy) on this platform, if one exists.
+ *  On Windows, agents without a PowerShell installer return undefined so the
+ *  UI falls back to the docs link instead of offering a bash command that
+ *  won't run. Mirrors the backend's platform pick (agent_install.rs). */
+export function installCommand(id: ProviderId): string | undefined {
+  const d = PROVIDER_DETAIL[id];
+  return IS_WINDOWS ? d.installWindows : d.install;
+}
+
 export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
   claude: {
     path: "/opt/homebrew/bin/claude",
     models: "Opus 4.7 · Sonnet 4.6 · Haiku 4",
     installed: true,
     install: "curl -fsSL https://claude.ai/install.sh | bash",
+    installWindows: "irm https://claude.ai/install.ps1 | iex",
     docs: "https://docs.anthropic.com/en/docs/claude-code",
     signIn: "Run `claude` once in a terminal to sign in.",
     // `claude --effort <level>` is a session-level spawn flag (not per-message):
@@ -71,6 +86,7 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     models: "GPT-5.2-codex · o4-mini",
     installed: true,
     install: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+    installWindows: "irm https://chatgpt.com/codex/install.ps1 | iex",
     docs: "https://github.com/openai/codex",
     signIn: "Run `codex` once in a terminal to sign in.",
     // `codex exec -c reasoning_effort="<value>"`
