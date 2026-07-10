@@ -1,5 +1,6 @@
 mod activity;
 mod agent;
+mod agent_install;
 mod bin_resolve;
 mod child_io;
 mod commands;
@@ -1111,6 +1112,8 @@ pub fn run() {
             commands::copy_checkout_file,
             commands::probe_provider_versions,
             commands::check_cli,
+            commands::git_dist_install,
+            commands::install_agent,
             commands::validate_agent_bin,
             commands::discover_supported_models,
             commands::reveal_logs,

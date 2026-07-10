@@ -14,10 +14,11 @@ import { api, type GhStatus, type ToolStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/Button";
-import { PROVIDER_DETAIL } from "@/data/providerDetail";
+import { installCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { useGitDist } from "@/util/useGitDist";
+import { IS_MAC } from "@/util/platform";
+import { useGitInstall } from "@/util/useGitInstall";
 
 type RowState = "ok" | "warn" | "bad" | "checking";
 
@@ -45,6 +46,7 @@ function Row({
   name,
   state,
   statusText,
+  action,
   fix,
   docs,
   hint,
@@ -53,6 +55,9 @@ function Row({
   name: string;
   state: RowState;
   statusText: string;
+  /** In-app remediation (e.g. the Install Git button), shown before the
+   *  copy-paste fix. */
+  action?: ReactNode;
   /** Copy-paste command that resolves the issue (install or sign-in). */
   fix?: string;
   docs?: string;
@@ -69,8 +74,9 @@ function Row({
           <span className={`rdy-dot ${state}`} />
           <span className="rdy-status text-sm">{statusText}</span>
         </div>
-        {needsFix && (fix || docs) && (
+        {needsFix && (action || fix || docs) && (
           <div className="rdy-fix flex-center">
+            {action}
             {fix && <CopyCmd cmd={fix} />}
             {docs && (
               <button
@@ -116,10 +122,10 @@ export function ProviderReadiness() {
     recheck();
   }, [recheck]);
 
-  // While the app is downloading its portable git (no usable system git),
-  // show that instead of a false "not found"; re-check once it settles.
-  const gitDist = useGitDist(recheck);
-  const gitDownloading = !git?.installed && gitDist.phase === "downloading";
+  const { gitDownloading, gitInstallError, installingGit, installGit } = useGitInstall(
+    git,
+    recheck,
+  );
 
   // Skip agents the user has toggled off; the rest are all runnable.
   const agents = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
@@ -160,12 +166,21 @@ export function ProviderReadiness() {
                 ? git.source === "portable"
                   ? `${git.version ?? "Installed"} — bundled with Fletch`
                   : (git.version ?? "Installed")
-                : "Not found — required to run any agent"
+                : gitInstallError
+                  ? `Install failed — ${gitInstallError}`
+                  : "Not found — required to run any agent"
               : checking
                 ? "Checking…"
                 : "Couldn't check"
         }
-        fix={gitState === "bad" ? "xcode-select --install" : undefined}
+        action={
+          gitState === "bad" ? (
+            <Button variant="outline" onClick={installGit} disabled={installingGit}>
+              {installingGit ? "Installing…" : "Install Git"}
+            </Button>
+          ) : undefined
+        }
+        fix={gitState === "bad" && IS_MAC ? "xcode-select --install" : undefined}
         docs="https://git-scm.com/downloads"
       />
 
@@ -196,7 +211,7 @@ export function ProviderReadiness() {
             }
             // Only offer the install command when we know it's missing, not
             // when detection itself failed.
-            fix={state === "bad" ? d.install : undefined}
+            fix={state === "bad" ? installCommand(p.id) : undefined}
             docs={d.docs}
             hint={d.signIn}
           />

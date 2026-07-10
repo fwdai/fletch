@@ -1369,6 +1369,35 @@ pub async fn check_cli(name: String) -> ToolStatus {
         })
 }
 
+/// Manually (re)trigger portable-git resolution/installation. The startup
+/// bootstrap may have failed (offline first launch, blocked network) — this
+/// gives the readiness UI a retry that doesn't require an app restart. Emits
+/// the same `git-dist:state` events as the startup path, so existing
+/// listeners render its progress unchanged.
+#[tauri::command]
+pub async fn git_dist_install(app: AppHandle) -> Result<()> {
+    use tauri::Emitter;
+    crate::git_dist::resolve_or_install(move |payload| {
+        let _ = app.emit("git-dist:state", payload);
+    })
+    .await
+    .map_err(Error::Other)
+}
+
+/// Run the pinned official installer for an agent CLI (see `agent_install`),
+/// streaming progress via `agent-install:state` events. Resolves when the
+/// installer exits; the frontend re-probes providers afterwards to confirm
+/// the binary is now detectable.
+#[tauri::command]
+pub async fn install_agent(app: AppHandle, id: String) -> Result<()> {
+    use tauri::Emitter;
+    crate::agent_install::install(id, move |payload| {
+        let _ = app.emit("agent-install:state", payload);
+    })
+    .await
+    .map_err(Error::Other)
+}
+
 /// Validate a candidate custom agent binary path: is it an executable file,
 /// and what `--version` does it report? The providers settings UI calls this
 /// before saving a path override so it can show immediate inline feedback

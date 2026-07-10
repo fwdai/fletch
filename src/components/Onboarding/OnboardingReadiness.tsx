@@ -11,7 +11,7 @@ import { api, type GhStatus, type ToolStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/Button";
-import { PROVIDER_DETAIL } from "@/data/providerDetail";
+import { installCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { useGitDist } from "@/util/useGitDist";
@@ -120,7 +120,7 @@ export function OnboardingReadiness() {
                       ? (providerVersions[p.id] ?? "installed")
                       : "not installed"
               }
-              fix={state === "bad" ? d.install : undefined}
+              fix={state === "bad" ? installCommand(p.id) : undefined}
               docs={d.docs}
             />
           );

@@ -532,11 +532,33 @@ fn locate_dist_root(unpacked: &Path) -> Option<PathBuf> {
 /// the time the user reaches onboarding's readiness screen. `emit` receives
 /// JSON state payloads for the `git-dist:state` frontend event.
 pub async fn startup(emit: impl Fn(Value) + Send + Sync + 'static) {
+    let _ = resolve_or_install(emit).await;
+}
+
+/// Serializes install attempts: the startup bootstrap and a manual retry from
+/// the UI can overlap, and the loser must wait and then observe the winner's
+/// completed install (via `ensure_installed`'s idempotence) instead of
+/// downloading a second copy over it.
+fn install_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Resolve, and when nothing usable exists, download + install the portable
+/// dist. Shared by the startup bootstrap and the `git_dist_install` command
+/// (the UI's retry after a failed bootstrap — offline first launch, blocked
+/// network), so both paths emit identical `git-dist:state` payloads and the
+/// frontend needs one listener. The returned error is also emitted as the
+/// `failed` phase.
+pub async fn resolve_or_install(
+    emit: impl Fn(Value) + Send + Sync + 'static,
+) -> Result<(), String> {
+    let _guard = install_lock().lock().await;
     emit(json!({ "phase": "checking" }));
     let resolved = tokio::task::spawn_blocking(resolve).await.ok().flatten();
     if let Some(bin) = resolved {
         emit(json!({ "phase": "ready", "source": bin.source.as_str() }));
-        return;
+        return Ok(());
     }
     emit(json!({ "phase": "downloading" }));
     let emit = Arc::new(emit);
@@ -550,10 +572,14 @@ pub async fn startup(emit: impl Fn(Value) + Send + Sync + 'static) {
     })
     .await;
     match result {
-        Ok(()) => emit(json!({ "phase": "ready", "source": "portable" })),
+        Ok(()) => {
+            emit(json!({ "phase": "ready", "source": "portable" }));
+            Ok(())
+        }
         Err(e) => {
             tracing::warn!(error = %e, "portable git install failed");
-            emit(json!({ "phase": "failed", "error": e }));
+            emit(json!({ "phase": "failed", "error": e.clone() }));
+            Err(e)
         }
     }
 }
