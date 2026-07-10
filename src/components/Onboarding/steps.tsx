@@ -1,13 +1,10 @@
-// Onboarding step screens — welcome/auth, feature beats, create first
-// project, and the ignition finale. Ported from the design prototype
-// (onboarding/steps.jsx).
+// Onboarding welcome/auth screen + the brand mark. The requirement steps
+// (git / GitHub / agents / ready) live in their own files; the shared
+// two-column frame is SetupBits' SetupStep.
 
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import type { CSSProperties } from "react";
 import { Icon } from "@/components/Icon";
-import { useAppStore } from "@/store";
-import type { BeatDef } from "./beats";
-import { OnboardingReadiness } from "./OnboardingReadiness";
 
 const TERMS_URL = "https://fletch.sh/terms";
 const PRIVACY_URL = "https://fletch.sh/privacy";
@@ -124,100 +121,6 @@ export function WelcomeStep({
             Privacy Policy
           </a>
           . Your code never leaves your machine.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// ── Step · generic feature beat ─────────────────────────────────────
-export function Beat({ beat }: { beat: BeatDef }) {
-  const Exhibit = beat.Exhibit;
-  return (
-    <div className="ob-step">
-      <div className="ob-beat">
-        <div className="ob-beat-copy">
-          <div className="ob-eyebrow ob-reveal text-xs" style={{ "--d": ".05s" } as CSSProperties}>
-            <span className="num">{beat.num}</span>
-            <span className="ln" />
-            <span>{beat.eyebrow}</span>
-          </div>
-          <h2 className="ob-display ob-reveal" style={{ "--d": ".14s" } as CSSProperties}>
-            {beat.title}
-          </h2>
-          <p className="ob-lede ob-reveal" style={{ "--d": ".24s" } as CSSProperties}>
-            {beat.lede}
-          </p>
-          <div className="ob-points">
-            {beat.points.map((p, i) => (
-              <div
-                key={i}
-                className="ob-point ob-reveal"
-                style={{ "--d": `${0.34 + i * 0.08}s` } as CSSProperties}
-              >
-                <span className="ic">
-                  <Icon name={p.icon} size={12} />
-                </span>
-                <span>
-                  <b>{p.head}</b> {p.body}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <Exhibit />
-      </div>
-    </div>
-  );
-}
-
-// ── Step · finale / handoff + readiness ─────────────────────────────
-// The closer doubles as the real setup screen: signing in only connected the
-// user's Fletch identity — agents are their own CLIs, so this is where we show
-// what's actually installed. Non-blocking: "Enter Fletch" is always enabled.
-export function IgniteStep({ onEnter }: { onEnter: () => void }) {
-  const providerPaths = useAppStore((s) => s.providerPaths);
-  const providersProbed = useAppStore((s) => s.providersProbed);
-  const hasAgent = Object.keys(providerPaths).length > 0;
-  return (
-    <div className="ob-step">
-      <div className="ob-ignite ob-ignite-setup">
-        <div className="seal ob-reveal" style={{ "--d": ".05s" } as CSSProperties}>
-          <PeaksMark />
-        </div>
-        <h2 className="ob-display ob-reveal" style={{ "--d": ".16s" } as CSSProperties}>
-          {!providersProbed ? (
-            <>
-              Almost <em>there.</em>
-            </>
-          ) : hasAgent ? (
-            <>
-              You're <em>all set.</em>
-            </>
-          ) : (
-            <>
-              One <em>last step.</em>
-            </>
-          )}
-        </h2>
-        <p className="ob-lede ob-reveal" style={{ "--d": ".28s" } as CSSProperties}>
-          Signing in connected your Fletch identity. To run agents you bring your own CLIs — here's
-          what's on your machine.
-        </p>
-        <div className="ob-readiness ob-reveal" style={{ "--d": ".4s" } as CSSProperties}>
-          <OnboardingReadiness />
-        </div>
-        <button
-          className="ob-cta ob-reveal"
-          style={{ "--d": ".56s" } as CSSProperties}
-          onClick={onEnter}
-        >
-          Enter Fletch
-          <Icon name="arrowR" />
-        </button>
-        <p className="ob-fineprint ob-reveal text-sm" style={{ "--d": ".64s" } as CSSProperties}>
-          Fletch shares anonymous usage data to improve the app. Turn it off anytime in Settings ›
-          General.
         </p>
       </div>
     </div>

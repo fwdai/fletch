@@ -1,29 +1,30 @@
 // Onboarding — a cinematic, native-feeling entry into Fletch. Full-screen
 // overlay shown to new users on first launch and re-openable from Settings ›
-// General. Ported from the design prototype (onboarding/app.jsx): ambient
-// stage, step sequence, cinematic transitions, progress rail, keyboard nav.
+// General. The sequence is functional, not a tour: sign in, then each step
+// verifies (and can fix) one requirement — Git installed, GitHub connected,
+// an agent CLI present — before the handoff. Ambient stage, cinematic
+// transitions, progress rail, and keyboard nav carry over from the original
+// tour; the exhibits now sit beside real controls.
 
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { useGithubConnect } from "@/util/useGithubConnect";
+import { AgentsStep } from "./AgentsStep";
 import { Ambient } from "./Ambient";
-import { BEATS } from "./beats";
 import { DeviceCode } from "./DeviceCode";
-import { Beat, IgniteStep, WelcomeStep } from "./steps";
+import { GithubStep } from "./GithubStep";
+import { GitStep } from "./GitStep";
+import { ReadyStep } from "./ReadyStep";
+import { WelcomeStep } from "./steps";
+import { useOnboardingSetup } from "./useSetup";
 import "./onboarding.css";
 
-// flat step model: welcome · three feature beats · finale
-type Step = { kind: "welcome" } | { kind: "beat"; beat: number } | { kind: "ignite" };
+// flat step model: sign-in, three requirement steps, handoff
+type StepKind = "welcome" | "git" | "github" | "agents" | "ready";
 
-const STEPS: Step[] = [
-  { kind: "welcome" },
-  { kind: "beat", beat: 0 },
-  { kind: "beat", beat: 1 },
-  { kind: "beat", beat: 2 },
-  { kind: "ignite" },
-];
-const RAIL_LEN = 4; // welcome..last beat (finale excluded)
+const STEPS: StepKind[] = ["welcome", "git", "github", "agents", "ready"];
+const RAIL_LEN = 4; // welcome..agents (the ready handoff is excluded)
 
 export function Onboarding() {
   const closeOnboarding = useAppStore((s) => s.closeOnboarding);
@@ -59,19 +60,42 @@ export function Onboarding() {
   const next = useCallback(() => go(idx + 1), [go, idx]);
   const back = useCallback(() => go(idx - 1), [go, idx]);
 
+  // Shared requirement checks: the steps render/fix them, the footer gates
+  // Continue on them. Agent probing polls while the agents step is up so a
+  // finished install lights up without a manual re-check.
+  const setup = useOnboardingSetup(step === "agents");
+
+  // Per-step gate for the footer's Continue. The welcome and ready steps have
+  // their own primary actions (sign-in / Enter Fletch) instead.
+  const canContinue =
+    step === "git"
+      ? setup.gitReady
+      : step === "github"
+        ? setup.ghConnected
+        : step === "agents"
+          ? setup.hasAgent
+          : false;
+  const showNext = step === "git" || step === "github" || step === "agents";
+
   // Shared device-flow sign-in. On success advance off the welcome step; the
   // hook persists the profile and refreshes the account + GitHub connection.
+  // The requirement checks re-run so a GitHub sign-in pre-passes step 02.
+  const onSignedIn = useCallback(() => {
+    setup.recheck();
+    go(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [go, setup.recheck]);
   const {
     connect,
     cancel: cancelAuth,
     device,
     error: authError,
     busy,
-  } = useGithubConnect(useCallback(() => go(1), [go]));
+  } = useGithubConnect(onSignedIn);
   const onAuth = useCallback((provider: string) => void connect(provider), [connect]);
 
-  // Finale handoff: just drop into the real app. Its empty state prompts the
-  // user to add their first repo from the sidebar — no auto-picker.
+  // Handoff: just drop into the real app. Its empty state prompts the user to
+  // add their first repo from the sidebar — no auto-picker.
   const onEnter = useCallback(() => closeOnboarding(), [closeOnboarding]);
 
   // keyboard navigation
@@ -81,26 +105,23 @@ export function Onboarding() {
       const inField = tag === "TEXTAREA" || tag === "INPUT";
       if (e.key === "Escape") {
         closeOnboarding();
-      } else if (e.key === "Enter" && step.kind === "welcome" && !busy) {
+      } else if (e.key === "Enter" && step === "welcome" && !busy) {
         onAuth("github");
-      } else if (
-        (e.key === "ArrowRight" || e.key === "Enter") &&
-        step.kind === "beat" &&
-        !inField
-      ) {
+      } else if ((e.key === "ArrowRight" || e.key === "Enter") && showNext && !inField) {
+        if (!canContinue) return;
         e.preventDefault();
         next();
-      } else if (e.key === "ArrowLeft" && idx > 0 && step.kind !== "ignite" && !inField) {
+      } else if (e.key === "ArrowLeft" && idx > 0 && !inField) {
         back();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, busy, step.kind, next, back]);
+  }, [idx, busy, step, showNext, canContinue, next, back]);
 
   let content = null;
-  if (step.kind === "welcome")
+  if (step === "welcome")
     // The only way off welcome is a successful sign-in (go(1)), so during its
     // fade-out (`phase === "out"`) keep the device panel up rather than
     // flashing the sign-in buttons as the hook clears its state.
@@ -110,12 +131,12 @@ export function Onboarding() {
       ) : (
         <WelcomeStep onAuth={onAuth} busy={busy} />
       );
-  else if (step.kind === "beat") content = <Beat beat={BEATS[step.beat]} />;
-  else if (step.kind === "ignite") content = <IgniteStep onEnter={onEnter} />;
+  else if (step === "git") content = <GitStep setup={setup} />;
+  else if (step === "github") content = <GithubStep setup={setup} onSkip={next} />;
+  else if (step === "agents") content = <AgentsStep setup={setup} onSkip={next} />;
+  else if (step === "ready") content = <ReadyStep setup={setup} onEnter={onEnter} />;
 
-  const showFoot = step.kind !== "ignite";
-  const showBack = idx > 0 && step.kind !== "ignite";
-  const showNext = step.kind === "beat";
+  const showBack = idx > 0;
 
   return (
     <div className="ob">
@@ -126,12 +147,12 @@ export function Onboarding() {
           <span>FLETCH</span>
         </div>
         <div className="ob-tb-right">
-          {step.kind !== "ignite" && (
+          {step !== "ready" && (
             <span className="ob-step-count text-xs">
               <b>{Math.min(idx + 1, RAIL_LEN)}</b> / {RAIL_LEN}
             </span>
           )}
-          {step.kind !== "ignite" && (
+          {step !== "ready" && (
             <button className="ob-skip text-sm" onClick={() => go(STEPS.length - 1)}>
               Skip
             </button>
@@ -157,35 +178,38 @@ export function Onboarding() {
           {content}
         </div>
 
-        {showFoot && (
-          <div className="ob-foot">
-            <div className="ob-foot-l">
-              {showBack && (
-                <button className="ob-back text-base" onClick={back}>
-                  <Icon name="chevL" /> Back
-                </button>
-              )}
-            </div>
-            <div className="ob-rail">
-              {Array.from({ length: RAIL_LEN }).map((_, i) => (
-                <span
-                  key={i}
-                  className={`seg ${i < idx ? "done" : ""} ${i === idx ? "cur" : ""}`}
-                  onClick={() => {
-                    if (i <= idx) go(i);
-                  }}
-                />
-              ))}
-            </div>
-            <div className="ob-foot-r">
-              {showNext && (
-                <button className="ob-next text-base" onClick={next}>
-                  Continue <Icon name="arrowR" />
-                </button>
-              )}
-            </div>
+        <div className="ob-foot">
+          <div className="ob-foot-l">
+            {showBack && (
+              <button className="ob-back text-base" onClick={back}>
+                <Icon name="chevL" /> Back
+              </button>
+            )}
           </div>
-        )}
+          <div className="ob-rail">
+            {Array.from({ length: RAIL_LEN }).map((_, i) => (
+              <span
+                key={i}
+                className={`seg ${i < idx ? "done" : ""} ${i === idx ? "cur" : ""}`}
+                onClick={() => {
+                  if (i <= idx) go(i);
+                }}
+              />
+            ))}
+          </div>
+          <div className="ob-foot-r">
+            {showNext && (
+              <button
+                className="ob-next text-base"
+                onClick={next}
+                disabled={!canContinue}
+                title={canContinue ? undefined : "Complete this step to continue"}
+              >
+                Continue <Icon name="arrowR" />
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
