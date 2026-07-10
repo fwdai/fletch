@@ -18,7 +18,7 @@ import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { IS_MAC } from "@/util/platform";
-import { useGitDist } from "@/util/useGitDist";
+import { useGitInstall } from "@/util/useGitInstall";
 
 type RowState = "ok" | "warn" | "bad" | "checking";
 
@@ -122,27 +122,10 @@ export function ProviderReadiness() {
     recheck();
   }, [recheck]);
 
-  // While the app is downloading its portable git (no usable system git),
-  // show that instead of a false "not found"; re-check once it settles.
-  const gitDist = useGitDist(recheck);
-  const gitDownloading = !git?.installed && gitDist.phase === "downloading";
-  // The startup bootstrap's failure reason, shown until a retry succeeds.
-  const gitInstallError = !git?.installed && gitDist.phase === "failed" ? gitDist.error : undefined;
-
-  const [installingGit, setInstallingGit] = useState(false);
-  const installGit = useCallback(() => {
-    setInstallingGit(true);
-    // Progress + failure reason arrive via git-dist:state; the final recheck
-    // covers the case where the bootstrap already settled before mount (no
-    // further events) yet the retry succeeded.
-    void api
-      .gitDistInstall()
-      .catch(() => {})
-      .finally(() => {
-        setInstallingGit(false);
-        recheck();
-      });
-  }, [recheck]);
+  const { gitDownloading, gitInstallError, installingGit, installGit } = useGitInstall(
+    git,
+    recheck,
+  );
 
   // Skip agents the user has toggled off; the rest are all runnable.
   const agents = PROVIDERS.filter((p) => providerFlags[p.id] !== false);

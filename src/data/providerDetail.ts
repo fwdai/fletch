@@ -84,7 +84,7 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     path: "/Applications/Cursor.app/…/cursor-agent",
     models: "Composer · Auto",
     installed: true,
-    install: "curl https://cursor.com/install -fsS | bash",
+    install: "curl -fsSL https://cursor.com/install | bash",
     docs: "https://cursor.com",
     signIn: "Run `cursor-agent login` to sign in.",
     // Cursor encodes effort in model names — no standalone flag.
