@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/Button";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { IS_MAC } from "@/util/platform";
 import { useGitDist } from "@/util/useGitDist";
 
 type RowState = "ok" | "warn" | "bad" | "checking";
@@ -45,6 +46,7 @@ function Row({
   name,
   state,
   statusText,
+  action,
   fix,
   docs,
   hint,
@@ -53,6 +55,9 @@ function Row({
   name: string;
   state: RowState;
   statusText: string;
+  /** In-app remediation (e.g. the Install Git button), shown before the
+   *  copy-paste fix. */
+  action?: ReactNode;
   /** Copy-paste command that resolves the issue (install or sign-in). */
   fix?: string;
   docs?: string;
@@ -69,8 +74,9 @@ function Row({
           <span className={`rdy-dot ${state}`} />
           <span className="rdy-status text-sm">{statusText}</span>
         </div>
-        {needsFix && (fix || docs) && (
+        {needsFix && (action || fix || docs) && (
           <div className="rdy-fix flex-center">
+            {action}
             {fix && <CopyCmd cmd={fix} />}
             {docs && (
               <button
@@ -120,6 +126,23 @@ export function ProviderReadiness() {
   // show that instead of a false "not found"; re-check once it settles.
   const gitDist = useGitDist(recheck);
   const gitDownloading = !git?.installed && gitDist.phase === "downloading";
+  // The startup bootstrap's failure reason, shown until a retry succeeds.
+  const gitInstallError = !git?.installed && gitDist.phase === "failed" ? gitDist.error : undefined;
+
+  const [installingGit, setInstallingGit] = useState(false);
+  const installGit = useCallback(() => {
+    setInstallingGit(true);
+    // Progress + failure reason arrive via git-dist:state; the final recheck
+    // covers the case where the bootstrap already settled before mount (no
+    // further events) yet the retry succeeded.
+    void api
+      .gitDistInstall()
+      .catch(() => {})
+      .finally(() => {
+        setInstallingGit(false);
+        recheck();
+      });
+  }, [recheck]);
 
   // Skip agents the user has toggled off; the rest are all runnable.
   const agents = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
@@ -160,12 +183,21 @@ export function ProviderReadiness() {
                 ? git.source === "portable"
                   ? `${git.version ?? "Installed"} — bundled with Fletch`
                   : (git.version ?? "Installed")
-                : "Not found — required to run any agent"
+                : gitInstallError
+                  ? `Install failed — ${gitInstallError}`
+                  : "Not found — required to run any agent"
               : checking
                 ? "Checking…"
                 : "Couldn't check"
         }
-        fix={gitState === "bad" ? "xcode-select --install" : undefined}
+        action={
+          gitState === "bad" ? (
+            <Button variant="outline" onClick={installGit} disabled={installingGit}>
+              {installingGit ? "Installing…" : "Install Git"}
+            </Button>
+          ) : undefined
+        }
+        fix={gitState === "bad" && IS_MAC ? "xcode-select --install" : undefined}
         docs="https://git-scm.com/downloads"
       />
 

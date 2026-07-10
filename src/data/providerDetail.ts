@@ -20,8 +20,11 @@ export interface ProviderDetail {
   models: string;
   /** Detected & configured on this machine — drives the "Installed" list. */
   installed: boolean;
-  /** Copy-paste shell command to install the CLI, shown in the readiness
-   *  check when the binary isn't found. Omit when there's no reliable
+  /** Shell command to install the CLI, shown in the readiness check when the
+   *  binary isn't found — the official native installer (standalone binary,
+   *  no Node/npm), so it doubles as the manual copy-paste fallback for the
+   *  one-click install. Must mirror the pinned command the backend runs
+   *  (src-tauri/src/agent_install.rs). Omit when there's no reliable
    *  one-liner — the UI falls back to the `docs` link. */
   install?: string;
   /** Setup / docs URL — always offered as "learn more" and the fallback when
@@ -47,7 +50,7 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     path: "/opt/homebrew/bin/claude",
     models: "Opus 4.7 · Sonnet 4.6 · Haiku 4",
     installed: true,
-    install: "npm install -g @anthropic-ai/claude-code",
+    install: "curl -fsSL https://claude.ai/install.sh | bash",
     docs: "https://docs.anthropic.com/en/docs/claude-code",
     signIn: "Run `claude` once in a terminal to sign in.",
     // `claude --effort <level>` is a session-level spawn flag (not per-message):
@@ -67,7 +70,7 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     path: "~/.codex/bin/codex",
     models: "GPT-5.2-codex · o4-mini",
     installed: true,
-    install: "npm install -g @openai/codex",
+    install: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
     docs: "https://github.com/openai/codex",
     signIn: "Run `codex` once in a terminal to sign in.",
     // `codex exec -c reasoning_effort="<value>"`
