@@ -1363,17 +1363,25 @@ async fn file_diff_unified(
     // `--no-index` exits 1 whenever the two sides differ, so accept 0 and 1.
     let out = git_output(
         checkout,
-        &["diff", "--no-color", unified, "--no-index", "--", "/dev/null", path],
+        &["diff", "--no-color", unified, "--no-index", "--", NULL_DEVICE, path],
     )
     .await?;
     match out.status.code() {
         Some(0) | Some(1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
         _ => Err(Error::Git(format!(
-            "diff --no-index -- /dev/null {path} failed: {}",
+            "diff --no-index -- {path} failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ))),
     }
 }
+
+/// The null device handed to `diff --no-index` as the "before" side. The app
+/// ships macOS-only today, but name the Windows device explicitly rather than
+/// relying on Git-for-Windows' msys `/dev/null` emulation if that changes.
+#[cfg(windows)]
+const NULL_DEVICE: &str = "NUL";
+#[cfg(not(windows))]
+const NULL_DEVICE: &str = "/dev/null";
 
 /// Whether `path` is in the index. `ls-files --error-unmatch` exits 0 for
 /// tracked paths; a spawn failure counts as tracked so callers fall back to

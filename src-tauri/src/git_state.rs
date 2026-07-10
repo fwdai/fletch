@@ -115,13 +115,22 @@ pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState
 
     // Merge numstat into file list. `git diff --numstat HEAD` only covers
     // tracked files, so untracked (agent-created, never-added) ones fall back
-    // to a direct line count of their on-disk contents.
-    for f in &mut files {
+    // to a direct line count of their on-disk contents, read concurrently so
+    // many new files don't serialize the poll.
+    let mut reads = tokio::task::JoinSet::new();
+    for (i, f) in files.iter_mut().enumerate() {
         if let Some(&(adds, dels)) = numstat.get(&f.path) {
             f.additions = adds;
             f.deletions = dels;
         } else if matches!(f.kind, StatusKind::Untracked) {
-            f.additions = untracked_additions(checkout_path, &f.path).await;
+            let root = checkout_path.to_path_buf();
+            let rel = f.path.clone();
+            reads.spawn(async move { (i, untracked_additions(&root, &rel).await) });
+        }
+    }
+    while let Some(res) = reads.join_next().await {
+        if let Ok((i, adds)) = res {
+            files[i].additions = adds;
         }
     }
 
@@ -166,11 +175,18 @@ pub async fn shortstats(checkout_path: &Path) -> ShortStats {
                 .fold((0, 0), |(a, d), &(adds, dels)| (a + adds, d + dels))
         })
         .unwrap_or((0, 0));
-    // Numstat misses untracked files (see `query`); count their lines too.
+    // Numstat misses untracked files (see `query`); count their lines too,
+    // concurrently, to keep this poll-path helper's latency flat.
+    let mut reads = tokio::task::JoinSet::new();
     for f in &files {
         if matches!(f.kind, StatusKind::Untracked) {
-            additions += untracked_additions(checkout_path, &f.path).await;
+            let root = checkout_path.to_path_buf();
+            let rel = f.path.clone();
+            reads.spawn(async move { untracked_additions(&root, &rel).await });
         }
+    }
+    while let Some(res) = reads.join_next().await {
+        additions += res.unwrap_or(0);
     }
     ShortStats { additions, deletions, file_count }
 }
