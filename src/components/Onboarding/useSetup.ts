@@ -7,7 +7,8 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type GhStatus, type ToolStatus } from "@/api";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { type GitDistState, useGitDist } from "@/util/useGitDist";
+import type { GitDistState } from "@/util/useGitDist";
+import { useGitInstall } from "@/util/useGitInstall";
 
 export interface OnboardingSetup {
   /** Result of the git probe; null until the first check resolves. */
@@ -72,26 +73,10 @@ export function useOnboardingSetup(pollAgents: boolean): OnboardingSetup {
     return () => window.clearInterval(t);
   }, [pollAgents, refreshProviders]);
 
-  // While the app is downloading its portable git (no usable system git),
-  // show that instead of a false "not found"; re-check once it settles.
-  const gitDist = useGitDist(recheck);
-  const gitDownloading = !git?.installed && gitDist.phase === "downloading";
-  const gitInstallError = !git?.installed && gitDist.phase === "failed" ? gitDist.error : undefined;
-
-  const [installingGit, setInstallingGit] = useState(false);
-  const installGit = useCallback(() => {
-    setInstallingGit(true);
-    // Progress + failure reason arrive via git-dist:state; the final recheck
-    // covers the case where the bootstrap already settled before mount (no
-    // further events) yet the retry succeeded.
-    void api
-      .gitDistInstall()
-      .catch(() => {})
-      .finally(() => {
-        setInstallingGit(false);
-        recheck();
-      });
-  }, [recheck]);
+  const { gitDist, gitDownloading, gitInstallError, installingGit, installGit } = useGitInstall(
+    git,
+    recheck,
+  );
 
   const agents = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
   const detected = agents.filter((p) => !!providerPaths[p.id]).length;
