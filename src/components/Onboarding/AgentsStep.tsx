@@ -10,7 +10,7 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { type AgentInstallEvent, api, onAgentInstallState } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PROVIDER_DETAIL } from "@/data/providerDetail";
+import { installCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
 import { ExBar } from "./exhibits";
 import { CopyCmd, DocsLink, SetupStep } from "./SetupBits";
@@ -91,12 +91,15 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
                 const path = providerPaths[p.id];
                 const inst = installs[p.id];
                 const ok = !!path;
+                // Platform-aware: also gates the one-click button, mirroring
+                // which agents the backend can actually script-install here.
+                const cmd = installCommand(p.id);
                 const cls = ok ? "ok" : inst?.phase === "failed" ? "failed" : "";
                 let sub: React.ReactNode;
                 if (ok) sub = d.signIn ?? d.models;
                 else if (inst?.phase === "running") sub = inst.line ?? "installing…";
                 else if (inst?.phase === "failed") sub = <span className="err">{inst.error}</span>;
-                else sub = d.install ?? "install via the setup guide";
+                else sub = cmd ?? "install via the setup guide";
                 return (
                   <div key={p.id} className={`ob-ag ${cls}`}>
                     <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={30} />
@@ -114,7 +117,7 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
                         <span className="ob-spinner" />
                       ) : inst?.phase === "failed" ? (
                         <>
-                          {d.install && <CopyCmd cmd={d.install} />}
+                          {cmd && <CopyCmd cmd={cmd} />}
                           <button
                             type="button"
                             className="ob-ag-install"
@@ -123,7 +126,7 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
                             Retry
                           </button>
                         </>
-                      ) : d.install ? (
+                      ) : cmd ? (
                         <button
                           type="button"
                           className="ob-ag-install"
