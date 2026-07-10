@@ -4,7 +4,7 @@ import { api, type GhStatus, type ToolStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { IS_MAC } from "@/util/platform";
-import { useGitDist } from "@/util/useGitDist";
+import { useGitInstall } from "@/util/useGitInstall";
 
 type S = "ok" | "warn" | "bad" | "checking";
 
@@ -24,27 +24,10 @@ export function DevToolsStatus() {
     recheck();
   }, [recheck]);
 
-  // While the app is downloading its portable git (no usable system git),
-  // show that instead of a false "not found"; re-check once it settles.
-  const gitDist = useGitDist(recheck);
-  const gitDownloading = !git?.installed && gitDist.phase === "downloading";
-  // The startup bootstrap's failure reason, shown until a retry succeeds.
-  const gitInstallError = !git?.installed && gitDist.phase === "failed" ? gitDist.error : undefined;
-
-  const [installingGit, setInstallingGit] = useState(false);
-  const installGit = useCallback(() => {
-    setInstallingGit(true);
-    // Progress + failure reason arrive via git-dist:state; the final recheck
-    // covers the case where the bootstrap already settled before mount (no
-    // further events) yet the retry succeeded.
-    void api
-      .gitDistInstall()
-      .catch(() => {})
-      .finally(() => {
-        setInstallingGit(false);
-        recheck();
-      });
-  }, [recheck]);
+  const { gitDownloading, gitInstallError, installingGit, installGit } = useGitInstall(
+    git,
+    recheck,
+  );
 
   const gitState: S = gitDownloading
     ? "checking"

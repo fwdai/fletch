@@ -36,7 +36,7 @@ pub fn install_command(id: &str) -> Option<&'static str> {
         match id {
             "claude" => Some("curl -fsSL https://claude.ai/install.sh | bash"),
             "codex" => Some("curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
-            "cursor" => Some("curl https://cursor.com/install -fsS | bash"),
+            "cursor" => Some("curl -fsSL https://cursor.com/install | bash"),
             "opencode" => Some("curl -fsSL https://opencode.ai/install | bash"),
             _ => None,
         }
@@ -143,12 +143,16 @@ async fn run_streamed(
         child.stdout.take().map(|s| Box::new(s) as _),
         child.stderr.take().map(|s| Box::new(s) as _),
     ];
-    let mut readers = Vec::new();
+    // JoinSet, not detached spawns: when the caller's timeout cancels this
+    // future, dropping the set aborts the readers with it — otherwise they'd
+    // keep emitting "running" lines after the terminal "failed" event while
+    // the killed child's pipes drain.
+    let mut readers = tokio::task::JoinSet::new();
     for stream in streams.into_iter().flatten() {
         let id = id.to_string();
         let emit = emit.clone();
         let last_line = last_line.clone();
-        readers.push(tokio::spawn(async move {
+        readers.spawn(async move {
             let mut lines = BufReader::new(stream).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let line = line.trim();
@@ -161,11 +165,9 @@ async fn run_streamed(
                 *last_line.lock().unwrap() = line.clone();
                 emit(json!({ "id": id, "phase": "running", "line": line }));
             }
-        }));
+        });
     }
-    for reader in readers {
-        let _ = reader.await;
-    }
+    while readers.join_next().await.is_some() {}
 
     let status = child
         .wait()
