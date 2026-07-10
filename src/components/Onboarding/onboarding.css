@@ -1283,65 +1283,6 @@
   }
 }
 
-/* ── ignition / finale ────────────────────────────────────────── */
-.ob-ignite {
-  text-align: center;
-  max-width: 620px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-.ob-ignite .seal {
-  width: 96px;
-  height: 96px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  margin-bottom: 30px;
-  position: relative;
-  color: var(--accent);
-}
-.ob-ignite .seal svg {
-  width: 52px;
-  height: 52px;
-}
-.ob-ignite .seal::before,
-.ob-ignite .seal::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  border: 1px solid var(--accent-line);
-}
-.ob-ignite .seal::after {
-  animation: ob-ring 2.6s ease-out infinite;
-}
-@keyframes ob-ring {
-  0% {
-    transform: scale(1);
-    opacity: 0.7;
-  }
-  100% {
-    transform: scale(1.9);
-    opacity: 0;
-  }
-}
-.ob-ignite .ob-display {
-  font-size: var(--fs-5xl);
-  line-height: var(--lh-tight);
-}
-.ob-ignite .ob-lede {
-  margin-top: 20px;
-  max-width: 440px;
-}
-.ob-ignite .ob-cta {
-  margin-top: 36px;
-  height: 48px;
-  padding: 0 26px;
-  font-size: var(--fs-base);
-}
-
 /* controls + compact labels must never wrap, whatever font is active */
 .ob-cta,
 .ob-next,
@@ -1416,168 +1357,279 @@
   opacity: 0.9;
 }
 
-/* Finale doubles as the setup/readiness screen — tighten the hero so the
-   readiness list fits without the step scrolling on common heights. */
-.ob-ignite-setup {
-  max-width: 560px;
-}
-.ob-ignite-setup .seal {
-  width: 64px;
-  height: 64px;
-  margin-bottom: 18px;
-}
-.ob-ignite-setup .seal svg {
-  width: 34px;
-  height: 34px;
-}
-.ob-ignite-setup .ob-display {
-  font-size: var(--fs-3xl);
-}
-.ob-ignite-setup .ob-lede {
-  margin-top: 14px;
-  max-width: 460px;
-}
-.ob-ignite-setup .ob-cta {
-  margin-top: 24px;
-}
-.ob-readiness {
-  width: 100%;
-  max-width: 480px;
-  margin: 24px auto 0;
-  text-align: left;
-}
+/* ── functional requirement steps ───────────────────────────────── */
 
-/* ── OnboardingReadiness — compact finale widget ────────────────── */
-.ob-rdy {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* Prereq rows: git + gh */
-.ob-rdy-prereqs {
-  background: var(--bg-1);
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-md);
-  overflow: hidden;
-}
-.ob-rdy-check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--bd-soft);
-}
-.ob-rdy-check:last-child {
-  border-bottom: 0;
-}
-.ob-rdy-check-icon {
-  color: var(--fg-3);
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-.ob-rdy-check-name {
-  font-weight: 600;
-  font-size: var(--fs-sm);
-  color: var(--fg-0);
-  flex-shrink: 0;
-}
-.ob-rdy-check-status {
-  color: var(--fg-2);
-  font-size: var(--fs-sm);
-  flex: 1;
-  min-width: 0;
-}
-.ob-rdy-check-fix {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
-/* Agent tile grid — compact, like the Step 3 exhibit */
-.ob-rdy-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-}
-.ob-rdy-tile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  padding: 12px 8px 10px;
-  background: var(--bg-1);
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-md);
-  text-align: center;
-  transition: border-color 0.15s;
-}
-.ob-rdy-tile.ok {
-  border-color: color-mix(in oklch, var(--success) 40%, var(--bd-soft));
-}
-.ob-rdy-tile.bad {
-  border-color: color-mix(in oklch, var(--danger) 30%, var(--bd-soft));
-}
-.ob-rdy-tile.warn {
-  border-color: color-mix(in oklch, var(--warn) 30%, var(--bd-soft));
-}
-.ob-rdy-tile-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.ob-rdy-tile-name {
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--fg-0);
-  line-height: var(--lh-tight);
-}
-.ob-rdy-tile-foot {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.ob-rdy-tile-status {
-  font-size: var(--fs-xs);
-  color: var(--fg-3);
-  white-space: nowrap;
-}
-.ob-rdy-tile-fix {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 4px;
-  margin-top: 2px;
-}
-
-/* Shared dot + footer */
+/* status dots shared by the setup cards + ready summary */
 .ob-rdy-dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 .ob-rdy-dot.ok {
   background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--success), transparent 85%);
 }
 .ob-rdy-dot.warn {
   background: var(--warn);
 }
 .ob-rdy-dot.bad {
   background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--danger), transparent 85%);
 }
 .ob-rdy-dot.checking {
   background: var(--fg-3);
 }
-.ob-rdy-foot {
+
+/* the step's status/action card, under the editorial points */
+.ob-setup-card {
+  margin-top: 28px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  background: color-mix(in oklch, var(--bg-1), transparent 15%);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+}
+.ob-setup-line {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding-top: 2px;
-}
-.ob-rdy-count {
+  gap: 10px;
+  font-size: var(--fs-base);
   color: var(--fg-2);
+  min-height: 20px;
+}
+.ob-setup-line b {
+  color: var(--fg-0);
+  font-weight: 500;
+}
+.ob-setup-sub {
+  font-size: var(--fs-sm);
+  color: var(--fg-3);
+  word-break: break-all;
+}
+.ob-setup-err {
+  color: var(--danger);
+}
+.ob-setup-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.ob-setup-code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xl);
+  letter-spacing: 0.16em;
+  font-weight: 600;
+  color: var(--fg-0);
+  font-variant-numeric: tabular-nums;
+}
+
+/* small inline spinner (status lines, installing tiles) */
+.ob-spinner {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid color-mix(in oklch, var(--fg-2), transparent 55%);
+  border-top-color: var(--fg-0);
+  animation: ob-spin 0.7s linear infinite;
+}
+
+/* slim download progress (portable git) */
+.ob-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bd);
+  overflow: hidden;
+}
+.ob-progress i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s var(--ease);
+}
+.ob-progress.indet i {
+  width: 40%;
+  animation: ob-indet 1.2s var(--ease) infinite;
+}
+@keyframes ob-indet {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
+/* compact CTA variant for in-card actions (Connect GitHub) */
+.ob-cta.sm {
+  height: 36px;
+  padding: 0 16px;
+  font-size: var(--fs-sm);
+  gap: 8px;
+}
+
+/* de-emphasized escape hatch under a gated step's card */
+.ob-skiplink {
+  align-self: flex-start;
+  margin-top: 14px;
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  color: var(--fg-3);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--bd);
+  text-underline-offset: 3px;
+  transition: color 0.12s;
+}
+.ob-skiplink:hover {
+  color: var(--fg-1);
+}
+
+/* gated Continue */
+.ob-next:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ob-next:disabled:hover {
+  transform: none;
+  border-color: var(--bd-strong);
+  background: var(--bg-2);
+}
+
+/* ── agents step: live install grid (framed as an exhibit) ──────── */
+.ob-ag-list {
+  padding: 14px 14px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ob-ag {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  min-width: 0;
+  transition:
+    border-color 0.25s var(--ease),
+    background 0.25s var(--ease);
+}
+.ob-ag.ok {
+  border-color: color-mix(in oklch, var(--success) 45%, var(--bd-soft));
+  background: color-mix(in oklch, var(--success), var(--bg-2) 94%);
+}
+.ob-ag.failed {
+  border-color: color-mix(in oklch, var(--danger) 35%, var(--bd-soft));
+}
+.ob-ag .meta {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ob-ag .pl {
+  font-size: var(--fs-base);
+  color: var(--fg-0);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ob-ag .ps {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ob-ag .ps .err {
+  color: var(--danger);
+}
+.ob-ag-act {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ob-ag-ver {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--success);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.ob-ag-install {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--bd-strong);
+  background: var(--bg-3);
+  color: var(--fg-0);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    border-color 0.14s,
+    background 0.14s;
+}
+.ob-ag-install:hover {
+  border-color: color-mix(in oklch, var(--accent), transparent 45%);
+}
+
+/* ── ready step: requirement summary + handoff ──────────────────── */
+.ob-sum {
+  margin-top: 28px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.ob-sum-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+  font-size: var(--fs-sm);
+}
+.ob-sum-row:last-child {
+  border-bottom: 0;
+}
+.ob-sum-row .nm {
+  font-weight: 600;
+  color: var(--fg-0);
+  width: 60px;
+  flex-shrink: 0;
+}
+.ob-sum-row .st {
+  color: var(--fg-2);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ob-ready-cta {
+  margin-top: 28px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.ob-ready-cta .ob-fineprint {
+  margin: 0;
+  text-align: left;
 }

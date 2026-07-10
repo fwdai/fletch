@@ -1,7 +1,7 @@
 // Onboarding exhibits — small, real-feeling fragments of the Fletch UI,
-// framed inside each feature beat. Built from the same visual language as the
-// app so the tour previews the actual product. Ported from the design
-// prototype (onboarding/exhibits.jsx).
+// framed beside each requirement step's controls. Built from the same visual
+// language as the app so onboarding previews the actual product. Ported from
+// the design prototype (onboarding/exhibits.jsx).
 
 import { useEffect, useState } from "react";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
@@ -12,7 +12,8 @@ import type { ProviderId } from "@/data/providers";
 import { PROVIDERS, providerChip } from "@/data/providers";
 
 // ── tiny faux window chrome for an exhibit ──────────────────────────
-function ExBar({ title }: { title: string }) {
+// Exported: the agents step frames its live install grid with the same chrome.
+export function ExBar({ title }: { title: string }) {
   return (
     <div className="ex-bar">
       <div className="dots">
@@ -147,7 +148,8 @@ export function ExhibitParallel() {
   );
 }
 
-// ── Exhibit 2 · any agent, one roof ─────────────────────────────────
+// ── Exhibit 2 · any agent, one roof (parked) ────────────────────────
+// Superseded by the agents step's functional install grid; kept for reuse.
 export function ExhibitProviders() {
   const list = PROVIDERS.slice(0, 6);
   const [lit, setLit] = useState(0);
@@ -292,8 +294,8 @@ export function ExhibitRoom() {
   );
 }
 
-// ── Exhibit 4 · live code, nothing hidden (parked — BEAT_CODE) ──────
-// Kept for when the live-diff feature ships; not currently in the sequence.
+// ── Exhibit 4 · live code, straight to a PR ─────────────────────────
+// Shown beside the GitHub step — the change-to-pull-request loop it unlocks.
 function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
