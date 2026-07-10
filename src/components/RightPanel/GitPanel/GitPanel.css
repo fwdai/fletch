@@ -237,7 +237,7 @@
   color: var(--info);
 }
 .git-file .gs.untracked {
-  color: var(--fg-3);
+  color: var(--success);
 }
 .git-file .gs.conflicted {
   color: var(--danger);

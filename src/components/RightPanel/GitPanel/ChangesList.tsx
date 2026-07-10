@@ -14,7 +14,7 @@ function kindLabel(kind: FileStatus["kind"]): string {
     case "renamed":
       return "R";
     case "untracked":
-      return "?";
+      return "U"; // new-but-unstaged file, shown green like VS Code
     case "conflicted":
       return "!";
     default:
