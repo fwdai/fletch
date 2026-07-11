@@ -24,10 +24,11 @@
 //! prompt, or other free-form user text.
 //!
 //! Belt-and-braces: the message is a static literal by convention, but if one ever
-//! interpolates the user's home directory we redact that substring. The static
-//! -message invariant is the real defense; this just limits the blast radius of a
-//! mistake. We do not attempt general path detection — that is a blocklist, and
-//! blocklists leak.
+//! interpolates a user-private path we redact the roots those paths live under —
+//! the home directory and the OS temp roots (see [`redact_private_paths`]). The
+//! static-message invariant is the real defense; this just limits the blast radius
+//! of a mistake. We do not attempt general path detection — that is a blocklist,
+//! and blocklists leak.
 
 use std::collections::BTreeMap;
 
@@ -52,13 +53,39 @@ fn retain_allowlisted(map: &mut BTreeMap<String, Value>) {
     map.retain(|key, _| ALLOWLIST.contains(&key.as_str()));
 }
 
-/// Replace occurrences of the current user's home directory with `[home]`. A
-/// best-effort guard for the (by-convention impossible) case of a home path
-/// interpolated into an otherwise-static message.
-fn redact_home(text: &mut String) {
-    if let Some(home) = dirs::home_dir().and_then(|p| p.to_str().map(str::to_owned)) {
-        if !home.is_empty() && text.contains(&home) {
-            *text = text.replace(&home, "[home]");
+/// Replace the roots under which user-private paths live: the home directory
+/// (`[home]`) and the OS temp roots (`[tmp]`). A best-effort guard for the
+/// (by-convention impossible) case of such a path interpolated into an
+/// otherwise-static message, and for panic messages, which are inherently
+/// free-form.
+///
+/// This is deliberately a *bounded* set of well-known roots — home, `$TMPDIR`,
+/// `/var/folders/`, `/private/tmp/`, `/tmp/` — not general path detection.
+/// On macOS every user-writable location is under one of these, and a fixed
+/// prefix list can't rot the way an open-ended "does this look like a path"
+/// heuristic would. Subpaths are kept (`[home]/x/y`) so reports stay
+/// debuggable. Longest-prefix-first so `$TMPDIR` (under `/var/folders/`) wins
+/// over its parent.
+fn redact_private_paths(text: &mut String) {
+    let home = dirs::home_dir().and_then(|p| p.to_str().map(str::to_owned));
+    let tmpdir = std::env::var("TMPDIR").ok();
+    let mut roots: Vec<(&str, &str)> = Vec::new();
+    if let Some(home) = home.as_deref().filter(|s| !s.is_empty()) {
+        roots.push((home, "[home]"));
+    }
+    if let Some(tmpdir) = tmpdir.as_deref().map(|s| s.trim_end_matches('/')).filter(|s| !s.is_empty()) {
+        roots.push((tmpdir, "[tmp]"));
+    }
+    roots.extend([
+        ("/private/var/folders/", "[tmp]/"),
+        ("/var/folders/", "[tmp]/"),
+        ("/private/tmp/", "[tmp]/"),
+        ("/tmp/", "[tmp]/"),
+    ]);
+    roots.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
+    for (prefix, placeholder) in roots {
+        if text.contains(prefix) {
+            *text = text.replace(prefix, placeholder);
         }
     }
 }
@@ -78,21 +105,22 @@ pub fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
     event.server_name = None;
 
     if let Some(message) = event.message.as_mut() {
-        redact_home(message);
+        redact_private_paths(message);
     }
     if let Some(entry) = event.logentry.as_mut() {
-        redact_home(&mut entry.message);
+        redact_private_paths(&mut entry.message);
     }
 
     // Panic messages land in exception values, and a panic payload (e.g. an
-    // `expect` on an io error) can embed a user path. Redact the home dir but
-    // keep the message — it is load-bearing for debugging, and on macOS user
-    // paths live under `$HOME`. Stacktrace frame paths are left alone: they
-    // come from the binary's debug info (the *build* machine, identical for
-    // every user), and scrubbing them would break symbolication.
+    // `expect` on an io error) can embed a user path. Redact the private path
+    // roots but keep the message — it is load-bearing for debugging, and on
+    // macOS every user-writable location is under home or a temp root.
+    // Stacktrace frame paths are left alone: they come from the binary's debug
+    // info (the *build* machine, identical for every user), and scrubbing them
+    // would break symbolication.
     for exception in event.exception.values.iter_mut() {
         if let Some(value) = exception.value.as_mut() {
-            redact_home(value);
+            redact_private_paths(value);
         }
     }
 
@@ -121,7 +149,7 @@ pub fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
 /// `data` not in [`ALLOWLIST`].
 pub fn scrub_breadcrumb(mut breadcrumb: Breadcrumb) -> Option<Breadcrumb> {
     if let Some(message) = breadcrumb.message.as_mut() {
-        redact_home(message);
+        redact_private_paths(message);
     }
     retain_allowlisted(&mut breadcrumb.data);
     Some(breadcrumb)
@@ -242,6 +270,28 @@ mod tests {
         let value = event.exception.values[0].value.as_deref().unwrap();
         assert!(!value.contains(&home), "home dir must be redacted");
         assert!(value.contains("[home]"));
+    }
+
+    #[test]
+    fn redacts_temp_roots_in_exception_value() {
+        let mut event = Event::default();
+        event.exception.values.push(sentry::protocol::Exception {
+            ty: "panic".into(),
+            value: Some(
+                "bind /var/folders/ab/xy/T/fletch.sock failed; cleanup of /private/tmp/box left /tmp/stray".into(),
+            ),
+            ..Default::default()
+        });
+
+        let event = scrub_event(event).expect("event not dropped");
+        let value = event.exception.values[0].value.as_deref().unwrap();
+        assert!(!value.contains("/var/folders/"), "value was: {value}");
+        assert!(!value.contains("/private/tmp/"), "value was: {value}");
+        assert!(!value.contains("/tmp/"), "value was: {value}");
+        assert_eq!(
+            value,
+            "bind [tmp]/ab/xy/T/fletch.sock failed; cleanup of [tmp]/box left [tmp]/stray"
+        );
     }
 
     #[test]
