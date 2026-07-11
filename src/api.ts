@@ -722,9 +722,10 @@ export function onSessionRecordsAppended(
 }
 
 /** Degraded transcript-ingest status: the vendor CLI's home dir is gone
- *  (`no_root`) or its files no longer parse (`format_drift`). `healthy` is only
- *  ever sent to clear a prior degraded status. */
-export type SyncHealthStatus = "healthy" | "no_root" | "format_drift";
+ *  (`no_root`), its files no longer parse (`format_drift`), or matched files
+ *  couldn't be read at all (`read_error`). `healthy` is only ever sent to
+ *  clear a prior degraded status. */
+export type SyncHealthStatus = "healthy" | "no_root" | "format_drift" | "read_error";
 
 export interface SessionSyncHealthEvent {
   agent_id: string;

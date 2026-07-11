@@ -161,8 +161,9 @@ function CrashBanner({ agent }: { agent: AgentRecord }) {
 }
 
 /** Non-blocking notice that this session's on-disk transcript couldn't be read
- *  at turn-end — the vendor CLI moved its files (`no_root`) or reshaped them
- *  (`format_drift`), so newly-written history may not persist. Worded as
+ *  at turn-end — the vendor CLI moved its files (`no_root`), reshaped them
+ *  (`format_drift`), or they were unreadable (`read_error`), so
+ *  newly-written history may not persist. Worded as
  *  degraded, not broken: the app still renders the turn from its live-compiled
  *  stream. Only present while the store holds a degraded status for the agent
  *  (cleared by a `healthy` sync-health event). */

@@ -344,6 +344,9 @@ pub(crate) enum SyncHealth {
     /// Files matched and carried non-blank lines, yet none parsed — the vendor
     /// reshaped its format. The smoking gun, essentially zero false positives.
     FormatDrift,
+    /// Files matched but couldn't be opened or read (permissions, vanished
+    /// mid-read) and nothing parsed — ingestion failed just as surely as drift.
+    ReadError,
 }
 
 impl SyncHealth {
@@ -354,6 +357,7 @@ impl SyncHealth {
             SyncHealth::Healthy => Some("healthy"),
             SyncHealth::NoRoot => Some("no_root"),
             SyncHealth::FormatDrift => Some("format_drift"),
+            SyncHealth::ReadError => Some("read_error"),
             SyncHealth::NoFiles => None,
         }
     }
@@ -362,11 +366,12 @@ impl SyncHealth {
 /// Classify a completed poll's diagnostics into a health signal. Pure so it's
 /// unit-testable over hand-built counters.
 ///
-/// The `lines_seen == 0` fall-through to `Healthy` is deliberate: an
-/// incremental tail read of an already-ingested transcript reads no new bytes
-/// on the settle poll (`files_matched > 0`, `records_parsed == 0`,
-/// `lines_seen == 0`), which must NOT read as drift. Real drift always leaves
-/// non-blank lines that failed to parse (`lines_seen > 0`).
+/// The final fall-through to `Healthy` is deliberate: an incremental tail read
+/// of an already-ingested transcript reads no new bytes on the settle poll
+/// (`files_matched > 0`, `records_parsed == 0`, `lines_seen == 0`,
+/// `io_errors == 0`), which must NOT read as drift. Real drift always leaves
+/// non-blank lines that failed to parse (`lines_seen > 0`), and a matched file
+/// that couldn't be read at all leaves `io_errors > 0`.
 fn classify(diag: &crate::agent::ReadDiagnostics) -> SyncHealth {
     if diag.records_parsed > 0 {
         SyncHealth::Healthy
@@ -376,6 +381,8 @@ fn classify(diag: &crate::agent::ReadDiagnostics) -> SyncHealth {
         SyncHealth::NoFiles
     } else if diag.lines_seen > 0 {
         SyncHealth::FormatDrift
+    } else if diag.io_errors > 0 {
+        SyncHealth::ReadError
     } else {
         SyncHealth::Healthy
     }
@@ -758,6 +765,21 @@ mod tests {
             io_errors: 0,
         };
         assert_eq!(classify(&d), SyncHealth::FormatDrift);
+    }
+
+    #[test]
+    fn classify_read_error_when_matched_files_unreadable() {
+        // locate matched a transcript but every read failed (permissions,
+        // vanished mid-read): no lines were ever seen, so without the
+        // io_errors branch this would fall through to Healthy.
+        let d = ReadDiagnostics {
+            root_exists: true,
+            files_matched: 1,
+            lines_seen: 0,
+            records_parsed: 0,
+            io_errors: 1,
+        };
+        assert_eq!(classify(&d), SyncHealth::ReadError);
     }
 
     #[test]
