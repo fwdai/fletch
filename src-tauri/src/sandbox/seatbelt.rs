@@ -518,9 +518,15 @@ mod tests {
             profile.contains(&format!("(subpath \"{}\")", opencode_config.display())),
             "agent profile should grant the narrow opencode config dir"
         );
+        // Codex's dir is env-relocatable too (`$CODEX_HOME`) — same treatment.
+        let codex_home = policy::codex_home_dir(&canonical_home);
+        assert!(
+            profile.contains(&format!("(subpath \"{}\")", codex_home.display())),
+            "agent profile should grant the codex home dir"
+        );
         // Everything else unchanged: provider dot-dirs, caches, macOS-native.
         for dir in [
-            ".claude", ".codex", ".cursor", ".gemini", ".pi", ".npm", ".cache",
+            ".claude", ".cursor", ".gemini", ".pi", ".npm", ".cache",
             "Library/Caches", "Library/Application Support",
         ] {
             assert!(

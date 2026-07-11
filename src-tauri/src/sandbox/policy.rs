@@ -64,11 +64,17 @@ const STATE_DIR_PROVIDERS: &[&str] = &["claude", "codex", "cursor", "gemini", "p
 /// seatbelt-local literal (see the module doc), and a non-default
 /// `CLAUDE_CONFIG_DIR` is likewise handled by the seatbelt caller, which needs
 /// its own symlink-resolution to keep the emitted SBPL path matching the
-/// sandbox's resolved write path.
+/// sandbox's resolved write path. Codex's and opencode's env relocations
+/// (`$CODEX_HOME`, `$XDG_*`), by contrast, ARE resolved here — both engines
+/// need the same dir, with no engine-specific handling on top.
 pub fn provider_state_dirs(provider: &str, home: &Path) -> Vec<PathBuf> {
     match provider {
         "claude" => vec![home.join(".claude")],
-        "codex" => vec![home.join(".codex")],
+        // Codex's state dir moves with `$CODEX_HOME`. The old blanket
+        // `~/.config` agent grant incidentally covered e.g.
+        // `CODEX_HOME=$HOME/.config/codex`; with the narrowing, this
+        // env-resolved grant is what keeps that supported relocation writable.
+        "codex" => vec![codex_home_dir(home)],
         "cursor" => vec![home.join(".cursor")],
         "gemini" => vec![home.join(".gemini")],
         "pi" => vec![home.join(".pi")],
@@ -140,6 +146,27 @@ pub fn opencode_data_dir(home: &Path) -> PathBuf {
 /// when it already exists (see the docker launch path).
 pub fn opencode_config_dir(home: &Path) -> PathBuf {
     xdg_base(home, "XDG_CONFIG_HOME", ".config").join("opencode")
+}
+
+/// Codex's config dir: `$CODEX_HOME` if set non-blank, else `~/.codex`. This
+/// is both the dir Docker bind-mounts read-write and where
+/// `transcripts::find_codex_rollouts` reads transcripts on the host, so the
+/// two must agree — this is the shared resolution (it used to live in the
+/// docker engine, leaving seatbelt blind to the relocation).
+pub fn codex_home_dir(home: &Path) -> PathBuf {
+    codex_home_from(std::env::var_os("CODEX_HOME"), home)
+}
+
+/// Pure core of [`codex_home_dir`] — the same env-seam split as
+/// [`xdg_base_from`], for the same hermetic-test reason. Blank counts as
+/// unset, matching the XDG handling (the docker engine's old resolution took
+/// a blank value verbatim, i.e. produced an empty mount source that failed
+/// the launch — falling back to the default is the strict improvement).
+fn codex_home_from(value: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
+    value
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"))
 }
 
 /// The XDG base dir named by `var` (`$var` if set non-blank, else
@@ -248,7 +275,10 @@ mod tests {
     fn provider_state_dirs_cover_each_provider() {
         let home = Path::new("/Users/u");
         assert_eq!(provider_state_dirs("claude", home), vec![home.join(".claude")]);
-        assert_eq!(provider_state_dirs("codex", home), vec![home.join(".codex")]);
+        // Codex: env-dependent (`$CODEX_HOME`), so assert identity with the
+        // canonical resolver — same treatment as opencode below; the
+        // resolution itself is covered by the `codex_home_from` test.
+        assert_eq!(provider_state_dirs("codex", home), vec![codex_home_dir(home)]);
         assert_eq!(provider_state_dirs("cursor", home), vec![home.join(".cursor")]);
         assert_eq!(provider_state_dirs("gemini", home), vec![home.join(".gemini")]);
         assert_eq!(provider_state_dirs("pi", home), vec![home.join(".pi")]);
@@ -268,7 +298,7 @@ mod tests {
         let all = all_provider_state_dirs(home);
         for expected in [
             home.join(".claude"),
-            home.join(".codex"),
+            codex_home_dir(home),
             home.join(".cursor"),
             home.join(".gemini"),
             home.join(".pi"),
@@ -338,6 +368,24 @@ mod tests {
             xdg_base_from(Some("".into()), home, ".config"),
             home.join(".config")
         );
+    }
+
+    /// Same hermetic env-seam coverage for codex's `$CODEX_HOME` relocation —
+    /// the regression this guards: policy hardcoding `~/.codex` while docker
+    /// resolved the env var left a relocated codex home write-denied under
+    /// seatbelt (the old blanket `~/.config` grant had covered e.g.
+    /// `CODEX_HOME=$HOME/.config/codex`).
+    #[test]
+    fn codex_home_from_prefers_nonblank_value_else_default() {
+        let home = Path::new("/Users/u");
+        assert_eq!(
+            codex_home_from(Some("/Users/u/.config/codex".into()), home),
+            PathBuf::from("/Users/u/.config/codex")
+        );
+        assert_eq!(codex_home_from(None, home), home.join(".codex"));
+        // Blank counts as unset — the old docker-local resolution took it
+        // verbatim and produced an empty, launch-failing mount source.
+        assert_eq!(codex_home_from(Some("".into()), home), home.join(".codex"));
     }
 
     #[test]
