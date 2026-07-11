@@ -119,13 +119,19 @@ fn ensure_real_dir(dir: &Path) -> Result<()> {
         .map_err(|e| Error::Other(format!("failed to create profile dir: {e}")))
 }
 
-/// Write a profile artifact, refusing to follow a symlink at the target path
-/// (`fs::write` would): an agent-planted link is removed so the content lands
-/// at the literal path. The agent process is not running while the host
-/// materializes the profile, so there is no live race with this check.
+/// Write a profile artifact, clearing whatever an agent left at the target
+/// path first: a symlink would be *followed* by `fs::write` (redirecting the
+/// host's write), and a directory would fail it with "is a directory",
+/// blocking every later respawn. These are host-owned paths — anything at
+/// them that isn't our regular file is replaced. The agent process is not
+/// running while the host materializes the profile, so there is no live race
+/// with this check.
 fn write_profile_file(path: &Path, contents: &str) -> Result<()> {
     if let Ok(meta) = std::fs::symlink_metadata(path) {
-        if meta.file_type().is_symlink() {
+        if meta.is_dir() {
+            std::fs::remove_dir_all(path)
+                .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
+        } else if meta.file_type().is_symlink() {
             std::fs::remove_file(path)
                 .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
         }
@@ -482,6 +488,32 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
+    }
+
+    #[test]
+    fn directory_artifacts_are_replaced_before_write() {
+        // An agent-created *directory* at a host-owned artifact path (e.g.
+        // `mkdir .fletch-profile/mcp-servers.json`) must not wedge later
+        // respawns with "is a directory" — it's cleared and rewritten.
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join(PROFILE_DIR);
+        std::fs::create_dir_all(profile.join("skills/deploy.md")).unwrap();
+        std::fs::create_dir_all(profile.join("mcp-servers.json/nested")).unwrap();
+
+        let skills = vec![skill("Deploy", "", "steps")];
+        materialize_skills(&skills, dir.path()).unwrap().unwrap();
+        assert!(profile.join("skills/deploy.md").is_file());
+
+        let servers = vec![McpServerSnapshot {
+            name: "GitHub".into(),
+            transport: "stdio".into(),
+            command: "npx".into(),
+            ..Default::default()
+        }];
+        let path = write_claude_mcp_config(&servers, dir.path())
+            .unwrap()
+            .unwrap();
+        assert!(path.is_file());
     }
 
     #[test]
