@@ -1205,9 +1205,18 @@ impl Agent {
         }
     }
 
-    pub fn shutdown(self) -> Result<()> {
-        drop(self);
-        Ok(())
+    /// Tear the agent's child down explicitly via the session's `&self` kill
+    /// path, rather than deferring to `Drop`. Takes `&self` so it can run on an
+    /// `Arc<Agent>` clone at a map-removal site: the kill is exactly what
+    /// unblocks a stuck write (EPIPE), so it must not wait behind an in-flight
+    /// blocked write holding another `Arc` clone. Idempotent (each session's
+    /// `kill` is), and `Drop` still runs it as a last-`Arc`-drop safety net.
+    pub fn shutdown(&self) -> Result<()> {
+        match self {
+            Self::Pty(a) => a.pty.kill(),
+            Self::Managed(a) => a.session.kill(),
+            Self::PerTurn(a) => a.session.kill(),
+        }
     }
 }
 

@@ -249,7 +249,8 @@ impl Supervisor {
         // process-exit handler before `shutdown()` triggers the latter, so the
         // exit can't re-emit `Idle` for the agent we're tearing down.
         self.bump_generation(agent_id);
-        if let Some(agent) = self.agents.lock().remove(agent_id) {
+        let taken = self.agents.lock().remove(agent_id);
+        if let Some(agent) = taken {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);

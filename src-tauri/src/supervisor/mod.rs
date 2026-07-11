@@ -21,7 +21,7 @@ use tauri::AppHandle;
 
 use crate::activity::Activity;
 use crate::agent::Agent;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::message_queue::MessageQueue;
 use crate::native_input::NativeInputTracker;
 use crate::pty_session::PtySession;
@@ -33,7 +33,16 @@ use messaging::{drain_message_queue, drain_pending_bin_respawn};
 
 pub struct Supervisor {
     pub workspace: Arc<WorkspaceManager>,
-    pub agents: Mutex<HashMap<String, Agent>>,
+    /// Live agent handles, keyed by agent id. INVARIANT: never hold this guard
+    /// across any call into an `Agent` that touches its child — stdin/PTY
+    /// writes, `interrupt`, `resize`, `shutdown`/`kill`. Those can block on a
+    /// child that stopped draining its pipe, and this is one global lock, so
+    /// blocking under it stalls every agent's I/O app-wide. Clone the `Arc` out
+    /// via `live_agent` (or bind the value out of a `remove`) and drop the lock
+    /// *first*; the sessions carry their own per-agent I/O mutexes, so the map
+    /// lock only needs to protect membership. The `Arc` lets a clone outlive the
+    /// guard so the actual I/O runs unlocked.
+    pub agents: Mutex<HashMap<String, Arc<Agent>>>,
     pub generations: Mutex<HashMap<String, u64>>,
     pub activities: Mutex<HashMap<String, Box<dyn Activity>>>,
     /// In-memory source of truth for live runtime status
@@ -93,6 +102,19 @@ impl Supervisor {
     fn bump_generation(&self, agent_id: &str) {
         let mut g = self.generations.lock();
         *g.entry(agent_id.to_string()).or_insert(0) += 1;
+    }
+
+    /// Clone the live agent's handle under a short-lived `agents` lock.
+    /// The only thing callers may do under the `agents` lock is this clone —
+    /// all child I/O (stdin writes, PTY writes, interrupt, shutdown) must
+    /// happen on the returned handle with the lock released (see the `agents`
+    /// field doc). Returns `AgentNotFound` when the agent isn't live.
+    pub(super) fn live_agent(&self, agent_id: &str) -> Result<Arc<Agent>> {
+        self.agents
+            .lock()
+            .get(agent_id)
+            .cloned()
+            .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))
     }
 
     /// Kill and reap every live child process the supervisor is tracking:
