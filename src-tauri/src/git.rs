@@ -93,7 +93,11 @@ async fn git_output_env(
 /// `Error::Git("<label> failed: <stderr>")` — `label` names the op for the
 /// message. Collapses the "spawn, check status, format stderr" trio repeated
 /// across this module into one call.
-pub(crate) async fn run_git(dir: &Path, args: &[&str], label: &str) -> Result<std::process::Output> {
+pub(crate) async fn run_git(
+    dir: &Path,
+    args: &[&str],
+    label: &str,
+) -> Result<std::process::Output> {
     run_git_env(dir, args, &[], label).await
 }
 
@@ -281,7 +285,9 @@ pub async fn worktree_add_detached(
         }
     }
 
-    Err(Error::Git(format!("worktree add --detach failed: {stderr}")))
+    Err(Error::Git(format!(
+        "worktree add --detach failed: {stderr}"
+    )))
 }
 
 /// Is `path` currently registered as a worktree of `repo`? Used by spawn to
@@ -434,9 +440,8 @@ pub async fn init_repo(path: &Path) -> Result<()> {
     let out = crate::git_dist::bare_command()
         .args([
             "init",
-            path.to_str().ok_or_else(|| {
-                Error::InvalidPath(path.display().to_string())
-            })?,
+            path.to_str()
+                .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?,
         ])
         .output()
         .await?;
@@ -537,18 +542,19 @@ pub async fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
 /// Resolve a ref to its full SHA. Returns the bare 40-char hex string.
 /// Errors if the ref is unknown or git is unhappy.
 pub async fn rev_parse(repo: &Path, refname: &str) -> Result<String> {
-    let out = run_git(repo, &["rev-parse", "--verify", refname], &format!("rev-parse {refname}")).await?;
+    let out = run_git(
+        repo,
+        &["rev-parse", "--verify", refname],
+        &format!("rev-parse {refname}"),
+    )
+    .await?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Run `git diff --shortstat <a>..<b>` and parse the additions /
 /// deletions counts. Returns zero counts if both refs resolve to the
 /// same commit (git prints nothing in that case).
-pub async fn diff_shortstat(
-    repo: &Path,
-    from_sha: &str,
-    to_sha: &str,
-) -> Result<(u32, u32)> {
+pub async fn diff_shortstat(repo: &Path, from_sha: &str, to_sha: &str) -> Result<(u32, u32)> {
     let range = format!("{from_sha}..{to_sha}");
     let out = run_git(repo, &["diff", "--shortstat", &range], "diff --shortstat").await?;
     let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -557,11 +563,13 @@ pub async fn diff_shortstat(
 
 /// Run `git diff --shortstat <base>` from a live checkout. This compares the
 /// current working tree, including uncommitted changes, against the base ref.
-pub async fn checkout_diff_shortstat(
-    checkout: &Path,
-    base_ref: &str,
-) -> Result<(u32, u32)> {
-    let out = run_git(checkout, &["diff", "--shortstat", base_ref], &format!("diff --shortstat {base_ref}")).await?;
+pub async fn checkout_diff_shortstat(checkout: &Path, base_ref: &str) -> Result<(u32, u32)> {
+    let out = run_git(
+        checkout,
+        &["diff", "--shortstat", base_ref],
+        &format!("diff --shortstat {base_ref}"),
+    )
+    .await?;
     let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok(parse_shortstat(&line))
 }
@@ -580,18 +588,12 @@ mod tests {
 
     #[test]
     fn parse_shortstat_only_additions() {
-        assert_eq!(
-            parse_shortstat(" 1 file changed, 5 insertions(+)"),
-            (5, 0)
-        );
+        assert_eq!(parse_shortstat(" 1 file changed, 5 insertions(+)"), (5, 0));
     }
 
     #[test]
     fn parse_shortstat_only_deletions() {
-        assert_eq!(
-            parse_shortstat(" 2 files changed, 9 deletions(-)"),
-            (0, 9)
-        );
+        assert_eq!(parse_shortstat(" 2 files changed, 9 deletions(-)"), (0, 9));
     }
 
     #[test]
@@ -627,7 +629,10 @@ mod tests {
     #[test]
     fn no_hooks_env_points_hookspath_at_dev_null() {
         let env = no_hooks_env();
-        assert_eq!(config_value_for(&env, "core.hooksPath").as_deref(), Some("/dev/null"));
+        assert_eq!(
+            config_value_for(&env, "core.hooksPath").as_deref(),
+            Some("/dev/null")
+        );
     }
 
     #[test]
@@ -658,7 +663,10 @@ mod tests {
         );
         // There is exactly one COUNT entry (the second set's didn't survive).
         assert_eq!(
-            merged.iter().filter(|(k, _)| k == "GIT_CONFIG_COUNT").count(),
+            merged
+                .iter()
+                .filter(|(k, _)| k == "GIT_CONFIG_COUNT")
+                .count(),
             1
         );
         // Both config entries are present with distinct indices.
@@ -887,7 +895,9 @@ mod tests {
 
         // Base the checkout on the first commit even though HEAD is now `second`.
         let wt = td.path().join("wt");
-        worktree_add_detached(repo, &wt, Some(&first)).await.unwrap();
+        worktree_add_detached(repo, &wt, Some(&first))
+            .await
+            .unwrap();
         assert_eq!(rev_parse(&wt, "HEAD").await.unwrap(), first);
 
         // With no base it tracks current HEAD (`second`).
@@ -1002,7 +1012,10 @@ mod tests {
         assert!(err.to_string().contains("rebase onto"), "got: {err}");
 
         // No workspace hook ran during any host-side step of the rebase.
-        assert!(!sentinel.exists(), "workspace post-checkout hook must not run");
+        assert!(
+            !sentinel.exists(),
+            "workspace post-checkout hook must not run"
+        );
         // And the abort left the checkout clean, not mid-rebase.
         assert!(!repo.join(".git/rebase-merge").exists());
         assert!(!repo.join(".git/rebase-apply").exists());
@@ -1031,17 +1044,18 @@ fn parse_shortstat(s: &str) -> (u32, u32) {
 /// Create a branch at a specific commit. Errors if the branch already
 /// exists or the SHA isn't reachable.
 pub async fn branch_create_at(repo: &Path, name: &str, sha: &str) -> Result<()> {
-    run_git(repo, &["branch", name, sha], &format!("branch {name} {sha}")).await?;
+    run_git(
+        repo,
+        &["branch", name, sha],
+        &format!("branch {name} {sha}"),
+    )
+    .await?;
     Ok(())
 }
 
 /// Create a worktree at `worktree_path` checked out on an existing
 /// branch. Counterpart to `worktree_add_detached` — used by restore.
-pub async fn worktree_add_branch(
-    repo: &Path,
-    worktree_path: &Path,
-    branch: &str,
-) -> Result<()> {
+pub async fn worktree_add_branch(repo: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
     let path = worktree_path
         .to_str()
         .ok_or_else(|| Error::InvalidPath(worktree_path.display().to_string()))?;
@@ -1135,8 +1149,13 @@ pub async fn rebase_onto(checkout: &Path, base: &str) -> Result<()> {
         // checkout is stuck mid-rebase and needs manual recovery — surface that
         // alongside the original conflict rather than silently swallowing it and
         // reporting only the conflict.
-        if let Err(abort_err) =
-            run_git_env(checkout, &["rebase", "--abort"], &no_hooks_env(), "rebase --abort").await
+        if let Err(abort_err) = run_git_env(
+            checkout,
+            &["rebase", "--abort"],
+            &no_hooks_env(),
+            "rebase --abort",
+        )
+        .await
         {
             return Err(Error::Git(format!(
                 "rebase onto {base} failed: {conflict}; the checkout is left \
@@ -1176,7 +1195,12 @@ pub async fn discard_all(checkout: &Path) -> Result<()> {
 /// Stash all working-tree changes including untracked files. No message —
 /// git generates the default "WIP on <branch>" label.
 pub async fn stash_push(checkout: &Path) -> Result<()> {
-    run_git(checkout, &["stash", "push", "--include-untracked"], "stash push").await?;
+    run_git(
+        checkout,
+        &["stash", "push", "--include-untracked"],
+        "stash push",
+    )
+    .await?;
     Ok(())
 }
 
@@ -1243,7 +1267,12 @@ pub async fn ensure_head_commit(repo: &Path) -> Result<()> {
 
 /// Add a remote. Used when publishing a fresh local repo to GitHub.
 pub async fn remote_add(checkout: &Path, name: &str, url: &str) -> Result<()> {
-    run_git(checkout, &["remote", "add", name, url], &format!("remote add {name}")).await?;
+    run_git(
+        checkout,
+        &["remote", "add", name, url],
+        &format!("remote add {name}"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1284,7 +1313,12 @@ pub async fn branch_delete(repo: &Path, branch: &str) -> Result<()> {
 pub async fn list_local_branches(repo: &Path) -> Result<Vec<String>> {
     let out = run_git(
         repo,
-        &["for-each-ref", "refs/heads", "--format=%(refname:short)", "--sort=refname"],
+        &[
+            "for-each-ref",
+            "refs/heads",
+            "--format=%(refname:short)",
+            "--sort=refname",
+        ],
         "for-each-ref",
     )
     .await?;
@@ -1303,7 +1337,13 @@ pub async fn list_local_branches(repo: &Path) -> Result<Vec<String>> {
 pub async fn list_files(checkout: &Path) -> Result<Vec<String>> {
     let out = run_git(
         checkout,
-        &["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        &[
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
         "ls-files",
     )
     .await?;
@@ -1318,7 +1358,12 @@ pub async fn list_files(checkout: &Path) -> Result<Vec<String>> {
 /// used to show the prior contents of a file the agent deleted.
 pub async fn show_file(checkout: &Path, base_ref: &str, path: &str) -> Result<String> {
     let spec = format!("{base_ref}:{path}");
-    let out = run_git(checkout, &["show", &spec], &format!("show {base_ref}:{path}")).await?;
+    let out = run_git(
+        checkout,
+        &["show", &spec],
+        &format!("show {base_ref}:{path}"),
+    )
+    .await?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -1363,7 +1408,15 @@ async fn file_diff_unified(
     // `--no-index` exits 1 whenever the two sides differ, so accept 0 and 1.
     let out = git_output(
         checkout,
-        &["diff", "--no-color", unified, "--no-index", "--", NULL_DEVICE, path],
+        &[
+            "diff",
+            "--no-color",
+            unified,
+            "--no-index",
+            "--",
+            NULL_DEVICE,
+            path,
+        ],
     )
     .await?;
     match out.status.code() {
@@ -1418,7 +1471,12 @@ fn parse_changed_lines(diff: &str) -> (Vec<u32>, Vec<u32>) {
 
     for line in diff.lines() {
         if let Some(rest) = line.strip_prefix("@@") {
-            flush(&mut hunk_added, &mut hunk_has_del, &mut added, &mut modified);
+            flush(
+                &mut hunk_added,
+                &mut hunk_has_del,
+                &mut added,
+                &mut modified,
+            );
             // rest looks like " -a,b +c,d @@ ..."; take the "+c[,d]" token.
             if let Some(plus) = rest.split_whitespace().find(|t| t.starts_with('+')) {
                 new_line = plus
@@ -1443,7 +1501,12 @@ fn parse_changed_lines(diff: &str) -> (Vec<u32>, Vec<u32>) {
             _ => new_line = new_line.saturating_add(1), // context line
         }
     }
-    flush(&mut hunk_added, &mut hunk_has_del, &mut added, &mut modified);
+    flush(
+        &mut hunk_added,
+        &mut hunk_has_del,
+        &mut added,
+        &mut modified,
+    );
     (added, modified)
 }
 

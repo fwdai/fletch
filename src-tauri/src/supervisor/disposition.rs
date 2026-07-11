@@ -467,7 +467,10 @@ mod tests {
         // pre-flight must reject it rather than fail later inside `fetch_branch`.
         assert!(!source_has_origin(repo).await);
         // Adding a remote flips it.
-        git(repo, &["remote", "add", "origin", "https://example.com/x.git"]);
+        git(
+            repo,
+            &["remote", "add", "origin", "https://example.com/x.git"],
+        );
         assert!(source_has_origin(repo).await);
     }
 }

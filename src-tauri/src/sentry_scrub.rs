@@ -73,7 +73,11 @@ fn redact_private_paths(text: &mut String) {
     if let Some(home) = home.as_deref().filter(|s| !s.is_empty()) {
         roots.push((home, "[home]"));
     }
-    if let Some(tmpdir) = tmpdir.as_deref().map(|s| s.trim_end_matches('/')).filter(|s| !s.is_empty()) {
+    if let Some(tmpdir) = tmpdir
+        .as_deref()
+        .map(|s| s.trim_end_matches('/'))
+        .filter(|s| !s.is_empty())
+    {
         roots.push((tmpdir, "[tmp]"));
     }
     roots.extend([

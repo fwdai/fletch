@@ -177,11 +177,19 @@ mod tests {
     #[test]
     fn json_reader_forwards_parsed_values_and_skips_junk() {
         let dir = tempfile::tempdir().unwrap();
-        let mut child = spawn(&dir.path(), "echo '{\"a\":1}'\necho ''\necho 'not json'\necho '{\"a\":2}'\n");
+        let mut child = spawn(
+            dir.path(),
+            "echo '{\"a\":1}'\necho ''\necho 'not json'\necho '{\"a\":2}'\n",
+        );
         let (tx, rx) = mpsc::channel();
-        spawn_json_reader(child.stdout.take().unwrap(), "t", tracing::Level::DEBUG, move |v| {
-            let _ = tx.send(v);
-        });
+        spawn_json_reader(
+            child.stdout.take().unwrap(),
+            "t",
+            tracing::Level::DEBUG,
+            move |v| {
+                let _ = tx.send(v);
+            },
+        );
         let first = rx.recv_timeout(Duration::from_secs(2)).unwrap();
         let second = rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(first["a"], 1);
@@ -193,12 +201,15 @@ mod tests {
     #[test]
     fn stderr_reader_forwards_lines_then_none_sentinel() {
         let dir = tempfile::tempdir().unwrap();
-        let mut child = spawn(&dir.path(), "echo 'boom' >&2\n");
+        let mut child = spawn(dir.path(), "echo 'boom' >&2\n");
         let (tx, rx) = mpsc::channel();
         spawn_stderr_reader(child.stderr.take().unwrap(), "t", move |line| {
             let _ = tx.send(line);
         });
-        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Some("boom".into()));
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Some("boom".into())
+        );
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), None);
         let _ = child.wait();
     }
@@ -206,7 +217,7 @@ mod tests {
     #[test]
     fn reaper_reports_a_genuine_exit() {
         let dir = tempfile::tempdir().unwrap();
-        let slot = Arc::new(Mutex::new(Some(spawn(&dir.path(), "exit 3\n"))));
+        let slot = Arc::new(Mutex::new(Some(spawn(dir.path(), "exit 3\n"))));
         let (tx, rx) = mpsc::channel();
         spawn_reaper(slot, "t", move |status| {
             let _ = tx.send(status.unwrap().code());
@@ -219,7 +230,7 @@ mod tests {
     #[test]
     fn reaper_stays_silent_when_the_slot_is_taken_away() {
         let dir = tempfile::tempdir().unwrap();
-        let slot = Arc::new(Mutex::new(Some(spawn(&dir.path(), "sleep 30\n"))));
+        let slot = Arc::new(Mutex::new(Some(spawn(dir.path(), "sleep 30\n"))));
         let (tx, rx) = mpsc::channel();
         // Empty the slot (and reap the child) as the superseding owner would,
         // before starting the reaper so it observes `None` on its first poll.

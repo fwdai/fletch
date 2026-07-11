@@ -287,7 +287,10 @@ impl DockerEngine {
         }
         // Skip the host probe entirely on the override path: the user's image
         // is never inspected or refreshed, so there is nothing to compare.
-        let host_cli_version = if override_image.map(str::trim).filter(|s| !s.is_empty()).is_none()
+        let host_cli_version = if override_image
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_none()
         {
             crate::agent::cached_provider_version(provider.id())
         } else {
@@ -297,8 +300,7 @@ impl DockerEngine {
         // separately by the `progress` sink inside `image::ensure_image`.
         // Free-form output rides in the `line` field (not the message) so the
         // sentry scrubber drops it — see the privacy invariant in `lib.rs`.
-        let on_progress =
-            |line: &str| tracing::info!(target: "fletch::docker_build", line = %line, "docker build output");
+        let on_progress = |line: &str| tracing::info!(target: "fletch::docker_build", line = %line, "docker build output");
         let tag = image::resolve_image(
             provider,
             override_image,
@@ -423,7 +425,10 @@ impl SandboxEngine for DockerEngine {
                     .as_deref()
                     .is_some_and(|dir| dir.join(CREDENTIALS_FILE).is_file());
                 if let Some(dir) = &cfg {
-                    env.push(("CLAUDE_CONFIG_DIR".into(), dir.to_string_lossy().into_owned()));
+                    env.push((
+                        "CLAUDE_CONFIG_DIR".into(),
+                        dir.to_string_lossy().into_owned(),
+                    ));
                 }
                 claude_config_dir = cfg;
                 projects_src = Some(ps);
@@ -461,7 +466,8 @@ impl SandboxEngine for DockerEngine {
                 // Forward XDG_DATA_HOME only when it points somewhere other than
                 // the default `~/.local/share` the container resolves via HOME —
                 // mirrors codex's CODEX_HOME handling.
-                forward_xdg_data_home = xdg_base_is_nondefault("XDG_DATA_HOME", ctx.home, ".local/share");
+                forward_xdg_data_home =
+                    xdg_base_is_nondefault("XDG_DATA_HOME", ctx.home, ".local/share");
                 if forward_xdg_data_home {
                     if let Some(v) = std::env::var_os("XDG_DATA_HOME") {
                         env.push(("XDG_DATA_HOME".into(), v.to_string_lossy().into_owned()));
@@ -519,8 +525,7 @@ impl SandboxEngine for DockerEngine {
         // `auth_start`). Scoped so the borrow of `env` ends before it moves into
         // the plan below.
         let prefix_args = {
-            let auth_vars: Vec<&str> =
-                env[auth_start..].iter().map(|(k, _)| k.as_str()).collect();
+            let auth_vars: Vec<&str> = env[auth_start..].iter().map(|(k, _)| k.as_str()).collect();
             // Assemble the provider's mount directives from the owned locals the
             // matched arm above filled in. Exactly one arm ran, so exactly one
             // variant's locals are populated.
@@ -869,7 +874,10 @@ fn prepare_pi_launch(
     );
     env.extend(resolved);
     std::fs::create_dir_all(data_dir).map_err(|e| {
-        Error::Other(format!("Couldn't create Pi data dir {}: {e}", data_dir.display()))
+        Error::Other(format!(
+            "Couldn't create Pi data dir {}: {e}",
+            data_dir.display()
+        ))
     })?;
     Ok(())
 }
@@ -1416,21 +1424,41 @@ mod tests {
                 count.store(map.len(), Ordering::SeqCst);
             },
         );
-        assert!(version_refresh_attempted("codex", "v2@fletch-agent-codex:bbb"));
+        assert!(version_refresh_attempted(
+            "codex",
+            "v2@fletch-agent-codex:bbb"
+        ));
         // Exact pair only: a new host version or a new tag re-arms the trigger.
-        assert!(!version_refresh_attempted("codex", "v3@fletch-agent-codex:bbb"));
-        assert!(!version_refresh_attempted("codex", "v2@fletch-agent-codex:ccc"));
+        assert!(!version_refresh_attempted(
+            "codex",
+            "v3@fletch-agent-codex:bbb"
+        ));
+        assert!(!version_refresh_attempted(
+            "codex",
+            "v2@fletch-agent-codex:ccc"
+        ));
         // Per-provider isolation.
-        assert!(!version_refresh_attempted("claude", "v2@fletch-agent-codex:bbb"));
+        assert!(!version_refresh_attempted(
+            "claude",
+            "v2@fletch-agent-codex:bbb"
+        ));
 
         // Recording persists the whole map through the installed callback,
         // and one pair per provider suffices (newer replaces older).
         record_version_refresh("claude", "v9@fletch-agent:ddd".into());
-        assert_eq!(persisted.load(Ordering::SeqCst), 2, "persister sees both providers");
+        assert_eq!(
+            persisted.load(Ordering::SeqCst),
+            2,
+            "persister sees both providers"
+        );
         record_version_refresh("claude", "v10@fletch-agent:ddd".into());
         assert!(version_refresh_attempted("claude", "v10@fletch-agent:ddd"));
         assert!(!version_refresh_attempted("claude", "v9@fletch-agent:ddd"));
-        assert_eq!(persisted.load(Ordering::SeqCst), 2, "replaced, not accumulated");
+        assert_eq!(
+            persisted.load(Ordering::SeqCst),
+            2,
+            "replaced, not accumulated"
+        );
     }
 
     /// The per-agent claude transcript dir every claude spec shares.
@@ -1614,9 +1642,15 @@ mod tests {
             .iter()
             .position(|a| a == "/Users/u/.claude:/Users/u/.claude:ro")
             .expect("~/.claude mounted read-only");
-        for tmpfs in ["/Users/u/.claude/session-env", "/Users/u/.claude/shell-snapshots"] {
+        for tmpfs in [
+            "/Users/u/.claude/session-env",
+            "/Users/u/.claude/shell-snapshots",
+        ] {
             let idx = args.iter().position(|a| a == tmpfs).unwrap();
-            assert!(ro_idx < idx, "tmpfs overlay {tmpfs} must follow the RO dir mount");
+            assert!(
+                ro_idx < idx,
+                "tmpfs overlay {tmpfs} must follow the RO dir mount"
+            );
         }
 
         // The overlays are tmpfs, never a `-v` bind — no `~/.claude` write
@@ -1654,7 +1688,10 @@ mod tests {
             .position(|a| a == "/Users/u/.claude:/Users/u/.claude:ro")
             .expect("~/.claude mounted read-only");
         let overlay_idx = args.iter().position(|a| a == overlay).unwrap();
-        assert!(ro_idx < overlay_idx, "projects overlay must follow the RO dir mount");
+        assert!(
+            ro_idx < overlay_idx,
+            "projects overlay must follow the RO dir mount"
+        );
 
         // Invariant 5: no read-write bind draws from a host `~/.claude` path, so
         // the shared config's `projects/` (other agents' transcripts, global
@@ -1749,12 +1786,18 @@ mod tests {
     fn argv_codex_forwards_openai_key_and_optional_codex_home() {
         let args = run_args(&codex_spec());
         let forwarded = values_of(&args, "-e");
-        assert!(forwarded.contains(&"OPENAI_API_KEY"), "missing bare -e OPENAI_API_KEY");
+        assert!(
+            forwarded.contains(&"OPENAI_API_KEY"),
+            "missing bare -e OPENAI_API_KEY"
+        );
         assert!(forwarded.contains(&"HOME"));
         assert!(!forwarded.contains(&"CLAUDE_CONFIG_DIR"));
         assert!(!forwarded.contains(&"ANTHROPIC_API_KEY"));
         // Default ~/.codex: CODEX_HOME is not forwarded (the mount + HOME cover it).
-        assert!(!forwarded.contains(&"CODEX_HOME"), "default CODEX_HOME must not forward");
+        assert!(
+            !forwarded.contains(&"CODEX_HOME"),
+            "default CODEX_HOME must not forward"
+        );
 
         // A non-default $CODEX_HOME is forwarded so in-container codex reads it.
         let mut spec = codex_spec();
@@ -1813,8 +1856,14 @@ mod tests {
     /// no `~/.claude` mount, no tmpfs overlay, no `projects/` transcript bind, and
     /// no `~/.codex` mount. Shared by the opencode and pi mount tests.
     fn assert_no_claude_or_codex_surface(args: &[String]) {
-        assert!(!args.iter().any(|a| a.contains("/.claude")), "no ~/.claude path");
-        assert!(!args.iter().any(|a| a.contains("/.codex")), "no ~/.codex path");
+        assert!(
+            !args.iter().any(|a| a.contains("/.claude")),
+            "no ~/.claude path"
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("/.codex")),
+            "no ~/.codex path"
+        );
         assert!(values_of(args, "--tmpfs").is_empty(), "no tmpfs overlays");
         assert!(
             !args.iter().any(|a| a.contains("fletch-claude-projects")),
@@ -1859,8 +1908,14 @@ mod tests {
         assert!(mounts.contains(&"/Users/u/.config/opencode:/Users/u/.config/opencode"));
 
         let forwarded = values_of(&args, "-e");
-        assert!(forwarded.contains(&"XDG_DATA_HOME"), "non-default XDG_DATA_HOME forwards");
-        assert!(!forwarded.contains(&"XDG_CONFIG_HOME"), "default XDG_CONFIG_HOME must not forward");
+        assert!(
+            forwarded.contains(&"XDG_DATA_HOME"),
+            "non-default XDG_DATA_HOME forwards"
+        );
+        assert!(
+            !forwarded.contains(&"XDG_CONFIG_HOME"),
+            "default XDG_CONFIG_HOME must not forward"
+        );
         assert!(forwarded.contains(&"ANTHROPIC_API_KEY"));
         // No value token in argv (invariant 3).
         for arg in &args {
@@ -1886,7 +1941,10 @@ mod tests {
         );
         assert_no_claude_or_codex_surface(&args);
         let forwarded = values_of(&args, "-e");
-        assert!(forwarded.contains(&"ANTHROPIC_API_KEY"), "missing bare -e ANTHROPIC_API_KEY");
+        assert!(
+            forwarded.contains(&"ANTHROPIC_API_KEY"),
+            "missing bare -e ANTHROPIC_API_KEY"
+        );
         assert!(!forwarded.contains(&"CLAUDE_CONFIG_DIR"));
         assert!(!forwarded.contains(&"CODEX_HOME"));
         for arg in &args {
@@ -1915,7 +1973,10 @@ mod tests {
         );
         assert_no_claude_or_codex_surface(&args);
         let forwarded = values_of(&args, "-e");
-        assert!(forwarded.contains(&"CURSOR_API_KEY"), "missing bare -e CURSOR_API_KEY");
+        assert!(
+            forwarded.contains(&"CURSOR_API_KEY"),
+            "missing bare -e CURSOR_API_KEY"
+        );
         assert!(!forwarded.contains(&"CLAUDE_CONFIG_DIR"));
         assert!(!forwarded.contains(&"CODEX_HOME"));
         // No token value in argv, only the label token may carry an `=`.
@@ -1994,7 +2055,11 @@ mod tests {
         for dir in [&a, &b, &checkout] {
             std::fs::create_dir_all(dir.join("info")).unwrap();
         }
-        std::fs::write(checkout.join("info/alternates"), format!("{}\n", b.display())).unwrap();
+        std::fs::write(
+            checkout.join("info/alternates"),
+            format!("{}\n", b.display()),
+        )
+        .unwrap();
         std::fs::write(b.join("info/alternates"), format!("{}\n", a.display())).unwrap();
 
         assert_eq!(
@@ -2318,8 +2383,8 @@ mod tests {
         let env: std::collections::HashMap<&str, &str> = [
             ("OPENAI_API_KEY", " sk-openai \n"),
             ("ANTHROPIC_API_KEY", "sk-ant"),
-            ("GROQ_API_KEY", "   "),      // blank → dropped
-            ("SOME_OTHER_KEY", "nope"),   // not in the curated set → dropped
+            ("GROQ_API_KEY", "   "),    // blank → dropped
+            ("SOME_OTHER_KEY", "nope"), // not in the curated set → dropped
         ]
         .into_iter()
         .collect();
@@ -2346,7 +2411,9 @@ mod tests {
             key,
         );
         // No key but a credential on the mount: resolves with nothing to inject.
-        assert!(multi_provider_auth_env(Vec::new(), true, NO_PI_AUTH_MSG).unwrap().is_empty());
+        assert!(multi_provider_auth_env(Vec::new(), true, NO_PI_AUTH_MSG)
+            .unwrap()
+            .is_empty());
         // Neither: the caller's fail-fast message.
         let err = multi_provider_auth_env(Vec::new(), false, NO_OPENCODE_AUTH_MSG).unwrap_err();
         assert_eq!(err.to_string(), NO_OPENCODE_AUTH_MSG);
@@ -2421,8 +2488,14 @@ mod tests {
             vec![("CURSOR_API_KEY".to_string(), "cur-key".to_string())],
         );
         // No mount fallback: unset and blank both fail with the settings pointer.
-        assert_eq!(cursor_auth_env(None).unwrap_err().to_string(), NO_CURSOR_AUTH_MSG);
-        assert_eq!(cursor_auth_env(Some("   ")).unwrap_err().to_string(), NO_CURSOR_AUTH_MSG);
+        assert_eq!(
+            cursor_auth_env(None).unwrap_err().to_string(),
+            NO_CURSOR_AUTH_MSG
+        );
+        assert_eq!(
+            cursor_auth_env(Some("   ")).unwrap_err().to_string(),
+            NO_CURSOR_AUTH_MSG
+        );
     }
 
     /// Regression (mirrors the codex key-only case): a cursor user with
@@ -2437,7 +2510,10 @@ mod tests {
         let mut env = Vec::new();
         prepare_cursor_launch(&mut env, &dir, Some("cur-key")).unwrap();
         assert!(dir.is_dir(), "~/.cursor must exist for the RW bind mount");
-        assert_eq!(env, vec![("CURSOR_API_KEY".to_string(), "cur-key".to_string())]);
+        assert_eq!(
+            env,
+            vec![("CURSOR_API_KEY".to_string(), "cur-key".to_string())]
+        );
 
         let no_auth = td.path().join(".cursor-no-auth");
         let err = prepare_cursor_launch(&mut Vec::new(), &no_auth, None).unwrap_err();
@@ -2532,7 +2608,10 @@ mod tests {
 
         let engine = DockerEngine::shared();
         let plan = KillPlan::Container { name: name.clone() };
-        assert!(container_running(&name), "fresh container should be running");
+        assert!(
+            container_running(&name),
+            "fresh container should be running"
+        );
         engine.kill(&plan).unwrap();
         assert!(!container_running(&name), "killed container reads as dead");
     }

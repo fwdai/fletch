@@ -1,8 +1,8 @@
 //! Python detector.
 
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector,
-    CONFIDENCE_LOCKFILE, CONFIDENCE_MANIFEST,
+    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    CONFIDENCE_MANIFEST,
 };
 use std::path::Path;
 
@@ -64,19 +64,55 @@ impl RunDetector for PythonDetector {
             ));
         }
 
-        rows.push(DetectedRow::new("install", RowGroup::Scripts, "Install", install, "convention"));
+        rows.push(DetectedRow::new(
+            "install",
+            RowGroup::Scripts,
+            "Install",
+            install,
+            "convention",
+        ));
 
         // dev + port: Django (needs manage.py) → runserver:8000; Flask → 5000.
         if exists(checkout, "manage.py") && has_dep("django") {
-            rows.push(DetectedRow::new("dev", RowGroup::Scripts, "Run", "python manage.py runserver", "Django"));
-            rows.push(DetectedRow::new("port", RowGroup::Server, "Port", "8000", "default (Django)"));
+            rows.push(DetectedRow::new(
+                "dev",
+                RowGroup::Scripts,
+                "Run",
+                "python manage.py runserver",
+                "Django",
+            ));
+            rows.push(DetectedRow::new(
+                "port",
+                RowGroup::Server,
+                "Port",
+                "8000",
+                "default (Django)",
+            ));
         } else if has_dep("flask") {
-            rows.push(DetectedRow::new("dev", RowGroup::Scripts, "Run", "flask run", "Flask"));
-            rows.push(DetectedRow::new("port", RowGroup::Server, "Port", "5000", "default (Flask)"));
+            rows.push(DetectedRow::new(
+                "dev",
+                RowGroup::Scripts,
+                "Run",
+                "flask run",
+                "Flask",
+            ));
+            rows.push(DetectedRow::new(
+                "port",
+                RowGroup::Server,
+                "Port",
+                "5000",
+                "default (Flask)",
+            ));
         }
 
         if has_dep("pytest") {
-            rows.push(DetectedRow::new("test", RowGroup::Scripts, "Test", "pytest", "pytest dependency"));
+            rows.push(DetectedRow::new(
+                "test",
+                RowGroup::Scripts,
+                "Test",
+                "pytest",
+                "pytest dependency",
+            ));
         }
 
         Some(DetectedConfig {
@@ -158,11 +194,7 @@ mod tests {
 
     #[test]
     fn django_dev_and_port() {
-        let cfg = detect(&[
-            ("requirements.txt", "Django==5.0\n"),
-            ("manage.py", ""),
-        ])
-        .unwrap();
+        let cfg = detect(&[("requirements.txt", "Django==5.0\n"), ("manage.py", "")]).unwrap();
         assert_eq!(val(&cfg, "dev"), "python manage.py runserver");
         assert_eq!(val(&cfg, "port"), "8000");
     }

@@ -113,7 +113,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn db_basenames_lists_current_before_legacy() {
         // move_db_aside processes DB_BASENAMES.rev() so the legacy name is moved
@@ -247,7 +246,10 @@ enum DbErrorChoice {
 /// by returning a live DB or exiting, so it's total. Runs in `setup` on the
 /// main thread — hence rfd's synchronous dialog, not the tauri plugin's, which
 /// needs the not-yet-running event loop.
-fn recover_from_db_init_failure(data_dir: &std::path::Path, mut err: crate::error::Error) -> DbState {
+fn recover_from_db_init_failure(
+    data_dir: &std::path::Path,
+    mut err: crate::error::Error,
+) -> DbState {
     loop {
         tracing::error!(error = %err, "database init failed; prompting for recovery");
         match show_db_error_dialog(&err) {
@@ -471,8 +473,12 @@ async fn set_telemetry_enabled(
 ) -> Result<(), String> {
     {
         let conn = state.lock();
-        database::set_setting(&conn, "telemetry_enabled", if enabled { "true" } else { "false" })
-            .map_err(|e| e.to_string())?;
+        database::set_setting(
+            &conn,
+            "telemetry_enabled",
+            if enabled { "true" } else { "false" },
+        )
+        .map_err(|e| e.to_string())?;
     }
     telemetry::set_enabled(enabled);
     Ok(())
@@ -546,8 +552,7 @@ async fn probe_docker_engine() -> Result<sandbox::DockerAvailability, String> {
 /// `spawn_blocking` because the first resolution may load the login-shell env
 /// (runs a shell).
 #[tauri::command]
-async fn get_container_auth_status(
-) -> Result<sandbox::docker::auth::ContainerAuthStatus, String> {
+async fn get_container_auth_status() -> Result<sandbox::docker::auth::ContainerAuthStatus, String> {
     tauri::async_runtime::spawn_blocking(sandbox::docker::auth::status)
         .await
         .map_err(|e| e.to_string())
@@ -665,9 +670,9 @@ async fn connect_claude_container_auth(
     match outcome {
         Ok(Ok(token)) => store_container_token(&state, &token),
         Ok(Err(e)) => Err(e.to_string()),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(
-            "Timed out waiting for the token. Re-run and complete the browser sign-in.".into(),
-        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err("Timed out waiting for the token. Re-run and complete the browser sign-in.".into())
+        }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             Err("Claude setup ended unexpectedly.".into())
         }
@@ -1065,10 +1070,10 @@ pub fn run() {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     use tokio::signal::unix::{signal, SignalKind};
-                    let mut sigint = signal(SignalKind::interrupt())
-                        .expect("install SIGINT handler");
-                    let mut sigterm = signal(SignalKind::terminate())
-                        .expect("install SIGTERM handler");
+                    let mut sigint =
+                        signal(SignalKind::interrupt()).expect("install SIGINT handler");
+                    let mut sigterm =
+                        signal(SignalKind::terminate()).expect("install SIGTERM handler");
                     tokio::select! {
                         _ = sigint.recv() => {}
                         _ = sigterm.recv() => {}
@@ -1198,9 +1203,7 @@ pub fn run() {
                 // Give in-flight telemetry sends a brief, bounded chance to
                 // finish before the runtime tears down, rather than dropping
                 // events that fired just before quit (e.g. `pr_opened`).
-                tauri::async_runtime::block_on(telemetry::flush(
-                    std::time::Duration::from_secs(3),
-                ));
+                tauri::async_runtime::block_on(telemetry::flush(std::time::Duration::from_secs(3)));
             }
         });
 }

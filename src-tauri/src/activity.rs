@@ -372,7 +372,9 @@ mod tests {
         a.observe_event(&serde_json::json!({"type": "tool_use"}));
         assert!(!a.turn_ended());
         // Intermediate step finishing for a tool call must NOT end the turn.
-        a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "tool-calls"}}));
+        a.observe_event(
+            &serde_json::json!({"type": "step_finish", "part": {"reason": "tool-calls"}}),
+        );
         assert!(!a.turn_ended());
         // The final step stops.
         a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}}));

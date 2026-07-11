@@ -22,10 +22,13 @@ jobs:
           bun-version: "1.3.3"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          # Both arches are required so Tauri can lipo them into a universal binary.
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+        # Toolchain version + components come from /rust-toolchain.toml (single
+        # source of truth; see ci.yml). Targets are release-only — both arches
+        # are required so Tauri can lipo them into a universal binary — so they
+        # stay here rather than in the shared toolchain file.
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

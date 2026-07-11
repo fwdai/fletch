@@ -79,7 +79,10 @@ impl GitDispatcher {
             // it only relays that the agent's native git action ran.
             "signal_git_action" => self.signal_git_action(id, args),
             "echo" => (self.echo(id, args).await, Vec::new()),
-            "ping" => (Response::ok(id, 0, "pong".to_string(), String::new()), Vec::new()),
+            "ping" => (
+                Response::ok(id, 0, "pong".to_string(), String::new()),
+                Vec::new(),
+            ),
             "git_status" => (
                 run_git_command(
                     id,
@@ -90,7 +93,10 @@ impl GitDispatcher {
                 .await,
                 Vec::new(),
             ),
-            other => (Response::err(id, format!("unknown op: {other}")), Vec::new()),
+            other => (
+                Response::err(id, format!("unknown op: {other}")),
+                Vec::new(),
+            ),
         };
         // A successful mutating op is ground truth that the agent performed the
         // git action this turn — surface it so the UI doesn't have to guess from
@@ -242,7 +248,10 @@ impl GitDispatcher {
             None => self.base_branch.clone(),
         };
         if branch.starts_with('-') {
-            return Response::err(id, format!("git_fetch: refusing option-like ref {branch:?}"));
+            return Response::err(
+                id,
+                format!("git_fetch: refusing option-like ref {branch:?}"),
+            );
         }
         let auth = crate::git::merge_git_env(&[
             &crate::github::git_auth_env(),
@@ -311,7 +320,12 @@ fn fallback_branch(title: &str) -> String {
     }
 }
 
-async fn run_git_command(id: &str, cwd: &Path, args: &[&str], env: &[(String, String)]) -> Response {
+async fn run_git_command(
+    id: &str,
+    cwd: &Path,
+    args: &[&str],
+    env: &[(String, String)],
+) -> Response {
     let mut cmd = crate::git_dist::command(cwd);
     cmd.args(args)
         .stdin(Stdio::null())
@@ -466,7 +480,10 @@ mod tests {
         // No origin remote → git exits non-zero. This must surface as a hard
         // error, not an ok response, so the agent stops instead of merging a
         // stale `origin/<base>`. And it's never a completed mutation.
-        assert!(!resp.ok, "a failed fetch must be an error response, got: {resp:?}");
+        assert!(
+            !resp.ok,
+            "a failed fetch must be an error response, got: {resp:?}"
+        );
         assert!(
             resp.error.as_deref().unwrap_or_default().contains("failed"),
             "error should explain the fetch failed, got: {:?}",
@@ -487,7 +504,11 @@ mod tests {
             .dispatch_inner("f2", "git_fetch", &json!({"ref": "--upload-pack=evil"}))
             .await;
         assert!(!resp.ok);
-        assert!(resp.error.as_deref().unwrap_or_default().contains("option-like"));
+        assert!(resp
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("option-like"));
     }
 
     #[tokio::test]

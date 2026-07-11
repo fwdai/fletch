@@ -340,13 +340,8 @@ impl ExecSession {
 
 fn drain_stderr(rx: &mpsc::Receiver<Option<String>>) -> Vec<String> {
     let mut lines = Vec::new();
-    loop {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(line)) => lines.push(line),
-            Ok(None)
-            | Err(mpsc::RecvTimeoutError::Timeout)
-            | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
+    while let Ok(Some(line)) = rx.recv_timeout(Duration::from_millis(100)) {
+        lines.push(line);
     }
     lines
 }

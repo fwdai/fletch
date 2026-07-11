@@ -95,7 +95,8 @@ pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>
 /// unsupported provider. Consults the capability lookup rather than string-
 /// matching a single provider id.
 fn ensure_engine_supports_provider(engine: EngineKind, provider: &str) -> Result<()> {
-    if engine == EngineKind::Docker && sandbox::docker::DockerProvider::from_id(provider).is_none() {
+    if engine == EngineKind::Docker && sandbox::docker::DockerProvider::from_id(provider).is_none()
+    {
         let label = per_turn_descriptor(provider)
             .map(|d| d.label())
             .unwrap_or(provider);

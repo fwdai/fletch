@@ -8,8 +8,16 @@ use std::sync::Arc;
 use crate::error::{Error, Result};
 
 const ALLOWED_TABLES: &[&str] = &[
-    "accounts", "custom_agents", "project_settings", "projects", "repos",
-    "sessions", "settings", "usage_daily", "workspaces", "worktrees",
+    "accounts",
+    "custom_agents",
+    "project_settings",
+    "projects",
+    "repos",
+    "sessions",
+    "settings",
+    "usage_daily",
+    "workspaces",
+    "worktrees",
 ];
 
 /// Base name of the on-disk SQLite database within the app data dir. Neutral
@@ -72,7 +80,12 @@ pub fn get_setting(conn: &Connection, key: &str) -> Option<String> {
 /// Upsert a single `settings` value. Mirrors the frontend `setSetting`, so a
 /// value written here is readable by the renderer's `getAllSettings`.
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
-    db_upsert(conn, "settings", json!({ "key": key, "value": value }), "key")?;
+    db_upsert(
+        conn,
+        "settings",
+        json!({ "key": key, "value": value }),
+        "key",
+    )?;
     Ok(())
 }
 
@@ -98,7 +111,10 @@ fn validate_table(table: &str) -> Result<()> {
 }
 
 fn validate_column(col: &str) -> Result<()> {
-    if !col.is_empty() && col.len() <= 64 && col.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+    if !col.is_empty()
+        && col.len() <= 64
+        && col.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
         Ok(())
     } else {
         Err(Error::Other(format!("invalid column name: {col}")))
@@ -139,7 +155,9 @@ pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
     let db_path = data_dir.join(DB_FILENAME);
     let mut conn = open_db(&db_path)?;
     backup_before_upgrade(&conn, &db_path)?;
-    get_migrations().to_latest(&mut conn).map_err(map_migration_error)?;
+    get_migrations()
+        .to_latest(&mut conn)
+        .map_err(map_migration_error)?;
     Ok(Arc::new(Mutex::new(conn)))
 }
 
@@ -303,9 +321,7 @@ fn row_to_json(
             rusqlite::types::ValueRef::Text(s) => {
                 Value::String(String::from_utf8_lossy(s).into_owned())
             }
-            rusqlite::types::ValueRef::Blob(b) => {
-                Value::String(hex_encode(b))
-            }
+            rusqlite::types::ValueRef::Blob(b) => Value::String(hex_encode(b)),
         };
         map.insert(col.clone(), val);
     }
@@ -381,8 +397,7 @@ pub fn db_insert(conn: &Connection, table: &str, mut data: Value) -> Result<Stri
         placeholders.join(", ")
     );
 
-    conn.prepare(&sql)?
-        .execute(params_from_iter(params))?;
+    conn.prepare(&sql)?.execute(params_from_iter(params))?;
 
     Ok(id)
 }
@@ -584,13 +599,13 @@ pub fn db_query(
         .map(|s| s.eq_ignore_ascii_case("select"))
         .unwrap_or(false)
     {
-        return Err(Error::Other("db_query only allows SELECT statements".into()));
+        return Err(Error::Other(
+            "db_query only allows SELECT statements".into(),
+        ));
     }
 
-    let sql_params: Vec<Box<dyn rusqlite::ToSql>> = params
-        .iter()
-        .map(json_to_sql)
-        .collect::<Result<_>>()?;
+    let sql_params: Vec<Box<dyn rusqlite::ToSql>> =
+        params.iter().map(json_to_sql).collect::<Result<_>>()?;
 
     let mut stmt = conn.prepare(sql_trimmed)?;
     let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
@@ -655,7 +670,10 @@ mod tests {
         migrate_legacy_db_name(dir.path()).unwrap();
 
         assert!(!dir.path().join(LEGACY_DB_FILENAME).exists());
-        assert_eq!(std::fs::read(dir.path().join(DB_FILENAME)).unwrap(), b"main");
+        assert_eq!(
+            std::fs::read(dir.path().join(DB_FILENAME)).unwrap(),
+            b"main"
+        );
         assert_eq!(
             std::fs::read(dir.path().join(format!("{DB_FILENAME}-wal"))).unwrap(),
             b"wal"
@@ -690,7 +708,11 @@ mod tests {
         // must not fire (there is nothing to resurrect) and init opens a clean
         // data.db rather than reviving the abandoned database.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(format!("{LEGACY_DB_FILENAME}-wal")), b"stray").unwrap();
+        std::fs::write(
+            dir.path().join(format!("{LEGACY_DB_FILENAME}-wal")),
+            b"stray",
+        )
+        .unwrap();
 
         init(dir.path()).unwrap();
 
@@ -720,7 +742,10 @@ mod tests {
 
         migrate_legacy_db_name(dir.path()).unwrap();
 
-        assert_eq!(std::fs::read(dir.path().join(DB_FILENAME)).unwrap(), b"current");
+        assert_eq!(
+            std::fs::read(dir.path().join(DB_FILENAME)).unwrap(),
+            b"current"
+        );
         assert!(dir.path().join(LEGACY_DB_FILENAME).exists());
     }
 
@@ -833,10 +858,12 @@ mod tests {
     fn rejects_invalid_column() {
         let db = test_db();
         let conn = db.lock();
-        assert!(
-            db_select(&conn, "workspaces", json!({ "where": { "id; DROP TABLE workspaces": "x" } }))
-                .is_err()
-        );
+        assert!(db_select(
+            &conn,
+            "workspaces",
+            json!({ "where": { "id; DROP TABLE workspaces": "x" } })
+        )
+        .is_err());
     }
 
     #[test]
@@ -867,7 +894,6 @@ mod tests {
         let created = rows[0]["created_at"].as_i64().unwrap();
         assert!(created > 0);
     }
-
 
     #[test]
     fn null_where_clause() {
@@ -913,12 +939,31 @@ mod tests {
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
-        for t in ["workspaces", "sessions", "worktrees", "session_records", "repos", "projects", "project_settings", "accounts", "settings"] {
+        for t in [
+            "workspaces",
+            "sessions",
+            "worktrees",
+            "session_records",
+            "repos",
+            "projects",
+            "project_settings",
+            "accounts",
+            "settings",
+        ] {
             assert!(names.contains(t), "missing table {t}");
         }
-        assert!(!names.contains("agents"), "stale table agents still present");
-        assert!(!names.contains("messages"), "stale table messages still present");
-        assert!(!names.contains("session_events"), "retired table session_events still present");
+        assert!(
+            !names.contains("agents"),
+            "stale table agents still present"
+        );
+        assert!(
+            !names.contains("messages"),
+            "stale table messages still present"
+        );
+        assert!(
+            !names.contains("session_events"),
+            "retired table session_events still present"
+        );
     }
 
     #[test]
@@ -926,8 +971,18 @@ mod tests {
         let db = test_db();
         let conn = db.lock();
         let pid = db_insert(&conn, "projects", json!({ "name": "p" })).unwrap();
-        let ws = db_insert(&conn, "workspaces", json!({ "project_id": pid, "name": "halifax" })).unwrap();
-        let sess = db_insert(&conn, "sessions", json!({ "workspace_id": ws, "provider": "claude" })).unwrap();
+        let ws = db_insert(
+            &conn,
+            "workspaces",
+            json!({ "project_id": pid, "name": "halifax" }),
+        )
+        .unwrap();
+        let sess = db_insert(
+            &conn,
+            "sessions",
+            json!({ "workspace_id": ws, "provider": "claude" }),
+        )
+        .unwrap();
         // session_records is written via dedicated functions, not the generic
         // layer, so it isn't in ALLOWED_TABLES — insert/count with raw SQL.
         conn.execute(

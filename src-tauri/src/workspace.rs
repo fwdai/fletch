@@ -29,18 +29,14 @@ pub enum AgentStatus {
 /// a time per agent. The user can toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum AgentView {
     /// Structured chat UI rendered from claude's stream-json events.
+    #[default]
     Custom,
     /// Read-only xterm showing claude's native TUI, with our input box
     /// overlaid on top of the claude input prompt.
     Native,
-}
-
-impl Default for AgentView {
-    fn default() -> Self {
-        AgentView::Custom
-    }
 }
 
 /// One repo an agent has a checkout in.
@@ -529,8 +525,7 @@ impl WorkspaceManager {
         // this same checkouts root). The on-disk listing closes that gap: it's
         // the only namespace shared across every Fletch process on the machine,
         // so a collision there is what actually breaks `git worktree add`.
-        let mut stmt =
-            conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
+        let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
         let mut used: HashSet<String> = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
@@ -667,12 +662,7 @@ impl WorkspaceManager {
     /// Written once the spawn task has created the checkout and resolved its
     /// HEAD. Overwrites unconditionally — the fork point is fixed for the
     /// checkout's life, so a re-write only ever sets the same value.
-    pub fn set_repo_base_sha(
-        &self,
-        agent_id: &str,
-        subdir: &str,
-        base_sha: &str,
-    ) -> Result<()> {
+    pub fn set_repo_base_sha(&self, agent_id: &str, subdir: &str, base_sha: &str) -> Result<()> {
         let conn = self.db.lock();
         conn.execute(
             "UPDATE worktrees SET base_sha = ?1 WHERE workspace_id = ?2 AND subdir = ?3",
@@ -685,12 +675,7 @@ impl WorkspaceManager {
     /// Written when a PR is created through the app or adopted from an OPEN
     /// out-of-band PR. Overwrites unconditionally — the latest PR opened for
     /// the branch is the one we track.
-    pub fn set_repo_pr_number(
-        &self,
-        agent_id: &str,
-        subdir: &str,
-        pr_number: i64,
-    ) -> Result<()> {
+    pub fn set_repo_pr_number(&self, agent_id: &str, subdir: &str, pr_number: i64) -> Result<()> {
         let conn = self.db.lock();
         conn.execute(
             "UPDATE worktrees SET pr_number = ?1 WHERE workspace_id = ?2 AND subdir = ?3",
@@ -952,7 +937,14 @@ impl WorkspaceManager {
                     .map_err(|e| Error::Other(format!("serialize record body: {e}")))?;
                 let next = seq + 1;
                 let n = stmt.execute(rusqlite::params![
-                    sid, next, provider, source, native_id, agent_version, body_json, now
+                    sid,
+                    next,
+                    provider,
+                    source,
+                    native_id,
+                    agent_version,
+                    body_json,
+                    now
                 ])?;
                 if n > 0 {
                     seq = next; // consumed only on a real insert; dups keep seq dense
@@ -1048,18 +1040,20 @@ impl WorkspaceManager {
             .collect::<std::result::Result<_, rusqlite::Error>>()?;
 
         rows.into_iter()
-            .map(|(seq, provider, source, native_id, agent_version, body_text)| {
-                let body = serde_json::from_str(&body_text)
-                    .map_err(|e| Error::Other(format!("deserialize record body: {e}")))?;
-                Ok(SessionRecord {
-                    seq,
-                    provider,
-                    source,
-                    native_id,
-                    agent_version,
-                    body,
-                })
-            })
+            .map(
+                |(seq, provider, source, native_id, agent_version, body_text)| {
+                    let body = serde_json::from_str(&body_text)
+                        .map_err(|e| Error::Other(format!("deserialize record body: {e}")))?;
+                    Ok(SessionRecord {
+                        seq,
+                        provider,
+                        source,
+                        native_id,
+                        agent_version,
+                        body,
+                    })
+                },
+            )
             .collect()
     }
 
@@ -1164,8 +1158,18 @@ impl WorkspaceManager {
             "SELECT turn_id, seq, text, attachments, native_id, started_at, ended_at
              FROM session_user_turns WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
-        let rows: Vec<(String, i64, String, String, Option<String>, Option<i64>, Option<i64>)> =
-            stmt.query_map([&sid], |r| {
+        // (turn_id, seq, text, attachments, native_id, started_at, ended_at)
+        type UserTurnRow = (
+            String,
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        );
+        let rows: Vec<UserTurnRow> = stmt
+            .query_map([&sid], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -1631,11 +1635,9 @@ impl WorkspaceManager {
     fn find_or_create_project(conn: &Connection, name: &str) -> Result<String> {
         // Try to find an existing project by name.
         let existing: Option<String> = conn
-            .query_row(
-                "SELECT id FROM projects WHERE name = ?1",
-                [name],
-                |row| row.get(0),
-            )
+            .query_row("SELECT id FROM projects WHERE name = ?1", [name], |row| {
+                row.get(0)
+            })
             .ok();
 
         if let Some(id) = existing {
@@ -1689,14 +1691,10 @@ impl WorkspaceManager {
 
         // Look up repo_id from repos table.
         let repo_id: String = conn
-            .query_row(
-                "SELECT id FROM repos WHERE path = ?1",
-                [&path_str],
-                |row| row.get(0),
-            )
-            .map_err(|_| {
-                Error::Other(format!("repo not found in database: {path_str}"))
-            })?;
+            .query_row("SELECT id FROM repos WHERE path = ?1", [&path_str], |row| {
+                row.get(0)
+            })
+            .map_err(|_| Error::Other(format!("repo not found in database: {path_str}")))?;
 
         let wt_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
@@ -1918,8 +1916,8 @@ pub fn checkouts_root() -> Result<PathBuf> {
     if let Some(root) = std::env::var_os(WORKSPACES_ROOT_ENV).filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(root));
     }
-    let home = dirs::home_dir()
-        .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     Ok(home.join(".fletch").join("workspaces"))
 }
 
@@ -2018,9 +2016,16 @@ mod tests {
 
         migrate_checkouts_root_in(&fletch, false);
 
-        assert!(!fletch.join("worktrees").exists(), "legacy dir should be gone");
         assert!(
-            fletch.join("workspaces").join("agent-1").join("repo").is_dir(),
+            !fletch.join("worktrees").exists(),
+            "legacy dir should be gone"
+        );
+        assert!(
+            fletch
+                .join("workspaces")
+                .join("agent-1")
+                .join("repo")
+                .is_dir(),
             "contents should have moved under the new root"
         );
     }
@@ -2035,8 +2040,14 @@ mod tests {
 
         migrate_checkouts_root_in(&fletch, true);
 
-        assert!(fletch.join("worktrees").is_dir(), "override must leave legacy dir");
-        assert!(!fletch.join("workspaces").exists(), "override must not create new dir");
+        assert!(
+            fletch.join("worktrees").is_dir(),
+            "override must leave legacy dir"
+        );
+        assert!(
+            !fletch.join("workspaces").exists(),
+            "override must not create new dir"
+        );
     }
 
     /// No legacy dir (a fresh install) → nothing to migrate, no new dir created.
@@ -2062,8 +2073,14 @@ mod tests {
 
         migrate_checkouts_root_in(&fletch, false);
 
-        assert!(fletch.join("worktrees").join("old-agent").is_dir(), "legacy left as-is");
-        assert!(fletch.join("workspaces").join("live-agent").is_dir(), "live root untouched");
+        assert!(
+            fletch.join("worktrees").join("old-agent").is_dir(),
+            "legacy left as-is"
+        );
+        assert!(
+            fletch.join("workspaces").join("live-agent").is_dir(),
+            "live root untouched"
+        );
         assert!(
             !fletch.join("workspaces").join("old-agent").exists(),
             "must not merge legacy contents into the existing new root"
@@ -2333,10 +2350,7 @@ mod tests {
             AgentStatus::Running
         );
         // A resting, clean workspace derives to Idle (lazy resume on send).
-        assert_eq!(
-            derive_status(false, false, false, None),
-            AgentStatus::Idle
-        );
+        assert_eq!(derive_status(false, false, false, None), AgentStatus::Idle);
     }
 
     #[test]
@@ -2485,7 +2499,10 @@ mod tests {
 
         // Read back via load_agent (single-row path)…
         let loaded = wm.agent(&id).unwrap();
-        assert_eq!(loaded.instructions.as_deref(), Some("You are the Reviewer. Be terse."));
+        assert_eq!(
+            loaded.instructions.as_deref(),
+            Some("You are the Reviewer. Be terse.")
+        );
         assert_eq!(loaded.custom_agent_id.as_deref(), Some("ca-reviewer"));
 
         // …and via the full list (query_all_agents path).
@@ -2590,7 +2607,10 @@ mod tests {
         wm.set_repo_pr_snapshot(&id, &subdir, &open).unwrap();
         let repo = wm.agent(&id).unwrap().repos[0].clone();
         assert_eq!(repo.pr_number, Some(42));
-        assert_eq!(repo.pr_url.as_deref(), Some("https://github.com/o/r/pull/42"));
+        assert_eq!(
+            repo.pr_url.as_deref(),
+            Some("https://github.com/o/r/pull/42")
+        );
         assert_eq!(repo.pr_title.as_deref(), Some("feat: thing"));
         assert_eq!(repo.pr_state.as_deref(), Some("open"));
 
@@ -2613,7 +2633,11 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(opened, Some(1_000), "COALESCE must keep the earlier opened_at");
+        assert_eq!(
+            opened,
+            Some(1_000),
+            "COALESCE must keep the earlier opened_at"
+        );
         assert_eq!(merged_at, Some(2_000));
     }
 
@@ -2804,7 +2828,7 @@ mod tests {
         // add_agent needs the repo pre-seeded in repos; add_workspace_repo
         // handles that above. But we also need the repo in the repos table
         // for the checkout join — seed it explicitly so the lookup succeeds.
-        let _ = seed_repo_path(db, &repo_str);
+        seed_repo_path(db, &repo_str);
         wm.add_agent(&mut rec).unwrap();
         let id = rec.id.clone();
         (id, wm)
@@ -2849,7 +2873,13 @@ mod tests {
 
         let body = serde_json::json!({"role": "user", "content": "hello"});
         let inserted = wm
-            .append_session_records(&ws_id, "claude", "transcript", Some("1.2.3"), &[("uuid-1", &body)])
+            .append_session_records(
+                &ws_id,
+                "claude",
+                "transcript",
+                Some("1.2.3"),
+                &[("uuid-1", &body)],
+            )
             .unwrap();
         assert_eq!(inserted, 1);
 
@@ -2910,9 +2940,15 @@ mod tests {
         assert_eq!(inserted, 3);
 
         let records = wm.read_session_records(&ws_id).unwrap();
-        assert_eq!(records.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_eq!(
-            records.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            records.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["id-a", "id-b", "id-c"],
         );
 
@@ -2931,7 +2967,10 @@ mod tests {
         assert_eq!(inserted, 1);
 
         let records = wm.read_session_records(&ws_id).unwrap();
-        assert_eq!(records.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        assert_eq!(
+            records.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
         assert_eq!(records[3].native_id, "id-d");
         assert_eq!(records[3].body, d);
     }
@@ -2947,8 +2986,14 @@ mod tests {
 
         let a = serde_json::json!({"n": 1});
         let b = serde_json::json!({"n": 2});
-        wm.append_session_records(&ws_id, "claude", "transcript", None, &[("x", &a), ("y", &b)])
-            .unwrap();
+        wm.append_session_records(
+            &ws_id,
+            "claude",
+            "transcript",
+            None,
+            &[("x", &a), ("y", &b)],
+        )
+        .unwrap();
         // record_count tracks MAX(seq) — the start index for the next tail read.
         assert_eq!(wm.session_record_count(&ws_id).unwrap(), 2);
 
@@ -3029,10 +3074,16 @@ mod tests {
         assert_eq!(started, Some(1000));
         assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].ended_at, None);
 
-        let closed = wm.mark_user_turn_ended(&ws_id).unwrap().expect("open turn closed");
+        let closed = wm
+            .mark_user_turn_ended(&ws_id)
+            .unwrap()
+            .expect("open turn closed");
         let turn = wm.read_user_turns(&ws_id).unwrap().remove(0);
         assert_eq!(turn.started_at, started, "start clock not reset by end");
-        assert!(turn.ended_at >= turn.started_at, "ended_at after started_at");
+        assert!(
+            turn.ended_at >= turn.started_at,
+            "ended_at after started_at"
+        );
         assert_eq!(
             closed.duration_ms,
             turn.ended_at.unwrap() - turn.started_at.unwrap(),
@@ -3075,7 +3126,9 @@ mod tests {
 
         assert!(wm.insert_user_turn(&ws_id, "turn-1", "first", &[]).unwrap());
         // Same turn_id (a send retry) — ignored, original retained, no new row.
-        assert!(!wm.insert_user_turn(&ws_id, "turn-1", "second", &[]).unwrap());
+        assert!(!wm
+            .insert_user_turn(&ws_id, "turn-1", "second", &[])
+            .unwrap());
 
         let turns = wm.read_user_turns(&ws_id).unwrap();
         assert_eq!(turns.len(), 1);
@@ -3090,7 +3143,8 @@ mod tests {
         // Two outgoing turns: one with an attachment, one plain.
         wm.insert_user_turn(&ws_id, "t1", "look at this", &["/tmp/diagram.png".into()])
             .unwrap();
-        wm.insert_user_turn(&ws_id, "t2", "now refactor", &[]).unwrap();
+        wm.insert_user_turn(&ws_id, "t2", "now refactor", &[])
+            .unwrap();
 
         // Transcript user-message records as the agent logged them (attachment
         // turn carries the injected reference line; plain turn is just text).
@@ -3232,7 +3286,10 @@ mod tests {
             .into_iter()
             .filter(|t| t.native_id.is_none())
             .count();
-        assert_eq!(pending, 1, "the unclaimed row orphans — hence we coalesce to one row");
+        assert_eq!(
+            pending, 1,
+            "the unclaimed row orphans — hence we coalesce to one row"
+        );
     }
 
     #[test]

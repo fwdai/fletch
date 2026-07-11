@@ -309,10 +309,7 @@ mod tests {
             env.get("PATH").map(String::as_str),
             Some("/opt/homebrew/bin:/usr/bin"),
         );
-        assert_eq!(
-            env.get("MULTI").map(String::as_str),
-            Some("line1\nline2=a"),
-        );
+        assert_eq!(env.get("MULTI").map(String::as_str), Some("line1\nline2=a"),);
         assert!(!env.contains_key("PWD"));
     }
 
@@ -335,7 +332,10 @@ mod tests {
             ("override-test-agent".to_string(), bin_str.clone()),
             // Blank paths are dropped, so this clears rather than sets.
             ("blank-agent".to_string(), "   ".to_string()),
-            ("missing-agent".to_string(), "/no/such/binary-xyz".to_string()),
+            (
+                "missing-agent".to_string(),
+                "/no/such/binary-xyz".to_string(),
+            ),
         ]));
 
         assert_eq!(

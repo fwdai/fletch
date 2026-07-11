@@ -120,13 +120,7 @@ pub fn set_identity_source(f: IdentitySource) {
 /// user.email: the signed-in profile when available, else a neutral default
 /// (so a first commit never dies with git's "Please tell me who you are").
 pub fn fallback_identity() -> (String, String) {
-    resolve_identity(
-        identity_source()
-            .read()
-            .unwrap()
-            .as_ref()
-            .and_then(|f| f()),
-    )
+    resolve_identity(identity_source().read().unwrap().as_ref().and_then(|f| f()))
 }
 
 /// Field-by-field identity resolution (pure): a profile with only a name still

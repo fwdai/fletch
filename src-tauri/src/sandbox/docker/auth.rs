@@ -570,7 +570,11 @@ mod tests {
             &br#"{"somethingElse":true}"#[..],
             &b"not json"[..],
         ] {
-            assert_eq!(usable_oauth_token(Some(blob)), None, "must reject: {blob:?}");
+            assert_eq!(
+                usable_oauth_token(Some(blob)),
+                None,
+                "must reject: {blob:?}"
+            );
         }
         assert_eq!(usable_oauth_token(None), None);
     }

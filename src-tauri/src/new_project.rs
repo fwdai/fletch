@@ -31,7 +31,9 @@ pub fn repo_name_from_spec(spec: &str) -> Result<String> {
 
     let name = tail.strip_suffix(".git").unwrap_or(tail).trim();
     if name.is_empty() {
-        return Err(Error::InvalidPath(format!("cannot parse repo name from: {spec}")));
+        return Err(Error::InvalidPath(format!(
+            "cannot parse repo name from: {spec}"
+        )));
     }
     validate_new_name(name)?;
     Ok(name.to_string())
@@ -269,11 +271,17 @@ mod tests {
             .success());
         // Precondition: initialized, but HEAD is unborn.
         assert!(dir.join(".git").exists());
-        assert!(!head_resolves(&dir), "test setup: repo should have no commits");
+        assert!(
+            !head_resolves(&dir),
+            "test setup: repo should have no commits"
+        );
 
         ensure_git_repo(&dir).await.unwrap();
 
-        assert!(head_resolves(&dir), "adopted empty repo must gain a HEAD commit");
+        assert!(
+            head_resolves(&dir),
+            "adopted empty repo must gain a HEAD commit"
+        );
         // Idempotent: a second adoption doesn't add another commit or error.
         ensure_git_repo(&dir).await.unwrap();
     }
@@ -321,7 +329,9 @@ mod tests {
 
     #[test]
     fn validate_rejects_bad_names() {
-        for bad in ["", "  ", ".", "..", "a/b", "a b", "a:b", "café", "-foo", "--push"] {
+        for bad in [
+            "", "  ", ".", "..", "a/b", "a b", "a:b", "café", "-foo", "--push",
+        ] {
             assert!(validate_new_name(bad).is_err(), "{bad} should be invalid");
         }
     }

@@ -328,7 +328,11 @@ async fn install_delegation_hooks(dest: &Path) -> Result<()> {
     // post-merge fires on a completed clean `git merge` (fast-forward or merge
     // commit): the action is unambiguously a base merge.
     let post_merge = hooks_dir.join("post-merge");
-    tokio::fs::write(&post_merge, delegation_hook_script(r#"action="git_update_branch""#)).await?;
+    tokio::fs::write(
+        &post_merge,
+        delegation_hook_script(r#"action="git_update_branch""#),
+    )
+    .await?;
     set_executable(&post_merge).await?;
     // post-commit fires on *every* plain `git commit` — including the commit
     // that completes a *conflicted* merge, which never reaches post-merge. Those
@@ -409,7 +413,12 @@ async fn seed_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
             .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
             .filter(|v| !v.is_empty());
         let value = effective.unwrap_or(fallback);
-        git::run_git(spec.dest, &["config", key, &value], &format!("config {key}")).await?;
+        git::run_git(
+            spec.dest,
+            &["config", key, &value],
+            &format!("config {key}"),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -622,16 +631,25 @@ mod tests {
         for hook in ["post-commit", "post-merge"] {
             let path = dest.join(".git/hooks").join(hook);
             let body = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{hook} missing"));
-            assert!(body.contains("signal_git_action"), "{hook} must ping the signal op");
+            assert!(
+                body.contains("signal_git_action"),
+                "{hook} must ping the signal op"
+            );
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert!(mode & 0o111 != 0, "{hook} must be executable, mode={mode:o}");
+            assert!(
+                mode & 0o111 != 0,
+                "{hook} must be executable, mode={mode:o}"
+            );
         }
         // post-merge always reports a base merge; post-commit distinguishes a
         // merge-completion commit (HEAD^2) from a plain one.
         let post_merge = std::fs::read_to_string(dest.join(".git/hooks/post-merge")).unwrap();
         assert!(post_merge.contains(r#"action="git_update_branch""#));
         let post_commit = std::fs::read_to_string(dest.join(".git/hooks/post-commit")).unwrap();
-        assert!(post_commit.contains("HEAD^2"), "post-commit must test for a merge commit");
+        assert!(
+            post_commit.contains("HEAD^2"),
+            "post-commit must test for a merge commit"
+        );
         assert!(post_commit.contains(r#"action="git_update_branch""#));
         assert!(post_commit.contains(r#"action="git_commit""#));
     }
@@ -675,7 +693,11 @@ mod tests {
             .args(["commit", "--no-edit"])
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         let reqs: Vec<_> = std::fs::read_dir(mailbox.join("requests"))
             .unwrap()
@@ -718,7 +740,11 @@ mod tests {
             .args(["commit", "-q", "-m", "hooked"])
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         let entries: Vec<_> = std::fs::read_dir(&requests)
             .unwrap()

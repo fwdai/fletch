@@ -194,10 +194,14 @@ fn parse_images_line(line: &str) -> Option<ImageRow> {
 /// logged at debug. Returns the number of images actually removed; callers
 /// treat all failures as non-fatal.
 pub fn sweep_stale_images() -> Result<usize> {
-    let current_tags: HashSet<String> =
-        DockerProvider::ALL.iter().map(|p| image::image_tag(*p)).collect();
-    let known_repos: HashSet<&'static str> =
-        DockerProvider::ALL.iter().map(|p| image::image_repo(*p)).collect();
+    let current_tags: HashSet<String> = DockerProvider::ALL
+        .iter()
+        .map(|p| image::image_tag(*p))
+        .collect();
+    let known_repos: HashSet<&'static str> = DockerProvider::ALL
+        .iter()
+        .map(|p| image::image_repo(*p))
+        .collect();
     let override_image = engine::image_override();
 
     let labeled = list_images(&[
@@ -225,7 +229,10 @@ pub fn sweep_stale_images() -> Result<usize> {
         return Ok(0);
     }
 
-    tracing::info!(count = refs.len(), "removing superseded fletch agent images");
+    tracing::info!(
+        count = refs.len(),
+        "removing superseded fletch agent images"
+    );
     let mut removed = 0;
     for image_ref in &refs {
         // One rmi per image (not batched): a single in-use image must not
@@ -296,7 +303,9 @@ fn image_removal_refs(
         if !row.untagged() && current_tags.contains(&row.named()) {
             return true;
         }
-        let Some(ov) = override_image else { return false };
+        let Some(ov) = override_image else {
+            return false;
+        };
         ov == row.id
             || (!row.untagged() && (ov == row.named() || (row.tag == "latest" && ov == row.repo)))
     };
@@ -342,7 +351,10 @@ fn image_removal_refs(
 /// 12 lowercase hex chars (`image::tag_for`'s `sha256[..12]`). Anything else
 /// in a Fletch repo was written by a human and is never a removal candidate.
 fn is_content_addressed_tag(tag: &str) -> bool {
-    tag.len() == 12 && tag.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    tag.len() == 12
+        && tag
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 /// Every tag pre-label Fletch ever shipped — the exact, closed set of images
@@ -354,12 +366,12 @@ fn is_content_addressed_tag(tag: &str) -> bool {
 /// grows — once pre-label installs have aged out, this arm and list can be
 /// deleted wholesale.
 const LEGACY_TAGS: &[&str] = &[
-    "fletch-agent:1ea320e4ab55",          // claude, unchanged pre-label era (at 3870598)
-    "fletch-agent-codex:fa189de85caf",    // codex, #367..3870598
+    "fletch-agent:1ea320e4ab55", // claude, unchanged pre-label era (at 3870598)
+    "fletch-agent-codex:fa189de85caf", // codex, #367..3870598
     "fletch-agent-opencode:87523a7118a0", // opencode, #368..3870598
-    "fletch-agent-pi:54ab6c418d9c",       // pi, #368..3870598
-    "fletch-agent-cursor:2d8ee8975d0d",   // cursor, #369 before the --version build check (3557367)
-    "fletch-agent-cursor:b84044879c26",   // cursor, #369 after it (b77d973..3870598)
+    "fletch-agent-pi:54ab6c418d9c", // pi, #368..3870598
+    "fletch-agent-cursor:2d8ee8975d0d", // cursor, #369 before the --version build check (3557367)
+    "fletch-agent-cursor:b84044879c26", // cursor, #369 after it (b77d973..3870598)
 ];
 
 #[cfg(test)]
@@ -486,10 +498,14 @@ mod tests {
     /// constants at the commits named on each entry.)
     #[test]
     fn legacy_tags_are_fletch_shaped() {
-        let known_repos: HashSet<&'static str> =
-            DockerProvider::ALL.iter().map(|p| image::image_repo(*p)).collect();
+        let known_repos: HashSet<&'static str> = DockerProvider::ALL
+            .iter()
+            .map(|p| image::image_repo(*p))
+            .collect();
         for entry in LEGACY_TAGS {
-            let (repo, tag) = entry.split_once(':').expect("legacy entry must be repo:tag");
+            let (repo, tag) = entry
+                .split_once(':')
+                .expect("legacy entry must be repo:tag");
             assert!(known_repos.contains(repo), "unknown legacy repo: {repo}");
             assert!(is_content_addressed_tag(tag), "malformed legacy tag: {tag}");
         }
@@ -543,8 +559,9 @@ mod tests {
         // with or without the override present.
         let with_latest = vec![row("lll", "fletch-agent", "latest")];
         for ov in [Some("fletch-agent"), None] {
-            assert!(image_removal_refs(&with_latest, &[], &current_tags, &known_repos, ov)
-                .is_empty());
+            assert!(
+                image_removal_refs(&with_latest, &[], &current_tags, &known_repos, ov).is_empty()
+            );
         }
 
         // Blank override protects nothing (same as None).

@@ -75,7 +75,9 @@ mod store {
         // failed scrub is non-fatal *here* (the keychain copy is in place and
         // the value must still be returned); `delete` is where a surviving
         // row is load-bearing.
-        let Some(legacy) = legacy else { return Ok(None) };
+        let Some(legacy) = legacy else {
+            return Ok(None);
+        };
         match set(conn, key, &legacy) {
             Ok(()) => {
                 if let Err(e) = scrub_setting(conn, key) {
@@ -182,7 +184,10 @@ mod tests {
         let conn = db.lock();
         assert_eq!(get(&conn, "github_token").unwrap(), None);
         set(&conn, "github_token", "tok123").unwrap();
-        assert_eq!(get(&conn, "github_token").unwrap().as_deref(), Some("tok123"));
+        assert_eq!(
+            get(&conn, "github_token").unwrap().as_deref(),
+            Some("tok123")
+        );
         delete(&conn, "github_token").unwrap();
         assert_eq!(get(&conn, "github_token").unwrap(), None);
     }

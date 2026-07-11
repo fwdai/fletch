@@ -216,11 +216,11 @@ pub fn all_provider_state_dirs(home: &Path) -> Vec<PathBuf> {
 /// for scratch, and mounting these back would needlessly expose host state.
 pub fn agent_scratch_dirs(home: &Path) -> Vec<PathBuf> {
     [
-        ".npm",                      // npm's package cache
-        ".cache",                    // XDG cache root
-        ".local/share",             // XDG data root — NOT ~/.local (holds ~/.local/bin)
-        ".local/state",             // XDG state root — NOT ~/.local (holds ~/.local/bin)
-        "Library/Caches",            // macOS-native cache root
+        ".npm",                        // npm's package cache
+        ".cache",                      // XDG cache root
+        ".local/share",                // XDG data root — NOT ~/.local (holds ~/.local/bin)
+        ".local/state",                // XDG state root — NOT ~/.local (holds ~/.local/bin)
+        "Library/Caches",              // macOS-native cache root
         "Library/Application Support", // macOS-native per-app state root
     ]
     .iter()
@@ -422,7 +422,11 @@ mod tests {
                 "{} must be a strict subdir of the config root, never the root",
                 island.display()
             );
-            assert!(!bin_resident(island), "{} must not be bin-resident", island.display());
+            assert!(
+                !bin_resident(island),
+                "{} must not be bin-resident",
+                island.display()
+            );
             assert_ne!(island.file_name(), Some(OsStr::new("bin")));
         }
     }
@@ -444,9 +448,18 @@ mod tests {
         // Codex: env-dependent (`$CODEX_HOME`), so assert identity with the
         // canonical resolver — same treatment as opencode below; the
         // resolution itself is covered by the `codex_home_from` test.
-        assert_eq!(provider_state_dirs("codex", home), vec![codex_home_dir(home)]);
-        assert_eq!(provider_state_dirs("cursor", home), vec![home.join(".cursor")]);
-        assert_eq!(provider_state_dirs("gemini", home), vec![home.join(".gemini")]);
+        assert_eq!(
+            provider_state_dirs("codex", home),
+            vec![codex_home_dir(home)]
+        );
+        assert_eq!(
+            provider_state_dirs("cursor", home),
+            vec![home.join(".cursor")]
+        );
+        assert_eq!(
+            provider_state_dirs("gemini", home),
+            vec![home.join(".gemini")]
+        );
         assert_eq!(provider_state_dirs("pi", home), vec![home.join(".pi")]);
         // OpenCode: XDG data + config subdirs. The exact paths are
         // env-dependent (`$XDG_DATA_HOME`/`$XDG_CONFIG_HOME` — CI runners
@@ -463,9 +476,16 @@ mod tests {
         // The union carries every provider's dirs and is deduped.
         let all = all_provider_state_dirs(home);
         // Claude contributes its islands to the union (not the `~/.claude` root).
-        assert!(!all.contains(&home.join(".claude")), "union must not carry the ~/.claude root");
+        assert!(
+            !all.contains(&home.join(".claude")),
+            "union must not carry the ~/.claude root"
+        );
         for island in claude_write_island_dirs(&home.join(".claude")) {
-            assert!(all.contains(&island), "union missing claude island {}", island.display());
+            assert!(
+                all.contains(&island),
+                "union missing claude island {}",
+                island.display()
+            );
         }
         for expected in [
             codex_home_dir(home),
@@ -475,7 +495,11 @@ mod tests {
             opencode_data_dir(home),
             opencode_config_dir(home),
         ] {
-            assert!(all.contains(&expected), "union missing {}", expected.display());
+            assert!(
+                all.contains(&expected),
+                "union missing {}",
+                expected.display()
+            );
         }
         let mut deduped = all.clone();
         deduped.dedup();
@@ -513,7 +537,10 @@ mod tests {
         // `.local/share/opencode` (opencode data) — all narrow, none is `.local`.
         for d in &under_local {
             assert_ne!(**d, home.join(".local"), "must never be the bare ~/.local");
-            assert!(d.starts_with(home.join(".local/share")) || d.starts_with(home.join(".local/state")));
+            assert!(
+                d.starts_with(home.join(".local/share"))
+                    || d.starts_with(home.join(".local/state"))
+            );
         }
     }
 

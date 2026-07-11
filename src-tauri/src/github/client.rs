@@ -108,7 +108,11 @@ pub fn note_rate_budget(remaining: i64, reset_at_ms: Option<i64>) {
 /// Inspect a response for rate-limit signals and arm the backoff gate:
 /// a secondary-limit `403`/`429` (honoring `Retry-After`), a GraphQL
 /// `RATE_LIMITED` error, or an exhausted `x-ratelimit-remaining` header.
-fn observe_rate_limit(status: reqwest::StatusCode, headers: &reqwest::header::HeaderMap, body: &Value) {
+fn observe_rate_limit(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    body: &Value,
+) {
     let header_secs = |name: &str| {
         headers
             .get(name)
@@ -144,7 +148,9 @@ fn observe_rate_limit(status: reqwest::StatusCode, headers: &reqwest::header::He
     // Primary budget exhausted: pause until the reset the header names.
     if header_secs("x-ratelimit-remaining") == Some(0) {
         let dur = header_secs("x-ratelimit-reset")
-            .map(|reset| Duration::from_secs((reset - chrono::Utc::now().timestamp()).max(1) as u64))
+            .map(
+                |reset| Duration::from_secs((reset - chrono::Utc::now().timestamp()).max(1) as u64),
+            )
             .unwrap_or(DEFAULT_BACKOFF);
         set_backoff(dur);
     }
@@ -240,7 +246,12 @@ impl Client {
         self.graphql_inner(query, variables, true).await
     }
 
-    async fn graphql_inner(&self, query: &str, variables: Value, allow_partial: bool) -> Result<Value> {
+    async fn graphql_inner(
+        &self,
+        query: &str,
+        variables: Value,
+        allow_partial: bool,
+    ) -> Result<Value> {
         let resp = self
             .request(reqwest::Method::POST, GRAPHQL_URL.to_string())
             .json(&json!({ "query": query, "variables": variables }))
@@ -357,7 +368,8 @@ mod tests {
     fn graphql_rate_limited_error_arms_backoff() {
         let _guard = test_backoff_lock();
         clear_backoff();
-        let body = json!({ "errors": [{ "type": "RATE_LIMITED", "message": "API rate limit exceeded" }] });
+        let body =
+            json!({ "errors": [{ "type": "RATE_LIMITED", "message": "API rate limit exceeded" }] });
         observe_rate_limit(reqwest::StatusCode::OK, &headers(&[]), &body);
         assert!(is_backing_off(), "GraphQL RATE_LIMITED must pause polling");
         clear_backoff();
@@ -372,7 +384,10 @@ mod tests {
             &headers(&[("x-ratelimit-remaining", "4999")]),
             &json!({ "data": {} }),
         );
-        assert!(!is_backing_off(), "a normal response must not pause polling");
+        assert!(
+            !is_backing_off(),
+            "a normal response must not pause polling"
+        );
     }
 
     #[test]

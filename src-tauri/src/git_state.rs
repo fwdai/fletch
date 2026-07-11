@@ -188,7 +188,11 @@ pub async fn shortstats(checkout_path: &Path) -> ShortStats {
     while let Some(res) = reads.join_next().await {
         additions += res.unwrap_or(0);
     }
-    ShortStats { additions, deletions, file_count }
+    ShortStats {
+        additions,
+        deletions,
+        file_count,
+    }
 }
 
 /// Additions for an untracked file: the line count of its on-disk contents —
@@ -197,17 +201,25 @@ pub async fn shortstats(checkout_path: &Path) -> ShortStats {
 async fn untracked_additions(checkout_path: &Path, rel: &str) -> u32 {
     const MAX_BYTES: u64 = 4 * 1024 * 1024;
     let abs = checkout_path.join(rel);
-    let Ok(meta) = tokio::fs::metadata(&abs).await else { return 0 };
+    let Ok(meta) = tokio::fs::metadata(&abs).await else {
+        return 0;
+    };
     if !meta.is_file() || meta.len() > MAX_BYTES {
         return 0;
     }
-    let Ok(bytes) = tokio::fs::read(&abs).await else { return 0 };
+    let Ok(bytes) = tokio::fs::read(&abs).await else {
+        return 0;
+    };
     if bytes.is_empty() || bytes.contains(&0) {
         return 0;
     }
     let newlines = bytes.iter().filter(|&&b| b == b'\n').count() as u32;
     // A final line without a trailing newline still counts as a line.
-    if bytes.ends_with(b"\n") { newlines } else { newlines + 1 }
+    if bytes.ends_with(b"\n") {
+        newlines
+    } else {
+        newlines + 1
+    }
 }
 
 /// HEAD commit SHA, or `None` when it can't be read.
@@ -310,7 +322,12 @@ async fn query_ahead_behind(checkout_path: &Path, parent_branch: &str) -> (u32, 
 /// doesn't resolve — so the caller can try an alternate ref spelling.
 async fn rev_list_counts(checkout_path: &Path, base: &str) -> Option<(u32, u32)> {
     let out = crate::git_dist::command(checkout_path)
-        .args(["rev-list", "--left-right", "--count", &format!("HEAD...{base}")])
+        .args([
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("HEAD...{base}"),
+        ])
         .output()
         .await
         .ok()?;
@@ -354,8 +371,14 @@ async fn run_numstat(checkout_path: &Path) -> Result<String> {
 
 fn parse_ahead_behind(s: &str) -> (u32, u32) {
     let mut parts = s.splitn(2, '\t');
-    let ahead: u32 = parts.next().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
-    let behind: u32 = parts.next().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+    let ahead: u32 = parts
+        .next()
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(0);
+    let behind: u32 = parts
+        .next()
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(0);
     (ahead, behind)
 }
 
@@ -421,15 +444,42 @@ fn unquote_path(s: &str) -> String {
     while i < inner.len() {
         if inner[i] == b'\\' && i + 1 < inner.len() {
             match inner[i + 1] {
-                b'a' => { out.push(0x07); i += 2; }
-                b'b' => { out.push(0x08); i += 2; }
-                b't' => { out.push(b'\t'); i += 2; }
-                b'n' => { out.push(b'\n'); i += 2; }
-                b'v' => { out.push(0x0b); i += 2; }
-                b'f' => { out.push(0x0c); i += 2; }
-                b'r' => { out.push(b'\r'); i += 2; }
-                b'"' => { out.push(b'"'); i += 2; }
-                b'\\' => { out.push(b'\\'); i += 2; }
+                b'a' => {
+                    out.push(0x07);
+                    i += 2;
+                }
+                b'b' => {
+                    out.push(0x08);
+                    i += 2;
+                }
+                b't' => {
+                    out.push(b'\t');
+                    i += 2;
+                }
+                b'n' => {
+                    out.push(b'\n');
+                    i += 2;
+                }
+                b'v' => {
+                    out.push(0x0b);
+                    i += 2;
+                }
+                b'f' => {
+                    out.push(0x0c);
+                    i += 2;
+                }
+                b'r' => {
+                    out.push(b'\r');
+                    i += 2;
+                }
+                b'"' => {
+                    out.push(b'"');
+                    i += 2;
+                }
+                b'\\' => {
+                    out.push(b'\\');
+                    i += 2;
+                }
                 d @ b'0'..=b'7' => {
                     // Up to three octal digits encode one byte (UTF-8 sequences
                     // arrive as several such escapes).
@@ -444,7 +494,10 @@ fn unquote_path(s: &str) -> String {
                     out.push(val as u8);
                     i = j;
                 }
-                _ => { out.push(inner[i]); i += 1; }
+                _ => {
+                    out.push(inner[i]);
+                    i += 1;
+                }
             }
         } else {
             out.push(inner[i]);
@@ -514,33 +567,54 @@ mod tests {
 
     #[test]
     fn web_url_https() {
-        assert_eq!(github_web_url("https://github.com/octocat/Hello-World"), Some("https://github.com/octocat/Hello-World".into()));
+        assert_eq!(
+            github_web_url("https://github.com/octocat/Hello-World"),
+            Some("https://github.com/octocat/Hello-World".into())
+        );
     }
 
     #[test]
     fn web_url_https_dot_git() {
-        assert_eq!(github_web_url("https://github.com/octocat/Hello-World.git"), Some("https://github.com/octocat/Hello-World".into()));
+        assert_eq!(
+            github_web_url("https://github.com/octocat/Hello-World.git"),
+            Some("https://github.com/octocat/Hello-World".into())
+        );
     }
 
     #[test]
     fn web_url_https_trailing_slash() {
-        assert_eq!(github_web_url("https://github.com/octocat/Hello-World.git/"), Some("https://github.com/octocat/Hello-World".into()));
+        assert_eq!(
+            github_web_url("https://github.com/octocat/Hello-World.git/"),
+            Some("https://github.com/octocat/Hello-World".into())
+        );
     }
 
     #[test]
     fn web_url_ssh_scp_form() {
-        assert_eq!(github_web_url("git@github.com:octocat/Hello-World.git"), Some("https://github.com/octocat/Hello-World".into()));
+        assert_eq!(
+            github_web_url("git@github.com:octocat/Hello-World.git"),
+            Some("https://github.com/octocat/Hello-World".into())
+        );
     }
 
     #[test]
     fn web_url_ssh_scheme_form() {
-        assert_eq!(github_web_url("ssh://git@github.com/octocat/Hello-World.git"), Some("https://github.com/octocat/Hello-World".into()));
+        assert_eq!(
+            github_web_url("ssh://git@github.com/octocat/Hello-World.git"),
+            Some("https://github.com/octocat/Hello-World".into())
+        );
     }
 
     #[test]
     fn web_url_non_github_is_none() {
-        assert_eq!(github_web_url("git@gitlab.com:octocat/Hello-World.git"), None);
-        assert_eq!(github_web_url("https://bitbucket.org/octocat/Hello-World"), None);
+        assert_eq!(
+            github_web_url("git@gitlab.com:octocat/Hello-World.git"),
+            None
+        );
+        assert_eq!(
+            github_web_url("https://bitbucket.org/octocat/Hello-World"),
+            None
+        );
     }
 
     #[test]
@@ -615,7 +689,12 @@ mod tests {
         let clone = td.path().join("clone");
         run(
             td.path(),
-            &["clone", "-q", source.to_str().unwrap(), clone.to_str().unwrap()],
+            &[
+                "clone",
+                "-q",
+                source.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
         );
 
         // Bare `main` fails in the clone; the fallback resolves origin/main.
@@ -774,7 +853,7 @@ mod tests {
         let map = parse_numstat(input);
         assert_eq!(map.get("new_name.rs"), Some(&(5, 2)));
         // Old name should not be present
-        assert!(map.get("old_name.rs => new_name.rs").is_none());
+        assert!(!map.contains_key("old_name.rs => new_name.rs"));
     }
 
     #[test]

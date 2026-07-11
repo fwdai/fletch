@@ -1,8 +1,8 @@
 //! Ruby detector.
 
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector,
-    CONFIDENCE_LOCKFILE, CONFIDENCE_MANIFEST,
+    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    CONFIDENCE_MANIFEST,
 };
 use std::path::Path;
 
@@ -17,7 +17,9 @@ impl RunDetector for RubyDetector {
             CONFIDENCE_MANIFEST
         };
         let gems = gemfile.to_lowercase();
-        let has_gem = |name: &str| gems.contains(&format!("'{name}'")) || gems.contains(&format!("\"{name}\""));
+        let has_gem = |name: &str| {
+            gems.contains(&format!("'{name}'")) || gems.contains(&format!("\"{name}\""))
+        };
         let is_rails = has_gem("rails");
 
         let mut rows = Vec::new();
@@ -47,10 +49,22 @@ impl RunDetector for RubyDetector {
             ));
         }
 
-        rows.push(DetectedRow::new("install", RowGroup::Scripts, "Install", "bundle install", "convention"));
+        rows.push(DetectedRow::new(
+            "install",
+            RowGroup::Scripts,
+            "Install",
+            "bundle install",
+            "convention",
+        ));
 
         if is_rails {
-            rows.push(DetectedRow::new("dev", RowGroup::Scripts, "Run", "bin/rails server", "Rails"));
+            rows.push(DetectedRow::new(
+                "dev",
+                RowGroup::Scripts,
+                "Run",
+                "bin/rails server",
+                "Rails",
+            ));
         }
 
         // test: rspec if present, else rake.
@@ -59,11 +73,23 @@ impl RunDetector for RubyDetector {
         } else {
             "bundle exec rake test"
         };
-        rows.push(DetectedRow::new("test", RowGroup::Scripts, "Test", test_cmd, "convention"));
+        rows.push(DetectedRow::new(
+            "test",
+            RowGroup::Scripts,
+            "Test",
+            test_cmd,
+            "convention",
+        ));
 
         // port (optional): Rails conventional dev port.
         if is_rails {
-            rows.push(DetectedRow::new("port", RowGroup::Server, "Port", "3000", "default (Rails)"));
+            rows.push(DetectedRow::new(
+                "port",
+                RowGroup::Server,
+                "Port",
+                "3000",
+                "default (Rails)",
+            ));
         }
 
         Some(DetectedConfig {

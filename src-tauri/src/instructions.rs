@@ -174,7 +174,10 @@ mod tests {
         assert!(first.ends_with("do the thing"));
 
         // Resumed turn: untouched (the text is already in history).
-        assert_eq!(prepend_to_prompt("do the thing", Some("sess-1"), None), "do the thing");
+        assert_eq!(
+            prepend_to_prompt("do the thing", Some("sess-1"), None),
+            "do the thing"
+        );
     }
 
     #[test]
@@ -201,7 +204,10 @@ mod tests {
 
     #[test]
     fn blank_custom_instructions_are_a_noop() {
-        assert_eq!(append_system_prompt_args(Some("   ")), append_system_prompt_args(None));
+        assert_eq!(
+            append_system_prompt_args(Some("   ")),
+            append_system_prompt_args(None)
+        );
     }
 
     #[test]
