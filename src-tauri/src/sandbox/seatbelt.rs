@@ -527,6 +527,15 @@ fn sbpl_string(s: &str) -> String {
 /// regex-escaped ([`sbpl_regex_escape`]) before interpolation — `sbpl_string`
 /// only escapes for string literals, and a home dir can contain regex
 /// metacharacters (`.`, `+`, `(`, …) that would otherwise change the match.
+///
+/// The pattern is emitted as a *string* argument — `(regex "…")` via
+/// [`sbpl_string`] — never as a raw `#"…"` regex literal: raw literals have no
+/// reliable in-literal quote escaping, so a `"` in the dir path would terminate
+/// the literal early and let the path's remainder parse as profile text
+/// (policy injection via path contents) or fail the profile outright. The
+/// string form composes correctly: `sbpl_string` doubles the regex escapes'
+/// backslashes and escapes any quote, and the Scheme string reader undoes
+/// exactly that before the regex engine sees the pattern.
 fn claude_credentials_rules(config_dir: &Path) -> Vec<String> {
     let resolved = policy::resolve_existing_prefix(config_dir);
     let mut out: Vec<String> = Vec::new();
@@ -539,7 +548,7 @@ fn claude_credentials_rules(config_dir: &Path) -> Vec<String> {
             sbpl_regex_escape(&dir.to_string_lossy()),
             sbpl_regex_escape(policy::CLAUDE_CREDENTIALS_FILE),
         );
-        let line = format!("  (regex #\"{re}\")");
+        let line = format!("  (regex {})", sbpl_string(&re));
         if !out.contains(&line) {
             out.push(line);
         }
@@ -789,15 +798,41 @@ mod tests {
                 island.display()
             );
         }
-        // The credential file gets its anchored regex rule under the custom dir.
-        // The dir portion is regex-escaped (tempdir paths carry `.`), matching
-        // how the profile emits it.
+        // The credential file gets its anchored regex rule under the custom
+        // dir — asserted via the emitter itself; its exact escaping is covered
+        // by `credentials_rules_escape_quotes_via_string_literals`.
+        for rule in claude_credentials_rules(&canonical_cfg) {
+            assert!(
+                profile.contains(rule.trim_start()),
+                "custom config dir should grant the .credentials.json rule {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn credentials_rules_escape_quotes_via_string_literals() {
+        // A `"` in the config-dir path must not terminate the SBPL token: raw
+        // `#"…"` regex literals have no in-literal quote escaping, so a quoted
+        // path would end the literal early and let the path's remainder parse
+        // as profile text (policy injection) or fail the profile. The rule is
+        // therefore emitted as a *string* argument, where `sbpl_string`
+        // escaping applies.
+        let rules = claude_credentials_rules(Path::new("/Users/we\"ird/.claude"));
+        assert_eq!(rules.len(), 1, "raw == resolved for a nonexistent path");
+        let rule = &rules[0];
         assert!(
-            profile.contains(&format!(
-                "(regex #\"^{}/\\.credentials\\.json.*$\")",
-                sbpl_regex_escape(&canonical_cfg.to_string_lossy())
-            )),
-            "custom config dir should grant the .credentials.json regex rule"
+            !rule.contains("#\""),
+            "raw regex literal must not be used: {rule}"
+        );
+        assert!(
+            rule.contains(r#"we\"ird"#),
+            "quote in path must be string-escaped: {rule}"
+        );
+        // The regex escapes ride the string escaping doubled: `\\.` in profile
+        // text reads back as `\.` for the regex engine.
+        assert!(
+            rule.contains(r#"\\.credentials\\.json"#),
+            "regex escapes must be double-escaped in the string form: {rule}"
         );
     }
 
@@ -820,15 +855,13 @@ mod tests {
             );
         }
         // The default credential regex likewise appears exactly once.
-        let creds = format!(
-            "(regex #\"^{}/\\.credentials\\.json.*$\")",
-            sbpl_regex_escape(&default_claude.to_string_lossy())
-        );
-        assert_eq!(
-            profile.matches(&creds).count(),
-            1,
-            "default .credentials.json regex should appear exactly once"
-        );
+        for rule in claude_credentials_rules(&default_claude) {
+            assert_eq!(
+                profile.matches(rule.trim_start()).count(),
+                1,
+                "default .credentials.json rule should appear exactly once: {rule}"
+            );
+        }
     }
 
     #[test]
@@ -857,15 +890,15 @@ mod tests {
                 island.display()
             );
         }
-        // The credential file's anchored regex rule is present (dir portion
-        // regex-escaped to match the emitted form).
-        assert!(
-            profile.contains(&format!(
-                "(regex #\"^{}/\\.credentials\\.json.*$\")",
-                sbpl_regex_escape(&claude.to_string_lossy())
-            )),
-            "agent profile should grant the ~/.claude/.credentials.json regex rule"
-        );
+        // The credential file's anchored regex rule is present — asserted via
+        // the emitter; its exact escaping is covered by
+        // `credentials_rules_escape_quotes_via_string_literals`.
+        for rule in claude_credentials_rules(&claude) {
+            assert!(
+                profile.contains(rule.trim_start()),
+                "agent profile should grant the credentials rule {rule}"
+            );
+        }
 
         // (c) The config-poisoning entries are covered by NO grant. Since (a)
         // holds (no root subpath) and each island is a distinct named subdir,
