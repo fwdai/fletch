@@ -187,7 +187,11 @@ impl Supervisor {
                 setting("port").or(port_default),
             )
         };
-        (install, dev, port_raw.and_then(|s| s.trim().parse::<u16>().ok()))
+        (
+            install,
+            dev,
+            port_raw.and_then(|s| s.trim().parse::<u16>().ok()),
+        )
     }
 
     /// Detect the run configuration for an agent's primary repo,
@@ -290,13 +294,14 @@ fn prepare_run(run_cmd: &str, intended: Option<u16>) -> Result<PreparedRun> {
     let Some(intended) = intended else {
         return Ok(PreparedRun::passthrough(run_cmd.to_string()));
     };
-    let chosen = crate::run_detect::port::find_free_port(intended, PORT_SCAN_CAP).ok_or_else(|| {
-        Error::Other(format!(
-            "No free port available in {}\u{2013}{}",
-            intended,
-            intended.saturating_add(PORT_SCAN_CAP)
-        ))
-    })?;
+    let chosen =
+        crate::run_detect::port::find_free_port(intended, PORT_SCAN_CAP).ok_or_else(|| {
+            Error::Other(format!(
+                "No free port available in {}\u{2013}{}",
+                intended,
+                intended.saturating_add(PORT_SCAN_CAP)
+            ))
+        })?;
 
     let mut cmd = run_cmd.to_string();
     let mut note = None;
@@ -417,16 +422,22 @@ fn spawn_run_phase(
     Ok(())
 }
 
+/// Program, argv, extra env, and the profile tempfile returned by
+/// [`sandboxed_run_command`].
+type SandboxedRunCommand = (
+    PathBuf,
+    Vec<String>,
+    Vec<(String, String)>,
+    tempfile::NamedTempFile,
+);
+
 /// Build the `sandbox-exec`-wrapped invocation for a Run-panel command:
 /// `sandbox-exec -f <profile> <shell> -lic <cmd>`. Returns the program, argv,
 /// and the profile tempfile. `sandbox-exec` reads the profile once, at the
 /// child's `exec`, so the tempfile must survive until then; the caller parks it
 /// on the `RunSession` (via `attach_pty`), which conservatively keeps it for the
 /// process's lifetime.
-fn sandboxed_run_command(
-    cwd: &Path,
-    cmd: &str,
-) -> Result<(PathBuf, Vec<String>, Vec<(String, String)>, tempfile::NamedTempFile)> {
+fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     // Grant the target's git *common dir* so `git worktree add` (and later

@@ -199,7 +199,10 @@ mod tests {
     #[test]
     fn idle_empty_queue_delivers_now() {
         for mode in [InjectionMode::Live, InjectionMode::AtTurnBoundary] {
-            assert_eq!(decide_delivery(false, mode, false, false), Delivery::DeliverNow);
+            assert_eq!(
+                decide_delivery(false, mode, false, false),
+                Delivery::DeliverNow
+            );
         }
     }
 
@@ -207,7 +210,10 @@ mod tests {
     fn idle_with_leftovers_flushes_now() {
         // Leftovers (e.g. after a stop) flush together with the new message.
         for mode in [InjectionMode::Live, InjectionMode::AtTurnBoundary] {
-            assert_eq!(decide_delivery(false, mode, false, true), Delivery::FlushNow);
+            assert_eq!(
+                decide_delivery(false, mode, false, true),
+                Delivery::FlushNow
+            );
         }
     }
 
@@ -275,7 +281,10 @@ mod tests {
         // A failed flush re-queues the coalesced batch; a message queued since
         // must not jump ahead of it.
         let mut q = MessageQueue::new();
-        q.enqueue("a", msg("t-new", "queued after the failed flush", &[], None));
+        q.enqueue(
+            "a",
+            msg("t-new", "queued after the failed flush", &[], None),
+        );
         q.requeue_front("a", msg("t-coalesced", "first\n\nsecond", &[], None));
         let out = q.drain_coalesced("a").unwrap();
         assert_eq!(out.text, "first\n\nsecond\n\nqueued after the failed flush");
@@ -328,7 +337,11 @@ mod tests {
         let out = q.drain_coalesced("a").unwrap();
         assert_eq!(
             out.attachments,
-            vec!["/a.txt".to_string(), "/b.txt".to_string(), "/c.txt".to_string()]
+            vec![
+                "/a.txt".to_string(),
+                "/b.txt".to_string(),
+                "/c.txt".to_string()
+            ]
         );
     }
 

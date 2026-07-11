@@ -8,12 +8,12 @@ use tauri::{AppHandle, State};
 
 use crate::agent::{BinValidation, ProviderProbe, ToolStatus};
 use crate::error::{Error, Result};
-use crate::github::{self as gh, GhRepoSummary, GhStatus, PrState};
 use crate::git;
-use crate::new_project;
 use crate::git_state::{self, FileStatus, GitState, ShortStats, StatusKind};
+use crate::github::{self as gh, GhRepoSummary, GhStatus, PrState};
 use crate::managed_session::ToolUseBehavior;
 use crate::names;
+use crate::new_project;
 use crate::run_session::RunStateSnapshot;
 use crate::supervisor::{SpawnRequest, Supervisor};
 use crate::workspace::{
@@ -92,9 +92,7 @@ pub fn open_in_editor(
 /// PR/merge/rebase bases and ahead/behind use `parent_branch` directly instead,
 /// since those need a live branch name, not a commit.
 fn diff_base(repo: &TrackedRepo) -> Option<String> {
-    repo.base_sha
-        .clone()
-        .or_else(|| repo.parent_branch.clone())
+    repo.base_sha.clone().or_else(|| repo.parent_branch.clone())
 }
 
 #[tauri::command]
@@ -260,12 +258,17 @@ pub async fn publish_agent(
 
 /// Drop the stored GitHub token — the app returns to local-only mode.
 #[tauri::command]
-pub fn github_disconnect(db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>) -> Result<()> {
+pub fn github_disconnect(
+    db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>,
+) -> Result<()> {
     crate::secrets::delete(&db.lock(), gh::TOKEN_SETTING)?;
     gh::set_token(None);
     Ok(())
 }
 
+// Args mirror the frontend `invoke("spawn_agent", ...)` payload one-to-one;
+// they're the IPC wire surface, not collapsible into a struct here.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn spawn_agent(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -388,10 +391,7 @@ pub async fn stop_agent(
 }
 
 #[tauri::command]
-pub async fn discard_agent(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<()> {
+pub async fn discard_agent(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
     let sup = supervisor.inner().clone();
     sup.discard_agent(&agent_id).await
 }
@@ -513,10 +513,7 @@ pub async fn discard_agent_changes(
 
 /// Stash all working-tree changes including untracked files.
 #[tauri::command]
-pub async fn stash_agent(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<()> {
+pub async fn stash_agent(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
     let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     git::stash_push(&checkout).await
 }
@@ -553,10 +550,7 @@ pub async fn delete_branch_agent(
 
 /// Pull latest into the primary repo's checkout.
 #[tauri::command]
-pub async fn pull_agent(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<()> {
+pub async fn pull_agent(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
     let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     git::pull(&checkout).await
 }
@@ -564,10 +558,7 @@ pub async fn pull_agent(
 /// Rebase the agent's branch onto its parent (base) branch. Used by the
 /// clean-state panel action to catch up when the base has advanced.
 #[tauri::command]
-pub async fn rebase_agent(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<()> {
+pub async fn rebase_agent(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
     let (repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
     git::rebase_onto(&checkout, base).await
@@ -596,10 +587,7 @@ pub async fn create_pr(
 
 /// Merge the open PR for the agent's current branch.
 #[tauri::command]
-pub async fn merge_pr(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<()> {
+pub async fn merge_pr(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
     let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     gh::pr_merge(&checkout).await
 }
@@ -681,10 +669,7 @@ pub fn open_agent_shell(
 /// Kill the shell PTY for an agent.
 /// Idempotent: if no shell is running, does nothing.
 #[tauri::command]
-pub fn close_agent_shell(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<()> {
+pub fn close_agent_shell(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
     supervisor.close_agent_shell(&agent_id)
 }
 
@@ -804,8 +789,12 @@ pub async fn get_all_shortstats(
         if agent.archive.is_some() {
             continue;
         }
-        let Some(repo) = agent.repos.first() else { continue };
-        let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else { continue };
+        let Some(repo) = agent.repos.first() else {
+            continue;
+        };
+        let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
+            continue;
+        };
         let agent_id = agent.id.clone();
         set.spawn(async move { (agent_id, git_state::shortstats(&checkout).await) });
     }
@@ -854,7 +843,8 @@ pub async fn refresh_all_pr_states(
     // confirmed right away.
     let tick = PR_STATE_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let reverify_closed = tick % CLOSED_REVERIFY_EVERY == 0;
-    let states = crate::supervisor::resolve_all_pr_states(&supervisor.workspace, reverify_closed).await;
+    let states =
+        crate::supervisor::resolve_all_pr_states(&supervisor.workspace, reverify_closed).await;
     // Only present states land in the map — an omitted agent keeps its
     // last-known badge on the frontend merge (never wiped to null).
     Ok(states.into_iter().map(|(id, pr)| (id, Some(pr))).collect())
@@ -897,17 +887,25 @@ pub async fn refresh_all_pr_checks(
         if agent.archive.is_some() {
             continue;
         }
-        let Some(repo) = agent.repos.first() else { continue };
+        let Some(repo) = agent.repos.first() else {
+            continue;
+        };
         let (Some(_branch), Some(number)) = (repo.branch.as_ref(), repo.pr_number) else {
             continue;
         };
-        let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else { continue };
+        let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
+            continue;
+        };
         let Some((owner, repo_name)) = gh::resolve_slug(&checkout, Some(&repo.repo_path)).await
         else {
             continue;
         };
         agent_ids.push(agent.id.clone());
-        refs.push(gh::PrRef { owner, repo: repo_name, number: number as u32 });
+        refs.push(gh::PrRef {
+            owner,
+            repo: repo_name,
+            number: number as u32,
+        });
     }
 
     let mut out = std::collections::HashMap::new();
@@ -1085,8 +1083,11 @@ pub async fn list_checkout_tree(
         state.as_ref()?.files.iter().find(|f| f.path == path)
     };
 
-    let mut paths: BTreeSet<String> =
-        git::list_files(&checkout).await.unwrap_or_default().into_iter().collect();
+    let mut paths: BTreeSet<String> = git::list_files(&checkout)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     if let Some(s) = &state {
         for f in &s.files {
             // A deleted file is gone from disk, so a file tree shouldn't show
@@ -1189,7 +1190,9 @@ pub async fn read_checkout_file(
     // Deleted by the agent: the file is gone from disk, so show its prior
     // contents from the parent ref (the design lets you re-create it).
     if status.as_deref() == Some("D") {
-        let text = git::show_file(&checkout, &parent, &path).await.unwrap_or_default();
+        let text = git::show_file(&checkout, &parent, &path)
+            .await
+            .unwrap_or_default();
         return Ok(empty(text, false, false));
     }
 

@@ -38,7 +38,12 @@ pub struct DiscoveredModel {
 
 impl DiscoveredModel {
     fn id(id: impl Into<String>) -> Self {
-        DiscoveredModel { id: id.into(), name: None, context_window: None, reasoning: None }
+        DiscoveredModel {
+            id: id.into(),
+            name: None,
+            context_window: None,
+            reasoning: None,
+        }
     }
 }
 
@@ -60,7 +65,9 @@ pub async fn discover_supported_models() -> Vec<AgentModels> {
     let mut handles = Vec::new();
     for agent in ["codex", "pi", "cursor", "opencode", "claude", "antigravity"] {
         let home = home.clone();
-        handles.push(tokio::spawn(async move { discover_one(agent, &home).await }));
+        handles.push(tokio::spawn(
+            async move { discover_one(agent, &home).await },
+        ));
     }
     let mut out = Vec::new();
     for h in handles {
@@ -79,9 +86,27 @@ const CLI_TIMEOUT: Duration = Duration::from_secs(15);
 async fn discover_one(agent: &str, home: &Path) -> AgentModels {
     let (provider_hint, models) = match agent {
         "codex" => (None, discover_codex(home)),
-        "pi" => (None, run_cli("pi", &["--list-models"], home).await.map(|t| parse_pi_table(&t)).unwrap_or_default()),
-        "cursor" => (None, run_cli("cursor-agent", &["models"], home).await.map(|t| parse_cursor_models(&t)).unwrap_or_default()),
-        "opencode" => (None, run_cli("opencode", &["models"], home).await.map(|t| parse_opencode_models(&t)).unwrap_or_default()),
+        "pi" => (
+            None,
+            run_cli("pi", &["--list-models"], home)
+                .await
+                .map(|t| parse_pi_table(&t))
+                .unwrap_or_default(),
+        ),
+        "cursor" => (
+            None,
+            run_cli("cursor-agent", &["models"], home)
+                .await
+                .map(|t| parse_cursor_models(&t))
+                .unwrap_or_default(),
+        ),
+        "opencode" => (
+            None,
+            run_cli("opencode", &["models"], home)
+                .await
+                .map(|t| parse_opencode_models(&t))
+                .unwrap_or_default(),
+        ),
         "claude" => (Some("anthropic".to_string()), Vec::new()),
         // agy's `--print` runner ignores model selection entirely (the `--model`
         // flag and its persisted setting are both inert in print mode), and its
@@ -91,7 +116,11 @@ async fn discover_one(agent: &str, home: &Path) -> AgentModels {
         "antigravity" => (None, Vec::new()),
         _ => (None, Vec::new()),
     };
-    AgentModels { agent: agent.to_string(), provider_hint, models }
+    AgentModels {
+        agent: agent.to_string(),
+        provider_hint,
+        models,
+    }
 }
 
 /// Resolve `bin` and capture its stdout, bounded by `CLI_TIMEOUT`. None on
@@ -160,13 +189,21 @@ fn parse_codex_cache(root: &Value) -> Vec<DiscoveredModel> {
         .filter(|m| m.get("visibility").and_then(|v| v.as_str()) != Some("hide"))
         .filter_map(|m| {
             let id = m.get("slug").and_then(|v| v.as_str())?.to_string();
-            let name = m.get("display_name").and_then(|v| v.as_str()).map(str::to_string);
+            let name = m
+                .get("display_name")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             let context_window = m.get("context_window").and_then(|v| v.as_u64());
             let reasoning = m
                 .get("supported_reasoning_levels")
                 .and_then(|v| v.as_array())
                 .map(|a| !a.is_empty());
-            Some(DiscoveredModel { id, name, context_window, reasoning })
+            Some(DiscoveredModel {
+                id,
+                name,
+                context_window,
+                reasoning,
+            })
         })
         .collect()
 }
@@ -272,7 +309,10 @@ mod tests {
 
     #[test]
     fn uses_stderr_when_successful_cli_has_empty_stdout() {
-        let text = cli_output_text(b"", b"provider model context\nanthropic claude-opus-4-8 1M\n");
+        let text = cli_output_text(
+            b"",
+            b"provider model context\nanthropic claude-opus-4-8 1M\n",
+        );
         assert!(text.contains("claude-opus-4-8"));
 
         let text = cli_output_text(b"stdout wins", b"stderr fallback");

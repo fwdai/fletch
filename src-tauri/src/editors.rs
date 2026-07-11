@@ -39,7 +39,13 @@ const fn editor(
     clis: &'static [&'static str],
     mac_app: &'static str,
 ) -> KnownEditor {
-    KnownEditor { id, label, kind: Kind::Editor, clis, mac_app: Some(mac_app) }
+    KnownEditor {
+        id,
+        label,
+        kind: Kind::Editor,
+        clis,
+        mac_app: Some(mac_app),
+    }
 }
 
 const fn terminal(
@@ -48,7 +54,13 @@ const fn terminal(
     clis: &'static [&'static str],
     mac_app: &'static str,
 ) -> KnownEditor {
-    KnownEditor { id, label, kind: Kind::Terminal, clis, mac_app: Some(mac_app) }
+    KnownEditor {
+        id,
+        label,
+        kind: Kind::Terminal,
+        clis,
+        mac_app: Some(mac_app),
+    }
 }
 
 /// The tools we know how to detect + open, in picker order (editors first,
@@ -57,7 +69,12 @@ const KNOWN: &[KnownEditor] = &[
     // ── editors ──
     editor("cursor", "Cursor", &["cursor"], "Cursor"),
     editor("vscode", "VS Code", &["code"], "Visual Studio Code"),
-    editor("vscode-insiders", "VS Code Insiders", &["code-insiders"], "Visual Studio Code - Insiders"),
+    editor(
+        "vscode-insiders",
+        "VS Code Insiders",
+        &["code-insiders"],
+        "Visual Studio Code - Insiders",
+    ),
     editor("vscodium", "VSCodium", &["codium"], "VSCodium"),
     editor("windsurf", "Windsurf", &["windsurf"], "Windsurf"),
     editor("zed", "Zed", &["zed"], "Zed"),
@@ -76,7 +93,12 @@ const KNOWN: &[KnownEditor] = &[
     editor("rubymine", "RubyMine", &["rubymine"], "RubyMine"),
     editor("clion", "CLion", &["clion"], "CLion"),
     editor("rider", "Rider", &["rider"], "Rider"),
-    editor("androidstudio", "Android Studio", &["studio"], "Android Studio"),
+    editor(
+        "androidstudio",
+        "Android Studio",
+        &["studio"],
+        "Android Studio",
+    ),
     // ── terminals ── (all open a checkout folder via `open -a`)
     terminal("terminal", "Terminal", &[], "Terminal"),
     terminal("iterm", "iTerm", &[], "iTerm"),
@@ -105,14 +127,22 @@ pub fn detect() -> Vec<DetectedEditor> {
         .map(DetectedEditor::from)
         .collect();
     if cfg!(target_os = "macos") && !found.iter().any(|e| e.id == TERMINAL_ID) {
-        found.push(DetectedEditor { id: TERMINAL_ID.into(), label: "Terminal".into(), kind: Kind::Terminal });
+        found.push(DetectedEditor {
+            id: TERMINAL_ID.into(),
+            label: "Terminal".into(),
+            kind: Kind::Terminal,
+        });
     }
     found
 }
 
 impl From<&KnownEditor> for DetectedEditor {
     fn from(ed: &KnownEditor) -> Self {
-        DetectedEditor { id: ed.id.into(), label: ed.label.into(), kind: ed.kind }
+        DetectedEditor {
+            id: ed.id.into(),
+            label: ed.label.into(),
+            kind: ed.kind,
+        }
     }
 }
 
@@ -161,7 +191,11 @@ pub fn open(editor_id: &str, checkout: &Path) -> Result<()> {
 /// Whether a tool is installed: its CLI resolves on PATH, or (macOS) its `.app`
 /// sits in one of the standard Applications folders.
 fn is_available(ed: &KnownEditor, home: Option<&Path>) -> bool {
-    let cli = home.is_some_and(|h| ed.clis.iter().any(|c| bin_resolve::resolve_bin(c, h).is_some()));
+    let cli = home.is_some_and(|h| {
+        ed.clis
+            .iter()
+            .any(|c| bin_resolve::resolve_bin(c, h).is_some())
+    });
     cli || mac_app_installed(ed, home)
 }
 
@@ -202,7 +236,10 @@ mod tests {
     #[test]
     fn open_rejects_unknown_editor() {
         let err = open("definitely-not-an-editor", Path::new("/tmp")).unwrap_err();
-        assert!(matches!(err, Error::Other(_)), "unknown editor id must be an error");
+        assert!(
+            matches!(err, Error::Other(_)),
+            "unknown editor id must be an error"
+        );
     }
 
     #[test]

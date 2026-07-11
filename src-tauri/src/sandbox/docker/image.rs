@@ -584,7 +584,11 @@ fn refresh_in_background_if_needed(
         container = %container.as_deref().unwrap_or_default(),
         "host CLI version differs from container image; rebuilding in the background",
     );
-    spawn_refresh_rebuild(provider, tag.to_string(), RefreshReason::VersionMismatch { guard_pair });
+    spawn_refresh_rebuild(
+        provider,
+        tag.to_string(),
+        RefreshReason::VersionMismatch { guard_pair },
+    );
 }
 
 /// Pure core of the version-mismatch trigger: refresh only when both sides
@@ -678,7 +682,10 @@ fn image_cli_version(provider: DockerProvider, tag: &str, image_id: &str) -> Opt
         return Some(v.clone());
     }
     let version = probe_image_cli_version(provider, tag)?;
-    cache.lock().unwrap().insert(image_id.to_string(), version.clone());
+    cache
+        .lock()
+        .unwrap()
+        .insert(image_id.to_string(), version.clone());
     Some(version)
 }
 
@@ -692,7 +699,15 @@ fn image_cli_version(provider: DockerProvider, tag: &str, image_id: &str) -> Opt
 fn probe_image_cli_version(provider: DockerProvider, tag: &str) -> Option<String> {
     let pid_label = super::cleanup::host_pid_label();
     let out = cli::run_docker(
-        &["run", "--rm", "--label", &pid_label, tag, provider.image_bin(), "--version"],
+        &[
+            "run",
+            "--rm",
+            "--label",
+            &pid_label,
+            tag,
+            provider.image_bin(),
+            "--version",
+        ],
         VERSION_PROBE_TIMEOUT,
     )
     .ok()?;
@@ -717,9 +732,7 @@ fn cache_image_version_post_build(provider: DockerProvider, tag: &str) {
         &["image", "inspect", "--format", "{{.Id}}", tag],
         INSPECT_TIMEOUT,
     ) {
-        Ok(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        }
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         Ok(_) | Err(_) => return,
     };
     match image_cli_version(provider, tag, &image_id) {
@@ -765,8 +778,14 @@ mod tests {
         // The repo is a prefix, not part of the hash: a different repo with the
         // same content shares the tail (so a repo rename can't force a rebuild).
         assert_eq!(
-            tag_for("fletch-agent", "FROM a\n", "#!/bin/sh\n").split_once(':').unwrap().1,
-            tag_for("other", "FROM a\n", "#!/bin/sh\n").split_once(':').unwrap().1,
+            tag_for("fletch-agent", "FROM a\n", "#!/bin/sh\n")
+                .split_once(':')
+                .unwrap()
+                .1,
+            tag_for("other", "FROM a\n", "#!/bin/sh\n")
+                .split_once(':')
+                .unwrap()
+                .1,
         );
     }
 
@@ -787,7 +806,10 @@ mod tests {
         const FROZEN_DOCKERFILE: &str = "FROM node:22-slim\nRUN apt-get update && apt-get install -y --no-install-recommends \\\n    git curl ca-certificates ripgrep jq procps \\\n && rm -rf /var/lib/apt/lists/*\nLABEL fletch.agent=claude\nRUN npm install -g @anthropic-ai/claude-code\nCOPY entrypoint.sh /entrypoint.sh\nRUN chmod +x /entrypoint.sh\nENTRYPOINT [\"/entrypoint.sh\"]\n";
         const FROZEN_ENTRYPOINT: &str = "#!/bin/sh\nset -e\nmkdir -p \"$HOME\"\nif [ ! -f \"$HOME/.claude.json\" ]; then\n  printf '{\"hasCompletedOnboarding\": true}\\n' > \"$HOME/.claude.json\"\nfi\nexec \"$@\"\n";
         assert_eq!(DOCKERFILE, FROZEN_DOCKERFILE, "claude Dockerfile changed");
-        assert_eq!(ENTRYPOINT_SH, FROZEN_ENTRYPOINT, "claude entrypoint changed");
+        assert_eq!(
+            ENTRYPOINT_SH, FROZEN_ENTRYPOINT,
+            "claude entrypoint changed"
+        );
         assert!(image_tag(DockerProvider::Claude).starts_with("fletch-agent:"));
     }
 
@@ -838,14 +860,26 @@ mod tests {
         let base = base_layers(DOCKERFILE);
 
         for (provider, prefix, pkg) in [
-            (DockerProvider::Opencode, "fletch-agent-opencode:", "opencode-ai"),
-            (DockerProvider::Pi, "fletch-agent-pi:", "@earendil-works/pi-coding-agent"),
+            (
+                DockerProvider::Opencode,
+                "fletch-agent-opencode:",
+                "opencode-ai",
+            ),
+            (
+                DockerProvider::Pi,
+                "fletch-agent-pi:",
+                "@earendil-works/pi-coding-agent",
+            ),
         ] {
             let tag = image_tag(provider);
             assert!(tag.starts_with(prefix), "{tag}");
             assert_ne!(tag, claude);
             let dockerfile = image_spec(provider).dockerfile;
-            assert_eq!(base_layers(dockerfile), base, "base layers must match for cache reuse");
+            assert_eq!(
+                base_layers(dockerfile),
+                base,
+                "base layers must match for cache reuse"
+            );
             assert!(dockerfile.contains(pkg), "{provider:?} must install {pkg}");
             // No cross-contamination with the other providers' install steps.
             assert!(!dockerfile.contains("claude-code"));
@@ -853,7 +887,10 @@ mod tests {
         }
 
         // The two new tags are distinct from each other, too.
-        assert_ne!(image_tag(DockerProvider::Opencode), image_tag(DockerProvider::Pi));
+        assert_ne!(
+            image_tag(DockerProvider::Opencode),
+            image_tag(DockerProvider::Pi)
+        );
     }
 
     /// Cursor gets its own repo + distinct tag and shares claude's base layers
@@ -870,7 +907,11 @@ mod tests {
             DockerProvider::Opencode,
             DockerProvider::Pi,
         ] {
-            assert_ne!(cursor, image_tag(other), "cursor tag collides with {other:?}");
+            assert_ne!(
+                cursor,
+                image_tag(other),
+                "cursor tag collides with {other:?}"
+            );
         }
         // Base (FROM + apt) byte-identical despite the curl-installer install step.
         assert_eq!(
@@ -894,11 +935,24 @@ mod tests {
         // install layer may defeat the freshness the rebuilds exist for.
         assert_eq!(
             build_args("fletch-agent:abc123def456", Path::new("/tmp/ctx"), false),
-            vec!["build", "--pull", "-t", "fletch-agent:abc123def456", "/tmp/ctx"],
+            vec![
+                "build",
+                "--pull",
+                "-t",
+                "fletch-agent:abc123def456",
+                "/tmp/ctx"
+            ],
         );
         assert_eq!(
             build_args("fletch-agent:abc123def456", Path::new("/tmp/ctx"), true),
-            vec!["build", "--pull", "--no-cache", "-t", "fletch-agent:abc123def456", "/tmp/ctx"],
+            vec![
+                "build",
+                "--pull",
+                "--no-cache",
+                "-t",
+                "fletch-agent:abc123def456",
+                "/tmp/ctx"
+            ],
         );
     }
 
@@ -912,7 +966,9 @@ mod tests {
             let value = dockerfile
                 .lines()
                 .find_map(|l| l.strip_prefix(&format!("LABEL {AGENT_IMAGE_LABEL}=")))
-                .unwrap_or_else(|| panic!("{provider:?} Dockerfile is missing the fletch.agent label"));
+                .unwrap_or_else(|| {
+                    panic!("{provider:?} Dockerfile is missing the fletch.agent label")
+                });
             assert_eq!(
                 DockerProvider::from_id(value.trim()),
                 Some(provider),
@@ -931,18 +987,34 @@ mod tests {
     #[test]
     fn version_refresh_decision() {
         // Mismatch → refresh.
-        assert!(version_refresh_wanted(Some("v2.0.1"), Some("v2.0.0"), false));
+        assert!(version_refresh_wanted(
+            Some("v2.0.1"),
+            Some("v2.0.0"),
+            false
+        ));
         // Direction doesn't matter (no ordering): host older also fires once.
-        assert!(version_refresh_wanted(Some("v1.0.0"), Some("v2.0.0"), false));
+        assert!(version_refresh_wanted(
+            Some("v1.0.0"),
+            Some("v2.0.0"),
+            false
+        ));
         // Match → fresh.
-        assert!(!version_refresh_wanted(Some("v2.0.0"), Some("v2.0.0"), false));
+        assert!(!version_refresh_wanted(
+            Some("v2.0.0"),
+            Some("v2.0.0"),
+            false
+        ));
         // No host CLI (not installed / probe failed) → inert.
         assert!(!version_refresh_wanted(None, Some("v2.0.0"), false));
         // Container version unknown (post-build probe failed) → inert.
         assert!(!version_refresh_wanted(Some("v2.0.0"), None, false));
         assert!(!version_refresh_wanted(None, None, false));
         // Already-attempted pairing → inert (pinned host must not loop).
-        assert!(!version_refresh_wanted(Some("v2.0.1"), Some("v2.0.0"), true));
+        assert!(!version_refresh_wanted(
+            Some("v2.0.1"),
+            Some("v2.0.0"),
+            true
+        ));
     }
 
     /// The TTL decision's pure core, with fixed instants: inside the window →
@@ -1022,10 +1094,7 @@ mod tests {
     fn blank_override_falls_through_to_embedded_tag() {
         // Blank means "not set" — but asserting the full resolve would hit
         // docker; assert only the pure decision by checking the tag source.
-        assert!(Some("   ")
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .is_none());
+        assert!(Some(str::trim("   ")).filter(|s| !s.is_empty()).is_none());
         assert!(image_tag(DockerProvider::Claude).starts_with("fletch-agent:"));
     }
 

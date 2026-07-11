@@ -214,7 +214,10 @@ async fn require_repo_ref(checkout: &Path) -> Result<(String, String)> {
 /// repo when the checkout is broken or gone (they share an origin). `None` when
 /// neither resolves to a github.com remote. Shared by the by-number lookups
 /// (single and batched) that must survive a checkout casualty.
-pub(crate) async fn resolve_slug(checkout: &Path, source: Option<&Path>) -> Option<(String, String)> {
+pub(crate) async fn resolve_slug(
+    checkout: &Path,
+    source: Option<&Path>,
+) -> Option<(String, String)> {
     match repo_ref(checkout).await {
         Some(slug) => Some(slug),
         None => match source {
@@ -434,7 +437,10 @@ const PR_CHECKS_FIELDS: &str = r#"mergeStateStatus
 
 /// Extract [`PrChecks`] from a PR node carrying [`PR_CHECKS_FIELDS`].
 fn pr_checks_from_node(pr: &Value) -> PrChecks {
-    let merge_state = pr["mergeStateStatus"].as_str().unwrap_or("UNKNOWN").to_string();
+    let merge_state = pr["mergeStateStatus"]
+        .as_str()
+        .unwrap_or("UNKNOWN")
+        .to_string();
     let rollup = pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
         .as_array()
         .cloned()
@@ -542,7 +548,10 @@ fn parse_pr_checks(merge_state_status: &str, rollup: &[Value]) -> PrChecks {
     // Computed directly, not by subtraction: the API can report a failure
     // conclusion on a not-yet-completed run (e.g. cancelled mid-run), which
     // would double-count into both `pending` and `failed` and underflow.
-    let passed = runs.iter().filter(|r| r.status == "completed" && !is_failing(r)).count() as u32;
+    let passed = runs
+        .iter()
+        .filter(|r| r.status == "completed" && !is_failing(r))
+        .count() as u32;
     let rollup_summary = if total == 0 {
         "none"
     } else if failed > 0 {
@@ -552,7 +561,11 @@ fn parse_pr_checks(merge_state_status: &str, rollup: &[Value]) -> PrChecks {
     } else {
         "passing"
     };
-    let required_failing = runs.iter().filter(|r| is_failing(r)).map(|r| r.name.clone()).collect();
+    let required_failing = runs
+        .iter()
+        .filter(|r| is_failing(r))
+        .map(|r| r.name.clone())
+        .collect();
 
     PrChecks {
         merge_state,
@@ -711,7 +724,10 @@ pub async fn pr_comments(checkout: &Path) -> Result<Option<PrComments>> {
     let Some(pr) = pick_branch_pr(&nodes) else {
         return Ok(None);
     };
-    let threads = pr["reviewThreads"]["nodes"].as_array().cloned().unwrap_or_default();
+    let threads = pr["reviewThreads"]["nodes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     Ok(Some(PrComments {
         unresolved: parse_review_threads(&threads),
     }))
@@ -731,10 +747,16 @@ fn parse_review_threads(nodes: &[Value]) -> Vec<PrComment> {
             let root = comments["nodes"].get(0)?;
             let total = comments["totalCount"].as_u64().unwrap_or(1);
             Some(PrComment {
-                author: root["author"]["login"].as_str().unwrap_or("unknown").to_string(),
+                author: root["author"]["login"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string(),
                 is_bot: root["author"]["__typename"].as_str() == Some("Bot"),
                 body: root["body"].as_str().unwrap_or_default().to_string(),
-                path: root["path"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()),
+                path: root["path"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string()),
                 line: root["line"].as_u64().map(|n| n as u32),
                 url: root["url"].as_str().unwrap_or_default().to_string(),
                 replies: total.saturating_sub(1) as u32,
@@ -804,11 +826,11 @@ pub async fn pr_create(checkout: &Path, title: &str, body: &str, base: &str) -> 
 fn detailed_rest_error(body: &Value) -> String {
     let mut parts = vec![client::rest_error_message(body)];
     if let Some(errors) = body.get("errors").and_then(Value::as_array) {
-        parts.extend(errors.iter().filter_map(|e| {
-            e.get("message")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        }));
+        parts.extend(
+            errors
+                .iter()
+                .filter_map(|e| e.get("message").and_then(Value::as_str).map(str::to_string)),
+        );
     }
     parts.retain(|p| !p.is_empty());
     parts.join("; ")
@@ -824,7 +846,10 @@ pub async fn pr_merge(checkout: &Path) -> Result<()> {
     let client = client::Client::new()?;
     let query = branch_prs_query("id");
     let data = client
-        .graphql(&query, json!({ "owner": owner, "repo": repo, "branch": branch }))
+        .graphql(
+            &query,
+            json!({ "owner": owner, "repo": repo, "branch": branch }),
+        )
         .await?;
     let nodes = branch_pr_nodes(&data);
     let id = pick_branch_pr(&nodes)
@@ -867,14 +892,26 @@ pub async fn pr_merge(checkout: &Path) -> Result<()> {
 /// network failure all report as not-authenticated fields, not failures.
 pub async fn auth_status() -> Result<GhStatus> {
     let Ok(client) = client::Client::new() else {
-        return Ok(GhStatus { installed: true, authenticated: false, login: None });
+        return Ok(GhStatus {
+            installed: true,
+            authenticated: false,
+            login: None,
+        });
     };
     match client.graphql("query{viewer{login}}", json!({})).await {
         Ok(data) => {
             let login = data["viewer"]["login"].as_str().map(str::to_string);
-            Ok(GhStatus { installed: true, authenticated: login.is_some(), login })
+            Ok(GhStatus {
+                installed: true,
+                authenticated: login.is_some(),
+                login,
+            })
         }
-        Err(_) => Ok(GhStatus { installed: true, authenticated: false, login: None }),
+        Err(_) => Ok(GhStatus {
+            installed: true,
+            authenticated: false,
+            login: None,
+        }),
     }
 }
 
@@ -979,8 +1016,12 @@ pub async fn repo_create_and_push(
         .as_str()
         .ok_or_else(|| Error::Gh("repo created but response had no full_name".into()))?;
 
-    crate::git::remote_add(target, "origin", &format!("https://github.com/{full_name}.git"))
-        .await?;
+    crate::git::remote_add(
+        target,
+        "origin",
+        &format!("https://github.com/{full_name}.git"),
+    )
+    .await?;
     let branch = require_current_branch(target, "publish").await?;
     crate::git::push(target, &branch).await?;
     Ok(format!("https://github.com/{full_name}"))
@@ -1041,21 +1082,41 @@ mod tests {
         let picked = pick_branch_pr(&nodes).unwrap();
         assert_eq!(picked["number"].as_u64(), Some(7));
 
-        let no_open = vec![pr_node("MERGED", 9, "UNKNOWN"), pr_node("CLOSED", 5, "UNKNOWN")];
-        assert_eq!(pick_branch_pr(&no_open).unwrap()["number"].as_u64(), Some(9));
+        let no_open = vec![
+            pr_node("MERGED", 9, "UNKNOWN"),
+            pr_node("CLOSED", 5, "UNKNOWN"),
+        ];
+        assert_eq!(
+            pick_branch_pr(&no_open).unwrap()["number"].as_u64(),
+            Some(9)
+        );
         assert!(pick_branch_pr(&[]).is_none());
     }
 
     #[test]
     fn batch_query_builds_aliases_and_variables() {
         let refs = vec![
-            PrRef { owner: "acme".into(), repo: "web".into(), number: 7 },
-            PrRef { owner: "acme".into(), repo: "api".into(), number: 12 },
+            PrRef {
+                owner: "acme".into(),
+                repo: "web".into(),
+                number: 7,
+            },
+            PrRef {
+                owner: "acme".into(),
+                repo: "api".into(),
+                number: 12,
+            },
         ];
         let (query, vars) = build_batch_query(&refs, "state number");
         // One aliased repository/pullRequest per ref, values via variables.
-        assert!(query.contains("a0:repository(owner:$o0,name:$r0)"), "{query}");
-        assert!(query.contains("a1:repository(owner:$o1,name:$r1)"), "{query}");
+        assert!(
+            query.contains("a0:repository(owner:$o0,name:$r0)"),
+            "{query}"
+        );
+        assert!(
+            query.contains("a1:repository(owner:$o1,name:$r1)"),
+            "{query}"
+        );
         assert!(query.contains("pullRequest(number:$n1)"), "{query}");
         // The budget probe rides along on every batch.
         assert!(query.contains("rateLimit"), "{query}");
@@ -1067,14 +1128,19 @@ mod tests {
     #[test]
     fn detects_already_exists_failure() {
         // GitHub's real 422 message for a duplicate PR.
-        assert!(pr_already_exists("A pull request already exists for fwdai:feat."));
+        assert!(pr_already_exists(
+            "A pull request already exists for fwdai:feat."
+        ));
         // An unrelated failure must not be mistaken for it.
         assert!(!pr_already_exists("Validation Failed"));
     }
 
     #[test]
     fn clone_url_forms() {
-        assert_eq!(clone_url("fwdai/fletch"), "https://github.com/fwdai/fletch.git");
+        assert_eq!(
+            clone_url("fwdai/fletch"),
+            "https://github.com/fwdai/fletch.git"
+        );
         assert_eq!(
             clone_url("https://github.com/fwdai/fletch.git"),
             "https://github.com/fwdai/fletch.git",
@@ -1206,7 +1272,9 @@ mod tests {
         let comments = parse_review_threads(&review_threads_fixture());
         // Resolved + outdated dropped; 3 remain (greptile, alice, dave).
         assert_eq!(comments.len(), 3);
-        assert!(comments.iter().all(|c| c.author != "bob" && c.author != "carol"));
+        assert!(comments
+            .iter()
+            .all(|c| c.author != "bob" && c.author != "carol"));
     }
 
     #[test]
@@ -1248,7 +1316,11 @@ mod tests {
             std::env::var("FLETCH_GITHUB_TOKEN").expect("set FLETCH_GITHUB_TOKEN to a token");
         client::set_token(Some(token));
         // cargo test runs in src-tauri; the repo root is one up.
-        let repo = std::env::current_dir().unwrap().parent().unwrap().to_path_buf();
+        let repo = std::env::current_dir()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
 
         let status = auth_status().await.unwrap();
         assert!(status.authenticated, "token must authenticate");
@@ -1264,7 +1336,10 @@ mod tests {
         if let Some(pr) = pr_view(&repo).await.unwrap() {
             assert!(pr.number > 0);
             assert!(pr.url.starts_with("https://github.com/"));
-            let by_number = pr_view_number(&repo, None, pr.number).await.unwrap().unwrap();
+            let by_number = pr_view_number(&repo, None, pr.number)
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(by_number.number, pr.number);
             let checks = pr_checks(&repo).await.unwrap();
             assert!(checks.is_some(), "checks must resolve for an existing PR");
@@ -1272,7 +1347,10 @@ mod tests {
         }
 
         // A PR number that can't exist maps to None, not an error.
-        assert!(pr_view_number(&repo, None, 999_999_999).await.unwrap().is_none());
+        assert!(pr_view_number(&repo, None, 999_999_999)
+            .await
+            .unwrap()
+            .is_none());
 
         let prs = pr_list(&repo, 5).await.unwrap();
         assert!(prs.len() <= 5);

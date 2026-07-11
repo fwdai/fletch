@@ -1,8 +1,8 @@
 //! Go detector.
 
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector,
-    CONFIDENCE_LOCKFILE, CONFIDENCE_MANIFEST,
+    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    CONFIDENCE_MANIFEST,
 };
 use std::path::Path;
 
@@ -35,10 +35,34 @@ impl RunDetector for GoDetector {
             ));
         }
 
-        rows.push(DetectedRow::new("install", RowGroup::Scripts, "Install", "go mod download", "convention"));
-        rows.push(DetectedRow::new("dev", RowGroup::Scripts, "Run", "go run .", "convention"));
-        rows.push(DetectedRow::new("build", RowGroup::Scripts, "Build", "go build ./...", "convention"));
-        rows.push(DetectedRow::new("test", RowGroup::Scripts, "Test", "go test ./...", "convention"));
+        rows.push(DetectedRow::new(
+            "install",
+            RowGroup::Scripts,
+            "Install",
+            "go mod download",
+            "convention",
+        ));
+        rows.push(DetectedRow::new(
+            "dev",
+            RowGroup::Scripts,
+            "Run",
+            "go run .",
+            "convention",
+        ));
+        rows.push(DetectedRow::new(
+            "build",
+            RowGroup::Scripts,
+            "Build",
+            "go build ./...",
+            "convention",
+        ));
+        rows.push(DetectedRow::new(
+            "test",
+            RowGroup::Scripts,
+            "Test",
+            "go test ./...",
+            "convention",
+        ));
 
         Some(DetectedConfig {
             ecosystem: "go".to_string(),

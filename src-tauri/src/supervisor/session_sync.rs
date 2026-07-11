@@ -150,8 +150,7 @@ pub(crate) async fn resolve_pr_state(
         if repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str()) {
             return pr_snapshot(repo).map(|pr| (pr, true));
         }
-        match crate::github::pr_view_number(&checkout, Some(&repo.repo_path), number as u32).await
-        {
+        match crate::github::pr_view_number(&checkout, Some(&repo.repo_path), number as u32).await {
             Ok(Some(pr)) => {
                 persist_pr_snapshot(workspace, agent_id, &repo.subdir, &pr);
                 Some((pr, true))
@@ -214,12 +213,16 @@ pub(crate) async fn resolve_all_pr_states(
         if agent.archive.is_some() {
             continue;
         }
-        let Some(repo) = agent.repos.first() else { continue };
+        let Some(repo) = agent.repos.first() else {
+            continue;
+        };
         // No branch → nothing pushed; no number → discovery isn't this poll's job.
         if repo.branch.is_none() {
             continue;
         }
-        let Some(number) = repo.pr_number else { continue };
+        let Some(number) = repo.pr_number else {
+            continue;
+        };
         let snapshot = pr_snapshot(repo);
 
         let terminal = repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str());
@@ -245,7 +248,11 @@ pub(crate) async fn resolve_all_pr_states(
                 agent_id: agent.id.clone(),
                 subdir: repo.subdir.clone(),
                 snapshot,
-                pr_ref: PrRef { owner, repo: repo_name, number: number as u32 },
+                pr_ref: PrRef {
+                    owner,
+                    repo: repo_name,
+                    number: number as u32,
+                },
             }),
             None => {
                 if let Some(snap) = snapshot {

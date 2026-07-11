@@ -143,8 +143,8 @@ pub(crate) fn find_codex_rollouts(session_id: &str) -> Vec<PathBuf> {
 /// unparseable lines.
 pub(crate) fn read_jsonl_values(path: &Path) -> Result<Vec<Value>> {
     use std::io::BufRead;
-    let file = std::fs::File::open(path)
-        .map_err(|e| Error::Other(format!("open transcript: {e}")))?;
+    let file =
+        std::fs::File::open(path).map_err(|e| Error::Other(format!("open transcript: {e}")))?;
     let reader = std::io::BufReader::new(file);
     let mut out = Vec::new();
     for line in reader.lines().map_while(std::result::Result::ok) {

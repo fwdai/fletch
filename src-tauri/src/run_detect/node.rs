@@ -2,8 +2,8 @@
 
 use super::port::detect_port;
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector,
-    CONFIDENCE_LOCKFILE, CONFIDENCE_MANIFEST,
+    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    CONFIDENCE_MANIFEST,
 };
 use std::path::Path;
 
@@ -213,11 +213,7 @@ mod tests {
 
     #[test]
     fn lockfile_drives_pm_when_no_field() {
-        let cfg = detect(&[
-            ("package.json", "{}"),
-            ("yarn.lock", ""),
-        ])
-        .unwrap();
+        let cfg = detect(&[("package.json", "{}"), ("yarn.lock", "")]).unwrap();
         assert_eq!(val(&cfg, "install"), "yarn install");
     }
 
@@ -241,11 +237,7 @@ mod tests {
 
     #[test]
     fn dev_falls_back_to_start_script() {
-        let cfg = detect(&[(
-            "package.json",
-            r#"{"scripts":{"start":"node server.js"}}"#,
-        )])
-        .unwrap();
+        let cfg = detect(&[("package.json", r#"{"scripts":{"start":"node server.js"}}"#)]).unwrap();
         assert_eq!(val(&cfg, "dev"), "npm start");
     }
 
@@ -258,11 +250,7 @@ mod tests {
 
     #[test]
     fn nvmrc_yields_version() {
-        let cfg = detect(&[
-            ("package.json", "{}"),
-            (".nvmrc", "v22.4.0\n"),
-        ])
-        .unwrap();
+        let cfg = detect(&[("package.json", "{}"), (".nvmrc", "v22.4.0\n")]).unwrap();
         assert_eq!(val(&cfg, "version"), "v22.4.0");
     }
 
@@ -280,11 +268,7 @@ mod tests {
 
     #[test]
     fn env_local_emits_env_row() {
-        let cfg = detect(&[
-            ("package.json", "{}"),
-            (".env.local", "X=1"),
-        ])
-        .unwrap();
+        let cfg = detect(&[("package.json", "{}"), (".env.local", "X=1")]).unwrap();
         assert_eq!(val(&cfg, "env"), ".env.local");
     }
 

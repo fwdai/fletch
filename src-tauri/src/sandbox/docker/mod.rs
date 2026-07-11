@@ -19,13 +19,13 @@
 //!   (one `docker run --rm --init` container per agent process).
 
 pub mod auth;
-pub mod setup_token;
 mod cleanup;
 mod cli;
 mod engine;
 mod image;
 mod probe;
 mod progress;
+pub mod setup_token;
 
 pub use engine::{
     init_version_refresh_guard, set_launch_settings, DockerEngine, LaunchSettings, CPUS_SETTING,

@@ -22,9 +22,9 @@ use serde_json::Value;
 use crate::activity::{Activity, ManagedActivity};
 use crate::error::{Error, Result};
 use crate::exec_session::{ExecCallbacks, ExecExit, ExecSession, ExecSpawn};
-use crate::message_queue::InjectionMode;
 use crate::instructions;
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
+use crate::message_queue::InjectionMode;
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
 use crate::sandbox::{AgentLaunchCtx, EngineKind, Keepalive, LaunchPlan, SandboxEngine};
@@ -37,7 +37,6 @@ pub enum Agent {
     /// sandboxes itself, so there's no sandbox-exec profile.
     PerTurn(PerTurnAgent),
 }
-
 
 pub struct PtyAgent {
     pty: PtySession,
@@ -101,6 +100,10 @@ pub struct TurnArgs<'a> {
     pub extra: Option<&'a str>,
 }
 
+/// Builds the native (PTY) view launch args from
+/// `(session [None = fresh], model, custom_instructions)`.
+type PtyArgsBuilder = fn(Option<&str>, Option<&str>, Option<&str>) -> Vec<String>;
+
 /// Everything that varies between per-turn agents. The runner lifecycle —
 /// one fresh process per turn via `ExecSession` — is identical for all of
 /// them; only the binary, CLI args, session-id extraction, and turn-end
@@ -118,7 +121,7 @@ pub struct PerTurnDescriptor {
     build_args: fn(&TurnArgs) -> Vec<String>,
     /// Builds the args to launch this agent's interactive TUI in the native
     /// (PTY) view: `(session [None = fresh], model, custom_instructions)`.
-    pty_args: fn(Option<&str>, Option<&str>, Option<&str>) -> Vec<String>,
+    pty_args: PtyArgsBuilder,
     /// Extracts the agent-assigned session id from a turn's events. The
     /// event-based agents are thin wrappers over `gated_session_id` (same shape,
     /// different gates). No-op for `plaintext` agents (they emit no events — see
@@ -202,12 +205,8 @@ pub fn capabilities(provider: &str) -> AgentCapabilities {
         Some(d) => AgentCapabilities {
             native_view: d.native_view,
         },
-        None if provider == "claude" => AgentCapabilities {
-            native_view: true,
-        },
-        None => AgentCapabilities {
-            native_view: false,
-        },
+        None if provider == "claude" => AgentCapabilities { native_view: true },
+        None => AgentCapabilities { native_view: false },
     }
 }
 
@@ -293,7 +292,9 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         transcript: Some(TranscriptReader {
             locate: pi_locate,
             read: pi_read,
-            tail: Some(JsonlTail { id_field: Some("id") }), // single jsonl when one file
+            tail: Some(JsonlTail {
+                id_field: Some("id"),
+            }), // single jsonl when one file
         }),
     },
     PerTurnDescriptor {
@@ -503,7 +504,9 @@ fn claude_read(paths: &[PathBuf]) -> Vec<RawRecord> {
 static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
     locate: claude_locate,
     read: claude_read,
-    tail: Some(JsonlTail { id_field: Some("uuid") }), // single persistent jsonl
+    tail: Some(JsonlTail {
+        id_field: Some("uuid"),
+    }), // single persistent jsonl
 };
 
 // ── Codex ──
@@ -641,7 +644,12 @@ fn opencode_read(message_paths: &[PathBuf]) -> Vec<RawRecord> {
 // selection (the `--model` flag is inert in print mode), so the picker offers
 // no selectable models for antigravity (see `model_catalog::discover_one`).
 fn antigravity_build_args(turn: &TurnArgs) -> Vec<String> {
-    let &TurnArgs { prompt, session_id, extra, .. } = turn;
+    let &TurnArgs {
+        prompt,
+        session_id,
+        extra,
+        ..
+    } = turn;
     // `--print` takes the prompt as its *value* (i.e. `--print <prompt>`), so the
     // prompt must come last, directly after `--print`. Putting another flag
     // between them makes that flag the prompt (agy then "answers" the flag name).
@@ -656,7 +664,11 @@ fn antigravity_build_args(turn: &TurnArgs) -> Vec<String> {
 // `antigravity_build_args` and `model_catalog::discover_one`). `_extra` unused:
 // the standing brief rides the first `--print` turn (above), which lives in the
 // resumed conversation the TUI then continues.
-fn antigravity_pty_args(session_id: Option<&str>, _model: Option<&str>, _extra: Option<&str>) -> Vec<String> {
+fn antigravity_pty_args(
+    session_id: Option<&str>,
+    _model: Option<&str>,
+    _extra: Option<&str>,
+) -> Vec<String> {
     // Native view: launch agy's interactive TUI (NOT `--print`, the
     // non-interactive turn runner), resuming the conversation by id.
     let mut args = vec!["--dangerously-skip-permissions".to_string()];
@@ -1029,14 +1041,19 @@ impl Agent {
         G: Fn(String) + Send + Sync + 'static,
         H: Fn(ExecExit) + Send + Sync + 'static,
     {
-        let home = dirs::home_dir()
-            .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let home =
+            dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         // Under docker this resolves to the provider's in-image bin (`codex`);
         // under seatbelt the host path — same decision claude makes. Resolved
         // here (not in `spawn_exec`) since the agent bin is provider-specific.
         let engine = sandbox::engine_for(spec.engine)?;
-        let program =
-            PathBuf::from(agent_bin_for(desc.id, desc.bin, desc.label, engine.as_ref(), &home)?);
+        let program = PathBuf::from(agent_bin_for(
+            desc.id,
+            desc.bin,
+            desc.label,
+            engine.as_ref(),
+            &home,
+        )?);
         // A custom agent's standing brief is constant for the session, so bind
         // it into the per-turn args builder once here rather than threading it
         // through every turn. `ExecSession` keeps calling a 4-arg builder.
@@ -1047,7 +1064,13 @@ impl Agent {
             program,
             spec,
             move |prompt, session_id, thinking, model| {
-                build_args(&TurnArgs { prompt, session_id, thinking, model, extra: extra.as_deref() })
+                build_args(&TurnArgs {
+                    prompt,
+                    session_id,
+                    thinking,
+                    model,
+                    extra: extra.as_deref(),
+                })
             },
             desc.session_id,
             !desc.plaintext,
@@ -1075,14 +1098,17 @@ impl Agent {
         cb: ExecCallbacks<F, G, H>,
     ) -> Result<Self>
     where
-        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync + 'static,
+        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String>
+            + Send
+            + Sync
+            + 'static,
         I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
         F: Fn(Value) + Send + Sync + 'static,
         G: Fn(String) + Send + Sync + 'static,
         H: Fn(ExecExit) + Send + Sync + 'static,
     {
-        let home = dirs::home_dir()
-            .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let home =
+            dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let agent_bin = program
             .to_str()
             .ok_or_else(|| Error::Other("agent bin path not utf-8".into()))?;
@@ -1135,19 +1161,22 @@ impl Agent {
     pub fn write_pty(&self, bytes: &[u8]) -> Result<()> {
         match self {
             Self::Pty(a) => a.pty.write(bytes),
-            Self::Managed(_) | Self::PerTurn(_) => Err(Error::Other(
-                "write_pty called on a managed agent".into(),
-            )),
+            Self::Managed(_) | Self::PerTurn(_) => {
+                Err(Error::Other("write_pty called on a managed agent".into()))
+            }
         }
     }
 
-    pub fn send_user_message(&self, text: &str, attachments: &[String], thinking: Option<&str>) -> Result<()> {
+    pub fn send_user_message(
+        &self,
+        text: &str,
+        attachments: &[String],
+        thinking: Option<&str>,
+    ) -> Result<()> {
         match self {
             Self::Managed(a) => a.session.send_user_message(text, attachments),
             Self::PerTurn(a) => a.session.send_user_message(text, attachments, thinking),
-            Self::Pty(_) => Err(Error::Other(
-                "send_user_message called on pty agent".into(),
-            )),
+            Self::Pty(_) => Err(Error::Other("send_user_message called on pty agent".into())),
         }
     }
 
@@ -1173,9 +1202,10 @@ impl Agent {
         message: Option<String>,
     ) -> Result<()> {
         match self {
-            Self::Managed(a) => a
-                .session
-                .answer_tool_use(request_id, updated_input, behavior, message),
+            Self::Managed(a) => {
+                a.session
+                    .answer_tool_use(request_id, updated_input, behavior, message)
+            }
             Self::PerTurn(_) | Self::Pty(_) => Err(Error::Other(
                 "answer_tool_use is only supported for managed agents".into(),
             )),
@@ -1348,7 +1378,13 @@ fn agent_bin_for(
 /// to leave a single boundary — and so codex can reach its RPC mailbox, which
 /// lives outside the checkout that `workspace-write` would have confined it to.
 fn codex_build_args(turn: &TurnArgs) -> Vec<String> {
-    let &TurnArgs { prompt, session_id, thinking, model, extra } = turn;
+    let &TurnArgs {
+        prompt,
+        session_id,
+        thinking,
+        model,
+        extra,
+    } = turn;
     let mut args: Vec<String> = vec!["exec".into()];
     push_opt(&mut args, "resume", session_id);
     args.push("--json".into());
@@ -1387,7 +1423,10 @@ fn gated_session_id(
             return None;
         }
     }
-    event.get(id_field).and_then(|v| v.as_str()).map(str::to_string)
+    event
+        .get(id_field)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 /// Codex assigns its thread id on the first turn via `thread.started`.
@@ -1400,7 +1439,13 @@ fn codex_session_id(event: &Value) -> Option<String> {
 /// workspace in headless mode. Cursor's own sandbox applies; cwd comes from
 /// the child process working directory.
 fn cursor_build_args(turn: &TurnArgs) -> Vec<String> {
-    let &TurnArgs { prompt, session_id, model, extra, .. } = turn;
+    let &TurnArgs {
+        prompt,
+        session_id,
+        model,
+        extra,
+        ..
+    } = turn;
     let mut args: Vec<String> = vec![
         "-p".into(),
         "--output-format".into(),
@@ -1418,7 +1463,12 @@ fn cursor_build_args(turn: &TurnArgs) -> Vec<String> {
 /// Cursor reports its session id on the `system`/`init` event (echoed on every
 /// later event; `maybe_capture_session_id` keeps only the first).
 fn cursor_session_id(event: &Value) -> Option<String> {
-    gated_session_id(event, Some("system"), Some(("subtype", "init")), "session_id")
+    gated_session_id(
+        event,
+        Some("system"),
+        Some(("subtype", "init")),
+        "session_id",
+    )
 }
 
 /// OpenCode: `opencode run --format json --dangerously-skip-permissions [--session <id>] <prompt>`.
@@ -1428,7 +1478,13 @@ fn cursor_session_id(event: &Value) -> Option<String> {
 /// its own session id on the first turn. The prompt is positional and must
 /// come after the flags.
 fn opencode_build_args(turn: &TurnArgs) -> Vec<String> {
-    let &TurnArgs { prompt, session_id, thinking, model, extra } = turn;
+    let &TurnArgs {
+        prompt,
+        session_id,
+        thinking,
+        model,
+        extra,
+    } = turn;
     let mut args: Vec<String> = vec![
         "run".into(),
         "--format".into(),
@@ -1464,7 +1520,13 @@ fn opencode_session_id(event: &Value) -> Option<String> {
 /// `--session-id` entirely. Verified end-to-end against pi 0.74.2. Pi runs in
 /// the child's cwd; the prompt is positional and must come after the flags.
 fn pi_build_args(turn: &TurnArgs) -> Vec<String> {
-    let &TurnArgs { prompt, session_id, thinking, model, extra } = turn;
+    let &TurnArgs {
+        prompt,
+        session_id,
+        thinking,
+        model,
+        extra,
+    } = turn;
     let mut args: Vec<String> = vec!["-p".into(), "--mode".into(), "json".into()];
     args.extend(model_args(model));
     if let Some(level) = thinking {
@@ -1494,7 +1556,11 @@ fn pi_session_id(event: &Value) -> Option<String> {
 /// Codex: bare `codex` launches the interactive TUI;
 /// `--dangerously-bypass-approvals-and-sandbox` runs it unattended (Fletch
 /// already isolates the checkout). `resume <id>` continues a prior session.
-fn codex_pty_args(session_id: Option<&str>, model: Option<&str>, extra: Option<&str>) -> Vec<String> {
+fn codex_pty_args(
+    session_id: Option<&str>,
+    model: Option<&str>,
+    extra: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = vec!["--dangerously-bypass-approvals-and-sandbox".into()];
     args.extend(model_args(model));
     args.extend(instructions::codex_config_args(extra));
@@ -1506,7 +1572,11 @@ fn codex_pty_args(session_id: Option<&str>, model: Option<&str>, extra: Option<&
 /// commands. `--resume <id>` continues a prior chat. `_extra` unused: cursor
 /// has no system-prompt slot, so the brief was prepended on the first
 /// Custom-view turn and now lives in the resumed conversation.
-fn cursor_pty_args(session_id: Option<&str>, model: Option<&str>, _extra: Option<&str>) -> Vec<String> {
+fn cursor_pty_args(
+    session_id: Option<&str>,
+    model: Option<&str>,
+    _extra: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = vec!["--force".into()];
     args.extend(model_args(model));
     push_opt(&mut args, "--resume", session_id);
@@ -1519,7 +1589,11 @@ fn cursor_pty_args(session_id: Option<&str>, model: Option<&str>, _extra: Option
 /// subcommand and makes the *default* (TUI) command print help and exit. The
 /// TUI prompts for tool permissions interactively, which the native view
 /// handles like any other keystroke.
-fn opencode_pty_args(session_id: Option<&str>, model: Option<&str>, _extra: Option<&str>) -> Vec<String> {
+fn opencode_pty_args(
+    session_id: Option<&str>,
+    model: Option<&str>,
+    _extra: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     args.extend(model_args(model));
     push_opt(&mut args, "--session", session_id);
@@ -1587,7 +1661,10 @@ pub fn validate_bin(path: &str) -> BinValidation {
     } else {
         None
     };
-    BinValidation { executable, version }
+    BinValidation {
+        executable,
+        version,
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1676,7 +1753,11 @@ pub(crate) fn parse_semver(s: &str) -> Option<String> {
     for word in s.split_whitespace() {
         let word = word.trim_start_matches('v');
         // Accept anything that is purely digit-and-dot with at least one dot.
-        if word.contains('.') && word.chars().all(|c| c.is_ascii_digit() || c == '.') && !word.starts_with('.') && !word.ends_with('.') {
+        if word.contains('.')
+            && word.chars().all(|c| c.is_ascii_digit() || c == '.')
+            && !word.starts_with('.')
+            && !word.ends_with('.')
+        {
             return Some(format!("v{word}"));
         }
     }
@@ -1702,17 +1783,16 @@ mod tests {
             let mut f = std::fs::File::create(&path).unwrap();
             write!(
                 f,
-                "{}\n{}\n{}",
-                r#"{"uuid":"a","type":"user"}"#,
-                r#"{"uuid":"b","type":"assistant"}"#,
-                r#"{"uuid":"c","#
+                "{{\"uuid\":\"a\",\"type\":\"user\"}}\n{{\"uuid\":\"b\",\"type\":\"assistant\"}}\n{{\"uuid\":\"c\","
             )
             .unwrap();
         }
 
         let (recs, off) = read_jsonl_tail(&path, 0, 0, Some("uuid"), false);
         assert_eq!(
-            recs.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            recs.iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["a", "b"],
             "only complete lines ingested; the torn line is held back",
         );
@@ -1720,13 +1800,23 @@ mod tests {
         // The writer finishes line c and appends d. Resume from the held offset
         // with start_index = 2 (we consumed 2 records).
         {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-            write!(f, "{}\n{}\n", r#""type":"assistant"}"#, r#"{"uuid":"d","type":"user"}"#).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            write!(
+                f,
+                "\"type\":\"assistant\"}}\n{{\"uuid\":\"d\",\"type\":\"user\"}}\n"
+            )
+            .unwrap();
         }
 
         let (recs2, _off2) = read_jsonl_tail(&path, off, 2, Some("uuid"), false);
         assert_eq!(
-            recs2.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            recs2
+                .iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["c", "d"],
             "resume picks up the now-complete line + the new one, no re-emit",
         );
@@ -1740,12 +1830,14 @@ mod tests {
         {
             let mut f = std::fs::File::create(&path).unwrap();
             // No `uuid` field → positional `ln:{global_index}` fallback.
-            write!(f, "{}\n{}\n", r#"{"type":"mode"}"#, r#"{"type":"summary"}"#).unwrap();
+            write!(f, "{{\"type\":\"mode\"}}\n{{\"type\":\"summary\"}}\n").unwrap();
         }
         // Pretend 5 records were already ingested.
         let (recs, _off) = read_jsonl_tail(&path, 0, 5, None, false);
         assert_eq!(
-            recs.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            recs.iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["ln:5", "ln:6"],
         );
     }
@@ -1762,9 +1854,7 @@ mod tests {
             let mut f = std::fs::File::create(&path).unwrap();
             write!(
                 f,
-                "{}\n{}",
-                r#"{"uuid":"a","type":"user"}"#,
-                r#"{"uuid":"b","type":"assistant"}"#,
+                "{{\"uuid\":\"a\",\"type\":\"user\"}}\n{{\"uuid\":\"b\",\"type\":\"assistant\"}}",
             )
             .unwrap();
         }
@@ -1772,15 +1862,23 @@ mod tests {
         // Exited writer: the unterminated final line is consumed, to EOF.
         let (recs, off) = read_jsonl_tail(&path, 0, 0, Some("uuid"), true);
         assert_eq!(
-            recs.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            recs.iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["a", "b"],
         );
-        assert_eq!(off, std::fs::metadata(&path).unwrap().len(), "consumed to EOF");
+        assert_eq!(
+            off,
+            std::fs::metadata(&path).unwrap().len(),
+            "consumed to EOF"
+        );
 
         // Live writer (same bytes): the unterminated final line is held back.
         let (held, _) = read_jsonl_tail(&path, 0, 0, Some("uuid"), false);
         assert_eq!(
-            held.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            held.iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["a"],
         );
 
@@ -1788,11 +1886,14 @@ mod tests {
         let torn = dir.path().join("torn.jsonl");
         {
             let mut f = std::fs::File::create(&torn).unwrap();
-            write!(f, "{}\n{}", r#"{"uuid":"a","type":"user"}"#, r#"{"uuid":"x","#).unwrap();
+            write!(f, "{{\"uuid\":\"a\",\"type\":\"user\"}}\n{{\"uuid\":\"x\",").unwrap();
         }
         let (recs_torn, _) = read_jsonl_tail(&torn, 0, 0, Some("uuid"), true);
         assert_eq!(
-            recs_torn.iter().map(|r| r.native_id.as_str()).collect::<Vec<_>>(),
+            recs_torn
+                .iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["a"],
             "a mid-write torn line is held even with consume_trailing",
         );
@@ -1800,10 +1901,16 @@ mod tests {
 
     #[test]
     fn provider_bin_label_dispatch() {
-        assert_eq!(provider_bin_label("claude"), Some(("claude", "Claude Code")));
+        assert_eq!(
+            provider_bin_label("claude"),
+            Some(("claude", "Claude Code"))
+        );
         assert!(provider_bin_label("codex").is_some());
         assert!(provider_bin_label("pi").is_some());
-        assert_eq!(provider_bin_label("antigravity"), Some(("agy", "Antigravity")));
+        assert_eq!(
+            provider_bin_label("antigravity"),
+            Some(("agy", "Antigravity"))
+        );
         assert!(provider_bin_label("nope").is_none());
     }
 
@@ -1929,12 +2036,18 @@ mod tests {
     #[test]
     fn opencode_args_request_thinking() {
         // Without --thinking, opencode emits no `reasoning` events at all.
-        let args = opencode_build_args(&TurnArgs { prompt: "hi", ..Default::default() });
+        let args = opencode_build_args(&TurnArgs {
+            prompt: "hi",
+            ..Default::default()
+        });
         assert!(args.contains(&"--thinking".to_string()));
         assert!(args.contains(&"--format".to_string()));
         // Prompt is positional and last (possibly prefixed with injected
         // instructions on a fresh turn, so match the tail rather than equality).
-        assert!(args.last().unwrap().ends_with("hi"), "prompt is positional and last");
+        assert!(
+            args.last().unwrap().ends_with("hi"),
+            "prompt is positional and last"
+        );
     }
 
     // ── pty (native TUI) args ──────────────────────────────────────────────
@@ -1993,7 +2106,10 @@ mod tests {
         // Fresh: bare `pi` launches the interactive TUI; tools auto-run there.
         // (May carry injected --append-system-prompt args, but never a resume.)
         let fresh = pi_pty_args(None, None, None);
-        assert!(!fresh.iter().any(|a| a == "--session"), "fresh TUI has no resume flag");
+        assert!(
+            !fresh.iter().any(|a| a == "--session"),
+            "fresh TUI has no resume flag"
+        );
         // Resume uses `--session <id>` (target pi 0.74.x lacks `--session-id`).
         let resume = pi_pty_args(Some("u-7"), None, None);
         let pos = resume
@@ -2021,14 +2137,22 @@ mod tests {
 
     #[test]
     fn opencode_args_variant_when_thinking_set() {
-        let args = opencode_build_args(&TurnArgs { prompt: "hi", thinking: Some("max"), ..Default::default() });
+        let args = opencode_build_args(&TurnArgs {
+            prompt: "hi",
+            thinking: Some("max"),
+            ..Default::default()
+        });
         assert!(args.contains(&"--variant".to_string()));
         assert!(args.contains(&"max".to_string()));
     }
 
     #[test]
     fn codex_args_reasoning_effort_when_thinking_set() {
-        let args = codex_build_args(&TurnArgs { prompt: "hi", thinking: Some("high"), ..Default::default() });
+        let args = codex_build_args(&TurnArgs {
+            prompt: "hi",
+            thinking: Some("high"),
+            ..Default::default()
+        });
         assert!(args.contains(&"reasoning_effort=\"high\"".to_string()));
     }
 
@@ -2037,7 +2161,10 @@ mod tests {
         // Fletch now wraps codex in sandbox-exec, so codex's own confinement is
         // turned fully off — otherwise its workspace-write sandbox would block
         // the RPC mailbox, which lives outside the checkout.
-        let args = codex_build_args(&TurnArgs { prompt: "hi", ..Default::default() });
+        let args = codex_build_args(&TurnArgs {
+            prompt: "hi",
+            ..Default::default()
+        });
         assert!(args.contains(&"sandbox_mode=\"danger-full-access\"".to_string()));
         assert!(!args.iter().any(|a| a.contains("workspace-write")));
         assert!(args.contains(&"approval_policy=\"never\"".to_string()));
@@ -2045,7 +2172,11 @@ mod tests {
 
     #[test]
     fn pi_args_thinking_when_set() {
-        let args = pi_build_args(&TurnArgs { prompt: "hi", thinking: Some("xhigh"), ..Default::default() });
+        let args = pi_build_args(&TurnArgs {
+            prompt: "hi",
+            thinking: Some("xhigh"),
+            ..Default::default()
+        });
         assert!(args.contains(&"--thinking".to_string()));
         assert!(args.contains(&"xhigh".to_string()));
     }
@@ -2065,8 +2196,15 @@ mod tests {
 
     #[test]
     fn cursor_args_ignores_thinking() {
-        let with_none = cursor_build_args(&TurnArgs { prompt: "hi", ..Default::default() });
-        let with_some = cursor_build_args(&TurnArgs { prompt: "hi", thinking: Some("high"), ..Default::default() });
+        let with_none = cursor_build_args(&TurnArgs {
+            prompt: "hi",
+            ..Default::default()
+        });
+        let with_some = cursor_build_args(&TurnArgs {
+            prompt: "hi",
+            thinking: Some("high"),
+            ..Default::default()
+        });
         assert_eq!(with_none, with_some);
     }
 
@@ -2082,7 +2220,10 @@ mod tests {
             codex_session_id(&json!({"type": "thread.started", "thread_id": "t-1"})),
             Some("t-1".into())
         );
-        assert_eq!(codex_session_id(&json!({"type": "turn.delta", "thread_id": "t-1"})), None);
+        assert_eq!(
+            codex_session_id(&json!({"type": "turn.delta", "thread_id": "t-1"})),
+            None
+        );
 
         // Cursor: gated on `system` + `subtype == init`, reads `session_id`.
         assert_eq!(
@@ -2102,8 +2243,14 @@ mod tests {
         );
 
         // Pi: gated on `session`, reads `id`.
-        assert_eq!(pi_session_id(&json!({"type": "session", "id": "u-7"})), Some("u-7".into()));
-        assert_eq!(pi_session_id(&json!({"type": "assistant", "id": "u-7"})), None);
+        assert_eq!(
+            pi_session_id(&json!({"type": "session", "id": "u-7"})),
+            Some("u-7".into())
+        );
+        assert_eq!(
+            pi_session_id(&json!({"type": "assistant", "id": "u-7"})),
+            None
+        );
     }
 
     // ── descriptor table ──────────────────────────────────────────────────

@@ -566,8 +566,14 @@ mod tests {
         );
         // Everything else unchanged: provider dot-dirs, caches, macOS-native.
         for dir in [
-            ".claude", ".cursor", ".gemini", ".pi", ".npm", ".cache",
-            "Library/Caches", "Library/Application Support",
+            ".claude",
+            ".cursor",
+            ".gemini",
+            ".pi",
+            ".npm",
+            ".cache",
+            "Library/Caches",
+            "Library/Application Support",
         ] {
             assert!(
                 profile.contains(&format!("(subpath \"{h}/{dir}\")")),
@@ -645,7 +651,10 @@ mod tests {
             "a symlinked ~/.claude must not smuggle a bin subtree onto the allow-list"
         );
         assert!(
-            profile.contains(&format!("(subpath \"{}/.cursor\")", canonical_home.display())),
+            profile.contains(&format!(
+                "(subpath \"{}/.cursor\")",
+                canonical_home.display()
+            )),
             "other provider dirs stay granted"
         );
     }
@@ -819,7 +828,14 @@ mod tests {
         // plus the whole `~/.config` and `~/.local` the agent profile withholds —
         // Run keeps the looser grant so arbitrary build steps succeed.
         for dir in [
-            ".cargo", "go", "Library/pnpm", ".bundle", ".rustup", ".bun", ".config", ".local",
+            ".cargo",
+            "go",
+            "Library/pnpm",
+            ".bundle",
+            ".rustup",
+            ".bun",
+            ".config",
+            ".local",
         ] {
             let expected = format!("(subpath \"{}/{dir}\")", canonical_home.display());
             assert!(
@@ -914,7 +930,8 @@ mod tests {
         }
         let canonical_common = std::fs::canonicalize(&common).unwrap();
 
-        let profile = build_run_profile(&checkout, &home, &[canonical_common.clone()]).unwrap();
+        let profile =
+            build_run_profile(&checkout, &home, std::slice::from_ref(&canonical_common)).unwrap();
         assert!(
             profile.contains(&format!("(subpath \"{}\")", canonical_common.display())),
             "run profile should grant the target's git common dir"

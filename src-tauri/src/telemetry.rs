@@ -61,7 +61,11 @@ pub fn init(distinct_id: String, enabled: bool, version: String) {
     super_props.insert("app_version".into(), json!(version));
     super_props.insert(
         "app_channel".into(),
-        json!(if cfg!(debug_assertions) { "dev" } else { "release" }),
+        json!(if cfg!(debug_assertions) {
+            "dev"
+        } else {
+            "release"
+        }),
     );
     super_props.insert("os".into(), json!(std::env::consts::OS));
     super_props.insert("arch".into(), json!(std::env::consts::ARCH));

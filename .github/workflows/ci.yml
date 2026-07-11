@@ -45,24 +45,26 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      # Guard the concurrency invariant this codebase relies on: a lock guard
-      # must never be held across a blocking wait / await (see the rule on
-      # Supervisor::agents — clone the Arc out and drop the lock before child
-      # I/O). Scoped to `await_holding_lock` (clean today) rather than
-      # `-D warnings` because of unrelated pre-existing clippy warnings.
-      # `significant_drop_tightening` was considered but fires on ~44 idiomatic
+      - name: Rustfmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      # Deny all warnings. This includes `await_holding_lock`, the guard for the
+      # concurrency invariant this codebase relies on: a lock guard must never be
+      # held across a blocking wait / await (see the rule on Supervisor::agents —
+      # clone the Arc out and drop the lock before child I/O).
+      # `significant_drop_tightening` stays opt-out: it fires on ~44 idiomatic
       # guard-at-scope-end sites across the tree, too noisy to gate on.
       - name: Clippy
         run: >
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --
-          -D clippy::await_holding_lock
+          -D warnings -A clippy::significant_drop_tightening
 
       - name: Test
         run: cargo test --manifest-path src-tauri/Cargo.toml

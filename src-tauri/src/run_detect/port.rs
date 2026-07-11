@@ -149,7 +149,10 @@ mod tests {
 
     #[test]
     fn explicit_env_assignment() {
-        assert_eq!(detect_port("PORT=4003 node server.js", &[]).unwrap().0, 4003);
+        assert_eq!(
+            detect_port("PORT=4003 node server.js", &[]).unwrap().0,
+            4003
+        );
     }
 
     #[test]

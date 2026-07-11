@@ -1,8 +1,8 @@
 //! Rust / Cargo detector.
 
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector,
-    CONFIDENCE_LOCKFILE, CONFIDENCE_MANIFEST,
+    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    CONFIDENCE_MANIFEST,
 };
 use std::path::Path;
 
@@ -43,10 +43,34 @@ impl RunDetector for RustDetector {
             ));
         }
 
-        rows.push(DetectedRow::new("install", RowGroup::Scripts, "Install", "cargo fetch", "convention"));
-        rows.push(DetectedRow::new("dev", RowGroup::Scripts, "Run", "cargo run", "convention"));
-        rows.push(DetectedRow::new("build", RowGroup::Scripts, "Build", "cargo build", "convention"));
-        rows.push(DetectedRow::new("test", RowGroup::Scripts, "Test", "cargo test", "convention"));
+        rows.push(DetectedRow::new(
+            "install",
+            RowGroup::Scripts,
+            "Install",
+            "cargo fetch",
+            "convention",
+        ));
+        rows.push(DetectedRow::new(
+            "dev",
+            RowGroup::Scripts,
+            "Run",
+            "cargo run",
+            "convention",
+        ));
+        rows.push(DetectedRow::new(
+            "build",
+            RowGroup::Scripts,
+            "Build",
+            "cargo build",
+            "convention",
+        ));
+        rows.push(DetectedRow::new(
+            "test",
+            RowGroup::Scripts,
+            "Test",
+            "cargo test",
+            "convention",
+        ));
 
         Some(DetectedConfig {
             ecosystem: "rust".to_string(),

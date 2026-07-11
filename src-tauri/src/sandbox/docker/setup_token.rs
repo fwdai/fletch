@@ -305,9 +305,7 @@ pub fn find_consent_url(output: &str) -> Option<String> {
             }
             end += 1;
         }
-        let url = s[start..end]
-            .trim_end_matches(['.', ',', ')'])
-            .to_string();
+        let url = s[start..end].trim_end_matches(['.', ',', ')']).to_string();
         if url.contains("oauth") || url.contains("claude.") || url.contains("anthropic.") {
             return Some(url);
         }
@@ -416,13 +414,18 @@ mod tests {
 
     #[test]
     fn find_consent_url_ignores_non_oauth_urls() {
-        assert_eq!(find_consent_url("see https://example.com/docs for help"), None);
+        assert_eq!(
+            find_consent_url("see https://example.com/docs for help"),
+            None
+        );
     }
 
     #[test]
     fn awaiting_code_detects_the_collapsed_prompt() {
         // As emitted by Ink (column-positioned words → no spaces after strip).
-        assert!(awaiting_code("\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>"));
+        assert!(awaiting_code(
+            "\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>"
+        ));
         // Also robust to normal spacing / wrapping.
         assert!(awaiting_code("Paste code here if prompted >"));
         assert!(!awaiting_code("Opening browser to sign in…"));

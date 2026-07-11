@@ -443,7 +443,10 @@ mod tests {
 
     #[test]
     fn unknown_provider_url_passes_through() {
-        assert_eq!(sized_avatar_url("other", "https://x/y.png"), "https://x/y.png");
+        assert_eq!(
+            sized_avatar_url("other", "https://x/y.png"),
+            "https://x/y.png"
+        );
     }
 
     #[test]
@@ -464,8 +467,14 @@ mod tests {
     #[test]
     fn builds_data_uri_from_bytes() {
         // "hi" → base64 "aGk=".
-        assert_eq!(to_data_uri("image/png", b"hi"), "data:image/png;base64,aGk=");
-        assert_eq!(to_data_uri("image/jpeg", b"hi"), "data:image/jpeg;base64,aGk=");
+        assert_eq!(
+            to_data_uri("image/png", b"hi"),
+            "data:image/png;base64,aGk="
+        );
+        assert_eq!(
+            to_data_uri("image/jpeg", b"hi"),
+            "data:image/jpeg;base64,aGk="
+        );
     }
 
     #[test]

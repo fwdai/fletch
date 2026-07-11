@@ -47,13 +47,7 @@ pub struct DetectedRow {
 }
 
 impl DetectedRow {
-    fn new(
-        id: &str,
-        group: RowGroup,
-        key: &str,
-        value: impl Into<String>,
-        source: &str,
-    ) -> Self {
+    fn new(id: &str, group: RowGroup, key: &str, value: impl Into<String>, source: &str) -> Self {
         Self {
             id: id.to_string(),
             group,
