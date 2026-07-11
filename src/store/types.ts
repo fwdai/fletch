@@ -20,6 +20,7 @@ import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import type { ModelMeta, SlimCatalog } from "@/data/modelCatalog";
 import type { AccountProfile } from "@/storage/accounts";
 import type { CustomAgent, NewCustomAgent } from "@/storage/customAgents";
+import type { McpServer, NewMcpServer } from "@/storage/mcpServers";
 import type {
   Density,
   FeatureFlags,
@@ -29,6 +30,7 @@ import type {
   ThemeMode,
   WorkspaceView,
 } from "@/storage/preferences";
+import type { NewSkill, Skill } from "@/storage/skills";
 import type { DraftAgent } from "./drafts";
 
 /** A degraded transcript-ingest state stored per agent (the `healthy` status is
@@ -552,6 +554,34 @@ export interface CustomAgentsSlice {
   duplicateCustomAgent: (id: string) => Promise<CustomAgent | null>;
 }
 
+export interface SkillsSlice {
+  /** Shared skills library, mirrored from the `skills` table and ordered
+   *  newest-edited first. Loaded once on init. */
+  skills: Skill[];
+
+  loadSkills: () => Promise<void>;
+  createSkill: (skill: NewSkill) => Promise<Skill>;
+  /** Patch an existing skill; resolves to the merged row, or null if the id is
+   *  unknown. */
+  updateSkill: (id: string, patch: Partial<NewSkill>) => Promise<Skill | null>;
+  /** Delete a skill and detach its id from every custom agent. */
+  deleteSkill: (id: string) => Promise<void>;
+}
+
+export interface McpServersSlice {
+  /** Shared MCP server registry, mirrored from the `mcp_servers` table and
+   *  ordered newest-edited first. Loaded once on init. */
+  mcpServers: McpServer[];
+
+  loadMcpServers: () => Promise<void>;
+  createMcpServer: (server: NewMcpServer) => Promise<McpServer>;
+  /** Patch an existing server; resolves to the merged row, or null if the id is
+   *  unknown. */
+  updateMcpServer: (id: string, patch: Partial<NewMcpServer>) => Promise<McpServer | null>;
+  /** Delete a server and detach its id from every custom agent. */
+  deleteMcpServer: (id: string) => Promise<void>;
+}
+
 export type AppState = AppSlice &
   WorkspaceSlice &
   ReposSlice &
@@ -563,6 +593,8 @@ export type AppState = AppSlice &
   AppearanceSlice &
   ProvidersSlice &
   CustomAgentsSlice &
+  SkillsSlice &
+  McpServersSlice &
   SandboxSlice;
 
 export type SliceCreator<T> = StateCreator<AppState, [], [], T>;

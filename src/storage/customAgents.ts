@@ -21,6 +21,12 @@ export interface CustomAgent {
   effort: string | null;
   /** The standing system-prompt-level brief injected when this agent runs. */
   instructions: string;
+  /** Ids of the library skills (see storage/skills.ts) this agent carries.
+   *  Resolved by value at spawn; dangling ids resolve to nothing. */
+  skillIds: string[];
+  /** Ids of the registry MCP servers (see storage/mcpServers.ts) this agent
+   *  attaches. Resolved by value at spawn; dangling ids resolve to nothing. */
+  mcpServerIds: string[];
   created_at: number;
   updated_at: number;
 }
@@ -31,6 +37,41 @@ export type NewCustomAgent = Omit<CustomAgent, "id" | "created_at" | "updated_at
 
 const TABLE = "custom_agents";
 
+/** The raw table row: id arrays live in JSON TEXT columns (`skill_ids`,
+ *  `mcp_server_ids`), converted to/from the typed arrays at this boundary. */
+type CustomAgentRow = Omit<CustomAgent, "skillIds" | "mcpServerIds"> & {
+  skill_ids: string;
+  mcp_server_ids: string;
+};
+
+function fromRow(row: CustomAgentRow): CustomAgent {
+  const { skill_ids, mcp_server_ids, ...rest } = row;
+  return {
+    ...rest,
+    skillIds: parseIdArray(skill_ids),
+    mcpServerIds: parseIdArray(mcp_server_ids),
+  };
+}
+
+function toRow(agent: CustomAgent): CustomAgentRow {
+  const { skillIds, mcpServerIds, ...rest } = agent;
+  return {
+    ...rest,
+    skill_ids: JSON.stringify(skillIds),
+    mcp_server_ids: JSON.stringify(mcpServerIds),
+  };
+}
+
+/** Parse a JSON id-array column, treating malformed content as empty. */
+function parseIdArray(json: string): string[] {
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((v) => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Generate a stable, collision-resistant id for a new custom agent. */
 function newId(): string {
   return `ca-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -38,23 +79,24 @@ function newId(): string {
 
 /** All custom agents, newest-edited first. */
 export async function listCustomAgents(): Promise<CustomAgent[]> {
-  return dbSelect<CustomAgent>(TABLE, {
+  const rows = await dbSelect<CustomAgentRow>(TABLE, {
     orderBy: "updated_at",
     orderDirection: "desc",
   });
+  return rows.map(fromRow);
 }
 
 /** Insert a new custom agent and return the persisted row. */
 export async function createCustomAgent(agent: NewCustomAgent): Promise<CustomAgent> {
   const now = Date.now();
-  const row: CustomAgent = {
+  const next: CustomAgent = {
     ...agent,
     id: newId(),
     created_at: now,
     updated_at: now,
   };
-  await dbInsert(TABLE, row as unknown as Record<string, unknown>);
-  return row;
+  await dbInsert(TABLE, toRow(next) as unknown as Record<string, unknown>);
+  return next;
 }
 
 /** Patch an existing custom agent (bumping `updated_at`) and return the merged
@@ -64,7 +106,7 @@ export async function updateCustomAgent(
   patch: Partial<NewCustomAgent>,
 ): Promise<CustomAgent> {
   const next: CustomAgent = { ...current, ...patch, updated_at: Date.now() };
-  const { id, created_at, ...writable } = next;
+  const { id, created_at, ...writable } = toRow(next);
   void id;
   void created_at;
   await dbUpdate(TABLE, { id: current.id }, writable as unknown as Record<string, unknown>);

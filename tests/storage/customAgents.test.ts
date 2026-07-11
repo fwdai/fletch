@@ -30,7 +30,12 @@ const NEW = {
   model: "gpt-5.2-codex",
   effort: "high",
   instructions: "Be terse.",
+  skillIds: ["sk-1", "sk-2"],
+  mcpServerIds: ["mcp-1"],
 };
+
+/** NEW without the id arrays — the scalar columns written verbatim. */
+const { skillIds: _sk, mcpServerIds: _mcp, ...NEW_SCALARS } = NEW;
 
 describe("customAgents storage", () => {
   beforeEach(() => {
@@ -45,9 +50,18 @@ describe("customAgents storage", () => {
     expect(agent.created_at).toBe(agent.updated_at);
     expect(agent.created_at).toBe(Date.now());
 
-    const [table, row] = dbInsert.mock.calls[0] as unknown as [string, CustomAgent];
+    const [table, row] = dbInsert.mock.calls[0] as unknown as [string, Record<string, unknown>];
     expect(table).toBe("custom_agents");
-    expect(row).toMatchObject({ ...NEW, id: agent.id });
+    // The id arrays are written as JSON TEXT columns (`skill_ids`,
+    // `mcp_server_ids`), not as the typed fields.
+    expect(row).toMatchObject({
+      ...NEW_SCALARS,
+      id: agent.id,
+      skill_ids: JSON.stringify(NEW.skillIds),
+      mcp_server_ids: JSON.stringify(NEW.mcpServerIds),
+    });
+    expect(row).not.toHaveProperty("skillIds");
+    expect(row).not.toHaveProperty("mcpServerIds");
   });
 
   it("bumps updated_at and never writes the id/created_at columns on update", async () => {

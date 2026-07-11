@@ -15,6 +15,8 @@ export type SettingsSection =
   | "account"
   | "providers"
   | "agents"
+  | "skills"
+  | "tools"
   | "experimental"
   | "developer";
 

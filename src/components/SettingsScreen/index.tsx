@@ -7,7 +7,9 @@ import { AccountPane } from "./AccountPane";
 import { CustomAgentsPane } from "./CustomAgents";
 import { ExperimentalPane } from "./ExperimentalPane";
 import { GeneralPane } from "./GeneralPane";
+import { McpServersPane } from "./McpServers";
 import { ProvidersPane } from "./ProvidersPane";
+import { SkillsPane } from "./Skills";
 
 // Lazily loaded behind `import.meta.env.DEV`. In production the ternary's dead
 // branch — including the dynamic import() — is dropped by Rollup, so the
@@ -25,6 +27,8 @@ const NAV: NavItem[] = [
   { id: "general", label: "General", icon: "settings", order: 20 },
   { id: "providers", label: "Providers", icon: "cube", order: 30 },
   { id: "agents", label: "Custom agents", icon: "bot", order: 40 },
+  { id: "skills", label: "Skills", icon: "notebookPen", order: 42 },
+  { id: "tools", label: "Tools", icon: "zap", order: 44 },
   { id: "experimental", label: "Experimental", icon: "flask", order: 50 },
   // Dev-only: omitted entirely from production builds.
   ...(DeveloperPane
@@ -72,6 +76,8 @@ export function SettingsScreen() {
           {section === "account" && <AccountPane />}
           {section === "providers" && <ProvidersPane />}
           {section === "agents" && <CustomAgentsPane />}
+          {section === "skills" && <SkillsPane />}
+          {section === "tools" && <McpServersPane />}
           {section === "experimental" && <ExperimentalPane />}
           {section === "developer" && DeveloperPane && (
             <Suspense fallback={null}>

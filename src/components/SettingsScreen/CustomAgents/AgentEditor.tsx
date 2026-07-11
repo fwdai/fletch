@@ -7,8 +7,9 @@ import { Select } from "@/components/ui/Select";
 import { PROVIDERS } from "@/data/providers";
 import type { NewCustomAgent } from "@/storage/customAgents";
 import { useAppStore } from "@/store";
+import { AssignPicker } from "./AssignPicker";
 import { Mono } from "./Mono";
-import { CA_HUES, INJECTION_HINT } from "./shared";
+import { CA_HUES, INJECTION_HINT, MCP_SUPPORTED_BASES } from "./shared";
 
 /** Mutable editor form state. `model`/`effort` use "" as the "provider default"
  *  sentinel so the <select> has a concrete value; converted to null on save. */
@@ -20,6 +21,8 @@ interface Form {
   model: string;
   effort: string;
   instructions: string;
+  skillIds: string[];
+  mcpServerIds: string[];
 }
 
 const EFFORTS = [
@@ -42,6 +45,8 @@ export function AgentEditor({
 }) {
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const providerFlags = useAppStore((s) => s.providerFlags);
+  const skills = useAppStore((s) => s.skills);
+  const mcpServers = useAppStore((s) => s.mcpServers);
 
   const [form, setForm] = useState<Form>({
     name: initial.name,
@@ -51,6 +56,8 @@ export function AgentEditor({
     model: initial.model ?? "",
     effort: initial.effort ?? "",
     instructions: initial.instructions,
+    skillIds: initial.skillIds,
+    mcpServerIds: initial.mcpServerIds,
   });
 
   const set = (patch: Partial<Form>) => setForm((f) => ({ ...f, ...patch }));
@@ -81,8 +88,12 @@ export function AgentEditor({
       model: form.model || null,
       effort: form.effort || null,
       instructions: form.instructions,
+      skillIds: form.skillIds,
+      mcpServerIds: form.mcpServerIds,
     });
   };
+
+  const mcpSupported = MCP_SUPPORTED_BASES.has(form.base);
 
   return (
     <div className="set-pane">
@@ -187,6 +198,44 @@ export function AgentEditor({
             value={form.instructions}
             placeholder="Describe this agent's role, how it should work, and what it should hand off…"
             onChange={(e) => set({ instructions: e.target.value })}
+          />
+        </div>
+
+        {/* skills */}
+        <div className="set-field ca-field">
+          <label className="set-field-label text-sm">
+            Skills
+            <span className="ca-field-hint">
+              Instruction documents this agent loads on demand — works on every base
+            </span>
+          </label>
+          <AssignPicker
+            items={skills.map((s) => ({ id: s.id, name: s.name, detail: s.description }))}
+            selected={form.skillIds}
+            onChange={(skillIds) => set({ skillIds })}
+            emptyHint="No skills yet — create them under Settings → Skills."
+          />
+        </div>
+
+        {/* tools (MCP servers) */}
+        <div className="set-field ca-field">
+          <label className="set-field-label text-sm">
+            Tools (MCP)
+            <span className="ca-field-hint">
+              {mcpSupported
+                ? "MCP servers attached when this agent runs"
+                : "Not supported by this base — the agent will run without attached tools"}
+            </span>
+          </label>
+          <AssignPicker
+            items={mcpServers.map((s) => ({
+              id: s.id,
+              name: s.name,
+              detail: s.transport === "http" ? s.url : s.command,
+            }))}
+            selected={form.mcpServerIds}
+            onChange={(mcpServerIds) => set({ mcpServerIds })}
+            emptyHint="No MCP servers yet — add them under Settings → Tools."
           />
         </div>
 

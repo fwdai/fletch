@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { ArmedDeleteButton, useArmedDelete } from "@/components/SettingsScreen/LibraryList";
 import { SetHead } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
@@ -22,15 +22,7 @@ export function AgentList({
   onDelete: (a: CustomAgent) => void;
 }) {
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
-  // Two-click delete confirm (matches the FileContextMenu "Confirm Delete?"
-  // idiom): the first trash click arms the row, the second deletes. Auto-disarms
-  // after a few seconds so a stray click never leaves a row stuck in danger.
-  const [armedDeleteId, setArmedDeleteId] = useState<string | null>(null);
-  useEffect(() => {
-    if (!armedDeleteId) return;
-    const t = setTimeout(() => setArmedDeleteId(null), 3000);
-    return () => clearTimeout(t);
-  }, [armedDeleteId]);
+  const { armedId, fire } = useArmedDelete();
 
   const modelLabel = (a: CustomAgent): string => {
     if (!a.model) return "Default model";
@@ -111,23 +103,10 @@ export function AgentList({
                   >
                     <Icon name="edit" />
                   </IconButton>
-                  <IconButton
-                    size="sm"
-                    className={armedDeleteId === a.id ? "danger" : undefined}
-                    tipDown
-                    tip={armedDeleteId === a.id ? "Click again to delete" : "Delete"}
-                    aria-label={armedDeleteId === a.id ? "Confirm delete" : "Delete"}
-                    onClick={() => {
-                      if (armedDeleteId === a.id) {
-                        onDelete(a);
-                        setArmedDeleteId(null);
-                      } else {
-                        setArmedDeleteId(a.id);
-                      }
-                    }}
-                  >
-                    <Icon name={armedDeleteId === a.id ? "check" : "trash"} />
-                  </IconButton>
+                  <ArmedDeleteButton
+                    armed={armedId === a.id}
+                    onClick={() => fire(a.id, () => onDelete(a))}
+                  />
                 </div>
               </div>
             );

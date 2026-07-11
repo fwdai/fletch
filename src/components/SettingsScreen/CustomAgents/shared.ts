@@ -27,3 +27,10 @@ export const INJECTION_HINT: Record<string, string> = {
   antigravity: "prepended to the first message",
   pi: "--append-system-prompt",
 };
+
+/** Which base providers can attach MCP servers — mirrors the backend delivery
+ *  in `agent_profile.rs` (claude `--mcp-config`, codex `-c mcp_servers.*`).
+ *  Skills need no such map: the materialize-and-index mechanism works on every
+ *  base. Surfaced in the editor so attaching tools to an unsupported base is
+ *  honest about being a no-op. */
+export const MCP_SUPPORTED_BASES: ReadonlySet<string> = new Set(["claude", "codex"]);

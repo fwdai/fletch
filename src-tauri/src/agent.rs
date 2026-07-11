@@ -72,8 +72,13 @@ pub struct PerTurnSpec {
     pub model: Option<String>,
     /// A custom agent's standing instructions, snapshotted on the session and
     /// injected into every turn (appended after Fletch's global system prompt).
+    /// Includes the materialized skill index when the session has skills.
     /// `None` for a plain built-in spawn.
     pub instructions: Option<String>,
+    /// The session's MCP-server snapshot, delivered by providers with a
+    /// descriptor-level `mcp_args` builder (codex). Empty for plain spawns and
+    /// ignored by providers without MCP support.
+    pub mcp_servers: Vec<crate::agent_profile::McpServerSnapshot>,
     /// The agent's RPC mailbox dir, exposed to the child as `FLETCH_RPC_DIR`.
     pub rpc_dir: PathBuf,
     /// Sandbox engine stamped on the agent's record at creation and reused on
@@ -98,11 +103,18 @@ pub struct TurnArgs<'a> {
     pub model: Option<&'a str>,
     /// A custom agent's standing brief, injected into the turn.
     pub extra: Option<&'a str>,
+    /// Provider-specific MCP override args, prebuilt once per session by the
+    /// descriptor's `mcp_args` (codex `-c mcp_servers.*`). Empty otherwise.
+    pub mcp_args: &'a [String],
 }
 
 /// Builds the native (PTY) view launch args from
-/// `(session [None = fresh], model, custom_instructions)`.
-type PtyArgsBuilder = fn(Option<&str>, Option<&str>, Option<&str>) -> Vec<String>;
+/// `(session [None = fresh], model, custom_instructions, mcp_args)`.
+type PtyArgsBuilder = fn(Option<&str>, Option<&str>, Option<&str>, &[String]) -> Vec<String>;
+
+/// Builds a provider's MCP-delivery args from the session's server snapshot
+/// (e.g. codex `-c mcp_servers.*` overrides).
+type McpArgsBuilder = fn(&[crate::agent_profile::McpServerSnapshot]) -> Vec<String>;
 
 /// Everything that varies between per-turn agents. The runner lifecycle —
 /// one fresh process per turn via `ExecSession` — is identical for all of
@@ -120,8 +132,14 @@ pub struct PerTurnDescriptor {
     /// Builds the CLI args for one turn from the turn's [`TurnArgs`].
     build_args: fn(&TurnArgs) -> Vec<String>,
     /// Builds the args to launch this agent's interactive TUI in the native
-    /// (PTY) view: `(session [None = fresh], model, custom_instructions)`.
+    /// (PTY) view: `(session [None = fresh], model, custom_instructions,
+    /// mcp_args)`.
     pty_args: PtyArgsBuilder,
+    /// Builds this provider's MCP-delivery args from the session's snapshot
+    /// (e.g. codex `-c mcp_servers.*` overrides), applied to both the per-turn
+    /// and native-PTY launches. `None` = provider has no MCP config surface we
+    /// can drive; the snapshot is ignored (the editor UI says so up front).
+    mcp_args: Option<McpArgsBuilder>,
     /// Extracts the agent-assigned session id from a turn's events. The
     /// event-based agents are thin wrappers over `gated_session_id` (same shape,
     /// different gates). No-op for `plaintext` agents (they emit no events — see
@@ -271,6 +289,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "Codex",
         build_args: codex_build_args,
         pty_args: codex_pty_args,
+        mcp_args: Some(crate::agent_profile::codex_mcp_args),
         session_id: codex_session_id,
         activity: || Box::new(ManagedActivity::codex()),
         native_view: true,
@@ -288,6 +307,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "Cursor",
         build_args: cursor_build_args,
         pty_args: cursor_pty_args,
+        mcp_args: None,
         session_id: cursor_session_id,
         // Cursor emits Claude-shaped stream-json incl. a `result` turn-end,
         // so it reuses the Claude managed detector.
@@ -307,6 +327,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "OpenCode",
         build_args: opencode_build_args,
         pty_args: opencode_pty_args,
+        mcp_args: None,
         session_id: opencode_session_id,
         activity: || Box::new(ManagedActivity::opencode()),
         native_view: true,
@@ -324,6 +345,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "Pi",
         build_args: pi_build_args,
         pty_args: pi_pty_args,
+        mcp_args: None,
         session_id: pi_session_id,
         activity: || Box::new(ManagedActivity::pi()),
         native_view: true,
@@ -344,6 +366,7 @@ const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "Antigravity",
         build_args: antigravity_build_args,
         pty_args: antigravity_pty_args,
+        mcp_args: None,
         // agy emits no JSON events; its session id is read from the filesystem.
         session_id: |_| None,
         // No event stream to detect turn-end from — the turn's process exit ends
@@ -749,6 +772,7 @@ fn antigravity_pty_args(
     session_id: Option<&str>,
     _model: Option<&str>,
     _extra: Option<&str>,
+    _mcp_args: &[String],
 ) -> Vec<String> {
     // Native view: launch agy's interactive TUI (NOT `--print`, the
     // non-interactive turn runner), resuming the conversation by id.
@@ -889,8 +913,16 @@ pub struct SpawnSpec<'a> {
     /// Session-level model override. `None` keeps the provider CLI default.
     pub model: Option<&'a str>,
     /// A custom agent's standing instructions, injected after Fletch's global
-    /// system prompt on every spawn/resume. `None` for a plain built-in spawn.
+    /// system prompt on every spawn/resume. Includes the materialized skill
+    /// index when the session has skills. `None` for a plain built-in spawn.
     pub instructions: Option<&'a str>,
+    /// The session's MCP-server snapshot, consumed by per-turn providers with
+    /// a descriptor `mcp_args` builder when this spec launches their native
+    /// TUI. Claude ignores it (it takes `mcp_config` instead).
+    pub mcp_servers: &'a [crate::agent_profile::McpServerSnapshot],
+    /// Claude's generated MCP config file, passed as
+    /// `--mcp-config <path> --strict-mcp-config`. `None` = no servers attached.
+    pub mcp_config: Option<&'a Path>,
     /// The agent's RPC mailbox dir, exposed to the child as `FLETCH_RPC_DIR`.
     pub rpc_dir: PathBuf,
     pub cols: u16,
@@ -1000,7 +1032,14 @@ impl Agent {
         } else {
             Some(spec.session_id)
         };
-        let agent_args = (desc.pty_args)(session, spec.model, spec.instructions);
+        // Provider MCP overrides (codex `-c mcp_servers.*`), rebuilt from the
+        // session's snapshot so the TUI resumes with the same tool set the
+        // Custom-view turns had.
+        let mcp_args = desc
+            .mcp_args
+            .map(|build| build(spec.mcp_servers))
+            .unwrap_or_default();
+        let agent_args = (desc.pty_args)(session, spec.model, spec.instructions, &mcp_args);
 
         // Unified sandbox: run the agent's TUI under the sandbox engine (the
         // agent's own sandbox is disabled in its arg builder), so per-turn
@@ -1143,11 +1182,16 @@ impl Agent {
             engine.as_ref(),
             &home,
         )?);
-        // A custom agent's standing brief is constant for the session, so bind
-        // it into the per-turn args builder once here rather than threading it
-        // through every turn. `ExecSession` keeps calling a 4-arg builder.
+        // A custom agent's standing brief and MCP overrides are constant for
+        // the session, so bind them into the per-turn args builder once here
+        // rather than threading them through every turn. `ExecSession` keeps
+        // calling a 4-arg builder.
         let build_args = desc.build_args;
         let extra = spec.instructions.clone();
+        let mcp_args = desc
+            .mcp_args
+            .map(|build| build(&spec.mcp_servers))
+            .unwrap_or_default();
         Self::spawn_exec(
             desc.id,
             program,
@@ -1159,6 +1203,7 @@ impl Agent {
                     thinking,
                     model,
                     extra: extra.as_deref(),
+                    mcp_args: &mcp_args,
                 })
             },
             desc.session_id,
@@ -1378,6 +1423,7 @@ fn prepare_pty_args(spec: &SpawnSpec<'_>) -> Vec<String> {
     args.extend(effort_args(spec.effort));
     args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args(spec.instructions));
+    args.extend(mcp_config_args(spec.mcp_config));
 
     if spec.fresh {
         args.push("--session-id".into());
@@ -1388,6 +1434,20 @@ fn prepare_pty_args(spec: &SpawnSpec<'_>) -> Vec<String> {
     }
 
     args
+}
+
+/// Claude's MCP flags for a generated config file: `--strict-mcp-config` makes
+/// the snapshot-derived file the *only* MCP source, so on-disk user/project MCP
+/// config never rides along with an agent Fletch spawns.
+fn mcp_config_args(config: Option<&Path>) -> Vec<String> {
+    match config {
+        Some(path) => vec![
+            "--mcp-config".into(),
+            path.to_string_lossy().into_owned(),
+            "--strict-mcp-config".into(),
+        ],
+        None => Vec::new(),
+    }
 }
 
 fn prepare_managed_args(spec: &SpawnSpec<'_>) -> Vec<String> {
@@ -1418,6 +1478,7 @@ fn prepare_managed_args(spec: &SpawnSpec<'_>) -> Vec<String> {
     args.extend(effort_args(spec.effort));
     args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args(spec.instructions));
+    args.extend(mcp_config_args(spec.mcp_config));
 
     if spec.fresh {
         args.push("--session-id".into());
@@ -1473,6 +1534,7 @@ fn codex_build_args(turn: &TurnArgs) -> Vec<String> {
         thinking,
         model,
         extra,
+        mcp_args,
     } = turn;
     let mut args: Vec<String> = vec!["exec".into()];
     push_opt(&mut args, "resume", session_id);
@@ -1488,6 +1550,10 @@ fn codex_build_args(turn: &TurnArgs) -> Vec<String> {
     }
     args.extend(model_args(model));
     args.extend(instructions::codex_config_args(extra));
+    // The session's MCP servers as `-c mcp_servers.*` overrides (see
+    // `agent_profile::codex_mcp_args`), re-passed every turn like the rest of
+    // the config since `codex exec` reads config per invocation.
+    args.extend_from_slice(mcp_args);
     args.push(prompt.to_string());
     args
 }
@@ -1573,6 +1639,7 @@ fn opencode_build_args(turn: &TurnArgs) -> Vec<String> {
         thinking,
         model,
         extra,
+        ..
     } = turn;
     let mut args: Vec<String> = vec![
         "run".into(),
@@ -1615,6 +1682,7 @@ fn pi_build_args(turn: &TurnArgs) -> Vec<String> {
         thinking,
         model,
         extra,
+        ..
     } = turn;
     let mut args: Vec<String> = vec!["-p".into(), "--mode".into(), "json".into()];
     args.extend(model_args(model));
@@ -1649,10 +1717,12 @@ fn codex_pty_args(
     session_id: Option<&str>,
     model: Option<&str>,
     extra: Option<&str>,
+    mcp_args: &[String],
 ) -> Vec<String> {
     let mut args: Vec<String> = vec!["--dangerously-bypass-approvals-and-sandbox".into()];
     args.extend(model_args(model));
     args.extend(instructions::codex_config_args(extra));
+    args.extend_from_slice(mcp_args);
     push_opt(&mut args, "resume", session_id);
     args
 }
@@ -1665,6 +1735,7 @@ fn cursor_pty_args(
     session_id: Option<&str>,
     model: Option<&str>,
     _extra: Option<&str>,
+    _mcp_args: &[String],
 ) -> Vec<String> {
     let mut args: Vec<String> = vec!["--force".into()];
     args.extend(model_args(model));
@@ -1682,6 +1753,7 @@ fn opencode_pty_args(
     session_id: Option<&str>,
     model: Option<&str>,
     _extra: Option<&str>,
+    _mcp_args: &[String],
 ) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     args.extend(model_args(model));
@@ -1692,7 +1764,12 @@ fn opencode_pty_args(
 /// Pi: bare `pi` launches the interactive TUI (tools auto-run there).
 /// `--session <id>` resumes — same flag the Custom-view runner uses, since the
 /// versions we target (0.74.x) lack `--session-id`.
-fn pi_pty_args(session_id: Option<&str>, model: Option<&str>, extra: Option<&str>) -> Vec<String> {
+fn pi_pty_args(
+    session_id: Option<&str>,
+    model: Option<&str>,
+    extra: Option<&str>,
+    _mcp_args: &[String],
+) -> Vec<String> {
     let mut args: Vec<String> = instructions::append_system_prompt_args(extra);
     args.extend(model_args(model));
     push_opt(&mut args, "--session", session_id);
@@ -2184,11 +2261,11 @@ mod tests {
     fn codex_pty_args_launch_tui_fresh_and_resume() {
         // Fresh: bypass approvals/sandbox so the TUI runs unattended; no
         // `exec`/`resume` subcommand means the interactive CLI.
-        let fresh = codex_pty_args(None, None, None);
+        let fresh = codex_pty_args(None, None, None, &[]);
         assert!(fresh.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
         assert!(!fresh.iter().any(|a| a == "resume"));
         // Resume: `resume <id>` continues the prior interactive session.
-        let resume = codex_pty_args(Some("abc123"), None, None);
+        let resume = codex_pty_args(Some("abc123"), None, None, &[]);
         assert!(resume.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
         let pos = resume
             .iter()
@@ -2199,10 +2276,10 @@ mod tests {
 
     #[test]
     fn cursor_pty_args_force_and_resume() {
-        let fresh = cursor_pty_args(None, None, None);
+        let fresh = cursor_pty_args(None, None, None, &[]);
         assert!(fresh.contains(&"--force".to_string()));
         assert!(!fresh.iter().any(|a| a == "--resume"));
-        let resume = cursor_pty_args(Some("chat-1"), None, None);
+        let resume = cursor_pty_args(Some("chat-1"), None, None, &[]);
         assert!(resume.contains(&"--force".to_string()));
         let pos = resume
             .iter()
@@ -2216,11 +2293,11 @@ mod tests {
         // Fresh: bare `opencode` launches the TUI. It must NOT carry
         // `--dangerously-skip-permissions` — that's a `run`-only flag, and
         // the default (TUI) command prints help and exits when given it.
-        let fresh = opencode_pty_args(None, None, None);
+        let fresh = opencode_pty_args(None, None, None, &[]);
         assert!(!fresh.iter().any(|a| a == "--dangerously-skip-permissions"));
         assert!(fresh.is_empty());
         // Resume: `--session <id>` continues the prior session.
-        let resume = opencode_pty_args(Some("ses_9"), None, None);
+        let resume = opencode_pty_args(Some("ses_9"), None, None, &[]);
         assert!(!resume.iter().any(|a| a == "--dangerously-skip-permissions"));
         let pos = resume
             .iter()
@@ -2233,13 +2310,13 @@ mod tests {
     fn pi_pty_args_bare_tui_and_session() {
         // Fresh: bare `pi` launches the interactive TUI; tools auto-run there.
         // (May carry injected --append-system-prompt args, but never a resume.)
-        let fresh = pi_pty_args(None, None, None);
+        let fresh = pi_pty_args(None, None, None, &[]);
         assert!(
             !fresh.iter().any(|a| a == "--session"),
             "fresh TUI has no resume flag"
         );
         // Resume uses `--session <id>` (target pi 0.74.x lacks `--session-id`).
-        let resume = pi_pty_args(Some("u-7"), None, None);
+        let resume = pi_pty_args(Some("u-7"), None, None, &[]);
         let pos = resume
             .iter()
             .position(|a| a == "--session")
@@ -2252,7 +2329,7 @@ mod tests {
         // Native view is wired for every per-turn agent, so each descriptor
         // must carry a TUI arg-builder. Fresh launch never references resume.
         for d in PER_TURN_AGENTS {
-            let fresh = (d.pty_args)(None, None, None);
+            let fresh = (d.pty_args)(None, None, None, &[]);
             assert!(
                 !fresh
                     .iter()

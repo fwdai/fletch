@@ -7,9 +7,11 @@ import { createComposerSlice } from "./composer";
 import { createCustomAgentsSlice } from "./customAgents";
 import { createDraftsSlice } from "./drafts";
 import { createGitSlice } from "./git";
+import { createMcpServersSlice } from "./mcpServers";
 import { createProvidersSlice } from "./providers";
 import { createReposSlice } from "./repos";
 import { createSandboxSlice } from "./sandbox";
+import { createSkillsSlice } from "./skills";
 import type { AppState } from "./types";
 import { createUiSlice } from "./ui";
 import { createWorkspaceSlice } from "./workspace";
@@ -28,6 +30,8 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createAppearanceSlice(...a),
   ...createProvidersSlice(...a),
   ...createCustomAgentsSlice(...a),
+  ...createSkillsSlice(...a),
+  ...createMcpServersSlice(...a),
   ...createSandboxSlice(...a),
 }));
 
