@@ -136,9 +136,9 @@ impl MessageQueue {
     /// delivery window (still queued here) keeps its row (see
     /// `WorkspaceManager::delete_pending_messages_except`).
     pub fn turn_ids(&self, agent_id: &str) -> Vec<String> {
-        self.by_agent.get(agent_id).map_or_else(Vec::new, |q| {
-            q.iter().map(|m| m.turn_id.clone()).collect()
-        })
+        self.by_agent
+            .get(agent_id)
+            .map_or_else(Vec::new, |q| q.iter().map(|m| m.turn_id.clone()).collect())
     }
 
     /// Remove and return all queued messages for an agent, coalesced into a

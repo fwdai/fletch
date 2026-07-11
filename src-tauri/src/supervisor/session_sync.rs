@@ -8,15 +8,18 @@ use crate::agent::per_turn_descriptor;
 use crate::github::{PrState, PrStatus};
 use crate::workspace::{repo_checkout_path, AgentRecord, AgentView, TrackedRepo, WorkspaceManager};
 
-use super::events::{emit_pr_state, emit_session_records_appended};
+use super::events::{emit_pr_state, emit_session_records_appended, emit_session_sync_health};
 use super::Supervisor;
+
+use parking_lot::Mutex;
+use std::collections::HashMap;
 
 impl Supervisor {
     /// Synchronously ingest the agent's transcript into session_records (used
     /// for lazy backfill when a session is opened with no records yet). `None`
     /// if the provider has no transcript reader.
     pub fn sync_session(&self, agent_id: &str) -> Option<usize> {
-        sync_session_records(&self.workspace, agent_id)
+        sync_session_records(&self.workspace, agent_id).map(|o| o.inserted)
     }
 
     /// Fire-and-forget transcript ingest at turn-end. Called from
@@ -34,6 +37,7 @@ impl Supervisor {
     ///   consecutive reads add nothing) before trusting the turn is fully on disk.
     pub fn trigger_session_sync(&self, app: AppHandle, agent_id: String) {
         let workspace = self.workspace.clone();
+        let health_map = self.sync_health.clone();
         let persistent = workspace
             .agent(&agent_id)
             .map(|r| is_persistent_runner(&r))
@@ -55,10 +59,21 @@ impl Supervisor {
             }
             if poll.should_emit() {
                 emit_session_records_appended(&app, &agent_id);
-            } else if poll.reader_ingested_nothing() {
-                tracing::warn!(
-                    agent_id,
-                    "session sync ingested 0 records after retries (transcript not found or unchanged)"
+            }
+            // Classify only now, after the retry loop is exhausted — earlier the
+            // transcript may just be mid-flush, which must never read as drift.
+            if let Some(diag) = poll.turn_diagnostics() {
+                let provider = workspace
+                    .agent(&agent_id)
+                    .map(|r| r.provider)
+                    .unwrap_or_default();
+                report_sync_health(
+                    &app,
+                    &health_map,
+                    &agent_id,
+                    &provider,
+                    classify(diag),
+                    diag,
                 );
             }
         });
@@ -313,10 +328,86 @@ enum PollControl {
     Stop,
 }
 
+/// One `sync_session_records` pass: how many new records it inserted plus the
+/// counters the locate/read collected. The count drives the poll's stop/settle
+/// logic; the diagnostics drive the post-exhaustion health classification.
+struct SyncOutcome {
+    inserted: usize,
+    diagnostics: crate::agent::ReadDiagnostics,
+}
+
+/// The turn-end ingest health for a reader-backed agent, derived purely from
+/// the last pass's [`ReadDiagnostics`](crate::agent::ReadDiagnostics).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum SyncHealth {
+    /// Records parsed this turn — ingestion is working.
+    Healthy,
+    /// The CLI's transcript root dir is gone though it just ran a turn — a
+    /// strong drift signal.
+    NoRoot,
+    /// Root present, but no transcript files matched. Ambiguous (slow flush /
+    /// empty session), so this is logged, never surfaced to the UI.
+    NoFiles,
+    /// Files matched and carried non-blank lines, yet none parsed — the vendor
+    /// reshaped its format. The smoking gun, essentially zero false positives.
+    FormatDrift,
+    /// Files matched but couldn't be opened or read (permissions, vanished
+    /// mid-read) and nothing parsed — ingestion failed just as surely as drift.
+    ReadError,
+    /// Records parsed, but the turn also hit a read failure — the tail of the
+    /// transcript may be missing. Degraded: the parsed records are kept, but
+    /// the read failure surfaces like any other ingest failure.
+    PartialRead,
+}
+
+impl SyncHealth {
+    /// The wire status for `session:sync-health`. `None` for `NoFiles`, which
+    /// is never emitted.
+    fn wire(self) -> Option<&'static str> {
+        match self {
+            SyncHealth::Healthy => Some("healthy"),
+            SyncHealth::NoRoot => Some("no_root"),
+            SyncHealth::FormatDrift => Some("format_drift"),
+            SyncHealth::ReadError => Some("read_error"),
+            SyncHealth::PartialRead => Some("partial_read"),
+            SyncHealth::NoFiles => None,
+        }
+    }
+}
+
+/// Classify a completed poll's diagnostics into a health signal. Pure so it's
+/// unit-testable over hand-built counters.
+///
+/// The final fall-through to `Healthy` is deliberate: an incremental tail read
+/// of an already-ingested transcript reads no new bytes on the settle poll
+/// (`files_matched > 0`, `records_parsed == 0`, `lines_seen == 0`,
+/// `io_errors == 0`), which must NOT read as drift. Real drift always leaves
+/// non-blank lines that failed to parse (`lines_seen > 0`), and a matched file
+/// that couldn't be read at all leaves `io_errors > 0`.
+fn classify(diag: &crate::agent::ReadDiagnostics) -> SyncHealth {
+    if diag.records_parsed > 0 {
+        if diag.io_errors > 0 {
+            SyncHealth::PartialRead
+        } else {
+            SyncHealth::Healthy
+        }
+    } else if !diag.root_exists {
+        SyncHealth::NoRoot
+    } else if diag.files_matched == 0 {
+        SyncHealth::NoFiles
+    } else if diag.lines_seen > 0 {
+        SyncHealth::FormatDrift
+    } else if diag.io_errors > 0 {
+        SyncHealth::ReadError
+    } else {
+        SyncHealth::Healthy
+    }
+}
+
 /// Decision logic for the turn-end transcript sync, split out from
 /// `trigger_session_sync` so it's unit-testable without timers or the
 /// filesystem. Fed each `sync_session_records` result (`None` = no reader,
-/// `Some(n)` = n new records this pass).
+/// `Some(outcome)` = the pass's record count + diagnostics).
 ///
 /// The stop condition depends on whether the runner persists:
 /// - **Non-persistent (per-turn, exited):** the file is complete, so stop at the
@@ -331,6 +422,11 @@ struct SyncPoll {
     had_reader: bool,
     inserted: usize,
     stable_polls: u32,
+    /// Diagnostics accumulated across every reader pass this turn, classified
+    /// only after the retry loop exhausts — never mid-poll, so flush lag can't
+    /// false-positive. Accumulated (not last-pass) so a clean settle read can't
+    /// erase an earlier pass's read errors and misreport the turn as Healthy.
+    turn_diag: Option<crate::agent::ReadDiagnostics>,
 }
 
 impl SyncPoll {
@@ -340,36 +436,43 @@ impl SyncPoll {
             had_reader: false,
             inserted: 0,
             stable_polls: 0,
+            turn_diag: None,
         }
     }
 
-    fn observe(&mut self, result: Option<usize>) -> PollControl {
-        match result {
-            None => PollControl::Stop, // no reader — nothing to wait for
-            Some(0) => {
-                self.had_reader = true;
-                if self.inserted == 0 {
-                    return PollControl::Continue; // not flushed yet — keep waiting
-                }
-                if !self.persistent {
-                    return PollControl::Stop; // exited → first batch was the whole turn
-                }
-                self.stable_polls += 1;
-                if self.stable_polls >= 2 {
-                    PollControl::Stop // file quiet for two polls → settled
-                } else {
-                    PollControl::Continue
-                }
+    fn observe(&mut self, result: Option<SyncOutcome>) -> PollControl {
+        let Some(SyncOutcome {
+            inserted: n,
+            diagnostics,
+        }) = result
+        else {
+            return PollControl::Stop; // no reader — nothing to wait for
+        };
+        self.had_reader = true;
+        match &mut self.turn_diag {
+            Some(acc) => acc.absorb(&diagnostics),
+            None => self.turn_diag = Some(diagnostics),
+        }
+        if n == 0 {
+            if self.inserted == 0 {
+                return PollControl::Continue; // not flushed yet — keep waiting
             }
-            Some(n) => {
-                self.had_reader = true;
-                self.inserted += n;
-                self.stable_polls = 0; // new content → not settled
-                if self.persistent {
-                    PollControl::Continue
-                } else {
-                    PollControl::Stop // exited → the batch is complete
-                }
+            if !self.persistent {
+                return PollControl::Stop; // exited → first batch was the whole turn
+            }
+            self.stable_polls += 1;
+            if self.stable_polls >= 2 {
+                PollControl::Stop // file quiet for two polls → settled
+            } else {
+                PollControl::Continue
+            }
+        } else {
+            self.inserted += n;
+            self.stable_polls = 0; // new content → not settled
+            if self.persistent {
+                PollControl::Continue
+            } else {
+                PollControl::Stop // exited → the batch is complete
             }
         }
     }
@@ -378,25 +481,122 @@ impl SyncPoll {
         self.inserted > 0
     }
 
-    fn reader_ingested_nothing(&self) -> bool {
-        self.had_reader && self.inserted == 0
+    /// The health of the whole turn — `None` when there was no reader (nothing
+    /// to classify). Test-only convenience; production classifies via
+    /// [`turn_diagnostics`](Self::turn_diagnostics) so it can log the counters.
+    #[cfg(test)]
+    fn health(&self) -> Option<SyncHealth> {
+        self.turn_diag.as_ref().map(classify)
+    }
+
+    /// Diagnostics accumulated over the turn's passes — `None` when there was
+    /// no reader.
+    fn turn_diagnostics(&self) -> Option<&crate::agent::ReadDiagnostics> {
+        self.turn_diag.as_ref()
+    }
+}
+
+/// Log every degraded pass (with full counters) and emit `session:sync-health`
+/// on status *change* only — a persistent drift must not fire an event per
+/// turn. `Healthy` is emitted solely to clear a prior degraded state; `NoFiles`
+/// is logged but never emitted (ambiguous — slow flush or empty session).
+fn report_sync_health(
+    app: &AppHandle,
+    health_map: &Mutex<HashMap<String, SyncHealth>>,
+    agent_id: &str,
+    provider: &str,
+    health: SyncHealth,
+    diag: &crate::agent::ReadDiagnostics,
+) {
+    match health {
+        SyncHealth::Healthy => {}
+        SyncHealth::PartialRead => {
+            tracing::warn!(
+                agent_id,
+                provider,
+                records_parsed = diag.records_parsed,
+                io_errors = diag.io_errors,
+                "session sync hit read errors after ingesting records — transcript tail may be missing",
+            );
+        }
+        _ => {
+            tracing::warn!(
+                agent_id,
+                provider,
+                ?health,
+                root_exists = diag.root_exists,
+                files_matched = diag.files_matched,
+                lines_seen = diag.lines_seen,
+                records_parsed = diag.records_parsed,
+                io_errors = diag.io_errors,
+                "session sync ingested 0 records after retries",
+            );
+        }
+    }
+
+    let mut map = health_map.lock();
+    match health {
+        // Ambiguous — logged above, but never emitted and never mutates state
+        // (so it can't clear a real degraded status either).
+        SyncHealth::NoFiles => {}
+        SyncHealth::Healthy => {
+            if map.remove(agent_id).is_some() {
+                // Clearing a previously-degraded status.
+                emit_session_sync_health(
+                    app,
+                    agent_id,
+                    provider,
+                    "healthy",
+                    crate::agent::cached_provider_version(provider),
+                );
+            }
+        }
+        degraded => {
+            if map.get(agent_id) != Some(&degraded) {
+                map.insert(agent_id.to_string(), degraded);
+                if let Some(status) = degraded.wire() {
+                    emit_session_sync_health(
+                        app,
+                        agent_id,
+                        provider,
+                        status,
+                        crate::agent::cached_provider_version(provider),
+                    );
+                }
+            }
+        }
     }
 }
 
 /// Ingest the agent's on-disk transcript into `session_records`, idempotent per
 /// `native_id`. `None` = no transcript reader for this provider (skip, don't
-/// retry); `Some(n)` = reader ran, `n` new records inserted (`0` = nothing yet:
-/// file not flushed, or its location/format changed).
-fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<usize> {
+/// retry); `Some(outcome)` = reader ran, carrying the count of new records
+/// inserted (`0` = nothing yet: file not flushed, or its location/format
+/// changed) plus the `ReadDiagnostics` the locate/read pass collected so the
+/// caller can tell those two apart.
+fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<SyncOutcome> {
     let record = workspace.agent(agent_id).ok()?;
     let reader = crate::agent::transcript_reader(&record.provider)?;
 
-    // A reader exists; from here any shortfall is "nothing yet" → Some(0).
+    // A reader exists but we couldn't even attempt a real read this pass (no
+    // repo / broken checkout / session id not captured yet). This is an
+    // internal / not-yet-ready state, never vendor drift, so report it as
+    // ambiguous (`root_exists`, no files → NoFiles, which is log-only) rather
+    // than letting the default all-false diagnostics read as NoRoot. Still
+    // `inserted == 0`, so the poll keeps retrying exactly as before.
+    let pending = || SyncOutcome {
+        inserted: 0,
+        diagnostics: crate::agent::ReadDiagnostics {
+            root_exists: true,
+            ..Default::default()
+        },
+    };
+
     let Some(repo) = record.repos.first() else {
-        return Some(0);
+        return Some(pending());
     };
     let Ok(cwd) = repo_checkout_path(agent_id, &repo.subdir) else {
-        return Some(0);
+        return Some(pending());
     };
 
     // Resolve the session id. Event-stream agents have it on the record already;
@@ -413,12 +613,13 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
                     let _ = workspace.set_agent_session_id(agent_id, &id);
                     id
                 }
-                None => return Some(0),
+                None => return Some(pending()),
             }
         }
     };
 
-    let paths = (reader.locate)(&session_id, &cwd);
+    let mut diagnostics = crate::agent::ReadDiagnostics::default();
+    let paths = (reader.locate)(&session_id, &cwd, &mut diagnostics);
 
     // Version-frozen snapshot tag (memoized probe — at most one --version per
     // provider per process).
@@ -444,10 +645,11 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
                 start_index,
                 tail.id_field,
                 consume_trailing,
+                &mut diagnostics,
             );
             (recs, Some(next))
         }
-        _ => ((reader.read)(&paths), None),
+        _ => ((reader.read)(&paths, &mut diagnostics), None),
     };
 
     let batch: Vec<(&str, &serde_json::Value)> = records
@@ -482,12 +684,49 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
         tracing::warn!(error = %e, agent_id, "associate user turns failed");
     }
 
-    Some(inserted)
+    Some(SyncOutcome {
+        inserted,
+        diagnostics,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::ReadDiagnostics;
+    use std::path::Path;
+
+    // Serialize the two env-var drift tests: they mutate process-global
+    // CODEX_HOME / CLAUDE_CONFIG_DIR, and cargo runs tests in parallel.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A pass that ingested `n` records off a healthy transcript.
+    fn healthy(n: usize) -> Option<SyncOutcome> {
+        Some(SyncOutcome {
+            inserted: n,
+            diagnostics: ReadDiagnostics {
+                root_exists: true,
+                files_matched: 1,
+                lines_seen: n.max(1),
+                records_parsed: n.max(1),
+                io_errors: 0,
+            },
+        })
+    }
+
+    /// A pass that read a matched file but parsed nothing (format drift).
+    fn drifted() -> Option<SyncOutcome> {
+        Some(SyncOutcome {
+            inserted: 0,
+            diagnostics: ReadDiagnostics {
+                root_exists: true,
+                files_matched: 1,
+                lines_seen: 3,
+                records_parsed: 0,
+                io_errors: 0,
+            },
+        })
+    }
 
     // ── SyncPoll: per-turn stops on first batch; persistent waits for settle ──
 
@@ -496,8 +735,8 @@ mod tests {
         // A per-turn agent has exited, so the file is complete: the first batch
         // is the whole turn. Empty reads before it just ride out flush lag.
         let mut poll = SyncPoll::new(false);
-        assert_eq!(poll.observe(Some(0)), PollControl::Continue); // not flushed yet
-        assert_eq!(poll.observe(Some(6)), PollControl::Stop); // complete — done
+        assert_eq!(poll.observe(healthy(0)), PollControl::Continue); // not flushed yet
+        assert_eq!(poll.observe(healthy(6)), PollControl::Stop); // complete — done
         assert!(poll.should_emit());
     }
 
@@ -506,9 +745,9 @@ mod tests {
         // Claude keeps the file open; only stop once it's been quiet for two
         // consecutive reads after we started ingesting.
         let mut poll = SyncPoll::new(true);
-        assert_eq!(poll.observe(Some(5)), PollControl::Continue);
-        assert_eq!(poll.observe(Some(0)), PollControl::Continue); // quiet 1
-        assert_eq!(poll.observe(Some(0)), PollControl::Stop); // quiet 2 → settled
+        assert_eq!(poll.observe(healthy(5)), PollControl::Continue);
+        assert_eq!(poll.observe(healthy(0)), PollControl::Continue); // quiet 1
+        assert_eq!(poll.observe(healthy(0)), PollControl::Stop); // quiet 2 → settled
         assert!(poll.should_emit());
     }
 
@@ -518,11 +757,11 @@ mod tests {
         // final answer a phase later (an empty read in between). A new batch
         // resets the settle counter, so the answer is still ingested this turn.
         let mut poll = SyncPoll::new(true);
-        assert_eq!(poll.observe(Some(7)), PollControl::Continue);
-        assert_eq!(poll.observe(Some(0)), PollControl::Continue); // gap, quiet 1
-        assert_eq!(poll.observe(Some(2)), PollControl::Continue); // answer lands → reset
-        assert_eq!(poll.observe(Some(0)), PollControl::Continue); // quiet 1
-        assert_eq!(poll.observe(Some(0)), PollControl::Stop); // quiet 2 → settled
+        assert_eq!(poll.observe(healthy(7)), PollControl::Continue);
+        assert_eq!(poll.observe(healthy(0)), PollControl::Continue); // gap, quiet 1
+        assert_eq!(poll.observe(healthy(2)), PollControl::Continue); // answer lands → reset
+        assert_eq!(poll.observe(healthy(0)), PollControl::Continue); // quiet 1
+        assert_eq!(poll.observe(healthy(0)), PollControl::Stop); // quiet 2 → settled
         assert!(poll.should_emit());
     }
 
@@ -531,17 +770,273 @@ mod tests {
         let mut poll = SyncPoll::new(true);
         assert_eq!(poll.observe(None), PollControl::Stop);
         assert!(!poll.should_emit());
-        assert!(!poll.reader_ingested_nothing());
+        assert_eq!(poll.health(), None);
+    }
+
+    // ── classifier: the four states, over hand-built diagnostics ──
+
+    #[test]
+    fn classify_healthy_when_records_parsed() {
+        let d = ReadDiagnostics {
+            root_exists: true,
+            files_matched: 1,
+            lines_seen: 4,
+            records_parsed: 4,
+            io_errors: 0,
+        };
+        assert_eq!(classify(&d), SyncHealth::Healthy);
     }
 
     #[test]
-    fn sync_poll_reader_but_nothing_ingested_warns() {
+    fn classify_no_root_when_root_missing() {
+        let d = ReadDiagnostics {
+            root_exists: false,
+            ..Default::default()
+        };
+        assert_eq!(classify(&d), SyncHealth::NoRoot);
+    }
+
+    #[test]
+    fn classify_no_files_when_root_present_but_no_matches() {
+        let d = ReadDiagnostics {
+            root_exists: true,
+            files_matched: 0,
+            ..Default::default()
+        };
+        assert_eq!(classify(&d), SyncHealth::NoFiles);
+    }
+
+    #[test]
+    fn classify_format_drift_when_lines_seen_but_none_parse() {
+        let d = ReadDiagnostics {
+            root_exists: true,
+            files_matched: 2,
+            lines_seen: 5,
+            records_parsed: 0,
+            io_errors: 0,
+        };
+        assert_eq!(classify(&d), SyncHealth::FormatDrift);
+    }
+
+    #[test]
+    fn classify_partial_read_when_records_and_read_failure() {
+        // A read that fails partway after ingesting records is PartialRead:
+        // records flowed (so no new banner — the next sync re-attempts the
+        // tail via the persisted offset / idempotent dedup), but the pass
+        // still failed, so it must not clear a prior degraded status either.
+        let d = ReadDiagnostics {
+            root_exists: true,
+            files_matched: 1,
+            lines_seen: 3,
+            records_parsed: 3,
+            io_errors: 1,
+        };
+        assert_eq!(classify(&d), SyncHealth::PartialRead);
+    }
+
+    #[test]
+    fn classify_read_error_when_matched_files_unreadable() {
+        // locate matched a transcript but every read failed (permissions,
+        // vanished mid-read): no lines were ever seen, so without the
+        // io_errors branch this would fall through to Healthy.
+        let d = ReadDiagnostics {
+            root_exists: true,
+            files_matched: 1,
+            lines_seen: 0,
+            records_parsed: 0,
+            io_errors: 1,
+        };
+        assert_eq!(classify(&d), SyncHealth::ReadError);
+    }
+
+    #[test]
+    fn classify_healthy_on_tail_settle_reading_no_new_bytes() {
+        // The false-positive guard: an already-ingested transcript tail-read at
+        // EOF matches a file but reads no new lines — must not read as drift.
+        let d = ReadDiagnostics {
+            root_exists: true,
+            files_matched: 1,
+            lines_seen: 0,
+            records_parsed: 0,
+            io_errors: 0,
+        };
+        assert_eq!(classify(&d), SyncHealth::Healthy);
+    }
+
+    // ── SyncPoll health: classification waits for retry exhaustion ──
+
+    #[test]
+    fn sync_poll_flush_lag_zero_then_records_is_healthy() {
+        // A zero→nonzero flush-lag sequence: early empty reads must not classify
+        // (that would false-positive a slow flush as drift). The turn's
+        // accumulated diagnostics carried records → Healthy.
+        let mut poll = SyncPoll::new(false);
+        assert_eq!(poll.observe(healthy(0)), PollControl::Continue);
+        assert_eq!(poll.observe(healthy(4)), PollControl::Stop);
+        assert_eq!(poll.health(), Some(SyncHealth::Healthy));
+    }
+
+    #[test]
+    fn sync_poll_persistent_drift_classifies_after_exhaustion() {
+        // Claude never ingests anything: every pass matches the file but parses
+        // nothing. After the loop exhausts, the turn diagnostics → FormatDrift.
         let mut poll = SyncPoll::new(true);
-        for _ in 0..5 {
-            assert_eq!(poll.observe(Some(0)), PollControl::Continue);
+        for _ in 0..8 {
+            assert_eq!(poll.observe(drifted()), PollControl::Continue);
         }
         assert!(!poll.should_emit());
-        assert!(poll.reader_ingested_nothing());
+        assert_eq!(poll.health(), Some(SyncHealth::FormatDrift));
+    }
+
+    #[test]
+    fn sync_poll_settle_reads_do_not_erase_an_earlier_read_error() {
+        // Persistent agent: the first pass ingests records but also hits a read
+        // error, then the file goes quiet and clean settle reads follow. The
+        // turn must classify PartialRead — a last-pass-wins diagnostic would let
+        // the clean settle read report Healthy and clear a real degraded state.
+        let partial = || {
+            Some(SyncOutcome {
+                inserted: 5,
+                diagnostics: ReadDiagnostics {
+                    root_exists: true,
+                    files_matched: 1,
+                    lines_seen: 5,
+                    records_parsed: 5,
+                    io_errors: 1,
+                },
+            })
+        };
+        // A genuinely empty settle read: tail at EOF, nothing seen, no errors.
+        let quiet = || {
+            Some(SyncOutcome {
+                inserted: 0,
+                diagnostics: ReadDiagnostics {
+                    root_exists: true,
+                    files_matched: 1,
+                    lines_seen: 0,
+                    records_parsed: 0,
+                    io_errors: 0,
+                },
+            })
+        };
+        let mut poll = SyncPoll::new(true);
+        assert_eq!(poll.observe(partial()), PollControl::Continue);
+        assert_eq!(poll.observe(quiet()), PollControl::Continue); // quiet 1
+        assert_eq!(poll.observe(quiet()), PollControl::Stop); // quiet 2 → settled
+        assert!(poll.should_emit());
+        assert_eq!(poll.health(), Some(SyncHealth::PartialRead));
+    }
+
+    // ── real-reader drift, via env-injectable roots ──
+    // These exercise the actual vendor readers through the public
+    // `transcript_reader` dispatch, so the diagnostics + classification are
+    // validated end-to-end (not just over hand-built counters).
+
+    /// Run a vendor reader against a session id / cwd and classify the result.
+    fn read_and_classify(
+        provider: &str,
+        session_id: &str,
+        cwd: &Path,
+    ) -> (SyncHealth, ReadDiagnostics) {
+        let reader = crate::agent::transcript_reader(provider).expect("reader");
+        let mut diag = ReadDiagnostics::default();
+        let paths = (reader.locate)(session_id, cwd, &mut diag);
+        let _ = (reader.read)(&paths, &mut diag);
+        (classify(&diag), diag)
+    }
+
+    #[test]
+    fn codex_reader_drift_states_via_codex_home() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("CODEX_HOME", home.path());
+        let cwd = home.path(); // codex ignores cwd
+        let day = home.path().join("sessions/2024/01/02");
+
+        // (a) missing root → NoRoot (no `sessions` dir yet).
+        let (h, d) = read_and_classify("codex", "sid-a", cwd);
+        assert_eq!(h, SyncHealth::NoRoot, "diag={d:?}");
+        assert!(!d.root_exists);
+
+        // (b) root present, no matching rollout → NoFiles.
+        std::fs::create_dir_all(&day).unwrap();
+        let (h, d) = read_and_classify("codex", "sid-b", cwd);
+        assert_eq!(h, SyncHealth::NoFiles, "diag={d:?}");
+        assert!(d.root_exists && d.files_matched == 0);
+
+        // (c) matching rollout of pure garbage → FormatDrift, zero records.
+        let garbage = day.join("rollout-20240102T0000-sid-c.jsonl");
+        std::fs::write(&garbage, b"not json\nalso not json\n").unwrap();
+        let (h, d) = read_and_classify("codex", "sid-c", cwd);
+        assert_eq!(h, SyncHealth::FormatDrift, "diag={d:?}");
+        assert_eq!(d.files_matched, 1);
+        assert_eq!(d.records_parsed, 0);
+        assert!(d.lines_seen >= 2);
+
+        // (d) mixed file: good lines still ingested, skips counted.
+        let mixed = day.join("rollout-20240102T0001-sid-d.jsonl");
+        std::fs::write(&mixed, b"{\"a\":1}\ngarbage\n{\"b\":2}\n").unwrap();
+        let reader = crate::agent::transcript_reader("codex").unwrap();
+        let mut diag = ReadDiagnostics::default();
+        let paths = (reader.locate)("sid-d", cwd, &mut diag);
+        let recs = (reader.read)(&paths, &mut diag);
+        assert_eq!(recs.len(), 2, "the two valid lines are still returned");
+        assert_eq!(diag.records_parsed, 2);
+        assert_eq!(
+            diag.lines_seen, 3,
+            "the garbage line was seen but not parsed"
+        );
+        assert_eq!(classify(&diag), SyncHealth::Healthy);
+
+        std::env::remove_var("CODEX_HOME");
+    }
+
+    #[test]
+    fn claude_reader_drift_states_via_config_dir() {
+        // NoRoot is not asserted here: Claude falls back to `~/.claude/projects`,
+        // which exists on many dev machines, so a missing CLAUDE_CONFIG_DIR alone
+        // can't guarantee `!root_exists`. NoRoot is covered by the codex reader
+        // test and the pure classifier test.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap(); // no docker per-agent dir under it
+        std::env::set_var("CLAUDE_CONFIG_DIR", cfg.path());
+        let projects = cfg.path().join("projects");
+        let slug = projects.join("-tmp-slug");
+        std::fs::create_dir_all(&slug).unwrap();
+
+        // (b) root present, session file absent → NoFiles (random uuid can't
+        // collide with a real file in the ~/.claude fallback).
+        let sid_b = "11111111-1111-4111-8111-111111111111";
+        let (h, d) = read_and_classify("claude", sid_b, cwd.path());
+        assert_eq!(h, SyncHealth::NoFiles, "diag={d:?}");
+        assert!(d.root_exists && d.files_matched == 0);
+
+        // (c) session file of garbage → FormatDrift.
+        let sid_c = "22222222-2222-4222-8222-222222222222";
+        std::fs::write(slug.join(format!("{sid_c}.jsonl")), b"{oops\nnope\n").unwrap();
+        let (h, d) = read_and_classify("claude", sid_c, cwd.path());
+        assert_eq!(h, SyncHealth::FormatDrift, "diag={d:?}");
+        assert_eq!(d.files_matched, 1);
+        assert_eq!(d.records_parsed, 0);
+
+        // (d) mixed file: valid records still ingested.
+        let sid_d = "33333333-3333-4333-8333-333333333333";
+        std::fs::write(
+            slug.join(format!("{sid_d}.jsonl")),
+            b"{\"uuid\":\"x\",\"type\":\"user\"}\ntorn{\n{\"uuid\":\"y\"}\n",
+        )
+        .unwrap();
+        let reader = crate::agent::transcript_reader("claude").unwrap();
+        let mut diag = ReadDiagnostics::default();
+        let paths = (reader.locate)(sid_d, cwd.path(), &mut diag);
+        let recs = (reader.read)(&paths, &mut diag);
+        assert_eq!(recs.len(), 2);
+        assert_eq!(diag.records_parsed, 2);
+        assert_eq!(diag.lines_seen, 3);
+        assert_eq!(classify(&diag), SyncHealth::Healthy);
+
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
     }
 
     fn snapshot_repo() -> TrackedRepo {

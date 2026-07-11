@@ -71,6 +71,12 @@ pub struct Supervisor {
     /// flush distinguish a natural completion (flush queued follow-ups) from a
     /// stop (keep them queued, don't auto-send — see `drain_message_queue`).
     pub interrupted: Mutex<HashSet<String>>,
+    /// Last-emitted transcript-ingest health per agent, so `session:sync-health`
+    /// fires on *change* only (real drift would otherwise spam an event every
+    /// turn). Absent = healthy/never-degraded. In-memory only, event-driven —
+    /// never persisted (see `session_sync`). Behind an `Arc` so the fire-and-
+    /// forget sync task can hold it without borrowing `self`.
+    pub sync_health: Arc<Mutex<HashMap<String, session_sync::SyncHealth>>>,
 }
 
 impl Supervisor {
@@ -87,6 +93,7 @@ impl Supervisor {
             respawn_pending: Mutex::new(HashSet::new()),
             message_queue: Mutex::new(MessageQueue::new()),
             interrupted: Mutex::new(HashSet::new()),
+            sync_health: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

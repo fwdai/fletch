@@ -72,6 +72,23 @@
   flex-shrink: 0;
 }
 
+/* Inline per-agent transcript-drift notice under the workspace header. Same
+   layout as .crash-banner but a softer warn tint — history ingestion degraded,
+   not the agent crashing (the app still has its live-compiled fallback). */
+.drift-banner {
+  gap: 12px;
+  margin: 8px 12px 0;
+  padding: 8px 10px 8px 12px;
+  background: color-mix(in srgb, var(--warn), var(--bg-0) 86%);
+  border: 1px solid color-mix(in srgb, var(--warn), var(--bg-0) 70%);
+  border-radius: var(--r-md);
+  font-size: var(--fs-base);
+}
+.drift-title {
+  color: var(--warn);
+  font-weight: 600;
+}
+
 /* update-ready toast — bottom-right, offers restart now / skip */
 .update-toast {
   position: fixed;

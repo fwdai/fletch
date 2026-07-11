@@ -82,6 +82,40 @@ pub(super) fn emit_session_records_appended(app: &AppHandle, agent_id: &str) {
     );
 }
 
+#[derive(Clone, serde::Serialize)]
+struct SessionSyncHealthPayload {
+    agent_id: String,
+    provider: String,
+    /// `"healthy"` (clears a prior degraded state), `"no_root"`, or
+    /// `"format_drift"`. `NoFiles` is never emitted (log-only, ambiguous).
+    status: &'static str,
+    /// The current CLI version string (memoized `<bin> --version`) for the
+    /// log/message only — not a historical DB lookup. `None` if unprobed.
+    version: Option<String>,
+}
+
+/// The transcript-ingest health for an agent changed (drift detected, or a
+/// prior drift cleared). Emitted on status *change* only — see
+/// `session_sync::trigger_session_sync`.
+pub(super) fn emit_session_sync_health(
+    app: &AppHandle,
+    agent_id: &str,
+    provider: &str,
+    status: &'static str,
+    version: Option<String>,
+) {
+    emit(
+        app,
+        "session:sync-health",
+        SessionSyncHealthPayload {
+            agent_id: agent_id.to_string(),
+            provider: provider.to_string(),
+            status,
+            version,
+        },
+    );
+}
+
 /// Emitted when a turn flips to Running, carrying the backend's own start
 /// timestamp (the same value persisted as the turn's `started_at`). The live
 /// timer anchors to this rather than the event's client-receipt time, so it

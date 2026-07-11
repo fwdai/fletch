@@ -721,6 +721,32 @@ export function onSessionRecordsAppended(
   );
 }
 
+/** Degraded transcript-ingest status: the vendor CLI's home dir is gone
+ *  (`no_root`), its files no longer parse (`format_drift`), or matched files
+ *  couldn't be read at all (`read_error`) or only partially (`partial_read`,
+ *  records ingested but the tail may be missing). `healthy` is only ever sent
+ *  to clear a prior degraded status. */
+export type SyncHealthStatus =
+  | "healthy"
+  | "no_root"
+  | "format_drift"
+  | "read_error"
+  | "partial_read";
+
+export interface SessionSyncHealthEvent {
+  agent_id: string;
+  provider: string;
+  status: SyncHealthStatus;
+  /** Current CLI version (for display/logging only), or null if unprobed. */
+  version: string | null;
+}
+
+/** Fires when an agent's turn-end transcript ingest changes health — drift
+ *  detected, or a prior drift cleared. Emitted on change only. */
+export function onSessionSyncHealth(cb: (e: SessionSyncHealthEvent) => void): Promise<UnlistenFn> {
+  return listen<SessionSyncHealthEvent>("session:sync-health", (event) => cb(event.payload));
+}
+
 export interface TurnStartedEvent {
   agent_id: string;
   /** Backend epoch millis the turn began — the live-timer anchor. */

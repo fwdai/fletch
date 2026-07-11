@@ -1315,19 +1315,21 @@ impl WorkspaceManager {
             })?
             .collect::<std::result::Result<_, rusqlite::Error>>()?;
         rows.into_iter()
-            .map(|(workspace_id, turn_id, text, attachments_text, thinking)| {
-                let attachments = serde_json::from_str(&attachments_text)
-                    .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
-                Ok((
-                    workspace_id,
-                    crate::message_queue::PendingMsg {
-                        turn_id,
-                        text,
-                        attachments,
-                        thinking,
-                    },
-                ))
-            })
+            .map(
+                |(workspace_id, turn_id, text, attachments_text, thinking)| {
+                    let attachments = serde_json::from_str(&attachments_text)
+                        .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
+                    Ok((
+                        workspace_id,
+                        crate::message_queue::PendingMsg {
+                            turn_id,
+                            text,
+                            attachments,
+                            thinking,
+                        },
+                    ))
+                },
+            )
             .collect()
     }
 
@@ -2220,9 +2222,12 @@ mod tests {
         };
 
         // Enqueue three follow-ups; they read back for this workspace in seq order.
-        wm.enqueue_pending_message("yosemite", &pm("t1", "first")).unwrap();
-        wm.enqueue_pending_message("yosemite", &pm("t2", "second")).unwrap();
-        wm.enqueue_pending_message("yosemite", &pm("t3", "third")).unwrap();
+        wm.enqueue_pending_message("yosemite", &pm("t1", "first"))
+            .unwrap();
+        wm.enqueue_pending_message("yosemite", &pm("t2", "second"))
+            .unwrap();
+        wm.enqueue_pending_message("yosemite", &pm("t3", "third"))
+            .unwrap();
 
         let all = wm.read_all_pending_messages().unwrap();
         let ids: Vec<_> = all
@@ -2247,7 +2252,8 @@ mod tests {
         assert!(wm.read_all_pending_messages().unwrap().is_empty());
 
         // clear wipes whatever remains (teardown path).
-        wm.enqueue_pending_message("yosemite", &pm("t4", "again")).unwrap();
+        wm.enqueue_pending_message("yosemite", &pm("t4", "again"))
+            .unwrap();
         wm.clear_pending_messages("yosemite").unwrap();
         assert!(wm.read_all_pending_messages().unwrap().is_empty());
     }
