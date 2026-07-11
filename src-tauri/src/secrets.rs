@@ -34,11 +34,27 @@ mod store {
 
     const SERVICE: &str = crate::BUNDLE_ID;
 
+    /// `errSecItemNotFound` — the one read/delete failure that means "no such
+    /// secret". Every other code (locked keychain, interaction not allowed)
+    /// means the secret may exist but the keychain is unavailable right now,
+    /// and must not be treated as absence.
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
     pub fn get(conn: &Connection, key: &str) -> Option<String> {
-        if let Ok(bytes) = get_generic_password(SERVICE, key) {
-            return String::from_utf8(bytes)
-                .ok()
-                .filter(|v| !v.trim().is_empty());
+        match get_generic_password(SERVICE, key) {
+            Ok(bytes) => {
+                return String::from_utf8(bytes)
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            }
+            // Unavailable ≠ absent: say so (never silently look signed out),
+            // then still consult the legacy row below — a pre-migration value
+            // keeps the session working, and nothing is scrubbed unless the
+            // keychain write succeeds.
+            Err(e) if e.code() != ERR_SEC_ITEM_NOT_FOUND => {
+                tracing::warn!(key, code = e.code(), "keychain read failed");
+            }
+            Err(_) => {}
         }
         // Not in the keychain: migrate the legacy plaintext `settings` row a
         // pre-keychain build left behind, then scrub it. On a keychain write
@@ -58,8 +74,16 @@ mod store {
     }
 
     pub fn delete(conn: &Connection, key: &str) -> Result<()> {
-        // Deleting an absent secret is a no-op, not an error.
-        let _ = delete_generic_password(SERVICE, key);
+        match delete_generic_password(SERVICE, key) {
+            // Deleting an absent secret is a no-op, not an error.
+            Ok(()) => {}
+            Err(e) if e.code() == ERR_SEC_ITEM_NOT_FOUND => {}
+            // Any other failure must fail the disconnect: swallowing it would
+            // clear only the in-process mirror, and the surviving keychain
+            // item would re-seed the token on next launch — a "disconnected"
+            // account that signs itself back in.
+            Err(e) => return Err(Error::Other(format!("keychain delete ({key}): {e}"))),
+        }
         // Scrub any plaintext row a failed migration could have left behind.
         if database::get_setting(conn, key).is_some_and(|v| !v.is_empty()) {
             scrub_setting(conn, key);
