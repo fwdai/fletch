@@ -1034,6 +1034,10 @@ pub fn run() {
             let workspace = Arc::new(WorkspaceManager::new(db));
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
+            // Reload follow-ups that were queued behind an in-flight turn when a
+            // prior run exited, so a mid-turn message survives a restart. They
+            // rest in the queue and flush on the user's next send (no auto-spawn).
+            supervisor.rehydrate_pending_messages();
             // At most one `claude setup-token` capture runs at a time; the
             // code-submit / cancel commands reach it through this slot.
             app.manage(ClaudeSetupState::default());

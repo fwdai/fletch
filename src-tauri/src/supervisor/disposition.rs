@@ -256,7 +256,23 @@ impl Supervisor {
         self.activities.lock().remove(agent_id);
         self.statuses.lock().remove(agent_id);
         self.native_inputs.lock().remove(agent_id);
-        self.message_queue.lock().clear(agent_id);
+        // Clear the in-memory queue and its durable mirror under one hold of
+        // the queue lock. Dropping the mirror stops an archived agent's queue
+        // from rehydrating on the next launch (discard also cascades via the FK
+        // when the workspace row is removed; this covers archive, which keeps
+        // it). Holding the lock across both clears means a concurrent
+        // `persist_and_enqueue` — which writes its row and queue entry under the
+        // same lock — is fully ordered before or after this teardown, so it
+        // can't slip a new row in between the two clears only to have it deleted
+        // with no in-memory entry left to deliver it. Lock order stays queue →
+        // db (see `messaging::Supervisor::persist_and_enqueue`).
+        {
+            let mut queue = self.message_queue.lock();
+            queue.clear(agent_id);
+            if let Err(e) = self.workspace.clear_pending_messages(agent_id) {
+                tracing::warn!(error = %e, agent_id, "clear persisted pending follow-ups failed");
+            }
+        }
         self.interrupted.lock().remove(agent_id);
         self.shells.lock().remove(agent_id);
         if let Some(run) = self.runs.lock().remove(agent_id) {
