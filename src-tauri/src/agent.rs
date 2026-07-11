@@ -188,6 +188,20 @@ pub struct ReadDiagnostics {
     pub io_errors: usize,
 }
 
+impl ReadDiagnostics {
+    /// Fold another pass's counters into this one. The turn-end sync polls
+    /// repeatedly and classifies the turn as a whole, so counters accumulate
+    /// across passes — a clean settle read must not erase an earlier pass's
+    /// errors.
+    pub fn absorb(&mut self, other: &ReadDiagnostics) {
+        self.root_exists |= other.root_exists;
+        self.files_matched += other.files_matched;
+        self.lines_seen += other.lines_seen;
+        self.records_parsed += other.records_parsed;
+        self.io_errors += other.io_errors;
+    }
+}
+
 /// Marks a reader whose transcript is a single append-only JSONL file, so it can
 /// be read incrementally from a byte offset (`read_jsonl_tail`) instead of fully
 /// re-parsed each turn. `id_field` is the per-line native-id field (matching the

@@ -62,7 +62,7 @@ impl Supervisor {
             }
             // Classify only now, after the retry loop is exhausted — earlier the
             // transcript may just be mid-flush, which must never read as drift.
-            if let Some(diag) = poll.last_diagnostics() {
+            if let Some(diag) = poll.turn_diagnostics() {
                 let provider = workspace
                     .agent(&agent_id)
                     .map(|r| r.provider)
@@ -422,9 +422,11 @@ struct SyncPoll {
     had_reader: bool,
     inserted: usize,
     stable_polls: u32,
-    /// Diagnostics from the most recent reader pass, classified only after the
-    /// retry loop exhausts — never mid-poll, so flush lag can't false-positive.
-    last_diag: Option<crate::agent::ReadDiagnostics>,
+    /// Diagnostics accumulated across every reader pass this turn, classified
+    /// only after the retry loop exhausts — never mid-poll, so flush lag can't
+    /// false-positive. Accumulated (not last-pass) so a clean settle read can't
+    /// erase an earlier pass's read errors and misreport the turn as Healthy.
+    turn_diag: Option<crate::agent::ReadDiagnostics>,
 }
 
 impl SyncPoll {
@@ -434,7 +436,7 @@ impl SyncPoll {
             had_reader: false,
             inserted: 0,
             stable_polls: 0,
-            last_diag: None,
+            turn_diag: None,
         }
     }
 
@@ -447,7 +449,10 @@ impl SyncPoll {
             return PollControl::Stop; // no reader — nothing to wait for
         };
         self.had_reader = true;
-        self.last_diag = Some(diagnostics);
+        match &mut self.turn_diag {
+            Some(acc) => acc.absorb(&diagnostics),
+            None => self.turn_diag = Some(diagnostics),
+        }
         if n == 0 {
             if self.inserted == 0 {
                 return PollControl::Continue; // not flushed yet — keep waiting
@@ -476,17 +481,18 @@ impl SyncPoll {
         self.inserted > 0
     }
 
-    /// The health of the final pass — `None` when there was no reader (nothing
+    /// The health of the whole turn — `None` when there was no reader (nothing
     /// to classify). Test-only convenience; production classifies via
-    /// [`last_diagnostics`](Self::last_diagnostics) so it can log the counters.
+    /// [`turn_diagnostics`](Self::turn_diagnostics) so it can log the counters.
     #[cfg(test)]
     fn health(&self) -> Option<SyncHealth> {
-        self.last_diag.as_ref().map(classify)
+        self.turn_diag.as_ref().map(classify)
     }
 
-    /// The final pass's diagnostics — `None` when there was no reader.
-    fn last_diagnostics(&self) -> Option<&crate::agent::ReadDiagnostics> {
-        self.last_diag.as_ref()
+    /// Diagnostics accumulated over the turn's passes — `None` when there was
+    /// no reader.
+    fn turn_diagnostics(&self) -> Option<&crate::agent::ReadDiagnostics> {
+        self.turn_diag.as_ref()
     }
 }
 
@@ -863,8 +869,8 @@ mod tests {
     #[test]
     fn sync_poll_flush_lag_zero_then_records_is_healthy() {
         // A zero→nonzero flush-lag sequence: early empty reads must not classify
-        // (that would false-positive a slow flush as drift). Only the final
-        // pass's diagnostics count, and it carried records → Healthy.
+        // (that would false-positive a slow flush as drift). The turn's
+        // accumulated diagnostics carried records → Healthy.
         let mut poll = SyncPoll::new(false);
         assert_eq!(poll.observe(healthy(0)), PollControl::Continue);
         assert_eq!(poll.observe(healthy(4)), PollControl::Stop);
@@ -874,13 +880,52 @@ mod tests {
     #[test]
     fn sync_poll_persistent_drift_classifies_after_exhaustion() {
         // Claude never ingests anything: every pass matches the file but parses
-        // nothing. After the loop exhausts, the last diagnostics → FormatDrift.
+        // nothing. After the loop exhausts, the turn diagnostics → FormatDrift.
         let mut poll = SyncPoll::new(true);
         for _ in 0..8 {
             assert_eq!(poll.observe(drifted()), PollControl::Continue);
         }
         assert!(!poll.should_emit());
         assert_eq!(poll.health(), Some(SyncHealth::FormatDrift));
+    }
+
+    #[test]
+    fn sync_poll_settle_reads_do_not_erase_an_earlier_read_error() {
+        // Persistent agent: the first pass ingests records but also hits a read
+        // error, then the file goes quiet and clean settle reads follow. The
+        // turn must classify PartialRead — a last-pass-wins diagnostic would let
+        // the clean settle read report Healthy and clear a real degraded state.
+        let partial = || {
+            Some(SyncOutcome {
+                inserted: 5,
+                diagnostics: ReadDiagnostics {
+                    root_exists: true,
+                    files_matched: 1,
+                    lines_seen: 5,
+                    records_parsed: 5,
+                    io_errors: 1,
+                },
+            })
+        };
+        // A genuinely empty settle read: tail at EOF, nothing seen, no errors.
+        let quiet = || {
+            Some(SyncOutcome {
+                inserted: 0,
+                diagnostics: ReadDiagnostics {
+                    root_exists: true,
+                    files_matched: 1,
+                    lines_seen: 0,
+                    records_parsed: 0,
+                    io_errors: 0,
+                },
+            })
+        };
+        let mut poll = SyncPoll::new(true);
+        assert_eq!(poll.observe(partial()), PollControl::Continue);
+        assert_eq!(poll.observe(quiet()), PollControl::Continue); // quiet 1
+        assert_eq!(poll.observe(quiet()), PollControl::Stop); // quiet 2 → settled
+        assert!(poll.should_emit());
+        assert_eq!(poll.health(), Some(SyncHealth::PartialRead));
     }
 
     // ── real-reader drift, via env-injectable roots ──
