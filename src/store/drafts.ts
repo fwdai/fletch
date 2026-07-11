@@ -1,5 +1,5 @@
 import { api } from "@/api";
-import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
+import { DEFAULT_PROVIDER_ID, MCP_SUPPORT, PROVIDERS, mcpAttachable } from "@/data/providers";
 import { sendWhenAgentReady, usedNames } from "@/helpers";
 import { snapshotMcpServer } from "@/storage/mcpServers";
 import { setSetting } from "@/storage/settings";
@@ -180,9 +180,15 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         .map((sid) => get().skills.find((s) => s.id === sid))
         .filter((s) => s !== undefined)
         .map(({ name, description, body }) => ({ name, description, body }));
+      // Undeliverable servers (e.g. an HTTP server on a codex base, saved
+      // before the base switch) drop here too, not just in the editor: the
+      // snapshot must contain exactly what the provider can run, so the
+      // backend never carries assignments it silently ignores.
+      const mcpSupport = MCP_SUPPORT[provider] ?? "none";
       const mcpServers = (custom?.mcpServerIds ?? [])
         .map((sid) => get().mcpServers.find((s) => s.id === sid))
         .filter((s) => s !== undefined)
+        .filter((s) => mcpAttachable(mcpSupport, s.transport))
         .map(snapshotMcpServer);
       // `thinking` carries the composer's effort selection. For claude it's a
       // session-level spawn flag (--effort), applied here; per-turn agents

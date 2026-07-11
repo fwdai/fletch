@@ -50,6 +50,25 @@ export function isDockerSupported(id: string | null | undefined): boolean {
   return !!PROVIDERS.find((p) => p.id === id)?.dockerSupported;
 }
 
+/** Which MCP transports each provider can attach — mirrors the backend
+ *  delivery in `agent_profile.rs`: claude takes stdio + http via
+ *  `--mcp-config`, codex only stdio via `-c mcp_servers.*` (its `-c` config
+ *  has no http transport), and the rest have no MCP surface we can drive.
+ *  Unknown ids are treated as unsupported. */
+export type McpSupport = "all" | "stdio" | "none";
+export const MCP_SUPPORT: Record<string, McpSupport> = {
+  claude: "all",
+  codex: "stdio",
+};
+
+/** Whether a provider with `support` can actually deliver an MCP server of
+ *  `transport` at spawn. The single rule behind the agent editor's disabled
+ *  rows, its save-path filter, and the spawn snapshot in `store/drafts.ts`,
+ *  so the three can't drift. */
+export function mcpAttachable(support: McpSupport, transport: "stdio" | "http"): boolean {
+  return support === "all" || (support === "stdio" && transport !== "http");
+}
+
 /** URL for a provider/agent's brand icon on the website CDN. Icons live at
  *  /agents/<slug>.svg (slug === provider id), so a rebrand only needs the SVG
  *  re-uploaded — no app release. The webview's disk cache serves it offline

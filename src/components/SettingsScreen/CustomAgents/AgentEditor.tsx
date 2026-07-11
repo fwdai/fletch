@@ -4,12 +4,12 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { SetSeg } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
-import { PROVIDERS } from "@/data/providers";
+import { MCP_SUPPORT, PROVIDERS, mcpAttachable } from "@/data/providers";
 import type { NewCustomAgent } from "@/storage/customAgents";
 import { useAppStore } from "@/store";
 import { AssignPicker } from "./AssignPicker";
 import { Mono } from "./Mono";
-import { CA_HUES, INJECTION_HINT, MCP_HINT, MCP_SUPPORT, mcpAttachable } from "./shared";
+import { CA_HUES, INJECTION_HINT, MCP_HINT } from "./shared";
 
 /** Mutable editor form state. `model`/`effort` use "" as the "provider default"
  *  sentinel so the <select> has a concrete value; converted to null on save. */

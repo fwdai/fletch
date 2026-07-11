@@ -1,6 +1,6 @@
 // Shared helpers + constants for the Custom Agents settings pane.
 
-import type { McpTransport } from "@/storage/mcpServers";
+import type { McpSupport } from "@/data/providers";
 
 /** Preset hues for the monogram tile (evenly spread around the wheel). */
 export const CA_HUES = [265, 150, 25, 215, 320, 95, 175, 50] as const;
@@ -30,27 +30,10 @@ export const INJECTION_HINT: Record<string, string> = {
   pi: "--append-system-prompt",
 };
 
-/** Which MCP transports each base provider can attach — mirrors the backend
- *  delivery in `agent_profile.rs`: claude takes stdio + http via
- *  `--mcp-config`, codex only stdio via `-c mcp_servers.*` (its `-c` config
- *  has no http transport), and the rest have no MCP surface we can drive.
- *  Skills need no such map: the materialize-and-index mechanism works on every
- *  base. Surfaced in the editor so unattachable servers are disabled up front
- *  instead of being silently ignored at spawn. */
-export type McpSupport = "all" | "stdio" | "none";
-export const MCP_SUPPORT: Record<string, McpSupport> = {
-  claude: "all",
-  codex: "stdio",
-};
-
-/** Whether a base with `support` can actually deliver a server of `transport`
- *  at spawn. The single rule behind both the editor's disabled rows and the
- *  save-path filter, so the two can't drift. */
-export function mcpAttachable(support: McpSupport, transport: McpTransport): boolean {
-  return support === "all" || (support === "stdio" && transport !== "http");
-}
-
-/** Editor hint line for the Tools section, by the base's MCP support level. */
+/** Editor hint line for the Tools section, by the base's MCP support level
+ *  (see `MCP_SUPPORT`/`mcpAttachable` in data/providers.ts — capability data
+ *  lives there so the spawn path can apply the same rule). Skills need no such
+ *  map: the materialize-and-index mechanism works on every base. */
 export const MCP_HINT: Record<McpSupport, string> = {
   all: "MCP servers attached when this agent runs",
   stdio: "MCP servers attached when this agent runs — command (stdio) servers only",
