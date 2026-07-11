@@ -435,11 +435,24 @@ pub fn build_profile(
 /// kept alongside: for the default home-relative dirs both forms are equal
 /// (home is canonical), and when a leaf like `~/.claude` is itself a symlink
 /// the literal path is what the `claude_config_extra` dedup compares against.
+///
+/// Every candidate — literal and resolved — passes [`policy::bin_resident`]
+/// before it's emitted: a default dir whose leaf symlinks into a PATH-style
+/// bin dir (`~/.claude` → `~/.local/bin/claude`) must not have its resolved
+/// form granted, or writes through the symlink would land agent-controlled
+/// files on the user's PATH (invariant 1). Env-relocated dirs are already
+/// rejected at resolution time, but the default home-relative dirs never pass
+/// through that check, so it's re-applied here at the emission seam. Skipping
+/// is fail-closed: with the resolved form denied, the provider's writes
+/// through the symlink are refused rather than hijackable.
 fn subpath_grants(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for dir in dirs {
         let resolved = policy::resolve_existing_prefix(&dir);
         for p in [dir, resolved] {
+            if policy::bin_resident(&p) {
+                continue;
+            }
             let line = format!("  (subpath {})", sbpl_string(&p.to_string_lossy()));
             if !out.contains(&line) {
                 out.push(line);
@@ -593,6 +606,48 @@ mod tests {
         // A dir that resolves to itself yields exactly one grant — no
         // duplicate lines for the common (canonical) case.
         assert_eq!(subpath_grants([canonical_real]).len(), 1);
+    }
+
+    #[test]
+    fn subpath_grants_never_emit_bin_resident_paths() {
+        // A default provider dir whose leaf symlinks into a PATH-style bin dir
+        // (~/.claude → ~/.local/bin/claude) must not have its resolved form
+        // emitted — that would grant an agent-writable subtree on the user's
+        // PATH through the symlink (invariant 1). Fail closed instead.
+        let td = tempfile::tempdir().unwrap();
+        let target = td.path().join(".local/bin/claude");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = td.path().join(".claude");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let grants = subpath_grants([link]);
+        assert!(
+            grants.is_empty(),
+            "no grant may be emitted for a bin-resident dir, got: {grants:?}"
+        );
+    }
+
+    #[test]
+    fn profile_omits_provider_dirs_symlinked_into_bin() {
+        // End-to-end through build_profile: with ~/.claude symlinked into
+        // ~/.local/bin, neither the resolved bin subtree nor any other
+        // .local/bin path may appear on the allow-list, while the remaining
+        // provider dirs stay granted.
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let target = home.join(".local/bin/claude");
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, home.join(".claude")).unwrap();
+
+        let profile = build_profile(&root, &rpc, &home, None).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        assert!(
+            !profile.contains(".local/bin"),
+            "a symlinked ~/.claude must not smuggle a bin subtree onto the allow-list"
+        );
+        assert!(
+            profile.contains(&format!("(subpath \"{}/.cursor\")", canonical_home.display())),
+            "other provider dirs stay granted"
+        );
     }
 
     #[test]
