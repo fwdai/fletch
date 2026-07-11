@@ -16,6 +16,7 @@ import {
   onRunPort,
   onRunState,
   onSessionRecordsAppended,
+  onSessionSyncHealth,
   onShellOutput,
   onTurnStarted,
   onWorkspaceChanged,
@@ -280,6 +281,26 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
         // Non-critical refresh; the next load picks up the records.
       }
     })();
+  });
+
+  // Transcript-ingest health changed for an agent. A degraded status
+  // (no_root / format_drift) is stored per-agent and surfaced as a
+  // non-blocking banner in the chat view; `healthy` clears it (deletes the
+  // key, mirroring how `unseenResults` treats an absent key as the good state).
+  await onSessionSyncHealth((e) => {
+    set((state) => {
+      const syncHealth = { ...state.syncHealth };
+      if (e.status === "healthy") {
+        delete syncHealth[e.agent_id];
+      } else {
+        syncHealth[e.agent_id] = {
+          status: e.status,
+          provider: e.provider,
+          version: e.version,
+        };
+      }
+      return { syncHealth };
+    });
   });
 
   await onAgentBranch((e) => {

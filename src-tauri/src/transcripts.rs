@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::error::{Error, Result};
+use crate::agent::ReadDiagnostics;
 
 /// Directory (under an agent's writable root) that the Docker sandbox binds
 /// over the container's read-only `<config-dir>/projects`, so claude's session
@@ -28,13 +28,17 @@ pub(crate) const DOCKER_CLAUDE_PROJECTS_DIRNAME: &str = ".fletch-claude-projects
 /// its parent is the writable root that holds it. Seatbelt agents have no such
 /// dir (it won't exist and is skipped), so the scan falls through to the
 /// standard `~/.claude` / `CLAUDE_CONFIG_DIR` candidates.
-pub(crate) fn find_session_jsonl(session_id: &str, cwd: &Path) -> Option<PathBuf> {
+pub(crate) fn find_session_jsonl(
+    session_id: &str,
+    cwd: &Path,
+    diag: &mut ReadDiagnostics,
+) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(parent) = cwd.parent() {
         dirs.push(parent.join(DOCKER_CLAUDE_PROJECTS_DIRNAME));
     }
     dirs.extend(claude_projects_dirs());
-    find_session_jsonl_in(&dirs, session_id)
+    find_session_jsonl_in(&dirs, session_id, diag)
 }
 
 /// Candidate `projects` directories Claude may have written transcripts to.
@@ -75,15 +79,23 @@ fn projects_dirs_from(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> Vec
 /// Scan the given `projects` dirs for `<session-id>.jsonl`, returning the first
 /// match. A missing/unreadable candidate dir is skipped, not fatal, so a later
 /// candidate is still searched.
-fn find_session_jsonl_in(projects_dirs: &[PathBuf], session_id: &str) -> Option<PathBuf> {
+fn find_session_jsonl_in(
+    projects_dirs: &[PathBuf],
+    session_id: &str,
+    diag: &mut ReadDiagnostics,
+) -> Option<PathBuf> {
     let filename = format!("{session_id}.jsonl");
     for projects in projects_dirs {
         let Ok(entries) = std::fs::read_dir(projects) else {
             continue;
         };
+        // A readable `projects` candidate is a live Claude root — Claude's home
+        // hasn't moved out from under us (either of its two roots counts).
+        diag.root_exists = true;
         for entry in entries.flatten() {
             let path = entry.path().join(&filename);
             if path.exists() {
+                diag.files_matched += 1;
                 return Some(path);
             }
         }
@@ -96,7 +108,7 @@ fn find_session_jsonl_in(projects_dirs: &[PathBuf], session_id: &str) -> Option<
 /// at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
 /// defaults to `~/.codex`); the id suffix is the thread id we captured. Resume
 /// normally keeps one file per session, but returning all is correct if it splits.
-pub(crate) fn find_codex_rollouts(session_id: &str) -> Vec<PathBuf> {
+pub(crate) fn find_codex_rollouts(session_id: &str, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
@@ -118,6 +130,7 @@ pub(crate) fn find_codex_rollouts(session_id: &str) -> Vec<PathBuf> {
             .collect()
     }
     let sessions = home.join("sessions");
+    diag.root_exists = sessions.exists();
     let mut out = Vec::new();
     for year in dirs_in(&sessions) {
         for month in dirs_in(&year) {
@@ -136,26 +149,34 @@ pub(crate) fn find_codex_rollouts(session_id: &str) -> Vec<PathBuf> {
         }
     }
     out.sort();
+    diag.files_matched += out.len();
     out
 }
 
-/// Read a JSONL file into a vec of parsed values, skipping blank or
-/// unparseable lines.
-pub(crate) fn read_jsonl_values(path: &Path) -> Result<Vec<Value>> {
+/// Read a JSONL file into a vec of parsed values, skipping blank lines. A
+/// non-blank line that fails to parse is counted (`lines_seen`) but not
+/// returned, so `lines_seen > records_parsed` surfaces a format drift instead
+/// of silently vanishing; an unreadable file bumps `io_errors`. Infallible by
+/// design — every value that DID parse is still returned.
+pub(crate) fn read_jsonl_values(path: &Path, diag: &mut ReadDiagnostics) -> Vec<Value> {
     use std::io::BufRead;
-    let file =
-        std::fs::File::open(path).map_err(|e| Error::Other(format!("open transcript: {e}")))?;
+    let Ok(file) = std::fs::File::open(path) else {
+        diag.io_errors += 1;
+        return Vec::new();
+    };
     let reader = std::io::BufReader::new(file);
     let mut out = Vec::new();
     for line in reader.lines().map_while(std::result::Result::ok) {
         if line.trim().is_empty() {
             continue;
         }
+        diag.lines_seen += 1;
         if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            diag.records_parsed += 1;
             out.push(v);
         }
     }
-    Ok(out)
+    out
 }
 
 #[cfg(test)]
@@ -210,7 +231,7 @@ mod tests {
         let jsonl = slug.join(format!("{sid}.jsonl"));
         std::fs::write(&jsonl, b"{}\n").unwrap();
 
-        let found = find_session_jsonl_in(&[projects], sid);
+        let found = find_session_jsonl_in(&[projects], sid, &mut ReadDiagnostics::default());
         assert_eq!(found.as_deref(), Some(jsonl.as_path()));
     }
 
@@ -227,7 +248,8 @@ mod tests {
         std::fs::write(&jsonl, b"{}\n").unwrap();
 
         let missing = cfg.path().join("does-not-exist");
-        let found = find_session_jsonl_in(&[missing, projects], sid);
+        let found =
+            find_session_jsonl_in(&[missing, projects], sid, &mut ReadDiagnostics::default());
         assert_eq!(found.as_deref(), Some(jsonl.as_path()));
     }
 
@@ -250,7 +272,7 @@ mod tests {
         let jsonl = slug.join(format!("{sid}.jsonl"));
         std::fs::write(&jsonl, b"{}\n").unwrap();
 
-        let found = find_session_jsonl(sid, &cwd);
+        let found = find_session_jsonl(sid, &cwd, &mut ReadDiagnostics::default());
         assert_eq!(found.as_deref(), Some(jsonl.as_path()));
     }
 }

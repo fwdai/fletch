@@ -163,6 +163,31 @@ pub struct RawRecord {
     pub body: Value,
 }
 
+/// Counters a `locate`/`read` pass fills in as it walks a provider's transcript
+/// on disk. Purely observational — never an error, and a reader must still
+/// return every record that DID parse (partial drift must not lose good
+/// records). The turn-end sync classifies these into a health signal to tell a
+/// benign "nothing flushed yet" apart from a vendor moving/reshaping its files
+/// (see `supervisor::session_sync`).
+#[derive(Default, Debug, Clone)]
+pub struct ReadDiagnostics {
+    /// The provider's transcript root dir was found (for Claude, EITHER of its
+    /// two candidate roots counts). False means the CLI's home dir is gone —
+    /// a strong drift signal when the CLI just ran a turn.
+    pub root_exists: bool,
+    /// Located transcript artifacts (locate glob/suffix hits). For OpenCode this
+    /// also includes the part-blob files discovered during `read`.
+    pub files_matched: usize,
+    /// Non-blank JSONL lines (or JSON files) actually read. Blank lines are
+    /// normal and never counted, so `lines_seen > records_parsed` means real
+    /// parse failures — the fingerprint of a format change.
+    pub lines_seen: usize,
+    /// Records that parsed cleanly out of `lines_seen`.
+    pub records_parsed: usize,
+    /// I/O failures opening/reading a located artifact.
+    pub io_errors: usize,
+}
+
 /// Marks a reader whose transcript is a single append-only JSONL file, so it can
 /// be read incrementally from a byte offset (`read_jsonl_tail`) instead of fully
 /// re-parsed each turn. `id_field` is the per-line native-id field (matching the
@@ -176,9 +201,11 @@ pub struct JsonlTail {
 pub struct TranscriptReader {
     /// Ordered transcript artifact paths for a session (empty if none / not
     /// yet flushed). Multiple paths concatenate in order (resume can split).
-    pub locate: fn(session_id: &str, cwd: &Path) -> Vec<PathBuf>,
-    /// Parse located artifacts into ordered verbatim records.
-    pub read: fn(paths: &[PathBuf]) -> Vec<RawRecord>,
+    /// Records `root_exists` / `files_matched` into `diag` as it scans.
+    pub locate: fn(session_id: &str, cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf>,
+    /// Parse located artifacts into ordered verbatim records, recording
+    /// `lines_seen` / `records_parsed` / `io_errors` into `diag`.
+    pub read: fn(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord>,
     /// Set for single-file JSONL readers to enable incremental tail ingest.
     /// `None` for multi-file (codex) / blob-dir (opencode) readers, which fall
     /// back to a full read + idempotent batched insert.
@@ -377,17 +404,21 @@ pub fn read_jsonl_tail(
     start_index: usize,
     id_field: Option<&str>,
     consume_trailing: bool,
+    diag: &mut ReadDiagnostics,
 ) -> (Vec<RawRecord>, u64) {
     use std::io::{Read, Seek, SeekFrom};
 
     let Ok(mut file) = std::fs::File::open(path) else {
+        diag.io_errors += 1;
         return (Vec::new(), offset);
     };
     if file.seek(SeekFrom::Start(offset)).is_err() {
+        diag.io_errors += 1;
         return (Vec::new(), offset);
     }
     let mut buf = Vec::new();
     if file.read_to_end(&mut buf).is_err() {
+        diag.io_errors += 1;
         return (Vec::new(), offset);
     }
 
@@ -403,15 +434,29 @@ pub fn read_jsonl_tail(
     let mut idx = start_index;
     let mut consumed = complete_end;
 
+    // A blank line is normal padding, not content — only non-blank lines count
+    // toward `lines_seen`, so a non-blank line that fails to parse is what marks
+    // a format drift (`lines_seen > records_parsed`).
+    let count_line = |line: &[u8], diag: &mut ReadDiagnostics| {
+        let nonblank = std::str::from_utf8(line).map_or(true, |t| !t.trim().is_empty());
+        if nonblank {
+            diag.lines_seen += 1;
+        }
+    };
+
     for line in buf[..complete_end].split(|&b| b == b'\n') {
+        count_line(line, diag);
         if let Some(rec) = parse_jsonl_record(line, id_field, idx) {
+            diag.records_parsed += 1;
             out.push(rec);
             idx += 1;
         }
     }
 
     if consume_trailing {
+        count_line(&buf[complete_end..], diag);
         if let Some(rec) = parse_jsonl_record(&buf[complete_end..], id_field, idx) {
+            diag.records_parsed += 1;
             out.push(rec);
             // The trailing line parsed cleanly, so it was complete — consume to
             // EOF so we don't re-read it next time.
@@ -461,19 +506,23 @@ fn pi_session_slug(cwd: &Path) -> String {
     format!("-{}--", cwd.to_string_lossy().replace('/', "-"))
 }
 
-fn pi_locate(session_id: &str, cwd: &Path) -> Vec<PathBuf> {
+fn pi_locate(session_id: &str, cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    let dir = home.join(".pi/agent/sessions").join(pi_session_slug(cwd));
+    let sessions = home.join(".pi/agent/sessions");
+    diag.root_exists = sessions.exists();
+    let dir = sessions.join(pi_session_slug(cwd));
     // Files are `<ts>_<session_id>.jsonl`.
-    jsonl_files_ending(&dir, &format!("_{session_id}.jsonl"))
+    let out = jsonl_files_ending(&dir, &format!("_{session_id}.jsonl"));
+    diag.files_matched += out.len();
+    out
 }
 
-fn pi_read(paths: &[PathBuf]) -> Vec<RawRecord> {
+fn pi_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord> {
     let values: Vec<Value> = paths
         .iter()
-        .flat_map(|p| crate::transcripts::read_jsonl_values(p).unwrap_or_default())
+        .flat_map(|p| crate::transcripts::read_jsonl_values(p, diag))
         .collect();
     // Pi's JSONL lines carry a stable `id`.
     records_with_id(values, Some("id"))
@@ -487,16 +536,16 @@ fn pi_read(paths: &[PathBuf]) -> Vec<RawRecord> {
 // per-agent transcript dir (derived from `cwd`). Content lines carry a top-level
 // `uuid`; metadata lines (mode/permission-mode/…) don't → positional fallback.
 
-fn claude_locate(session_id: &str, cwd: &Path) -> Vec<PathBuf> {
-    crate::transcripts::find_session_jsonl(session_id, cwd)
+fn claude_locate(session_id: &str, cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
+    crate::transcripts::find_session_jsonl(session_id, cwd, diag)
         .into_iter()
         .collect()
 }
 
-fn claude_read(paths: &[PathBuf]) -> Vec<RawRecord> {
+fn claude_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord> {
     let values: Vec<Value> = paths
         .iter()
-        .flat_map(|p| crate::transcripts::read_jsonl_values(p).unwrap_or_default())
+        .flat_map(|p| crate::transcripts::read_jsonl_values(p, diag))
         .collect();
     records_with_id(values, Some("uuid"))
 }
@@ -513,14 +562,14 @@ static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
 // Codex writes `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`.
 // Lines are `{timestamp,type,payload}` dual-channel with no stable per-line id,
 // so records key positionally. The codex frontend adapter already normalizes.
-fn codex_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
-    crate::transcripts::find_codex_rollouts(session_id)
+fn codex_locate(session_id: &str, _cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
+    crate::transcripts::find_codex_rollouts(session_id, diag)
 }
 
-fn codex_read(paths: &[PathBuf]) -> Vec<RawRecord> {
+fn codex_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord> {
     let values: Vec<Value> = paths
         .iter()
-        .flat_map(|p| crate::transcripts::read_jsonl_values(p).unwrap_or_default())
+        .flat_map(|p| crate::transcripts::read_jsonl_values(p, diag))
         .collect();
     records_with_id(values, None)
 }
@@ -530,7 +579,7 @@ fn codex_read(paths: &[PathBuf]) -> Vec<RawRecord> {
 // The session-id dir is unique, so glob by it (like claude) rather than
 // reverse-engineering the undocumented slug. Lines have no per-line id →
 // positional keys.
-fn cursor_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
+fn cursor_locate(session_id: &str, _cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
@@ -538,6 +587,7 @@ fn cursor_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
     let projects = home.join(".cursor").join("projects");
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&projects) {
+        diag.root_exists = true;
         for entry in entries.flatten() {
             let path = entry.path().join(&rel);
             if path.exists() {
@@ -546,13 +596,14 @@ fn cursor_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
         }
     }
     out.sort();
+    diag.files_matched += out.len();
     out
 }
 
-fn cursor_read(paths: &[PathBuf]) -> Vec<RawRecord> {
+fn cursor_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord> {
     let values: Vec<Value> = paths
         .iter()
-        .flat_map(|p| crate::transcripts::read_jsonl_values(p).unwrap_or_default())
+        .flat_map(|p| crate::transcripts::read_jsonl_values(p, diag))
         .collect();
     records_with_id(values, None)
 }
@@ -590,20 +641,35 @@ fn read_json_value(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-fn opencode_locate(session_id: &str, _cwd: &Path) -> Vec<PathBuf> {
+fn opencode_locate(session_id: &str, _cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
     let Some(root) = opencode_storage_root() else {
         return Vec::new();
     };
-    json_files_in(&root.join("message").join(session_id))
+    diag.root_exists = root.exists();
+    let out = json_files_in(&root.join("message").join(session_id));
+    diag.files_matched += out.len();
+    out
 }
 
-fn opencode_read(message_paths: &[PathBuf]) -> Vec<RawRecord> {
+fn opencode_read(message_paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord> {
+    // Each blob is one JSON object (not a JSONL line): count it as one
+    // `lines_seen`, bump `io_errors` when unreadable/unparseable, and only
+    // `records_parsed` once we've confirmed its expected `id` shape — so an
+    // OpenCode format change (readable JSON, but the id moved) reads as drift.
+    let read_one = |path: &Path, diag: &mut ReadDiagnostics| -> Option<(String, Value)> {
+        diag.lines_seen += 1;
+        let Some(v) = read_json_value(path) else {
+            diag.io_errors += 1;
+            return None;
+        };
+        let id = v.get("id").and_then(|x| x.as_str())?.to_string();
+        diag.records_parsed += 1;
+        Some((id, v))
+    };
+
     let mut out = Vec::new();
     for msg_path in message_paths {
-        let Some(msg) = read_json_value(msg_path) else {
-            continue;
-        };
-        let Some(msg_id) = msg.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
+        let Some((msg_id, msg)) = read_one(msg_path, diag) else {
             continue;
         };
         out.push(RawRecord {
@@ -621,13 +687,14 @@ fn opencode_read(message_paths: &[PathBuf]) -> Vec<RawRecord> {
             continue;
         };
         for pf in json_files_in(&part_dir) {
-            if let Some(part) = read_json_value(&pf) {
-                if let Some(pid) = part.get("id").and_then(|v| v.as_str()) {
-                    out.push(RawRecord {
-                        native_id: pid.to_string(),
-                        body: part,
-                    });
-                }
+            // Part blobs count toward files_matched too (locate only saw the
+            // message blobs).
+            diag.files_matched += 1;
+            if let Some((pid, part)) = read_one(&pf, diag) {
+                out.push(RawRecord {
+                    native_id: pid,
+                    body: part,
+                });
             }
         }
     }
@@ -692,10 +759,17 @@ fn antigravity_conv_id_from_map(json_text: &str, cwd: &str) -> Option<String> {
     map.get(cwd).and_then(|v| v.as_str()).map(str::to_string)
 }
 
-fn antigravity_locate(session_id: &str, cwd: &Path) -> Vec<PathBuf> {
+fn antigravity_locate(session_id: &str, cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
+    // root_exists tracks the CLI's home dir, not the conv-id indirection: a
+    // missing/unparseable `last_conversations.json` or a missing cwd key leaves
+    // the CLI installed (root present) but the conversation unresolved, so it
+    // reads as `files_matched == 0` (ambiguous NoFiles), not NoRoot. Only the
+    // whole `~/.gemini/antigravity-cli` dir vanishing is a NoRoot drift signal.
+    let vendor_root = home.join(".gemini/antigravity-cli");
+    diag.root_exists = vendor_root.exists();
     // Prefer the captured id; fall back to the cwd→id map (e.g. the first turn,
     // before the id has been persisted).
     let id = if session_id.is_empty() {
@@ -706,21 +780,22 @@ fn antigravity_locate(session_id: &str, cwd: &Path) -> Vec<PathBuf> {
     } else {
         session_id.to_string()
     };
-    let path = home
-        .join(".gemini/antigravity-cli/brain")
+    let path = vendor_root
+        .join("brain")
         .join(&id)
         .join(".system_generated/logs/transcript_full.jsonl");
     if path.exists() {
+        diag.files_matched += 1;
         vec![path]
     } else {
         Vec::new()
     }
 }
 
-fn antigravity_read(paths: &[PathBuf]) -> Vec<RawRecord> {
+fn antigravity_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord> {
     paths
         .iter()
-        .flat_map(|p| crate::transcripts::read_jsonl_values(p).unwrap_or_default())
+        .flat_map(|p| crate::transcripts::read_jsonl_values(p, diag))
         .enumerate()
         .map(|(i, body)| {
             // `step_index` is a stable, monotonic per-conversation key.
@@ -1788,7 +1863,8 @@ mod tests {
             .unwrap();
         }
 
-        let (recs, off) = read_jsonl_tail(&path, 0, 0, Some("uuid"), false);
+        let (recs, off) =
+            read_jsonl_tail(&path, 0, 0, Some("uuid"), false, &mut ReadDiagnostics::default());
         assert_eq!(
             recs.iter()
                 .map(|r| r.native_id.as_str())
@@ -1811,7 +1887,8 @@ mod tests {
             .unwrap();
         }
 
-        let (recs2, _off2) = read_jsonl_tail(&path, off, 2, Some("uuid"), false);
+        let (recs2, _off2) =
+            read_jsonl_tail(&path, off, 2, Some("uuid"), false, &mut ReadDiagnostics::default());
         assert_eq!(
             recs2
                 .iter()
@@ -1833,7 +1910,7 @@ mod tests {
             write!(f, "{{\"type\":\"mode\"}}\n{{\"type\":\"summary\"}}\n").unwrap();
         }
         // Pretend 5 records were already ingested.
-        let (recs, _off) = read_jsonl_tail(&path, 0, 5, None, false);
+        let (recs, _off) = read_jsonl_tail(&path, 0, 5, None, false, &mut ReadDiagnostics::default());
         assert_eq!(
             recs.iter()
                 .map(|r| r.native_id.as_str())
@@ -1860,7 +1937,8 @@ mod tests {
         }
 
         // Exited writer: the unterminated final line is consumed, to EOF.
-        let (recs, off) = read_jsonl_tail(&path, 0, 0, Some("uuid"), true);
+        let (recs, off) =
+            read_jsonl_tail(&path, 0, 0, Some("uuid"), true, &mut ReadDiagnostics::default());
         assert_eq!(
             recs.iter()
                 .map(|r| r.native_id.as_str())
@@ -1874,7 +1952,8 @@ mod tests {
         );
 
         // Live writer (same bytes): the unterminated final line is held back.
-        let (held, _) = read_jsonl_tail(&path, 0, 0, Some("uuid"), false);
+        let (held, _) =
+            read_jsonl_tail(&path, 0, 0, Some("uuid"), false, &mut ReadDiagnostics::default());
         assert_eq!(
             held.iter()
                 .map(|r| r.native_id.as_str())
@@ -1888,7 +1967,8 @@ mod tests {
             let mut f = std::fs::File::create(&torn).unwrap();
             write!(f, "{{\"uuid\":\"a\",\"type\":\"user\"}}\n{{\"uuid\":\"x\",").unwrap();
         }
-        let (recs_torn, _) = read_jsonl_tail(&torn, 0, 0, Some("uuid"), true);
+        let (recs_torn, _) =
+            read_jsonl_tail(&torn, 0, 0, Some("uuid"), true, &mut ReadDiagnostics::default());
         assert_eq!(
             recs_torn
                 .iter()
@@ -1947,11 +2027,14 @@ mod tests {
             "{\"step_index\":0,\"type\":\"USER_INPUT\"}\n{\"step_index\":2,\"type\":\"PLANNER_RESPONSE\"}\n{\"type\":\"X\"}\n",
         )
         .unwrap();
-        let recs = antigravity_read(&[f]);
+        let mut diag = ReadDiagnostics::default();
+        let recs = antigravity_read(&[f], &mut diag);
         assert_eq!(recs.len(), 3);
         assert_eq!(recs[0].native_id, "step:0");
         assert_eq!(recs[1].native_id, "step:2");
         assert_eq!(recs[2].native_id, "ln:2"); // no step_index → positional
+        assert_eq!(diag.lines_seen, 3);
+        assert_eq!(diag.records_parsed, 3);
     }
 
     // agy's native (PTY/TUI) view is wired — it resumes the conversation the

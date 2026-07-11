@@ -36,6 +36,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   managedBusyLabel: {},
   switchInFlight: {},
   unseenResults: {},
+  syncHealth: {},
   usage: {},
   runPhases: {},
   runPorts: {},

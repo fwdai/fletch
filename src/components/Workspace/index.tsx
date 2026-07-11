@@ -3,6 +3,7 @@ import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
+import { providerLabel } from "@/data/providers";
 import { EMPTY_AGENTS, useAppStore } from "@/store";
 import { ChatView } from "./ChatView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
@@ -54,6 +55,7 @@ export function Workspace() {
     <div className="pane center fade-in" key={agent.id}>
       <WorkspaceHeader agent={agent} />
       {agent.status === "error" && <CrashBanner agent={agent} />}
+      <SyncHealthBanner agentId={agent.id} />
       {agent.view === "native" ? <NativeBody agent={agent} /> : <ChatView agent={agent} />}
     </div>
   );
@@ -154,6 +156,29 @@ function CrashBanner({ agent }: { agent: AgentRecord }) {
         <Icon name="play" size={12} />
         {resuming ? "Resuming…" : "Resume"}
       </Button>
+    </div>
+  );
+}
+
+/** Non-blocking notice that this session's on-disk transcript couldn't be read
+ *  at turn-end — the vendor CLI moved its files (`no_root`) or reshaped them
+ *  (`format_drift`), so newly-written history may not persist. Worded as
+ *  degraded, not broken: the app still renders the turn from its live-compiled
+ *  stream. Only present while the store holds a degraded status for the agent
+ *  (cleared by a `healthy` sync-health event). */
+function SyncHealthBanner({ agentId }: { agentId: string }) {
+  const health = useAppStore((s) => s.syncHealth[agentId]);
+  if (!health) return null;
+  const provider = providerLabel(health.provider);
+  return (
+    <div className="drift-banner flex-center" role="status">
+      <div className="crash-text">
+        <span className="drift-title">Couldn't read chat history</span>
+        <span className="crash-detail">
+          Fletch couldn't read this session's history from the {provider} CLI — new history for this
+          session may not be saved. The conversation you see is still up to date.
+        </span>
+      </div>
     </div>
   );
 }

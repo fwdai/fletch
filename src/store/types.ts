@@ -31,6 +31,15 @@ import type {
 } from "@/storage/preferences";
 import type { DraftAgent } from "./drafts";
 
+/** A degraded transcript-ingest state stored per agent (the `healthy` status is
+ *  never stored — it deletes the key). `provider`/`version` are for the banner
+ *  copy; `status` picks the message. */
+export interface SyncHealthInfo {
+  status: "no_root" | "format_drift";
+  provider: string;
+  version: string | null;
+}
+
 export interface AppSlice {
   busy: boolean;
   lastError: string | null;
@@ -96,6 +105,11 @@ export interface WorkspaceSlice {
    *  non-selected agent (covers research-only turns with no diff), cleared
    *  when the agent is selected. */
   unseenResults: Record<string, boolean>;
+  /** Degraded transcript-ingest health per agent, keyed by agent_id, from the
+   *  `session:sync-health` event. Absent = healthy (the common case): a `healthy`
+   *  event deletes the key. Present = the vendor CLI drifted, so the chat view
+   *  shows a non-blocking "couldn't read history" banner. In-memory only. */
+  syncHealth: Record<string, SyncHealthInfo>;
   /** Per-agent cumulative token usage (and latest context-window fill),
    *  folded from session_records at turn-end and on transcript load. Keyed by
    *  agent_id; absent until the agent's first turn lands. Empty for agents that
