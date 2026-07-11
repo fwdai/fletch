@@ -11,6 +11,10 @@
 //! each run. Values that reached the settings table under the pre-keychain
 //! scheme are migrated (and the plaintext scrubbed) on first read.
 //!
+//! `get` keeps a missing secret (`Ok(None)`) distinct from an unavailable
+//! store (`Err` — e.g. a locked keychain): a saved login that can't be read
+//! right now must surface as a retryable failure, never as signed-out.
+//!
 //! Secrets read or written here must never appear in logs, telemetry, or
 //! error strings — the `github::client` invariant, enforced at the store too.
 
@@ -40,32 +44,40 @@ mod store {
     /// and must not be treated as absence.
     const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
-    pub fn get(conn: &Connection, key: &str) -> Option<String> {
-        match get_generic_password(SERVICE, key) {
+    pub fn get(conn: &Connection, key: &str) -> Result<Option<String>> {
+        let err = match get_generic_password(SERVICE, key) {
             Ok(bytes) => {
-                return String::from_utf8(bytes)
+                return Ok(String::from_utf8(bytes)
                     .ok()
-                    .filter(|v| !v.trim().is_empty())
+                    .filter(|v| !v.trim().is_empty()))
             }
-            // Unavailable ≠ absent: say so (never silently look signed out),
-            // then still consult the legacy row below — a pre-migration value
-            // keeps the session working, and nothing is scrubbed unless the
-            // keychain write succeeds.
-            Err(e) if e.code() != ERR_SEC_ITEM_NOT_FOUND => {
-                tracing::warn!(key, code = e.code(), "keychain read failed");
-            }
-            Err(_) => {}
+            Err(e) => e,
+        };
+        // The legacy plaintext `settings` row a pre-keychain build left
+        // behind — consulted both for migration and as the working copy
+        // while the keychain is unavailable.
+        let legacy = database::get_setting(conn, key).filter(|v| !v.trim().is_empty());
+        if err.code() != ERR_SEC_ITEM_NOT_FOUND {
+            // Unavailable ≠ absent (locked keychain, interaction not
+            // allowed): a migrated secret may exist but can't be read right
+            // now. A still-unmigrated legacy value keeps the session working
+            // (no migration attempt — the keychain write would fail too);
+            // otherwise surface the failure so callers retry instead of
+            // treating the account as signed out.
+            return match legacy {
+                Some(v) => Ok(Some(v)),
+                None => Err(Error::Other(format!("keychain read ({key}): {err}"))),
+            };
         }
-        // Not in the keychain: migrate the legacy plaintext `settings` row a
-        // pre-keychain build left behind, then scrub it. On a keychain write
-        // failure keep the settings copy — the token still works, and the
-        // move retries on the next read.
-        let legacy = database::get_setting(conn, key).filter(|v| !v.trim().is_empty())?;
+        // Definitively absent from the keychain: migrate the legacy row,
+        // then scrub it. On a keychain write failure keep the settings copy —
+        // the token still works, and the move retries on the next read.
+        let Some(legacy) = legacy else { return Ok(None) };
         match set(conn, key, &legacy) {
             Ok(()) => scrub_setting(conn, key),
             Err(e) => tracing::warn!(key, error = %e, "keychain migration failed"),
         }
-        Some(legacy)
+        Ok(Some(legacy))
     }
 
     pub fn set(_conn: &Connection, key: &str, value: &str) -> Result<()> {
@@ -119,8 +131,8 @@ mod store {
     use super::*;
     use crate::database;
 
-    pub fn get(conn: &Connection, key: &str) -> Option<String> {
-        database::get_setting(conn, key).filter(|v| !v.trim().is_empty())
+    pub fn get(conn: &Connection, key: &str) -> Result<Option<String>> {
+        Ok(database::get_setting(conn, key).filter(|v| !v.trim().is_empty()))
     }
 
     pub fn set(conn: &Connection, key: &str, value: &str) -> Result<()> {
@@ -152,20 +164,21 @@ mod tests {
     fn roundtrip_set_get_delete() {
         let (_dir, db) = test_db();
         let conn = db.lock();
-        assert_eq!(get(&conn, "github_token"), None);
+        assert_eq!(get(&conn, "github_token").unwrap(), None);
         set(&conn, "github_token", "tok123").unwrap();
-        assert_eq!(get(&conn, "github_token").as_deref(), Some("tok123"));
+        assert_eq!(get(&conn, "github_token").unwrap().as_deref(), Some("tok123"));
         delete(&conn, "github_token").unwrap();
-        assert_eq!(get(&conn, "github_token"), None);
+        assert_eq!(get(&conn, "github_token").unwrap(), None);
     }
 
     /// A cleared secret persists as a blank row (dev store) — blank must read
-    /// back as "no secret", matching `github::set_token`'s blank handling.
+    /// back as "no secret" (`Ok(None)`, not an error), matching
+    /// `github::set_token`'s blank handling.
     #[test]
     fn blank_value_reads_as_none() {
         let (_dir, db) = test_db();
         let conn = db.lock();
         set(&conn, "claude_container_token", "  ").unwrap();
-        assert_eq!(get(&conn, "claude_container_token"), None);
+        assert_eq!(get(&conn, "claude_container_token").unwrap(), None);
     }
 }
