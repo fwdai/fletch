@@ -99,7 +99,7 @@ pub fn detect_all(checkout: &Path) -> Vec<DetectedConfig> {
         .collect();
     // Stable sort by confidence desc so ties keep detector registration
     // order (node before python before … — a deterministic primary).
-    configs.sort_by(|a, b| b.confidence.cmp(&a.confidence));
+    configs.sort_by_key(|c| std::cmp::Reverse(c.confidence));
     configs
 }
 
