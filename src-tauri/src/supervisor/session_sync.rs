@@ -494,6 +494,16 @@ fn report_sync_health(
             io_errors = diag.io_errors,
             "session sync ingested 0 records after retries",
         );
+    } else if diag.io_errors > 0 {
+        // Partial read: records flowed so this stays Healthy (no banner), but
+        // an unread tail shouldn't vanish without a trace.
+        tracing::warn!(
+            agent_id,
+            provider,
+            records_parsed = diag.records_parsed,
+            io_errors = diag.io_errors,
+            "session sync hit read errors after ingesting records — transcript tail may be missing",
+        );
     }
 
     let mut map = health_map.lock();
@@ -765,6 +775,22 @@ mod tests {
             io_errors: 0,
         };
         assert_eq!(classify(&d), SyncHealth::FormatDrift);
+    }
+
+    #[test]
+    fn classify_healthy_on_partial_read_with_records() {
+        // A read that fails partway after ingesting records stays Healthy (no
+        // banner — records flowed, and the next sync re-attempts the tail via
+        // the persisted offset / idempotent dedup); the partial loss is
+        // warn-logged instead.
+        let d = ReadDiagnostics {
+            root_exists: true,
+            files_matched: 1,
+            lines_seen: 3,
+            records_parsed: 3,
+            io_errors: 1,
+        };
+        assert_eq!(classify(&d), SyncHealth::Healthy);
     }
 
     #[test]

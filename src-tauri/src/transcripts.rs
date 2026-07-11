@@ -156,8 +156,9 @@ pub(crate) fn find_codex_rollouts(session_id: &str, diag: &mut ReadDiagnostics) 
 /// Read a JSONL file into a vec of parsed values, skipping blank lines. A
 /// non-blank line that fails to parse is counted (`lines_seen`) but not
 /// returned, so `lines_seen > records_parsed` surfaces a format drift instead
-/// of silently vanishing; an unreadable file bumps `io_errors`. Infallible by
-/// design — every value that DID parse is still returned.
+/// of silently vanishing; an unreadable file — or a read that fails partway
+/// through, leaving an unread tail — bumps `io_errors`. Infallible by design —
+/// every value that DID parse is still returned.
 pub(crate) fn read_jsonl_values(path: &Path, diag: &mut ReadDiagnostics) -> Vec<Value> {
     use std::io::BufRead;
     let Ok(file) = std::fs::File::open(path) else {
@@ -166,7 +167,16 @@ pub(crate) fn read_jsonl_values(path: &Path, diag: &mut ReadDiagnostics) -> Vec<
     };
     let reader = std::io::BufReader::new(file);
     let mut out = Vec::new();
-    for line in reader.lines().map_while(std::result::Result::ok) {
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => {
+                // Mid-stream read failure: the rest of the file is unreadable,
+                // so record it rather than letting the tail look ingested.
+                diag.io_errors += 1;
+                break;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -274,5 +284,21 @@ mod tests {
 
         let found = find_session_jsonl(sid, &cwd, &mut ReadDiagnostics::default());
         assert_eq!(found.as_deref(), Some(jsonl.as_path()));
+    }
+
+    // ── read_jsonl_values: I/O failure accounting ──────────────────────────────
+
+    #[test]
+    fn read_jsonl_values_counts_read_failure_after_successful_open() {
+        // A directory opens fine on Unix but the first read fails (EISDIR) —
+        // the mid-stream `Err` arm must bump `io_errors` instead of the old
+        // `map_while(Result::ok)` silently stopping.
+        let td = tempfile::tempdir().unwrap();
+        let mut diag = ReadDiagnostics::default();
+        let out = read_jsonl_values(td.path(), &mut diag);
+        assert!(out.is_empty());
+        assert_eq!(diag.io_errors, 1);
+        assert_eq!(diag.lines_seen, 0);
+        assert_eq!(diag.records_parsed, 0);
     }
 }
