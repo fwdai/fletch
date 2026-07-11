@@ -162,22 +162,26 @@ function CrashBanner({ agent }: { agent: AgentRecord }) {
 
 /** Non-blocking notice that this session's on-disk transcript couldn't be read
  *  at turn-end — the vendor CLI moved its files (`no_root`), reshaped them
- *  (`format_drift`), or they were unreadable (`read_error`), so
- *  newly-written history may not persist. Worded as
- *  degraded, not broken: the app still renders the turn from its live-compiled
- *  stream. Only present while the store holds a degraded status for the agent
- *  (cleared by a `healthy` sync-health event). */
+ *  (`format_drift`), they were unreadable (`read_error`), or a read failed
+ *  partway so the tail may be missing (`partial_read`) — newly-written history
+ *  may not persist. Worded as degraded, not broken: the app still renders the
+ *  turn from its live-compiled stream. Only present while the store holds a
+ *  degraded status for the agent (cleared by a `healthy` sync-health event). */
 function SyncHealthBanner({ agentId }: { agentId: string }) {
   const health = useAppStore((s) => s.syncHealth[agentId]);
   if (!health) return null;
   const provider = providerLabel(health.provider);
+  const partial = health.status === "partial_read";
   return (
     <div className="drift-banner flex-center" role="status">
       <div className="crash-text">
-        <span className="drift-title">Couldn't read chat history</span>
+        <span className="drift-title">
+          {partial ? "Couldn't read some chat history" : "Couldn't read chat history"}
+        </span>
         <span className="crash-detail">
-          Fletch couldn't read this session's history from the {provider} CLI — new history for this
-          session may not be saved. The conversation you see is still up to date.
+          {partial
+            ? `Fletch could only read part of this session's history from the ${provider} CLI — some new history may not be saved. The conversation you see is still up to date.`
+            : `Fletch couldn't read this session's history from the ${provider} CLI — new history for this session may not be saved. The conversation you see is still up to date.`}
         </span>
       </div>
     </div>

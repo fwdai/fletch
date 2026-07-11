@@ -35,7 +35,7 @@ import type { DraftAgent } from "./drafts";
  *  never stored — it deletes the key). `provider`/`version` are for the banner
  *  copy; `status` picks the message. */
 export interface SyncHealthInfo {
-  status: "no_root" | "format_drift" | "read_error";
+  status: "no_root" | "format_drift" | "read_error" | "partial_read";
   provider: string;
   version: string | null;
 }

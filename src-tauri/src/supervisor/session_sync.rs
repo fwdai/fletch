@@ -354,23 +354,23 @@ pub(crate) enum SyncHealth {
     /// Files matched but couldn't be opened or read (permissions, vanished
     /// mid-read) and nothing parsed — ingestion failed just as surely as drift.
     ReadError,
-    /// Records parsed, but the same pass also hit a read failure — the tail of
-    /// the transcript may be missing. Logged, never emitted, and never mutates
-    /// health state: records did flow (so no new banner), but a pass that
-    /// failed partway must not clear a real degraded status either.
+    /// Records parsed, but the turn also hit a read failure — the tail of the
+    /// transcript may be missing. Degraded: the parsed records are kept, but
+    /// the read failure surfaces like any other ingest failure.
     PartialRead,
 }
 
 impl SyncHealth {
-    /// The wire status for `session:sync-health`. `None` for `NoFiles` and
-    /// `PartialRead`, which are never emitted.
+    /// The wire status for `session:sync-health`. `None` for `NoFiles`, which
+    /// is never emitted.
     fn wire(self) -> Option<&'static str> {
         match self {
             SyncHealth::Healthy => Some("healthy"),
             SyncHealth::NoRoot => Some("no_root"),
             SyncHealth::FormatDrift => Some("format_drift"),
             SyncHealth::ReadError => Some("read_error"),
-            SyncHealth::NoFiles | SyncHealth::PartialRead => None,
+            SyncHealth::PartialRead => Some("partial_read"),
+            SyncHealth::NoFiles => None,
         }
     }
 }
@@ -536,10 +536,9 @@ fn report_sync_health(
 
     let mut map = health_map.lock();
     match health {
-        // Ambiguous (NoFiles) or partial (PartialRead) — logged above, but
-        // never emitted and never mutates state (so neither can clear a real
-        // degraded status).
-        SyncHealth::NoFiles | SyncHealth::PartialRead => {}
+        // Ambiguous — logged above, but never emitted and never mutates state
+        // (so it can't clear a real degraded status either).
+        SyncHealth::NoFiles => {}
         SyncHealth::Healthy => {
             if map.remove(agent_id).is_some() {
                 // Clearing a previously-degraded status.
