@@ -4,7 +4,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { SetSeg } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
-import { MCP_SUPPORT, PROVIDERS, mcpAttachable } from "@/data/providers";
+import { MCP_SUPPORT, mcpAttachable, PROVIDERS } from "@/data/providers";
 import type { NewCustomAgent } from "@/storage/customAgents";
 import { useAppStore } from "@/store";
 import { AssignPicker } from "./AssignPicker";

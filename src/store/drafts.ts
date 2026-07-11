@@ -1,5 +1,5 @@
 import { api } from "@/api";
-import { DEFAULT_PROVIDER_ID, MCP_SUPPORT, PROVIDERS, mcpAttachable } from "@/data/providers";
+import { DEFAULT_PROVIDER_ID, MCP_SUPPORT, mcpAttachable, PROVIDERS } from "@/data/providers";
 import { sendWhenAgentReady, usedNames } from "@/helpers";
 import { snapshotMcpServer } from "@/storage/mcpServers";
 import { setSetting } from "@/storage/settings";
