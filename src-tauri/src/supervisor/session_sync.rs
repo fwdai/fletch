@@ -347,18 +347,23 @@ pub(crate) enum SyncHealth {
     /// Files matched but couldn't be opened or read (permissions, vanished
     /// mid-read) and nothing parsed — ingestion failed just as surely as drift.
     ReadError,
+    /// Records parsed, but the same pass also hit a read failure — the tail of
+    /// the transcript may be missing. Logged, never emitted, and never mutates
+    /// health state: records did flow (so no new banner), but a pass that
+    /// failed partway must not clear a real degraded status either.
+    PartialRead,
 }
 
 impl SyncHealth {
-    /// The wire status for `session:sync-health`. `None` for `NoFiles`, which is
-    /// never emitted.
+    /// The wire status for `session:sync-health`. `None` for `NoFiles` and
+    /// `PartialRead`, which are never emitted.
     fn wire(self) -> Option<&'static str> {
         match self {
             SyncHealth::Healthy => Some("healthy"),
             SyncHealth::NoRoot => Some("no_root"),
             SyncHealth::FormatDrift => Some("format_drift"),
             SyncHealth::ReadError => Some("read_error"),
-            SyncHealth::NoFiles => None,
+            SyncHealth::NoFiles | SyncHealth::PartialRead => None,
         }
     }
 }
@@ -374,7 +379,11 @@ impl SyncHealth {
 /// that couldn't be read at all leaves `io_errors > 0`.
 fn classify(diag: &crate::agent::ReadDiagnostics) -> SyncHealth {
     if diag.records_parsed > 0 {
-        SyncHealth::Healthy
+        if diag.io_errors > 0 {
+            SyncHealth::PartialRead
+        } else {
+            SyncHealth::Healthy
+        }
     } else if !diag.root_exists {
         SyncHealth::NoRoot
     } else if diag.files_matched == 0 {
@@ -482,35 +491,38 @@ fn report_sync_health(
     health: SyncHealth,
     diag: &crate::agent::ReadDiagnostics,
 ) {
-    if !matches!(health, SyncHealth::Healthy) {
-        tracing::warn!(
-            agent_id,
-            provider,
-            ?health,
-            root_exists = diag.root_exists,
-            files_matched = diag.files_matched,
-            lines_seen = diag.lines_seen,
-            records_parsed = diag.records_parsed,
-            io_errors = diag.io_errors,
-            "session sync ingested 0 records after retries",
-        );
-    } else if diag.io_errors > 0 {
-        // Partial read: records flowed so this stays Healthy (no banner), but
-        // an unread tail shouldn't vanish without a trace.
-        tracing::warn!(
-            agent_id,
-            provider,
-            records_parsed = diag.records_parsed,
-            io_errors = diag.io_errors,
-            "session sync hit read errors after ingesting records — transcript tail may be missing",
-        );
+    match health {
+        SyncHealth::Healthy => {}
+        SyncHealth::PartialRead => {
+            tracing::warn!(
+                agent_id,
+                provider,
+                records_parsed = diag.records_parsed,
+                io_errors = diag.io_errors,
+                "session sync hit read errors after ingesting records — transcript tail may be missing",
+            );
+        }
+        _ => {
+            tracing::warn!(
+                agent_id,
+                provider,
+                ?health,
+                root_exists = diag.root_exists,
+                files_matched = diag.files_matched,
+                lines_seen = diag.lines_seen,
+                records_parsed = diag.records_parsed,
+                io_errors = diag.io_errors,
+                "session sync ingested 0 records after retries",
+            );
+        }
     }
 
     let mut map = health_map.lock();
     match health {
-        // Ambiguous — logged above, but never emitted and never mutates state
-        // (so it can't clear a real degraded status either).
-        SyncHealth::NoFiles => {}
+        // Ambiguous (NoFiles) or partial (PartialRead) — logged above, but
+        // never emitted and never mutates state (so neither can clear a real
+        // degraded status).
+        SyncHealth::NoFiles | SyncHealth::PartialRead => {}
         SyncHealth::Healthy => {
             if map.remove(agent_id).is_some() {
                 // Clearing a previously-degraded status.
@@ -778,11 +790,11 @@ mod tests {
     }
 
     #[test]
-    fn classify_healthy_on_partial_read_with_records() {
-        // A read that fails partway after ingesting records stays Healthy (no
-        // banner — records flowed, and the next sync re-attempts the tail via
-        // the persisted offset / idempotent dedup); the partial loss is
-        // warn-logged instead.
+    fn classify_partial_read_when_records_and_read_failure() {
+        // A read that fails partway after ingesting records is PartialRead:
+        // records flowed (so no new banner — the next sync re-attempts the
+        // tail via the persisted offset / idempotent dedup), but the pass
+        // still failed, so it must not clear a prior degraded status either.
         let d = ReadDiagnostics {
             root_exists: true,
             files_matched: 1,
@@ -790,7 +802,7 @@ mod tests {
             records_parsed: 3,
             io_errors: 1,
         };
-        assert_eq!(classify(&d), SyncHealth::Healthy);
+        assert_eq!(classify(&d), SyncHealth::PartialRead);
     }
 
     #[test]
