@@ -749,17 +749,19 @@ async fn set_docker_launch_settings(
     Ok(())
 }
 
-/// How long the startup secret seed keeps retrying an unavailable store
-/// (10 × 30s ≈ 5 min) — generous for the realistic case, a login-item launch
-/// racing the keychain unlock, without polling forever.
-const SECRET_SEED_RETRIES: u32 = 10;
-const SECRET_SEED_RETRY_SECS: u64 = 30;
+/// Startup seed retry pacing for an unavailable secret store: start at 30s
+/// (the realistic case — a login-item launch racing the keychain unlock —
+/// resolves quickly) and back off to a slow probe that never gives up. An
+/// unavailable store must stay distinct from "no token" for the app's whole
+/// lifetime, not just a startup window: a saved login must never read as
+/// signed-out only because the keychain stayed locked past some deadline.
+const SECRET_SEED_RETRY_START: std::time::Duration = std::time::Duration::from_secs(30);
+const SECRET_SEED_RETRY_CAP: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Seed an in-process secret mirror from the store at startup. A definitive
 /// answer (present or absent) applies immediately; an *unavailable* store
-/// (`Err` — e.g. the keychain is locked) must not read as signed-out, so it
-/// retries in the background and applies on the first definitive answer.
-/// `apply` is a plain fn: both mirrors (`github::set_token`,
+/// (`Err` — e.g. the keychain is locked) retries in the background until it
+/// gets one. `apply` is a plain fn: both mirrors (`github::set_token`,
 /// `docker::auth::set_stored_token`) have that shape.
 fn seed_secret_mirror(db: &DbState, key: &'static str, apply: fn(Option<String>)) {
     match secrets::get(&db.lock(), key) {
@@ -768,15 +770,19 @@ fn seed_secret_mirror(db: &DbState, key: &'static str, apply: fn(Option<String>)
             tracing::warn!(key, error = %e, "secret store unavailable at startup; retrying");
             let db = db.clone();
             tauri::async_runtime::spawn(async move {
-                for _ in 0..SECRET_SEED_RETRIES {
-                    tokio::time::sleep(std::time::Duration::from_secs(SECRET_SEED_RETRY_SECS))
-                        .await;
-                    if let Ok(value) = secrets::get(&db.lock(), key) {
-                        apply(value);
-                        return;
+                let mut delay = SECRET_SEED_RETRY_START;
+                loop {
+                    tokio::time::sleep(delay).await;
+                    match secrets::get(&db.lock(), key) {
+                        // Only a real value is applied: the mirror already
+                        // defaults to empty, and a sign-in/paste may have set
+                        // it directly while we waited — a late None could only
+                        // clobber that fresher token, never fix anything.
+                        Ok(Some(value)) => return apply(Some(value)),
+                        Ok(None) => return,
+                        Err(_) => delay = (delay * 2).min(SECRET_SEED_RETRY_CAP),
                     }
                 }
-                tracing::warn!(key, "secret store still unavailable; giving up until restart");
             });
         }
     }
