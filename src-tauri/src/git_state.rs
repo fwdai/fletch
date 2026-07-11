@@ -330,7 +330,7 @@ async fn run_status(checkout_path: &Path) -> Result<String> {
         .output()
         .await?;
     if !out.status.success() {
-        tracing::warn!("git status --porcelain=v1 failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        tracing::warn!(stderr = %String::from_utf8_lossy(&out.stderr).trim(), "git status --porcelain=v1 failed");
         return Ok(String::new());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -342,7 +342,7 @@ async fn run_numstat(checkout_path: &Path) -> Result<String> {
         .output()
         .await?;
     if !out.status.success() {
-        tracing::warn!("git diff --numstat failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        tracing::warn!(stderr = %String::from_utf8_lossy(&out.stderr).trim(), "git diff --numstat failed");
         return Ok(String::new());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())

@@ -170,7 +170,7 @@ fn quarantine_orphaned_wal(data_dir: &Path) -> Result<()> {
         let src = data_dir.join(&name);
         if src.exists() {
             std::fs::rename(&src, data_dir.join(format!("{name}.orphaned-{stamp}")))?;
-            tracing::warn!("quarantined orphaned {name}; no main database present");
+            tracing::warn!(name = %name, "quarantined orphaned database sidecar; no main database present");
         }
     }
     Ok(())
@@ -201,7 +201,11 @@ fn migrate_legacy_db_name(data_dir: &Path) -> Result<()> {
             std::fs::rename(&src, data_dir.join(format!("{DB_FILENAME}{suffix}")))?;
         }
     }
-    tracing::info!("migrated legacy database {LEGACY_DB_FILENAME} -> {DB_FILENAME}");
+    tracing::info!(
+        from = LEGACY_DB_FILENAME,
+        to = DB_FILENAME,
+        "migrated legacy database"
+    );
     Ok(())
 }
 
