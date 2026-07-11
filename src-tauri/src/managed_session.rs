@@ -248,13 +248,12 @@ impl ManagedSession {
     }
 
     /// Send SIGINT to the child process to interrupt the current turn
-    /// without killing it. First releases any held permission prompts (denied),
-    /// so a turn paused on a question can unwind rather than hang.
+    /// without killing it. Signal *first*, then release any held permission
+    /// prompts (denied): the deny-writes unblock a turn paused on a question so
+    /// it can unwind rather than hang, but they go over stdin, which a wedged
+    /// writer (blocked on a full pipe) can be holding — signalling first means
+    /// such a wedge can't prevent the interrupt from reaching the child.
     pub fn interrupt(&self) {
-        let held: Vec<String> = self.pending.lock().drain().collect();
-        for rid in held {
-            let _ = write_line(&self.stdin, deny_response(&rid, "Interrupted by user"));
-        }
         #[cfg(unix)]
         {
             use nix::sys::signal::{kill, Signal};
@@ -264,20 +263,27 @@ impl ManagedSession {
                 let _ = kill(Pid::from_raw(id as i32), Signal::SIGINT);
             }
         }
+        let held: Vec<String> = self.pending.lock().drain().collect();
+        for rid in held {
+            let _ = write_line(&self.stdin, deny_response(&rid, "Interrupted by user"));
+        }
     }
 
     pub fn kill(&self) -> Result<()> {
         // Tear the sandbox down first, but never let a failed engine teardown
-        // skip closing stdin / reaping the local child (see exec_session): an
+        // skip reaping the local child / closing stdin (see exec_session): an
         // errored container kill must not strand the host-side wrapper.
         let engine_result = self.kill_plan.kill();
-        // Close stdin to signal EOF (claude exits cleanly that way),
-        // then kill if it's still alive.
-        let _ = self.stdin.lock().take();
+        // Kill+reap the child *before* touching stdin. A wedged writer holding
+        // the stdin mutex would otherwise stall teardown here — and the child
+        // kill is exactly what unblocks that writer (EPIPE). Closing stdin (the
+        // EOF that lets claude exit cleanly) is now only best-effort cleanup
+        // after the forced kill, so it can never gate the reap.
         if let Some(mut child) = self.child.lock().take() {
             let _ = child.kill();
             let _ = child.wait();
         }
+        let _ = self.stdin.lock().take();
         engine_result
     }
 }

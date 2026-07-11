@@ -517,7 +517,9 @@ impl Supervisor {
             },
         )?;
 
-        self.agents.lock().insert(agent_id_str.clone(), agent);
+        self.agents
+            .lock()
+            .insert(agent_id_str.clone(), Arc::new(agent));
 
         // Initial status is always Idle now — at process start there's
         // never an in-flight turn (we no longer pass a task as a spawn
@@ -530,7 +532,8 @@ impl Supervisor {
         let promoted = self.claim_spawn_outcome(app, &agent_id_str, AgentStatus::Idle, None);
         if !promoted && matches!(self.live_status(&agent_id_str), Some(AgentStatus::Error)) {
             self.bump_generation(&agent_id_str);
-            if let Some(agent) = self.agents.lock().remove(&agent_id_str) {
+            let taken = self.agents.lock().remove(&agent_id_str);
+            if let Some(agent) = taken {
                 let _ = agent.shutdown();
             }
             self.activities.lock().remove(&agent_id_str);
@@ -718,13 +721,7 @@ impl Supervisor {
         agent_id: &str,
         bytes: &[u8],
     ) -> Result<()> {
-        {
-            let agents = self.agents.lock();
-            let agent = agents
-                .get(agent_id)
-                .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
-            agent.write_pty(bytes)?;
-        }
+        self.live_agent(agent_id)?.write_pty(bytes)?;
         let submitted = self
             .native_inputs
             .lock()
@@ -739,11 +736,7 @@ impl Supervisor {
     }
 
     pub fn resize_agent(&self, agent_id: &str, cols: u16, rows: u16) -> Result<()> {
-        let agents = self.agents.lock();
-        let agent = agents
-            .get(agent_id)
-            .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
-        agent.resize(cols, rows)
+        self.live_agent(agent_id)?.resize(cols, rows)
     }
 
     pub async fn switch_view(
@@ -778,7 +771,8 @@ impl Supervisor {
             ));
         }
 
-        if let Some(agent) = self.agents.lock().remove(agent_id) {
+        let taken = self.agents.lock().remove(agent_id);
+        if let Some(agent) = taken {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
@@ -912,8 +906,10 @@ impl Supervisor {
         // Mark the stop so the turn-end Idle transition keeps the queue intact
         // instead of auto-flushing it (A2-A). Cleared when a new turn starts.
         self.interrupted.lock().insert(agent_id.to_string());
-        let agents = self.agents.lock();
-        if let Some(agent) = agents.get(agent_id) {
+        // Clone the handle out and interrupt with the `agents` lock released
+        // (interrupt writes deny responses over stdin, which can block). An
+        // agent not in the map is a silent no-op, as before.
+        if let Ok(agent) = self.live_agent(agent_id) {
             agent.interrupt();
         }
         Ok(())
@@ -1088,7 +1084,11 @@ fn spawn_per_turn_agent(
                 AgentStatus::Idle,
             );
         } else {
-            sup_for_exit.agents.lock().remove(&id_for_exit);
+            // Bind the removed handle so the `agents` guard drops before the
+            // (last-`Arc`) session teardown, keeping child kill/reap off the
+            // global lock.
+            let taken = sup_for_exit.agents.lock().remove(&id_for_exit);
+            drop(taken);
             sup_for_exit.activities.lock().remove(&id_for_exit);
             sup_for_exit.native_inputs.lock().remove(&id_for_exit);
             sup_for_exit.trigger_session_sync(app_for_exit.clone(), id_for_exit.clone());
@@ -1146,7 +1146,8 @@ pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: 
         // Invalidate any gen-guarded loop / exit handler from this spawn before
         // killing the process (same reason as `detach_runtime`).
         sup.bump_generation(&agent_id);
-        if let Some(agent) = sup.agents.lock().remove(&agent_id) {
+        let taken = sup.agents.lock().remove(&agent_id);
+        if let Some(agent) = taken {
             let _ = agent.shutdown();
         }
         sup.activities.lock().remove(&agent_id);
@@ -1181,7 +1182,10 @@ fn apply_exit_if_current(
     // and RPC watcher stop polling instead of spinning for the app's lifetime.
     sup.bump_generation(agent_id);
 
-    sup.agents.lock().remove(agent_id);
+    // Bind the removed handle so the `agents` guard drops before the
+    // (last-`Arc`) session teardown runs its child kill/reap off the lock.
+    let taken = sup.agents.lock().remove(agent_id);
+    drop(taken);
     sup.activities.lock().remove(agent_id);
     sup.native_inputs.lock().remove(agent_id);
 

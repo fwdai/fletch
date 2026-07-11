@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
-use crate::agent::{injection_mode, Agent};
-use crate::error::{Error, Result};
+use crate::agent::injection_mode;
+use crate::error::Result;
 use crate::managed_session::ToolUseBehavior;
 use crate::message_queue::{decide_delivery, Delivery, PendingMsg};
 use crate::workspace::AgentStatus;
@@ -41,7 +41,7 @@ impl Supervisor {
             .agents
             .lock()
             .get(agent_id)
-            .is_some_and(Agent::is_tool_gated);
+            .is_some_and(|a| a.is_tool_gated());
         let queue_nonempty = !self.message_queue.lock().is_empty(agent_id);
 
         let msg = PendingMsg {
@@ -103,13 +103,14 @@ impl Supervisor {
     /// the message untouched so the caller can fall back without double-handling
     /// it.
     fn inject_live(&self, agent_id: &str, msg: &PendingMsg) -> Result<()> {
-        self.agents
-            .lock()
-            .get(agent_id)
-            .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))
-            .and_then(|a| {
-                a.send_user_message(&msg.text, &msg.attachments, msg.thinking.as_deref())
-            })?;
+        // `live_agent` yields `AgentNotFound` when the turn already ended; the
+        // send error then propagates untouched so the caller's fallback still
+        // fires. Both happen with the `agents` lock released (see `live_agent`).
+        self.live_agent(agent_id)?.send_user_message(
+            &msg.text,
+            &msg.attachments,
+            msg.thinking.as_deref(),
+        )?;
         if let Err(e) =
             self.workspace
                 .insert_user_turn(agent_id, &msg.turn_id, &msg.text, &msg.attachments)
@@ -149,10 +150,7 @@ impl Supervisor {
         {
             tracing::warn!(error = %e, agent_id, "persist outgoing user turn failed");
         }
-        let agents = self.agents.lock();
-        let agent = agents
-            .get(agent_id)
-            .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
+        let agent = self.live_agent(agent_id)?;
         agent.send_user_message(text, attachments, thinking)?;
         Ok(())
     }
@@ -167,10 +165,7 @@ impl Supervisor {
         behavior: ToolUseBehavior,
         message: Option<String>,
     ) -> Result<()> {
-        let agents = self.agents.lock();
-        let agent = agents
-            .get(agent_id)
-            .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))?;
+        let agent = self.live_agent(agent_id)?;
         agent.answer_tool_use(request_id, updated_input, behavior, message)
     }
 }
@@ -355,6 +350,7 @@ pub(super) fn drain_pending_bin_respawn(sup: &Supervisor, app: &AppHandle, agent
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
     use crate::supervisor::tests::{record_with_status, test_supervisor};
 
     #[test]
