@@ -2,9 +2,9 @@
 //! are both supported.
 //!
 //! Google is identity-only: its token reads the profile once, then drops.
-//! GitHub requests the `repo` scope and its token is persisted (settings
-//! table + the in-process registry) — it powers the GitHub API client and
-//! git's https auth, replacing the `gh` CLI dependency.
+//! GitHub requests the `repo` scope and its token is persisted (the app's
+//! secret store + the in-process registry) — it powers the GitHub API client
+//! and git's https auth, replacing the `gh` CLI dependency.
 
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -311,14 +311,14 @@ pub async fn oauth_device_login(
     };
 
     // Persist the GitHub token — it authenticates the API client and git's
-    // https transport from now on. A failed write isn't fatal to sign-in
-    // (the in-process registry still has it until quit), but say so loudly.
+    // https transport from now on. A failed write fails the sign-in: the
+    // store is the Keychain on release macOS, which can refuse writes (e.g.
+    // locked keychain), and proceeding would look signed in until quit, then
+    // silently sign out on next launch. Same posture as
+    // `store_container_token`; the mirror is only set once storage succeeded.
     if provider == "github" {
-        if let Err(e) =
-            crate::database::set_setting(&db.lock(), crate::github::TOKEN_SETTING, &access_token)
-        {
-            tracing::warn!(error = %e, "failed to persist GitHub token");
-        }
+        crate::secrets::set(&db.lock(), crate::github::TOKEN_SETTING, &access_token)
+            .map_err(|e| format!("couldn't save your GitHub login: {e}"))?;
         crate::github::set_token(Some(access_token.clone()));
     }
 

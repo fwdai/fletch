@@ -1192,6 +1192,7 @@ dependencies = [
  "rfd",
  "rusqlite",
  "rusqlite_migration",
+ "security-framework",
  "sentry",
  "serde",
  "serde_json",

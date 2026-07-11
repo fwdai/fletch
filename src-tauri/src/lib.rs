@@ -25,6 +25,7 @@ mod rpc;
 mod run_detect;
 mod run_session;
 mod sandbox;
+mod secrets;
 mod supervisor;
 mod telemetry;
 mod transcripts;
@@ -543,11 +544,11 @@ async fn get_container_auth_status(
 }
 
 /// Store a pasted `claude setup-token` for containerized agents under the
-/// `claude_container_token` setting — plaintext in sqlite, the same posture
-/// as `github_token`. Trims; rejects empty; unexpected shapes are accepted
-/// with a warning (which, like every log line here, never includes the token
-/// itself). Persists and then updates the in-process mirror, like
-/// `set_sandbox_engine` and `github::set_token`.
+/// `claude_container_token` secret — the OS keychain on release macOS builds
+/// (see `secrets`), the same posture as `github_token`. Trims; rejects empty;
+/// unexpected shapes are accepted with a warning (which, like every log line
+/// here, never includes the token itself). Persists and then updates the
+/// in-process mirror, like `set_sandbox_engine` and `github::set_token`.
 #[tauri::command]
 async fn set_container_auth_token(
     token: String,
@@ -559,8 +560,8 @@ async fn set_container_auth_token(
 /// Persist-then-mirror core shared by the paste command
 /// ([`set_container_auth_token`]) and the automated capture flow
 /// ([`connect_claude_container_auth`]): normalize + shape-check (warning, never
-/// logging the token, on an unrecognized shape), write the
-/// `claude_container_token` setting, then update the in-process mirror the
+/// logging the token, on an unrecognized shape), store the
+/// `claude_container_token` secret, then update the in-process mirror the
 /// spawn path reads — so a change applies to the next docker spawn without a
 /// restart. Same shape as `github::set_token`.
 fn store_container_token(db: &DbState, raw_token: &str) -> Result<(), String> {
@@ -573,7 +574,7 @@ fn store_container_token(db: &DbState, raw_token: &str) -> Result<(), String> {
     }
     {
         let conn = db.lock();
-        database::set_setting(&conn, sandbox::docker::auth::TOKEN_SETTING, &token)
+        secrets::set(&conn, sandbox::docker::auth::TOKEN_SETTING, &token)
             .map_err(|e| e.to_string())?;
     }
     sandbox::docker::auth::set_stored_token(Some(token));
@@ -688,14 +689,13 @@ async fn cancel_claude_container_auth(
     Ok(())
 }
 
-/// Drop the stored container token (blank the setting + clear the mirror,
+/// Drop the stored container token (delete the secret + clear the mirror,
 /// mirroring `github_disconnect`). Later chain steps take over, if any.
 #[tauri::command]
 async fn clear_container_auth_token(state: tauri::State<'_, DbState>) -> Result<(), String> {
     {
         let conn = state.lock();
-        database::set_setting(&conn, sandbox::docker::auth::TOKEN_SETTING, "")
-            .map_err(|e| e.to_string())?;
+        secrets::delete(&conn, sandbox::docker::auth::TOKEN_SETTING).map_err(|e| e.to_string())?;
     }
     sandbox::docker::auth::set_stored_token(None);
     Ok(())
@@ -747,6 +747,45 @@ async fn set_docker_launch_settings(
         cpus,
     });
     Ok(())
+}
+
+/// Startup seed retry pacing for an unavailable secret store: start at 30s
+/// (the realistic case — a login-item launch racing the keychain unlock —
+/// resolves quickly) and back off to a slow probe that never gives up. An
+/// unavailable store must stay distinct from "no token" for the app's whole
+/// lifetime, not just a startup window: a saved login must never read as
+/// signed-out only because the keychain stayed locked past some deadline.
+const SECRET_SEED_RETRY_START: std::time::Duration = std::time::Duration::from_secs(30);
+const SECRET_SEED_RETRY_CAP: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Seed an in-process secret mirror from the store at startup. A definitive
+/// answer (present or absent) applies immediately; an *unavailable* store
+/// (`Err` — e.g. the keychain is locked) retries in the background until it
+/// gets one. `apply` is a plain fn: both mirrors (`github::set_token`,
+/// `docker::auth::set_stored_token`) have that shape.
+fn seed_secret_mirror(db: &DbState, key: &'static str, apply: fn(Option<String>)) {
+    match secrets::get(&db.lock(), key) {
+        Ok(value) => apply(value),
+        Err(e) => {
+            tracing::warn!(key, error = %e, "secret store unavailable at startup; retrying");
+            let db = db.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut delay = SECRET_SEED_RETRY_START;
+                loop {
+                    tokio::time::sleep(delay).await;
+                    match secrets::get(&db.lock(), key) {
+                        // Only a real value is applied: the mirror already
+                        // defaults to empty, and a sign-in/paste may have set
+                        // it directly while we waited — a late None could only
+                        // clobber that fresher token, never fix anything.
+                        Ok(Some(value)) => return apply(Some(value)),
+                        Ok(None) => return,
+                        Err(_) => delay = (delay * 2).min(SECRET_SEED_RETRY_CAP),
+                    }
+                }
+            });
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -874,14 +913,15 @@ pub fn run() {
                 });
             }
 
-            // Seed the in-process container auth token (mirror of the
-            // `claude_container_token` setting, same pattern as the GitHub
+            // Seed the in-process container auth token (mirror of the stored
+            // `claude_container_token` secret, same pattern as the GitHub
             // token below) so the docker auth chain — resolved at spawn time
             // with no DB handle — sees a token pasted in a previous run.
-            sandbox::docker::auth::set_stored_token(database::get_setting(
-                &db.lock(),
+            seed_secret_mirror(
+                &db,
                 sandbox::docker::auth::TOKEN_SETTING,
-            ));
+                sandbox::docker::auth::set_stored_token,
+            );
 
             // Unified git resolution: point the portable-install root at app
             // data, wire the fallback commit identity to the signed-in
@@ -891,7 +931,7 @@ pub fn run() {
             git_dist::init(data_dir.join("git-dist"));
             // Seed the in-process GitHub token so API calls and git network
             // auth work without a DB handle (updated on sign-in).
-            github::set_token(database::get_setting(&db.lock(), github::TOKEN_SETTING));
+            seed_secret_mirror(&db, github::TOKEN_SETTING, github::set_token);
             {
                 let db = db.clone();
                 git_dist::set_identity_source(Box::new(move || {

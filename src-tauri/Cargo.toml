@@ -64,6 +64,13 @@ tar = "0.4"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
 
+# App-held secrets (secrets.rs): release builds keep the GitHub / container
+# tokens in the login Keychain via the in-process API — the same signed binary
+# creates and reads the items, so access is silent. Already in the dep tree
+# transitively; pinned to the lockfile's major.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
 [dev-dependencies]
 tempfile = "3"
 

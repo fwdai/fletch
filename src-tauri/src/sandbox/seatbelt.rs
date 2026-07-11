@@ -21,6 +21,14 @@
 //! latter. The agent CLIs' own sandboxes are disabled (e.g. codex runs
 //! `danger-full-access`) so the two don't fight, leaving `sandbox-exec` as the
 //! sole boundary.
+//!
+//! One region is carved back *out* of the broad `Application Support` grant:
+//! the app's own data dir (`~/Library/Application Support/<BUNDLE_ID>`, holding
+//! `fletch.db` — transcripts, settings). Both reads (exfiltration) and writes
+//! (forging state) are denied there, so a prompt-injected agent can't touch
+//! app state even though its parent is writable. The Run profile keeps the same
+//! deny but re-allows the `dev` subdir, so a nested *dev* Fletch launched from
+//! the Run panel can still open its own database.
 
 use std::path::{Path, PathBuf};
 
@@ -89,6 +97,28 @@ fn standard_state_dirs(home_s: &str) -> Vec<String> {
     .iter()
     .map(|d| sbpl_string(&format!("{home_s}/{d}")))
     .collect()
+}
+
+/// SBPL rule carving the app's own data dir back *out* of the broad
+/// `Application Support` write grant — and out of `allow default` for reads.
+/// `fletch.db` (agent transcripts, settings) lives here, so no confined process
+/// should read it (exfiltration) or write it (forging state). Emitted as a
+/// single multi-operation deny (verified to parse) and MUST follow the
+/// `(allow file-write* …)` block: SBPL is last-match-wins, so a later deny
+/// overrides the earlier read/write grants. `BUNDLE_ID` must match the folder
+/// macOS derives from `tauri.conf.json`'s `identifier`.
+fn deny_app_data_dir(home_s: &str) -> String {
+    let app_data = sbpl_string(&format!(
+        "{home_s}/Library/Application Support/{}",
+        crate::BUNDLE_ID
+    ));
+    format!(
+        ";; The app's own data dir (fletch.db: transcripts, settings) must be opaque\n\
+         ;; to confined processes: deny reads (exfiltration) and writes (forging\n\
+         ;; state), even though the broad Application Support grant above covers its\n\
+         ;; parent. Last-match-wins, so this must come after the allow block.\n\
+         (deny file-read* file-write* (subpath {app_data}))"
+    )
 }
 
 /// Toolchain state dirs the Run panel additionally grants so real project
@@ -165,6 +195,12 @@ pub fn build_run_profile(
         .collect::<Vec<_>>()
         .join("\n  ");
 
+    let deny_app_data = deny_app_data_dir(&home_s);
+    let app_data_dev = sbpl_string(&format!(
+        "{home_s}/Library/Application Support/{}/dev",
+        crate::BUNDLE_ID
+    ));
+
     Ok(format!(
         r#"(version 1)
 (allow default)
@@ -173,6 +209,14 @@ pub fn build_run_profile(
 (deny file-write*)
 (allow file-write*
   {writable_block})
+
+{deny_app_data}
+;; Exception: a nested *dev* Fletch launched from the Run panel stores its data
+;; under `<data dir>/dev` (see lib.rs setup) and must open its own database, so
+;; re-allow just that subtree (last-match-wins). A Run-panel process can thus
+;; touch the dev instance's state — acceptable because it's dev-only and the Run
+;; panel already runs arbitrary project code the developer chose to run.
+(allow file-read* file-write* (subpath {app_data_dev}))
 
 {DEVICE_WRITE_RULES}
 "#
@@ -340,6 +384,10 @@ pub fn build_profile(
     let gemini_state = sbpl_string(&format!("{home_s}/.gemini"));
     let pi_state = sbpl_string(&format!("{home_s}/.pi"));
 
+    // No `dev` exception here (unlike the Run profile): agents never legitimately
+    // touch any Fletch data dir, dev or otherwise.
+    let deny_app_data = deny_app_data_dir(&home_s);
+
     Ok(format!(
         r#"(version 1)
 (allow default)
@@ -364,6 +412,8 @@ pub fn build_profile(
   (subpath {cursor_state})
   (subpath {gemini_state})
   (subpath {pi_state}))
+
+{deny_app_data}
 
 {DEVICE_WRITE_RULES}
 "#
@@ -526,6 +576,90 @@ mod tests {
     #[test]
     fn escapes_quotes_in_paths() {
         assert_eq!(sbpl_string(r#"/path/with"quote"#), r#""/path/with\"quote""#);
+    }
+
+    #[test]
+    fn agent_profile_denies_app_data_dir_after_allow_block() {
+        // The app's own data dir (fletch.db) must be opaque to agents: deny both
+        // reads (exfiltration) and writes (forging state). The deny only bites if
+        // it comes AFTER the write allow-list, since SBPL is last-match-wins.
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let profile = build_profile(&root, &rpc, &home, None).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+
+        let deny = format!(
+            "(deny file-read* file-write* (subpath \"{}/Library/Application Support/{}\"))",
+            canonical_home.display(),
+            crate::BUNDLE_ID
+        );
+        assert!(
+            profile.contains(&deny),
+            "agent profile must deny read+write on its own data dir: missing {deny}"
+        );
+        let allow_at = profile.find("(allow file-write*").unwrap();
+        let deny_at = profile.find(&deny).unwrap();
+        assert!(
+            deny_at > allow_at,
+            "the app-data deny must come after the allow block to override it"
+        );
+    }
+
+    #[test]
+    fn agent_profile_does_not_reallow_dev_data_dir() {
+        // Agents never legitimately touch any Fletch data dir — no `dev`
+        // exception (that carve-out is Run-profile-only).
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let profile = build_profile(&root, &rpc, &home, None).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        let dev = format!(
+            "{}/Library/Application Support/{}/dev",
+            canonical_home.display(),
+            crate::BUNDLE_ID
+        );
+        assert!(
+            !profile.contains(&dev),
+            "agent profile must not re-allow the dev data subdir"
+        );
+    }
+
+    #[test]
+    fn run_profile_denies_app_data_but_reallows_dev_subdir() {
+        // The Run profile carries the same app-data deny, but re-allows the `dev`
+        // subtree AFTER it (last-match-wins) so a nested dev Fletch can open its
+        // own database.
+        let td = tempfile::tempdir().unwrap();
+        let checkout = td.path().join("repo-checkout");
+        let home = td.path().join("home");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+
+        let profile = build_run_profile(&checkout, &home, &[]).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+
+        let deny = format!(
+            "(deny file-read* file-write* (subpath \"{}/Library/Application Support/{}\"))",
+            canonical_home.display(),
+            crate::BUNDLE_ID
+        );
+        let dev_allow = format!(
+            "(allow file-read* file-write* (subpath \"{}/Library/Application Support/{}/dev\"))",
+            canonical_home.display(),
+            crate::BUNDLE_ID
+        );
+        assert!(
+            profile.contains(&deny),
+            "run profile must deny the app data dir"
+        );
+        assert!(
+            profile.contains(&dev_allow),
+            "run profile must re-allow the dev subdir: missing {dev_allow}"
+        );
+        let deny_at = profile.find(&deny).unwrap();
+        let dev_at = profile.find(&dev_allow).unwrap();
+        assert!(
+            dev_at > deny_at,
+            "the dev re-allow must come after the deny to take effect"
+        );
     }
 
     #[test]
