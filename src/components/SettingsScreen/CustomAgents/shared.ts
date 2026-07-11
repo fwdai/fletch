@@ -1,5 +1,7 @@
 // Shared helpers + constants for the Custom Agents settings pane.
 
+import type { McpTransport } from "@/storage/mcpServers";
+
 /** Preset hues for the monogram tile (evenly spread around the wheel). */
 export const CA_HUES = [265, 150, 25, 215, 320, 95, 175, 50] as const;
 
@@ -40,6 +42,13 @@ export const MCP_SUPPORT: Record<string, McpSupport> = {
   claude: "all",
   codex: "stdio",
 };
+
+/** Whether a base with `support` can actually deliver a server of `transport`
+ *  at spawn. The single rule behind both the editor's disabled rows and the
+ *  save-path filter, so the two can't drift. */
+export function mcpAttachable(support: McpSupport, transport: McpTransport): boolean {
+  return support === "all" || (support === "stdio" && transport !== "http");
+}
 
 /** Editor hint line for the Tools section, by the base's MCP support level. */
 export const MCP_HINT: Record<McpSupport, string> = {

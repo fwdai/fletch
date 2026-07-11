@@ -9,7 +9,7 @@ import type { NewCustomAgent } from "@/storage/customAgents";
 import { useAppStore } from "@/store";
 import { AssignPicker } from "./AssignPicker";
 import { Mono } from "./Mono";
-import { CA_HUES, INJECTION_HINT, MCP_HINT, MCP_SUPPORT } from "./shared";
+import { CA_HUES, INJECTION_HINT, MCP_HINT, MCP_SUPPORT, mcpAttachable } from "./shared";
 
 /** Mutable editor form state. `model`/`effort` use "" as the "provider default"
  *  sentinel so the <select> has a concrete value; converted to null on save. */
@@ -78,6 +78,17 @@ export function AgentEditor({
 
   const canSave = form.name.trim().length > 0;
 
+  const mcpSupport = MCP_SUPPORT[form.base] ?? "none";
+
+  /** A saved id must be one the selected base can deliver: switching base
+   *  (e.g. Claude → Codex with an HTTP server attached) must not persist
+   *  assignments the spawn path would silently drop. Ids without a library row
+   *  pass through — the delete path already detaches those. */
+  const deliverable = (id: string) => {
+    const server = mcpServers.find((s) => s.id === id);
+    return !server || mcpAttachable(mcpSupport, server.transport);
+  };
+
   const submit = () => {
     if (!canSave) return;
     onSave({
@@ -89,11 +100,9 @@ export function AgentEditor({
       effort: form.effort || null,
       instructions: form.instructions,
       skillIds: form.skillIds,
-      mcpServerIds: form.mcpServerIds,
+      mcpServerIds: form.mcpServerIds.filter(deliverable),
     });
   };
-
-  const mcpSupport = MCP_SUPPORT[form.base] ?? "none";
 
   return (
     <div className="set-pane">
@@ -225,8 +234,7 @@ export function AgentEditor({
           </label>
           <AssignPicker
             items={mcpServers.map((s) => {
-              const unattachable =
-                mcpSupport === "none" || (mcpSupport === "stdio" && s.transport === "http");
+              const unattachable = !mcpAttachable(mcpSupport, s.transport);
               const target = s.transport === "http" ? s.url : s.command;
               return {
                 id: s.id,
