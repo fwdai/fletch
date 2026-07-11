@@ -66,6 +66,7 @@ use crate::sandbox::engine::{
 };
 use crate::sandbox::policy::{
     codex_home_dir, opencode_config_dir, opencode_data_dir, resolve_existing_prefix,
+    CLAUDE_CREDENTIALS_FILE, CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS, CLAUDE_PROJECTS_SUBDIR,
 };
 
 use super::auth::{self, ContainerAuth};
@@ -85,7 +86,9 @@ const DEFAULT_CPUS: &str = "2";
 /// bind-mounted read-only: claude's OAuth refresh rewrites the rotated token
 /// here, and the `CredentialsFile` auth chain (see [`super::auth`]) needs that
 /// write to land on the host. Mounted read-write on top of the read-only dir.
-const CREDENTIALS_FILE: &str = ".credentials.json";
+/// The name is shared with seatbelt via [`CLAUDE_CREDENTIALS_FILE`] so
+/// the two engines can't drift.
+const CREDENTIALS_FILE: &str = CLAUDE_CREDENTIALS_FILE;
 
 /// Subdirs of a claude config dir that Claude Code creates and writes *afresh
 /// every session* — the per-session env store (`mkdir session-env/<id>` at
@@ -106,13 +109,18 @@ const CREDENTIALS_FILE: &str = ".credentials.json";
 /// best-effort (a failed write logs and continues), so it needs no overlay —
 /// while making it writable would reopen exactly the injection surface this
 /// design closes.
-const EPHEMERAL_RUNTIME_SUBDIRS: &[&str] = &["session-env", "shell-snapshots"];
+///
+/// Shared with seatbelt via [`CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS`] (which
+/// grants the real dirs as writable islands) so the two engines can't drift.
+const EPHEMERAL_RUNTIME_SUBDIRS: &[&str] = CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS;
 
 /// Claude's session-transcript subdir within a config dir (`<config-dir>/
 /// projects/<slug>/<uuid>.jsonl`). Unlike [`EPHEMERAL_RUNTIME_SUBDIRS`], this
 /// one is bind-mounted to a *persistent* per-agent host dir (not tmpfs) so
 /// `--resume` survives container recreation — see [`push_claude_config_mount`].
-const PROJECTS_SUBDIR: &str = "projects";
+/// Shared with seatbelt via [`CLAUDE_PROJECTS_SUBDIR`] so the two
+/// engines can't drift.
+const PROJECTS_SUBDIR: &str = CLAUDE_PROJECTS_SUBDIR;
 
 /// Signal/removal docker calls during teardown.
 const KILL_TIMEOUT: Duration = Duration::from_secs(10);
