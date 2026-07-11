@@ -359,21 +359,35 @@ pub fn build_profile(
     let home_s = home.to_string_lossy();
 
     let claude_json = sbpl_string(&format!("{home_s}/.claude.json"));
+
+    // Claude's config dir is NOT granted whole (its `settings.json` defines
+    // host-executed hooks, and it holds `plugins`/`skills`/`CLAUDE.md`/MCP
+    // config — the config-poisoning surface Docker's invariant 5 closes). Only
+    // the writable *islands* beneath it ([`policy::claude_write_island_dirs`])
+    // plus the `.credentials.json` file are granted. The default `~/.claude`
+    // islands flow through the policy state-dir list (`policy_dirs` below); its
+    // credential file needs a *regex* rule (atomic temp-file writes), emitted
+    // here.
+    let claude_default_dir = home.join(".claude");
+    let claude_credentials = claude_credentials_rules(&claude_default_dir).join("\n");
+
     // A non-default `CLAUDE_CONFIG_DIR` is where claude actually writes its
-    // config/transcripts/auth, so grant it too. Resolve symlinks first so the
-    // SBPL path matches what the sandbox sees at write time (every other entry
-    // is canonical); then skip it only when it equals the default `{home}/.claude`
-    // (which the policy state-dir list grants below), to avoid a redundant entry.
-    // `home` is already canonical, but the policy's `.claude` leaf is NOT
-    // symlink-resolved — the state-dir grant is that literal path — so compare
-    // against it un-resolved. If `~/.claude` is itself a symlink and the config
-    // dir points at its resolved target, resolving the leaf here too would treat
-    // it as default and drop the grant, yet the literal state-dir rule wouldn't
-    // cover the target, denying claude's writes. (Docker can resolve both sides
-    // because its `~/.claude` bind mount follows the symlink source; the SBPL
-    // allow-list can't.) The `~/.claude.json` top-level state *file* stays a
-    // seatbelt-local literal grant: it's a file, not a dir, so the dir-oriented
-    // policy API doesn't model it (see the policy module doc).
+    // config/transcripts/auth, so grant the same islands + credential file
+    // relative to *that* dir. Resolve symlinks first so the SBPL paths match
+    // what the sandbox sees at write time (every other entry is canonical);
+    // then skip it only when the resolved dir equals the default `{home}/.claude`
+    // (whose islands the policy state-dir list already grants below), to avoid
+    // redundant entries. `home` is already canonical, but the policy's `.claude`
+    // leaf is NOT symlink-resolved — the state-dir grant builds islands under
+    // that literal path — so compare against it un-resolved. If `~/.claude` is
+    // itself a symlink and the config dir points at its resolved target,
+    // resolving the leaf here too would treat it as default and drop the grant,
+    // yet the literal state-dir rule's islands wouldn't cover the target,
+    // denying claude's writes. (Docker can resolve both sides because its
+    // `~/.claude` bind mount follows the symlink source; the SBPL allow-list
+    // can't.) The `~/.claude.json` top-level state *file* stays a seatbelt-local
+    // literal grant: it's a file, not a dir, so the dir-oriented policy API
+    // doesn't model it (see the policy module doc).
     let claude_config_extra = claude_config_dir
         // A bin-resident relocation (`CLAUDE_CONFIG_DIR=$HOME/.local/bin/…`)
         // would put an agent-writable subtree on the user's PATH — the same
@@ -381,13 +395,20 @@ pub fn build_profile(
         // fail-closed: claude's config writes are denied, never a hijack).
         .filter(|p| !policy::bin_resident(p))
         .map(policy::resolve_existing_prefix)
-        .map(|p| p.to_string_lossy().into_owned())
-        .filter(|p| *p != format!("{home_s}/.claude"))
-        .map(|p| format!("\n  (subpath {})", sbpl_string(&p)))
+        .filter(|resolved| resolved.to_string_lossy() != claude_default_dir.to_string_lossy())
+        .map(|resolved| {
+            // Islands flow through `subpath_grants` (bin_resident filter +
+            // resolved forms) like every other grant; the credential file gets
+            // its own regex rule.
+            let mut lines = subpath_grants(policy::claude_write_island_dirs(&resolved));
+            lines.extend(claude_credentials_rules(&resolved));
+            format!("\n{}", lines.join("\n"))
+        })
         .unwrap_or_default();
     // The write allow-list is the engine-independent policy, not a list local to
-    // this file: every provider's host-persistence dirs (`~/.claude`, `~/.codex`,
-    // `~/.cursor`, `~/.gemini`, `~/.pi`, opencode's XDG data+config subdirs) plus
+    // this file: every provider's host-persistence dirs (claude's config-dir
+    // *islands* — see above, NOT the `~/.claude` root — `~/.codex`, `~/.cursor`,
+    // `~/.gemini`, `~/.pi`, opencode's XDG data+config subdirs) plus
     // the host-scratch cache/data dirs (`~/.npm`, `~/.cache`, `~/.local/share`,
     // `~/.local/state`, `~/Library/Caches`, `~/Library/Application Support`).
     // Crucially this is *not* the old blanket `~/.local`/`~/.config` grant: the
@@ -417,7 +438,8 @@ pub fn build_profile(
   (subpath "/private/tmp")
   (subpath "/private/var/folders")
   (subpath "/private/var/tmp")
-  (literal {claude_json}){claude_config_extra}
+  (literal {claude_json})
+{claude_credentials}{claude_config_extra}
 {policy_dirs})
 
 {deny_app_data}
@@ -482,6 +504,66 @@ pub fn profile_tempfile(text: &str) -> Result<tempfile::NamedTempFile> {
 fn sbpl_string(s: &str) -> String {
     let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
+}
+
+/// SBPL `file-write*` filter clauses for a claude config dir's
+/// `.credentials.json` — the one file under the config dir that must stay
+/// writable (claude's OAuth refresh persists the rotated token here). Emitted as
+/// filters for the enclosing `(allow file-write* …)` block, alongside the island
+/// `(subpath …)` grants.
+///
+/// It's a *regex*, not a `(literal …)`: claude rewrites the file atomically via
+/// the `write-file-atomic` pattern — write a sibling temp file (`<path>.<pid>
+/// <rand>`) in the same dir, then `rename` it over the target — so a literal on
+/// the final name alone would deny the temp write and break the refresh. The
+/// anchored `^<dir>/\.credentials\.json.*$` matches the target *and* its
+/// atomic-temp siblings (both share the `.credentials.json` prefix) while
+/// granting nothing else under the config dir.
+///
+/// Emitted in the dir's literal form and — when different — its symlink-resolved
+/// form (the sandbox checks resolved write paths), same as [`subpath_grants`]; a
+/// bin-resident form is dropped (invariant 1) so a config dir symlinked into a
+/// PATH bin dir can't smuggle a writable on-PATH file. The dir path is
+/// regex-escaped ([`sbpl_regex_escape`]) before interpolation — `sbpl_string`
+/// only escapes for string literals, and a home dir can contain regex
+/// metacharacters (`.`, `+`, `(`, …) that would otherwise change the match.
+fn claude_credentials_rules(config_dir: &Path) -> Vec<String> {
+    let resolved = policy::resolve_existing_prefix(config_dir);
+    let mut out: Vec<String> = Vec::new();
+    for dir in [config_dir.to_path_buf(), resolved] {
+        if policy::bin_resident(&dir) {
+            continue;
+        }
+        let re = format!(
+            "^{}/{}.*$",
+            sbpl_regex_escape(&dir.to_string_lossy()),
+            sbpl_regex_escape(policy::CLAUDE_CREDENTIALS_FILE),
+        );
+        let line = format!("  (regex #\"{re}\")");
+        if !out.contains(&line) {
+            out.push(line);
+        }
+    }
+    out
+}
+
+/// Backslash-escape the regex metacharacters in `s` so it can be embedded as a
+/// literal fragment inside an SBPL `#"…"` regex. The set covers the POSIX/ERE
+/// metacharacters SBPL's regex engine recognizes; `/` is not special and is left
+/// as-is. Distinct from [`sbpl_string`], which escapes for *string* literals
+/// (only `"`/`\`) and would leave a `.` in a path matching any character.
+fn sbpl_regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if matches!(
+            c,
+            '\\' | '^' | '$' | '.' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn canonical(p: &Path) -> Result<PathBuf> {
@@ -565,8 +647,10 @@ mod tests {
             "agent profile should grant the codex home dir"
         );
         // Everything else unchanged: provider dot-dirs, caches, macOS-native.
+        // (`.claude` is deliberately NOT here — its root is no longer granted;
+        // see `agent_profile_grants_claude_islands_not_the_config_root`.)
         for dir in [
-            ".claude", ".cursor", ".gemini", ".pi", ".npm", ".cache",
+            ".cursor", ".gemini", ".pi", ".npm", ".cache",
             "Library/Caches", "Library/Application Support",
         ] {
             assert!(
@@ -677,35 +761,135 @@ mod tests {
     }
 
     #[test]
-    fn profile_grants_custom_claude_config_dir() {
+    fn profile_grants_custom_claude_config_dir_islands_not_the_root() {
         // Regression: a sandboxed agent running with CLAUDE_CONFIG_DIR outside
-        // ~/.claude couldn't write its config/transcripts/auth, because only
-        // ~/.claude was on the allow-list.
+        // ~/.claude couldn't write its config/transcripts/auth. It gets the same
+        // writable *islands* (not the config-dir root — config-poisoning
+        // narrowing) plus the credential file, relative to the custom dir.
         let (_td, root, rpc, home) = sandbox_dirs();
         let cfg = home.join(".claude-eve");
         std::fs::create_dir_all(&cfg).unwrap();
 
         let profile = build_profile(&root, &rpc, &home, Some(cfg.as_path())).unwrap();
-        // The emitted path must be canonical (symlink-resolved) so it matches
+        // The emitted paths must be canonical (symlink-resolved) so they match
         // what the sandbox resolves at write time — e.g. on macOS the tempdir
         // lives under /var → /private/var.
         let canonical_cfg = std::fs::canonicalize(&cfg).unwrap();
-        assert!(profile.contains(&format!("(subpath \"{}\")", canonical_cfg.display())));
+
+        // The config-dir ROOT is never granted.
+        assert!(
+            !profile.contains(&format!("(subpath \"{}\")", canonical_cfg.display())),
+            "the custom config-dir root must not be granted, only its islands"
+        );
+        // Every island under the custom dir is granted.
+        for island in policy::claude_write_island_dirs(&canonical_cfg) {
+            assert!(
+                profile.contains(&format!("(subpath \"{}\")", island.display())),
+                "custom config dir should grant island {}",
+                island.display()
+            );
+        }
+        // The credential file gets its anchored regex rule under the custom dir.
+        // The dir portion is regex-escaped (tempdir paths carry `.`), matching
+        // how the profile emits it.
+        assert!(
+            profile.contains(&format!(
+                "(regex #\"^{}/\\.credentials\\.json.*$\")",
+                sbpl_regex_escape(&canonical_cfg.to_string_lossy())
+            )),
+            "custom config dir should grant the .credentials.json regex rule"
+        );
     }
 
     #[test]
-    fn profile_does_not_duplicate_default_config_dir() {
+    fn profile_does_not_duplicate_default_config_dir_islands() {
         // CLAUDE_CONFIG_DIR explicitly set to the default ~/.claude must not add
-        // a second, redundant allow entry.
+        // second, redundant island entries (the default islands come through the
+        // policy list already).
         let (_td, root, rpc, home) = sandbox_dirs();
         let default_claude = std::fs::canonicalize(&home).unwrap().join(".claude");
 
         let profile = build_profile(&root, &rpc, &home, Some(default_claude.as_path())).unwrap();
-        let needle = format!("(subpath \"{}\")", default_claude.display());
+        for island in policy::claude_write_island_dirs(&default_claude) {
+            let needle = format!("(subpath \"{}\")", island.display());
+            assert_eq!(
+                profile.matches(&needle).count(),
+                1,
+                "default island {} should appear exactly once",
+                island.display()
+            );
+        }
+        // The default credential regex likewise appears exactly once.
+        let creds = format!(
+            "(regex #\"^{}/\\.credentials\\.json.*$\")",
+            sbpl_regex_escape(&default_claude.to_string_lossy())
+        );
         assert_eq!(
-            profile.matches(&needle).count(),
+            profile.matches(&creds).count(),
             1,
-            "default ~/.claude should appear exactly once"
+            "default .credentials.json regex should appear exactly once"
+        );
+    }
+
+    #[test]
+    fn agent_profile_grants_claude_islands_not_the_config_root() {
+        // The security fix (config-poisoning narrowing): the default ~/.claude
+        // config-dir ROOT must NOT be granted, only its writable islands and the
+        // credential file. `settings.json` (host hooks), `plugins/`, `CLAUDE.md`,
+        // etc. must be covered by no grant.
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let profile = build_profile(&root, &rpc, &home, None).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        let claude = canonical_home.join(".claude");
+        let h = canonical_home.display();
+
+        // (a) No `(subpath ".../.claude")` root grant.
+        assert!(
+            !profile.contains(&format!("(subpath \"{}\")", claude.display())),
+            "the ~/.claude config-dir root must not be granted"
+        );
+
+        // (b) Every island present.
+        for island in policy::claude_write_island_dirs(&claude) {
+            assert!(
+                profile.contains(&format!("(subpath \"{}\")", island.display())),
+                "agent profile should grant claude island {}",
+                island.display()
+            );
+        }
+        // The credential file's anchored regex rule is present (dir portion
+        // regex-escaped to match the emitted form).
+        assert!(
+            profile.contains(&format!(
+                "(regex #\"^{}/\\.credentials\\.json.*$\")",
+                sbpl_regex_escape(&claude.to_string_lossy())
+            )),
+            "agent profile should grant the ~/.claude/.credentials.json regex rule"
+        );
+
+        // (c) The config-poisoning entries are covered by NO grant. Since (a)
+        // holds (no root subpath) and each island is a distinct named subdir,
+        // a substring check for these paths suffices.
+        for denied in [
+            ".claude/settings.json",
+            ".claude/settings.local.json",
+            ".claude/plugins",
+            ".claude/skills",
+            ".claude/commands",
+            ".claude/agents",
+            ".claude/hooks",
+            ".claude/CLAUDE.md",
+            ".claude/keybindings.json",
+        ] {
+            assert!(
+                !profile.contains(&format!("{h}/{denied}")),
+                "config-poisoning path {denied} must not be covered by any grant"
+            );
+        }
+        // (d) The `~/.claude.json` top-level state file literal stays.
+        assert!(
+            profile.contains(&format!("(literal \"{h}/.claude.json\")")),
+            "the ~/.claude.json literal grant must remain"
         );
     }
 
