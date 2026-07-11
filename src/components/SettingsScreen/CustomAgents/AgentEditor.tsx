@@ -9,7 +9,7 @@ import type { NewCustomAgent } from "@/storage/customAgents";
 import { useAppStore } from "@/store";
 import { AssignPicker } from "./AssignPicker";
 import { Mono } from "./Mono";
-import { CA_HUES, INJECTION_HINT, MCP_SUPPORTED_BASES } from "./shared";
+import { CA_HUES, INJECTION_HINT, MCP_HINT, MCP_SUPPORT } from "./shared";
 
 /** Mutable editor form state. `model`/`effort` use "" as the "provider default"
  *  sentinel so the <select> has a concrete value; converted to null on save. */
@@ -93,7 +93,7 @@ export function AgentEditor({
     });
   };
 
-  const mcpSupported = MCP_SUPPORTED_BASES.has(form.base);
+  const mcpSupport = MCP_SUPPORT[form.base] ?? "none";
 
   return (
     <div className="set-pane">
@@ -221,18 +221,23 @@ export function AgentEditor({
         <div className="set-field ca-field">
           <label className="set-field-label text-sm">
             Tools (MCP)
-            <span className="ca-field-hint">
-              {mcpSupported
-                ? "MCP servers attached when this agent runs"
-                : "Not supported by this base — the agent will run without attached tools"}
-            </span>
+            <span className="ca-field-hint">{MCP_HINT[mcpSupport]}</span>
           </label>
           <AssignPicker
-            items={mcpServers.map((s) => ({
-              id: s.id,
-              name: s.name,
-              detail: s.transport === "http" ? s.url : s.command,
-            }))}
+            items={mcpServers.map((s) => {
+              const unattachable =
+                mcpSupport === "none" || (mcpSupport === "stdio" && s.transport === "http");
+              const target = s.transport === "http" ? s.url : s.command;
+              return {
+                id: s.id,
+                name: s.name,
+                detail:
+                  unattachable && mcpSupport === "stdio"
+                    ? `${target} — HTTP servers aren't supported by this base`
+                    : target,
+                disabled: unattachable,
+              };
+            })}
             selected={form.mcpServerIds}
             onChange={(mcpServerIds) => set({ mcpServerIds })}
             emptyHint="No MCP servers yet — add them under Settings → Tools."

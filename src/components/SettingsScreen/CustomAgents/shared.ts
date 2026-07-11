@@ -28,9 +28,22 @@ export const INJECTION_HINT: Record<string, string> = {
   pi: "--append-system-prompt",
 };
 
-/** Which base providers can attach MCP servers — mirrors the backend delivery
- *  in `agent_profile.rs` (claude `--mcp-config`, codex `-c mcp_servers.*`).
+/** Which MCP transports each base provider can attach — mirrors the backend
+ *  delivery in `agent_profile.rs`: claude takes stdio + http via
+ *  `--mcp-config`, codex only stdio via `-c mcp_servers.*` (its `-c` config
+ *  has no http transport), and the rest have no MCP surface we can drive.
  *  Skills need no such map: the materialize-and-index mechanism works on every
- *  base. Surfaced in the editor so attaching tools to an unsupported base is
- *  honest about being a no-op. */
-export const MCP_SUPPORTED_BASES: ReadonlySet<string> = new Set(["claude", "codex"]);
+ *  base. Surfaced in the editor so unattachable servers are disabled up front
+ *  instead of being silently ignored at spawn. */
+export type McpSupport = "all" | "stdio" | "none";
+export const MCP_SUPPORT: Record<string, McpSupport> = {
+  claude: "all",
+  codex: "stdio",
+};
+
+/** Editor hint line for the Tools section, by the base's MCP support level. */
+export const MCP_HINT: Record<McpSupport, string> = {
+  all: "MCP servers attached when this agent runs",
+  stdio: "MCP servers attached when this agent runs — command (stdio) servers only",
+  none: "Not supported by this base — the agent will run without attached tools",
+};

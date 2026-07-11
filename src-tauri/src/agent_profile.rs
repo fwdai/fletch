@@ -101,6 +101,39 @@ fn dedupe(base: &str, used: &mut Vec<String>, sep: char) -> String {
     candidate
 }
 
+/// Ensure `dir` is a real directory, replacing an agent-planted symlink (or
+/// stray file) at that path. The profile dir sits under the agent-writable
+/// root but is written by the *host* on every spawn; without this check a
+/// prompt-injected agent could swap `.fletch-profile` for a symlink between
+/// spawns and redirect the host's writes anywhere the user can write. Checked
+/// per component we own (profile root, skills dir) since `create_dir_all`
+/// happily follows an existing symlink.
+fn ensure_real_dir(dir: &Path) -> Result<()> {
+    if let Ok(meta) = std::fs::symlink_metadata(dir) {
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            std::fs::remove_file(dir)
+                .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
+        }
+    }
+    std::fs::create_dir_all(dir)
+        .map_err(|e| Error::Other(format!("failed to create profile dir: {e}")))
+}
+
+/// Write a profile artifact, refusing to follow a symlink at the target path
+/// (`fs::write` would): an agent-planted link is removed so the content lands
+/// at the literal path. The agent process is not running while the host
+/// materializes the profile, so there is no live race with this check.
+fn write_profile_file(path: &Path, contents: &str) -> Result<()> {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            std::fs::remove_file(path)
+                .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
+        }
+    }
+    std::fs::write(path, contents)
+        .map_err(|e| Error::Other(format!("failed to write profile file: {e}")))
+}
+
 /// Filesystem-safe slug for a skill file name: lowercased, runs of
 /// non-alphanumerics collapsed to `-`. Falls back to `skill` for names with no
 /// usable characters; callers dedupe collisions positionally.
@@ -133,8 +166,8 @@ pub fn materialize_skills(skills: &[SkillSnapshot], sandbox_root: &Path) -> Resu
         return Ok(None);
     }
     let dir = skills_dir(sandbox_root);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| Error::Other(format!("failed to create skills dir: {e}")))?;
+    ensure_real_dir(&profile_dir(sandbox_root))?;
+    ensure_real_dir(&dir)?;
 
     let mut index = String::from(
         "## Skills\n\nThe following skill documents are available. When your task matches one, \
@@ -144,8 +177,7 @@ pub fn materialize_skills(skills: &[SkillSnapshot], sandbox_root: &Path) -> Resu
     for skill in skills {
         let file = dedupe(&slug(&skill.name), &mut used, '-');
         let path = dir.join(format!("{file}.md"));
-        std::fs::write(&path, &skill.body)
-            .map_err(|e| Error::Other(format!("failed to write skill file: {e}")))?;
+        write_profile_file(&path, &skill.body)?;
         let desc = skill.description.trim();
         if desc.is_empty() {
             index.push_str(&format!("- {} — {}\n", skill.name, path.display()));
@@ -218,13 +250,11 @@ pub fn write_claude_mcp_config(
     }
     let config = serde_json::json!({ "mcpServers": serde_json::Value::Object(map) });
     let dir = profile_dir(sandbox_root);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| Error::Other(format!("failed to create profile dir: {e}")))?;
+    ensure_real_dir(&dir)?;
     let path = dir.join("mcp-servers.json");
     let body = serde_json::to_string_pretty(&config)
         .map_err(|e| Error::Other(format!("failed to encode MCP config: {e}")))?;
-    std::fs::write(&path, body)
-        .map_err(|e| Error::Other(format!("failed to write MCP config: {e}")))?;
+    write_profile_file(&path, &body)?;
     Ok(Some(path))
 }
 
@@ -410,6 +440,48 @@ mod tests {
         // The http server contributes nothing.
         assert_eq!(args.len(), 6);
         assert!(codex_mcp_args(&[]).is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_profile_dir_is_replaced_not_followed() {
+        // An agent-planted symlink at `.fletch-profile` (or a skill file) must
+        // never redirect the host's writes outside the profile dir.
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(PROFILE_DIR)).unwrap();
+
+        let skills = vec![skill("Deploy", "", "steps")];
+        materialize_skills(&skills, dir.path()).unwrap().unwrap();
+
+        // The link was replaced by a real dir; nothing landed outside.
+        let profile = dir.path().join(PROFILE_DIR);
+        assert!(!std::fs::symlink_metadata(&profile)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(profile.join("skills/deploy.md").exists());
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+
+        // Same for a symlinked artifact file inside a real profile dir.
+        let target = outside.path().join("victim");
+        std::fs::write(&target, "before").unwrap();
+        let cfg = profile.join("mcp-servers.json");
+        std::os::unix::fs::symlink(&target, &cfg).unwrap();
+        let servers = vec![McpServerSnapshot {
+            name: "GitHub".into(),
+            transport: "stdio".into(),
+            command: "npx".into(),
+            ..Default::default()
+        }];
+        write_claude_mcp_config(&servers, dir.path())
+            .unwrap()
+            .unwrap();
+        assert!(!std::fs::symlink_metadata(&cfg)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
     }
 
     #[test]
