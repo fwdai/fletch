@@ -1,6 +1,7 @@
 mod activity;
 mod agent;
 mod agent_install;
+mod agent_profile;
 mod bin_resolve;
 mod child_io;
 mod commands;

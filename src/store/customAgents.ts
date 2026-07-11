@@ -6,7 +6,7 @@ import {
   listCustomAgents,
   type NewCustomAgent,
 } from "@/storage/customAgents";
-import type { CustomAgentsSlice, SliceCreator } from "./types";
+import type { AppState, CustomAgentsSlice, SliceCreator } from "./types";
 
 // Store slice for custom agents. The list mirrors the `custom_agents` table and
 // is loaded once on init; every mutation writes through to the db and updates
@@ -55,5 +55,20 @@ export const createCustomAgentsSlice: SliceCreator<CustomAgentsSlice> = (set, ge
     return get().createCustomAgent(copy);
   },
 });
+
+/** Remove a deleted library id (skill / MCP server) from every custom agent
+ *  that references it, so the editor never shows — and the spawn path never
+ *  resolves — a dangling id. Shared by the skills and MCP-server slices. */
+export async function detachIdFromAgents(
+  state: Pick<AppState, "customAgents" | "updateCustomAgent">,
+  field: "skillIds" | "mcpServerIds",
+  id: string,
+): Promise<void> {
+  for (const agent of state.customAgents.filter((a) => a[field].includes(id))) {
+    await state.updateCustomAgent(agent.id, {
+      [field]: agent[field].filter((x) => x !== id),
+    });
+  }
+}
 
 export type { CustomAgent };

@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentModels } from "./data/modelCatalog/types";
+import type { McpServerSnapshot } from "./storage/mcpServers";
 import type { SandboxEngine } from "./storage/preferences";
+import type { SkillSnapshot } from "./storage/skills";
 
 export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
@@ -508,6 +510,11 @@ export const api = {
      *  branch; a workflow step instead passes the previous step's HEAD
      *  (commit-ish) so its checkout continues that work. */
     forkBase?: string,
+    /** A custom agent's skills, resolved by value at spawn (snapshotted onto
+     *  the session like `instructions`). */
+    skills?: SkillSnapshot[],
+    /** A custom agent's MCP servers, resolved by value at spawn. */
+    mcpServers?: McpServerSnapshot[],
   ) =>
     invoke<AgentRecord>("spawn_agent", {
       view,
@@ -518,6 +525,8 @@ export const api = {
       model: model ?? null,
       instructions: instructions ?? null,
       customAgentId: customAgentId ?? null,
+      skills: skills ?? null,
+      mcpServers: mcpServers ?? null,
       forkBase: forkBase ?? null,
     }),
   writeToAgent: (agentId: string, data: string) =>

@@ -77,7 +77,15 @@ export function SetRow({
   );
 }
 
-export function SetToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+export function SetToggle({
+  on,
+  onClick,
+  disabled,
+}: {
+  on: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   return (
     <button
       type="button"
@@ -85,6 +93,8 @@ export function SetToggle({ on, onClick }: { on: boolean; onClick: () => void })
       data-on={on ? "1" : "0"}
       role="switch"
       aria-checked={on}
+      disabled={disabled}
+      style={disabled ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
       onClick={onClick}
     >
       <i />

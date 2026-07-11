@@ -163,6 +163,10 @@ pub struct SpawnRequest {
     pub instructions: Option<String>,
     /// Custom agent identity; `None` for a plain built-in spawn.
     pub custom_agent_id: Option<String>,
+    /// Custom agent's skills, snapshotted by value (see `agent_profile`).
+    pub skills: Vec<crate::agent_profile::SkillSnapshot>,
+    /// Custom agent's MCP servers, snapshotted by value (see `agent_profile`).
+    pub mcp_servers: Vec<crate::agent_profile::McpServerSnapshot>,
     /// Base the checkout forks from, which also becomes the agent's recorded
     /// parent branch (PR base / ahead-behind). The new-agent screen passes the
     /// chosen base branch here; a workflow step instead passes the previous
@@ -186,6 +190,8 @@ impl Supervisor {
             model,
             instructions,
             custom_agent_id,
+            skills,
+            mcp_servers,
             fork_base,
         } = req;
         if !repo_path.join(".git").exists() {
@@ -268,6 +274,10 @@ impl Supervisor {
         // built-in spawn. The brief is re-injected on every spawn/resume.
         record.instructions = instructions;
         record.custom_agent_id = custom_agent_id;
+        // Skill/MCP snapshots, persisted like the brief so every process spawn
+        // (fresh, view-switch, resume) re-materializes the same profile.
+        record.skills = skills;
+        record.mcp_servers = mcp_servers;
         // Stamp the sandbox engine at creation: the agent keeps this engine
         // for life (respawn, view-switch, restore), so a later settings change
         // never re-engines it — see `spawn_agent_process`, which reuses the
@@ -599,6 +609,26 @@ impl Supervisor {
         // respawn), not just fresh spawns: only claude runs under docker.
         ensure_engine_supports_provider(engine, &record.provider)?;
 
+        // Materialize the session's skill snapshot under the writable root and
+        // fold its index into the injected instructions. Recomputed on every
+        // launch path so the files always exist (e.g. after a checkout is
+        // recreated) and always match the snapshot. `None` when the session has
+        // neither a brief nor skills — the pre-profile behavior.
+        let instructions = crate::agent_profile::effective_instructions(
+            record.instructions.as_deref(),
+            &record.skills,
+            &sandbox_root,
+        )?;
+        // Claude's generated MCP config, regenerated from the snapshot each
+        // launch and passed via `--mcp-config` + `--strict-mcp-config`. Other
+        // providers take their MCP delivery from the spec's snapshot instead
+        // (codex `-c` overrides); see `agent_profile`.
+        let mcp_config = if record.provider == "claude" {
+            crate::agent_profile::write_claude_mcp_config(&record.mcp_servers, &sandbox_root)?
+        } else {
+            None
+        };
+
         if per_turn {
             match record.view {
                 // Native view: launch the agent's interactive TUI in a PTY,
@@ -621,7 +651,9 @@ impl Supervisor {
                         // not at spawn.
                         effort: None,
                         model: record.model.as_deref(),
-                        instructions: record.instructions.as_deref(),
+                        instructions: instructions.as_deref(),
+                        mcp_servers: &record.mcp_servers,
+                        mcp_config: None,
                         rpc_dir,
                         cols: 120,
                         rows: 32,
@@ -647,7 +679,8 @@ impl Supervisor {
                         sandbox_root,
                         session_id,
                         model: record.model.clone(),
-                        instructions: record.instructions.clone(),
+                        instructions: instructions.clone(),
+                        mcp_servers: record.mcp_servers.clone(),
                         rpc_dir,
                         engine,
                     },
@@ -671,7 +704,9 @@ impl Supervisor {
                 // re-applies on every spawn (fresh, view-switch, resume).
                 effort: record.effort.as_deref(),
                 model: record.model.as_deref(),
-                instructions: record.instructions.as_deref(),
+                instructions: instructions.as_deref(),
+                mcp_servers: &record.mcp_servers,
+                mcp_config: mcp_config.as_deref(),
                 rpc_dir,
                 cols: 120,
                 rows: 32,

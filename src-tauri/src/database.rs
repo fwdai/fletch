@@ -142,6 +142,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0014_pr_times_and_usage_daily.sql"),
     include_str!("../migrations/0015_worktree_pr_snapshot.sql"),
     include_str!("../migrations/0016_pending_messages.sql"),
+    include_str!("../migrations/0017_skills_and_mcp_servers.sql"),
 ];
 
 fn get_migrations() -> Migrations<'static> {

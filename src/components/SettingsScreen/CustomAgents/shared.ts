@@ -1,5 +1,7 @@
 // Shared helpers + constants for the Custom Agents settings pane.
 
+import type { McpSupport } from "@/data/providers";
+
 /** Preset hues for the monogram tile (evenly spread around the wheel). */
 export const CA_HUES = [265, 150, 25, 215, 320, 95, 175, 50] as const;
 
@@ -26,4 +28,14 @@ export const INJECTION_HINT: Record<string, string> = {
   opencode: "prepended to the first message",
   antigravity: "prepended to the first message",
   pi: "--append-system-prompt",
+};
+
+/** Editor hint line for the Tools section, by the base's MCP support level
+ *  (see `MCP_SUPPORT`/`mcpAttachable` in data/providers.ts — capability data
+ *  lives there so the spawn path can apply the same rule). Skills need no such
+ *  map: the materialize-and-index mechanism works on every base. */
+export const MCP_HINT: Record<McpSupport, string> = {
+  all: "MCP servers attached when this agent runs",
+  stdio: "MCP servers attached when this agent runs — command (stdio) servers only",
+  none: "Not supported by this base — the agent will run without attached tools",
 };

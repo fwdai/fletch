@@ -1,6 +1,7 @@
 import { api } from "@/api";
-import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
+import { DEFAULT_PROVIDER_ID, MCP_SUPPORT, mcpAttachable, PROVIDERS } from "@/data/providers";
 import { sendWhenAgentReady, usedNames } from "@/helpers";
+import { snapshotMcpServer } from "@/storage/mcpServers";
 import { setSetting } from "@/storage/settings";
 import type { AppState, DraftsSlice, SliceCreator } from "./types";
 
@@ -171,6 +172,24 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         ? get().customAgents.find((a) => a.id === customAgentId)
         : undefined;
       const instructions = custom?.instructions?.trim() ? custom.instructions : undefined;
+      // Resolve the agent's skill/MCP assignments to by-value snapshots, in the
+      // agent's assignment order. Dangling ids (deleted library entries) drop
+      // out. Snapshotted like the brief: later library edits never touch this
+      // session.
+      const skills = (custom?.skillIds ?? [])
+        .map((sid) => get().skills.find((s) => s.id === sid))
+        .filter((s) => s !== undefined)
+        .map(({ name, description, body }) => ({ name, description, body }));
+      // Undeliverable servers (e.g. an HTTP server on a codex base, saved
+      // before the base switch) drop here too, not just in the editor: the
+      // snapshot must contain exactly what the provider can run, so the
+      // backend never carries assignments it silently ignores.
+      const mcpSupport = MCP_SUPPORT[provider] ?? "none";
+      const mcpServers = (custom?.mcpServerIds ?? [])
+        .map((sid) => get().mcpServers.find((s) => s.id === sid))
+        .filter((s) => s !== undefined)
+        .filter((s) => mcpAttachable(mcpSupport, s.transport))
+        .map(snapshotMcpServer);
       // `thinking` carries the composer's effort selection. For claude it's a
       // session-level spawn flag (--effort), applied here; per-turn agents
       // ignore it at spawn and take it per-turn via sendUserMessage below.
@@ -187,6 +206,8 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // forks the checkout from it and records it as the agent's parent
         // branch (PR base / ahead-behind).
         draft.base,
+        skills.length > 0 ? skills : undefined,
+        mcpServers.length > 0 ? mcpServers : undefined,
       );
       const fresh = await api.getWorkspace();
       set((state) => {

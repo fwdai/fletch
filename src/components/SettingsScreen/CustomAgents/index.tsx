@@ -21,6 +21,8 @@ function blankAgent(seed: number): NewCustomAgent {
     model: null,
     effort: null,
     instructions: "",
+    skillIds: [],
+    mcpServerIds: [],
   };
 }
 

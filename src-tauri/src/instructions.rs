@@ -111,8 +111,9 @@ pub fn prepend_to_prompt(prompt: &str, session_id: Option<&str>, extra: Option<&
 }
 
 /// Encode `s` as a TOML basic string (double-quoted, with escapes), so it can
-/// be passed as the value half of a `-c key=value` config override.
-fn toml_basic_string(s: &str) -> String {
+/// be passed as the value half of a `-c key=value` config override. Also used
+/// by `agent_profile` for codex `mcp_servers.*` overrides.
+pub(crate) fn toml_basic_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {

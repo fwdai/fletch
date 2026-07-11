@@ -281,6 +281,8 @@ pub async fn spawn_agent(
     model: Option<String>,
     instructions: Option<String>,
     custom_agent_id: Option<String>,
+    skills: Option<Vec<crate::agent_profile::SkillSnapshot>>,
+    mcp_servers: Option<Vec<crate::agent_profile::McpServerSnapshot>>,
     fork_base: Option<String>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
@@ -295,6 +297,8 @@ pub async fn spawn_agent(
             model,
             instructions,
             custom_agent_id,
+            skills: skills.unwrap_or_default(),
+            mcp_servers: mcp_servers.unwrap_or_default(),
             fork_base,
         },
     )

@@ -171,6 +171,16 @@ pub struct AgentRecord {
     /// name/color in the sidebar. `None` for a plain built-in spawn.
     #[serde(default)]
     pub custom_agent_id: Option<String>,
+    /// Skills snapshotted at spawn (by value, like `instructions`): materialized
+    /// as files under the agent's writable root on every process spawn, with an
+    /// index appended to the injected instructions. Empty for plain spawns.
+    #[serde(default)]
+    pub skills: Vec<crate::agent_profile::SkillSnapshot>,
+    /// MCP servers snapshotted at spawn (by value): regenerated into provider
+    /// config (claude `--mcp-config`, codex `-c mcp_servers.*`) on every process
+    /// spawn. Empty for plain spawns.
+    #[serde(default)]
+    pub mcp_servers: Vec<crate::agent_profile::McpServerSnapshot>,
     /// Sandbox engine stamped at creation (an `EngineKind::as_setting`
     /// spelling) and reused on every process spawn, so a settings change never
     /// re-engines an existing agent. `None` = created before engine selection
@@ -332,6 +342,7 @@ const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created
             w.stopped_at, w.archived_at,
             s.provider, s.view, s.provider_session_id, s.last_error,
             s.effort, s.model, s.instructions, s.custom_agent_id,
+            s.skills, s.mcp_servers,
             w.sandbox_engine
      FROM workspaces w
      LEFT JOIN sessions s ON s.workspace_id = w.id";
@@ -353,6 +364,8 @@ type AgentRow = (
     Option<String>, // s.model
     Option<String>, // s.instructions
     Option<String>, // s.custom_agent_id
+    Option<String>, // s.skills (JSON array of SkillSnapshot)
+    Option<String>, // s.mcp_servers (JSON array of McpServerSnapshot)
     Option<String>, // w.sandbox_engine
 );
 
@@ -595,8 +608,8 @@ impl WorkspaceManager {
         // not persisted — it derives from the workspace/session dispositions.
         let session_id = uuid::Uuid::new_v4().to_string();
         tx.execute(
-            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, instructions, custom_agent_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, instructions, custom_agent_id, skills, mcp_servers, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             rusqlite::params![
                 session_id,
                 record.id,
@@ -608,6 +621,8 @@ impl WorkspaceManager {
                 record.model,
                 record.instructions,
                 record.custom_agent_id,
+                encode_json_vec(&record.skills),
+                encode_json_vec(&record.mcp_servers),
                 created_millis,
             ],
         )?;
@@ -1741,7 +1756,7 @@ impl WorkspaceManager {
     }
 
     /// Map a row from an [`AGENT_SELECT`] query into the raw column tuple.
-    /// Shared by `query_all_agents` and `load_agent` so the 16-column layout
+    /// Shared by `query_all_agents` and `load_agent` so the 18-column layout
     /// is decoded in exactly one place.
     fn map_agent_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRow> {
         Ok((
@@ -1761,6 +1776,8 @@ impl WorkspaceManager {
             row.get(13)?,
             row.get(14)?,
             row.get(15)?,
+            row.get(16)?,
+            row.get(17)?,
         ))
     }
 
@@ -1784,6 +1801,8 @@ impl WorkspaceManager {
             model,
             instructions,
             custom_agent_id,
+            skills_json,
+            mcp_servers_json,
             sandbox_engine,
         ) = row;
 
@@ -1820,12 +1839,32 @@ impl WorkspaceManager {
             model,
             instructions,
             custom_agent_id,
+            skills: decode_json_vec(skills_json.as_deref()),
+            mcp_servers: decode_json_vec(mcp_servers_json.as_deref()),
             sandbox_engine,
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,
         }
     }
+}
+
+/// Decode a nullable JSON-array session column into a Vec, treating NULL,
+/// blank, or malformed JSON as empty — a snapshot that can't be read shouldn't
+/// keep the whole workspace from loading.
+fn decode_json_vec<T: serde::de::DeserializeOwned>(json: Option<&str>) -> Vec<T> {
+    json.filter(|s| !s.trim().is_empty())
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default()
+}
+
+/// Encode a snapshot Vec for its session column: `None` (SQL NULL) when empty,
+/// so plain built-in spawns keep NULL columns like they do for `instructions`.
+fn encode_json_vec<T: serde::Serialize>(items: &[T]) -> Option<String> {
+    if items.is_empty() {
+        return None;
+    }
+    serde_json::to_string(items).ok()
 }
 
 /// Per-turn agents run one process per turn, assign their own session id
@@ -1870,6 +1909,8 @@ pub fn new_agent_record(
         model: None,
         instructions: None,
         custom_agent_id: None,
+        skills: Vec::new(),
+        mcp_servers: Vec::new(),
         // Stamped by the spawn path (`supervisor::lifecycle::spawn_agent`)
         // from the live setting — callers building records directly (tests)
         // default to the pre-selection NULL, which spawns under sandbox-exec.
@@ -1889,7 +1930,11 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("repo")
         .to_string();
-    if !used.iter().any(|u| u == &base) {
+    // `.fletch-profile` is reserved for Fletch-generated per-agent artifacts
+    // (skill files, MCP config — see `agent_profile::PROFILE_DIR`); a repo with
+    // that basename gets a numbered subdir instead of colliding with it.
+    let reserved = base == crate::agent_profile::PROFILE_DIR;
+    if !reserved && !used.iter().any(|u| u == &base) {
         return base;
     }
     let mut n = 2;
@@ -2535,6 +2580,58 @@ mod tests {
         let plain_loaded = wm.agent(&plain_id).unwrap();
         assert_eq!(plain_loaded.instructions, None);
         assert_eq!(plain_loaded.custom_agent_id, None);
+    }
+
+    #[test]
+    fn skill_and_mcp_snapshots_round_trip() {
+        use crate::agent_profile::{McpServerSnapshot, SkillSnapshot};
+
+        let db = test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        seed_repo(&db, "/r");
+
+        let mut rec = new_agent_record(
+            "rainier".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        let id = rec.id.clone();
+        rec.skills = vec![SkillSnapshot {
+            name: "Code Review".into(),
+            description: "how we review".into(),
+            body: "# Review\nBe thorough.".into(),
+        }];
+        rec.mcp_servers = vec![McpServerSnapshot {
+            name: "GitHub".into(),
+            transport: "stdio".into(),
+            command: "npx".into(),
+            args: vec!["-y".into(), "gh-mcp".into()],
+            env: vec![("TOKEN".into(), "t".into())],
+            ..Default::default()
+        }];
+        wm.add_agent(&mut rec).unwrap();
+
+        let loaded = wm.agent(&id).unwrap();
+        assert_eq!(loaded.skills, rec.skills);
+        assert_eq!(loaded.mcp_servers, rec.mcp_servers);
+
+        // A plain spawn keeps both columns NULL → empty vecs.
+        let mut plain = new_agent_record(
+            "hood".into(),
+            "b".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        let plain_id = plain.id.clone();
+        wm.add_agent(&mut plain).unwrap();
+        let plain_loaded = wm.agent(&plain_id).unwrap();
+        assert!(plain_loaded.skills.is_empty());
+        assert!(plain_loaded.mcp_servers.is_empty());
     }
 
     #[test]
