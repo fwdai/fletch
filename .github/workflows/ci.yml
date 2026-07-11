@@ -43,12 +43,10 @@ jobs:
           version: 1.0
 
       - name: Setup Rust
-        # Pinned, not @stable: the clippy gate is `-D warnings`, so a floating
-        # toolchain lets a future release's new lints break CI on unchanged
-        # code. Bump this deliberately.
-        uses: dtolnay/rust-toolchain@1.97.0
-        with:
-          components: clippy, rustfmt
+        # Toolchain version + components come from /rust-toolchain.toml (the
+        # single source of truth, shared with the release build and local dev).
+        # rustup installs the pinned toolchain named there, with its components.
+        run: rustup toolchain install
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
