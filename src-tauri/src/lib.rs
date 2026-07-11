@@ -26,6 +26,7 @@ mod run_detect;
 mod run_session;
 mod sandbox;
 mod secrets;
+mod sentry_scrub;
 mod supervisor;
 mod telemetry;
 mod transcripts;
@@ -189,6 +190,12 @@ fn init_logging() {
     // Sentry alongside the local log file. Lower levels become breadcrumbs that
     // give those events context. Capture is a no-op when no DSN is baked in, so
     // this stays inert in dev and unconfigured builds.
+    //
+    // PRIVACY INVARIANT: keep log messages static string literals and put every
+    // dynamic value (paths, argv, repo/branch names, error strings) in a
+    // structured field. Fields are dropped before egress unless their key is
+    // allowlisted in `sentry_scrub` — the message is what reaches Sentry.
+    // Interpolating dynamic data into the message string would leak it.
     let sentry_layer = sentry::integrations::tracing::layer().event_filter(|md| {
         use sentry::integrations::tracing::EventFilter;
         match *md.level() {
@@ -797,10 +804,19 @@ pub fn run() {
     // regardless of any future data-sharing toggle. `_sentry` must stay bound
     // for the whole process so the client flushes on exit; `run()` blocks
     // below, so this scope lives until quit.
+    //
+    // Because crash reporting is not gated on consent, the payload carries the
+    // privacy burden: `before_send`/`before_breadcrumb` scrub every event and
+    // breadcrumb down to its static message plus a small allowlist of
+    // categorical fields (paths, argv, error strings, hostname, etc. never
+    // egress). See `sentry_scrub` for the invariant and how to allowlist a new
+    // field.
     let _sentry = sentry::init((
         option_env!("QUORUM_SENTRY_DSN").filter(|s| !s.is_empty()),
         sentry::ClientOptions {
             release: sentry::release_name!(),
+            before_send: Some(std::sync::Arc::new(sentry_scrub::scrub_event)),
+            before_breadcrumb: Some(std::sync::Arc::new(sentry_scrub::scrub_breadcrumb)),
             ..Default::default()
         },
     ));
