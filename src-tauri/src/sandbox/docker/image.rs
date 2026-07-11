@@ -653,7 +653,9 @@ fn spawn_refresh_rebuild(provider: DockerProvider, tag: String, reason: RefreshR
 fn rebuild_image(provider: DockerProvider, tag: &str) -> Result<()> {
     let spec = image_spec(provider);
     let _guard = BUILD_LOCK.lock().unwrap();
-    let on_line = |line: &str| tracing::info!(target: "fletch::docker_build", "{line}");
+    // Build output is free-form (`line` in a field, not the message) so the
+    // sentry scrubber drops it — see the privacy invariant in `lib.rs`.
+    let on_line = |line: &str| tracing::info!(target: "fletch::docker_build", line = %line, "docker build output");
     run_build(spec.dockerfile, spec.entrypoint, tag, true, &on_line)
 }
 

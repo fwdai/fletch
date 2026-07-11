@@ -84,6 +84,18 @@ pub fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
         redact_home(&mut entry.message);
     }
 
+    // Panic messages land in exception values, and a panic payload (e.g. an
+    // `expect` on an io error) can embed a user path. Redact the home dir but
+    // keep the message — it is load-bearing for debugging, and on macOS user
+    // paths live under `$HOME`. Stacktrace frame paths are left alone: they
+    // come from the binary's debug info (the *build* machine, identical for
+    // every user), and scrubbing them would break symbolication.
+    for exception in event.exception.values.iter_mut() {
+        if let Some(value) = exception.value.as_mut() {
+            redact_home(value);
+        }
+    }
+
     // Empty for tracing events, but manual captures / other integrations may
     // populate `extra`; hold the allowlist invariant there too.
     retain_allowlisted(&mut event.extra);
@@ -212,6 +224,24 @@ mod tests {
         assert!(!breadcrumb.data.contains_key("error"));
         assert_eq!(breadcrumb.data.get("agent_id"), Some(&json!("agent-123")));
         assert_eq!(breadcrumb.data.get("op"), Some(&json!("spawn")));
+    }
+
+    #[test]
+    fn redacts_home_dir_in_exception_value() {
+        let Some(home) = dirs::home_dir().and_then(|p| p.to_str().map(str::to_owned)) else {
+            return; // no home dir on this platform; nothing to assert
+        };
+        let mut event = Event::default();
+        event.exception.values.push(sentry::protocol::Exception {
+            ty: "panic".into(),
+            value: Some(format!("called `Result::unwrap()` on Err: {home}/x.db")),
+            ..Default::default()
+        });
+
+        let event = scrub_event(event).expect("event not dropped");
+        let value = event.exception.values[0].value.as_deref().unwrap();
+        assert!(!value.contains(&home), "home dir must be redacted");
+        assert!(value.contains("[home]"));
     }
 
     #[test]

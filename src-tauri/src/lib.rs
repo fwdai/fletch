@@ -195,7 +195,10 @@ fn init_logging() {
     // dynamic value (paths, argv, repo/branch names, error strings) in a
     // structured field. Fields are dropped before egress unless their key is
     // allowlisted in `sentry_scrub` — the message is what reaches Sentry.
-    // Interpolating dynamic data into the message string would leak it.
+    // Interpolating dynamic data into the message string would leak it. This
+    // applies to every macro form, including `target:`-prefixed ones (e.g.
+    // streaming docker build output) — those produce breadcrumbs like any
+    // other sub-WARN event.
     let sentry_layer = sentry::integrations::tracing::layer().event_filter(|md| {
         use sentry::integrations::tracing::EventFilter;
         match *md.level() {

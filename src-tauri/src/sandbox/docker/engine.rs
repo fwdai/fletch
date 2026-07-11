@@ -285,7 +285,10 @@ impl DockerEngine {
         };
         // Per-line build output goes to the log; the UI build toast is driven
         // separately by the `progress` sink inside `image::ensure_image`.
-        let on_progress = |line: &str| tracing::info!(target: "fletch::docker_build", "{line}");
+        // Free-form output rides in the `line` field (not the message) so the
+        // sentry scrubber drops it — see the privacy invariant in `lib.rs`.
+        let on_progress =
+            |line: &str| tracing::info!(target: "fletch::docker_build", line = %line, "docker build output");
         let tag = image::resolve_image(
             provider,
             override_image,
