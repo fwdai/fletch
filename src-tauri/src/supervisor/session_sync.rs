@@ -67,7 +67,14 @@ impl Supervisor {
                     .agent(&agent_id)
                     .map(|r| r.provider)
                     .unwrap_or_default();
-                report_sync_health(&app, &health_map, &agent_id, &provider, classify(diag), diag);
+                report_sync_health(
+                    &app,
+                    &health_map,
+                    &agent_id,
+                    &provider,
+                    classify(diag),
+                    diag,
+                );
             }
         });
     }
@@ -432,7 +439,11 @@ impl SyncPoll {
     }
 
     fn observe(&mut self, result: Option<SyncOutcome>) -> PollControl {
-        let Some(SyncOutcome { inserted: n, diagnostics }) = result else {
+        let Some(SyncOutcome {
+            inserted: n,
+            diagnostics,
+        }) = result
+        else {
             return PollControl::Stop; // no reader — nothing to wait for
         };
         self.had_reader = true;
@@ -570,7 +581,10 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
     // `inserted == 0`, so the poll keeps retrying exactly as before.
     let pending = || SyncOutcome {
         inserted: 0,
-        diagnostics: crate::agent::ReadDiagnostics { root_exists: true, ..Default::default() },
+        diagnostics: crate::agent::ReadDiagnostics {
+            root_exists: true,
+            ..Default::default()
+        },
     };
 
     let Some(repo) = record.repos.first() else {
@@ -665,7 +679,10 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
         tracing::warn!(error = %e, agent_id, "associate user turns failed");
     }
 
-    Some(SyncOutcome { inserted, diagnostics })
+    Some(SyncOutcome {
+        inserted,
+        diagnostics,
+    })
 }
 
 #[cfg(test)]
@@ -767,13 +784,20 @@ mod tests {
 
     #[test]
     fn classify_no_root_when_root_missing() {
-        let d = ReadDiagnostics { root_exists: false, ..Default::default() };
+        let d = ReadDiagnostics {
+            root_exists: false,
+            ..Default::default()
+        };
         assert_eq!(classify(&d), SyncHealth::NoRoot);
     }
 
     #[test]
     fn classify_no_files_when_root_present_but_no_matches() {
-        let d = ReadDiagnostics { root_exists: true, files_matched: 0, ..Default::default() };
+        let d = ReadDiagnostics {
+            root_exists: true,
+            files_matched: 0,
+            ..Default::default()
+        };
         assert_eq!(classify(&d), SyncHealth::NoFiles);
     }
 
@@ -865,7 +889,11 @@ mod tests {
     // validated end-to-end (not just over hand-built counters).
 
     /// Run a vendor reader against a session id / cwd and classify the result.
-    fn read_and_classify(provider: &str, session_id: &str, cwd: &Path) -> (SyncHealth, ReadDiagnostics) {
+    fn read_and_classify(
+        provider: &str,
+        session_id: &str,
+        cwd: &Path,
+    ) -> (SyncHealth, ReadDiagnostics) {
         let reader = crate::agent::transcript_reader(provider).expect("reader");
         let mut diag = ReadDiagnostics::default();
         let paths = (reader.locate)(session_id, cwd, &mut diag);
@@ -910,7 +938,10 @@ mod tests {
         let recs = (reader.read)(&paths, &mut diag);
         assert_eq!(recs.len(), 2, "the two valid lines are still returned");
         assert_eq!(diag.records_parsed, 2);
-        assert_eq!(diag.lines_seen, 3, "the garbage line was seen but not parsed");
+        assert_eq!(
+            diag.lines_seen, 3,
+            "the garbage line was seen but not parsed"
+        );
         assert_eq!(classify(&diag), SyncHealth::Healthy);
 
         std::env::remove_var("CODEX_HOME");

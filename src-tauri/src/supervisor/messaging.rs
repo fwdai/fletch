@@ -212,7 +212,10 @@ impl Supervisor {
         for (agent_id, msg) in pending {
             queue.enqueue(&agent_id, msg);
         }
-        tracing::info!(count, "rehydrated queued follow-up messages from a prior run");
+        tracing::info!(
+            count,
+            "rehydrated queued follow-up messages from a prior run"
+        );
     }
 }
 
@@ -344,7 +347,10 @@ pub(super) fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &st
     {
         let queue = sup.message_queue.lock();
         let keep = queue.turn_ids(agent_id);
-        if let Err(e) = sup.workspace.delete_pending_messages_except(agent_id, &keep) {
+        if let Err(e) = sup
+            .workspace
+            .delete_pending_messages_except(agent_id, &keep)
+        {
             tracing::warn!(error = %e, agent_id, "clear delivered pending follow-ups failed");
         }
     }

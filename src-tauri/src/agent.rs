@@ -1863,8 +1863,14 @@ mod tests {
             .unwrap();
         }
 
-        let (recs, off) =
-            read_jsonl_tail(&path, 0, 0, Some("uuid"), false, &mut ReadDiagnostics::default());
+        let (recs, off) = read_jsonl_tail(
+            &path,
+            0,
+            0,
+            Some("uuid"),
+            false,
+            &mut ReadDiagnostics::default(),
+        );
         assert_eq!(
             recs.iter()
                 .map(|r| r.native_id.as_str())
@@ -1887,8 +1893,14 @@ mod tests {
             .unwrap();
         }
 
-        let (recs2, _off2) =
-            read_jsonl_tail(&path, off, 2, Some("uuid"), false, &mut ReadDiagnostics::default());
+        let (recs2, _off2) = read_jsonl_tail(
+            &path,
+            off,
+            2,
+            Some("uuid"),
+            false,
+            &mut ReadDiagnostics::default(),
+        );
         assert_eq!(
             recs2
                 .iter()
@@ -1910,7 +1922,8 @@ mod tests {
             write!(f, "{{\"type\":\"mode\"}}\n{{\"type\":\"summary\"}}\n").unwrap();
         }
         // Pretend 5 records were already ingested.
-        let (recs, _off) = read_jsonl_tail(&path, 0, 5, None, false, &mut ReadDiagnostics::default());
+        let (recs, _off) =
+            read_jsonl_tail(&path, 0, 5, None, false, &mut ReadDiagnostics::default());
         assert_eq!(
             recs.iter()
                 .map(|r| r.native_id.as_str())
@@ -1937,8 +1950,14 @@ mod tests {
         }
 
         // Exited writer: the unterminated final line is consumed, to EOF.
-        let (recs, off) =
-            read_jsonl_tail(&path, 0, 0, Some("uuid"), true, &mut ReadDiagnostics::default());
+        let (recs, off) = read_jsonl_tail(
+            &path,
+            0,
+            0,
+            Some("uuid"),
+            true,
+            &mut ReadDiagnostics::default(),
+        );
         assert_eq!(
             recs.iter()
                 .map(|r| r.native_id.as_str())
@@ -1952,8 +1971,14 @@ mod tests {
         );
 
         // Live writer (same bytes): the unterminated final line is held back.
-        let (held, _) =
-            read_jsonl_tail(&path, 0, 0, Some("uuid"), false, &mut ReadDiagnostics::default());
+        let (held, _) = read_jsonl_tail(
+            &path,
+            0,
+            0,
+            Some("uuid"),
+            false,
+            &mut ReadDiagnostics::default(),
+        );
         assert_eq!(
             held.iter()
                 .map(|r| r.native_id.as_str())
@@ -1967,8 +1992,14 @@ mod tests {
             let mut f = std::fs::File::create(&torn).unwrap();
             write!(f, "{{\"uuid\":\"a\",\"type\":\"user\"}}\n{{\"uuid\":\"x\",").unwrap();
         }
-        let (recs_torn, _) =
-            read_jsonl_tail(&torn, 0, 0, Some("uuid"), true, &mut ReadDiagnostics::default());
+        let (recs_torn, _) = read_jsonl_tail(
+            &torn,
+            0,
+            0,
+            Some("uuid"),
+            true,
+            &mut ReadDiagnostics::default(),
+        );
         assert_eq!(
             recs_torn
                 .iter()
