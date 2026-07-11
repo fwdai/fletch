@@ -65,11 +65,11 @@ No VM, no Docker, no containers.
 ## How it works
 
 1. **Point** Fletch at a local git repo.
-2. **Spawn** an agent with a task — Fletch creates an isolated worktree at `~/.fletch/worktrees/<id>/` on a fresh branch.
-3. **Run** the agent's CLI in that worktree under `sandbox-exec`, bridged through a local PTY.
+2. **Spawn** an agent with a task — Fletch creates an isolated per-agent workspace at `~/.fletch/workspaces/<id>/`, with the repo checked out in a subdir as a lightweight clone that shares your repo's git objects.
+3. **Run** the agent's CLI in that checkout under `sandbox-exec`, bridged through a local PTY.
 4. **Watch** output stream into a tab — switch between the normalized chat view and the raw terminal.
 5. **Review** edits as live diffs; browse and edit files directly.
-6. **Ship** — commit, push, open or merge a PR, or discard the agent and its worktree in one click.
+6. **Ship** — commit, push, open or merge a PR, or discard the agent and its workspace in one click.
 
 Every session is captured to a local SQLite store, so reopening it replays the full transcript.
 
@@ -77,14 +77,23 @@ Every session is captured to a local SQLite store, so reopening it replays the f
 
 Each agent runs as **your user** under a per-agent `sandbox-exec` profile that denies writes by default, re-allowing only:
 
-- the agent's worktree root under `~/.fletch/worktrees/<id>/`
-- `/private/tmp`, `/private/var/tmp`, and `/private/var/folders`
-- the agent's own state: `~/.claude`, `~/.claude.json`, `~/.npm`, `~/.cache`, `~/.config`, and `~/.local`
-- the PTY and device files terminal programs need (`/dev/tty*`, `/dev/ptmx`, `/dev/pts/*`, `/dev/null`, `/dev/zero`)
+- the agent's workspace root at `~/.fletch/workspaces/<id>/` (its per-repo checkouts live in subdirs) and its RPC mailbox at `~/.fletch/rpc/<id>/`
+- temp dirs: `/private/tmp`, `/private/var/tmp`, and `/private/var/folders`
+- per-user app state: `~/.claude` and `~/.claude.json` (plus `CLAUDE_CONFIG_DIR` when set), `~/.npm`, `~/.cache`, `~/.config`, `~/.local`, `~/Library/Caches`, and `~/Library/Application Support`
+- each per-turn agent's own on-disk state store: `~/.codex`, `~/.cursor`, `~/.gemini`, and `~/.pi`
+- the PTY and device files terminal programs need (`/dev/null`, `/dev/zero`, `/dev/tty*`, `/dev/ptmx`, `/dev/pts/*`)
 
-That's the complete write-allow set — everything else is denied. See [`src-tauri/src/sandbox.rs`](src-tauri/src/sandbox.rs) for the exact profile.
+See [`src-tauri/src/sandbox/seatbelt.rs`](src-tauri/src/sandbox/seatbelt.rs) for the exact profile — the code is canonical. Run-panel processes (a project's setup/dev command) use a broader profile that additionally grants toolchain dirs like `~/.cargo`, `~/.rustup`, and `~/go` so real project builds succeed.
 
 This is a **write-protection sandbox, not a VM**: an agent can still read what your user can read and reach the network. It's "can't trash your repo or machine," not "air-gapped." Choose tasks accordingly.
+
+### Workspaces are clones, not worktrees
+
+Each workspace checkout is a `git clone --shared` of your repo, not a linked `git worktree`. A linked worktree's `.git` file points back inside your real repo's `.git` — agents would need write access there, and a writable `.git/hooks` means code execution on your host the next time you run git. With a shared clone, the agent's entire writable `.git` lives inside its sandboxed workspace: **your repo's `.git` is never writable by an agent**. The clone borrows your repo's object store instead of copying it, so spawning an agent costs kilobytes and milliseconds regardless of history size, and your repo stays pristine — no worktree entries, no "branch already checked out elsewhere" collisions, and discarding an agent just deletes its directory. The flip side of borrowing objects is that a workspace is tied to its source repo staying in place. See [`src-tauri/src/sandbox/provision.rs`](src-tauri/src/sandbox/provision.rs) for the full design.
+
+### Remote actions & credentials
+
+Agents can ask the host to run a small, fixed set of git operations on their behalf through an RPC broker: `git push`, PR creation (`open_pr`), and a credentialed `git fetch`. These run on the host with your GitHub credentials — and today they run **without a confirmation prompt**. The mitigation is narrow but real: the credentials never enter the sandbox (the ops are brokered host-side), and the broker accepts only that closed, small op set. The consequence is that an agent can publish code and open pull requests under your identity, so choose tasks and repos accordingly.
 
 ## Build from source
 
