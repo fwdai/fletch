@@ -375,6 +375,11 @@ pub fn build_profile(
     // seatbelt-local literal grant: it's a file, not a dir, so the dir-oriented
     // policy API doesn't model it (see the policy module doc).
     let claude_config_extra = claude_config_dir
+        // A bin-resident relocation (`CLAUDE_CONFIG_DIR=$HOME/.local/bin/…`)
+        // would put an agent-writable subtree on the user's PATH — the same
+        // rejection every env-relocated policy dir gets (invariant 1;
+        // fail-closed: claude's config writes are denied, never a hijack).
+        .filter(|p| !policy::bin_resident(p))
         .map(policy::resolve_existing_prefix)
         .map(|p| p.to_string_lossy().into_owned())
         .filter(|p| *p != format!("{home_s}/.claude"))
@@ -389,12 +394,12 @@ pub fn build_profile(
     // policy withholds every PATH-resolved bin dir (`~/.local/bin`) and config
     // root (`~/.config`), granting only `~/.local/share`+`~/.local/state` and the
     // specific `~/.config/opencode` — see the policy module's invariants.
-    let policy_dirs = policy::all_provider_state_dirs(&home)
-        .into_iter()
-        .chain(policy::agent_scratch_dirs(&home))
-        .map(|p| format!("  (subpath {})", sbpl_string(&p.to_string_lossy())))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let policy_dirs = subpath_grants(
+        policy::all_provider_state_dirs(&home)
+            .into_iter()
+            .chain(policy::agent_scratch_dirs(&home)),
+    )
+    .join("\n");
 
     // No `dev` exception here (unlike the Run profile): agents never legitimately
     // touch any Fletch data dir, dev or otherwise.
@@ -420,6 +425,28 @@ pub fn build_profile(
 {DEVICE_WRITE_RULES}
 "#
     ))
+}
+
+/// SBPL `(subpath …)` grant lines for the policy dirs, each emitted in its
+/// literal form and — when different — its symlink-resolved form (deduped).
+/// The sandbox checks *resolved* write paths, so an env-relocated provider dir
+/// that passes through a symlink (`CODEX_HOME=/tmp/codex` → writes observed at
+/// `/private/tmp/codex`) is denied by the raw grant alone. The literal form is
+/// kept alongside: for the default home-relative dirs both forms are equal
+/// (home is canonical), and when a leaf like `~/.claude` is itself a symlink
+/// the literal path is what the `claude_config_extra` dedup compares against.
+fn subpath_grants(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for dir in dirs {
+        let resolved = policy::resolve_existing_prefix(&dir);
+        for p in [dir, resolved] {
+            let line = format!("  (subpath {})", sbpl_string(&p.to_string_lossy()));
+            if !out.contains(&line) {
+                out.push(line);
+            }
+        }
+    }
+    out
 }
 
 /// Write an SBPL profile to a private `.sb` tempfile. `sandbox-exec -f <path>`
@@ -538,6 +565,48 @@ mod tests {
         assert!(
             profile.contains(&format!("(literal \"{h}/.claude.json\")")),
             "agent profile should keep the ~/.claude.json literal grant"
+        );
+    }
+
+    #[test]
+    fn subpath_grants_emit_resolved_form_for_symlinked_dirs() {
+        // The sandbox checks resolved write paths: an env-relocated dir behind
+        // a symlink (CODEX_HOME=/tmp/codex → /private/tmp/codex) must be
+        // granted in resolved form too, or its writes are denied.
+        let td = tempfile::tempdir().unwrap();
+        let real = td.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = td.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let grants = subpath_grants([link.clone()]);
+        let canonical_real = std::fs::canonicalize(&real).unwrap();
+        assert!(
+            grants.contains(&format!("  (subpath \"{}\")", link.display())),
+            "literal form kept"
+        );
+        assert!(
+            grants.contains(&format!("  (subpath \"{}\")", canonical_real.display())),
+            "resolved form added"
+        );
+
+        // A dir that resolves to itself yields exactly one grant — no
+        // duplicate lines for the common (canonical) case.
+        assert_eq!(subpath_grants([canonical_real]).len(), 1);
+    }
+
+    #[test]
+    fn profile_rejects_bin_resident_claude_config_dir() {
+        // CLAUDE_CONFIG_DIR pointed into a PATH-style bin dir must not become
+        // a write grant (invariant 1) — claude fails closed instead.
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let cfg = home.join(".local/bin/claude-cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+
+        let profile = build_profile(&root, &rpc, &home, Some(cfg.as_path())).unwrap();
+        assert!(
+            !profile.contains(".local/bin"),
+            "bin-resident CLAUDE_CONFIG_DIR must not appear on the allow-list"
         );
     }
 

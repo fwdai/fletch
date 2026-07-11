@@ -23,7 +23,13 @@
 //!
 //! Two invariants hold across every path any function here returns; the guard
 //! test `policy_grants_never_expose_bin_or_config_root` encodes them so a future
-//! provider or scratch dir can't silently regress the class:
+//! provider or scratch dir can't silently regress the class. For the
+//! env-relocatable dirs (`$CODEX_HOME`, `$XDG_*` — and `$CLAUDE_CONFIG_DIR`,
+//! resolved by the seatbelt caller) invariant 1 is additionally *enforced at
+//! resolution time*: [`env_state_dir`] rejects a value that sits inside a
+//! `bin`/`sbin` dir — checked on both the raw value and its symlink-resolved
+//! form — and falls back to the default, so the provider fails closed under
+//! that configuration instead of the profile granting a PATH dir:
 //!
 //! 1. **No PATH-resolved bin dir is ever agent-writable** (the `~/.local/bin`
 //!    class). Nothing returns `~/.local/bin`, anything under it, or any
@@ -163,10 +169,7 @@ pub fn codex_home_dir(home: &Path) -> PathBuf {
 /// a blank value verbatim, i.e. produced an empty mount source that failed
 /// the launch — falling back to the default is the strict improvement).
 fn codex_home_from(value: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
-    value
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".codex"))
+    env_state_dir(value, home.join(".codex"))
 }
 
 /// The XDG base dir named by `var` (`$var` if set non-blank, else
@@ -183,10 +186,44 @@ pub fn xdg_base(home: &Path, var: &str, default_rel: &str) -> PathBuf {
 /// value. A blank value counts as unset, matching the XDG spec's treatment of
 /// empty base-dir vars.
 fn xdg_base_from(value: Option<std::ffi::OsString>, home: &Path, default_rel: &str) -> PathBuf {
-    value
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(default_rel))
+    env_state_dir(value, home.join(default_rel))
+}
+
+/// Shared resolution for every env-relocatable state dir: use the env `value`
+/// unless it's absent, blank, or violates invariant 1. A value that sits
+/// inside a `bin`/`sbin` directory is REJECTED in favor of `default` — a grant
+/// there would put agent-writable files directly on the user's PATH (e.g.
+/// `XDG_DATA_HOME=$HOME/.local/bin` would grant `~/.local/bin/opencode`,
+/// letting an agent create an on-PATH executable named `opencode`; a
+/// bin-resident `$CODEX_HOME` would grant the whole bin dir). The check runs
+/// on the raw value AND its symlink-resolved form, so a link disguising a bin
+/// dir doesn't slip through. Rejection is fail-closed: under such a
+/// configuration the provider's writes are denied (it looks at the env var,
+/// we grant the default) — a visible breakage, never a hijack surface.
+fn env_state_dir(value: Option<std::ffi::OsString>, default: PathBuf) -> PathBuf {
+    let Some(v) = value.filter(|v| !v.is_empty()) else {
+        return default;
+    };
+    let raw = PathBuf::from(v);
+    if bin_resident(&raw) {
+        return default;
+    }
+    raw
+}
+
+/// Whether `p` — raw or symlink-resolved — has a `bin`/`sbin` path component,
+/// i.e. is or lives inside a PATH-style binaries dir (invariant 1's rejection
+/// predicate). Component equality, not substring: `~/binaries` is fine.
+/// `pub(crate)` for the seatbelt `CLAUDE_CONFIG_DIR` handling, which resolves
+/// its env value itself and must apply the same rejection.
+pub(crate) fn bin_resident(p: &Path) -> bool {
+    has_bin_component(p) || has_bin_component(&resolve_existing_prefix(p))
+}
+
+fn has_bin_component(p: &Path) -> bool {
+    use std::path::Component;
+    p.components()
+        .any(|c| matches!(c, Component::Normal(n) if n == "bin" || n == "sbin"))
 }
 
 /// Resolve symlinks in the longest existing prefix of `p`, then re-append the
@@ -386,6 +423,50 @@ mod tests {
         // Blank counts as unset — the old docker-local resolution took it
         // verbatim and produced an empty, launch-failing mount source.
         assert_eq!(codex_home_from(Some("".into()), home), home.join(".codex"));
+    }
+
+    /// Invariant 1 enforced at resolution time, not just asserted over the
+    /// defaults: an env relocation into a `bin`/`sbin` dir must be rejected,
+    /// or the profile would grant an agent-writable path directly on the
+    /// user's PATH (`XDG_DATA_HOME=$HOME/.local/bin` → a writable on-PATH
+    /// `opencode`; a bin-resident `$CODEX_HOME` → the whole bin dir).
+    #[test]
+    fn env_relocations_inside_bin_dirs_are_rejected() {
+        let home = Path::new("/Users/u");
+
+        assert_eq!(
+            xdg_base_from(Some("/Users/u/.local/bin".into()), home, ".local/share"),
+            home.join(".local/share"),
+            "XDG base inside ~/.local/bin must fall back to the default"
+        );
+        assert_eq!(
+            codex_home_from(Some("/Users/u/.local/bin/codex".into()), home),
+            home.join(".codex"),
+            "CODEX_HOME under a bin dir must fall back to the default"
+        );
+        // `sbin` is the same PATH-style class.
+        assert_eq!(
+            codex_home_from(Some("/usr/local/sbin/codex".into()), home),
+            home.join(".codex")
+        );
+        // Component equality, not substring: a dir merely *named like* bin is
+        // a legitimate relocation target.
+        assert_eq!(
+            codex_home_from(Some("/Users/u/binaries/codex".into()), home),
+            PathBuf::from("/Users/u/binaries/codex")
+        );
+
+        // A symlink disguising a bin dir resolves into one → still rejected.
+        let td = tempfile::tempdir().unwrap();
+        let bin = td.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let link = td.path().join("data");
+        std::os::unix::fs::symlink(&bin, &link).unwrap();
+        assert_eq!(
+            codex_home_from(Some(link.into_os_string()), home),
+            home.join(".codex"),
+            "a symlink resolving into a bin dir must be rejected too"
+        );
     }
 
     #[test]
