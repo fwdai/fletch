@@ -7,7 +7,7 @@
 // so a run resumes after an app restart.
 
 import { type AgentStatus, api, onAgentStatus } from "../../api";
-import { sendWhenAgentReady } from "../../helpers";
+import { sendWhenAgentReady, snapshotAgentDeliverables } from "../../helpers";
 import type { CustomAgent } from "../../storage/customAgents";
 import { useAppStore } from "../../store";
 import type { Workflow, WorkflowStep } from "../storage";
@@ -64,11 +64,16 @@ function refFor(agentId: string): StepRef {
 function stepSpawnParams(step: WorkflowStep, customAgents: CustomAgent[]) {
   const ca = customAgents.find((a) => a.id === step.agent);
   if (ca) {
+    // Same by-value snapshot semantics as the draft spawn path: the step's
+    // agent gets its skills and deliverable MCP servers resolved at spawn.
+    const { skills, mcpServers } = snapshotAgentDeliverables(useAppStore.getState(), ca, ca.base);
     return {
       provider: ca.base,
       model: ca.model ?? undefined,
       instructions: ca.instructions?.trim() ? ca.instructions : undefined,
       customAgentId: ca.id,
+      skills,
+      mcpServers,
     };
   }
   return {
@@ -76,6 +81,8 @@ function stepSpawnParams(step: WorkflowStep, customAgents: CustomAgent[]) {
     model: undefined,
     instructions: undefined,
     customAgentId: undefined,
+    skills: undefined,
+    mcpServers: undefined,
   };
 }
 
@@ -163,6 +170,8 @@ async function executeStep(
     sp.instructions,
     sp.customAgentId,
     prevHead,
+    sp.skills,
+    sp.mcpServers,
   );
   const ref: StepRef = { agentId: rec.id, subdir: rec.repos[0]?.subdir ?? "repo" };
 

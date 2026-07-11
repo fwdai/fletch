@@ -7,7 +7,11 @@
 import { type ChatItem, getAdapter, type RawEvent } from "../adapters";
 import { hasUsage, usageFromRecords } from "../adapters/usage";
 import { api, type SessionRecord, type UserTurn, type Workspace } from "../api";
+import { MCP_SUPPORT, mcpAttachable } from "../data/providers";
 import { commandsFor } from "../data/slashCommands";
+import type { CustomAgent } from "../storage/customAgents";
+import { type McpServerSnapshot, snapshotMcpServer } from "../storage/mcpServers";
+import type { SkillSnapshot } from "../storage/skills";
 import { recordUsageSnapshot } from "../storage/usageDaily";
 import type { AppState, DraftAgent } from "../store";
 
@@ -342,6 +346,34 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     gitDelegations,
     unseenResults,
     rightPanelTabs,
+  };
+}
+
+/** Resolve a custom agent's skill/MCP assignments into by-value spawn
+ *  snapshots, in the agent's assignment order. Dangling ids (deleted library
+ *  entries) drop out, as do MCP servers the target provider can't run (e.g. an
+ *  HTTP server on a codex base, saved before the base switch): the snapshot
+ *  must contain exactly what the provider can deliver, so the backend never
+ *  carries assignments it silently ignores. Snapshotted like the standing
+ *  brief: later library edits never touch the spawned session. */
+export function snapshotAgentDeliverables(
+  state: Pick<AppState, "skills" | "mcpServers">,
+  custom: CustomAgent | undefined,
+  provider: string,
+): { skills: SkillSnapshot[] | undefined; mcpServers: McpServerSnapshot[] | undefined } {
+  const skills = (custom?.skillIds ?? [])
+    .map((sid) => state.skills.find((s) => s.id === sid))
+    .filter((s) => s !== undefined)
+    .map(({ name, description, body }) => ({ name, description, body }));
+  const mcpSupport = MCP_SUPPORT[provider] ?? "none";
+  const mcpServers = (custom?.mcpServerIds ?? [])
+    .map((sid) => state.mcpServers.find((s) => s.id === sid))
+    .filter((s) => s !== undefined)
+    .filter((s) => mcpAttachable(mcpSupport, s.transport))
+    .map(snapshotMcpServer);
+  return {
+    skills: skills.length > 0 ? skills : undefined,
+    mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
   };
 }
 
