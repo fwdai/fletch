@@ -64,7 +64,9 @@ use crate::error::{Error, Result};
 use crate::sandbox::engine::{
     AgentLaunchCtx, EngineKind, Keepalive, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
-use crate::sandbox::seatbelt::resolve_existing_prefix;
+use crate::sandbox::policy::{
+    codex_home_dir, opencode_config_dir, opencode_data_dir, resolve_existing_prefix,
+};
 
 use super::auth::{self, ContainerAuth};
 use super::{cleanup, cli, image, DockerProvider};
@@ -679,54 +681,35 @@ const MULTI_PROVIDER_API_KEY_ENV: &[&str] = &[
     "MISTRAL_API_KEY",
 ];
 
-/// Codex's config dir: `$CODEX_HOME` if set, else `~/.codex`. This is both the
-/// dir bind-mounted read-write and where `transcripts::find_codex_rollouts`
-/// reads transcripts, so the two must agree — mirror its resolution.
-fn codex_home_dir(home: &Path) -> PathBuf {
-    std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".codex"))
-}
-
 /// Whether `$CODEX_HOME` is set to a dir other than the default `~/.codex`
 /// (which the container already resolves via `HOME`). Only a non-default value
 /// is forwarded, mirroring [`nondefault_claude_config_dir`]; both sides go
 /// through [`resolve_existing_prefix`] so a symlink can't read as non-default.
+/// Blank counts as unset, matching [`codex_home_dir`]'s resolution —
+/// forwarding a blank value the resolver ignored would desync the two.
 fn codex_home_is_nondefault(home: &Path) -> bool {
     match std::env::var_os("CODEX_HOME") {
-        Some(v) => resolve_existing_prefix(&PathBuf::from(v)) != resolve_existing_prefix(&home.join(".codex")),
-        None => false,
+        Some(v) if !v.is_empty() => {
+            resolve_existing_prefix(&PathBuf::from(v))
+                != resolve_existing_prefix(&home.join(".codex"))
+        }
+        _ => false,
     }
 }
 
-/// OpenCode's data dir: `$XDG_DATA_HOME/opencode` if set, else
-/// `~/.local/share/opencode`. This is both the dir bind-mounted read-write and
-/// where `agent::opencode_locate` reads its session storage on the host, so the
-/// two must agree — mirror its resolution.
-fn opencode_data_dir(home: &Path) -> PathBuf {
-    xdg_base(home, "XDG_DATA_HOME", ".local/share").join("opencode")
-}
-
-/// OpenCode's config dir: `$XDG_CONFIG_HOME/opencode` if set, else
-/// `~/.config/opencode` (custom providers + plugin installs). Mounted only when
-/// it already exists (see the launch path).
-fn opencode_config_dir(home: &Path) -> PathBuf {
-    xdg_base(home, "XDG_CONFIG_HOME", ".config").join("opencode")
-}
-
-/// The XDG base dir named by `var` (`$var` if set non-blank, else
-/// `home/<default_rel>`). Shared by [`opencode_data_dir`]/[`opencode_config_dir`].
-fn xdg_base(home: &Path, var: &str, default_rel: &str) -> PathBuf {
-    std::env::var_os(var)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(default_rel))
-}
+// Codex's `$CODEX_HOME` resolution (`codex_home_dir`) and opencode's data/
+// config dir resolution (`opencode_data_dir`, `opencode_config_dir`, their
+// shared `xdg_base`) now live in [`crate::sandbox::policy`] — they're class-1
+// host-persistence dirs both engines share (Docker mounts them; seatbelt
+// grants them), so the policy module is their single source of truth.
+// Imported at the top of this file.
 
 /// Whether `$var` points to an XDG base other than the default `home/<default_rel>`
 /// the container already resolves via `HOME`. Only a non-default base is forwarded,
 /// mirroring [`codex_home_is_nondefault`]; both sides canonicalize via
-/// [`resolve_existing_prefix`] so a symlink can't read as non-default.
+/// [`resolve_existing_prefix`] so a symlink can't read as non-default. This stays
+/// docker-local: it's launch-time env-forwarding logic (does the container need a
+/// `-e XDG_*`?), not a write-policy question.
 fn xdg_base_is_nondefault(var: &str, home: &Path, default_rel: &str) -> bool {
     match std::env::var_os(var) {
         Some(v) if !v.is_empty() => {

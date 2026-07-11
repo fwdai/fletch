@@ -13,14 +13,20 @@
 //! Because confinement is by *write* path (reads and network stay open via
 //! `allow default`), each agent that the wrapper covers must have its
 //! out-of-checkout write locations (session transcripts, config, auth refresh)
-//! on the allow-list below — otherwise it can't persist its own state. That
-//! covers the agents' own dot-dir stores plus the standard per-user
-//! cache/state dirs in both XDG (`~/.cache`, `~/.config`, `~/.local`) and
-//! macOS-native (`~/Library/Caches`, `~/Library/Application Support`) form,
-//! since the agents' subprocess toolchains and macOS frameworks write to the
-//! latter. The agent CLIs' own sandboxes are disabled (e.g. codex runs
-//! `danger-full-access`) so the two don't fight, leaving `sandbox-exec` as the
-//! sole boundary.
+//! on the allow-list below — otherwise it can't persist its own state. What
+//! goes on that list is *policy*, not a hand-maintained list local to this
+//! file: the agent profile's write allowance is exactly the engine-independent
+//! [`super::policy`] grants — every provider's host-persistence dirs
+//! ([`policy::all_provider_state_dirs`]) plus the host-scratch cache/data dirs a
+//! host-FS-sharing engine must additionally allow ([`policy::agent_scratch_dirs`],
+//! which cover XDG `~/.cache`/`~/.local/share`/`~/.local/state` and their
+//! macOS-native `~/Library/Caches`/`~/Library/Application Support` forms). Those
+//! grants deliberately never include a PATH-resolved bin dir (`~/.local/bin`) or
+//! a config *root* (`~/.config`) — see the policy module's invariants — which is
+//! why this profile grants `~/.local/share`+`~/.local/state` rather than all of
+//! `~/.local`, and only `~/.config/opencode` rather than all of `~/.config`. The
+//! agent CLIs' own sandboxes are disabled (e.g. codex runs `danger-full-access`)
+//! so the two don't fight, leaving `sandbox-exec` as the sole boundary.
 //!
 //! One region is carved back *out* of the broad `Application Support` grant:
 //! the app's own data dir (`~/Library/Application Support/<BUNDLE_ID>`, holding
@@ -33,6 +39,7 @@
 use std::path::{Path, PathBuf};
 
 use super::engine::{AgentLaunchCtx, EngineKind, Keepalive, KillHandle, LaunchPlan, SandboxEngine};
+use super::policy;
 use crate::error::{Error, Result};
 
 pub struct SandboxExecEngine;
@@ -82,23 +89,6 @@ const DEVICE_WRITE_RULES: &str = r#";; PTYs and basic device files are required 
   (regex #"^/dev/ptmx$")
   (regex #"^/dev/pts/[0-9]+$"))"#;
 
-/// Per-user cache/state dirs that both agents and Run processes must be able to
-/// write: package-manager caches and XDG + macOS-native app state. Returned as
-/// sbpl-quoted `subpath` argument strings (without the enclosing `(subpath …)`).
-fn standard_state_dirs(home_s: &str) -> Vec<String> {
-    [
-        ".npm",
-        ".cache",
-        ".config",
-        ".local",
-        "Library/Caches",
-        "Library/Application Support",
-    ]
-    .iter()
-    .map(|d| sbpl_string(&format!("{home_s}/{d}")))
-    .collect()
-}
-
 /// SBPL rule carving the app's own data dir back *out* of the broad
 /// `Application Support` write grant — and out of `allow default` for reads.
 /// `fletch.db` (agent transcripts, settings) lives here, so no confined process
@@ -121,13 +111,24 @@ fn deny_app_data_dir(home_s: &str) -> String {
     )
 }
 
-/// Toolchain state dirs the Run panel additionally grants so real project
-/// builds succeed. These hold package caches, downloaded toolchains, and —
-/// for some — PATH-resolved binaries (`~/.cargo/bin`, `~/go/bin`,
-/// `~/.rbenv/shims`). That last part is a residual hijack surface, which is
-/// why this superset is **Run-only** and deliberately kept off the agent
-/// profile: a running project legitimately needs its toolchain to write here,
-/// whereas an agent editing source does not.
+/// Toolchain + broad-state dirs the Run panel additionally grants so real
+/// project builds succeed. These hold package caches, downloaded toolchains,
+/// and — for some — PATH-resolved binaries (`~/.cargo/bin`, `~/go/bin`,
+/// `~/.rbenv/shims`, and everything under `~/.local/bin`). That last part is a
+/// residual hijack surface, which is why this superset is **Run-only** and
+/// deliberately kept off the agent profile: a running project legitimately
+/// needs its toolchain to write here, whereas an agent editing source does not.
+///
+/// The two broadest entries — the whole of `~/.config` and `~/.local` — are the
+/// ones the agent profile pointedly narrows (to `~/.config/opencode` and
+/// `~/.local/share`+`~/.local/state`; see [`super::policy`]). Run re-adds them
+/// whole because build steps write arbitrary config/state (`~/.config/<tool>`,
+/// `~/.local/bin` installs). Note the residual surface is reachable from an
+/// agent *indirectly*: an agent can edit e.g. a `package.json` script or a
+/// `Makefile` target that a later Run command executes, so Run's looseness can
+/// be triggered by agent-authored content. That's an accepted, documented
+/// trade-off — the Run panel runs project code the user chose to run, under a
+/// weaker boundary by design — not a hole in the agent profile.
 const RUN_TOOLCHAIN_DIRS: &[&str] = &[
     ".cargo",         // Rust: registry, git checkouts, installed bins
     ".rustup",        // Rust: downloaded toolchains (rust-toolchain.toml)
@@ -139,6 +140,8 @@ const RUN_TOOLCHAIN_DIRS: &[&str] = &[
     ".rbenv",         // rbenv: shims + installed Ruby versions
     ".rvm",           // rvm: alternative Ruby version manager
     "Library/Python", // pip --user / no-venv user site-packages
+    ".config",        // Run-only: whole config root (agent gets only subdirs)
+    ".local",         // Run-only: whole ~/.local incl. ~/.local/bin (agent gets share/state)
 ];
 
 /// Build the SBPL profile for a **Run-panel** process (setup/dev command).
@@ -178,7 +181,18 @@ pub fn build_run_profile(
         sbpl_string("/private/var/folders"),
         sbpl_string("/private/var/tmp"),
     ];
-    subpaths.extend(standard_state_dirs(&home_s));
+    // Host-scratch dirs (package/XDG/macOS caches) — the same class the agent
+    // profile grants, sourced from the shared policy so the two can't drift.
+    subpaths.extend(
+        policy::agent_scratch_dirs(&home)
+            .iter()
+            .map(|p| sbpl_string(&p.to_string_lossy())),
+    );
+    // Run-only toolchain + broad-state dirs, including the whole `~/.config`
+    // and `~/.local` the agent profile pointedly withholds (see the const's
+    // doc-comment). `~/.local` here supersets the scratch `~/.local/share`/
+    // `~/.local/state` above — a harmless redundancy that keeps Run's write set
+    // byte-for-byte what it was before the agent-profile narrowing.
     subpaths.extend(
         RUN_TOOLCHAIN_DIRS
             .iter()
@@ -344,45 +358,48 @@ pub fn build_profile(
     let rpc_root_s = sbpl_string(&rpc_root.to_string_lossy());
     let home_s = home.to_string_lossy();
 
-    let claude_state = sbpl_string(&format!("{home_s}/.claude"));
     let claude_json = sbpl_string(&format!("{home_s}/.claude.json"));
     // A non-default `CLAUDE_CONFIG_DIR` is where claude actually writes its
     // config/transcripts/auth, so grant it too. Resolve symlinks first so the
     // SBPL path matches what the sandbox sees at write time (every other entry
     // is canonical); then skip it only when it equals the default `{home}/.claude`
-    // granted above (`claude_state`), to avoid a redundant entry. `home` is
-    // already canonical, but the `.claude` leaf is NOT symlink-resolved —
-    // `claude_state` grants that literal path — so compare against it un-resolved.
-    // If `~/.claude` is itself a symlink and the config dir points at its
-    // resolved target, resolving the leaf here too would treat it as default and
-    // drop the grant, yet the literal `claude_state` rule wouldn't cover the
-    // target, denying claude's writes. (Docker can resolve both sides because its
-    // `~/.claude` bind mount follows the symlink source; the SBPL allow-list can't.)
+    // (which the policy state-dir list grants below), to avoid a redundant entry.
+    // `home` is already canonical, but the policy's `.claude` leaf is NOT
+    // symlink-resolved — the state-dir grant is that literal path — so compare
+    // against it un-resolved. If `~/.claude` is itself a symlink and the config
+    // dir points at its resolved target, resolving the leaf here too would treat
+    // it as default and drop the grant, yet the literal state-dir rule wouldn't
+    // cover the target, denying claude's writes. (Docker can resolve both sides
+    // because its `~/.claude` bind mount follows the symlink source; the SBPL
+    // allow-list can't.) The `~/.claude.json` top-level state *file* stays a
+    // seatbelt-local literal grant: it's a file, not a dir, so the dir-oriented
+    // policy API doesn't model it (see the policy module doc).
     let claude_config_extra = claude_config_dir
-        .map(resolve_existing_prefix)
+        // A bin-resident relocation (`CLAUDE_CONFIG_DIR=$HOME/.local/bin/…`)
+        // would put an agent-writable subtree on the user's PATH — the same
+        // rejection every env-relocated policy dir gets (invariant 1;
+        // fail-closed: claude's config writes are denied, never a hijack).
+        .filter(|p| !policy::bin_resident(p))
+        .map(policy::resolve_existing_prefix)
         .map(|p| p.to_string_lossy().into_owned())
         .filter(|p| *p != format!("{home_s}/.claude"))
         .map(|p| format!("\n  (subpath {})", sbpl_string(&p)))
         .unwrap_or_default();
-    let npm_state = sbpl_string(&format!("{home_s}/.npm"));
-    let cache_state = sbpl_string(&format!("{home_s}/.cache"));
-    let config_state = sbpl_string(&format!("{home_s}/.config"));
-    let local_state = sbpl_string(&format!("{home_s}/.local"));
-    // macOS-native equivalents of the XDG cache/state dirs above. Native
-    // toolchains the agents invoke (node/npm tooling, git, language SDKs) and
-    // macOS framework caches (CFNetwork, fonts, per-bundle state) write here; a
-    // denied write ranges from a harmless cache miss to a fatal auth-token
-    // write, so allow them on the same "per-user app state, not source/system"
-    // basis as `~/.cache`/`~/.config`.
-    let library_caches = sbpl_string(&format!("{home_s}/Library/Caches"));
-    let library_app_support = sbpl_string(&format!("{home_s}/Library/Application Support"));
-    // Per-agent on-disk session stores (transcripts, config, auth) for the
-    // per-turn agents now covered by this profile. OpenCode's store lives under
-    // `~/.local/share/opencode`, already covered by `local_state`.
-    let codex_state = sbpl_string(&format!("{home_s}/.codex"));
-    let cursor_state = sbpl_string(&format!("{home_s}/.cursor"));
-    let gemini_state = sbpl_string(&format!("{home_s}/.gemini"));
-    let pi_state = sbpl_string(&format!("{home_s}/.pi"));
+    // The write allow-list is the engine-independent policy, not a list local to
+    // this file: every provider's host-persistence dirs (`~/.claude`, `~/.codex`,
+    // `~/.cursor`, `~/.gemini`, `~/.pi`, opencode's XDG data+config subdirs) plus
+    // the host-scratch cache/data dirs (`~/.npm`, `~/.cache`, `~/.local/share`,
+    // `~/.local/state`, `~/Library/Caches`, `~/Library/Application Support`).
+    // Crucially this is *not* the old blanket `~/.local`/`~/.config` grant: the
+    // policy withholds every PATH-resolved bin dir (`~/.local/bin`) and config
+    // root (`~/.config`), granting only `~/.local/share`+`~/.local/state` and the
+    // specific `~/.config/opencode` — see the policy module's invariants.
+    let policy_dirs = subpath_grants(
+        policy::all_provider_state_dirs(&home)
+            .into_iter()
+            .chain(policy::agent_scratch_dirs(&home)),
+    )
+    .join("\n");
 
     // No `dev` exception here (unlike the Run profile): agents never legitimately
     // touch any Fletch data dir, dev or otherwise.
@@ -400,24 +417,49 @@ pub fn build_profile(
   (subpath "/private/tmp")
   (subpath "/private/var/folders")
   (subpath "/private/var/tmp")
-  (subpath {claude_state})
   (literal {claude_json}){claude_config_extra}
-  (subpath {npm_state})
-  (subpath {cache_state})
-  (subpath {config_state})
-  (subpath {local_state})
-  (subpath {library_caches})
-  (subpath {library_app_support})
-  (subpath {codex_state})
-  (subpath {cursor_state})
-  (subpath {gemini_state})
-  (subpath {pi_state}))
+{policy_dirs})
 
 {deny_app_data}
 
 {DEVICE_WRITE_RULES}
 "#
     ))
+}
+
+/// SBPL `(subpath …)` grant lines for the policy dirs, each emitted in its
+/// literal form and — when different — its symlink-resolved form (deduped).
+/// The sandbox checks *resolved* write paths, so an env-relocated provider dir
+/// that passes through a symlink (`CODEX_HOME=/tmp/codex` → writes observed at
+/// `/private/tmp/codex`) is denied by the raw grant alone. The literal form is
+/// kept alongside: for the default home-relative dirs both forms are equal
+/// (home is canonical), and when a leaf like `~/.claude` is itself a symlink
+/// the literal path is what the `claude_config_extra` dedup compares against.
+///
+/// Every candidate — literal and resolved — passes [`policy::bin_resident`]
+/// before it's emitted: a default dir whose leaf symlinks into a PATH-style
+/// bin dir (`~/.claude` → `~/.local/bin/claude`) must not have its resolved
+/// form granted, or writes through the symlink would land agent-controlled
+/// files on the user's PATH (invariant 1). Env-relocated dirs are already
+/// rejected at resolution time, but the default home-relative dirs never pass
+/// through that check, so it's re-applied here at the emission seam. Skipping
+/// is fail-closed: with the resolved form denied, the provider's writes
+/// through the symlink are refused rather than hijackable.
+fn subpath_grants(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for dir in dirs {
+        let resolved = policy::resolve_existing_prefix(&dir);
+        for p in [dir, resolved] {
+            if policy::bin_resident(&p) {
+                continue;
+            }
+            let line = format!("  (subpath {})", sbpl_string(&p.to_string_lossy()));
+            if !out.contains(&line) {
+                out.push(line);
+            }
+        }
+    }
+    out
 }
 
 /// Write an SBPL profile to a private `.sb` tempfile. `sandbox-exec -f <path>`
@@ -444,32 +486,6 @@ fn sbpl_string(s: &str) -> String {
 
 fn canonical(p: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(p).map_err(|e| Error::Other(format!("canonicalize {}: {e}", p.display())))
-}
-
-/// Resolve symlinks in the longest existing prefix of `p`, then re-append the
-/// not-yet-existing tail. `fs::canonicalize` alone can't be used because it
-/// requires the whole path to exist, but `CLAUDE_CONFIG_DIR` may point at a dir
-/// claude hasn't created yet. Resolving the existing prefix still collapses the
-/// well-known macOS symlinks (`/tmp` → `/private/tmp`, `/var` → `/private/var`),
-/// so the emitted SBPL path matches the sandbox's resolved write path. Falls
-/// back to `p` unchanged if nothing resolves (e.g. a bogus path).
-pub(crate) fn resolve_existing_prefix(p: &Path) -> PathBuf {
-    let mut cur = p.to_path_buf();
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    loop {
-        if let Ok(real) = std::fs::canonicalize(&cur) {
-            let mut out = real;
-            out.extend(tail.iter().rev());
-            return out;
-        }
-        match cur.file_name() {
-            Some(name) => tail.push(name.to_os_string()),
-            None => return p.to_path_buf(),
-        }
-        if !cur.pop() {
-            return p.to_path_buf();
-        }
-    }
 }
 
 #[cfg(test)]
@@ -500,6 +516,155 @@ mod tests {
         assert!(profile.contains("/Library/Application Support"));
     }
 
+    #[test]
+    fn agent_profile_narrows_local_and_config_away_from_bin_and_root() {
+        // The security fix: the agent profile must NOT grant blanket `~/.local`
+        // (it contains `~/.local/bin`, a PATH dir → host-command hijack) or
+        // blanket `~/.config` (config poisoning: git core.hooksPath, fish, gh).
+        // It grants the narrow replacements instead, and every provider dot-dir
+        // and cache dir stays exactly as before.
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let profile = build_profile(&root, &rpc, &home, None).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        let h = canonical_home.display();
+
+        // Blanket roots ABSENT (the whole point of the fix).
+        assert!(
+            !profile.contains(&format!("(subpath \"{h}/.local\")")),
+            "blanket ~/.local must not be on the agent allow-list"
+        );
+        assert!(
+            !profile.contains(&format!("(subpath \"{h}/.config\")")),
+            "blanket ~/.config must not be on the agent allow-list"
+        );
+        // No `~/.local/bin` grant may appear in any form.
+        assert!(
+            !profile.contains(&format!("{h}/.local/bin")),
+            "no ~/.local/bin grant may appear"
+        );
+
+        // Narrow replacements PRESENT. The scratch dirs are fixed
+        // home-relative paths; opencode's config dir is env-dependent
+        // (`$XDG_CONFIG_HOME` — CI runners export their own), so assert it via
+        // the same policy resolution the profile builder uses.
+        for narrow in [".local/share", ".local/state"] {
+            assert!(
+                profile.contains(&format!("(subpath \"{h}/{narrow}\")")),
+                "agent profile should grant the narrow {narrow}"
+            );
+        }
+        let opencode_config = policy::opencode_config_dir(&canonical_home);
+        assert!(
+            profile.contains(&format!("(subpath \"{}\")", opencode_config.display())),
+            "agent profile should grant the narrow opencode config dir"
+        );
+        // Codex's dir is env-relocatable too (`$CODEX_HOME`) — same treatment.
+        let codex_home = policy::codex_home_dir(&canonical_home);
+        assert!(
+            profile.contains(&format!("(subpath \"{}\")", codex_home.display())),
+            "agent profile should grant the codex home dir"
+        );
+        // Everything else unchanged: provider dot-dirs, caches, macOS-native.
+        for dir in [
+            ".claude", ".cursor", ".gemini", ".pi", ".npm", ".cache",
+            "Library/Caches", "Library/Application Support",
+        ] {
+            assert!(
+                profile.contains(&format!("(subpath \"{h}/{dir}\")")),
+                "agent profile should still grant {dir}"
+            );
+        }
+        // The `~/.claude.json` top-level state file stays a literal grant.
+        assert!(
+            profile.contains(&format!("(literal \"{h}/.claude.json\")")),
+            "agent profile should keep the ~/.claude.json literal grant"
+        );
+    }
+
+    #[test]
+    fn subpath_grants_emit_resolved_form_for_symlinked_dirs() {
+        // The sandbox checks resolved write paths: an env-relocated dir behind
+        // a symlink (CODEX_HOME=/tmp/codex → /private/tmp/codex) must be
+        // granted in resolved form too, or its writes are denied.
+        let td = tempfile::tempdir().unwrap();
+        let real = td.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = td.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let grants = subpath_grants([link.clone()]);
+        let canonical_real = std::fs::canonicalize(&real).unwrap();
+        assert!(
+            grants.contains(&format!("  (subpath \"{}\")", link.display())),
+            "literal form kept"
+        );
+        assert!(
+            grants.contains(&format!("  (subpath \"{}\")", canonical_real.display())),
+            "resolved form added"
+        );
+
+        // A dir that resolves to itself yields exactly one grant — no
+        // duplicate lines for the common (canonical) case.
+        assert_eq!(subpath_grants([canonical_real]).len(), 1);
+    }
+
+    #[test]
+    fn subpath_grants_never_emit_bin_resident_paths() {
+        // A default provider dir whose leaf symlinks into a PATH-style bin dir
+        // (~/.claude → ~/.local/bin/claude) must not have its resolved form
+        // emitted — that would grant an agent-writable subtree on the user's
+        // PATH through the symlink (invariant 1). Fail closed instead.
+        let td = tempfile::tempdir().unwrap();
+        let target = td.path().join(".local/bin/claude");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = td.path().join(".claude");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let grants = subpath_grants([link]);
+        assert!(
+            grants.is_empty(),
+            "no grant may be emitted for a bin-resident dir, got: {grants:?}"
+        );
+    }
+
+    #[test]
+    fn profile_omits_provider_dirs_symlinked_into_bin() {
+        // End-to-end through build_profile: with ~/.claude symlinked into
+        // ~/.local/bin, neither the resolved bin subtree nor any other
+        // .local/bin path may appear on the allow-list, while the remaining
+        // provider dirs stay granted.
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let target = home.join(".local/bin/claude");
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, home.join(".claude")).unwrap();
+
+        let profile = build_profile(&root, &rpc, &home, None).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        assert!(
+            !profile.contains(".local/bin"),
+            "a symlinked ~/.claude must not smuggle a bin subtree onto the allow-list"
+        );
+        assert!(
+            profile.contains(&format!("(subpath \"{}/.cursor\")", canonical_home.display())),
+            "other provider dirs stay granted"
+        );
+    }
+
+    #[test]
+    fn profile_rejects_bin_resident_claude_config_dir() {
+        // CLAUDE_CONFIG_DIR pointed into a PATH-style bin dir must not become
+        // a write grant (invariant 1) — claude fails closed instead.
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let cfg = home.join(".local/bin/claude-cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+
+        let profile = build_profile(&root, &rpc, &home, Some(cfg.as_path())).unwrap();
+        assert!(
+            !profile.contains(".local/bin"),
+            "bin-resident CLAUDE_CONFIG_DIR must not appear on the allow-list"
+        );
+    }
+
     fn sandbox_dirs() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("agent-parent");
@@ -526,35 +691,6 @@ mod tests {
         // lives under /var → /private/var.
         let canonical_cfg = std::fs::canonicalize(&cfg).unwrap();
         assert!(profile.contains(&format!("(subpath \"{}\")", canonical_cfg.display())));
-    }
-
-    #[test]
-    fn resolve_existing_prefix_resolves_symlinks_through_missing_leaf() {
-        // CLAUDE_CONFIG_DIR may point at a dir claude hasn't created yet, under
-        // a symlinked prefix (the /tmp → /private/tmp case). The existing prefix
-        // must be symlink-resolved and the missing leaf re-appended verbatim.
-        let td = tempfile::tempdir().unwrap();
-        let real = td.path().join("real");
-        std::fs::create_dir_all(&real).unwrap();
-        let link = td.path().join("link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-
-        let resolved = resolve_existing_prefix(&link.join("not-created-yet"));
-        let expected = std::fs::canonicalize(&real)
-            .unwrap()
-            .join("not-created-yet");
-        assert_eq!(resolved, expected);
-    }
-
-    #[test]
-    fn resolve_existing_prefix_canonicalizes_an_existing_dir() {
-        let td = tempfile::tempdir().unwrap();
-        let dir = td.path().join("cfg");
-        std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(
-            resolve_existing_prefix(&dir),
-            std::fs::canonicalize(&dir).unwrap()
-        );
     }
 
     #[test]
@@ -679,8 +815,12 @@ mod tests {
         assert!(profile.contains("(deny file-write*)"));
         // The run command writes freely inside its checkout.
         assert!(profile.contains(&format!("\"{}\"", canonical_checkout.display())));
-        // Toolchain dirs the default detected commands need (cargo/go/pnpm/bundler).
-        for dir in [".cargo", "go", "Library/pnpm", ".bundle", ".rustup", ".bun"] {
+        // Toolchain dirs the default detected commands need (cargo/go/pnpm/bundler),
+        // plus the whole `~/.config` and `~/.local` the agent profile withholds —
+        // Run keeps the looser grant so arbitrary build steps succeed.
+        for dir in [
+            ".cargo", "go", "Library/pnpm", ".bundle", ".rustup", ".bun", ".config", ".local",
+        ] {
             let expected = format!("(subpath \"{}/{dir}\")", canonical_home.display());
             assert!(
                 profile.contains(&expected),
