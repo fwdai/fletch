@@ -144,8 +144,19 @@ pub fn opencode_config_dir(home: &Path) -> PathBuf {
 
 /// The XDG base dir named by `var` (`$var` if set non-blank, else
 /// `home/<default_rel>`). Shared by [`opencode_data_dir`]/[`opencode_config_dir`].
+/// This thin wrapper is the env *seam*; the resolution itself is the pure
+/// [`xdg_base_from`], so it can be tested hermetically — CI runners export
+/// their own `XDG_*` vars, and mutating the process env in parallel tests
+/// races other tests that read it.
 pub fn xdg_base(home: &Path, var: &str, default_rel: &str) -> PathBuf {
-    std::env::var_os(var)
+    xdg_base_from(std::env::var_os(var), home, default_rel)
+}
+
+/// Pure core of [`xdg_base`]: resolve from an explicit (possibly absent) env
+/// value. A blank value counts as unset, matching the XDG spec's treatment of
+/// empty base-dir vars.
+fn xdg_base_from(value: Option<std::ffi::OsString>, home: &Path, default_rel: &str) -> PathBuf {
+    value
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(default_rel))
@@ -241,13 +252,14 @@ mod tests {
         assert_eq!(provider_state_dirs("cursor", home), vec![home.join(".cursor")]);
         assert_eq!(provider_state_dirs("gemini", home), vec![home.join(".gemini")]);
         assert_eq!(provider_state_dirs("pi", home), vec![home.join(".pi")]);
-        // OpenCode: XDG data + config subdirs (default locations here).
+        // OpenCode: XDG data + config subdirs. The exact paths are
+        // env-dependent (`$XDG_DATA_HOME`/`$XDG_CONFIG_HOME` — CI runners
+        // export their own), so assert identity with the canonical resolvers;
+        // the resolution logic itself is covered hermetically by the
+        // `xdg_base_from` test below.
         assert_eq!(
             provider_state_dirs("opencode", home),
-            vec![
-                home.join(".local/share/opencode"),
-                home.join(".config/opencode"),
-            ],
+            vec![opencode_data_dir(home), opencode_config_dir(home)],
         );
         // Unknown provider → empty, never a panic.
         assert!(provider_state_dirs("nope", home).is_empty());
@@ -260,8 +272,8 @@ mod tests {
             home.join(".cursor"),
             home.join(".gemini"),
             home.join(".pi"),
-            home.join(".local/share/opencode"),
-            home.join(".config/opencode"),
+            opencode_data_dir(home),
+            opencode_config_dir(home),
         ] {
             assert!(all.contains(&expected), "union missing {}", expected.display());
         }
@@ -272,22 +284,26 @@ mod tests {
 
     /// The only `~/.config` grant the policy ever emits is a specific subdir
     /// (`opencode`), and the only `~/.local` grants are `share`/`state` — the
-    /// concrete narrowing this security fix is about.
+    /// concrete narrowing this security fix is about. Assertions are filtered
+    /// against the fake home, so a CI runner's own `$XDG_*` vars (which point
+    /// outside it, relocating opencode's dirs) can't perturb them.
     #[test]
     fn config_and_local_grants_are_narrow_subdirs() {
         let home = Path::new("/Users/u");
         let mut dirs = all_provider_state_dirs(home);
         dirs.extend(agent_scratch_dirs(home));
 
-        let under_config: Vec<_> = dirs
-            .iter()
-            .filter(|d| d.starts_with(home.join(".config")))
-            .collect();
-        assert_eq!(
-            under_config,
-            vec![&home.join(".config/opencode")],
-            "the only ~/.config grant may be ~/.config/opencode"
-        );
+        // Anything under ~/.config must be exactly opencode's default config
+        // subdir — never the root, never another subdir smuggled in outside
+        // the policy. (With a custom `$XDG_CONFIG_HOME` opencode's dir lives
+        // elsewhere and nothing under ~/.config is granted at all.)
+        for d in dirs.iter().filter(|d| d.starts_with(home.join(".config"))) {
+            assert_eq!(
+                *d,
+                home.join(".config/opencode"),
+                "the only ~/.config grant may be ~/.config/opencode"
+            );
+        }
 
         let under_local: Vec<_> = dirs
             .iter()
@@ -299,6 +315,29 @@ mod tests {
             assert_ne!(**d, home.join(".local"), "must never be the bare ~/.local");
             assert!(d.starts_with(home.join(".local/share")) || d.starts_with(home.join(".local/state")));
         }
+    }
+
+    /// Hermetic coverage of the XDG resolution [`xdg_base`] performs at its
+    /// env seam. The tests above deliberately never read the live env for
+    /// expected values — CI runners export their own `XDG_*` vars — and don't
+    /// mutate it either (parallel tests race on the process env), so the pure
+    /// core carries the resolution contract.
+    #[test]
+    fn xdg_base_from_prefers_nonblank_value_else_default() {
+        let home = Path::new("/Users/u");
+        assert_eq!(
+            xdg_base_from(Some("/custom/data".into()), home, ".local/share"),
+            PathBuf::from("/custom/data")
+        );
+        assert_eq!(
+            xdg_base_from(None, home, ".local/share"),
+            home.join(".local/share")
+        );
+        // Blank counts as unset, per the XDG spec.
+        assert_eq!(
+            xdg_base_from(Some("".into()), home, ".config"),
+            home.join(".config")
+        );
     }
 
     #[test]

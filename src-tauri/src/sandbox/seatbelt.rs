@@ -503,13 +503,21 @@ mod tests {
             "no ~/.local/bin grant may appear"
         );
 
-        // Narrow replacements PRESENT.
-        for narrow in [".local/share", ".local/state", ".config/opencode"] {
+        // Narrow replacements PRESENT. The scratch dirs are fixed
+        // home-relative paths; opencode's config dir is env-dependent
+        // (`$XDG_CONFIG_HOME` — CI runners export their own), so assert it via
+        // the same policy resolution the profile builder uses.
+        for narrow in [".local/share", ".local/state"] {
             assert!(
                 profile.contains(&format!("(subpath \"{h}/{narrow}\")")),
                 "agent profile should grant the narrow {narrow}"
             );
         }
+        let opencode_config = policy::opencode_config_dir(&canonical_home);
+        assert!(
+            profile.contains(&format!("(subpath \"{}\")", opencode_config.display())),
+            "agent profile should grant the narrow opencode config dir"
+        );
         // Everything else unchanged: provider dot-dirs, caches, macOS-native.
         for dir in [
             ".claude", ".codex", ".cursor", ".gemini", ".pi", ".npm", ".cache",
