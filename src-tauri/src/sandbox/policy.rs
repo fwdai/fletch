@@ -42,6 +42,19 @@
 //!    poison `~/.config/git` (`core.hooksPath`), `~/.config/fish`,
 //!    `~/.config/gh` (aliases carry shell commands), etc.
 //!
+//! Claude's config dir gets a third treatment that is really invariant 2
+//! applied to `~/.claude` itself. `~/.claude` *is* a config root — its
+//! `settings.json` defines hooks Claude Code runs **on the host**, and it holds
+//! `plugins/`/`skills/`/`commands/`/`agents/`, `CLAUDE.md`, and MCP config — so
+//! granting it whole was exactly the config-poisoning surface invariant 2 closes
+//! for `~/.config`. So claude's grant is no longer the config-dir *root* but a
+//! set of **writable islands** beneath it ([`claude_write_island_dirs`] + the
+//! [`CLAUDE_CREDENTIALS_FILE`] file): claude-regenerated, non-executable,
+//! non-config state only. This mirrors Docker's invariant 5 (`~/.claude` mounted
+//! read-only with writable exceptions layered on); the shared island-name
+//! constants ([`CLAUDE_PROJECTS_SUBDIR`], [`CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS`],
+//! [`CLAUDE_CREDENTIALS_FILE`]) are the same ones the docker engine mounts.
+//!
 //! One piece of claude's persistence surface is deliberately *not* modeled
 //! here: the top-level `~/.claude.json` state **file**. It's a single file, not
 //! a dir, and threading a file-literal grant through this dir-oriented API buys
@@ -58,6 +71,77 @@ use std::path::{Path, PathBuf};
 /// is the authority for the seatbelt side.
 const STATE_DIR_PROVIDERS: &[&str] = &["claude", "codex", "cursor", "gemini", "pi", "opencode"];
 
+/// The one **file** under a claude config dir that stays writable when the dir
+/// is otherwise read-only: claude's OAuth refresh rewrites the rotated token
+/// here, and the host-side `CredentialsFile` auth chain needs that write to
+/// land on the host. Docker remounts it read-write over the read-only config
+/// dir; seatbelt grants it as a file rule (see the seatbelt caller). Shared so
+/// the two engines can't drift on the name.
+pub const CLAUDE_CREDENTIALS_FILE: &str = ".credentials.json";
+
+/// Claude's session-transcript subdir (`<config-dir>/projects/<slug>/*.jsonl`).
+/// Docker binds it to a persistent per-agent host dir so `--resume` survives
+/// container recreation; seatbelt grants the real one as an island (see the
+/// residual note on [`claude_write_island_dirs`]). Shared so the two engines
+/// agree on the name.
+pub const CLAUDE_PROJECTS_SUBDIR: &str = "projects";
+
+/// Subdirs claude creates and writes *afresh every session*: the per-session
+/// env store (`session-env/<id>`) and the shell-environment snapshot the Bash
+/// tool sources (`shell-snapshots`). Docker overlays each with an ephemeral
+/// tmpfs (claude otherwise `mkdir`s them under the read-only config dir and
+/// fails `EROFS`); seatbelt grants the real ones as islands. Shared so the two
+/// engines agree on the names.
+pub const CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS: &[&str] = &["session-env", "shell-snapshots"];
+
+/// Extra pure-state subdirs seatbelt grants writable that docker leaves
+/// read-only. Docker leaves *everything* but the credential file, the projects
+/// bind, and the tmpfs overlays read-only, and claude's writes there are
+/// best-effort (a failed write logs and continues). Seatbelt shares the host
+/// filesystem, so these writes actually land on the real `~/.claude` and are
+/// worth allowing — but only for claude-regenerated, non-executable, non-config
+/// state that can neither run code on the host nor steer a later host session:
+/// per-session todo lists, the feature-flag/analytics cache, file edit-history
+/// (undo state), and diagnostic logs. Anything that could influence a later
+/// session's trust/behavior (`backups/` of `~/.claude.json`, `plans/`,
+/// `sessions/`, `cache/`, `paste-cache/`) or execute (`downloads/` of the
+/// claude binary, `chrome/`, `daemon/`) is deliberately NOT here — deny by
+/// default (fail-closed) is the correct treatment for those.
+const CLAUDE_SEATBELT_STATE_SUBDIRS: &[&str] = &["todos", "statsig", "file-history", "debug"];
+
+/// The writable **islands** beneath a claude config `config_dir` — the write
+/// grant that replaces the old whole-`~/.claude` grant (config-poisoning
+/// narrowing; see the module doc). Each is claude-regenerated, non-executable,
+/// non-config *state*: session transcripts, per-session runtime scaffolding, and
+/// the pure-state dirs above. Everything else under the config dir
+/// (`settings.json` → host hooks, `plugins`/`skills`/`commands`/`agents`,
+/// `CLAUDE.md`, MCP config, …) stays deny-by-default, so a prompt-injected agent
+/// can't plant a host-executed hook or a config a later HOST session trusts.
+///
+/// The credential *file* ([`CLAUDE_CREDENTIALS_FILE`]) is intentionally NOT
+/// here: it's a file needing a regex rule (atomic temp-file writes), which the
+/// seatbelt caller emits separately.
+///
+/// Two DELIBERATE residuals, left writable here and flagged for later hardening
+/// rather than fixed now:
+///
+/// 1. **`projects/` stays writable.** Docker redirects it to a per-agent host
+///    dir so the shared `~/.claude/projects` (other agents' transcripts, global
+///    memory) is unreachable; seatbelt can't redirect without env surgery, and
+///    the app's host-side transcript reader tails the real dir. Residual: an
+///    agent can write a `projects/<slug>/memory` entry a later session trusts.
+/// 2. **`~/.claude.json` stays a writable literal** (emitted by the seatbelt
+///    caller, not here — it's outside the config dir). Claude requires it (state
+///    writes every session), yet it carries per-project trust/settings. Both are
+///    candidates for later hardening.
+pub fn claude_write_island_dirs(config_dir: &Path) -> Vec<PathBuf> {
+    std::iter::once(CLAUDE_PROJECTS_SUBDIR)
+        .chain(CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS.iter().copied())
+        .chain(CLAUDE_SEATBELT_STATE_SUBDIRS.iter().copied())
+        .map(|s| config_dir.join(s))
+        .collect()
+}
+
 /// Class-1 host-persistence dirs a single `provider` must write on the host:
 /// its session store, auth, and config. Docker mounts exactly these read-write
 /// at their host paths; the seatbelt profile folds them in provider-agnostically
@@ -65,9 +149,12 @@ const STATE_DIR_PROVIDERS: &[&str] = &["claude", "codex", "cursor", "gemini", "p
 /// list — Docker already gates on a known [`super::docker::DockerProvider`], and
 /// the seatbelt side only ever passes ids from [`STATE_DIR_PROVIDERS`].
 ///
-/// Note the omissions this policy makes on purpose: claude's grant is its
-/// config *dir* only — the top-level `~/.claude.json` file stays a
-/// seatbelt-local literal (see the module doc), and a non-default
+/// Note the omissions this policy makes on purpose: claude's grant is NOT its
+/// config-dir root (that root holds host-executed hooks / plugins / MCP config
+/// — see the module doc) but the writable **islands** beneath it
+/// ([`claude_write_island_dirs`]); the top-level `~/.claude.json` file and the
+/// [`CLAUDE_CREDENTIALS_FILE`] file both stay seatbelt-local literals (a file,
+/// not a dir, so the dir-oriented API doesn't model them), and a non-default
 /// `CLAUDE_CONFIG_DIR` is likewise handled by the seatbelt caller, which needs
 /// its own symlink-resolution to keep the emitted SBPL path matching the
 /// sandbox's resolved write path. Codex's and opencode's env relocations
@@ -75,7 +162,10 @@ const STATE_DIR_PROVIDERS: &[&str] = &["claude", "codex", "cursor", "gemini", "p
 /// need the same dir, with no engine-specific handling on top.
 pub fn provider_state_dirs(provider: &str, home: &Path) -> Vec<PathBuf> {
     match provider {
-        "claude" => vec![home.join(".claude")],
+        // Not the `~/.claude` root — only its writable islands (config-poisoning
+        // narrowing, module doc). The credential *file* is added separately by
+        // the seatbelt caller (it needs a regex rule, not a `(subpath …)`).
+        "claude" => claude_write_island_dirs(&home.join(".claude")),
         // Codex's state dir moves with `$CODEX_HOME`. The old blanket
         // `~/.config` agent grant incidentally covered e.g.
         // `CODEX_HOME=$HOME/.config/codex`; with the narrowing, this
@@ -307,13 +397,53 @@ mod tests {
         }
     }
 
+    /// The claude write islands are exactly the config-poisoning narrowing: each
+    /// is a subdir *beneath* a config dir, never the config-dir root itself, and
+    /// never a bin dir — the same invariants, applied to `~/.claude`.
+    #[test]
+    fn claude_islands_are_subdirs_never_the_config_root_or_bin() {
+        let config_dir = Path::new("/Users/u/.claude");
+        let islands = claude_write_island_dirs(config_dir);
+
+        // The exact set (order-independent): the shared projects/ephemeral
+        // names plus the seatbelt-only pure-state subdirs.
+        let expected: Vec<PathBuf> = std::iter::once(CLAUDE_PROJECTS_SUBDIR)
+            .chain(CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS.iter().copied())
+            .chain(CLAUDE_SEATBELT_STATE_SUBDIRS.iter().copied())
+            .map(|s| config_dir.join(s))
+            .collect();
+        assert_eq!(islands, expected);
+        // The credential *file* is not an island dir (it's a file rule).
+        assert!(!islands.iter().any(|p| p.ends_with(CLAUDE_CREDENTIALS_FILE)));
+
+        for island in &islands {
+            assert!(
+                island.starts_with(config_dir) && *island != config_dir,
+                "{} must be a strict subdir of the config root, never the root",
+                island.display()
+            );
+            assert!(
+                !bin_resident(island),
+                "{} must not be bin-resident",
+                island.display()
+            );
+            assert_ne!(island.file_name(), Some(OsStr::new("bin")));
+        }
+    }
+
     /// Class-1 per-provider content, and the union's dedup + coverage.
     #[test]
     fn provider_state_dirs_cover_each_provider() {
         let home = Path::new("/Users/u");
+        // Claude's entry is no longer the `~/.claude` root — it's the writable
+        // islands beneath it (config-poisoning narrowing).
         assert_eq!(
             provider_state_dirs("claude", home),
-            vec![home.join(".claude")]
+            claude_write_island_dirs(&home.join(".claude"))
+        );
+        assert!(
+            !provider_state_dirs("claude", home).contains(&home.join(".claude")),
+            "claude must not grant its config-dir root"
         );
         // Codex: env-dependent (`$CODEX_HOME`), so assert identity with the
         // canonical resolver — same treatment as opencode below; the
@@ -345,8 +475,19 @@ mod tests {
 
         // The union carries every provider's dirs and is deduped.
         let all = all_provider_state_dirs(home);
+        // Claude contributes its islands to the union (not the `~/.claude` root).
+        assert!(
+            !all.contains(&home.join(".claude")),
+            "union must not carry the ~/.claude root"
+        );
+        for island in claude_write_island_dirs(&home.join(".claude")) {
+            assert!(
+                all.contains(&island),
+                "union missing claude island {}",
+                island.display()
+            );
+        }
         for expected in [
-            home.join(".claude"),
             codex_home_dir(home),
             home.join(".cursor"),
             home.join(".gemini"),
