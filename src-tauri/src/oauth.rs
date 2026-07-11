@@ -2,9 +2,9 @@
 //! are both supported.
 //!
 //! Google is identity-only: its token reads the profile once, then drops.
-//! GitHub requests the `repo` scope and its token is persisted (settings
-//! table + the in-process registry) — it powers the GitHub API client and
-//! git's https auth, replacing the `gh` CLI dependency.
+//! GitHub requests the `repo` scope and its token is persisted (the app's
+//! secret store + the in-process registry) — it powers the GitHub API client
+//! and git's https auth, replacing the `gh` CLI dependency.
 
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -315,7 +315,7 @@ pub async fn oauth_device_login(
     // (the in-process registry still has it until quit), but say so loudly.
     if provider == "github" {
         if let Err(e) =
-            crate::database::set_setting(&db.lock(), crate::github::TOKEN_SETTING, &access_token)
+            crate::secrets::set(&db.lock(), crate::github::TOKEN_SETTING, &access_token)
         {
             tracing::warn!(error = %e, "failed to persist GitHub token");
         }

@@ -20,9 +20,10 @@
 //!    re-login (e.g. after hitting a rate limit) takes effect immediately. Only
 //!    a usable token counts (see [`usable_oauth_token`]); no Keychain / no login
 //!    (Linux, CI) falls through. See [`keychain_token`].
-//! 2. A `claude setup-token` value captured into settings ([`TOKEN_SETTING`],
-//!    auto-populated by [`super::setup_token`]) → `CLAUDE_CODE_OAUTH_TOKEN`. The
-//!    fallback for hosts without a readable Keychain login.
+//! 2. A `claude setup-token` value captured into the app's secret store
+//!    ([`TOKEN_SETTING`], auto-populated by [`super::setup_token`]) →
+//!    `CLAUDE_CODE_OAUTH_TOKEN`. The fallback for hosts without a readable
+//!    Keychain login.
 //! 3. The app's process env or the login-shell probe exports a credential —
 //!    `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or `ANTHROPIC_AUTH_TOKEN`
 //!    (a custom-gateway bearer) → forward it plus `ANTHROPIC_BASE_URL` (the
@@ -52,9 +53,9 @@ use parking_lot::RwLock;
 
 use crate::bin_resolve;
 
-/// `settings` key holding the user-pasted `claude setup-token` value.
-/// Plaintext in sqlite — the same posture as `github::TOKEN_SETTING`
-/// (consistency over novelty; a keychain migration would move both).
+/// `crate::secrets` key holding the user-pasted `claude setup-token` value —
+/// the OS keychain on release macOS builds, the same posture as
+/// `github::TOKEN_SETTING`.
 pub const TOKEN_SETTING: &str = "claude_container_token";
 
 /// Env var claude reads a setup-token (OAuth) credential from.

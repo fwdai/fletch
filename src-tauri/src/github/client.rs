@@ -4,10 +4,10 @@
 //! everything here is transport.
 //!
 //! The token comes from the app's own OAuth device flow (`repo` scope) and is
-//! stored in the `settings` table — plaintext for now, the same bar as the
-//! `gh` CLI's hosts.yml, isolated behind `set_token`/`token` so a move to the
-//! OS keychain later touches only the storage call sites. The token must
-//! never appear in logs, telemetry, or error strings.
+//! persisted via `crate::secrets` — the OS keychain on release macOS builds,
+//! the `settings` table in dev — isolated behind `set_token`/`token` so the
+//! storage backend never leaks into API code. The token must never appear in
+//! logs, telemetry, or error strings.
 
 use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -17,7 +17,8 @@ use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 
-/// `settings` key holding the GitHub access token.
+/// `crate::secrets` key holding the GitHub access token (keychain account
+/// name on release macOS; `settings` key in the dev fallback).
 pub const TOKEN_SETTING: &str = "github_token";
 
 const API_BASE: &str = "https://api.github.com";

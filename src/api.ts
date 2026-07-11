@@ -439,9 +439,9 @@ export const api = {
   setSandboxEngine: (engine: SandboxEngine) => invoke<void>("set_sandbox_engine", { engine }),
   probeDockerEngine: () => invoke<DockerProbe>("probe_docker_engine"),
   // Anthropic auth for containerized agents. Docker-only: seatbelt agents keep
-  // the user's own claude login. The token setting is backend-owned
-  // (`claude_container_token`, written by the set/clear commands below — never
-  // via a frontend `setSetting`).
+  // the user's own claude login. The token is backend-owned
+  // (`claude_container_token` in the backend secret store, written by the
+  // set/clear commands below — never via a frontend `setSetting`).
   getContainerAuthStatus: () => invoke<ContainerAuthStatus>("get_container_auth_status"),
   setContainerAuthToken: (token: string) => invoke<void>("set_container_auth_token", { token }),
   clearContainerAuthToken: () => invoke<void>("clear_container_auth_token"),

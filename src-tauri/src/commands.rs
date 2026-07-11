@@ -261,7 +261,7 @@ pub async fn publish_agent(
 /// Drop the stored GitHub token — the app returns to local-only mode.
 #[tauri::command]
 pub fn github_disconnect(db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>) -> Result<()> {
-    crate::database::set_setting(&db.lock(), gh::TOKEN_SETTING, "")?;
+    crate::secrets::delete(&db.lock(), gh::TOKEN_SETTING)?;
     gh::set_token(None);
     Ok(())
 }
