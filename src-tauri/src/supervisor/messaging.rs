@@ -174,11 +174,21 @@ impl Supervisor {
     /// hiccup is logged but never blocks the in-memory delivery, which is the
     /// hot path. The persisted row is dropped once the message is delivered
     /// (see `flush_queued`) or the agent is torn down (see `detach_runtime`).
+    ///
+    /// The DB write and the in-memory enqueue are done under one hold of the
+    /// queue lock so they land as a unit. Otherwise a concurrent
+    /// `flush_queued` cleanup could observe the persisted row (written first)
+    /// but not yet the queue entry, and its delete-except-still-queued pass
+    /// would delete the row — losing the message on a restart before delivery.
+    /// Lock order is always queue → db (`WorkspaceManager` only ever takes the
+    /// db lock and never calls back into the queue), so nesting the db lock
+    /// under the queue lock here cannot deadlock.
     fn persist_and_enqueue(&self, agent_id: &str, msg: PendingMsg) {
+        let mut queue = self.message_queue.lock();
         if let Err(e) = self.workspace.enqueue_pending_message(agent_id, &msg) {
             tracing::warn!(error = %e, agent_id, "persist queued follow-up failed");
         }
-        self.message_queue.lock().enqueue(agent_id, msg);
+        queue.enqueue(agent_id, msg);
     }
 
     /// Reload queued follow-ups persisted by a previous run into the live
@@ -324,9 +334,19 @@ pub(super) fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &st
     // — a follow-up that arrived during the delivery window — so it survives to
     // its own flush. This also clears any rows coalesced away by a prior failed
     // flush, leaving no orphans behind.
-    let keep = sup.message_queue.lock().turn_ids(agent_id);
-    if let Err(e) = sup.workspace.delete_pending_messages_except(agent_id, &keep) {
-        tracing::warn!(error = %e, agent_id, "clear delivered pending follow-ups failed");
+    //
+    // Snapshot `keep` and run the delete under a single hold of the queue lock,
+    // so a concurrent `persist_and_enqueue` (which writes its row and queue
+    // entry under the same lock) is fully ordered before or after this pass —
+    // never half-visible. Without the shared lock, a row written but not yet
+    // queued would be absent from `keep` and wrongly deleted. Lock order is
+    // queue → db throughout (see `persist_and_enqueue`), so this can't deadlock.
+    {
+        let queue = sup.message_queue.lock();
+        let keep = queue.turn_ids(agent_id);
+        if let Err(e) = sup.workspace.delete_pending_messages_except(agent_id, &keep) {
+            tracing::warn!(error = %e, agent_id, "clear delivered pending follow-ups failed");
+        }
     }
     Ok(false)
 }
