@@ -71,10 +71,17 @@ mod store {
         }
         // Definitively absent from the keychain: migrate the legacy row,
         // then scrub it. On a keychain write failure keep the settings copy —
-        // the token still works, and the move retries on the next read.
+        // the token still works, and the move retries on the next read. A
+        // failed scrub is non-fatal *here* (the keychain copy is in place and
+        // the value must still be returned); `delete` is where a surviving
+        // row is load-bearing.
         let Some(legacy) = legacy else { return Ok(None) };
         match set(conn, key, &legacy) {
-            Ok(()) => scrub_setting(conn, key),
+            Ok(()) => {
+                if let Err(e) = scrub_setting(conn, key) {
+                    tracing::warn!(key, error = %e, "failed to blank migrated plaintext row");
+                }
+            }
             Err(e) => tracing::warn!(key, error = %e, "keychain migration failed"),
         }
         Ok(Some(legacy))
@@ -96,30 +103,39 @@ mod store {
             // account that signs itself back in.
             Err(e) => return Err(Error::Other(format!("keychain delete ({key}): {e}"))),
         }
-        // Scrub any plaintext row a failed migration could have left behind.
+        // Blank any plaintext row a failed migration could have left behind —
+        // and fail the disconnect if that blank fails: a surviving row would
+        // be re-migrated into the keychain on the next read, resurrecting the
+        // "deleted" secret.
         if database::get_setting(conn, key).is_some_and(|v| !v.is_empty()) {
-            scrub_setting(conn, key);
+            scrub_setting(conn, key)?;
         }
         Ok(())
     }
 
-    /// Blank the legacy `settings` row and scrub the old plaintext from the
+    /// Blank the legacy `settings` row, then scrub the old plaintext from the
     /// database *file*: a plain UPDATE leaves the value recoverable on freed
     /// pages and in the WAL, so zero freed content (`secure_delete`), rewrite
     /// the main file (VACUUM), and drain the WAL (checkpoint TRUNCATE).
-    /// Best-effort — the secret is already safe in the keychain, so a scrub
-    /// failure warns rather than blocking the caller.
-    fn scrub_setting(conn: &Connection, key: &str) {
-        let scrub = || -> Result<()> {
-            conn.pragma_update(None, "secure_delete", "ON")?;
-            database::set_setting(conn, key, "")?;
+    /// The row blank is the load-bearing step — a surviving value is a live
+    /// secret `get` would re-migrate — so its failure propagates; the file
+    /// scrub guards against forensic *remnants* and stays best-effort.
+    fn scrub_setting(conn: &Connection, key: &str) -> Result<()> {
+        // Armed before the overwrite so the freed page content is zeroed;
+        // only weakens the file scrub if it fails, so best-effort.
+        if let Err(e) = conn.pragma_update(None, "secure_delete", "ON") {
+            tracing::warn!(key, error = %e, "failed to enable secure_delete");
+        }
+        database::set_setting(conn, key, "")?;
+        let file_scrub = || -> Result<()> {
             conn.execute_batch("VACUUM")?;
             conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
             Ok(())
         };
-        if let Err(e) = scrub() {
-            tracing::warn!(key, error = %e, "failed to scrub legacy plaintext setting");
+        if let Err(e) = file_scrub() {
+            tracing::warn!(key, error = %e, "failed to scrub plaintext remnants from db file");
         }
+        Ok(())
     }
 }
 
