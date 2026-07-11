@@ -43,7 +43,10 @@ jobs:
           version: 1.0
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned, not @stable: the clippy gate is `-D warnings`, so a floating
+        # toolchain lets a future release's new lints break CI on unchanged
+        # code. Bump this deliberately.
+        uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy, rustfmt
 
