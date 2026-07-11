@@ -130,6 +130,17 @@ impl MessageQueue {
         self.by_agent.get(agent_id).map_or(0, VecDeque::len)
     }
 
+    /// The `turn_id`s currently queued for an agent, in FIFO order. Used by the
+    /// durable mirror: after a flush delivers, the supervisor deletes every
+    /// persisted row *except* these, so a follow-up that arrived during the
+    /// delivery window (still queued here) keeps its row (see
+    /// `WorkspaceManager::delete_pending_messages_except`).
+    pub fn turn_ids(&self, agent_id: &str) -> Vec<String> {
+        self.by_agent.get(agent_id).map_or_else(Vec::new, |q| {
+            q.iter().map(|m| m.turn_id.clone()).collect()
+        })
+    }
+
     /// Remove and return all queued messages for an agent, coalesced into a
     /// single [`PendingMsg`]. `None` if nothing was queued.
     pub fn drain_coalesced(&mut self, agent_id: &str) -> Option<PendingMsg> {
@@ -253,6 +264,18 @@ mod tests {
         assert_eq!(q.len("a"), 2);
         // isolation between agents
         assert!(q.is_empty("b"));
+    }
+
+    #[test]
+    fn turn_ids_lists_queued_in_fifo_order() {
+        let mut q = MessageQueue::new();
+        assert!(q.turn_ids("a").is_empty());
+        q.enqueue("a", msg("t1", "hi", &[], None));
+        q.enqueue("a", msg("t2", "there", &[], None));
+        assert_eq!(q.turn_ids("a"), vec!["t1".to_string(), "t2".to_string()]);
+        // Draining empties it; the persisted-row cleanup then keeps nothing.
+        q.drain_coalesced("a");
+        assert!(q.turn_ids("a").is_empty());
     }
 
     #[test]

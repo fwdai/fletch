@@ -62,7 +62,7 @@ impl Supervisor {
                 false
             }
             Delivery::FlushNow => {
-                self.message_queue.lock().enqueue(agent_id, msg);
+                self.persist_and_enqueue(agent_id, msg);
                 flush_queued(&self, app, agent_id)?
             }
             Delivery::WriteLive => {
@@ -74,14 +74,14 @@ impl Supervisor {
                     // bare re-enqueue would strand the follow-up until the next
                     // user message (CQ3-A).
                     tracing::warn!(error = %e, agent_id, "live inject failed; delivering as a new turn");
-                    self.message_queue.lock().enqueue(agent_id, msg);
+                    self.persist_and_enqueue(agent_id, msg);
                     flush_queued(&self, app, agent_id)?
                 } else {
                     false
                 }
             }
             Delivery::Enqueue => {
-                self.message_queue.lock().enqueue(agent_id, msg);
+                self.persist_and_enqueue(agent_id, msg);
                 // Same TOCTOU as WriteLive's fallback (CQ3-B): the turn may
                 // have ended between the busy check above and this enqueue, so
                 // the turn-end Idle drain already ran against an empty queue.
@@ -167,6 +167,42 @@ impl Supervisor {
     ) -> Result<()> {
         let agent = self.live_agent(agent_id)?;
         agent.answer_tool_use(request_id, updated_input, behavior, message)
+    }
+
+    /// Enqueue a follow-up both in memory (the live queue) and in the durable
+    /// mirror, so it survives a crash/restart. The persist is best-effort: a DB
+    /// hiccup is logged but never blocks the in-memory delivery, which is the
+    /// hot path. The persisted row is dropped once the message is delivered
+    /// (see `flush_queued`) or the agent is torn down (see `detach_runtime`).
+    fn persist_and_enqueue(&self, agent_id: &str, msg: PendingMsg) {
+        if let Err(e) = self.workspace.enqueue_pending_message(agent_id, &msg) {
+            tracing::warn!(error = %e, agent_id, "persist queued follow-up failed");
+        }
+        self.message_queue.lock().enqueue(agent_id, msg);
+    }
+
+    /// Reload queued follow-ups persisted by a previous run into the live
+    /// in-memory queue. Called once at startup, before any send. Rehydrated
+    /// messages sit idle until the user's next interaction, which routes through
+    /// `Delivery::FlushNow` and delivers them coalesced (the existing
+    /// idle-with-leftovers path) — no process is auto-spawned here.
+    pub fn rehydrate_pending_messages(&self) {
+        let pending = match self.workspace.read_all_pending_messages() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "rehydrate queued follow-ups failed");
+                return;
+            }
+        };
+        if pending.is_empty() {
+            return;
+        }
+        let count = pending.len();
+        let mut queue = self.message_queue.lock();
+        for (agent_id, msg) in pending {
+            queue.enqueue(&agent_id, msg);
+        }
+        tracing::info!(count, "rehydrated queued follow-up messages from a prior run");
     }
 }
 
@@ -277,9 +313,20 @@ pub(super) fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &st
         // Delivery raced with teardown/respawn (e.g. AgentNotFound). Put the
         // follow-ups back rather than dropping them; a later boundary or the
         // post-respawn flush retries. Re-queue at the front to preserve order.
+        // The persisted rows are left intact (we only clear on success), so the
+        // retry — or a restart before it — still has them.
         tracing::warn!(error = %e, agent_id, "flush delivery failed; re-queueing follow-ups");
         sup.message_queue.lock().requeue_front(agent_id, coalesced);
         return Ok(true);
+    }
+    // Delivered as a turn (now durable in `session_user_turns`), so drop the
+    // pending rows we just delivered. Keep only what is still queued in memory
+    // — a follow-up that arrived during the delivery window — so it survives to
+    // its own flush. This also clears any rows coalesced away by a prior failed
+    // flush, leaving no orphans behind.
+    let keep = sup.message_queue.lock().turn_ids(agent_id);
+    if let Err(e) = sup.workspace.delete_pending_messages_except(agent_id, &keep) {
+        tracing::warn!(error = %e, agent_id, "clear delivered pending follow-ups failed");
     }
     Ok(false)
 }

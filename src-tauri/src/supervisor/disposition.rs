@@ -257,6 +257,12 @@ impl Supervisor {
         self.statuses.lock().remove(agent_id);
         self.native_inputs.lock().remove(agent_id);
         self.message_queue.lock().clear(agent_id);
+        // Drop the durable mirror too, so an archived agent's queue can't be
+        // rehydrated on the next launch. (Discard also cascades via the FK when
+        // the workspace row is removed; this covers archive, which keeps it.)
+        if let Err(e) = self.workspace.clear_pending_messages(agent_id) {
+            tracing::warn!(error = %e, agent_id, "clear persisted pending follow-ups failed");
+        }
         self.interrupted.lock().remove(agent_id);
         self.shells.lock().remove(agent_id);
         if let Some(run) = self.runs.lock().remove(agent_id) {
