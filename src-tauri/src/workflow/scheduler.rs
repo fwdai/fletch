@@ -184,8 +184,7 @@ impl WorkflowService {
             let mut eff: EffectiveBudgets = serde_json::from_str(&budgets_json)
                 .map_err(|e| Error::Other(format!("bad budgets_json: {e}")))?;
             eff.apply_patch(&patch);
-            let patched =
-                serde_json::to_string(&eff).map_err(|e| Error::Other(e.to_string()))?;
+            let patched = serde_json::to_string(&eff).map_err(|e| Error::Other(e.to_string()))?;
             conn.execute(
                 "UPDATE wf_run SET budgets_json = ?1, updated_at = ?2 WHERE id = ?3",
                 rusqlite::params![patched, super::now_ms(), run_id],
@@ -1833,8 +1832,7 @@ mod tests {
         // with a budget patch (simulating `wf_resume(budget_patch)`) lifts the
         // cap and the run drives to done from the paused position.
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws) =
-            scaffold_steps(tmp.path(), "run-b1", "wf/b1", &["s1", "s2"], &eff_json(1));
+        let (db, ws) = scaffold_steps(tmp.path(), "run-b1", "wf/b1", &["s1", "s2"], &eff_json(1));
         let ctx = RunCtx {
             db: db.clone(),
             driver: StubDriver::new(ws, true),
@@ -1877,9 +1875,11 @@ mod tests {
         {
             let conn = db.lock();
             let bj: String = conn
-                .query_row("SELECT budgets_json FROM wf_run WHERE id='run-b1'", [], |r| {
-                    r.get(0)
-                })
+                .query_row(
+                    "SELECT budgets_json FROM wf_run WHERE id='run-b1'",
+                    [],
+                    |r| r.get(0),
+                )
                 .unwrap();
             let mut e: EffectiveBudgets = serde_json::from_str(&bj).unwrap();
             e.apply_patch(&Budgets {

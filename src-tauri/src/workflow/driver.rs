@@ -340,10 +340,7 @@ impl MockDriver {
     /// Set the cumulative token usage `turn_usage` reports for an agent (the
     /// budget ledger's token input).
     pub(crate) fn set_usage(&self, agent_id: &str, usage: TurnUsage) {
-        self.state
-            .lock()
-            .usage
-            .insert(agent_id.to_string(), usage);
+        self.state.lock().usage.insert(agent_id.to_string(), usage);
     }
 
     pub(crate) fn set_worktree(&self, path: PathBuf) {
@@ -483,7 +480,10 @@ mod tests {
         });
         assert_eq!(
             usage_from_body(&body),
-            Some(TurnUsage { input_tokens: 150, output_tokens: 30 })
+            Some(TurnUsage {
+                input_tokens: 150,
+                output_tokens: 30
+            })
         );
     }
 
@@ -494,7 +494,10 @@ mod tests {
         }}});
         assert_eq!(
             usage_from_body(&body),
-            Some(TurnUsage { input_tokens: 80, output_tokens: 20 })
+            Some(TurnUsage {
+                input_tokens: 80,
+                output_tokens: 20
+            })
         );
     }
 

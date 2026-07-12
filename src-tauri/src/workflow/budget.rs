@@ -267,7 +267,10 @@ impl Ledger {
     /// provider exposes no usage), so the delta is what this turn added.
     pub fn charge_tokens(&mut self, agent_id: &str, step_id: &str, usage: Option<TurnUsage>) {
         let cumulative = usage.map(|u| u.input_tokens + u.output_tokens).unwrap_or(0);
-        let seen = self.agent_tokens_seen.entry(agent_id.to_string()).or_insert(0);
+        let seen = self
+            .agent_tokens_seen
+            .entry(agent_id.to_string())
+            .or_insert(0);
         // Deltas only; guard against a non-monotonic report (never negative).
         let delta = cumulative.saturating_sub(*seen);
         *seen = cumulative;
@@ -411,8 +414,22 @@ mod tests {
     fn token_charges_are_per_turn_deltas() {
         let mut l = Ledger::default();
         // Cumulative session usage grows across turns; the ledger charges deltas.
-        l.charge_tokens("a", "s", Some(TurnUsage { input_tokens: 100, output_tokens: 0 }));
-        l.charge_tokens("a", "s", Some(TurnUsage { input_tokens: 250, output_tokens: 0 }));
+        l.charge_tokens(
+            "a",
+            "s",
+            Some(TurnUsage {
+                input_tokens: 100,
+                output_tokens: 0,
+            }),
+        );
+        l.charge_tokens(
+            "a",
+            "s",
+            Some(TurnUsage {
+                input_tokens: 250,
+                output_tokens: 0,
+            }),
+        );
         assert_eq!(l.tokens, 250, "delta 100 then 150");
         assert_eq!(l.steps["s"].tokens, 250);
     }
@@ -489,7 +506,14 @@ mod tests {
     fn ledger_json_round_trips_persisted_fields() {
         let mut l = Ledger::default();
         l.charge_turn("s", "e1");
-        l.charge_tokens("a", "s", Some(TurnUsage { input_tokens: 5, output_tokens: 5 }));
+        l.charge_tokens(
+            "a",
+            "s",
+            Some(TurnUsage {
+                input_tokens: 5,
+                output_tokens: 5,
+            }),
+        );
         l.wall_ms = 1234;
         let restored = Ledger::from_json(&l.to_json());
         assert_eq!(restored.turns, 1);

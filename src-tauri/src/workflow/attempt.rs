@@ -844,9 +844,13 @@ mod tests {
             turns: 1,
             ..Default::default()
         };
-        let run =
-            run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast()), &mut ledger, &eff)
-                .await;
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+            &mut ledger,
+            &eff,
+        )
+        .await;
         match run.outcome {
             AttemptOutcome::BudgetExceeded { which } => assert_eq!(which, "turns"),
             other => panic!("expected BudgetExceeded(turns), got {other:?}"),
@@ -880,9 +884,13 @@ mod tests {
             tokens: Some(500),
             ..Default::default()
         };
-        let run =
-            run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast()), &mut ledger, &eff)
-                .await;
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+            &mut ledger,
+            &eff,
+        )
+        .await;
         match run.outcome {
             AttemptOutcome::BudgetExceeded { which } => assert_eq!(which, "tokens"),
             other => panic!("expected BudgetExceeded(tokens), got {other:?}"),
@@ -906,9 +914,13 @@ mod tests {
             turns: 2,
             ..Default::default()
         };
-        let run =
-            run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast()), &mut ledger, &eff)
-                .await;
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+            &mut ledger,
+            &eff,
+        )
+        .await;
         assert!(
             matches!(run.outcome, AttemptOutcome::BudgetExceeded { .. }),
             "{:?}",
