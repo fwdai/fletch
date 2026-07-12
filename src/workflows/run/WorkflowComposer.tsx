@@ -3,16 +3,20 @@
 // project/branch pickers around it, identical to the agent screen). It reuses
 // the agent composer's shell classes (.composer / .composer-input /
 // .composer-foot / .model-chip / .send) so the two look the same.
+//
+// Launch goes through the v1 scheduler: `wf_launch` takes the definition's spec
+// snapshot and returns the run id, which the monitor (RunView) then observes.
 
 import { type CSSProperties, Fragment, useRef, useState } from "react";
+import { api } from "../../api";
 import { Icon } from "../../components/Icon";
 import { Chip } from "../../components/ui/Chip";
 import { useAppStore } from "../../store";
 import { AgentAvatar } from "../builder/AgentAvatar";
 import { resolveAgent } from "../shared";
-import type { Workflow } from "../storage";
-import { launchRun } from "./engine";
-import { useWorkflows } from "./useWorkflows";
+import type { Definition, Spec } from "../spec";
+import { flattenSteps } from "./RunView/flatten";
+import { useDefinitions } from "./useDefinitions";
 
 const FLOW_HUE = 285;
 
@@ -41,35 +45,50 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
   const setLastError = useAppStore((s) => s.setLastError);
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
+  const projects = useAppStore((s) => s.workspace?.projects ?? []);
 
-  const workflows = useWorkflows();
-  const [wfId, setWfId] = useState("");
+  const definitions = useDefinitions();
+  const [defId, setDefId] = useState("");
   const [task, setTask] = useState("");
   const [busy, setBusy] = useState(false);
   const ta = useRef<HTMLTextAreaElement>(null);
 
-  // Default to the first workflow once they load.
-  const wf = workflows.find((w) => w.id === wfId) ?? workflows[0];
-  const canLaunch = !!wf && !!task.trim() && !busy;
+  // Default to the first definition once they load.
+  const def = definitions.find((d) => d.id === defId) ?? definitions[0];
+  const steps = flattenSteps(def?.spec ?? null);
+  const canLaunch = !!def && !!task.trim() && !busy;
 
   const grow = (el: HTMLTextAreaElement) => {
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   };
 
+  const resolve = (alias: string) => {
+    const a = def?.spec.agents?.[alias];
+    return resolveAgent(a?.custom_agent ?? a?.base ?? alias, customAgents, modelsByAgent);
+  };
+
   const launch = async () => {
-    if (!wf || !task.trim() || busy) return;
+    if (!def || !task.trim() || busy) return;
     setBusy(true);
     try {
-      const run = await launchRun(wf, { task: task.trim(), projectId: "", repoPath, baseBranch });
-      selectRun(run.id);
+      const projectId = projects.find((p) => p.path === repoPath)?.project_id ?? "";
+      const runId = await api.wfLaunch(
+        def.spec,
+        task.trim(),
+        projectId,
+        repoPath,
+        def.id,
+        baseBranch || undefined,
+      );
+      selectRun(runId);
     } catch (e) {
       setLastError(`Failed to launch workflow: ${e}`);
       setBusy(false);
     }
   };
 
-  if (workflows.length === 0) {
+  if (definitions.length === 0) {
     return (
       <div className="wf-field-empty" style={{ textAlign: "center" }}>
         No workflows yet — create one in <b>Settings → Workflows</b>.
@@ -81,13 +100,13 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
     <div className="composer">
       {/* The selected flow's step chain, built into the top of the prompt box so
           it reads as "this task launches this flow" — not a detached strip. */}
-      {wf && (
+      {def && (
         <div className="cmp-flow-strip">
           <span className="cf-tag">
-            <Icon name="combine" size={11} /> {wf.name}
+            <Icon name="combine" size={11} /> {def.name}
           </span>
-          {wf.steps.map((s, i) => {
-            const a = resolveAgent(s.agent, customAgents, modelsByAgent);
+          {steps.map((s, i) => {
+            const a = resolve(s.agentAlias);
             return (
               <Fragment key={s.id}>
                 {i > 0 && <Icon name="arrowR" size={11} className="cf-arr" />}
@@ -127,7 +146,7 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
         }}
       />
       <div className="composer-foot">
-        <WorkflowSelect workflows={workflows} selected={wf} onPick={setWfId} />
+        <WorkflowSelect definitions={definitions} selected={def} onPick={setDefId} />
         <span style={{ flex: 1 }} />
         <button
           type="button"
@@ -145,15 +164,16 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
 
 /** Workflow selector styled exactly like the composer's model-chip. */
 function WorkflowSelect({
-  workflows,
+  definitions,
   selected,
   onPick,
 }: {
-  workflows: Workflow[];
-  selected: Workflow | undefined;
+  definitions: Definition[];
+  selected: Definition | undefined;
   onPick: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const stepCount = (spec: Spec) => flattenSteps(spec).length;
   return (
     <div className="model-picker" style={{ position: "relative" }}>
       <Chip bordered tip="Workflow" className="model-chip" onClick={() => setOpen((v) => !v)}>
@@ -164,7 +184,9 @@ function WorkflowSelect({
           <Icon name="combine" size={10} />
         </span>
         <span className="model-chip-agent">{selected?.name ?? "Pick a workflow"}</span>
-        <span className="model-chip-model">{selected ? `${selected.steps.length} steps` : ""}</span>
+        <span className="model-chip-model">
+          {selected ? `${stepCount(selected.spec)} steps` : ""}
+        </span>
         <Icon name="chevD" size={9} />
       </Chip>
       {open && (
@@ -180,18 +202,18 @@ function WorkflowSelect({
               minWidth: 240,
             }}
           >
-            {workflows.map((w) => (
+            {definitions.map((d) => (
               <div
-                key={w.id}
-                className={`dd-item ${w.id === selected?.id ? "active" : ""}`}
+                key={d.id}
+                className={`dd-item ${d.id === selected?.id ? "active" : ""}`}
                 onClick={() => {
-                  onPick(w.id);
+                  onPick(d.id);
                   setOpen(false);
                 }}
               >
-                <span>{w.name}</span>
+                <span>{d.name}</span>
                 <span style={{ marginLeft: "auto", color: "var(--fg-3)", fontSize: 11 }}>
-                  {w.steps.length} steps
+                  {stepCount(d.spec)} steps
                 </span>
               </div>
             ))}

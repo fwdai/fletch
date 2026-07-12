@@ -413,6 +413,14 @@ impl WorkspaceManager {
         })
     }
 
+    /// A workflow run's step agents (by `owner_run_id`), including archived
+    /// ones — the run monitor's source for per-attempt chat records, which the
+    /// sidebar snapshot deliberately omits.
+    pub fn agents_for_run(&self, run_id: &str) -> Vec<AgentRecord> {
+        let conn = self.db.lock();
+        Self::query_agents_for_run(&conn, run_id)
+    }
+
     /// Append a repo to the sidebar's pinned list. Idempotent — adding
     /// a path that's already pinned is a no-op (returns Ok).
     pub fn add_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
@@ -1573,6 +1581,26 @@ impl WorkspaceManager {
         // issues further queries on `conn`, which can't run while `stmt`
         // still borrows it.
         stmt.query_map([], Self::map_agent_row)
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| Self::build_agent_record(conn, row))
+            .collect()
+    }
+
+    /// Step agents owned by a workflow run (`owner_run_id = run_id`), including
+    /// archived ones so the run monitor can open the chat of any attempt — live
+    /// or abandoned. The inverse of [`query_all_agents`]'s sidebar filter.
+    fn query_agents_for_run(conn: &Connection, run_id: &str) -> Vec<AgentRecord> {
+        let mut stmt = match conn.prepare(&format!(
+            "{AGENT_SELECT} WHERE w.owner_run_id = ?1 ORDER BY w.created_at"
+        )) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map([run_id], Self::map_agent_row)
             .ok()
             .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
             .unwrap_or_default()

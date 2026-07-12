@@ -6,7 +6,7 @@ import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { useWorkflows } from "@/workflows/run/useWorkflows";
+import { useDefinitions } from "@/workflows/run/useDefinitions";
 import { WorkflowComposer, WorkflowHeading } from "@/workflows/run/WorkflowComposer";
 
 /** Empty-state pane shown when the user has started a draft agent.
@@ -27,7 +27,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   // the page and swaps the whole block — it is not part of the prompt box. The
   // Workflow option only appears once at least one workflow has been defined.
   const [mode, setMode] = useState<"agent" | "workflow">("agent");
-  const hasWorkflows = useWorkflows().length > 0;
+  const hasWorkflows = useDefinitions().length > 0;
   const workflowMode = mode === "workflow" && hasWorkflows;
 
   return (

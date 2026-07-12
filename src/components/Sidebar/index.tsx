@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentRecord } from "@/api";
+import type { AgentRecord, WfRun } from "@/api";
 import { Icon } from "@/components/Icon";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
-import type { WorkflowRun } from "@/workflows/run/types";
 import { useRuns } from "@/workflows/run/useRuns";
 import { NewProjectPopover } from "./NewProjectPopover";
 import { ProjectGroup } from "./ProjectGroup";
@@ -17,7 +16,7 @@ interface RepoGroup {
   repoPath: string;
   agents: AgentRecord[];
   drafts: DraftAgent[];
-  runs: WorkflowRun[];
+  runs: WfRun[];
   pinned: boolean;
 }
 
@@ -27,7 +26,7 @@ function groupByRepo(
   pinned: string[],
   agents: readonly AgentRecord[],
   drafts: readonly DraftAgent[],
-  runs: readonly WorkflowRun[],
+  runs: readonly WfRun[],
 ): RepoGroup[] {
   const map = new Map<string, RepoGroup>();
   const ensure = (p: string, pinnedFlag = false): RepoGroup => {

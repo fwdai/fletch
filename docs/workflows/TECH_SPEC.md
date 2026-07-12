@@ -966,7 +966,15 @@ wf_def_import_yaml(yaml) -> ImportReport wf_answer(run_id, message_id, body)
 wf_list_runs(project_id?) -> [RunRow]    wf_retry(run_id)           // paused(blocked_gate|stalled)
 wf_get_run(run_id) -> RunDetail          wf_resolve_conflict(run_id, mode)
 wf_events(run_id, after_seq, limit)      wf_delete_run(run_id)      // terminal runs only
+wf_run_agents(run_id) -> [AgentRecord]   // run-owned step agents (live + archived)
 ```
+
+`wf_run_agents` returns a run's step agents by `owner_run_id`, including
+archived ones. Run-owned agents are filtered out of `get_workspace` (they live
+under the run, not the sidebar), so the Run Monitor fetches them here to render
+each attempt's preserved chat via the existing `ChatView` (§14.2). Read-only;
+implemented on the supervisor alongside `get_workspace` rather than on
+`WorkflowService`, since it is a workspace query.
 
 `wf_delete_run` cascades: discard all run-owned step-agent workspaces
 (matched by `owner_run_id`), delete `~/.fletch/runs/<run-id>/` (blackboard

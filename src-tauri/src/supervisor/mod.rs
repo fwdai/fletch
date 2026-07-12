@@ -358,6 +358,17 @@ impl Supervisor {
         Some(ws)
     }
 
+    /// A workflow run's step agents (live + archived), with the supervisor's
+    /// in-memory runtime status overlaid — the run monitor renders each
+    /// attempt's chat from these records.
+    pub fn run_agents(&self, run_id: &str) -> Vec<AgentRecord> {
+        let mut agents = self.workspace.agents_for_run(run_id);
+        for record in &mut agents {
+            record.status = self.effective_status(&record.id, record);
+        }
+        agents
+    }
+
     pub fn add_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
         self.workspace.add_workspace_repo(repo_path)
     }
