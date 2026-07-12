@@ -37,14 +37,17 @@ pub struct SpawnReq {
     pub custom_agent_id: Option<String>,
     pub skills: Vec<crate::agent_profile::SkillSnapshot>,
     pub mcp_servers: Vec<crate::agent_profile::McpServerSnapshot>,
-    /// The fork source. In v1 this is a ref/commit-ish resolvable when
-    /// provisioning the workspace; the run repository (§12.1, S4b) makes a
-    /// previous step's commit resolvable by fetching this ref before detaching.
+    /// The fork source: a ref/commit-ish. For step 1 it is the run's `base_sha`
+    /// (present in a fresh source clone); for step N it is `refs/wf/steps/<prev>`,
+    /// resolvable only after fetching it from the run repo (§12.1).
     pub fork_base: Option<String>,
+    /// The run repository (`~/.fletch/runs/<id>/repo`) the fork ref is fetched
+    /// from before detaching (§12.1). `Some` for every workflow step.
+    pub run_repo: Option<PathBuf>,
     /// The run that owns this agent — persisted on the record so run-owned
     /// agents are hidden from the normal sidebar and cleaned up by
-    /// `wf_delete_run`. The blackboard write-grant is derived from it at spawn
-    /// (S4b), keeping the run directory the single source of truth.
+    /// `wf_delete_run`. The blackboard write-grant is derived from it at spawn,
+    /// keeping the run directory the single source of truth.
     pub owner_run_id: String,
 }
 
@@ -108,6 +111,7 @@ impl AgentDriver for SupervisorDriver {
                 skills,
                 mcp_servers,
                 fork_base,
+                run_repo,
                 owner_run_id,
             } = req;
 
@@ -129,6 +133,7 @@ impl AgentDriver for SupervisorDriver {
                         skills,
                         mcp_servers,
                         fork_base,
+                        run_repo,
                         owner_run_id: Some(owner_run_id),
                     },
                 )
@@ -429,6 +434,7 @@ mod tests {
                 skills: vec![],
                 mcp_servers: vec![],
                 fork_base: None,
+                run_repo: None,
                 owner_run_id: "run-1".into(),
             })
             .await
@@ -455,6 +461,7 @@ mod tests {
                 skills: vec![],
                 mcp_servers: vec![],
                 fork_base: None,
+                run_repo: None,
                 owner_run_id: "run-1".into(),
             })
             .await;

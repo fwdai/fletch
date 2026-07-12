@@ -118,6 +118,9 @@ struct ProcessLaunch {
     per_turn: bool,
     effective_fresh: bool,
     my_gen: u64,
+    /// The run blackboard dir to grant a workflow step agent (§8), derived from
+    /// the record's `owner_run_id`. `None` for a normal, non-run-owned agent.
+    blackboard: Option<PathBuf>,
 }
 
 /// Pick the turn-end detector for an agent by provider class and view, and
@@ -173,6 +176,12 @@ pub struct SpawnRequest {
     /// step's HEAD (a commit-ish). `None` falls back to the repo's current
     /// branch.
     pub fork_base: Option<String>,
+    /// For a workflow step: the run repository (`~/.fletch/runs/<id>/repo`) to
+    /// fetch `fork_base` from before detaching (§12.1), since a previous step's
+    /// commit lives only there. When `Some`, provisioning forks from the run
+    /// repo instead of resolving the base against the source repo. `None` for a
+    /// normal user spawn.
+    pub run_repo: Option<PathBuf>,
     /// The workflow run that owns this agent, when spawned as a workflow step.
     /// Persisted on the record so run-owned agents are filterable from the
     /// normal sidebar and cleaned up by `wf_delete_run`. `None` for a normal
@@ -198,6 +207,7 @@ impl Supervisor {
             skills,
             mcp_servers,
             fork_base,
+            run_repo,
             owner_run_id,
         } = req;
         if !repo_path.join(".git").exists() {
@@ -249,6 +259,8 @@ impl Supervisor {
         // moved into `primary` below.
         let parent_for_fork = parent_branch.clone();
         let subdir_for_fork = subdir.clone();
+        // A workflow step forks from its `fork_base` ref in this run repo.
+        let run_repo_for_task = run_repo.clone();
 
         let primary = TrackedRepo {
             repo_path: repo_path.clone(),
@@ -340,19 +352,37 @@ impl Supervisor {
             // as a local branch, so checking out any *other* branch by name
             // trips git's remote-DWIM (an implicit `-b`), which is fatal
             // combined with `--detach`.
-            let base = match &parent_for_fork {
-                Some(b) => match git::fetch_fork_point(&repo_path, b).await {
-                    Some(sha) => Some(sha),
-                    None => git::rev_parse(&repo_path, b).await.ok(),
-                },
-                None => None,
+            let provision_result = match &run_repo_for_task {
+                // Workflow step (§12.1): fork from `fork_base` in the run repo.
+                // `base_ref` is used as-is — step 1's `base_sha` is already in
+                // the fresh source clone, so the run-repo fetch is skipped; step
+                // N's `refs/wf/steps/<prev>` is fetched from the run repo first.
+                Some(run_repo) => {
+                    let base_ref = parent_for_fork.as_deref().unwrap_or("HEAD");
+                    let spec = CheckoutSpec {
+                        source_repo: &repo_path,
+                        base_ref,
+                        dest: &primary_checkout,
+                    };
+                    provision::provision_forking_run_repo(&spec, run_repo).await
+                }
+                None => {
+                    let base = match &parent_for_fork {
+                        Some(b) => match git::fetch_fork_point(&repo_path, b).await {
+                            Some(sha) => Some(sha),
+                            None => git::rev_parse(&repo_path, b).await.ok(),
+                        },
+                        None => None,
+                    };
+                    let spec = CheckoutSpec {
+                        source_repo: &repo_path,
+                        base_ref: base.as_deref().unwrap_or("HEAD"),
+                        dest: &primary_checkout,
+                    };
+                    provision::provision(workspace_mode, &spec).await
+                }
             };
-            let spec = CheckoutSpec {
-                source_repo: &repo_path,
-                base_ref: base.as_deref().unwrap_or("HEAD"),
-                dest: &primary_checkout,
-            };
-            if let Err(e) = provision::provision(workspace_mode, &spec).await {
+            if let Err(e) = provision_result {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                 return;
             }
@@ -369,7 +399,20 @@ impl Supervisor {
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
-                let _ = provision::teardown(workspace_mode, &spec).await;
+                // A workflow step was always provisioned as a clone (forking from
+                // the run repo), so tear it down as one regardless of the mode
+                // setting; `teardown` only needs the dest for the clone arm.
+                let teardown_mode = if run_repo_for_task.is_some() {
+                    provision::WorkspaceMode::Clone
+                } else {
+                    workspace_mode
+                };
+                let teardown_spec = CheckoutSpec {
+                    source_repo: &repo_path,
+                    base_ref: "HEAD",
+                    dest: &primary_checkout,
+                };
+                let _ = provision::teardown(teardown_mode, &teardown_spec).await;
                 let _ = tokio::fs::remove_dir_all(&parent_dir).await;
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
             }
@@ -487,6 +530,17 @@ impl Supervisor {
         // and per-turn alike) now runs under sandbox-exec rooted here.
         let sandbox_root = agent_parent_dir(agent_id)?;
 
+        // A workflow step agent additionally gets a write grant to its run's
+        // blackboard (§8), derived from the record's `owner_run_id` so the run
+        // directory stays the single source of truth. The scheduler provisions
+        // the dir at launch; here we only compute the path to grant.
+        let blackboard = match &record.owner_run_id {
+            Some(run_id) => Some(crate::workflow::blackboard::blackboard_dir(
+                &crate::workflow::blackboard::run_dir(run_id)?,
+            )),
+            None => None,
+        };
+
         // The agent's file-mailbox RPC dir, created before spawn so the watcher
         // (and the agent's `FLETCH_RPC_DIR`) have a target from turn one.
         let rpc_dir = rpc::mailbox_dir(agent_id)?;
@@ -534,6 +588,7 @@ impl Supervisor {
                 per_turn,
                 effective_fresh,
                 my_gen,
+                blackboard,
             },
         )?;
 
@@ -610,6 +665,7 @@ impl Supervisor {
             per_turn,
             effective_fresh,
             my_gen,
+            blackboard,
         } = launch;
         let agent_id_str = agent_id.to_string();
 
@@ -667,6 +723,7 @@ impl Supervisor {
                         cols: 120,
                         rows: 32,
                         engine,
+                        blackboard: blackboard.as_deref(),
                     };
                     spawn_pty_per_turn_agent(
                         spec,
@@ -692,6 +749,7 @@ impl Supervisor {
                         mcp_servers: record.mcp_servers.clone(),
                         rpc_dir,
                         engine,
+                        blackboard: blackboard.clone(),
                     },
                     app.clone(),
                     agent_id_str.clone(),
@@ -720,6 +778,7 @@ impl Supervisor {
                 cols: 120,
                 rows: 32,
                 engine,
+                blackboard: blackboard.as_deref(),
             };
             match record.view {
                 AgentView::Native => spawn_pty_agent(

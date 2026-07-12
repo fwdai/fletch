@@ -99,6 +99,40 @@ async fn clone_detached(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
     .await
 }
 
+/// Provision a workflow step workspace: a `--shared` clone of the source repo
+/// that then forks from `spec.base_ref` **in the run repository** (spec §12.1).
+///
+/// A previous step's commit exists only in that step's (now-disposable) clone
+/// and was ferried into the run repo, so it is unreachable from a fresh clone of
+/// the source. This is the one provisioning extension §12.1 calls for: after the
+/// source clone, `git fetch <run-repo> <base_ref>` before detaching. Step 1's
+/// base is the run's `base_sha` (already present in the source clone), so the
+/// fetch is skipped when the ref already resolves — the same `commit_present`
+/// gate the branch-restore path uses.
+pub async fn provision_forking_run_repo(spec: &CheckoutSpec<'_>, run_repo: &Path) -> Result<()> {
+    clone_base(spec, true).await?;
+    finish_clone(spec, |dest| async move {
+        if !commit_present(&dest, spec.base_ref).await {
+            let src = path_str(run_repo)?;
+            let refspec = format!("{}:{}", spec.base_ref, spec.base_ref);
+            git::run_git(
+                &dest,
+                &["fetch", &src, &refspec],
+                "fetch fork ref from run repo",
+            )
+            .await?;
+        }
+        git::run_git(
+            &dest,
+            &["checkout", "--detach", spec.base_ref],
+            &format!("checkout --detach {}", spec.base_ref),
+        )
+        .await?;
+        Ok(())
+    })
+    .await
+}
+
 /// Create the workspace checked out on a new local branch `branch` pointing at
 /// `spec.base_ref`. Restore path — the counterpart of [`provision`] for agents
 /// that had already materialized a branch.
