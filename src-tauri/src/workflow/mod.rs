@@ -1,10 +1,12 @@
 //! Workflows v1 backend (TECH_SPEC §3.1).
 //!
-//! This slice lands the persistence substrate: the domain types (`types`), the
-//! append-only journal (`journal`), and the read-only command surface below.
-//! The scheduler, gates, budgets, comms and git transport arrive in later
-//! slices; until one of them populates the tables, the read commands simply
-//! return empty results.
+//! This module lands the persistence substrate: the domain types (`types`), the
+//! append-only journal (`journal`), and the read-only command surface below
+//! (all S1). The definition layer (`spec`, `yaml`, `definition` — S2) adds the
+//! spec types + validation, the portable YAML format, and the `wf_def_*`
+//! storage commands. The scheduler, gates, budgets, comms and git transport
+//! arrive in later slices; until one of them populates the run tables, the read
+//! commands simply return empty results.
 //!
 //! `dead_code` is allowed module-wide: this slice deliberately publishes the
 //! write API (`journal::append`, the `wf:event`/`wf:run` emitters, the §7.1
@@ -12,8 +14,11 @@
 //! The allow is removed once those callers land.
 #![allow(dead_code)]
 
+pub mod definition;
 pub mod journal;
+pub mod spec;
 pub mod types;
+pub mod yaml;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

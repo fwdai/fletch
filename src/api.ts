@@ -4,6 +4,7 @@ import type { AgentModels } from "./data/modelCatalog/types";
 import type { McpServerSnapshot } from "./storage/mcpServers";
 import type { SandboxEngine } from "./storage/preferences";
 import type { SkillSnapshot } from "./storage/skills";
+import type { Definition, ImportReport, Spec } from "./workflows/spec";
 
 export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
@@ -664,6 +665,22 @@ export const api = {
   /** A page of a run's journal: events strictly after `afterSeq`, oldest first. */
   wfEvents: (runId: string, afterSeq: number, limit: number) =>
     invoke<WfEvent[]>("wf_events", { runId, afterSeq, limit }),
+
+  // ── Workflows v1: definition storage (spec §13, `wf_def_*`) ──
+  /** Validate and persist a workflow definition. Omit `id` to create; pass an
+   *  existing id to edit in place (run_count/created_at are preserved). Rejects
+   *  with the joined §5.2 validation errors if the spec is invalid. */
+  wfDefSave: (spec: Spec, id?: string, hue?: number) =>
+    invoke<Definition>("wf_def_save", { spec, id, hue }),
+  /** Every stored definition, newest-edited first. */
+  wfDefList: () => invoke<Definition[]>("wf_def_list"),
+  /** Delete a definition; in-flight runs keep their own launch snapshot. */
+  wfDefDelete: (id: string) => invoke<void>("wf_def_delete", { id }),
+  /** Serialize a definition to portable YAML (custom-agent specs embedded). */
+  wfDefExportYaml: (id: string) => invoke<string>("wf_def_export_yaml", { id }),
+  /** Parse + validate a YAML file and resolve it against the local library.
+   *  Missing skills / unknown providers come back as warnings, not errors. */
+  wfDefImportYaml: (yamlText: string) => invoke<ImportReport>("wf_def_import_yaml", { yamlText }),
 };
 
 // ───────────────────────────── Workflows v1 types ───────────────────────────
