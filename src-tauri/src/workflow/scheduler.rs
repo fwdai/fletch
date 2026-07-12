@@ -326,7 +326,14 @@ struct RunEssentials {
 async fn drive_run(ctx: &RunCtx, run_id: &str) {
     if let Err(e) = drive_run_inner(ctx, run_id).await {
         let conn = ctx.db.lock();
-        set_status(&conn, ctx.app.as_ref(), run_id, "failed", None, Some(&e.to_string()));
+        set_status(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            "failed",
+            None,
+            Some(&e.to_string()),
+        );
     }
 }
 
@@ -351,7 +358,14 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
         } else {
             event_type::RUN_RESUMED
         };
-        journal_event(&conn, ctx.app.as_ref(), run_id, ev, None, &json!({ "base_sha": run.base_sha }));
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            ev,
+            None,
+            &json!({ "base_sha": run.base_sha }),
+        );
         set_status(&conn, ctx.app.as_ref(), run_id, "running", None, None);
     }
 
@@ -360,7 +374,8 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
 
     let mut index = get_cursor_index(&ctx.db.lock(), run_id) as usize;
     // The fork source for the next step: the last done step's ref, else base_sha.
-    let mut last_ref = latest_done_ref(&ctx.db.lock(), run_id).unwrap_or_else(|| run.base_sha.clone());
+    let mut last_ref =
+        latest_done_ref(&ctx.db.lock(), run_id).unwrap_or_else(|| run.base_sha.clone());
     let mut last_exec_id: Option<String> = latest_done_exec(&ctx.db.lock(), run_id);
 
     while index < steps.len() {
@@ -372,16 +387,25 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                 let _ = ctx.driver.stop(&a).await;
             }
             let conn = ctx.db.lock();
-            journal_event(&conn, ctx.app.as_ref(), run_id, event_type::RUN_CANCELED, None, &json!({}));
+            journal_event(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                event_type::RUN_CANCELED,
+                None,
+                &json!({}),
+            );
             set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
             return Ok(());
         }
 
         let step = &steps[index];
-        let agent_spec = spec
-            .agents
-            .get(&step.agent)
-            .ok_or_else(|| Error::Other(format!("step '{}' references unknown agent '{}'", step.id, step.agent)))?;
+        let agent_spec = spec.agents.get(&step.agent).ok_or_else(|| {
+            Error::Other(format!(
+                "step '{}' references unknown agent '{}'",
+                step.id, step.agent
+            ))
+        })?;
         let max_attempts = step
             .budgets
             .as_ref()
@@ -395,7 +419,14 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
             let exec_id = format!("exec-{}", uuid::Uuid::new_v4());
             {
                 let conn = ctx.db.lock();
-                create_step_exec(&conn, &exec_id, run_id, &step.id, attempt_no, gate_mode(&step.gate));
+                create_step_exec(
+                    &conn,
+                    &exec_id,
+                    run_id,
+                    &step.id,
+                    attempt_no,
+                    gate_mode(&step.gate),
+                );
             }
 
             let prompt = {
@@ -457,7 +488,14 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     );
                 }
                 for e in &result.events {
-                    journal_event(&conn, ctx.app.as_ref(), run_id, e.event_type, Some(&exec_id), &e.payload);
+                    journal_event(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        e.event_type,
+                        Some(&exec_id),
+                        &e.payload,
+                    );
                 }
             }
 
@@ -491,7 +529,14 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                             let conn = ctx.db.lock();
                             finish_step_exec(&conn, &exec_id, "error", None);
                             if attempt_no >= max_attempts {
-                                set_status(&conn, ctx.app.as_ref(), run_id, "failed", None, Some(&format!("ferry failed: {e}")));
+                                set_status(
+                                    &conn,
+                                    ctx.app.as_ref(),
+                                    run_id,
+                                    "failed",
+                                    None,
+                                    Some(&format!("ferry failed: {e}")),
+                                );
                                 return Ok(());
                             }
                         }
@@ -503,7 +548,15 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     // advance (§6.3 step 8, §9). The agent is archived; the run
                     // pauses until `wf_approve` bumps the cursor and resumes.
                     let msg = format!("wf({}): {} attempt {}", spec.name, step.id, attempt_no);
-                    let head = ferry_step(ctx, run_id, &exec_id, &msg, result.worktree.as_ref().unwrap(), &run_repo).await?;
+                    let head = ferry_step(
+                        ctx,
+                        run_id,
+                        &exec_id,
+                        &msg,
+                        result.worktree.as_ref().unwrap(),
+                        &run_repo,
+                    )
+                    .await?;
                     {
                         let conn = ctx.db.lock();
                         finish_step_exec(&conn, &exec_id, "awaiting_approval", Some(&head));
@@ -512,8 +565,22 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                         let _ = ctx.driver.archive(agent_id).await;
                     }
                     let conn = ctx.db.lock();
-                    journal_event(&conn, ctx.app.as_ref(), run_id, event_type::RUN_PAUSED, Some(&exec_id), &json!({ "reason": "approval" }));
-                    set_status(&conn, ctx.app.as_ref(), run_id, "paused", Some("approval"), None);
+                    journal_event(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        event_type::RUN_PAUSED,
+                        Some(&exec_id),
+                        &json!({ "reason": "approval" }),
+                    );
+                    set_status(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        "paused",
+                        Some("approval"),
+                        None,
+                    );
                     return Ok(());
                 }
                 AttemptOutcome::Blocked { reason } => {
@@ -525,8 +592,22 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                         let _ = ctx.driver.stop(agent_id).await;
                     }
                     let conn = ctx.db.lock();
-                    journal_event(&conn, ctx.app.as_ref(), run_id, event_type::RUN_PAUSED, Some(&exec_id), &json!({ "reason": "blocked_gate", "detail": reason }));
-                    set_status(&conn, ctx.app.as_ref(), run_id, "paused", Some("blocked_gate"), None);
+                    journal_event(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        event_type::RUN_PAUSED,
+                        Some(&exec_id),
+                        &json!({ "reason": "blocked_gate", "detail": reason }),
+                    );
+                    set_status(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        "paused",
+                        Some("blocked_gate"),
+                        None,
+                    );
                     return Ok(());
                 }
                 AttemptOutcome::Error { error } => {
@@ -540,10 +621,31 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                         // fail the run (§6.5).
                         let conn = ctx.db.lock();
                         if error == "stalled" {
-                            journal_event(&conn, ctx.app.as_ref(), run_id, event_type::RUN_PAUSED, Some(&exec_id), &json!({ "reason": "stalled" }));
-                            set_status(&conn, ctx.app.as_ref(), run_id, "paused", Some("stalled"), None);
+                            journal_event(
+                                &conn,
+                                ctx.app.as_ref(),
+                                run_id,
+                                event_type::RUN_PAUSED,
+                                Some(&exec_id),
+                                &json!({ "reason": "stalled" }),
+                            );
+                            set_status(
+                                &conn,
+                                ctx.app.as_ref(),
+                                run_id,
+                                "paused",
+                                Some("stalled"),
+                                None,
+                            );
                         } else {
-                            set_status(&conn, ctx.app.as_ref(), run_id, "failed", None, Some(&error));
+                            set_status(
+                                &conn,
+                                ctx.app.as_ref(),
+                                run_id,
+                                "failed",
+                                None,
+                                Some(&error),
+                            );
                         }
                         return Ok(());
                     }
@@ -556,7 +658,14 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     // Every step done → finalize + mark done.
     finalize_run(ctx, run_id, &run, &spec, &run_repo, last_exec_id.as_deref()).await?;
     let conn = ctx.db.lock();
-    journal_event(&conn, ctx.app.as_ref(), run_id, event_type::RUN_DONE, None, &json!({}));
+    journal_event(
+        &conn,
+        ctx.app.as_ref(),
+        run_id,
+        event_type::RUN_DONE,
+        None,
+        &json!({}),
+    );
     set_status(&conn, ctx.app.as_ref(), run_id, "done", None, None);
     Ok(())
 }
@@ -574,7 +683,14 @@ async fn ferry_step(
     let bc = gitops::boundary_commit(worktree, message).await?;
     {
         let conn = ctx.db.lock();
-        journal_event(&conn, ctx.app.as_ref(), run_id, event_type::BOUNDARY_COMMIT, Some(exec_id), &json!({ "sha": bc.head }));
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::BOUNDARY_COMMIT,
+            Some(exec_id),
+            &json!({ "sha": bc.head }),
+        );
     }
     let refname = gitops::pin_step_ref(worktree, exec_id).await?;
     gitops::ferry(worktree, run_repo, &refname).await?;
@@ -602,13 +718,43 @@ async fn finalize_run(
     let final_ref = gitops::step_ref(exec_id);
     let base = fin.pr_base.clone().unwrap_or_else(|| "main".to_string());
     let title = format!("wf: {}", spec.name);
-    let outcome = gitops::finalize(run_repo, &final_ref, &run.branch, &base, &title, "", fin.open_pr).await?;
+    let outcome = gitops::finalize(
+        run_repo,
+        &final_ref,
+        &run.branch,
+        &base,
+        &title,
+        "",
+        fin.open_pr,
+    )
+    .await?;
     let conn = ctx.db.lock();
-    journal_event(&conn, ctx.app.as_ref(), run_id, event_type::FINALIZE_PUSHED, None, &json!({ "branch": outcome.branch }));
+    journal_event(
+        &conn,
+        ctx.app.as_ref(),
+        run_id,
+        event_type::FINALIZE_PUSHED,
+        None,
+        &json!({ "branch": outcome.branch }),
+    );
     if let Some(url) = outcome.pr_url {
-        journal_event(&conn, ctx.app.as_ref(), run_id, event_type::FINALIZE_PR, None, &json!({ "url": url }));
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::FINALIZE_PR,
+            None,
+            &json!({ "url": url }),
+        );
     } else if let Some(err) = outcome.pr_error {
-        journal_event(&conn, ctx.app.as_ref(), run_id, event_type::FINALIZE_PR, None, &json!({ "error": err }));
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::FINALIZE_PR,
+            None,
+            &json!({ "error": err }),
+        );
     }
     Ok(())
 }
@@ -622,9 +768,15 @@ fn extract_linear_steps(spec: &Spec) -> Result<Vec<Step>> {
         .iter()
         .map(|b| match b {
             Block::Step(s) => Ok(s.clone()),
-            Block::Loop(_) => Err(Error::Other("loop blocks are not supported yet (S7)".into())),
-            Block::Parallel(_) => Err(Error::Other("parallel blocks are not supported yet (S8)".into())),
-            Block::Orchestrate(_) => Err(Error::Other("orchestrate blocks are not supported yet (S11)".into())),
+            Block::Loop(_) => Err(Error::Other(
+                "loop blocks are not supported yet (S7)".into(),
+            )),
+            Block::Parallel(_) => Err(Error::Other(
+                "parallel blocks are not supported yet (S8)".into(),
+            )),
+            Block::Orchestrate(_) => Err(Error::Other(
+                "orchestrate blocks are not supported yet (S11)".into(),
+            )),
         })
         .collect()
 }
@@ -642,7 +794,13 @@ fn gate_mode(gate: &Gate) -> &'static str {
 fn slugify(name: &str) -> String {
     let mut s: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     while s.contains("--") {
         s = s.replace("--", "-");
@@ -697,7 +855,11 @@ fn set_status(
         rusqlite::params![status, paused_reason, error, super::now_ms(), run_id],
     );
     if let Some(app) = app {
-        if let Ok(run) = conn.query_row("SELECT * FROM wf_run WHERE id = ?1", [run_id], super::types::Run::from_row) {
+        if let Ok(run) = conn.query_row(
+            "SELECT * FROM wf_run WHERE id = ?1",
+            [run_id],
+            super::types::Run::from_row,
+        ) {
             journal::emit_run(app, &run);
         }
     }
@@ -722,7 +884,14 @@ fn journal_event(
     }
 }
 
-fn create_step_exec(conn: &Connection, id: &str, run_id: &str, step_id: &str, attempt: i64, gate_mode: &str) {
+fn create_step_exec(
+    conn: &Connection,
+    id: &str,
+    run_id: &str,
+    step_id: &str,
+    attempt: i64,
+    gate_mode: &str,
+) {
     let _ = conn.execute(
         "INSERT INTO wf_step_exec (id, run_id, step_id, attempt, iteration, status, gate_mode)
          VALUES (?1, ?2, ?3, ?4, 0, 'spawning', ?5)",
@@ -748,7 +917,11 @@ fn next_attempt_no(conn: &Connection, run_id: &str, step_id: &str) -> i64 {
 
 fn get_cursor_index(conn: &Connection, run_id: &str) -> i64 {
     let cursor: Option<String> = conn
-        .query_row("SELECT cursor_json FROM wf_run WHERE id = ?1", [run_id], |r| r.get(0))
+        .query_row(
+            "SELECT cursor_json FROM wf_run WHERE id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )
         .optional()
         .ok()
         .flatten();
@@ -761,7 +934,11 @@ fn get_cursor_index(conn: &Connection, run_id: &str) -> i64 {
 fn set_cursor_index(conn: &Connection, run_id: &str, index: i64) {
     let _ = conn.execute(
         "UPDATE wf_run SET cursor_json = ?1, updated_at = ?2 WHERE id = ?3",
-        rusqlite::params![json!({ "index": index }).to_string(), super::now_ms(), run_id],
+        rusqlite::params![
+            json!({ "index": index }).to_string(),
+            super::now_ms(),
+            run_id
+        ],
     );
 }
 
@@ -806,8 +983,10 @@ async fn abandon_stale_attempts(ctx: &RunCtx, run_id: &str) {
              WHERE run_id = ?1 AND status IN ('spawning','running','gating')",
         )
         .and_then(|mut s| {
-            s.query_map([run_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?
-                .collect::<std::result::Result<Vec<_>, _>>()
+            s.query_map([run_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
         })
         .unwrap_or_default()
     };
@@ -820,7 +999,14 @@ async fn abandon_stale_attempts(ctx: &RunCtx, run_id: &str) {
             "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
             rusqlite::params![super::now_ms(), exec_id],
         );
-        journal_event(&conn, ctx.app.as_ref(), run_id, event_type::ATTEMPT_ABANDONED, Some(&exec_id), &json!({ "cause": "resume" }));
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::ATTEMPT_ABANDONED,
+            Some(&exec_id),
+            &json!({ "cause": "resume" }),
+        );
     }
 }
 
@@ -840,7 +1026,14 @@ pub async fn wf_launch(
     service: Svc<'_>,
 ) -> std::result::Result<String, String> {
     service
-        .launch(spec, task, project_id, repo_path, definition_id, base_branch)
+        .launch(
+            spec,
+            task,
+            project_id,
+            repo_path,
+            definition_id,
+            base_branch,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -876,8 +1069,17 @@ mod tests {
     use tokio::sync::broadcast;
 
     fn sh(dir: &Path, args: &[&str]) {
-        let out = Sh::new("git").current_dir(dir).args(args).output().expect("git");
-        assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+        let out = Sh::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     /// A real-git stub driver: on spawn it provisions a real `--shared` clone
@@ -910,11 +1112,18 @@ mod tests {
         }
         fn set(&self, id: &str, s: AgentStatus) {
             self.state.lock().statuses.insert(id.to_string(), s.clone());
-            let _ = self.tx.send(StatusEvent { agent_id: id.to_string(), status: s });
+            let _ = self.tx.send(StatusEvent {
+                agent_id: id.to_string(),
+                status: s,
+            });
         }
     }
     impl AgentDriver for StubDriver {
-        fn spawn(&self, req: SpawnReq) -> super::super::driver::BoxFuture<'_, Result<super::super::driver::SpawnedAgent>> {
+        fn spawn(
+            &self,
+            req: SpawnReq,
+        ) -> super::super::driver::BoxFuture<'_, Result<super::super::driver::SpawnedAgent>>
+        {
             Box::pin(async move {
                 let id = {
                     let mut st = self.state.lock();
@@ -928,12 +1137,19 @@ mod tests {
                     base_ref: &base_ref,
                     dest: &dest,
                 };
-                crate::sandbox::provision::provision_forking_run_repo(&spec, req.run_repo.as_ref().unwrap()).await?;
+                crate::sandbox::provision::provision_forking_run_repo(
+                    &spec,
+                    req.run_repo.as_ref().unwrap(),
+                )
+                .await?;
                 sh(&dest, &["config", "user.email", "t@t.t"]);
                 sh(&dest, &["config", "user.name", "t"]);
                 self.state.lock().worktrees.insert(id.clone(), dest.clone());
                 self.set(&id, AgentStatus::Idle);
-                Ok(super::super::driver::SpawnedAgent { agent_id: id, worktree: dest })
+                Ok(super::super::driver::SpawnedAgent {
+                    agent_id: id,
+                    worktree: dest,
+                })
             })
         }
         fn status(&self, id: &str) -> Option<AgentStatus> {
@@ -942,7 +1158,11 @@ mod tests {
         fn subscribe(&self) -> broadcast::Receiver<StatusEvent> {
             self.tx.subscribe()
         }
-        fn send_message<'a>(&'a self, id: &'a str, _text: String) -> super::super::driver::BoxFuture<'a, Result<()>> {
+        fn send_message<'a>(
+            &'a self,
+            id: &'a str,
+            _text: String,
+        ) -> super::super::driver::BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 let wt = self.state.lock().worktrees.get(id).cloned().unwrap();
                 self.set(id, AgentStatus::Running);
@@ -996,9 +1216,16 @@ mod tests {
         std::fs::write(source.join("README"), "base").unwrap();
         sh(&source, &["add", "-A"]);
         sh(&source, &["commit", "-qm", "base"]);
-        sh(&source, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        sh(
+            &source,
+            &["remote", "add", "origin", bare.to_str().unwrap()],
+        );
         let base_sha = {
-            let out = Sh::new("git").current_dir(&source).args(["rev-parse", "HEAD"]).output().unwrap();
+            let out = Sh::new("git")
+                .current_dir(&source)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
 
@@ -1066,7 +1293,9 @@ mod tests {
         // Run reached done.
         let status: String = db
             .lock()
-            .query_row("SELECT status FROM wf_run WHERE id=?1", [run_id], |r| r.get(0))
+            .query_row("SELECT status FROM wf_run WHERE id=?1", [run_id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(status, "done", "run should be done");
 
@@ -1094,7 +1323,11 @@ mod tests {
             .args(["rev-list", "--count", &format!("refs/heads/{branch}")])
             .output()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "3", "base + 2 step commits");
+        assert_eq!(
+            String::from_utf8_lossy(&count.stdout).trim(),
+            "3",
+            "base + 2 step commits"
+        );
 
         // A finalize_pushed event was journaled.
         let fin: i64 = db
@@ -1119,7 +1352,11 @@ mod tests {
         sh(&source, &["add", "-A"]);
         sh(&source, &["commit", "-qm", "base"]);
         let base_sha = {
-            let o = Sh::new("git").current_dir(&source).args(["rev-parse", "HEAD"]).output().unwrap();
+            let o = Sh::new("git")
+                .current_dir(&source)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
             String::from_utf8_lossy(&o.stdout).trim().to_string()
         };
         let run_dir = tmp.join("rundir");
@@ -1178,7 +1415,9 @@ mod tests {
         drive_run(&ctx, "run-cancel").await;
         let status: String = db
             .lock()
-            .query_row("SELECT status FROM wf_run WHERE id='run-cancel'", [], |r| r.get(0))
+            .query_row("SELECT status FROM wf_run WHERE id='run-cancel'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(status, "canceled");
     }
@@ -1235,7 +1474,11 @@ mod tests {
         // The stale attempt was abandoned...
         let stale: String = db
             .lock()
-            .query_row("SELECT status FROM wf_step_exec WHERE id='exec-stale'", [], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM wf_step_exec WHERE id='exec-stale'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(stale, "abandoned");
         // ...a fresh attempt ran to done and the run completed.
@@ -1250,9 +1493,10 @@ mod tests {
         assert_eq!(done, 1);
         let status: String = db
             .lock()
-            .query_row("SELECT status FROM wf_run WHERE id='run-resume'", [], |r| r.get(0))
+            .query_row("SELECT status FROM wf_run WHERE id='run-resume'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(status, "done");
     }
 }
-

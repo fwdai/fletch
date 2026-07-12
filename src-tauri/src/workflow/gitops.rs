@@ -73,7 +73,12 @@ async fn rewrite_origin(source_repo: &Path, dest: &Path) -> Result<()> {
     let out = git::git_output(source_repo, &["remote", "get-url", "origin"]).await?;
     if out.status.success() {
         let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        git::run_git(dest, &["remote", "set-url", "origin", &url], "set-url origin").await?;
+        git::run_git(
+            dest,
+            &["remote", "set-url", "origin", &url],
+            "set-url origin",
+        )
+        .await?;
     } else {
         // No source remote → drop the local-path origin so a push can't write
         // into the user's source repo.
@@ -125,7 +130,12 @@ pub async fn pin_step_ref(checkout: &Path, step_exec_id: &str) -> Result<String>
 pub async fn ferry(step_checkout: &Path, run_repo: &Path, refname: &str) -> Result<()> {
     let src = path_str(step_checkout)?;
     let refspec = format!("{refname}:{refname}");
-    git::run_git(run_repo, &["fetch", &src, &refspec], "ferry step ref into run repo").await?;
+    git::run_git(
+        run_repo,
+        &["fetch", &src, &refspec],
+        "ferry step ref into run repo",
+    )
+    .await?;
     Ok(())
 }
 
@@ -240,7 +250,16 @@ mod tests {
 
         // Workspace A: a --shared clone of the source that makes a new commit.
         let ws_a = tmp.path().join("ws-a");
-        git(tmp.path(), &["clone", "-q", "--shared", source.to_str().unwrap(), ws_a.to_str().unwrap()]);
+        git(
+            tmp.path(),
+            &[
+                "clone",
+                "-q",
+                "--shared",
+                source.to_str().unwrap(),
+                ws_a.to_str().unwrap(),
+            ],
+        );
         git(&ws_a, &["config", "user.email", "t@t.t"]);
         git(&ws_a, &["config", "user.name", "t"]);
         write(&ws_a, "step1.txt", "work");
@@ -275,13 +294,25 @@ mod tests {
         write(&source, "README", "base");
         git(&source, &["add", "-A"]);
         git(&source, &["commit", "-qm", "base"]);
-        git(&source, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        git(
+            &source,
+            &["remote", "add", "origin", bare.to_str().unwrap()],
+        );
 
         let run_dir = tmp.path().join("run");
         let run_repo = provision_run_repo(&source, &run_dir).await.unwrap();
 
         let ws_a = tmp.path().join("ws-a");
-        git(tmp.path(), &["clone", "-q", "--shared", source.to_str().unwrap(), ws_a.to_str().unwrap()]);
+        git(
+            tmp.path(),
+            &[
+                "clone",
+                "-q",
+                "--shared",
+                source.to_str().unwrap(),
+                ws_a.to_str().unwrap(),
+            ],
+        );
         git(&ws_a, &["config", "user.email", "t@t.t"]);
         git(&ws_a, &["config", "user.name", "t"]);
         write(&ws_a, "step1.txt", "work");
@@ -304,7 +335,11 @@ mod tests {
             .args(["rev-parse", "refs/heads/wf/test-abc"])
             .output()
             .unwrap();
-        assert!(out.status.success(), "branch not pushed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "branch not pushed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), final_sha);
     }
 
