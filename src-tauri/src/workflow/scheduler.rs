@@ -11,7 +11,7 @@
 //! `failed("internal scheduler error")` so a run is never left `running` with no
 //! live driver.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,6 +20,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use tauri::AppHandle;
+use tokio::task::JoinSet;
 
 use crate::error::{Error, Result};
 
@@ -30,7 +31,7 @@ use super::driver::{AgentDriver, SpawnReq};
 use super::gitops;
 use super::journal;
 use super::prompts::{self, Position, StepPromptCtx};
-use super::spec::{Block, Budgets, Gate, Spec, Step};
+use super::spec::{AgentSpec, Block, Budgets, Gate, Integrate, Join, Parallel, Spec, Step};
 use super::types::event_type;
 
 type Db = Arc<Mutex<Connection>>;
@@ -405,7 +406,8 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     }
     let spec: Spec =
         serde_json::from_str(&run.spec_json).map_err(|e| Error::Other(e.to_string()))?;
-    let steps = extract_linear_steps(&spec)?;
+    ensure_executable(&spec.workflow)?;
+    let blocks = &spec.workflow;
     let repo = PathBuf::from(&run.repo_path);
     let run_dir = PathBuf::from(&run.run_dir);
     let run_repo = gitops::run_repo_path(&run_dir);
@@ -447,12 +449,15 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     ledger.start_drive(super::now_ms());
 
     let mut index = get_cursor_index(&ctx.db.lock(), run_id) as usize;
-    // The fork source for the next step: the last done step's ref, else base_sha.
-    let mut last_ref =
-        latest_done_ref(&ctx.db.lock(), run_id).unwrap_or_else(|| run.base_sha.clone());
-    let mut last_exec_id: Option<String> = latest_done_exec(&ctx.db.lock(), run_id);
+    // The fork source for the current block: the last *linear step* before the
+    // cursor that reached `done`, else the run base. A parallel `integrate: none`
+    // stage never advances the line (§12.3), so its done children must not be
+    // mistaken for the fork source on resume — hence a block-tree walk rather
+    // than "the most recent done exec".
+    let (mut last_ref, mut last_exec_id) =
+        resume_line_state(&ctx.db.lock(), run_id, blocks, index, &run.base_sha);
 
-    while index < steps.len() {
+    while index < blocks.len() {
         if ctx.cancel.load(Ordering::SeqCst) {
             // Bind first so the lock guard drops before the awaits below (a
             // guard held across `.await` would make the drive future `!Send`).
@@ -473,7 +478,56 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
             return Ok(());
         }
 
-        let step = &steps[index];
+        // `ensure_executable` (above) rejects loop / orchestrate / merge before
+        // any block runs, so those arms are defensive-unreachable; a parallel
+        // stage here is always `integrate: none`.
+        let par = match &blocks[index] {
+            Block::Step(_) => None,
+            Block::Parallel(par) => Some(par),
+            Block::Loop(_) => {
+                return Err(Error::Other(
+                    "loop blocks are not supported yet (S7)".into(),
+                ))
+            }
+            Block::Orchestrate(_) => {
+                return Err(Error::Other(
+                    "orchestrate blocks are not supported yet (S11)".into(),
+                ))
+            }
+        };
+        if let Some(par) = par {
+            match run_parallel_stage(
+                ctx,
+                run_id,
+                &run,
+                &spec,
+                par,
+                index,
+                blocks.len(),
+                &blackboard,
+                &repo,
+                &run_repo,
+                &last_ref,
+                &eff,
+                &mut ledger,
+            )
+            .await?
+            {
+                // `integrate: none` — the stage HEAD is its entry HEAD, so the
+                // line's fork source is unchanged; just advance the cursor.
+                StageFlow::Advance => {
+                    index += 1;
+                    set_cursor_index(&ctx.db.lock(), run_id, index as i64);
+                }
+                StageFlow::Stop => return Ok(()),
+            }
+            continue;
+        }
+
+        let step = match &blocks[index] {
+            Block::Step(step) => step,
+            _ => unreachable!("dispatched above"),
+        };
         let agent_spec = spec.agents.get(&step.agent).ok_or_else(|| {
             Error::Other(format!(
                 "step '{}' references unknown agent '{}'",
@@ -528,7 +582,7 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     step_goal: &step.goal,
                     position: Position {
                         step_index: index,
-                        step_count: steps.len(),
+                        step_count: blocks.len(),
                         iteration: None,
                     },
                     gate: &step.gate,
@@ -567,6 +621,9 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                 prompt,
                 deadlines: deadlines.clone(),
                 reprompt_on_block: true,
+                // Linear steps are never cancelled mid-attempt (only parallel
+                // losers are, §6.6), so this flag is never set.
+                cancel: Arc::new(AtomicBool::new(false)),
             };
 
             let started = super::now_ms();
@@ -776,6 +833,18 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     finish_budget_pause(ctx, run_id, Some(&exec_id), &mut ledger);
                     return Ok(());
                 }
+                AttemptOutcome::Canceled => {
+                    // Linear steps never pass a live cancel flag, so this is
+                    // unreachable in practice; handle it defensively as an
+                    // abandonment rather than panicking (the agent is already
+                    // stopped by `run_attempt`).
+                    let conn = ctx.db.lock();
+                    let _ = conn.execute(
+                        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
+                        rusqlite::params![super::now_ms(), exec_id],
+                    );
+                    return Ok(());
+                }
             }
         }
     }
@@ -886,24 +955,564 @@ async fn finalize_run(
 
 // ───────────────────────────── helpers ──────────────────────────────────────
 
-/// Top-level steps of a linear run. A non-step block fails the run (loop /
-/// parallel / orchestrate execution is S7 / S8 / S11).
-fn extract_linear_steps(spec: &Spec) -> Result<Vec<Step>> {
-    spec.workflow
-        .iter()
-        .map(|b| match b {
-            Block::Step(s) => Ok(s.clone()),
-            Block::Loop(_) => Err(Error::Other(
-                "loop blocks are not supported yet (S7)".into(),
-            )),
-            Block::Parallel(_) => Err(Error::Other(
-                "parallel blocks are not supported yet (S8)".into(),
-            )),
-            Block::Orchestrate(_) => Err(Error::Other(
-                "orchestrate blocks are not supported yet (S11)".into(),
-            )),
-        })
-        .collect()
+/// Reject blocks the engine can't yet execute, up front, so a run fails with a
+/// clear cause before doing any work rather than part-way through. S8 executes
+/// `step` and `parallel` with `integrate: none`; loop (S7), orchestrate (S11),
+/// and `integrate: merge` (S9) are not implemented yet.
+fn ensure_executable(blocks: &[Block]) -> Result<()> {
+    for b in blocks {
+        match b {
+            Block::Step(_) => {}
+            Block::Parallel(p) => {
+                if matches!(p.integrate, Integrate::Merge) {
+                    return Err(Error::Other(
+                        "parallel integrate: merge is not supported yet (S9)".into(),
+                    ));
+                }
+            }
+            Block::Loop(_) => {
+                return Err(Error::Other(
+                    "loop blocks are not supported yet (S7)".into(),
+                ))
+            }
+            Block::Orchestrate(_) => {
+                return Err(Error::Other(
+                    "orchestrate blocks are not supported yet (S11)".into(),
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+// ─────────────────────────── parallel stages (§6.6) ─────────────────────────
+
+/// Whether a completed stage advances the run (`Advance`) or halts it (`Stop` —
+/// the stage wrote a terminal `failed`/paused status).
+enum StageFlow {
+    Advance,
+    Stop,
+}
+
+/// A parallel child's terminal outcome, from the stage's point of view. Every
+/// variant carries the child's own budget ledger so the stage can fold its turn
+/// / token spend into the run ledger (§11.2).
+enum ChildOutcome {
+    /// Gate satisfied. `moved_head` records whether the child committed on its
+    /// fork (its code is left there under `integrate: none` — §12.3).
+    Success {
+        moved_head: bool,
+        head: Option<String>,
+    },
+    /// Errored (autonomous retries exhausted), gate blocked, budget-exceeded, or
+    /// an unsupported approval gate — anything that isn't a clean `done`.
+    Failure { reason: String },
+    /// Superseded before finishing by the stage winding down (a join `any`
+    /// winner, or a failed `all` stage).
+    Canceled,
+}
+
+struct ChildResult {
+    step_id: String,
+    outcome: ChildOutcome,
+    ledger: Ledger,
+}
+
+/// Everything one parallel child owns to drive itself on its own task (child
+/// tasks are spawned into a [`JoinSet`], so they must be `'static`).
+struct ChildCtx {
+    db: Db,
+    driver: Arc<dyn AgentDriver>,
+    app: Option<AppHandle>,
+    base_deadlines: Deadlines,
+    eff: EffectiveBudgets,
+    run_id: String,
+    run_task: String,
+    step: Step,
+    agent_spec: AgentSpec,
+    fork_base: String,
+    blackboard: PathBuf,
+    repo: PathBuf,
+    run_repo: PathBuf,
+    block_index: usize,
+    block_count: usize,
+    /// Set by the stage to wind this child down (loser cancellation, §6.6).
+    stage_cancel: Arc<AtomicBool>,
+}
+
+/// Fold a finished child's budget ledger into the run ledger (§11.2). Each child
+/// runs against its own fresh ledger (concurrent children can't share the run's
+/// `&mut Ledger`); their spend is summed back here so the next block — and the
+/// persisted `spent_json` — reflect the whole stage.
+fn fold_child_ledger(run: &mut Ledger, child: &Ledger) {
+    run.turns += child.turns;
+    run.tokens += child.tokens;
+    for (k, v) in &child.steps {
+        let e = run.steps.entry(k.clone()).or_default();
+        e.turns += v.turns;
+        e.tokens += v.tokens;
+    }
+    for (k, v) in &child.attempts {
+        *run.attempts.entry(k.clone()).or_default() += v;
+    }
+}
+
+/// Run a `parallel` stage with `integrate: none` (§6.6, §12.3): fork every child
+/// from the stage-entry ref, run them concurrently (bounded by `max_concurrent`),
+/// and join.
+///
+/// - `all` — every child must reach `done`; the first failure fails the stage
+///   (and so the run), winding the rest down.
+/// - `any` — the first `done` child wins and the losers are cancelled + archived;
+///   the stage fails only when *every* child fails.
+///
+/// `integrate: none` means the stage HEAD is its entry HEAD: no child commit is
+/// merged, so the run line is unchanged (the caller keeps `last_ref`). A child
+/// that moved its own HEAD is journaled `integrate_skipped`. Children run against
+/// their own budget ledgers, folded into the run ledger at the end (§11.2).
+#[allow(clippy::too_many_arguments)]
+async fn run_parallel_stage(
+    ctx: &RunCtx,
+    run_id: &str,
+    run: &RunEssentials,
+    spec: &Spec,
+    par: &Parallel,
+    block_index: usize,
+    block_count: usize,
+    blackboard: &Path,
+    repo: &Path,
+    run_repo: &Path,
+    fork_base: &str,
+    eff: &EffectiveBudgets,
+    ledger: &mut Ledger,
+) -> Result<StageFlow> {
+    // Enforcement point: before spawning the stage (§11.2). Pause at the block
+    // boundary if the run budget is already spent, spawning nothing.
+    if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
+        {
+            let conn = ctx.db.lock();
+            journal_event(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                event_type::BUDGET_EXCEEDED,
+                None,
+                &json!({ "which": which.as_str() }),
+            );
+        }
+        finish_budget_pause(ctx, run_id, None, ledger);
+        return Ok(StageFlow::Stop);
+    }
+
+    // The stage-entry SHA, resolved in the run repo (a bare base SHA and a
+    // ferried `refs/wf/steps/*` both resolve there). Used only to detect whether
+    // a child moved HEAD, so failure to resolve degrades to "no movement".
+    let stage_entry_sha = crate::git::rev_parse(run_repo, fork_base).await.ok();
+
+    // Resume: a child that already reached `done` in a prior drive is not re-run
+    // (§12.3). If join `any` already has a winner, the stage is complete.
+    let mut pending: Vec<&Step> = Vec::new();
+    let mut prior_success = false;
+    for step in &par.steps {
+        if child_already_done(&ctx.db.lock(), run_id, &step.id) {
+            prior_success = true;
+        } else {
+            pending.push(step);
+        }
+    }
+    if matches!(par.join, Join::Any) && prior_success {
+        return Ok(StageFlow::Advance);
+    }
+    if pending.is_empty() {
+        // join `all`: every child already `done` (resume) → stage complete.
+        return Ok(StageFlow::Advance);
+    }
+
+    let stage_cancel = Arc::new(AtomicBool::new(false));
+    let concurrency = par
+        .max_concurrent
+        .map(|m| m as usize)
+        .unwrap_or(pending.len())
+        .max(1);
+
+    // Build an owned context per pending child up front (also validates agent
+    // refs — a bad ref fails the run rather than a single child).
+    let mut queue: VecDeque<ChildCtx> = VecDeque::with_capacity(pending.len());
+    for step in pending {
+        let agent_spec = spec.agents.get(&step.agent).ok_or_else(|| {
+            Error::Other(format!(
+                "parallel step '{}' references unknown agent '{}'",
+                step.id, step.agent
+            ))
+        })?;
+        queue.push_back(ChildCtx {
+            db: ctx.db.clone(),
+            driver: ctx.driver.clone(),
+            app: ctx.app.clone(),
+            base_deadlines: ctx.deadlines.clone(),
+            eff: eff.clone(),
+            run_id: run_id.to_string(),
+            run_task: run.task.clone(),
+            step: step.clone(),
+            agent_spec: agent_spec.clone(),
+            fork_base: fork_base.to_string(),
+            blackboard: blackboard.to_path_buf(),
+            repo: repo.to_path_buf(),
+            run_repo: run_repo.to_path_buf(),
+            block_index,
+            block_count,
+            stage_cancel: stage_cancel.clone(),
+        });
+    }
+
+    let mut set: JoinSet<ChildResult> = JoinSet::new();
+    let launch = |set: &mut JoinSet<ChildResult>, queue: &mut VecDeque<ChildCtx>| {
+        if let Some(c) = queue.pop_front() {
+            let entry = stage_entry_sha.clone();
+            set.spawn(async move { drive_child(c, entry).await });
+        }
+    };
+    for _ in 0..concurrency {
+        launch(&mut set, &mut queue);
+    }
+
+    let mut successes = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    let mut stage_failed: Option<String> = None;
+
+    while let Some(joined) = set.join_next().await {
+        let res = match joined {
+            Ok(r) => r,
+            Err(e) => {
+                // A child task panicked — contain it as a child failure (§6.1).
+                let reason = format!("child task error: {e}");
+                if matches!(par.join, Join::All) && stage_failed.is_none() {
+                    stage_failed = Some(reason.clone());
+                    stage_cancel.store(true, Ordering::SeqCst);
+                }
+                failures.push(reason);
+                continue;
+            }
+        };
+        // Fold the child's spend into the run ledger regardless of outcome.
+        fold_child_ledger(ledger, &res.ledger);
+        match res.outcome {
+            ChildOutcome::Success { moved_head, head } => {
+                successes += 1;
+                if moved_head {
+                    let conn = ctx.db.lock();
+                    journal_event(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        event_type::INTEGRATE_SKIPPED,
+                        None,
+                        &json!({ "step_id": res.step_id, "sha": head }),
+                    );
+                }
+                // join `any`: first winner → wind the losers down (no new starts).
+                if matches!(par.join, Join::Any) {
+                    stage_cancel.store(true, Ordering::SeqCst);
+                }
+            }
+            ChildOutcome::Failure { reason } => {
+                // join `all`: the first failure fails the stage.
+                if matches!(par.join, Join::All) && stage_failed.is_none() {
+                    stage_failed = Some(reason.clone());
+                    stage_cancel.store(true, Ordering::SeqCst);
+                }
+                failures.push(reason);
+            }
+            ChildOutcome::Canceled => {}
+        }
+        // Keep the pipeline full unless we're winding the stage down.
+        if !stage_cancel.load(Ordering::SeqCst) {
+            launch(&mut set, &mut queue);
+        }
+    }
+
+    // Persist the folded ledger (children's turns/tokens) before returning.
+    {
+        let conn = ctx.db.lock();
+        ledger.checkpoint_wall(super::now_ms());
+        persist_spent(&conn, run_id, ledger);
+    }
+
+    match par.join {
+        Join::All => {
+            if let Some(reason) = stage_failed {
+                let conn = ctx.db.lock();
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "failed",
+                    None,
+                    Some(&format!("parallel stage failed: {reason}")),
+                );
+                Ok(StageFlow::Stop)
+            } else {
+                Ok(StageFlow::Advance)
+            }
+        }
+        Join::Any => {
+            if successes > 0 {
+                Ok(StageFlow::Advance)
+            } else {
+                let conn = ctx.db.lock();
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "failed",
+                    None,
+                    Some(&format!(
+                        "all parallel children failed: {}",
+                        failures.join("; ")
+                    )),
+                );
+                Ok(StageFlow::Stop)
+            }
+        }
+    }
+}
+
+/// Drive one parallel child to a terminal [`ChildOutcome`] on its own task
+/// (§6.6). Mirrors the linear attempt loop (spawn → turn → gate, autonomous
+/// retries on error) but: it never ferries (`integrate: none`), classifies the
+/// result as success/failure for the join, runs against its own budget ledger,
+/// and honours `stage_cancel` — a loser's `run_attempt` stops its own agent and
+/// returns `Canceled`, so no agent is ever left running outside the workflow.
+async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResult {
+    let step_eff = c.eff.for_step(c.step.budgets.as_ref());
+    let deadlines = deadlines_from(&c.base_deadlines, &step_eff);
+    let max_attempts = step_eff.max_attempts;
+    let mut child_ledger = Ledger::default();
+
+    let done = |outcome: ChildOutcome, ledger: Ledger| ChildResult {
+        step_id: c.step.id.clone(),
+        outcome,
+        ledger,
+    };
+
+    let mut attempt_no = next_attempt_no(&c.db.lock(), &c.run_id, &c.step.id);
+    let mut last_failure: Option<String> = None;
+
+    loop {
+        if c.stage_cancel.load(Ordering::SeqCst) {
+            return done(ChildOutcome::Canceled, child_ledger);
+        }
+
+        let exec_id = format!("exec-{}", uuid::Uuid::new_v4());
+        {
+            let conn = c.db.lock();
+            create_step_exec(
+                &conn,
+                &exec_id,
+                &c.run_id,
+                &c.step.id,
+                attempt_no,
+                gate_mode(&c.step.gate),
+            );
+        }
+
+        let prompt = {
+            let ctx_prompt = StepPromptCtx {
+                run_task: &c.run_task,
+                step_id: &c.step.id,
+                step_goal: &c.step.goal,
+                position: Position {
+                    step_index: c.block_index,
+                    step_count: c.block_count,
+                    iteration: None,
+                },
+                gate: &c.step.gate,
+                turns_per_attempt: c.step.budgets.as_ref().and_then(|b| b.turns_per_attempt),
+            };
+            match &last_failure {
+                Some(f) => prompts::retry_prompt(f, &ctx_prompt),
+                None => prompts::step_prompt(&ctx_prompt),
+            }
+        };
+
+        let params = AttemptParams {
+            spawn_req: build_spawn_req(
+                &c.agent_spec,
+                &c.fork_base,
+                &c.repo,
+                &c.run_repo,
+                &c.run_id,
+            ),
+            blackboard: c.blackboard.clone(),
+            exec_id: exec_id.clone(),
+            step_id: c.step.id.clone(),
+            attempt: attempt_no as u32,
+            iteration: 0,
+            gate: c.step.gate.clone(),
+            prompt,
+            deadlines: deadlines.clone(),
+            reprompt_on_block: true,
+            cancel: c.stage_cancel.clone(),
+        };
+
+        let started = super::now_ms();
+        let result =
+            attempt::run_attempt(c.driver.as_ref(), params, &mut child_ledger, &step_eff).await;
+
+        // Journal the attempt's events + stamp its agent id (linear-path parity).
+        {
+            let conn = c.db.lock();
+            if let Some(agent_id) = &result.agent_id {
+                let _ = conn.execute(
+                    "UPDATE wf_step_exec SET agent_id = ?1, started_at = ?2 WHERE id = ?3",
+                    rusqlite::params![agent_id, started, exec_id],
+                );
+            }
+            for e in &result.events {
+                journal_event(
+                    &conn,
+                    c.app.as_ref(),
+                    &c.run_id,
+                    e.event_type,
+                    Some(&exec_id),
+                    &e.payload,
+                );
+            }
+        }
+
+        match result.outcome {
+            AttemptOutcome::Done { .. } => {
+                // `integrate: none` — no boundary commit / ferry. Detect whether
+                // the child moved its own HEAD; if so its code is abandoned on
+                // the fork → `integrate_skipped`.
+                let head = match &result.worktree {
+                    Some(wt) => gitops::head_sha(wt).await.ok(),
+                    None => None,
+                };
+                let moved_head = match (&head, &stage_entry_sha) {
+                    (Some(h), Some(entry)) => h != entry,
+                    _ => false,
+                };
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "done", head.as_deref());
+                }
+                if let Some(agent_id) = &result.agent_id {
+                    let _ = c.driver.archive(agent_id).await;
+                }
+                return done(ChildOutcome::Success { moved_head, head }, child_ledger);
+            }
+            AttemptOutcome::Canceled => {
+                // A loser: `run_attempt` already stopped the agent (no leak).
+                // Abandon the row and archive the chat.
+                {
+                    let conn = c.db.lock();
+                    let _ = conn.execute(
+                        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
+                        rusqlite::params![super::now_ms(), exec_id],
+                    );
+                    journal_event(
+                        &conn,
+                        c.app.as_ref(),
+                        &c.run_id,
+                        event_type::ATTEMPT_ABANDONED,
+                        Some(&exec_id),
+                        &json!({ "cause": "canceled" }),
+                    );
+                }
+                if let Some(agent_id) = &result.agent_id {
+                    let _ = c.driver.archive(agent_id).await;
+                }
+                return done(ChildOutcome::Canceled, child_ledger);
+            }
+            AttemptOutcome::Error { error } => {
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "error", None);
+                }
+                last_failure = Some(error.clone());
+                if attempt_no >= max_attempts {
+                    return done(ChildOutcome::Failure { reason: error }, child_ledger);
+                }
+                attempt_no += 1;
+            }
+            AttemptOutcome::Blocked { reason } => {
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "blocked", None);
+                }
+                if let Some(agent_id) = &result.agent_id {
+                    let _ = c.driver.stop(agent_id).await;
+                    let _ = c.driver.archive(agent_id).await;
+                }
+                return done(
+                    ChildOutcome::Failure {
+                        reason: format!("gate unmet: {reason}"),
+                    },
+                    child_ledger,
+                );
+            }
+            AttemptOutcome::BudgetExceeded { which } => {
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "error", None);
+                }
+                if let Some(agent_id) = &result.agent_id {
+                    let _ = c.driver.stop(agent_id).await;
+                    let _ = c.driver.archive(agent_id).await;
+                }
+                return done(
+                    ChildOutcome::Failure {
+                        reason: format!("budget_exceeded: {which}"),
+                    },
+                    child_ledger,
+                );
+            }
+            AttemptOutcome::AwaitingApproval => {
+                // Per-child approval pauses aren't modelled in v1 (joins are over
+                // success/error, §6.6) — fail the child with a clear cause rather
+                // than hang the stage.
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "error", None);
+                }
+                if let Some(agent_id) = &result.agent_id {
+                    let _ = c.driver.archive(agent_id).await;
+                }
+                return done(
+                    ChildOutcome::Failure {
+                        reason: "approval gates are not supported inside a parallel stage".into(),
+                    },
+                    child_ledger,
+                );
+            }
+        }
+    }
+}
+
+/// Assemble a [`SpawnReq`] for a step / parallel-child agent. Resolving the
+/// spec's skill / MCP names to snapshots is a documented S4b follow-up; the
+/// engine spawns with provider + brief for now (the blackboard write-grant is
+/// derived from `owner_run_id` at spawn).
+fn build_spawn_req(
+    agent_spec: &AgentSpec,
+    fork_base: &str,
+    repo: &Path,
+    run_repo: &Path,
+    run_id: &str,
+) -> SpawnReq {
+    SpawnReq {
+        repo_path: repo.to_path_buf(),
+        provider: agent_spec.base.clone(),
+        model: agent_spec.model.clone(),
+        instructions: agent_spec.instructions.clone(),
+        custom_agent_id: agent_spec.custom_agent.clone(),
+        skills: vec![],
+        mcp_servers: vec![],
+        fork_base: Some(fork_base.to_string()),
+        run_repo: Some(run_repo.to_path_buf()),
+        owner_run_id: run_id.to_string(),
+    }
 }
 
 fn gate_mode(gate: &Gate) -> &'static str {
@@ -1135,11 +1744,13 @@ fn deadlines_from(base: &Deadlines, eff: &EffectiveBudgets) -> Deadlines {
     }
 }
 
-/// The exec id of the most recent `done` step (the fork source for the next).
-fn latest_done_exec(conn: &Connection, run_id: &str) -> Option<String> {
+/// The exec id of the most recent `done` attempt of a specific step.
+fn latest_done_exec_for_step(conn: &Connection, run_id: &str, step_id: &str) -> Option<String> {
     conn.query_row(
-        "SELECT id FROM wf_step_exec WHERE run_id = ?1 AND status = 'done' ORDER BY rowid DESC LIMIT 1",
-        [run_id],
+        "SELECT id FROM wf_step_exec
+         WHERE run_id = ?1 AND step_id = ?2 AND status = 'done'
+         ORDER BY rowid DESC LIMIT 1",
+        rusqlite::params![run_id, step_id],
         |r| r.get(0),
     )
     .optional()
@@ -1147,8 +1758,33 @@ fn latest_done_exec(conn: &Connection, run_id: &str) -> Option<String> {
     .flatten()
 }
 
-fn latest_done_ref(conn: &Connection, run_id: &str) -> Option<String> {
-    latest_done_exec(conn, run_id).map(|id| gitops::step_ref(&id))
+/// Whether a step already has a `done` attempt (a parallel child that finished
+/// in an earlier, interrupted drive — resume must not re-run it, §12.3 / S8).
+fn child_already_done(conn: &Connection, run_id: &str, step_id: &str) -> bool {
+    latest_done_exec_for_step(conn, run_id, step_id).is_some()
+}
+
+/// Recompute the line's fork source at resume: the last **top-level `step`**
+/// before the cursor that reached `done` (its ferried ref + exec id), else the
+/// run base. Parallel `integrate: none` children are deliberately ignored — they
+/// never advance the line — which is why this walks the block tree rather than
+/// querying "the most recent done exec".
+fn resume_line_state(
+    conn: &Connection,
+    run_id: &str,
+    blocks: &[Block],
+    cursor: usize,
+    base_sha: &str,
+) -> (String, Option<String>) {
+    let upper = cursor.min(blocks.len());
+    for b in blocks[..upper].iter().rev() {
+        if let Block::Step(s) = b {
+            if let Some(exec_id) = latest_done_exec_for_step(conn, run_id, &s.id) {
+                return (gitops::step_ref(&exec_id), Some(exec_id));
+            }
+        }
+    }
+    (base_sha.to_string(), None)
 }
 
 /// Live (spawned, non-terminal) step agents for a run — stopped on cancel/pause.
@@ -1965,5 +2601,410 @@ mod tests {
         assert!(check_resumable(&conn, "r-appr", "resume").is_err());
         assert!(check_resumable(&conn, "r-budg", "resume").is_ok());
         assert!(check_resumable(&conn, "r-blk", "retry").is_ok());
+    }
+
+    // ───────────────────────── parallel stages (S8) ─────────────────────────
+
+    /// Markers embedded in a child's goal so [`MatrixDriver`] can script its
+    /// per-child behaviour off the (goal-bearing) step prompt.
+    const FAIL: &str = "PZFAIL";
+    const HANG: &str = "PZHANG";
+
+    #[derive(Clone, Copy)]
+    enum Beh {
+        Success,
+        Fail,
+        Hang,
+    }
+
+    /// A real-git stub like [`StubDriver`] with per-child behaviour keyed off the
+    /// step goal: a child whose goal contains `PZFAIL` runs turns but never
+    /// commits (its `commit` gate stays unmet → failure); `PZHANG` starts a turn
+    /// and never ends it (until the stage cancels it); anything else commits
+    /// (success, moving HEAD → `integrate_skipped`).
+    struct MatrixDriver {
+        root: PathBuf,
+        tx: broadcast::Sender<StatusEvent>,
+        state: parking_lot::Mutex<MatrixState>,
+    }
+    #[derive(Default)]
+    struct MatrixState {
+        statuses: HashMap<String, AgentStatus>,
+        worktrees: HashMap<String, PathBuf>,
+        /// Behaviour fixed on the agent's first prompt (the step prompt carries
+        /// the goal marker; a later reprompt does not, so it must not re-derive).
+        behavior: HashMap<String, Beh>,
+        archived: Vec<String>,
+        stopped: Vec<String>,
+        count: usize,
+    }
+    impl MatrixDriver {
+        fn new(root: PathBuf) -> Arc<Self> {
+            Arc::new(Self {
+                root,
+                tx: broadcast::channel(256).0,
+                state: parking_lot::Mutex::new(MatrixState::default()),
+            })
+        }
+        fn set(&self, id: &str, s: AgentStatus) {
+            self.state.lock().statuses.insert(id.to_string(), s.clone());
+            let _ = self.tx.send(StatusEvent {
+                agent_id: id.to_string(),
+                status: s,
+            });
+        }
+    }
+    impl AgentDriver for MatrixDriver {
+        fn spawn(
+            &self,
+            req: SpawnReq,
+        ) -> super::super::driver::BoxFuture<'_, Result<super::super::driver::SpawnedAgent>>
+        {
+            Box::pin(async move {
+                let id = {
+                    let mut st = self.state.lock();
+                    st.count += 1;
+                    format!("m-{}", st.count)
+                };
+                let dest = self.root.join(&id);
+                let base_ref = req.fork_base.clone().unwrap();
+                let spec = crate::sandbox::provision::CheckoutSpec {
+                    source_repo: &req.repo_path,
+                    base_ref: &base_ref,
+                    dest: &dest,
+                };
+                crate::sandbox::provision::provision_forking_run_repo(
+                    &spec,
+                    req.run_repo.as_ref().unwrap(),
+                )
+                .await?;
+                sh(&dest, &["config", "user.email", "t@t.t"]);
+                sh(&dest, &["config", "user.name", "t"]);
+                self.state.lock().worktrees.insert(id.clone(), dest.clone());
+                self.set(&id, AgentStatus::Idle);
+                Ok(super::super::driver::SpawnedAgent {
+                    agent_id: id,
+                    worktree: dest,
+                })
+            })
+        }
+        fn status(&self, id: &str) -> Option<AgentStatus> {
+            self.state.lock().statuses.get(id).cloned()
+        }
+        fn subscribe(&self) -> broadcast::Receiver<StatusEvent> {
+            self.tx.subscribe()
+        }
+        fn send_message<'a>(
+            &'a self,
+            id: &'a str,
+            text: String,
+        ) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                let (wt, beh) = {
+                    let mut st = self.state.lock();
+                    let wt = st.worktrees.get(id).cloned().unwrap();
+                    let beh = *st.behavior.entry(id.to_string()).or_insert_with(|| {
+                        if text.contains(HANG) {
+                            Beh::Hang
+                        } else if text.contains(FAIL) {
+                            Beh::Fail
+                        } else {
+                            Beh::Success
+                        }
+                    });
+                    (wt, beh)
+                };
+                self.set(id, AgentStatus::Running);
+                match beh {
+                    Beh::Hang => return Ok(()), // turn never ends — only a cancel unblocks it
+                    Beh::Fail => {}             // no commit → commit gate stays unmet
+                    Beh::Success => {
+                        std::fs::write(wt.join(format!("{id}.txt")), "work").unwrap();
+                        sh(&wt, &["add", "-A"]);
+                        sh(&wt, &["commit", "-qm", "child work"]);
+                    }
+                }
+                self.set(id, AgentStatus::Idle);
+                Ok(())
+            })
+        }
+        fn stop<'a>(&'a self, id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                self.state.lock().stopped.push(id.to_string());
+                Ok(())
+            })
+        }
+        fn archive<'a>(&'a self, id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                self.state.lock().archived.push(id.to_string());
+                Ok(())
+            })
+        }
+        fn last_activity(&self, _id: &str) -> Option<i64> {
+            None
+        }
+        fn turn_usage(&self, _id: &str) -> Option<super::super::driver::TurnUsage> {
+            None
+        }
+    }
+
+    /// A commit-gated parallel child; `marker` (`""` / `FAIL` / `HANG`) selects
+    /// the driver behaviour.
+    fn cstep(id: &str, marker: &str) -> Step {
+        Step {
+            id: id.to_string(),
+            agent: "coder".to_string(),
+            goal: format!("child {id} {marker}"),
+            gate: Gate::Commit,
+            budgets: None,
+            comms: vec![],
+        }
+    }
+
+    /// A run whose whole workflow is one `parallel { integrate: none }` block.
+    /// Returns the db, the workspace root for the driver, and the base SHA.
+    fn scaffold_parallel(
+        tmp: &Path,
+        run_id: &str,
+        join: Join,
+        children: &[Step],
+    ) -> (Db, PathBuf, String) {
+        let source = tmp.join(format!("src-{run_id}"));
+        std::fs::create_dir_all(&source).unwrap();
+        sh(&source, &["init", "-q", "-b", "main"]);
+        sh(&source, &["config", "user.email", "t@t.t"]);
+        sh(&source, &["config", "user.name", "t"]);
+        std::fs::write(source.join("README"), "base").unwrap();
+        sh(&source, &["add", "-A"]);
+        sh(&source, &["commit", "-qm", "base"]);
+        let base_sha = {
+            let o = Sh::new("git")
+                .current_dir(&source)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let run_dir = tmp.join(format!("rd-{run_id}"));
+        std::fs::create_dir_all(blackboard::blackboard_dir(&run_dir)).unwrap();
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "coder".to_string(),
+            super::super::spec::AgentSpec {
+                base: "codex".to_string(),
+                model: None,
+                instructions: None,
+                skills: vec![],
+                custom_agent: None,
+            },
+        );
+        let spec = Spec {
+            version: 1,
+            name: "par".to_string(),
+            description: None,
+            budgets: None,
+            agents,
+            workflow: vec![Block::Parallel(Parallel {
+                join,
+                integrate: Integrate::None,
+                max_concurrent: None,
+                steps: children.to_vec(),
+            })],
+            finalize: None,
+        };
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        let db = crate::database::init(tmp).unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,'par',?2,'t','p',?3,?4,'wf/par-x',?5,'pending','{}','{}',0,0)",
+                rusqlite::params![
+                    run_id,
+                    spec_json,
+                    source.to_string_lossy(),
+                    run_dir.to_string_lossy(),
+                    base_sha,
+                ],
+            )
+            .unwrap();
+        (db, tmp.join(format!("ws-{run_id}")), base_sha)
+    }
+
+    fn par_ctx(db: Db, driver: Arc<MatrixDriver>) -> RunCtx {
+        RunCtx {
+            db,
+            driver,
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+        }
+    }
+
+    fn run_status_str(db: &Db, run_id: &str) -> String {
+        db.lock()
+            .query_row("SELECT status FROM wf_run WHERE id=?1", [run_id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    }
+
+    fn count_children(db: &Db, run_id: &str, status: &str) -> i64 {
+        db.lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id=?1 AND status=?2",
+                rusqlite::params![run_id, status],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn parallel_all_success_reaches_done_and_journals_integrate_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", ""), cstep("b", ""), cstep("c", "")];
+        let (db, ws, _base) = scaffold_parallel(tmp.path(), "run-pa", Join::All, &children);
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-pa").await;
+
+        assert_eq!(run_status_str(&db, "run-pa"), "done");
+        assert_eq!(count_children(&db, "run-pa", "done"), 3, "every child done");
+        // `integrate: none` — each committing child left its work on its fork.
+        let skipped: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_event WHERE run_id='run-pa' AND type=?1",
+                [event_type::INTEGRATE_SKIPPED],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(skipped, 3, "one integrate_skipped per committing child");
+    }
+
+    #[tokio::test]
+    async fn parallel_all_fails_when_a_child_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("ok", ""), cstep("bad", FAIL)];
+        let (db, ws, _b) = scaffold_parallel(tmp.path(), "run-af", Join::All, &children);
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-af").await;
+
+        let (status, err): (String, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, error FROM wf_run WHERE id='run-af'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+        assert!(
+            err.unwrap_or_default().contains("parallel stage failed"),
+            "failure names its cause"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_any_first_success_wins_and_cancels_the_loser() {
+        let tmp = tempfile::tempdir().unwrap();
+        // One fast success + one hanging child; `any` → success wins and the
+        // hanging loser is cancelled + archived (§6.6).
+        let children = vec![cstep("win", ""), cstep("slow", HANG)];
+        let (db, ws, _b) = scaffold_parallel(tmp.path(), "run-any", Join::Any, &children);
+        let driver = MatrixDriver::new(ws);
+        let ctx = par_ctx(db.clone(), driver.clone());
+        drive_run(&ctx, "run-any").await;
+
+        assert_eq!(run_status_str(&db, "run-any"), "done");
+        assert_eq!(count_children(&db, "run-any", "done"), 1, "one winner");
+        assert_eq!(count_children(&db, "run-any", "abandoned"), 1, "one loser");
+
+        // The loser was stopped and archived (its chat stays replayable) — the
+        // spawn-race fix guarantees the agent id was known when it was cancelled.
+        let loser: Option<String> = db
+            .lock()
+            .query_row(
+                "SELECT agent_id FROM wf_step_exec
+                 WHERE run_id='run-any' AND status='abandoned'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let loser = loser.expect("cancelled loser has an agent id");
+        assert!(
+            driver.state.lock().stopped.contains(&loser),
+            "loser stopped"
+        );
+        assert!(
+            driver.state.lock().archived.contains(&loser),
+            "loser archived"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_any_fails_only_when_all_children_fail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("x", FAIL), cstep("y", FAIL)];
+        let (db, ws, _b) = scaffold_parallel(tmp.path(), "run-anf", Join::Any, &children);
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-anf").await;
+
+        let (status, err): (String, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, error FROM wf_run WHERE id='run-anf'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+        assert!(err
+            .unwrap_or_default()
+            .contains("all parallel children failed"));
+    }
+
+    #[tokio::test]
+    async fn resume_parallel_redrives_only_unfinished_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A prior drive finished `done_child` before dying; resume must not
+        // re-run it and must drive the remaining child to done (§12.3 / S8).
+        let children = vec![cstep("done_child", ""), cstep("todo_child", "")];
+        let (db, ws, _b) = scaffold_parallel(tmp.path(), "run-rp", Join::All, &children);
+        db.lock()
+            .execute("UPDATE wf_run SET status='running' WHERE id='run-rp'", [])
+            .unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,head_end)
+                 VALUES ('exec-prior','run-rp','done_child',1,0,'done','commit','deadbeef')",
+                [],
+            )
+            .unwrap();
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-rp").await;
+
+        let done_child_execs: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-rp' AND step_id='done_child'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            done_child_execs, 1,
+            "the done child must not be re-executed"
+        );
+        let todo_done: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_step_exec
+                 WHERE run_id='run-rp' AND step_id='todo_child' AND status='done'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(todo_done, 1, "the unfinished child ran to done");
+        assert_eq!(run_status_str(&db, "run-rp"), "done");
     }
 }

@@ -13,6 +13,8 @@
 //! because it is part of the attempt, not the run.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
@@ -76,6 +78,12 @@ pub struct AttemptParams {
     pub deadlines: Deadlines,
     /// Whether to re-prompt once on a blocked gate before pausing (spec §6.5).
     pub reprompt_on_block: bool,
+    /// Cooperative cancellation for a parallel child (§6.6). When set, the
+    /// attempt stops its agent and returns [`AttemptOutcome::Canceled`] at the
+    /// next checkpoint — right after spawn (so the agent id is always known and
+    /// can be stopped; no spawn-race leak) and during the ready/turn waits. The
+    /// linear path passes a never-set flag.
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// The terminal outcome of an attempt (maps onto the §6.2 attempt states).
@@ -95,6 +103,9 @@ pub enum AttemptOutcome {
     /// the scheduler pauses the run `budget_exceeded`. `which` is `turns` /
     /// `tokens` / `wall_clock`.
     BudgetExceeded { which: String },
+    /// The attempt observed its cancel flag (a losing parallel child, §6.6). The
+    /// agent has been stopped; the scheduler marks the attempt `abandoned`.
+    Canceled,
 }
 
 /// One journalable event the attempt produced, in order. The scheduler attaches
@@ -149,6 +160,7 @@ pub async fn run_attempt(
         prompt,
         deadlines,
         reprompt_on_block,
+        cancel,
     } = params;
 
     let fork_base = spawn_req.fork_base.clone();
@@ -175,8 +187,22 @@ pub async fn run_attempt(
         json!({ "agent_id": agent_id, "fork_base": fork_base }),
     ));
 
+    // Cancel checkpoint: spawn ran to completion, so the agent id is known and
+    // can be stopped — a cancel that raced the spawn can never leak the agent
+    // (the spawn-race the scheduler's parallel `any`/`all` teardown depends on).
+    if cancel.load(Ordering::SeqCst) {
+        return terminal_canceled(driver, &agent_id, events).await;
+    }
+
     // ── 2. Ready — subscribe-then-check until Idle (deadline: spawn_timeout) ──
-    match wait_ready(driver, &agent_id, deadlines.spawn_timeout).await {
+    // Raced against cancel so a losing child stops promptly rather than waiting
+    // out the spawn timeout.
+    let ready = tokio::select! {
+        biased;
+        r = wait_ready(driver, &agent_id, deadlines.spawn_timeout) => r,
+        _ = wait_cancelled(&cancel) => Ready::Canceled,
+    };
+    match ready {
         Ready::Idle => events.push(ev(event_type::ATTEMPT_READY, json!({}))),
         Ready::Errored => {
             return terminal_error(driver, &agent_id, "agent error before ready", events).await
@@ -185,6 +211,7 @@ pub async fn run_attempt(
         Ready::Closed => {
             return terminal_error(driver, &agent_id, "supervisor stopped", events).await
         }
+        Ready::Canceled => return terminal_canceled(driver, &agent_id, events).await,
     }
 
     // ── 3. Fork point (commit gate only needs it) ────────────────────────
@@ -242,16 +269,13 @@ pub async fn run_attempt(
 
         // Turn: wait for start (deadline) then end (stall watchdog). `rx` was
         // subscribed *before* the send above, so the flap is already buffered.
-        match drive_turn(
-            driver,
-            &agent_id,
-            &mut rx,
-            snapshot,
-            &deadlines,
-            &mut events,
-        )
-        .await
-        {
+        // Raced against cancel so a losing child drops a hanging turn at once.
+        let turn = tokio::select! {
+            biased;
+            t = drive_turn(driver, &agent_id, &mut rx, snapshot, &deadlines, &mut events) => t,
+            _ = wait_cancelled(&cancel) => TurnEnd::Canceled,
+        };
+        match turn {
             TurnEnd::Ended => events.push(ev(event_type::TURN_ENDED, json!({ "status": "idle" }))),
             TurnEnd::AgentErrored => {
                 events.push(ev(event_type::TURN_ENDED, json!({ "status": "error" })));
@@ -264,6 +288,7 @@ pub async fn run_attempt(
             TurnEnd::Closed => {
                 return terminal_error(driver, &agent_id, "supervisor stopped", events).await
             }
+            TurnEnd::Canceled => return terminal_canceled(driver, &agent_id, events).await,
         }
 
         // Turn complete: count it (the universal unit, spec §11.2) and charge any
@@ -370,6 +395,33 @@ async fn terminal_error(
     }
 }
 
+/// Stop the (still-live) agent and return a `Canceled` outcome (a losing
+/// parallel child, §6.6). Because this runs only *after* spawn completed, the
+/// agent id is always known, so the loser is never left running outside the
+/// workflow. The scheduler journals the abandonment and archives the chat.
+async fn terminal_canceled(
+    driver: &dyn AgentDriver,
+    agent_id: &str,
+    events: Vec<AttemptEvent>,
+) -> AttemptRun {
+    let _ = driver.stop(agent_id).await;
+    AttemptRun {
+        agent_id: Some(agent_id.to_string()),
+        worktree: None,
+        outcome: AttemptOutcome::Canceled,
+        events,
+    }
+}
+
+/// Resolve once `flag` is set. Polls on a short cadence so a cancelled child
+/// reacts promptly under real time and deterministically under a paused test
+/// clock (an idle runtime auto-advances to the next pending timer).
+async fn wait_cancelled(flag: &AtomicBool) {
+    while !flag.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Build the `BudgetExceeded` result. The agent is left alive and idle — the
 /// scheduler stops it as part of pausing the run (spec §6.5 "pausing stops
 /// processes"), mirroring how a `Blocked` attempt is handled.
@@ -398,6 +450,7 @@ enum Ready {
     Errored,
     Timeout,
     Closed,
+    Canceled,
 }
 
 /// Wait for the agent to reach `Idle` (ready to prompt), subscribing before
@@ -437,6 +490,7 @@ enum TurnEnd {
     TurnStartTimeout,
     Stalled,
     Closed,
+    Canceled,
 }
 
 /// Drive one turn: wait for the turn to start (deadline `turn_start_timeout`),
@@ -577,6 +631,7 @@ mod tests {
             prompt: "do the thing".into(),
             deadlines,
             reprompt_on_block: true,
+            cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -659,6 +714,29 @@ mod tests {
             AttemptOutcome::Error { error } => assert_eq!(error, "turn_start_timeout"),
             other => panic!("expected turn_start_timeout, got {other:?}"),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_after_spawn_stops_the_agent_and_returns_canceled() {
+        // The spawn-race the parallel teardown depends on (§6.6): a cancel that
+        // wins the instant the agent spawns must still stop it — never leak it.
+        // Spawn runs to completion, so the post-spawn checkpoint always knows the
+        // agent id and can stop it.
+        let bb = tempfile::tempdir().unwrap();
+        let d = MockDriver::new();
+        d.set_ready_on_spawn(true);
+        let mut p = params(Gate::Verdict, bb.path().to_path_buf(), fast());
+        p.cancel = Arc::new(AtomicBool::new(true)); // already cancelled at entry
+        let run = run(d.as_ref(), p).await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::Canceled),
+            "{:?}",
+            run.outcome
+        );
+        let agent = run
+            .agent_id
+            .expect("agent was spawned before the cancel check");
+        assert!(d.was_stopped(&agent), "the cancelled agent must be stopped");
     }
 
     #[tokio::test(start_paused = true)]
