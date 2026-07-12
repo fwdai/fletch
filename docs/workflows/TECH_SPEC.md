@@ -653,12 +653,20 @@ path handed to `SpawnReq`.
 ### 8.2 Sandbox grants
 
 - **Seatbelt:** one additional write-allow subpath per step agent:
-  `~/.fletch/runs/<run-id>/blackboard/`. Added in `sandbox/policy.rs` as a
-  run-scoped grant (same mechanism as the workspace grant).
+  `~/.fletch/runs/<run-id>/blackboard/`. Plumbed as an optional path on
+  `AgentLaunchCtx` and emitted directly in `seatbelt.rs`'s `build_profile`,
+  the same way the RPC mailbox grant is — *not* through `sandbox/policy.rs`.
+  The policy module is the source of truth for *static, home-relative*
+  provider/scratch dirs; it deliberately does not model dynamic per-run/
+  per-agent paths (its own doc-comment notes a passthrough grant "buys
+  nothing" through its dir-oriented API), which is why the mailbox — the
+  direct precedent for a per-agent out-of-checkout path — is a seatbelt-local
+  subpath. The blackboard follows that precedent.
 - **Docker:** bind-mount the blackboard directory read-write into the
-  container at a fixed path (`/workspace/.wf-blackboard`); the prompt tells
-  the agent the mount path. `WF_BLACKBOARD` env var carries the correct
-  path for both engines.
+  container **at its identical host path** (invariant 1 — path identity — the
+  same shape as the RPC mailbox mount), not a synthetic container path. The
+  `WF_BLACKBOARD` env var carries the path; because the mount is identical on
+  both engines, that value is the same under seatbelt and Docker.
 
 ### 8.3 Verdict schema
 

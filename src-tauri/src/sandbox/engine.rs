@@ -43,6 +43,13 @@ pub struct AgentLaunchCtx<'a> {
     pub cwd: &'a Path,
     pub home: &'a Path,
     pub interactive: bool,
+    /// A workflow step agent's blackboard directory
+    /// (`~/.fletch/runs/<run-id>/blackboard/`), granted read-write into the
+    /// sandbox on top of the writable root: seatbelt adds it as a writable
+    /// subpath, Docker bind-mounts it at its identical host path. Both engines
+    /// export it as `WF_BLACKBOARD`. `None` for ordinary (non-workflow) agents,
+    /// which is every agent until the scheduler (S4) populates it at spawn.
+    pub blackboard: Option<&'a Path>,
 }
 
 /// A resource that must outlive the launched process. Parked on the session
