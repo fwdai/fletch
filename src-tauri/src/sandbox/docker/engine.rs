@@ -366,6 +366,18 @@ impl SandboxEngine for DockerEngine {
         // match sets `auth_start` so it forwards as a plain env var, not an
         // auth var.
         if let Some(board) = ctx.blackboard {
+            // Fail closed if the blackboard was not provisioned before launch:
+            // a bare `-v` on a missing source has Docker create it *root-owned*,
+            // leaving the host-side reader unable to read the agent's verdict/
+            // handoff files. Seatbelt already fails here (its `canonicalize`
+            // errors on a missing path); match that so an ordering bug in the
+            // scheduler surfaces instead of silently corrupting the mount.
+            if !board.is_dir() {
+                return Err(Error::Other(format!(
+                    "workflow blackboard not provisioned before launch: {}",
+                    board.display()
+                )));
+            }
             env.push((
                 crate::workflow::blackboard::WF_BLACKBOARD_ENV.into(),
                 board.to_string_lossy().into_owned(),

@@ -64,9 +64,32 @@ pub fn runs_root() -> Result<PathBuf> {
     Ok(home.join(".fletch").join("runs"))
 }
 
+/// Reject an id that is not a single safe path component. Run ids and step ids
+/// are joined onto host paths that become sandbox *write grants*, so a
+/// traversal component (`../other`) would place the grant outside the run
+/// directory or a step's lane, and `.` would alias a whole parent directory.
+/// Defense in depth: run ids are engine-generated and step ids are
+/// spec-validated (S2), but these path-deriving helpers must not trust them.
+fn validate_id(kind: &str, id: &str) -> Result<()> {
+    let unsafe_component = id.is_empty()
+        || id == "."
+        || id == ".."
+        || id.contains('/')
+        || id.contains('\\')
+        || id.contains('\0');
+    if unsafe_component {
+        return Err(Error::InvalidPath(format!(
+            "unsafe workflow {kind} id: {id:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// `~/.fletch/runs/<run-id>/` — one run's host-owned directory (blackboard +,
-/// once S4 lands, the run repository and journal export).
+/// once S4 lands, the run repository and journal export). Errors if `run_id`
+/// is not a safe path component ([`validate_id`]).
 pub fn run_dir(run_id: &str) -> Result<PathBuf> {
+    validate_id("run", run_id)?;
     Ok(runs_root()?.join(run_id))
 }
 
@@ -83,9 +106,12 @@ pub fn export_dir(run_dir: &Path) -> PathBuf {
 }
 
 /// One step's blackboard subdirectory: `<blackboard>/<step-id>/`. A step owns
-/// this directory and `shared/`; it reads everything.
-pub fn step_dir(blackboard: &Path, step_id: &str) -> PathBuf {
-    blackboard.join(step_id)
+/// this directory and `shared/`; it reads everything. Errors if `step_id` is
+/// not a safe path component ([`validate_id`]) — otherwise a step id like
+/// `../other` would point outside the step's lane.
+pub fn step_dir(blackboard: &Path, step_id: &str) -> Result<PathBuf> {
+    validate_id("step", step_id)?;
+    Ok(blackboard.join(step_id))
 }
 
 /// Provision the run directory layout and write `task.md`, returning the
@@ -106,8 +132,12 @@ pub fn provision(run_dir: &Path, task_md: &str) -> Result<PathBuf> {
 }
 
 /// The structured completion signal an agent writes to
-/// `<step-id>/verdict.json` (spec §8.3).
+/// `<step-id>/verdict.json` (spec §8.3). `deny_unknown_fields` keeps the shape
+/// narrow: an unexpected key (a typo'd field name, a prompt-injected extra)
+/// makes the verdict `Malformed` rather than being silently dropped, and the
+/// re-prompt (§6.5) quotes the offending field back to the agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Verdict {
     pub result: VerdictResult,
     /// One-line handoff for the timeline and the next agent. Defaulted so a
@@ -207,7 +237,9 @@ pub fn scan_foreign_writes(
     own_step_id: &str,
     since: SystemTime,
 ) -> Result<Vec<PathBuf>> {
-    let own = blackboard.join(own_step_id);
+    // Validate through `step_dir` so a `.` / `..` step id can't alias the whole
+    // blackboard (marking every file "owned" and hiding all foreign writes).
+    let own = step_dir(blackboard, own_step_id)?;
     let shared = blackboard.join("shared");
     let mut out = Vec::new();
     collect_recent_files(blackboard, since, &mut |path| {
@@ -256,6 +288,42 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn run_dir_rejects_traversal_ids() {
+        for bad in ["../other", "a/b", "..", ".", "", "a\\b"] {
+            assert!(
+                run_dir(bad).is_err(),
+                "run id {bad:?} must be rejected as unsafe"
+            );
+        }
+        // A plain component resolves under the runs root.
+        assert!(run_dir("run-1").expect("safe id").ends_with("run-1"));
+    }
+
+    #[test]
+    fn step_dir_rejects_traversal_and_dot() {
+        let board = Path::new("/tmp/board");
+        for bad in ["../other-run", ".", "..", "a/b", ""] {
+            assert!(
+                step_dir(board, bad).is_err(),
+                "step id {bad:?} must be rejected as unsafe"
+            );
+        }
+        assert_eq!(
+            step_dir(board, "review").expect("safe id"),
+            board.join("review")
+        );
+    }
+
+    #[test]
+    fn scan_foreign_writes_rejects_unsafe_step_id() {
+        let dir = tmp();
+        let board = provision(dir.path(), "task").expect("provision");
+        // A `.` own-step-id would otherwise alias the whole board as owned.
+        assert!(scan_foreign_writes(&board, ".", SystemTime::UNIX_EPOCH).is_err());
+        assert!(scan_foreign_writes(&board, "../x", SystemTime::UNIX_EPOCH).is_err());
     }
 
     #[test]
@@ -334,6 +402,20 @@ mod tests {
         assert_eq!(v.result, VerdictResult::Done);
         assert_eq!(v.summary, "");
         assert!(v.detail.is_none());
+    }
+
+    #[test]
+    fn read_verdict_rejects_unknown_fields() {
+        let dir = tmp();
+        std::fs::write(
+            dir.path().join("verdict.json"),
+            r#"{"result":"done","summary":"ok","unexpected":"x"}"#,
+        )
+        .unwrap();
+        match read_verdict(dir.path()) {
+            Err(VerdictError::Malformed(msg)) => assert!(msg.contains("unexpected")),
+            other => panic!("expected malformed on unknown field, got {other:?}"),
+        }
     }
 
     #[test]
