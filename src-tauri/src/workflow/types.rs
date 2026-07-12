@@ -303,11 +303,7 @@ pub struct RunDetail {
 // ───────────────────────────── row helpers ──────────────────────────────
 
 fn conversion_err(col: &str, detail: String) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        0,
-        Type::Text,
-        format!("{col}: {detail}").into(),
-    )
+    rusqlite::Error::FromSqlConversionFailure(0, Type::Text, format!("{col}: {detail}").into())
 }
 
 /// Parse a required JSON TEXT column into a `Value`.

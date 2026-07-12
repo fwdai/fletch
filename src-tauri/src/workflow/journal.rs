@@ -131,7 +131,14 @@ mod tests {
     fn seq_is_per_run_monotonic_from_one() {
         let conn = test_conn();
         for expected in 1..=3 {
-            let ev = append(&conn, "run-a", event_type_ref(), None, &json!({"n": expected})).unwrap();
+            let ev = append(
+                &conn,
+                "run-a",
+                event_type_ref(),
+                None,
+                &json!({"n": expected}),
+            )
+            .unwrap();
             assert_eq!(ev.seq, expected);
         }
         // A second run has its own independent sequence.

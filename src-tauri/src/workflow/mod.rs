@@ -47,9 +47,7 @@ pub async fn wf_list_runs(
     match project_id {
         Some(pid) => {
             let mut stmt = conn
-                .prepare(
-                    "SELECT * FROM wf_run WHERE project_id = ?1 ORDER BY updated_at DESC",
-                )
+                .prepare("SELECT * FROM wf_run WHERE project_id = ?1 ORDER BY updated_at DESC")
                 .map_err(map_err)?;
             let rows = stmt.query_map([pid], Run::from_row).map_err(map_err)?;
             rows.collect::<rusqlite::Result<_>>().map_err(map_err)
@@ -74,7 +72,11 @@ pub async fn wf_get_run(
     let map_err = |e: rusqlite::Error| e.to_string();
 
     let run = conn
-        .query_row("SELECT * FROM wf_run WHERE id = ?1", [&run_id], Run::from_row)
+        .query_row(
+            "SELECT * FROM wf_run WHERE id = ?1",
+            [&run_id],
+            Run::from_row,
+        )
         .optional()
         .map_err(map_err)?;
     let Some(run) = run else {
@@ -88,7 +90,8 @@ pub async fn wf_get_run(
         let rows = stmt
             .query_map([&run_id], StepExec::from_row)
             .map_err(map_err)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)?
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_err)?
     };
 
     let messages = {
@@ -98,7 +101,8 @@ pub async fn wf_get_run(
         let rows = stmt
             .query_map([&run_id], Message::from_row)
             .map_err(map_err)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)?
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_err)?
     };
 
     Ok(Some(RunDetail {
