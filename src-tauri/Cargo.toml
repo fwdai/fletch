@@ -77,6 +77,11 @@ security-framework = "3"
 
 [dev-dependencies]
 tempfile = "3"
+# `test-util` unlocks the paused-time test clock (`#[tokio::test(start_paused)]`)
+# the workflow attempt tests use to exercise spawn/turn/stall deadlines
+# deterministically. Test-only (unioned with the runtime `full` feature); it
+# activates no extra crates, so the lockfile is unchanged.
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 opt-level = "z"

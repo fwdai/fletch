@@ -173,6 +173,11 @@ pub struct SpawnRequest {
     /// step's HEAD (a commit-ish). `None` falls back to the repo's current
     /// branch.
     pub fork_base: Option<String>,
+    /// The workflow run that owns this agent, when spawned as a workflow step.
+    /// Persisted on the record so run-owned agents are filterable from the
+    /// normal sidebar and cleaned up by `wf_delete_run`. `None` for a normal
+    /// user spawn.
+    pub owner_run_id: Option<String>,
 }
 
 impl Supervisor {
@@ -193,6 +198,7 @@ impl Supervisor {
             skills,
             mcp_servers,
             fork_base,
+            owner_run_id,
         } = req;
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -283,6 +289,9 @@ impl Supervisor {
         // never re-engines it — see `spawn_agent_process`, which reuses the
         // stored value instead of the live setting.
         record.sandbox_engine = Some(engine_kind.as_setting().to_string());
+        // Tag the agent with its owning run (workflow step spawn) so it's
+        // hidden from the normal sidebar and cascaded on run delete.
+        record.owner_run_id = owner_run_id;
         let parent_dir = agent_parent_dir(&agent_id)?;
         let primary_checkout = repo_checkout_path(&agent_id, &subdir)?;
 

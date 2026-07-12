@@ -300,6 +300,9 @@ pub async fn spawn_agent(
             skills: skills.unwrap_or_default(),
             mcp_servers: mcp_servers.unwrap_or_default(),
             fork_base,
+            // User-initiated spawns are never run-owned; the workflow scheduler
+            // sets this when it spawns a step agent.
+            owner_run_id: None,
         },
     )
     .await
