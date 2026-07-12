@@ -194,17 +194,14 @@ the run), and the blackboard grant path (§8).
 Replaces the v0 tables. The branch's `0018_workflows.sql` has already been
 applied to dev databases (`rusqlite_migration` tracks `user_version`, so a
 rewritten 0018 would silently never re-run there). It therefore stays as
-shipped, and v1 lands as two order-independent migrations:
-**`0019_workflows_v1.sql`** (`DROP TABLE IF EXISTS` for the v0 tables, the
-four runtime tables below, and a nullable `owner_run_id` column on the
-persisted agent/worktree record so run-owned step agents are filterable
-from the normal sidebar and cleanable by cascade — §6.3, §13) and
-**`0020_wf_definitions.sql`** (the `wf_definition` table, owned by the
-spec/YAML slice). `wf_run.definition_id` deliberately carries no FK
-constraint, which is what keeps the two independent.
+shipped, and v1 lands as **`0019_workflows_v1.sql`**: `DROP TABLE IF EXISTS`
+for the v0 tables, then the schema below. 0019 also adds a nullable
+`owner_run_id` column to the persisted agent/worktree record so run-owned
+step agents are filterable from the normal sidebar and cleanable by cascade
+(§6.3, §13).
 
 ```sql
--- 0019_workflows_v1.sql + 0020_wf_definitions.sql
+-- 0019_workflows_v1.sql
 
 CREATE TABLE wf_definition (
   id          TEXT PRIMARY KEY,
