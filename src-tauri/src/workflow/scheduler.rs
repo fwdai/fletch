@@ -50,6 +50,12 @@ pub struct WorkflowService {
 
 struct RunHandle {
     cancel: Arc<AtomicBool>,
+    /// Set when a spawn request arrives while this driver is winding down (its
+    /// paused status already written, registry entry not yet removed). The
+    /// watchdog re-drives after removing the entry instead of dropping the
+    /// request — an approve that raced the wind-down would otherwise leave the
+    /// run paused forever with nothing left to approve.
+    respawn: Arc<AtomicBool>,
 }
 
 impl WorkflowService {
@@ -240,52 +246,13 @@ impl WorkflowService {
     }
 
     fn spawn_drive(&self, run_id: String) {
-        let cancel = Arc::new(AtomicBool::new(false));
-        {
-            let mut runs = self.runs.lock();
-            if runs.contains_key(&run_id) {
-                // A run has at most one live driver (§6.1).
-                return;
-            }
-            runs.insert(
-                run_id.clone(),
-                RunHandle {
-                    cancel: cancel.clone(),
-                },
-            );
-        }
-
-        let ctx = RunCtx {
-            db: self.db.clone(),
-            driver: self.driver.clone(),
-            app: Some(self.app.clone()),
-            cancel,
-            deadlines: Deadlines::default(),
-        };
-        let db = self.db.clone();
-        let app = self.app.clone();
-        let runs_ptr = self.runs.clone();
-        let id = run_id.clone();
-        let join = tauri::async_runtime::spawn(async move {
-            drive_run(&ctx, &id).await;
-        });
-        // Panic containment (§6.1): a panicked/aborted drive task marks its run
-        // failed so it is never left `running` with no live driver.
-        tauri::async_runtime::spawn(async move {
-            let panicked = join.await.is_err();
-            if panicked {
-                let conn = db.lock();
-                set_status(
-                    &conn,
-                    Some(&app),
-                    &run_id,
-                    "failed",
-                    None,
-                    Some("internal scheduler error"),
-                );
-            }
-            runs_ptr.lock().remove(&run_id);
-        });
+        spawn_drive_task(
+            self.db.clone(),
+            self.driver.clone(),
+            self.app.clone(),
+            self.runs.clone(),
+            run_id,
+        );
     }
 
     async fn stop_live_step_agents(&self, run_id: &str) {
@@ -294,6 +261,78 @@ impl WorkflowService {
             let _ = self.driver.stop(&a).await;
         }
     }
+}
+
+/// Register `run_id` in the active-run map and spawn its drive task. A free
+/// function (not a method) so the watchdog can re-invoke it after removing the
+/// registry entry.
+///
+/// A run has at most one live driver (§6.1). If an entry already exists, the
+/// driver may be winding down — its paused status written, its entry not yet
+/// removed by the watchdog. A command landing in that window (approve, resume,
+/// retry) must not be dropped: flag the entry so the watchdog re-drives right
+/// after removal.
+fn spawn_drive_task(
+    db: Db,
+    driver: Arc<dyn AgentDriver>,
+    app: AppHandle,
+    runs: Arc<Mutex<HashMap<String, RunHandle>>>,
+    run_id: String,
+) {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let respawn = Arc::new(AtomicBool::new(false));
+    {
+        let mut m = runs.lock();
+        if let Some(existing) = m.get(&run_id) {
+            existing.respawn.store(true, Ordering::SeqCst);
+            return;
+        }
+        m.insert(
+            run_id.clone(),
+            RunHandle {
+                cancel: cancel.clone(),
+                respawn: respawn.clone(),
+            },
+        );
+    }
+
+    let ctx = RunCtx {
+        db: db.clone(),
+        driver: driver.clone(),
+        app: Some(app.clone()),
+        cancel,
+        deadlines: Deadlines::default(),
+    };
+    let id = run_id.clone();
+    let join = tauri::async_runtime::spawn(async move {
+        drive_run(&ctx, &id).await;
+    });
+    // Panic containment (§6.1): a panicked/aborted drive task marks its run
+    // failed so it is never left `running` with no live driver.
+    tauri::async_runtime::spawn(async move {
+        let panicked = join.await.is_err();
+        if panicked {
+            let conn = db.lock();
+            set_status(
+                &conn,
+                Some(&app),
+                &run_id,
+                "failed",
+                None,
+                Some("internal scheduler error"),
+            );
+        }
+        // Read the respawn flag under the same lock as the removal so a
+        // request can't slip between the two.
+        let respawn_requested = {
+            let mut m = runs.lock();
+            m.remove(&run_id);
+            respawn.load(Ordering::SeqCst)
+        };
+        if respawn_requested && !panicked {
+            spawn_drive_task(db, driver, app, runs, run_id);
+        }
+    });
 }
 
 // ───────────────────────────── the drive loop ───────────────────────────────
@@ -339,6 +378,11 @@ async fn drive_run(ctx: &RunCtx, run_id: &str) {
 
 async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     let run = load_run(&ctx.db.lock(), run_id)?;
+    // Defense in depth: a stale respawn or a command racing a terminal write
+    // must never restart a finished run.
+    if matches!(run.status.as_str(), "done" | "failed" | "canceled") {
+        return Ok(());
+    }
     let spec: Spec =
         serde_json::from_str(&run.spec_json).map_err(|e| Error::Other(e.to_string()))?;
     let steps = extract_linear_steps(&spec)?;
@@ -1420,6 +1464,34 @@ mod tests {
             })
             .unwrap();
         assert_eq!(status, "canceled");
+    }
+
+    #[tokio::test]
+    async fn terminal_run_is_not_redriven() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-term", "wf/t-1");
+        db.lock()
+            .execute("UPDATE wf_run SET status='failed' WHERE id='run-term'", [])
+            .unwrap();
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: StubDriver::new(ws, true),
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+        };
+        drive_run(&ctx, "run-term").await;
+        let (status, execs): (String, i64) = db
+            .lock()
+            .query_row(
+                "SELECT status, (SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-term')
+                 FROM wf_run WHERE id='run-term'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "failed", "terminal status must be preserved");
+        assert_eq!(execs, 0, "no step may run on a terminal run");
     }
 
     #[tokio::test]
