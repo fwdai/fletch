@@ -29,9 +29,6 @@ use super::gates::TestsOutcome;
 /// re-prompt (spec §9.4 keeps the last 100).
 const OUTPUT_TAIL_LINES: usize = 100;
 
-/// Default bound on a single test (or setup) run (spec §11.1 `tests_timeout_secs`).
-pub const DEFAULT_TESTS_TIMEOUT_SECS: u64 = 900;
-
 /// Resolves and runs the `tests` gate. Behind a trait so the attempt lifecycle
 /// is unit-testable with a scripted mock (`AgentDriver`'s pattern).
 pub trait TestRunner: Send + Sync {
@@ -81,7 +78,17 @@ impl SandboxTestRunner {
         worktree: &Path,
         cmd: &str,
     ) -> Result<(PathBuf, Vec<String>, tempfile::NamedTempFile)> {
-        let profile_text = crate::sandbox::build_run_profile(worktree, &self.home, &[])?;
+        // Grant the target's git *common dir* (as the Run panel does) so test
+        // commands that touch git — e.g. `git worktree add` — work in a linked
+        // worktree checkout, whose common dir lives outside `worktree`. For a
+        // plain `--shared` clone this is `<worktree>/.git`, already writable, so
+        // the grant is harmless.
+        let extra_writable: Vec<PathBuf> =
+            crate::supervisor::run::run_target_git_common_dir(worktree)
+                .into_iter()
+                .collect();
+        let profile_text =
+            crate::sandbox::build_run_profile(worktree, &self.home, &extra_writable)?;
         let profile_file = crate::sandbox::profile_tempfile(&profile_text)?;
         let profile_path = profile_file
             .path()
@@ -116,6 +123,17 @@ impl SandboxTestRunner {
 impl TestRunner for SandboxTestRunner {
     fn run_tests<'a>(&'a self, worktree: &'a Path) -> BoxFuture<'a, TestsOutcome> {
         Box::pin(async move {
+            // The gate runs under the Run-panel seatbelt profile, which needs
+            // macOS `sandbox-exec`. Where it isn't present we can't safely run a
+            // repo-derived command, so degrade to the verdict gate (spec §9.4)
+            // rather than fail the step for the wrong reason.
+            if !sandbox_available() {
+                tracing::warn!(
+                    "tests gate: `{}` unavailable on this host; degrading to the verdict gate",
+                    crate::sandbox::SANDBOX_EXEC
+                );
+                return TestsOutcome::NoCommand;
+            }
             let Some(resolved) = resolve(worktree, &self.test_override, &self.setup_override)
             else {
                 return TestsOutcome::NoCommand;
@@ -177,25 +195,47 @@ struct Resolved {
 }
 
 /// Resolve the test and setup commands for `worktree`: a non-empty override
-/// wins, else the highest-confidence detected config's `test` / `install` rows
-/// (spec §9.4). `None` when no test command can be found (→ degrade to verdict).
+/// wins, else the detected commands (spec §9.4). `None` when no test command can
+/// be found (→ degrade to verdict).
+///
+/// Detected commands are taken from a single ecosystem: the highest-confidence
+/// config that actually defines a `test` row (`detect_all` is confidence-sorted).
+/// This keeps `test` and `install` from the same ecosystem and lets a
+/// lower-ranked detector supply the test command when the top one has none — a
+/// mixed repo whose primary ecosystem has no test script no longer degrades to
+/// the verdict gate while a sibling ecosystem's tests go unrun.
 fn resolve(
     worktree: &Path,
     test_override: &Option<String>,
     setup_override: &Option<String>,
 ) -> Option<Resolved> {
     let configs = crate::run_detect::detect_all(worktree);
-    let detected = |id: &str| -> Option<String> {
-        configs
-            .first()
-            .and_then(|c| c.rows.iter().find(|r| r.id == id))
-            .map(|r| r.value.clone())
+    let row = |c: &crate::run_detect::DetectedConfig, id: &str| -> Option<String> {
+        c.rows.iter().find(|r| r.id == id).map(|r| r.value.clone())
     };
-    let test =
-        nonempty(test_override.clone()).or_else(|| detected("test").and_then(some_nonempty))?;
-    let setup =
-        nonempty(setup_override.clone()).or_else(|| detected("install").and_then(some_nonempty));
+    // The ecosystem we take detected commands from. Its `install` pairs with its
+    // `test`; for an override test with no detected test config, setup falls back
+    // to the highest-confidence config.
+    let test_config = configs.iter().find(|c| row(c, "test").is_some());
+    let setup_config = test_config.or_else(|| configs.first());
+
+    let test = nonempty(test_override.clone()).or_else(|| {
+        test_config
+            .and_then(|c| row(c, "test"))
+            .and_then(some_nonempty)
+    })?;
+    let setup = nonempty(setup_override.clone()).or_else(|| {
+        setup_config
+            .and_then(|c| row(c, "install"))
+            .and_then(some_nonempty)
+    });
     Some(Resolved { test, setup })
+}
+
+/// Whether the seatbelt sandbox binary the tests gate runs under is present
+/// (macOS). Elsewhere the gate degrades to the verdict gate rather than fail.
+fn sandbox_available() -> bool {
+    Path::new(crate::sandbox::SANDBOX_EXEC).exists()
 }
 
 /// `Some(trimmed)` when the value is present and non-blank, else `None`.
@@ -310,6 +350,21 @@ mod tests {
         let r = resolve(dir.path(), &None, &None).unwrap();
         assert_eq!(r.test, "npm test");
         assert_eq!(r.setup.as_deref(), Some("npm install"));
+    }
+
+    #[test]
+    fn resolve_uses_lower_ranked_config_when_top_has_no_test() {
+        // Node (lockfile → confidence 90, ranks first) has no `test` script, but
+        // Go (also 90, ranked after node) always defines one. The gate must run
+        // Go's tests rather than degrade, and pair them with Go's install.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "package.json", "{}");
+        write(dir.path(), "pnpm-lock.yaml", "");
+        write(dir.path(), "go.mod", "module example.com/x\n\ngo 1.22\n");
+        write(dir.path(), "go.sum", "");
+        let r = resolve(dir.path(), &None, &None).unwrap();
+        assert_eq!(r.test, "go test ./...");
+        assert_eq!(r.setup.as_deref(), Some("go mod download"));
     }
 
     #[test]

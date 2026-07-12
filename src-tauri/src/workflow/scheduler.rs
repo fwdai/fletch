@@ -416,15 +416,15 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     gitops::provision_run_repo(&repo, &run_dir).await?;
 
     // Tests gate (spec §9.4): resolve the project's test/setup command overrides
-    // once and build the runner shared across every step's attempts. Detection
-    // itself runs per step worktree at gate time.
-    let test_runner = {
+    // once (they are project-scoped). The runner is built per step below so it
+    // honors the step's effective `tests_timeout_secs`; detection runs per step
+    // worktree at gate time.
+    let (test_override, setup_override) = {
         let conn = ctx.db.lock();
-        super::tests_gate::SandboxTestRunner::new(
+        (
             project_setting(&conn, &run.project_id, "run.test"),
             project_setting(&conn, &run.project_id, "run.install"),
-            super::tests_gate::DEFAULT_TESTS_TIMEOUT_SECS,
-        )?
+        )
     };
 
     let first_time = run.status == "pending";
@@ -498,6 +498,14 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
         let step_eff = eff.for_step(step.budgets.as_ref());
         let max_attempts = step_eff.max_attempts;
         let deadlines = deadlines_from(&ctx.deadlines, &step_eff);
+        // Tests-gate runner for this step, honoring its effective
+        // `tests_timeout_secs` (spec §9.4, §11.1). Only the `tests` gate consults
+        // it; a fresh runner per step means setup runs once per step workspace.
+        let test_runner = super::tests_gate::SandboxTestRunner::new(
+            test_override.clone(),
+            setup_override.clone(),
+            step_eff.tests_timeout_secs.max(1) as u64,
+        )?;
 
         let mut attempt_no = next_attempt_no(&ctx.db.lock(), run_id, &step.id);
         let mut last_failure: Option<String> = None;
@@ -644,17 +652,31 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                         }
                         Err(e) => {
                             last_failure = Some(format!("ferry failed: {e}"));
-                            let conn = ctx.db.lock();
-                            finish_step_exec(&conn, &exec_id, "error", None);
-                            if attempt_no >= max_attempts {
-                                set_status(
-                                    &conn,
-                                    ctx.app.as_ref(),
-                                    run_id,
-                                    "failed",
-                                    None,
-                                    Some(&format!("ferry failed: {e}")),
-                                );
+                            // The attempt reached `done`, so its agent is idle but
+                            // still alive. Marking the exec `error` hides it from
+                            // `live_step_agents` (which only sees in-flight execs),
+                            // so stop+archive it here — otherwise the CLI process
+                            // leaks past the retry/fail and its chat is orphaned.
+                            if let Some(agent_id) = &result.agent_id {
+                                let _ = ctx.driver.stop(agent_id).await;
+                                let _ = ctx.driver.archive(agent_id).await;
+                            }
+                            let give_up = attempt_no >= max_attempts;
+                            {
+                                let conn = ctx.db.lock();
+                                finish_step_exec(&conn, &exec_id, "error", None);
+                                if give_up {
+                                    set_status(
+                                        &conn,
+                                        ctx.app.as_ref(),
+                                        run_id,
+                                        "failed",
+                                        None,
+                                        Some(&format!("ferry failed: {e}")),
+                                    );
+                                }
+                            }
+                            if give_up {
                                 return Ok(());
                             }
                         }
