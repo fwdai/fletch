@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use serde_json::Value;
 use tauri::AppHandle;
 use tokio::sync::broadcast;
 
@@ -58,9 +59,12 @@ pub struct SpawnedAgent {
     pub worktree: PathBuf,
 }
 
-/// Per-turn token usage, when the provider's transcript exposes it. The budget
-/// *ledger* that consumes this is S5; `SupervisorDriver` returns `None` in S4
-/// (turn counting is the universal unit the linear engine needs).
+/// Cumulative token usage for an agent's current session, when the provider's
+/// records expose it. The budget ledger charges the per-turn *delta* between
+/// successive reads (§11.2), so returning the running session total — not one
+/// turn's slice — is what lets it account correctly across a multi-turn attempt.
+/// Providers that expose no usage report `None`, and only turn/clock budgets
+/// then apply.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TurnUsage {
     pub input_tokens: u64,
@@ -198,11 +202,52 @@ impl AgentDriver for SupervisorDriver {
         self.sup.last_activity(agent_id)
     }
 
-    fn turn_usage(&self, _agent_id: &str) -> Option<TurnUsage> {
-        // Token extraction is the budget ledger's job (S5). Turn counting — the
-        // universal unit — needs nothing from here.
-        None
+    fn turn_usage(&self, agent_id: &str) -> Option<TurnUsage> {
+        // Sum the `usage` reported across the agent's session records — the
+        // cumulative session total (§11.2). Best-effort by design: we read only
+        // fields the provider already wrote into the record body and build no
+        // per-provider parser (SLICES.md guardrail). A provider that reports no
+        // usage yields `None`, so tokens stay uncounted and turn/clock budgets
+        // bound the run instead.
+        let records = self.sup.read_session_records(agent_id);
+        let mut total = TurnUsage::default();
+        let mut any = false;
+        for rec in &records {
+            if let Some(u) = usage_from_body(&rec.body) {
+                total.input_tokens += u.input_tokens;
+                total.output_tokens += u.output_tokens;
+                any = true;
+            }
+        }
+        any.then_some(total)
     }
+}
+
+/// Pull a `usage` object out of a canonical record body and read the token
+/// counts under whatever standard names the provider used. Covers the shapes
+/// Fletch's providers actually emit — `usage` at the record top level or nested
+/// under `message` (Claude `result`), with Anthropic (`input_tokens` +
+/// `cache_*_input_tokens` / `output_tokens`) or OpenAI (`prompt_tokens` /
+/// `completion_tokens`) field names. Returns `None` when no usage is present.
+fn usage_from_body(body: &Value) -> Option<TurnUsage> {
+    let usage = body
+        .get("usage")
+        .or_else(|| body.pointer("/message/usage"))?;
+    let field = |k: &str| usage.get(k).and_then(Value::as_u64);
+    let input = field("input_tokens")
+        .or_else(|| field("prompt_tokens"))
+        .map(|n| {
+            n + field("cache_creation_input_tokens").unwrap_or(0)
+                + field("cache_read_input_tokens").unwrap_or(0)
+        });
+    let output = field("output_tokens").or_else(|| field("completion_tokens"));
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(TurnUsage {
+        input_tokens: input.unwrap_or(0),
+        output_tokens: output.unwrap_or(0),
+    })
 }
 
 /// What a `MockDriver` does to the agent's status when a prompt is sent —
@@ -290,6 +335,12 @@ impl MockDriver {
             .lock()
             .activity
             .insert(agent_id.to_string(), ts_ms);
+    }
+
+    /// Set the cumulative token usage `turn_usage` reports for an agent (the
+    /// budget ledger's token input).
+    pub(crate) fn set_usage(&self, agent_id: &str, usage: TurnUsage) {
+        self.state.lock().usage.insert(agent_id.to_string(), usage);
     }
 
     pub(crate) fn set_worktree(&self, path: PathBuf) {
@@ -419,6 +470,43 @@ impl AgentDriver for MockDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn usage_from_body_reads_anthropic_shape_with_cache() {
+        let body = json!({
+            "type": "result",
+            "usage": { "input_tokens": 100, "cache_read_input_tokens": 50, "output_tokens": 30 }
+        });
+        assert_eq!(
+            usage_from_body(&body),
+            Some(TurnUsage {
+                input_tokens: 150,
+                output_tokens: 30
+            })
+        );
+    }
+
+    #[test]
+    fn usage_from_body_reads_openai_shape_and_nested() {
+        let body = json!({ "message": { "usage": {
+            "prompt_tokens": 80, "completion_tokens": 20
+        }}});
+        assert_eq!(
+            usage_from_body(&body),
+            Some(TurnUsage {
+                input_tokens: 80,
+                output_tokens: 20
+            })
+        );
+    }
+
+    #[test]
+    fn usage_from_body_none_when_absent_or_empty() {
+        assert_eq!(usage_from_body(&json!({ "type": "turn.completed" })), None);
+        // An empty `usage` object carries no token fields → no usage.
+        assert_eq!(usage_from_body(&json!({ "usage": {} })), None);
+    }
 
     #[tokio::test]
     async fn mock_spawn_starts_spawning_and_broadcasts() {

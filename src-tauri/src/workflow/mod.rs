@@ -16,6 +16,7 @@
 
 pub mod attempt;
 pub mod blackboard;
+pub mod budget;
 pub mod definition;
 pub mod driver;
 pub mod gates;

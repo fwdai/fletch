@@ -25,18 +25,15 @@ use crate::error::{Error, Result};
 
 use super::attempt::{self, AttemptOutcome, AttemptParams, Deadlines};
 use super::blackboard;
+use super::budget::{EffectiveBudgets, Ledger};
 use super::driver::{AgentDriver, SpawnReq};
 use super::gitops;
 use super::journal;
 use super::prompts::{self, Position, StepPromptCtx};
-use super::spec::{Block, Gate, Spec, Step};
+use super::spec::{Block, Budgets, Gate, Spec, Step};
 use super::types::event_type;
 
 type Db = Arc<Mutex<Connection>>;
-
-/// Default `max_attempts` per step (spec §11.1). Autonomous retries only; a
-/// user-initiated `wf_retry` always grants one beyond this.
-const DEFAULT_MAX_ATTEMPTS: i64 = 2;
 
 /// App-state singleton: the active-run registry plus launch / control.
 pub struct WorkflowService {
@@ -100,11 +97,10 @@ impl WorkflowService {
 
         let branch = format!("wf/{}-{}", slugify(&spec.name), &run_id[run_id.len() - 8..]);
         let spec_json = serde_json::to_string(&spec).map_err(|e| Error::Other(e.to_string()))?;
-        let budgets_json = spec
-            .budgets
-            .as_ref()
-            .and_then(|b| serde_json::to_string(b).ok())
-            .unwrap_or_else(|| "{}".to_string());
+        // Freeze the effective budgets (§11.1 defaults ∪ spec) at launch — the
+        // immutable-except-by-resume-patch source of truth for enforcement (§11.2).
+        let budgets_json = serde_json::to_string(&EffectiveBudgets::resolve(&spec))
+            .map_err(|e| Error::Other(e.to_string()))?;
 
         let now = super::now_ms();
         {
@@ -170,10 +166,40 @@ impl WorkflowService {
         Ok(())
     }
 
-    /// Resume a paused run (`wf_resume`): re-drive from the cursor. A fresh
-    /// attempt is started for a blocked/stalled step by the drive loop.
-    pub fn resume(&self, run_id: &str) -> Result<()> {
-        self.resume_paused(run_id, "resume")
+    /// Resume a paused run (`wf_resume`): optionally raise the budget (§11.2,
+    /// §13), then re-drive from the cursor. A fresh attempt is started for a
+    /// blocked / stalled / budget-exceeded step by the drive loop. A patch that
+    /// lifts the tripped cap is what lets a `budget_exceeded` run make progress;
+    /// resuming without one simply re-pauses at the same cap.
+    pub fn resume(&self, run_id: &str, budget_patch: Option<Budgets>) -> Result<()> {
+        {
+            let conn = self.db.lock();
+            // Validate resumability BEFORE touching the budget — a rejected
+            // resume (terminal or approval-paused run) must not mutate the
+            // otherwise-immutable `budgets_json`.
+            check_resumable(&conn, run_id, "resume")?;
+            if let Some(patch) = budget_patch {
+                let budgets_json: String = conn
+                    .query_row(
+                        "SELECT budgets_json FROM wf_run WHERE id = ?1",
+                        [run_id],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| Error::Other(format!("run {run_id} not found: {e}")))?;
+                let mut eff: EffectiveBudgets = serde_json::from_str(&budgets_json)
+                    .map_err(|e| Error::Other(format!("bad budgets_json: {e}")))?;
+                eff.apply_patch(&patch);
+                let patched =
+                    serde_json::to_string(&eff).map_err(|e| Error::Other(e.to_string()))?;
+                conn.execute(
+                    "UPDATE wf_run SET budgets_json = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![patched, super::now_ms(), run_id],
+                )
+                .map_err(|e| Error::Other(e.to_string()))?;
+            }
+        }
+        self.spawn_drive(run_id.to_string());
+        Ok(())
     }
 
     /// User-initiated retry after `paused(blocked_gate|stalled)` — same as
@@ -183,22 +209,14 @@ impl WorkflowService {
         self.resume_paused(run_id, "retry")
     }
 
-    /// Shared resume/retry guard: only a `paused(blocked_gate|stalled)` run may
-    /// be re-driven. A terminal run must not restart, and a `paused(approval)`
-    /// run must go through `wf_approve` — re-driving it would start a fresh
-    /// attempt for a step whose result is already ferried.
+    /// Shared resume/retry guard: only a `paused(blocked_gate|stalled|
+    /// budget_exceeded)` run may be re-driven. A terminal run must not restart,
+    /// and a `paused(approval)` run must go through `wf_approve` — re-driving it
+    /// would start a fresh attempt for a step whose result is already ferried.
     fn resume_paused(&self, run_id: &str, action: &str) -> Result<()> {
         {
             let conn = self.db.lock();
-            let (status, reason) = run_status(&conn, run_id)?;
-            if status != "paused" {
-                return Err(Error::Other(format!("cannot {action} a {status} run")));
-            }
-            if reason.as_deref() == Some("approval") {
-                return Err(Error::Other(
-                    "run is awaiting approval — use wf_approve (or wf_cancel)".into(),
-                ));
-            }
+            check_resumable(&conn, run_id, action)?;
         }
         self.spawn_drive(run_id.to_string());
         Ok(())
@@ -358,6 +376,8 @@ struct RunEssentials {
     branch: String,
     base_sha: String,
     status: String,
+    budgets_json: String,
+    spent_json: String,
 }
 
 /// Drive one run to a terminal or paused state. Any error bubbling out marks the
@@ -416,6 +436,16 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     // Resume: abandon any attempt left non-terminal by a prior driver (§6.4).
     abandon_stale_attempts(ctx, run_id).await;
 
+    // Budget ledger + frozen caps (§11). `budgets_json` is the launch-frozen
+    // effective set; `spent_json` the running ledger (carried across resumes).
+    // `start_drive` stamps the wall-clock so pause time between drives isn't
+    // charged (§11.3).
+    let eff: EffectiveBudgets = serde_json::from_str(&run.budgets_json)
+        .unwrap_or_else(|_| EffectiveBudgets::resolve(&spec));
+    let spent_val: Value = serde_json::from_str(&run.spent_json).unwrap_or_else(|_| json!({}));
+    let mut ledger = Ledger::from_json(&spent_val);
+    ledger.start_drive(super::now_ms());
+
     let mut index = get_cursor_index(&ctx.db.lock(), run_id) as usize;
     // The fork source for the next step: the last done step's ref, else base_sha.
     let mut last_ref =
@@ -450,16 +480,34 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                 step.id, step.agent
             ))
         })?;
-        let max_attempts = step
-            .budgets
-            .as_ref()
-            .and_then(|b| b.max_attempts)
-            .unwrap_or(DEFAULT_MAX_ATTEMPTS);
+        // Step-effective budgets: run-level frozen caps with this step's own
+        // `budgets` overlaid (§11.1). Feeds the attempt timeouts and retry cap.
+        let step_eff = eff.for_step(step.budgets.as_ref());
+        let max_attempts = step_eff.max_attempts;
+        let deadlines = deadlines_from(&ctx.deadlines, &step_eff);
 
         let mut attempt_no = next_attempt_no(&ctx.db.lock(), run_id, &step.id);
         let mut last_failure: Option<String> = None;
 
         loop {
+            // Enforcement point: before every spawn (§11.2). No attempt row is
+            // created — the run pauses at the block boundary.
+            if let Some(which) = ledger.exceeded(&step_eff, super::now_ms()) {
+                {
+                    let conn = ctx.db.lock();
+                    journal_event(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        event_type::BUDGET_EXCEEDED,
+                        None,
+                        &json!({ "which": which.as_str() }),
+                    );
+                }
+                finish_budget_pause(ctx, run_id, None, &mut ledger);
+                return Ok(());
+            }
+
             let exec_id = format!("exec-{}", uuid::Uuid::new_v4());
             {
                 let conn = ctx.db.lock();
@@ -511,17 +559,19 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     owner_run_id: run_id.to_string(),
                 },
                 blackboard: blackboard.clone(),
+                exec_id: exec_id.clone(),
                 step_id: step.id.clone(),
                 attempt: attempt_no as u32,
                 iteration: 0,
                 gate: step.gate.clone(),
                 prompt,
-                deadlines: ctx.deadlines.clone(),
+                deadlines: deadlines.clone(),
                 reprompt_on_block: true,
             };
 
             let started = super::now_ms();
-            let result = attempt::run_attempt(ctx.driver.as_ref(), params).await;
+            let result =
+                attempt::run_attempt(ctx.driver.as_ref(), params, &mut ledger, &step_eff).await;
             // Journal the attempt's events and stamp its agent id.
             {
                 let conn = ctx.db.lock();
@@ -541,6 +591,11 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                         &e.payload,
                     );
                 }
+                // Persist the ledger this attempt spent (turns/tokens charged in
+                // `run_attempt`), folding in the drive's active wall-clock so a
+                // resume reads a current spend snapshot (§11.2).
+                ledger.checkpoint_wall(super::now_ms());
+                persist_spent(&conn, run_id, &ledger);
             }
 
             match result.outcome {
@@ -694,6 +749,32 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                         return Ok(());
                     }
                     attempt_no += 1;
+                }
+                AttemptOutcome::BudgetExceeded { .. } => {
+                    // A run-level cap was hit mid-attempt (§11.2). The attempt
+                    // already journaled `budget_exceeded`; finish its bookkeeping
+                    // — stop the agent, abandon the incomplete attempt — and pause.
+                    // Resume-with-patch (§13) starts a fresh attempt for this step.
+                    if let Some(agent_id) = &result.agent_id {
+                        let _ = ctx.driver.stop(agent_id).await;
+                    }
+                    {
+                        let conn = ctx.db.lock();
+                        let _ = conn.execute(
+                            "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
+                            rusqlite::params![super::now_ms(), exec_id],
+                        );
+                        journal_event(
+                            &conn,
+                            ctx.app.as_ref(),
+                            run_id,
+                            event_type::ATTEMPT_ABANDONED,
+                            Some(&exec_id),
+                            &json!({ "cause": "budget_exceeded" }),
+                        );
+                    }
+                    finish_budget_pause(ctx, run_id, Some(&exec_id), &mut ledger);
+                    return Ok(());
                 }
             }
         }
@@ -857,6 +938,23 @@ fn slugify(name: &str) -> String {
     }
 }
 
+/// The resume/retry guard: only a `paused(blocked_gate|stalled|budget_exceeded)`
+/// run may be re-driven. A terminal run must not restart, and a
+/// `paused(approval)` run must go through `wf_approve`. Callers run this before
+/// any state mutation so a rejected resume changes nothing.
+fn check_resumable(conn: &Connection, run_id: &str, action: &str) -> Result<()> {
+    let (status, reason) = run_status(conn, run_id)?;
+    if status != "paused" {
+        return Err(Error::Other(format!("cannot {action} a {status} run")));
+    }
+    if reason.as_deref() == Some("approval") {
+        return Err(Error::Other(
+            "run is awaiting approval — use wf_approve (or wf_cancel)".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn run_status(conn: &Connection, run_id: &str) -> Result<(String, Option<String>)> {
     conn.query_row(
         "SELECT status, paused_reason FROM wf_run WHERE id = ?1",
@@ -868,7 +966,9 @@ fn run_status(conn: &Connection, run_id: &str) -> Result<(String, Option<String>
 
 fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
     conn.query_row(
-        "SELECT spec_json, task, repo_path, run_dir, branch, base_sha, status FROM wf_run WHERE id = ?1",
+        "SELECT spec_json, task, repo_path, run_dir, branch, base_sha, status,
+                budgets_json, spent_json
+         FROM wf_run WHERE id = ?1",
         [run_id],
         |r| {
             Ok(RunEssentials {
@@ -879,6 +979,8 @@ fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
                 branch: r.get(4)?,
                 base_sha: r.get(5)?,
                 status: r.get(6)?,
+                budgets_json: r.get(7)?,
+                spent_json: r.get(8)?,
             })
         },
     )
@@ -986,6 +1088,53 @@ fn set_cursor_index(conn: &Connection, run_id: &str, index: i64) {
     );
 }
 
+/// Persist the run's ledger snapshot to `spent_json` (§11.2).
+fn persist_spent(conn: &Connection, run_id: &str, ledger: &Ledger) {
+    let _ = conn.execute(
+        "UPDATE wf_run SET spent_json = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![ledger.to_json().to_string(), super::now_ms(), run_id],
+    );
+}
+
+/// Pause a run `budget_exceeded` (§11.2): fold in the drive's active wall-clock,
+/// persist the ledger, journal `run_paused`, and set the row. The caller has
+/// already journaled the `budget_exceeded` event (from the attempt's events or
+/// the pre-spawn check) and settled any live agent.
+fn finish_budget_pause(ctx: &RunCtx, run_id: &str, exec_id: Option<&str>, ledger: &mut Ledger) {
+    ledger.checkpoint_wall(super::now_ms());
+    let conn = ctx.db.lock();
+    persist_spent(&conn, run_id, ledger);
+    journal_event(
+        &conn,
+        ctx.app.as_ref(),
+        run_id,
+        event_type::RUN_PAUSED,
+        exec_id,
+        &json!({ "reason": "budget_exceeded" }),
+    );
+    set_status(
+        &conn,
+        ctx.app.as_ref(),
+        run_id,
+        "paused",
+        Some("budget_exceeded"),
+        None,
+    );
+}
+
+/// Attempt deadlines resolved from the step-effective budgets (§11.1). The
+/// watchdog cadence comes from `base` — it is not a budget field.
+fn deadlines_from(base: &Deadlines, eff: &EffectiveBudgets) -> Deadlines {
+    let secs = |n: i64| std::time::Duration::from_secs(n.max(0) as u64);
+    Deadlines {
+        spawn_timeout: secs(eff.spawn_timeout_secs),
+        turn_start_timeout: secs(eff.turn_start_timeout_secs),
+        stall_timeout: secs(eff.stall_timeout_secs),
+        nudge_timeout: secs(eff.nudge_timeout_secs),
+        watchdog_tick: base.watchdog_tick,
+    }
+}
+
 /// The exec id of the most recent `done` step (the fork source for the next).
 fn latest_done_exec(conn: &Connection, run_id: &str) -> Option<String> {
     conn.query_row(
@@ -1087,10 +1236,17 @@ pub async fn wf_cancel(run_id: String, service: Svc<'_>) -> std::result::Result<
     service.cancel(&run_id).await.map_err(|e| e.to_string())
 }
 
-/// Resume a paused run (no budget patch yet — S5).
+/// Resume a paused run (§13), optionally raising the budget with a patch
+/// ("+N turns / +N tokens / +N minutes") for a `budget_exceeded` pause.
 #[tauri::command]
-pub async fn wf_resume(run_id: String, service: Svc<'_>) -> std::result::Result<(), String> {
-    service.resume(&run_id).map_err(|e| e.to_string())
+pub async fn wf_resume(
+    run_id: String,
+    budget_patch: Option<Budgets>,
+    service: Svc<'_>,
+) -> std::result::Result<(), String> {
+    service
+        .resume(&run_id, budget_patch)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1570,5 +1726,244 @@ mod tests {
             })
             .unwrap();
         assert_eq!(status, "done");
+    }
+
+    // ── budgets (spec §11.2) ─────────────────────────────────────────────────
+
+    /// Scaffold a commit-gated linear run of `step_ids`, no finalize, with an
+    /// explicit `budgets_json`. Mirrors `scaffold_one_step` but parametric.
+    fn scaffold_steps(
+        tmp: &Path,
+        run_id: &str,
+        branch: &str,
+        step_ids: &[&str],
+        budgets_json: &str,
+    ) -> (Db, PathBuf) {
+        let source = tmp.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        sh(&source, &["init", "-q", "-b", "main"]);
+        sh(&source, &["config", "user.email", "t@t.t"]);
+        sh(&source, &["config", "user.name", "t"]);
+        std::fs::write(source.join("README"), "base").unwrap();
+        sh(&source, &["add", "-A"]);
+        sh(&source, &["commit", "-qm", "base"]);
+        let base_sha = {
+            let o = Sh::new("git")
+                .current_dir(&source)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let run_dir = tmp.join("rundir");
+        std::fs::create_dir_all(blackboard::blackboard_dir(&run_dir)).unwrap();
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "coder".to_string(),
+            super::super::spec::AgentSpec {
+                base: "codex".to_string(),
+                model: None,
+                instructions: None,
+                skills: vec![],
+                custom_agent: None,
+            },
+        );
+        let spec = Spec {
+            version: 1,
+            name: "demo".to_string(),
+            description: None,
+            budgets: None,
+            agents,
+            workflow: step_ids.iter().map(|id| Block::Step(step(id))).collect(),
+            finalize: None,
+        };
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        let db = crate::database::init(tmp).unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,'demo',?2,'t','p',?3,?4,?5,?6,'pending',?7,'{}',0,0)",
+                rusqlite::params![
+                    run_id,
+                    spec_json,
+                    source.to_string_lossy(),
+                    run_dir.to_string_lossy(),
+                    branch,
+                    base_sha,
+                    budgets_json,
+                ],
+            )
+            .unwrap();
+        (db, tmp.join("ws"))
+    }
+
+    fn eff_json(turns: i64) -> String {
+        serde_json::to_string(&EffectiveBudgets {
+            turns,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn zero_turn_budget_pauses_before_any_spawn() {
+        // Enforcement point: before every spawn (§11.2). A run with no turn
+        // budget pauses at the block boundary, having spawned nothing.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws) = scaffold_steps(tmp.path(), "run-b0", "wf/b0", &["only"], &eff_json(0));
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: StubDriver::new(ws, true),
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+        };
+        drive_run(&ctx, "run-b0").await;
+
+        let (status, reason): (String, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, paused_reason FROM wf_run WHERE id='run-b0'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "paused");
+        assert_eq!(reason.as_deref(), Some("budget_exceeded"));
+        let execs: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-b0'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(execs, 0, "no attempt was spawned");
+    }
+
+    #[tokio::test]
+    async fn budget_exceeded_pauses_then_resume_with_patch_completes() {
+        // A turn budget of 1 lets step 1's turn run and be counted, then trips
+        // the turn-end enforcement point and pauses the two-step run. A resume
+        // with a budget patch (simulating `wf_resume(budget_patch)`) lifts the
+        // cap and the run drives to done from the paused position.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws) = scaffold_steps(tmp.path(), "run-b1", "wf/b1", &["s1", "s2"], &eff_json(1));
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: StubDriver::new(ws, true),
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+        };
+        drive_run(&ctx, "run-b1").await;
+
+        // Paused for budget, one turn spent, a budget_exceeded event journaled.
+        let (status, reason): (String, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, paused_reason FROM wf_run WHERE id='run-b1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "paused");
+        assert_eq!(reason.as_deref(), Some("budget_exceeded"));
+        let spent: String = db
+            .lock()
+            .query_row("SELECT spent_json FROM wf_run WHERE id='run-b1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let ledger = Ledger::from_json(&serde_json::from_str(&spent).unwrap());
+        assert_eq!(ledger.turns, 1, "one turn charged before the pause");
+        let exceeded: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_event WHERE run_id='run-b1' AND type=?1",
+                [event_type::BUDGET_EXCEEDED],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(exceeded, 1, "budget_exceeded journaled");
+
+        // Resume with +10 turns (what `wf_resume`'s patch does), then re-drive.
+        {
+            let conn = db.lock();
+            let bj: String = conn
+                .query_row(
+                    "SELECT budgets_json FROM wf_run WHERE id='run-b1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let mut e: EffectiveBudgets = serde_json::from_str(&bj).unwrap();
+            e.apply_patch(&Budgets {
+                turns: Some(10),
+                tokens: None,
+                wall_clock_mins: None,
+                turns_per_attempt: None,
+                max_attempts: None,
+                spawn_timeout_secs: None,
+                turn_start_timeout_secs: None,
+                stall_timeout_secs: None,
+                nudge_timeout_secs: None,
+                tests_timeout_secs: None,
+            });
+            conn.execute(
+                "UPDATE wf_run SET budgets_json=?1 WHERE id='run-b1'",
+                [serde_json::to_string(&e).unwrap()],
+            )
+            .unwrap();
+        }
+        drive_run(&ctx, "run-b1").await;
+
+        let status: String = db
+            .lock()
+            .query_row("SELECT status FROM wf_run WHERE id='run-b1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "done", "resume-with-patch drove the run to done");
+        let done: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-b1' AND status='done'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(done, 2, "both steps completed after the patch");
+    }
+
+    #[test]
+    fn check_resumable_gates_resume_and_retry() {
+        // The guard runs before `resume` applies any budget patch, so a rejected
+        // resume leaves state untouched. Terminal and approval-paused runs are
+        // rejected; resumable pauses pass.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let insert = |id: &str, status: &str, reason: Option<&str>| {
+            db.lock()
+                .execute(
+                    "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,
+                        branch,base_sha,status,paused_reason,budgets_json,spent_json,
+                        created_at,updated_at)
+                     VALUES (?1,'n','{}','t','p','/r','/d','wf/x','sha',?2,?3,'{}','{}',0,0)",
+                    rusqlite::params![id, status, reason],
+                )
+                .unwrap();
+        };
+        insert("r-done", "done", None);
+        insert("r-appr", "paused", Some("approval"));
+        insert("r-budg", "paused", Some("budget_exceeded"));
+        insert("r-blk", "paused", Some("blocked_gate"));
+
+        let conn = db.lock();
+        assert!(check_resumable(&conn, "r-done", "resume").is_err());
+        assert!(check_resumable(&conn, "r-appr", "resume").is_err());
+        assert!(check_resumable(&conn, "r-budg", "resume").is_ok());
+        assert!(check_resumable(&conn, "r-blk", "retry").is_ok());
     }
 }
