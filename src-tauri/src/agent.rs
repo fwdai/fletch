@@ -963,6 +963,7 @@ impl Agent {
             cwd: &spec.cwd,
             home: &home,
             interactive: true,
+            blackboard: None,
         };
         let LaunchPlan {
             program,
@@ -1052,6 +1053,7 @@ impl Agent {
             cwd: &spec.cwd,
             home: &home,
             interactive: true,
+            blackboard: None,
         };
         let LaunchPlan {
             program,
@@ -1113,6 +1115,7 @@ impl Agent {
             cwd: &spec.cwd,
             home: &home,
             interactive: false,
+            blackboard: None,
         };
         let LaunchPlan {
             program,
@@ -1255,6 +1258,7 @@ impl Agent {
             cwd: &spec.cwd,
             home: &home,
             interactive: false,
+            blackboard: None,
         };
         let LaunchPlan {
             program: launch_program,

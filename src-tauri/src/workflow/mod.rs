@@ -14,6 +14,7 @@
 //! The allow is removed once those callers land.
 #![allow(dead_code)]
 
+pub mod blackboard;
 pub mod definition;
 pub mod journal;
 pub mod spec;

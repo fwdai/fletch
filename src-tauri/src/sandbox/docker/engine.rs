@@ -360,6 +360,17 @@ impl SandboxEngine for DockerEngine {
             ("TERM".into(), "xterm-256color".into()),
             ("COLORTERM".into(), "truecolor".into()),
         ];
+        // A workflow step agent's blackboard is bind-mounted at its identical
+        // host path (invariant 1, like the RPC mailbox), so `WF_BLACKBOARD` is
+        // the same host path under either engine. Pushed before the provider
+        // match sets `auth_start` so it forwards as a plain env var, not an
+        // auth var.
+        if let Some(board) = ctx.blackboard {
+            env.push((
+                crate::workflow::blackboard::WF_BLACKBOARD_ENV.into(),
+                board.to_string_lossy().into_owned(),
+            ));
+        }
 
         // Owned per-provider mount inputs, borrowed into a `ProviderMounts` when
         // the `RunSpec` is built below. Defaults describe "no config surface";
@@ -571,6 +582,7 @@ impl SandboxEngine for DockerEngine {
                 rpc_dir: ctx.rpc_dir,
                 home: ctx.home,
                 cwd: ctx.cwd,
+                blackboard: ctx.blackboard,
                 mounts,
                 borrowed_object_stores: &borrowed_object_stores,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
@@ -1091,6 +1103,10 @@ struct RunSpec<'a> {
     rpc_dir: &'a Path,
     home: &'a Path,
     cwd: &'a Path,
+    /// A workflow step agent's blackboard directory, bind-mounted read-write at
+    /// its identical host path and forwarded as `WF_BLACKBOARD`. `None` for
+    /// ordinary agents.
+    blackboard: Option<&'a Path>,
     /// The launching provider's config/data mounts + config-dir env forwards.
     mounts: ProviderMounts<'a>,
     /// Object stores borrowed via git alternates (a `--shared` clone),
@@ -1132,6 +1148,12 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         let path = path.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}"));
+    }
+    // A workflow step agent's blackboard, bind-mounted read-write at its
+    // identical host path (invariant 1) so `$WF_BLACKBOARD` resolves the same
+    // in-container as on the host — the same shape as the RPC mailbox mount.
+    if let Some(board) = spec.blackboard {
+        push_rw_bind(&mut args, board);
     }
     // Object stores borrowed by a --shared clone, mounted read-only at their
     // identical host path so the alternates file resolves in-container with no
@@ -1185,6 +1207,9 @@ fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     // the value ever appearing in argv (invariant 3 for the auth vars). Auth
     // vars come from `spec.auth_vars` — the set the chain actually resolved.
     let mut forwarded: Vec<&str> = vec!["HOME", "FLETCH_RPC_DIR", "TERM", "COLORTERM"];
+    if spec.blackboard.is_some() {
+        forwarded.push(crate::workflow::blackboard::WF_BLACKBOARD_ENV);
+    }
     match &spec.mounts {
         ProviderMounts::Claude { config_dir, .. } => {
             if config_dir.is_some() {
@@ -1487,6 +1512,7 @@ mod tests {
             rpc_dir: Path::new("/Users/u/.fletch/rpc/orkney"),
             home: Path::new("/Users/u"),
             cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
+            blackboard: None,
             mounts: claude_mounts(None, false, false),
             borrowed_object_stores: &[],
             memory: "4g",
@@ -1519,6 +1545,7 @@ mod tests {
             rpc_dir: Path::new("/Users/u/.fletch/rpc/orkney"),
             home: Path::new("/Users/u"),
             cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
+            blackboard: None,
             mounts,
             borrowed_object_stores: &[],
             memory: "4g",
@@ -1575,6 +1602,39 @@ mod tests {
             values_of(&args, "-w"),
             vec!["/Users/u/.fletch/worktrees/orkney/repo"],
         );
+    }
+
+    #[test]
+    fn argv_mounts_blackboard_and_forwards_its_env_when_present() {
+        let board = Path::new("/Users/u/.fletch/runs/run-1/blackboard");
+        let mut spec = test_spec(false);
+        spec.blackboard = Some(board);
+        let args = run_args(&spec);
+
+        // Bound read-write at its identical host path (invariant 1), the same
+        // shape as the RPC mailbox mount.
+        assert!(
+            values_of(&args, "-v").contains(
+                &"/Users/u/.fletch/runs/run-1/blackboard:/Users/u/.fletch/runs/run-1/blackboard"
+            ),
+            "blackboard must be bind-mounted at its identical host path, got {:?}",
+            values_of(&args, "-v")
+        );
+        // Forwarded so the in-container agent finds the mount via `$WF_BLACKBOARD`.
+        assert!(
+            values_of(&args, "-e").contains(&"WF_BLACKBOARD"),
+            "WF_BLACKBOARD must be forwarded into the container"
+        );
+    }
+
+    #[test]
+    fn argv_omits_blackboard_for_ordinary_agents() {
+        let args = run_args(&test_spec(false));
+        assert!(
+            !args.iter().any(|a| a.contains("blackboard")),
+            "no blackboard mount for a non-workflow agent"
+        );
+        assert!(!values_of(&args, "-e").contains(&"WF_BLACKBOARD"));
     }
 
     /// Invariant 5: `~/.claude` is read-only so a prompt-injected agent cannot
@@ -2552,6 +2612,7 @@ mod tests {
             rpc_dir: &rpc,
             home: &home,
             cwd: &root,
+            blackboard: None,
             mounts: ProviderMounts::Claude {
                 config_dir: None,
                 credentials_rw: false,
