@@ -140,6 +140,9 @@ pub mod event_type {
     pub const CHILD_SPAWN_DENIED: &str = "child_spawn_denied";
     pub const SUBRUN_LAUNCHED: &str = "subrun_launched";
     pub const SUBRUN_FINISHED: &str = "subrun_finished";
+    /// A parallel/orchestrate stage with `integrate: none` finished; a child's
+    /// committed work was left on its (unpushed) fork rather than merged (§12.3).
+    pub const INTEGRATE_SKIPPED: &str = "integrate_skipped";
     pub const MERGE_STARTED: &str = "merge_started";
     pub const MERGE_CONFLICT: &str = "merge_conflict";
     pub const MERGE_DONE: &str = "merge_done";
