@@ -556,8 +556,9 @@ impl Supervisor {
         // wf_ask / wf_notify, §10); everything else still falls through to the
         // git dispatcher. Plain agents keep the git dispatcher unchanged.
         let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> = match &record.owner_run_id {
-            Some(_) => Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
+            Some(run_id) => Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
                 app.clone(),
+                run_id.clone(),
                 agent_id.to_string(),
                 git_dispatcher,
             )),

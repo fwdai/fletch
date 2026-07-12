@@ -186,6 +186,24 @@ pub(super) fn take_pending_deliveries(
     msgs
 }
 
+/// Does this attempt have a `wf_ask` still awaiting a human answer? The
+/// persisted message is the source of truth (spec §8.4 "event-sourced truth"):
+/// the in-memory pending-ask poke is best-effort and can be missed if the RPC
+/// op races the driver's wind-down, so the scheduler consults this before acting
+/// on a turn's gate outcome — a queued ask always pauses the run `question`
+/// rather than letting the gate be acted on (§10.4).
+pub(super) fn has_unanswered_ask(conn: &Connection, step_exec_id: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM wf_message
+         WHERE from_step_exec_id = ?1 AND kind = 'ask' AND status = 'queued' LIMIT 1",
+        [step_exec_id],
+        |_| Ok(()),
+    )
+    .optional()
+    .unwrap_or(None)
+    .is_some()
+}
+
 // ───────────────────────────── sender resolution ────────────────────────────
 
 /// The run/step context of the agent that issued a comms op.
@@ -226,36 +244,55 @@ fn step_caps(spec: &Spec, step_id: &str) -> Option<Vec<CommsCap>> {
     walk(&spec.workflow, step_id).map(<[CommsCap]>::to_vec)
 }
 
-/// Resolve the live step attempt behind a run-owned agent's mailbox. Errors if
-/// the agent has no attempt, its attempt is terminal (not live), or its step is
-/// missing from the launch snapshot.
-fn resolve_sender(conn: &Connection, agent_id: &str) -> Result<Sender> {
-    let (step_exec_id, run_id, step_id, status) = conn
-        .query_row(
-            "SELECT id, run_id, step_id, status FROM wf_step_exec
-             WHERE agent_id = ?1 ORDER BY rowid DESC LIMIT 1",
-            [agent_id],
-            |r| {
+/// Resolve the live step attempt behind a run-owned agent's mailbox. Keyed by
+/// `run_id` (which the dispatcher captures from the agent's `owner_run_id` at
+/// spawn) rather than `agent_id`: the scheduler only stamps `wf_step_exec.
+/// agent_id` *after* the turn completes, so during the turn — exactly when a
+/// comms op fires — that column is still NULL and an agent-id lookup would miss.
+/// When the row is already linked to `agent_id` (a future/parallel case) that
+/// row is preferred; otherwise the run's single in-flight attempt is used, and
+/// concurrent in-flight attempts (parallel comms, unsupported in v1) are an
+/// explicit error rather than a silent misattribution.
+fn resolve_sender(conn: &Connection, run_id: &str, agent_id: &str) -> Result<Sender> {
+    let live: Vec<(String, String, Option<String>)> = conn
+        .prepare(
+            "SELECT id, step_id, agent_id FROM wf_step_exec
+             WHERE run_id = ?1 AND status IN ('spawning','running','gating')
+             ORDER BY rowid DESC",
+        )
+        .and_then(|mut s| {
+            s.query_map([run_id], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<String>>(2)?,
                 ))
-            },
-        )
-        .optional()
-        .map_err(|e| Error::Other(e.to_string()))?
-        .ok_or_else(|| Error::Other("no workflow step for this agent".into()))?;
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|e| Error::Other(e.to_string()))?;
 
-    if !matches!(status.as_str(), "spawning" | "running" | "gating") {
-        return Err(Error::Other("this step's attempt is no longer live".into()));
-    }
+    let (step_exec_id, step_id) =
+        if let Some((id, step, _)) = live.iter().find(|(_, _, a)| a.as_deref() == Some(agent_id)) {
+            (id.clone(), step.clone())
+        } else {
+            match live.as_slice() {
+                [] => return Err(Error::Other("no live step for this run".into())),
+                [(id, step, _)] => (id.clone(), step.clone()),
+                _ => {
+                    return Err(Error::Other(
+                        "cannot attribute a comms op among concurrent steps \
+                     (parallel comms is not supported yet)"
+                            .into(),
+                    ))
+                }
+            }
+        };
 
     let spec_json: String = conn
         .query_row(
             "SELECT spec_json FROM wf_run WHERE id = ?1",
-            [&run_id],
+            [run_id],
             |r| r.get(0),
         )
         .map_err(|e| Error::Other(e.to_string()))?;
@@ -264,7 +301,7 @@ fn resolve_sender(conn: &Connection, agent_id: &str) -> Result<Sender> {
         .ok_or_else(|| Error::Other(format!("step '{step_id}' not found in run spec")))?;
 
     Ok(Sender {
-        run_id,
+        run_id: run_id.to_string(),
         step_exec_id,
         step_id,
         caps,
@@ -289,11 +326,12 @@ fn route(
     conn: &Connection,
     app: Option<&AppHandle>,
     id: &str,
+    run_id: &str,
     agent_id: &str,
     op: &str,
     args: &Value,
 ) -> (Response, Poke) {
-    let sender = match resolve_sender(conn, agent_id) {
+    let sender = match resolve_sender(conn, run_id, agent_id) {
         Ok(s) => s,
         Err(e) => return (Response::err(id, e.to_string()), Poke::None),
     };
@@ -476,6 +514,7 @@ impl WorkflowService {
     pub(super) fn handle_comms_op(
         &self,
         id: &str,
+        run_id: &str,
         agent_id: &str,
         op: &str,
         args: &Value,
@@ -485,7 +524,7 @@ impl WorkflowService {
         // DB lock's work).
         let (resp, poke) = {
             let conn = self.db.lock();
-            route(&conn, Some(&self.app), id, agent_id, op, args)
+            route(&conn, Some(&self.app), id, run_id, agent_id, op, args)
         };
         if let Poke::AskQueued { run_id } = poke {
             // Raise the run's pending-ask flag so the in-flight attempt defers its
@@ -572,13 +611,22 @@ fn new_msg_id() -> String {
 /// `supervisor::lifecycle` when an agent has an `owner_run_id`.
 pub struct WorkflowCommsDispatcher {
     app: AppHandle,
+    /// The run that owns this agent (its `owner_run_id`), captured at spawn. Comms
+    /// ops resolve the sender by run — `wf_step_exec.agent_id` is stamped only
+    /// after the turn, so it can't key resolution during the turn.
+    run_id: String,
     agent_id: String,
     git: GitDispatcher,
 }
 
 impl WorkflowCommsDispatcher {
-    pub fn new(app: AppHandle, agent_id: String, git: GitDispatcher) -> Self {
-        Self { app, agent_id, git }
+    pub fn new(app: AppHandle, run_id: String, agent_id: String, git: GitDispatcher) -> Self {
+        Self {
+            app,
+            run_id,
+            agent_id,
+            git,
+        }
     }
 }
 
@@ -592,7 +640,10 @@ impl RpcDispatcher for WorkflowCommsDispatcher {
         Box::pin(async move {
             if is_comms_op(op) {
                 match self.app.try_state::<Arc<WorkflowService>>() {
-                    Some(svc) => svc.inner().handle_comms_op(id, &self.agent_id, op, args),
+                    Some(svc) => {
+                        svc.inner()
+                            .handle_comms_op(id, &self.run_id, &self.agent_id, op, args)
+                    }
                     None => (
                         Response::err(id, "workflow service unavailable"),
                         Vec::new(),
@@ -755,6 +806,7 @@ mod tests {
             &conn,
             None,
             "req-1",
+            "run",
             "agent-1",
             "wf_report",
             &json!({ "status": "progress", "note": "halfway" }),
@@ -790,6 +842,7 @@ mod tests {
             &conn,
             None,
             "req-1",
+            "run",
             "agent-1",
             "wf_report",
             &json!({ "note": "x" }),
@@ -816,6 +869,7 @@ mod tests {
             &conn,
             None,
             "req-1",
+            "run",
             "agent-1",
             "wf_ask",
             &json!({ "question": "which db?" }),
@@ -841,6 +895,7 @@ mod tests {
             &conn,
             None,
             "req-1",
+            "run",
             "agent-1",
             "wf_ask",
             &json!({ "question": "   " }),
@@ -858,6 +913,7 @@ mod tests {
             &conn,
             None,
             "req-1",
+            "run",
             "agent-1",
             "wf_ask",
             &json!({ "question": "which db?" }),
@@ -905,5 +961,84 @@ mod tests {
         .unwrap();
         let err = deliver_answer(&conn, None, &run, "nope", "x");
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn resolves_sender_before_agent_id_is_stamped() {
+        // The scheduler stamps `wf_step_exec.agent_id` only after the turn ends,
+        // but comms ops fire *during* the turn. Resolution must work off the
+        // run's live attempt while that column is still NULL — otherwise every
+        // mid-turn wf_ask/wf_report would fail with "no workflow step".
+        let (conn, _run, exec) = seed(vec![CommsCap::Ask]);
+        conn.execute(
+            "UPDATE wf_step_exec SET agent_id = NULL WHERE id = ?1",
+            [&exec],
+        )
+        .unwrap();
+        let (resp, poke) = route(
+            &conn,
+            None,
+            "req-1",
+            "run",
+            "agent-1",
+            "wf_ask",
+            &json!({ "question": "which db?" }),
+        );
+        assert!(
+            resp.ok,
+            "must resolve by run while agent_id is NULL: {resp:?}"
+        );
+        assert!(matches!(poke, Poke::AskQueued { .. }));
+    }
+
+    #[test]
+    fn concurrent_live_attempts_are_not_misattributed() {
+        // Parallel comms is unsupported in v1: with two in-flight attempts and no
+        // agent_id link yet, the router refuses rather than guess a sender.
+        let (conn, _run, _exec) = seed(vec![CommsCap::Ask]);
+        conn.execute(
+            "UPDATE wf_step_exec SET agent_id = NULL WHERE id = 'exec-1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode)
+             VALUES ('exec-2','run','s1',1,0,'running','verdict')",
+            [],
+        )
+        .unwrap();
+        let (resp, _poke) = route(
+            &conn,
+            None,
+            "req-1",
+            "run",
+            "agent-1",
+            "wf_ask",
+            &json!({ "question": "q" }),
+        );
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("concurrent"));
+    }
+
+    #[test]
+    fn has_unanswered_ask_tracks_queued_then_answered() {
+        let (conn, run, exec) = seed(vec![CommsCap::Ask]);
+        assert!(!has_unanswered_ask(&conn, &exec), "no ask yet");
+        let (resp, _) = route(
+            &conn,
+            None,
+            "req-1",
+            "run",
+            "agent-1",
+            "wf_ask",
+            &json!({ "question": "q" }),
+        );
+        let ask_id = resp.stdout.unwrap();
+        assert!(has_unanswered_ask(&conn, &exec), "queued ask is pending");
+        deliver_answer(&conn, None, &run, &ask_id, "yes").unwrap();
+        assert!(
+            !has_unanswered_ask(&conn, &exec),
+            "answered ask is no longer pending"
+        );
     }
 }

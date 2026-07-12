@@ -711,7 +711,21 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                 persist_spent(&conn, run_id, &ledger);
             }
 
-            match result.outcome {
+            // Authoritative pending-ask backstop (§10.4): the in-memory
+            // `pending_ask` poke is best-effort — it can be missed if the RPC op
+            // raced this driver's wind-down or landed just after the turn-end
+            // check — so the *persisted* ask is the source of truth. If this
+            // attempt raised a `wf_ask` still awaiting a human answer, pause
+            // `question` regardless of the gate outcome; the gate's result is
+            // never acted on (no ferry, no advance) while an answer is
+            // outstanding. `AwaitingAnswer` from the fast path lands here too.
+            let outcome = if super::comms::has_unanswered_ask(&ctx.db.lock(), &exec_id) {
+                AttemptOutcome::AwaitingAnswer
+            } else {
+                result.outcome
+            };
+
+            match outcome {
                 AttemptOutcome::Done { .. } => {
                     let wt = result
                         .worktree
@@ -1723,9 +1737,11 @@ fn slugify(name: &str) -> String {
 }
 
 /// The resume/retry guard: only a `paused(blocked_gate|stalled|budget_exceeded)`
-/// run may be re-driven. A terminal run must not restart, and a
-/// `paused(approval)` run must go through `wf_approve`. Callers run this before
-/// any state mutation so a rejected resume changes nothing.
+/// run may be re-driven. A terminal run must not restart; a `paused(approval)`
+/// run must go through `wf_approve`; and a `paused(question)` run must go through
+/// `wf_answer` — resuming it without an answer would re-prompt the step with no
+/// human response (§10.4). Callers run this before any state mutation so a
+/// rejected resume changes nothing.
 fn check_resumable(conn: &Connection, run_id: &str, action: &str) -> Result<()> {
     let (status, reason) = run_status(conn, run_id)?;
     if status != "paused" {
@@ -1734,6 +1750,11 @@ fn check_resumable(conn: &Connection, run_id: &str, action: &str) -> Result<()> 
     if reason.as_deref() == Some("approval") {
         return Err(Error::Other(
             "run is awaiting approval — use wf_approve (or wf_cancel)".into(),
+        ));
+    }
+    if reason.as_deref() == Some("question") {
+        return Err(Error::Other(
+            "run is awaiting an answer — use wf_answer (or wf_cancel)".into(),
         ));
     }
     Ok(())
@@ -2513,7 +2534,13 @@ mod tests {
     /// answer-fold on resume.
     struct AskStub {
         root: PathBuf,
+        db: Db,
+        run_id: String,
         pending_ask: Arc<AtomicBool>,
+        /// Whether turn 1 also raises the in-memory flag (fast path). `false`
+        /// exercises the scheduler's DB backstop: the ask is persisted but the
+        /// poke is "missed", and the run must still pause `question`.
+        set_flag: bool,
         tx: broadcast::Sender<StatusEvent>,
         state: parking_lot::Mutex<AskStubState>,
     }
@@ -2526,10 +2553,19 @@ mod tests {
         prompts: Vec<String>,
     }
     impl AskStub {
-        fn new(root: PathBuf, pending_ask: Arc<AtomicBool>) -> Arc<Self> {
+        fn new(
+            root: PathBuf,
+            db: Db,
+            run_id: &str,
+            pending_ask: Arc<AtomicBool>,
+            set_flag: bool,
+        ) -> Arc<Self> {
             Arc::new(Self {
                 root,
+                db,
+                run_id: run_id.to_string(),
                 pending_ask,
+                set_flag,
                 tx: broadcast::channel(256).0,
                 state: parking_lot::Mutex::new(AskStubState::default()),
             })
@@ -2597,7 +2633,32 @@ mod tests {
                 self.set(id, AgentStatus::Running);
                 if turn == 1 {
                     // First turn: ask the human (defer the gate) — no commit.
-                    self.pending_ask.store(true, Ordering::SeqCst);
+                    // Persist a real queued ask against the run's live attempt,
+                    // exactly as the router does (agent_id is still NULL here, so
+                    // resolution is by run). The poke is raised only when
+                    // `set_flag`; otherwise the scheduler's DB backstop must catch
+                    // the queued ask.
+                    let conn = self.db.lock();
+                    let exec: String = conn
+                        .query_row(
+                            "SELECT id FROM wf_step_exec WHERE run_id = ?1
+                             AND status IN ('spawning','running','gating')
+                             ORDER BY rowid DESC LIMIT 1",
+                            [&self.run_id],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                    conn.execute(
+                        "INSERT INTO wf_message (id, run_id, from_step_exec_id, to_step_exec_id,
+                            kind, body_json, status, created_at)
+                         VALUES (?1, ?2, ?3, NULL, 'ask', '{\"question\":\"which db?\"}', 'queued', 0)",
+                        rusqlite::params![format!("ask-msg-{turn}"), self.run_id, exec],
+                    )
+                    .unwrap();
+                    drop(conn);
+                    if self.set_flag {
+                        self.pending_ask.store(true, Ordering::SeqCst);
+                    }
                 } else {
                     // Later turns: do the work so the commit gate is met.
                     std::fs::write(wt.join(format!("{id}.txt")), "work").unwrap();
@@ -2627,7 +2688,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (db, ws) = scaffold_one_step(tmp.path(), "run-ask", "wf/ask-1");
         let pending_ask = Arc::new(AtomicBool::new(false));
-        let driver = AskStub::new(ws, pending_ask.clone());
+        let driver = AskStub::new(ws, db.clone(), "run-ask", pending_ask.clone(), true);
         let ctx = RunCtx {
             db: db.clone(),
             driver: driver.clone(),
@@ -2716,6 +2777,54 @@ mod tests {
             )
             .unwrap();
         assert_eq!(undelivered, 0, "answer should be marked delivered");
+    }
+
+    #[tokio::test]
+    async fn queued_ask_backstop_pauses_even_when_poke_is_missed() {
+        // The in-memory pending-ask poke can be lost (the RPC op races the
+        // driver's wind-down). The persisted ask is authoritative: even with the
+        // flag never set, the scheduler must pause `question` rather than act on
+        // the gate outcome (§10.4).
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-ask2", "wf/ask2-1");
+        let pending_ask = Arc::new(AtomicBool::new(false));
+        // set_flag = false → the ask is persisted, but the flag is never raised.
+        let driver = AskStub::new(ws, db.clone(), "run-ask2", pending_ask.clone(), false);
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver,
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask,
+            deadlines: Deadlines::default(),
+        };
+
+        drive_run(&ctx, "run-ask2").await;
+
+        let (status, reason): (String, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, paused_reason FROM wf_run WHERE id='run-ask2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "paused");
+        assert_eq!(
+            reason.as_deref(),
+            Some("question"),
+            "the persisted ask must pause the run even though the poke was missed"
+        );
+        // No boundary commit was ferried — the gate outcome was not acted on.
+        let commits: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_event WHERE run_id='run-ask2' AND type='boundary_commit'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(commits, 0, "no ferry while an answer is outstanding");
     }
 
     #[tokio::test]
@@ -3002,12 +3111,16 @@ mod tests {
         };
         insert("r-done", "done", None);
         insert("r-appr", "paused", Some("approval"));
+        insert("r-ques", "paused", Some("question"));
         insert("r-budg", "paused", Some("budget_exceeded"));
         insert("r-blk", "paused", Some("blocked_gate"));
 
         let conn = db.lock();
         assert!(check_resumable(&conn, "r-done", "resume").is_err());
         assert!(check_resumable(&conn, "r-appr", "resume").is_err());
+        // A question-paused run must go through `wf_answer`, not a bare resume —
+        // otherwise the step re-runs with no human response folded in (§10.4).
+        assert!(check_resumable(&conn, "r-ques", "resume").is_err());
         assert!(check_resumable(&conn, "r-budg", "resume").is_ok());
         assert!(check_resumable(&conn, "r-blk", "retry").is_ok());
     }
