@@ -89,7 +89,7 @@ export function WorkflowList({
       <SetHead
         eyebrow="Settings · Workflows"
         title="Workflows"
-        desc="Chain agents into a repeatable pipeline. Each step hands its work to the next on the same git branch — so the worktree itself is the shared context. Define once here; launch on any task."
+        desc="Chain agents into a repeatable pipeline. Each step hands its work to the next on the same git branch — so the checkout itself is the shared context. Define once here; launch on any task."
       />
 
       <div className="set-list-head">

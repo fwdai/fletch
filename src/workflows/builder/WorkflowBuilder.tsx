@@ -192,7 +192,7 @@ export function WorkflowBuilder({
                 <b>1</b> loop
               </>
             )}
-            {" · runs on a fresh worktree per launch"}
+            {" · runs on a fresh checkout per launch"}
           </div>
           <span className="grow"></span>
           <button className="btn-t ghost" onClick={onCancel}>

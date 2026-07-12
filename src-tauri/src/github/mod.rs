@@ -328,10 +328,18 @@ fn parse_pr_state(node: &Value) -> PrState {
 /// Fetch the current PR state for the branch checked out in `checkout`.
 /// `Ok(None)` when the branch has no PR (or no token / non-GitHub origin).
 pub async fn pr_view(checkout: &Path) -> Result<Option<PrState>> {
-    let Some((owner, repo)) = repo_ref(checkout).await else {
+    let Some(branch) = crate::git::current_branch(checkout).await? else {
         return Ok(None);
     };
-    let Some(branch) = crate::git::current_branch(checkout).await? else {
+    pr_view_branch(checkout, &branch).await
+}
+
+/// Fetch the current PR state for an explicit head branch, regardless of the
+/// branch checked out in `checkout`. Backs the detached-HEAD callers (a
+/// workflow run's step checkout is detached; its branch lives only on the
+/// remote after a detached push), so they can't rely on `current_branch`.
+pub async fn pr_view_branch(checkout: &Path, branch: &str) -> Result<Option<PrState>> {
+    let Some((owner, repo)) = repo_ref(checkout).await else {
         return Ok(None);
     };
     let query = branch_prs_query(PR_STATE_FIELDS);
@@ -779,8 +787,23 @@ fn pr_already_exists(message: &str) -> bool {
 /// Create a PR for the branch checked out in `checkout`. When `title` is
 /// empty, the last commit's subject/body fill in (what gh's `--fill` did).
 pub async fn pr_create(checkout: &Path, title: &str, body: &str, base: &str) -> Result<PrState> {
-    let (owner, repo) = require_repo_ref(checkout).await?;
     let branch = require_current_branch(checkout, "pr create").await?;
+    pr_create_head(checkout, &branch, title, body, base).await
+}
+
+/// Create a PR with an explicit head branch — for callers whose checkout is on
+/// a detached HEAD (e.g. a workflow run's step checkout, whose `wf/…` branch
+/// exists only on the remote after a detached push) and so can't derive the
+/// head from `current_branch`. When `title` is empty, the last commit's
+/// subject/body fill in.
+pub async fn pr_create_head(
+    checkout: &Path,
+    head: &str,
+    title: &str,
+    body: &str,
+    base: &str,
+) -> Result<PrState> {
+    let (owner, repo) = require_repo_ref(checkout).await?;
 
     let (title, body) = if title.is_empty() {
         crate::git::last_commit_message(checkout).await?
@@ -793,7 +816,7 @@ pub async fn pr_create(checkout: &Path, title: &str, body: &str, base: &str) -> 
         .rest(
             reqwest::Method::POST,
             &format!("/repos/{owner}/{repo}/pulls"),
-            Some(&json!({ "title": title, "body": body, "head": branch, "base": base })),
+            Some(&json!({ "title": title, "body": body, "head": head, "base": base })),
         )
         .await?;
 
@@ -805,7 +828,7 @@ pub async fn pr_create(checkout: &Path, title: &str, body: &str, base: &str) -> 
         // one, so the caller isn't stuck erroring forever over a PR that's
         // actually there.
         if pr_already_exists(&message) {
-            if let Some(pr) = pr_view(checkout).await? {
+            if let Some(pr) = pr_view_branch(checkout, head).await? {
                 return Ok(pr);
             }
         }

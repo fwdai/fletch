@@ -8,7 +8,7 @@
 import type { AdvanceMode, WorkflowStep } from "../storage";
 
 export type RunStatus =
-  | "pending" // created, worktree not yet set up
+  | "pending" // created, checkout not yet set up
   | "running" // a step is active
   | "paused" // awaiting manual approval, or a blocked gate
   | "done" // all steps completed, branch pushed
@@ -48,7 +48,7 @@ export interface WorkflowRun {
   task: string;
   project_id: string;
   repo_path: string;
-  /** App-owned run directory: ~/.quorum/worktrees/<run-id>/ (sandbox root). */
+  /** App-owned run directory: ~/.quorum/checkouts/<run-id>/ (sandbox root). */
   run_dir: string;
   /** The single branch this run pushes to (computed once at launch). */
   branch: string;
@@ -73,9 +73,9 @@ export interface WorkflowRunStep {
   agent_id: string | null;
   status: RunStepStatus;
   advance_mode: AdvanceMode;
-  /** Worktree HEAD when the step started — the per-step diff base. */
+  /** Checkout HEAD when the step started — the per-step diff base. */
   head_start: string | null;
-  /** Worktree HEAD when the step finished. */
+  /** Checkout HEAD when the step finished. */
   head_end: string | null;
   /** Short human summary / handoff line captured at completion. */
   summary: string | null;

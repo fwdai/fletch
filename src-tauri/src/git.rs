@@ -1071,6 +1071,27 @@ pub async fn worktree_add_branch(repo: &Path, worktree_path: &Path, branch: &str
     Ok(())
 }
 
+/// Push the detached `HEAD` to `refs/heads/<branch>` on `origin`, creating the
+/// remote branch without needing a local one (so it never collides with a
+/// linked worktree's checkout). Same auth + hook-disabling env as [`push`], so
+/// the https transport authenticates with the app's token and a workspace
+/// `pre-push` hook can't fire on the host.
+pub async fn push_head_to_branch(checkout: &Path, branch: &str) -> Result<()> {
+    let mut cmd = crate::git_dist::command(checkout);
+    cmd.args(["push", "origin", &format!("HEAD:refs/heads/{branch}")]);
+    for (k, v) in merge_git_env(&[&crate::github::git_auth_env(), &no_hooks_env()]) {
+        cmd.env(k, v);
+    }
+    let out = output_timed(&mut cmd, "git push").await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "push failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 /// Push the current branch to `origin`. Uses `-u` to set the upstream
 /// tracking ref on the first push.
 /// Returns `"up-to-date"` when the remote already had everything (a no-op

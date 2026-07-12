@@ -53,7 +53,7 @@ async function persistStep(step: WorkflowRunStep): Promise<WorkflowRunStep> {
   return step;
 }
 
-/** Resolve a step's worktree ref (subdir) from the live workspace. */
+/** Resolve a step's checkout ref (subdir) from the live workspace. */
 function refFor(agentId: string): StepRef {
   const ws = useAppStore.getState().workspace;
   const agent = ws?.agents.find((a) => a.id === agentId);
@@ -191,7 +191,7 @@ async function executeStep(
   };
   await persistStep(row);
 
-  // Ready → ferry prior notes into this worktree → snapshot the fork point.
+  // Ready → ferry prior notes into this checkout → snapshot the fork point.
   await awaitStatus(rec.id, ["idle"]);
   if (canceled.has(run.id)) {
     await persistStep({ ...row, status: "error", ended_at: Date.now(), summary: "stopped" });
@@ -300,9 +300,11 @@ export async function driveRun(runId: string): Promise<void> {
     }
 
     // All steps done → push the final HEAD to the run branch + open a PR.
+    // The PR targets the branch the run forked from (empty = the repo default).
     if (prevRef) {
       await git.finalize(prevRef, {
         branch: run.branch,
+        baseBranch: run.base_sha || undefined,
         title: `${run.name}: ${run.task}`.slice(0, 120),
         body: run.task,
       });

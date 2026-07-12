@@ -15,7 +15,6 @@
 //! AgentRecord and never construct paths themselves.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -306,8 +305,9 @@ pub async fn workflow_delete_run(id: String, db: tauri::State<'_, Db>) -> Result
 const HANDOFF_DIR: &str = ".quorum";
 
 fn run_git(dir: &Path, args: &[&str]) -> Result<std::process::Output, String> {
-    Command::new("git")
-        .current_dir(dir)
+    // The pinned/bundled git the rest of the app uses, not a bare PATH lookup —
+    // a Finder-launched app inherits launchd's minimal PATH (see bin_resolve).
+    crate::git_dist::std_command(dir)
         .args(args)
         .output()
         .map_err(|e| format!("git {}: {e}", args.join(" ")))
@@ -327,7 +327,7 @@ fn git_ok(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// Resolve a step checkout from `(agent_id, subdir)`.
-fn worktree(agent_id: &str, subdir: &str) -> Result<PathBuf, String> {
+fn checkout_path(agent_id: &str, subdir: &str) -> Result<PathBuf, String> {
     crate::workspace::repo_checkout_path(agent_id, subdir).map_err(|e| e.to_string())
 }
 
@@ -379,8 +379,8 @@ pub async fn workflow_prepare_repo(repo_path: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
-/// Copy the previous step's `.quorum/` into the next step's worktree, so handoff
-/// notes accumulate forward across forked worktrees.
+/// Copy the previous step's `.quorum/` into the next step's checkout, so handoff
+/// notes accumulate forward across forked checkouts.
 #[tauri::command]
 pub async fn workflow_ferry_notes(
     from_agent_id: String,
@@ -388,8 +388,8 @@ pub async fn workflow_ferry_notes(
     to_agent_id: String,
     to_subdir: String,
 ) -> Result<Value, String> {
-    let from = worktree(&from_agent_id, &from_subdir)?;
-    let to = worktree(&to_agent_id, &to_subdir)?;
+    let from = checkout_path(&from_agent_id, &from_subdir)?;
+    let to = checkout_path(&to_agent_id, &to_subdir)?;
     copy_dir(&from.join(HANDOFF_DIR), &to.join(HANDOFF_DIR)).map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true }))
 }
@@ -402,30 +402,30 @@ pub async fn workflow_boundary_commit(
     subdir: String,
     message: String,
 ) -> Result<Value, String> {
-    let wt = worktree(&agent_id, &subdir)?;
-    git_ok(&wt, &["add", "-A"])?;
+    let checkout = checkout_path(&agent_id, &subdir)?;
+    git_ok(&checkout, &["add", "-A"])?;
     // `diff --cached --quiet` exits 1 when there is something staged.
-    let clean = run_git(&wt, &["diff", "--cached", "--quiet"])?
+    let clean = run_git(&checkout, &["diff", "--cached", "--quiet"])?
         .status
         .success();
     let committed = !clean;
     if committed {
-        git_ok(&wt, &["commit", "-m", &message])?;
+        git_ok(&checkout, &["commit", "-m", &message])?;
     }
-    let head = git_ok(&wt, &["rev-parse", "HEAD"])?;
+    let head = git_ok(&checkout, &["rev-parse", "HEAD"])?;
     Ok(json!({ "head": head, "committed": committed }))
 }
 
-/// Current HEAD of a step worktree (head_start snapshot + the "did the agent
+/// Current HEAD of a step checkout (head_start snapshot + the "did the agent
 /// commit?" gate).
 #[tauri::command]
 pub async fn workflow_head_sha(agent_id: String, subdir: String) -> Result<Value, String> {
-    let wt = worktree(&agent_id, &subdir)?;
-    Ok(json!({ "head": git_ok(&wt, &["rev-parse", "HEAD"])? }))
+    let checkout = checkout_path(&agent_id, &subdir)?;
+    Ok(json!({ "head": git_ok(&checkout, &["rev-parse", "HEAD"])? }))
 }
 
 /// Gate probe for the "file written" advance mode. `path` is relative to the
-/// worktree (e.g. ".quorum/PLAN.md").
+/// checkout (e.g. ".quorum/PLAN.md").
 #[tauri::command]
 pub async fn workflow_file_exists(
     agent_id: String,
@@ -433,16 +433,16 @@ pub async fn workflow_file_exists(
     path: String,
 ) -> Result<Value, String> {
     use std::path::Component;
-    let wt = worktree(&agent_id, &subdir)?;
-    // The gate only ever checks a file *inside* the worktree. The path comes
+    let checkout = checkout_path(&agent_id, &subdir)?;
+    // The gate only ever checks a file *inside* the checkout. The path comes
     // from the workflow's `artifact` field (renderer-supplied), so reject
-    // absolute paths and `..` traversal — otherwise `wt.join(path)` would let a
-    // crafted artifact name probe the filesystem outside the worktree.
+    // absolute paths and `..` traversal — otherwise `checkout.join(path)` would
+    // let a crafted artifact name probe the filesystem outside the checkout.
     let rel = Path::new(&path);
     if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err("artifact path must be relative to the worktree".into());
+        return Err("artifact path must be relative to the checkout".into());
     }
-    Ok(json!({ "exists": wt.join(rel).exists() }))
+    Ok(json!({ "exists": checkout.join(rel).exists() }))
 }
 
 /// A run only ever pushes to its own generated `wf/<slug>-<id>` branch. Enforce
@@ -458,7 +458,10 @@ fn is_run_branch(b: &str) -> bool {
 
 /// Push the run's final HEAD to its branch, then best-effort open a PR. Pushing
 /// detached `HEAD:refs/heads/<branch>` needs no local branch, so it never
-/// collides with a worktree's checkout.
+/// collides with a checkout. The push and PR both go through the app's git/
+/// GitHub layer — the authenticated https transport, hook-disabling, and REST
+/// PR creation — rather than a bare `git`/`gh` invocation that would skip auth
+/// (and fail outright with the app's minimal launchd PATH; see bin_resolve).
 #[tauri::command]
 pub async fn workflow_finalize(
     agent_id: String,
@@ -473,43 +476,19 @@ pub async fn workflow_finalize(
             "refusing to push: '{branch}' is not a wf/ run branch"
         ));
     }
-    let wt = worktree(&agent_id, &subdir)?;
-    git_ok(
-        &wt,
-        &["push", "origin", &format!("HEAD:refs/heads/{branch}")],
-    )?;
-    // PR is best-effort: a missing/unauthed gh, or an existing PR, must not fail
-    // an otherwise-complete run.
+    let checkout = checkout_path(&agent_id, &subdir)?;
+    crate::git::push_head_to_branch(&checkout, &branch)
+        .await
+        .map_err(|e| e.to_string())?;
+    // PR is best-effort: a missing token, non-GitHub origin, or an existing PR
+    // must not fail an otherwise-complete run.
     let base = base_branch.as_deref().unwrap_or("main");
     let title = title.as_deref().unwrap_or("Workflow run");
     let body = body.as_deref().unwrap_or("");
-    let pr = run_git_gh(&wt, base, &branch, title, body);
-    Ok(json!({ "pushed": true, "branch": branch, "pr": pr.0, "pr_error": pr.1 }))
-}
-
-/// `gh pr create`, returning `(url, error)` — at most one is set.
-fn run_git_gh(
-    dir: &Path,
-    base: &str,
-    branch: &str,
-    title: &str,
-    body: &str,
-) -> (Option<String>, Option<String>) {
-    let out = Command::new("gh")
-        .current_dir(dir)
-        .args([
-            "pr", "create", "--base", base, "--head", branch, "--title", title, "--body", body,
-        ])
-        .output();
-    match out {
-        Ok(o) if o.status.success() => (
-            Some(String::from_utf8_lossy(&o.stdout).trim().to_string()),
-            None,
-        ),
-        Ok(o) => (
-            None,
-            Some(String::from_utf8_lossy(&o.stderr).trim().to_string()),
-        ),
-        Err(e) => (None, Some(e.to_string())),
-    }
+    let (pr, pr_error) =
+        match crate::github::pr_create_head(&checkout, &branch, title, body, base).await {
+            Ok(pr) => (Some(pr.url), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
+    Ok(json!({ "pushed": true, "branch": branch, "pr": pr, "pr_error": pr_error }))
 }

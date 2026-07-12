@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-/** Locate a step's worktree server-side from the agent id + its repo subdir. */
+/** Locate a step's checkout server-side from the agent id + its repo subdir. */
 export interface StepRef {
   agentId: string;
   subdir: string;
@@ -12,7 +12,7 @@ export interface StepRef {
 export const prepareRepo = (repoPath: string) =>
   invoke<{ ok: boolean }>("workflow_prepare_repo", { repoPath });
 
-/** Copy the previous step's `.quorum/` notes into the next step's worktree. */
+/** Copy the previous step's `.quorum/` notes into the next step's checkout. */
 export const ferryNotes = (from: StepRef, to: StepRef) =>
   invoke<{ ok: boolean }>("workflow_ferry_notes", {
     fromAgentId: from.agentId,
@@ -35,7 +35,7 @@ export const headSha = (ref: StepRef) =>
     subdir: ref.subdir,
   });
 
-/** True if `path` (relative to the worktree) exists — backs file/loop gates. */
+/** True if `path` (relative to the checkout) exists — backs file/loop gates. */
 export const fileExists = (ref: StepRef, path: string) =>
   invoke<{ exists: boolean }>("workflow_file_exists", {
     agentId: ref.agentId,

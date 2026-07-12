@@ -41,7 +41,7 @@ export const ADVANCE_MODES: AdvanceModeDef[] = [
     label: "When file is written",
     short: "file written",
     icon: "file",
-    note: "Advance once a named file (e.g. PLAN.md) is committed to the worktree.",
+    note: "Advance once a named file (e.g. PLAN.md) is committed to the checkout.",
   },
   {
     id: "approval",
