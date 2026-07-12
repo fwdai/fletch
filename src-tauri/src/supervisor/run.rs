@@ -493,7 +493,10 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
 /// check anyway). Runs synchronously — the profile is assembled off the async
 /// runtime — via the app's resolved git binary (portable-git fallback),
 /// matching every other git call.
-fn run_target_git_common_dir(cwd: &Path) -> Option<PathBuf> {
+///
+/// Shared with the workflows tests gate (`workflow::tests_gate`), which runs the
+/// project's tests under this same Run profile and needs the identical grant.
+pub(crate) fn run_target_git_common_dir(cwd: &Path) -> Option<PathBuf> {
     let out = crate::git_dist::std_command(cwd)
         // Resolve strictly from `cwd`. `std_command` inherits the outer app's
         // environment, and an ambient GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR

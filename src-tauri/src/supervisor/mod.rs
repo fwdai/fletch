@@ -5,7 +5,7 @@ mod events;
 mod lifecycle;
 mod messaging;
 mod rpc_watch;
-mod run;
+pub(crate) mod run;
 mod session_sync;
 mod shell;
 

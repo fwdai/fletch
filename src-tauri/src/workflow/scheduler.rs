@@ -371,6 +371,7 @@ struct RunCtx {
 struct RunEssentials {
     spec_json: String,
     task: String,
+    project_id: String,
     repo_path: String,
     run_dir: String,
     branch: String,
@@ -413,6 +414,18 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
 
     // Run repo may need re-provisioning after a restart (idempotent).
     gitops::provision_run_repo(&repo, &run_dir).await?;
+
+    // Tests gate (spec §9.4): resolve the project's test/setup command overrides
+    // once (they are project-scoped). The runner is built per step below so it
+    // honors the step's effective `tests_timeout_secs`; detection runs per step
+    // worktree at gate time.
+    let (test_override, setup_override) = {
+        let conn = ctx.db.lock();
+        (
+            project_setting(&conn, &run.project_id, "run.test"),
+            project_setting(&conn, &run.project_id, "run.install"),
+        )
+    };
 
     let first_time = run.status == "pending";
     {
@@ -485,6 +498,14 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
         let step_eff = eff.for_step(step.budgets.as_ref());
         let max_attempts = step_eff.max_attempts;
         let deadlines = deadlines_from(&ctx.deadlines, &step_eff);
+        // Tests-gate runner for this step, honoring its effective
+        // `tests_timeout_secs` (spec §9.4, §11.1). Only the `tests` gate consults
+        // it; a fresh runner per step means setup runs once per step workspace.
+        let test_runner = super::tests_gate::SandboxTestRunner::new(
+            test_override.clone(),
+            setup_override.clone(),
+            step_eff.tests_timeout_secs.max(1) as u64,
+        )?;
 
         let mut attempt_no = next_attempt_no(&ctx.db.lock(), run_id, &step.id);
         let mut last_failure: Option<String> = None;
@@ -570,8 +591,14 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
             };
 
             let started = super::now_ms();
-            let result =
-                attempt::run_attempt(ctx.driver.as_ref(), params, &mut ledger, &step_eff).await;
+            let result = attempt::run_attempt(
+                ctx.driver.as_ref(),
+                &test_runner,
+                params,
+                &mut ledger,
+                &step_eff,
+            )
+            .await;
             // Journal the attempt's events and stamp its agent id.
             {
                 let conn = ctx.db.lock();
@@ -625,17 +652,36 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                         }
                         Err(e) => {
                             last_failure = Some(format!("ferry failed: {e}"));
-                            let conn = ctx.db.lock();
-                            finish_step_exec(&conn, &exec_id, "error", None);
-                            if attempt_no >= max_attempts {
-                                set_status(
-                                    &conn,
-                                    ctx.app.as_ref(),
-                                    run_id,
-                                    "failed",
-                                    None,
-                                    Some(&format!("ferry failed: {e}")),
-                                );
+                            // The attempt reached `done`, so its agent is idle but
+                            // still alive, and marking the exec `error` hides it
+                            // from `live_step_agents` (which only sees in-flight
+                            // execs). Stop it here — the same cleanup every other
+                            // errored attempt gets (`terminal_error`,
+                            // `abandon_stale_attempts`) — so the CLI process can't
+                            // leak past the retry/fail. Deliberately not archived:
+                            // `archive` rejects a not-yet-stopped agent (a race),
+                            // and the chat stays replayable by `agent_id` anyway
+                            // (run agents are hidden from the sidebar via
+                            // `owner_run_id`, not by archiving).
+                            if let Some(agent_id) = &result.agent_id {
+                                let _ = ctx.driver.stop(agent_id).await;
+                            }
+                            let give_up = attempt_no >= max_attempts;
+                            {
+                                let conn = ctx.db.lock();
+                                finish_step_exec(&conn, &exec_id, "error", None);
+                                if give_up {
+                                    set_status(
+                                        &conn,
+                                        ctx.app.as_ref(),
+                                        run_id,
+                                        "failed",
+                                        None,
+                                        Some(&format!("ferry failed: {e}")),
+                                    );
+                                }
+                            }
+                            if give_up {
                                 return Ok(());
                             }
                         }
@@ -964,9 +1010,23 @@ fn run_status(conn: &Connection, run_id: &str) -> Result<(String, Option<String>
     .map_err(|e| Error::Other(format!("run {run_id} not found: {e}")))
 }
 
+/// Read a project setting value, `None` when unset, blank, or the table is
+/// absent. Used to resolve the tests-gate command overrides (spec §9.4), which
+/// mirror the Run panel's `run.test` / `run.install` keys.
+fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
+        rusqlite::params![project_id, key],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+}
+
 fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
     conn.query_row(
-        "SELECT spec_json, task, repo_path, run_dir, branch, base_sha, status,
+        "SELECT spec_json, task, project_id, repo_path, run_dir, branch, base_sha, status,
                 budgets_json, spent_json
          FROM wf_run WHERE id = ?1",
         [run_id],
@@ -974,13 +1034,14 @@ fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
             Ok(RunEssentials {
                 spec_json: r.get(0)?,
                 task: r.get(1)?,
-                repo_path: r.get(2)?,
-                run_dir: r.get(3)?,
-                branch: r.get(4)?,
-                base_sha: r.get(5)?,
-                status: r.get(6)?,
-                budgets_json: r.get(7)?,
-                spent_json: r.get(8)?,
+                project_id: r.get(2)?,
+                repo_path: r.get(3)?,
+                run_dir: r.get(4)?,
+                branch: r.get(5)?,
+                base_sha: r.get(6)?,
+                status: r.get(7)?,
+                budgets_json: r.get(8)?,
+                spent_json: r.get(9)?,
             })
         },
     )

@@ -29,9 +29,10 @@ use crate::workspace::AgentStatus;
 use super::blackboard::{self, Verdict, VerdictError};
 use super::budget::{BudgetLimit, EffectiveBudgets, Ledger};
 use super::driver::{AgentDriver, SpawnReq};
-use super::gates::{self, GateInputs, GateOutcome};
+use super::gates::{self, GateInputs, GateOutcome, TestsOutcome};
 use super::prompts;
 use super::spec::Gate;
+use super::tests_gate::TestRunner;
 use super::types::event_type;
 
 /// The deadlines and watchdog cadence for one attempt (spec §11.1). The
@@ -127,6 +128,9 @@ fn ev(event_type: &'static str, payload: Value) -> AttemptEvent {
 
 /// Drive one step attempt to a terminal outcome (spec §6.3 steps 1–6).
 ///
+/// `test_runner` is only consulted for a `tests` gate (spec §9.4); every other
+/// gate ignores it, so callers with no test-capable gate can pass any impl.
+///
 /// `ledger` / `eff` carry budget enforcement (spec §11.2): the attempt checks
 /// `ledger.exceeded()` before each prompt send and charges one turn (plus any
 /// token usage) at each turn end, bailing with [`AttemptOutcome::BudgetExceeded`]
@@ -134,6 +138,7 @@ fn ev(event_type: &'static str, payload: Value) -> AttemptEvent {
 /// and persistence of the mutated ledger.
 pub async fn run_attempt(
     driver: &dyn AgentDriver,
+    test_runner: &dyn TestRunner,
     params: AttemptParams,
     ledger: &mut Ledger,
     eff: &EffectiveBudgets,
@@ -294,6 +299,13 @@ pub async fn run_attempt(
             Gate::Artifact { path } => artifact_exists(&spawned.worktree, path),
             _ => false,
         };
+        // Tests gate (spec §9.4): resolve + run the project's tests in the step
+        // worktree now, then let the pure gate turn the outcome into done/blocked.
+        let tests = if matches!(gate, Gate::Tests) {
+            Some(test_runner.run_tests(&spawned.worktree).await)
+        } else {
+            None
+        };
         let inputs = GateInputs {
             verdict: verdict.as_ref(),
             verdict_error: verdict_error.as_deref(),
@@ -301,16 +313,31 @@ pub async fn run_attempt(
             head_end: head_end.as_deref(),
             artifact_present,
             approved: false,
+            tests: tests.as_ref(),
         };
         let result = gates::evaluate(&gate, &inputs);
-        events.push(ev(
-            event_type::GATE_EVALUATED,
-            json!({
-                "mode": gate_mode(&gate),
-                "outcome": outcome_label(&result.outcome),
-                "reason": result.reason,
-            }),
-        ));
+        let mut gate_payload = json!({
+            "mode": gate_mode(&gate),
+            "outcome": outcome_label(&result.outcome),
+            "reason": result.reason,
+        });
+        // Attach the tests-gate specifics for the timeline (spec §9.4): the
+        // output tail on a red/timeout/setup-failed run, or a degrade warning
+        // when no test command resolved and the gate fell back to verdict.
+        match &tests {
+            Some(
+                TestsOutcome::Failed { tail }
+                | TestsOutcome::TimedOut { tail }
+                | TestsOutcome::SetupFailed { tail },
+            ) if !tail.trim().is_empty() => {
+                gate_payload["output_tail"] = json!(tail);
+            }
+            Some(TestsOutcome::NoCommand) => {
+                gate_payload["tests_degraded"] = json!(true);
+            }
+            _ => {}
+        }
+        events.push(ev(event_type::GATE_EVALUATED, gate_payload));
 
         match result.outcome {
             GateOutcome::Done => {
@@ -552,7 +579,24 @@ fn outcome_label(outcome: &GateOutcome) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::driver::{MockDriver, TurnBehavior, TurnUsage};
+    use crate::workflow::driver::{BoxFuture, MockDriver, TurnBehavior, TurnUsage};
+
+    /// A runner for the non-tests gates, which must never invoke it.
+    struct NeverTests;
+    impl TestRunner for NeverTests {
+        fn run_tests<'a>(&'a self, _worktree: &'a Path) -> BoxFuture<'a, TestsOutcome> {
+            Box::pin(async { panic!("run_tests must not be called for a non-tests gate") })
+        }
+    }
+
+    /// A runner that returns a fixed outcome — drives the `tests` gate cases.
+    struct ScriptedTests(TestsOutcome);
+    impl TestRunner for ScriptedTests {
+        fn run_tests<'a>(&'a self, _worktree: &'a Path) -> BoxFuture<'a, TestsOutcome> {
+            let outcome = self.0.clone();
+            Box::pin(async move { outcome })
+        }
+    }
 
     fn params(gate: Gate, blackboard: PathBuf, deadlines: Deadlines) -> AttemptParams {
         AttemptParams {
@@ -582,9 +626,20 @@ mod tests {
 
     /// Run an attempt with an effectively unbounded budget — the default for the
     /// lifecycle tests that don't exercise enforcement.
-    async fn run(driver: &dyn AgentDriver, params: AttemptParams) -> AttemptRun {
+    async fn run(
+        driver: &dyn AgentDriver,
+        test_runner: &dyn TestRunner,
+        params: AttemptParams,
+    ) -> AttemptRun {
         let mut ledger = Ledger::default();
-        run_attempt(driver, params, &mut ledger, &EffectiveBudgets::default()).await
+        run_attempt(
+            driver,
+            test_runner,
+            params,
+            &mut ledger,
+            &EffectiveBudgets::default(),
+        )
+        .await
     }
 
     fn fast() -> Deadlines {
@@ -613,6 +668,7 @@ mod tests {
 
         let run = run(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
         .await;
@@ -635,6 +691,7 @@ mod tests {
         // ready_on_spawn stays false → agent parks in Spawning forever.
         let run = run(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
         .await;
@@ -652,6 +709,7 @@ mod tests {
         d.set_turn_behavior(TurnBehavior::Silent); // prompt lands, no turn
         let run = run(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
         .await;
@@ -676,6 +734,7 @@ mod tests {
 
         let run = run(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
         .await;
@@ -694,6 +753,7 @@ mod tests {
         d.set_turn_behavior(TurnBehavior::RunningOnly); // turn starts, never ends
         let run = run(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
         .await;
@@ -720,6 +780,7 @@ mod tests {
         d.set_turn_behavior(TurnBehavior::ErrorOut);
         let run = run(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
         .await;
@@ -737,6 +798,7 @@ mod tests {
         d.fail_next_spawn("no repo");
         let run = run(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
         .await;
@@ -756,6 +818,7 @@ mod tests {
 
         let run = run(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
         .await;
@@ -781,6 +844,7 @@ mod tests {
         d.set_turn_behavior(TurnBehavior::Complete);
         let run = run(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Approval, bb.path().to_path_buf(), fast()),
         )
         .await;
@@ -810,6 +874,7 @@ mod tests {
         d.set_turn_behavior(TurnBehavior::Complete); // completes but writes no verdict
         let run = run(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
         .await;
@@ -846,6 +911,7 @@ mod tests {
         };
         let run = run_attempt(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
             &mut ledger,
             &eff,
@@ -886,6 +952,7 @@ mod tests {
         };
         let run = run_attempt(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
             &mut ledger,
             &eff,
@@ -916,6 +983,7 @@ mod tests {
         };
         let run = run_attempt(
             d.as_ref(),
+            &NeverTests,
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
             &mut ledger,
             &eff,
@@ -930,5 +998,92 @@ mod tests {
         assert!(types_present(&run.events, event_type::ATTEMPT_READY));
         assert!(!types_present(&run.events, event_type::PROMPT_SENT));
         assert!(d.sent_messages().is_empty());
+    }
+
+    // ── tests gate (spec §9.4) ────────────────────────────────────────────────
+
+    #[tokio::test(start_paused = true)]
+    async fn tests_gate_passes_when_the_runner_reports_green() {
+        let bb = tempfile::tempdir().unwrap();
+        let d = MockDriver::new();
+        d.set_ready_on_spawn(true);
+        d.set_turn_behavior(TurnBehavior::Complete);
+        let run = run(
+            d.as_ref(),
+            &ScriptedTests(TestsOutcome::Passed),
+            params(Gate::Tests, bb.path().to_path_buf(), fast()),
+        )
+        .await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::Done { .. }),
+            "{:?}",
+            run.outcome
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tests_gate_red_run_reprompts_with_output_tail() {
+        let bb = tempfile::tempdir().unwrap();
+        let d = MockDriver::new();
+        d.set_ready_on_spawn(true);
+        d.set_turn_behavior(TurnBehavior::Complete);
+        let tail = "FAIL src/math.test.ts\n  ✕ adds (3 failing tests)";
+        let run = run(
+            d.as_ref(),
+            &ScriptedTests(TestsOutcome::Failed { tail: tail.into() }),
+            params(Gate::Tests, bb.path().to_path_buf(), fast()),
+        )
+        .await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::Blocked { .. }),
+            "{:?}",
+            run.outcome
+        );
+        // The re-prompt after the red run quotes the output tail (spec §9.4).
+        let reprompt_has_tail = d
+            .sent_messages()
+            .into_iter()
+            .any(|(_, t)| t.contains("3 failing tests"));
+        assert!(
+            reprompt_has_tail,
+            "re-prompt should include the output tail"
+        );
+        // And the gate_evaluated events carry the tail for the timeline.
+        assert!(run
+            .events
+            .iter()
+            .any(|e| e.event_type == event_type::GATE_EVALUATED
+                && e.payload
+                    .get("output_tail")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s.contains("3 failing tests"))));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tests_gate_no_command_degrades_to_verdict() {
+        // With no resolvable test command the gate falls back to the verdict:
+        // a done verdict completes the step, and the degrade is journaled.
+        let bb = tempfile::tempdir().unwrap();
+        let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
+        let d = MockDriver::new();
+        d.set_ready_on_spawn(true);
+        d.set_turn_behavior(TurnBehavior::Complete);
+        d.set_complete_verdict(step_dir, r#"{"result":"done","summary":"ok"}"#);
+        let run = run(
+            d.as_ref(),
+            &ScriptedTests(TestsOutcome::NoCommand),
+            params(Gate::Tests, bb.path().to_path_buf(), fast()),
+        )
+        .await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::Done { .. }),
+            "{:?}",
+            run.outcome
+        );
+        assert!(run
+            .events
+            .iter()
+            .any(|e| e.event_type == event_type::GATE_EVALUATED
+                && e.payload.get("tests_degraded").and_then(|v| v.as_bool()) == Some(true)));
     }
 }
