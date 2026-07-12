@@ -172,11 +172,9 @@ fn gate_statement(gate: &Gate) -> String {
              `verdict.json`. A human will review and approve before the workflow \
              continues."
             .to_string(),
-        // Tests gate lands in S6. Spec validation rejects definitions that
-        // declare it and gate evaluation blocks it, so this arm is unreachable
-        // in a validated run — kept only so the match stays total.
-        Gate::Tests => "The `tests` gate is not implemented yet and cannot pass. Write \
-             `verdict.json` describing your work; the run will pause blocked."
+        Gate::Tests => "You are done when the project's test suite passes. The workflow runs \
+             the project's tests for you after your turn; make them green. Still write \
+             `verdict.json` and handoff notes so the next step has your summary."
             .to_string(),
     }
 }
@@ -242,6 +240,8 @@ mod tests {
         })
         .contains("X.md"));
         assert!(gate_statement(&Gate::Approval).contains("human"));
+        let tests = gate_statement(&Gate::Tests);
+        assert!(tests.contains("test suite passes"), "{tests}");
     }
 
     #[test]

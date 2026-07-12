@@ -4,10 +4,11 @@
 //! verdict, and artifact existence, then asks this module for the verdict so
 //! the decision is trivially unit-testable and journalable.
 //!
-//! S4 implements four gates — `verdict`, `commit`, `artifact`, `approval`. The
-//! `tests` gate (spec §9.4) lands in S6; until then spec validation rejects
-//! definitions that declare it, and this module blocks it rather than let a
-//! step complete a `tests` gate without any test having run.
+//! S4 implemented four gates — `verdict`, `commit`, `artifact`, `approval`.
+//! S6 adds the `tests` gate (spec §9.4): the caller (`workflow::tests_gate`)
+//! resolves and runs the project's test command bounded in the step worktree,
+//! then hands the [`TestsOutcome`] in as a fact — execution stays out of this
+//! pure module. When no test command resolves the gate degrades to `verdict`.
 
 use super::blackboard::{Verdict, VerdictResult};
 use super::spec::Gate;
@@ -51,6 +52,26 @@ impl GateResult {
     }
 }
 
+/// The result of running the project's tests for the `tests` gate (spec §9.4).
+/// Produced by `workflow::tests_gate` (which does the I/O) and handed to
+/// [`evaluate`] as a fact so gate evaluation stays pure and unit-testable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TestsOutcome {
+    /// The test command exited 0.
+    Passed,
+    /// The test command exited non-zero. `tail` is the last lines of output
+    /// (spec §9.4), quoted into the `gate_evaluated` payload and the re-prompt.
+    Failed { tail: String },
+    /// The test command did not finish within `tests_timeout_secs`.
+    TimedOut { tail: String },
+    /// The project's setup/install command failed, so tests never ran — a
+    /// distinct cause from failing tests (spec §9.4).
+    SetupFailed { tail: String },
+    /// No test command could be resolved (no override, nothing detected). The
+    /// gate degrades to `verdict` with a journaled warning (spec §9.4).
+    NoCommand,
+}
+
 /// Facts the caller gathers before asking for a gate decision. Everything here
 /// is already-resolved data — this module performs no I/O.
 #[derive(Debug, Default, Clone)]
@@ -71,6 +92,10 @@ pub struct GateInputs<'a> {
     /// evaluation → `AwaitingApproval`; the `wf_approve` path re-evaluates with
     /// `true`.
     pub approved: bool,
+    /// The result of running the project's tests (the `tests` gate only). `None`
+    /// for every other gate; a `tests` gate with `NoCommand` degrades to the
+    /// verdict facts above (spec §9.4).
+    pub tests: Option<&'a TestsOutcome>,
 }
 
 /// Evaluate `gate` against `inputs`. Pure and total — no panics, no I/O.
@@ -80,12 +105,7 @@ pub fn evaluate(gate: &Gate, inputs: &GateInputs) -> GateResult {
         Gate::Commit => evaluate_commit(inputs),
         Gate::Artifact { path } => evaluate_artifact(path, inputs),
         Gate::Approval => evaluate_approval(inputs),
-        // Tests gate arrives in S6. Spec validation already rejects it; block
-        // here too so nothing can complete a `tests` gate without tests running.
-        Gate::Tests => GateResult::blocked(
-            "tests gate is not implemented yet — no test command was run; use the \
-             `verdict` gate until test execution lands (S6)",
-        ),
+        Gate::Tests => evaluate_tests(inputs),
     }
 }
 
@@ -139,6 +159,38 @@ fn evaluate_approval(inputs: &GateInputs) -> GateResult {
             outcome: GateOutcome::AwaitingApproval,
             reason: "waiting for human approval".to_string(),
         }
+    }
+}
+
+fn evaluate_tests(inputs: &GateInputs) -> GateResult {
+    match inputs.tests {
+        Some(TestsOutcome::Passed) => GateResult::done("project tests passed"),
+        Some(TestsOutcome::Failed { tail }) => {
+            GateResult::blocked(with_tail("project tests failed", tail))
+        }
+        Some(TestsOutcome::TimedOut { tail }) => {
+            GateResult::blocked(with_tail("project tests timed out before finishing", tail))
+        }
+        Some(TestsOutcome::SetupFailed { tail }) => GateResult::blocked(with_tail(
+            "project setup command failed (tests not run)",
+            tail,
+        )),
+        // No test command resolvable → degrade to the verdict gate (spec §9.4).
+        // `attempt.rs` journals the degrade warning; here we just read the
+        // verdict facts the caller always gathers.
+        Some(TestsOutcome::NoCommand) | None => evaluate_verdict(inputs),
+    }
+}
+
+/// Compose a gate reason from a headline plus an optional output tail. The tail
+/// rides in the reason so it reaches both the `gate_evaluated` journal event and
+/// the re-prompt (spec §9.4) through the existing blocked-reason plumbing.
+fn with_tail(headline: &str, tail: &str) -> String {
+    let tail = tail.trim_end();
+    if tail.is_empty() {
+        headline.to_string()
+    } else {
+        format!("{headline}:\n{tail}")
     }
 }
 
@@ -294,16 +346,86 @@ mod tests {
     }
 
     #[test]
-    fn tests_gate_blocks_even_with_done_verdict() {
-        let v = verdict(VerdictResult::Done, "ok");
+    fn tests_gate_passes_when_tests_pass() {
+        let outcome = TestsOutcome::Passed;
         let r = evaluate(
             &Gate::Tests,
             &GateInputs {
-                verdict: Some(&v),
+                tests: Some(&outcome),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::Done);
+    }
+
+    #[test]
+    fn tests_gate_blocks_with_output_tail_on_failure() {
+        let outcome = TestsOutcome::Failed {
+            tail: "FAIL src/foo.test.ts\n  ✕ adds numbers".into(),
+        };
+        let r = evaluate(
+            &Gate::Tests,
+            &GateInputs {
+                tests: Some(&outcome),
                 ..Default::default()
             },
         );
         assert_eq!(r.outcome, GateOutcome::Blocked);
-        assert!(r.reason.contains("not implemented"), "reason: {}", r.reason);
+        assert!(r.reason.contains("adds numbers"), "reason: {}", r.reason);
+    }
+
+    #[test]
+    fn tests_gate_distinguishes_timeout_and_setup_failure() {
+        let timed = TestsOutcome::TimedOut {
+            tail: String::new(),
+        };
+        let r = evaluate(
+            &Gate::Tests,
+            &GateInputs {
+                tests: Some(&timed),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::Blocked);
+        assert!(r.reason.contains("timed out"), "reason: {}", r.reason);
+
+        let setup = TestsOutcome::SetupFailed {
+            tail: "npm ERR! missing script: build".into(),
+        };
+        let r = evaluate(
+            &Gate::Tests,
+            &GateInputs {
+                tests: Some(&setup),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::Blocked);
+        assert!(r.reason.contains("setup"), "reason: {}", r.reason);
+    }
+
+    #[test]
+    fn tests_gate_no_command_degrades_to_verdict() {
+        let none = TestsOutcome::NoCommand;
+        // With a done verdict present the degraded gate passes …
+        let v = verdict(VerdictResult::Done, "ok");
+        let r = evaluate(
+            &Gate::Tests,
+            &GateInputs {
+                tests: Some(&none),
+                verdict: Some(&v),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::Done);
+
+        // … and without one it blocks exactly like a verdict gate.
+        let r = evaluate(
+            &Gate::Tests,
+            &GateInputs {
+                tests: Some(&none),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::Blocked);
     }
 }

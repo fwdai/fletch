@@ -371,6 +371,7 @@ struct RunCtx {
 struct RunEssentials {
     spec_json: String,
     task: String,
+    project_id: String,
     repo_path: String,
     run_dir: String,
     branch: String,
@@ -413,6 +414,18 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
 
     // Run repo may need re-provisioning after a restart (idempotent).
     gitops::provision_run_repo(&repo, &run_dir).await?;
+
+    // Tests gate (spec §9.4): resolve the project's test/setup command overrides
+    // once and build the runner shared across every step's attempts. Detection
+    // itself runs per step worktree at gate time.
+    let test_runner = {
+        let conn = ctx.db.lock();
+        super::tests_gate::SandboxTestRunner::new(
+            project_setting(&conn, &run.project_id, "run.test"),
+            project_setting(&conn, &run.project_id, "run.install"),
+            super::tests_gate::DEFAULT_TESTS_TIMEOUT_SECS,
+        )?
+    };
 
     let first_time = run.status == "pending";
     {
@@ -570,8 +583,14 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
             };
 
             let started = super::now_ms();
-            let result =
-                attempt::run_attempt(ctx.driver.as_ref(), params, &mut ledger, &step_eff).await;
+            let result = attempt::run_attempt(
+                ctx.driver.as_ref(),
+                &test_runner,
+                params,
+                &mut ledger,
+                &step_eff,
+            )
+            .await;
             // Journal the attempt's events and stamp its agent id.
             {
                 let conn = ctx.db.lock();
@@ -964,9 +983,23 @@ fn run_status(conn: &Connection, run_id: &str) -> Result<(String, Option<String>
     .map_err(|e| Error::Other(format!("run {run_id} not found: {e}")))
 }
 
+/// Read a project setting value, `None` when unset, blank, or the table is
+/// absent. Used to resolve the tests-gate command overrides (spec §9.4), which
+/// mirror the Run panel's `run.test` / `run.install` keys.
+fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
+        rusqlite::params![project_id, key],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+}
+
 fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
     conn.query_row(
-        "SELECT spec_json, task, repo_path, run_dir, branch, base_sha, status,
+        "SELECT spec_json, task, project_id, repo_path, run_dir, branch, base_sha, status,
                 budgets_json, spent_json
          FROM wf_run WHERE id = ?1",
         [run_id],
@@ -974,13 +1007,14 @@ fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
             Ok(RunEssentials {
                 spec_json: r.get(0)?,
                 task: r.get(1)?,
-                repo_path: r.get(2)?,
-                run_dir: r.get(3)?,
-                branch: r.get(4)?,
-                base_sha: r.get(5)?,
-                status: r.get(6)?,
-                budgets_json: r.get(7)?,
-                spent_json: r.get(8)?,
+                project_id: r.get(2)?,
+                repo_path: r.get(3)?,
+                run_dir: r.get(4)?,
+                branch: r.get(5)?,
+                base_sha: r.get(6)?,
+                status: r.get(7)?,
+                budgets_json: r.get(8)?,
+                spent_json: r.get(9)?,
             })
         },
     )

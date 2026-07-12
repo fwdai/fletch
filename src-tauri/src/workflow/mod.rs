@@ -25,6 +25,7 @@ pub mod journal;
 pub mod prompts;
 pub mod scheduler;
 pub mod spec;
+pub mod tests_gate;
 pub mod types;
 pub mod yaml;
 
