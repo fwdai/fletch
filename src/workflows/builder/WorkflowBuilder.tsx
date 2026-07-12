@@ -1,101 +1,88 @@
-// WorkflowBuilder.tsx — the visual builder: a left-to-right chain of steps with
-// one optional loop-back edge drawn as a measured arc above the track.
+// WorkflowBuilder.tsx — the block-tree editor (spec §14.1). The canvas renders
+// the recursive block sequence; a shared `ctx` lets any nested card dispatch an
+// edit or open a popover. Validation from `model.ts` renders inline and gates
+// the save. Persistence is the caller's job (Save hands back the editor state).
 
-import { Fragment, useLayoutEffect, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { ModelMeta } from "../../data/modelCatalog/types";
 import type { CustomAgent } from "../../storage/customAgents";
-import { newStep, resolveAgent } from "../shared";
-import type { WorkflowStep as Step, WorkflowDraft } from "../storage";
-import { AdvancePick, AgentPick, LoopEditor, type PopRect } from "./pickers";
-import { WorkflowStep } from "./WorkflowStep";
+import { resolveAgent } from "../shared";
+import type { Budgets, Gate } from "../spec";
+import { BlockSequence } from "./blocks/BlockSequence";
+import type { BuilderCtx, Pop, PopRect } from "./ctx";
+import {
+  type AgentRole,
+  addBlockOfType,
+  addStepToContainer,
+  findStep,
+  patchBlock,
+  patchStep,
+  removeNode,
+  setAgent,
+  setField,
+} from "./edits";
+import type { EditorState, NodeId } from "./model";
+import { validateEditor } from "./model";
+import { AgentPick, BudgetsPopover, GatePick } from "./pickers";
 
-type Pop = { type: "agent" | "advance" | "loop"; stepId: string; rect: PopRect };
+function rectFrom(e: React.MouseEvent): PopRect {
+  const r = e.currentTarget.getBoundingClientRect();
+  return { top: r.bottom + 6, left: r.left, right: r.right, bottom: r.bottom };
+}
 
 export function WorkflowBuilder({
-  draft,
+  initial,
   isNew,
   agents,
   modelsByAgent,
+  saving,
+  saveError,
   onCancel,
   onSave,
 }: {
-  draft: WorkflowDraft;
+  initial: EditorState;
   isNew: boolean;
   agents: CustomAgent[];
   modelsByAgent: Record<string, ModelMeta[]>;
+  saving: boolean;
+  saveError: string | null;
   onCancel: () => void;
-  onSave: (w: WorkflowDraft) => void;
+  onSave: (state: EditorState) => void;
 }) {
-  const [w, setW] = useState<WorkflowDraft>(draft);
+  const [state, setState] = useState<EditorState>(initial);
   const [pop, setPop] = useState<Pop | null>(null);
-
-  const resolve = (id: string | null) => resolveAgent(id, agents, modelsByAgent);
-
-  const set = (patch: Partial<WorkflowDraft>) => setW((x) => ({ ...x, ...patch }));
-  const setStep = (id: string, patch: Partial<Step>) =>
-    setW((x) => ({ ...x, steps: x.steps.map((s) => (s.id === id ? { ...s, ...patch } : s)) }));
-  const addStep = () => setW((x) => ({ ...x, steps: [...x.steps, newStep()] }));
-  const removeStep = (id: string) =>
-    setW((x) => ({
-      ...x,
-      steps: x.steps
-        .filter((s) => s.id !== id)
-        .map((s) => (s.loop?.to === id ? { ...s, loop: null } : s)),
-    }));
-
-  const openPop = (type: Pop["type"], stepId: string, e: React.MouseEvent) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    setPop({
-      type,
-      stepId,
-      rect: { top: r.bottom + 6, left: r.left, right: r.right, bottom: r.bottom },
-    });
-  };
   const closePop = () => setPop(null);
 
-  const loopStep = w.steps.find((s) => s.loop);
-  const canSave = !!w.name.trim() && w.steps.every((s) => s.agent);
+  const validation = useMemo(() => validateEditor(state), [state]);
 
-  // Measure the loop arc from real DOM positions (steps are flexible width).
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const stepRefs = useRef<Record<string, HTMLDivElement>>({});
-  const [arc, setArc] = useState<{ left: number; width: number } | null>(null);
-  const loopKey = loopStep
-    ? `${loopStep.id}:${loopStep.loop!.to}:${loopStep.loop!.when}:${loopStep.loop!.max}`
-    : "";
-  useLayoutEffect(() => {
-    const measure = () => {
-      if (!loopStep) {
-        setArc(null);
-        return;
-      }
-      const track = trackRef.current;
-      const src = stepRefs.current[loopStep.id];
-      const tgt = stepRefs.current[loopStep.loop!.to];
-      if (!track || !src || !tgt) {
-        setArc(null);
-        return;
-      }
-      const tr = track.getBoundingClientRect();
-      const sc = src.getBoundingClientRect();
-      const tc = tgt.getBoundingClientRect();
-      const srcC = sc.left - tr.left + sc.width / 2;
-      const tgtC = tc.left - tr.left + tc.width / 2;
-      setArc({ left: Math.min(srcC, tgtC), width: Math.abs(srcC - tgtC) });
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    if (trackRef.current) ro.observe(trackRef.current);
-    window.addEventListener("resize", measure);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [w.steps.length, loopKey]);
+  const ctx: BuilderCtx = useMemo(
+    () => ({
+      resolve: (id) => resolveAgent(id, agents, modelsByAgent),
+      errorsFor: (nid) => validation.byNode[nid],
+      patchStep: (nid, patch) => setState((s) => patchStep(s, nid, patch)),
+      patchBlock: (nid, patch) => setState((s) => patchBlock(s, nid, patch)),
+      removeNode: (nid) => setState((s) => removeNode(s, nid)),
+      addStepToContainer: (nid) => setState((s) => addStepToContainer(s, nid)),
+      addBlock: (seqNid, type) => setState((s) => addBlockOfType(s, seqNid, type)),
+      openAgent: (nid, role: AgentRole, e) =>
+        setPop({ type: "agent", nid, role, rect: rectFrom(e) }),
+      openGate: (nid, e) => setPop({ type: "gate", nid, rect: rectFrom(e) }),
+      openBudgets: (target, e) => setPop({ type: "budgets", target, rect: rectFrom(e) }),
+    }),
+    [agents, modelsByAgent, validation],
+  );
 
-  const popStep = pop ? w.steps.find((s) => s.id === pop.stepId) : undefined;
+  const runBudgetLabel = state.budgets?.turns ? `${state.budgets.turns} turns` : "budgets";
+  const finalize = state.finalize;
+
+  const setGate = (nid: NodeId, gate: Gate) => setState((s) => patchStep(s, nid, { gate }));
+  const budgetsOf = (target: NodeId | "run"): Budgets | undefined =>
+    target === "run" ? state.budgets : (findStep(state, target)?.budgets ?? undefined);
+  const setBudgets = (target: NodeId | "run", next: Budgets | undefined) =>
+    target === "run"
+      ? setState((s) => setField(s, { budgets: next }))
+      : setState((s) => patchStep(s, target, { budgets: next }));
 
   return (
     <div className="set-pane">
@@ -109,141 +96,155 @@ export function WorkflowBuilder({
             <input
               className="wb-name"
               placeholder="Name this workflow…"
-              value={w.name}
+              value={state.name}
               autoFocus
-              onChange={(e) => set({ name: e.target.value })}
+              onChange={(e) => setState((s) => setField(s, { name: e.target.value }))}
             />
             <textarea
               className="wb-desc"
               rows={1}
               placeholder="What is this pipeline for?"
-              value={w.description}
-              onChange={(e) => set({ description: e.target.value })}
+              value={state.description}
+              onChange={(e) => setState((s) => setField(s, { description: e.target.value }))}
             />
           </div>
+          <button
+            className="wb-chip-btn lg tip"
+            data-tip-down
+            data-tip="Run-level budgets"
+            onClick={(e) => ctx.openBudgets("run", e)}
+          >
+            <Icon name="clock" size={12} /> {runBudgetLabel}
+          </button>
         </div>
 
         <div className="wb-canvas">
-          <div className="wb-track-inner" ref={trackRef}>
-            {loopStep && arc && (
-              <div className="wb-loop-ribbon" style={{ left: arc.left, width: arc.width }}>
-                <span className="wb-loop-arrow">
-                  <Icon name="arrowDown" />
-                </span>
-                <button className="wb-loop-label" onClick={(e) => openPop("loop", loopStep.id, e)}>
-                  <Icon name="loop" /> until {loopStep.loop!.when} · max {loopStep.loop!.max}
-                  <span
-                    className="wb-loop-x"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setStep(loopStep.id, { loop: null });
-                    }}
-                  >
-                    <Icon name="close" size={9} />
-                  </span>
-                </button>
-              </div>
-            )}
+          <BlockSequence blocks={state.blocks} seqNid={null} ctx={ctx} />
+        </div>
 
-            {w.steps.map((s, i) => (
-              <Fragment key={s.id}>
-                {i > 0 && (
-                  <div className="wb-conn">
-                    <Icon name="arrowR" />
-                  </div>
-                )}
-                <WorkflowStep
-                  step={s}
-                  index={i}
-                  resolve={resolve}
-                  isLoopTarget={!!loopStep && loopStep.loop!.to === s.id}
-                  canLoop={i > 0}
-                  innerRef={(el) => {
-                    if (el) stepRefs.current[s.id] = el;
-                    else delete stepRefs.current[s.id];
-                  }}
-                  onPick={(e) => openPop("agent", s.id, e)}
-                  onAdvance={(e) => openPop("advance", s.id, e)}
-                  onLoop={(e) => openPop("loop", s.id, e)}
-                  onGoal={(v) => setStep(s.id, { goal: v })}
-                  onRemove={w.steps.length > 1 ? () => removeStep(s.id) : null}
-                />
-              </Fragment>
-            ))}
-
-            <div className="wb-conn">
-              <Icon name="arrowR" />
-            </div>
-            <button className="wb-add tip" data-tip-down data-tip="Add step" onClick={addStep}>
-              <span className="wb-add-ic">
-                <Icon name="plus" />
-              </span>
-              <span className="wb-add-l">Add step</span>
-            </button>
-          </div>
+        <div className="wb-finish">
+          <span className="wb-finish-l">When the run finishes</span>
+          <label className="wb-toggle">
+            <input
+              type="checkbox"
+              checked={!!finalize?.push}
+              onChange={(e) =>
+                setState((s) =>
+                  setField(s, {
+                    finalize: {
+                      push: e.target.checked,
+                      open_pr: finalize?.open_pr ?? false,
+                      pr_base: finalize?.pr_base,
+                    },
+                  }),
+                )
+              }
+            />
+            Push the branch
+          </label>
+          <label className="wb-toggle">
+            <input
+              type="checkbox"
+              checked={!!finalize?.open_pr}
+              onChange={(e) =>
+                setState((s) =>
+                  setField(s, {
+                    finalize: {
+                      push: finalize?.push ?? false,
+                      open_pr: e.target.checked,
+                      pr_base: finalize?.pr_base,
+                    },
+                  }),
+                )
+              }
+            />
+            Open a PR
+          </label>
+          {finalize?.open_pr && (
+            <input
+              className="ca-input sm"
+              style={{ width: 120 }}
+              placeholder="base: main"
+              value={finalize.pr_base ?? ""}
+              onChange={(e) =>
+                setState((s) =>
+                  setField(s, {
+                    finalize: {
+                      push: finalize.push,
+                      open_pr: finalize.open_pr,
+                      pr_base: e.target.value.trim() || undefined,
+                    },
+                  }),
+                )
+              }
+            />
+          )}
         </div>
 
         <div className="wb-foot">
           <div className="wb-summary">
-            <b>{w.steps.length}</b> step{w.steps.length === 1 ? "" : "s"}
-            {loopStep && (
+            {validation.ok ? (
               <>
-                {" · "}
-                <b>1</b> loop
+                Ready to save · <b>{state.blocks.length}</b> block
+                {state.blocks.length === 1 ? "" : "s"}
               </>
+            ) : (
+              <span className="wb-summary-err">
+                <Icon name="close" size={11} />{" "}
+                {validation.form[0] ??
+                  `${Object.keys(validation.byNode).length} block(s) need attention`}
+              </span>
             )}
-            {" · runs on a fresh checkout per launch"}
+            {saveError && <span className="wb-summary-err"> · {saveError}</span>}
           </div>
-          <span className="grow"></span>
+          <span className="grow" />
           <button className="btn-t ghost" onClick={onCancel}>
             Cancel
           </button>
           <button
             className="btn-t primary"
-            disabled={!canSave}
-            style={!canSave ? { opacity: 0.5 } : undefined}
-            onClick={() => canSave && onSave(w)}
+            disabled={!validation.ok || saving}
+            style={!validation.ok || saving ? { opacity: 0.5 } : undefined}
+            onClick={() => validation.ok && onSave(state)}
           >
-            <Icon name="check" size={13} /> {isNew ? "Create workflow" : "Save workflow"}
+            <Icon name="check" size={13} />{" "}
+            {saving ? "Saving…" : isNew ? "Create workflow" : "Save workflow"}
           </button>
         </div>
       </div>
 
-      {pop && <div style={{ position: "fixed", inset: 0, zIndex: 55 }} onClick={closePop}></div>}
+      {pop && <div style={{ position: "fixed", inset: 0, zIndex: 55 }} onClick={closePop} />}
       {pop?.type === "agent" && (
         <AgentPick
           rect={pop.rect}
           agents={agents}
           onPick={(id) => {
-            setStep(pop.stepId, { agent: id });
+            setState((s) => setAgent(s, pop.nid, pop.role, id, agents));
             closePop();
           }}
         />
       )}
-      {pop?.type === "advance" && (
-        <AdvancePick
+      {pop?.type === "gate" && (
+        <GatePick
           rect={pop.rect}
-          value={popStep?.advance}
-          onPick={(v) => {
-            setStep(pop.stepId, { advance: v });
+          gate={findStep(state, pop.nid)?.gate.type ?? "verdict"}
+          onPick={(kind) => {
+            const cur = findStep(state, pop.nid)?.gate;
+            const gate: Gate =
+              kind === "artifact"
+                ? { type: "artifact", path: cur?.type === "artifact" ? cur.path : "" }
+                : { type: kind };
+            setGate(pop.nid, gate);
             closePop();
           }}
         />
       )}
-      {pop?.type === "loop" && popStep && (
-        <LoopEditor
+      {pop?.type === "budgets" && (
+        <BudgetsPopover
           rect={pop.rect}
-          step={popStep}
-          steps={w.steps}
-          resolve={resolve}
-          onApply={(loop) => {
-            setStep(pop.stepId, { loop });
-            closePop();
-          }}
-          onClear={() => {
-            setStep(pop.stepId, { loop: null });
-            closePop();
-          }}
+          scope={pop.target === "run" ? "run" : "step"}
+          value={budgetsOf(pop.target)}
+          onChange={(next) => setBudgets(pop.target, next)}
         />
       )}
     </div>

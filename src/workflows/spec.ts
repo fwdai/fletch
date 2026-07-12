@@ -7,6 +7,9 @@
 // internally tagged (`{ type: "artifact", path }`). Optional fields correspond
 // to Rust `Option`/`Vec` defaults that serde omits when empty.
 
+/** The only spec version this build understands (mirrors `spec.rs`). */
+export const SPEC_VERSION = 1;
+
 /** Provider id a workflow agent targets (claude/codex/cursor/opencode/pi/…). */
 export type ProviderBase = string;
 
