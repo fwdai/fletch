@@ -5,9 +5,9 @@
 //! the decision is trivially unit-testable and journalable.
 //!
 //! S4 implements four gates — `verdict`, `commit`, `artifact`, `approval`. The
-//! `tests` gate (spec §9.4) lands in S6; until then a `Tests` gate degrades to
-//! `verdict` evaluation with a note, so a definition that uses it still runs
-//! (as a verdict gate) rather than failing to launch.
+//! `tests` gate (spec §9.4) lands in S6; until then spec validation rejects
+//! definitions that declare it, and this module blocks it rather than let a
+//! step complete a `tests` gate without any test having run.
 
 use super::blackboard::{Verdict, VerdictResult};
 use super::spec::Gate;
@@ -80,16 +80,12 @@ pub fn evaluate(gate: &Gate, inputs: &GateInputs) -> GateResult {
         Gate::Commit => evaluate_commit(inputs),
         Gate::Artifact { path } => evaluate_artifact(path, inputs),
         Gate::Approval => evaluate_approval(inputs),
-        // Tests gate arrives in S6; degrade to the verdict gate so a definition
-        // that declares it still runs. The caller journals the degrade note.
-        Gate::Tests => {
-            let mut res = evaluate_verdict(inputs);
-            res.reason = format!(
-                "tests gate not yet available; degraded to verdict — {}",
-                res.reason
-            );
-            res
-        }
+        // Tests gate arrives in S6. Spec validation already rejects it; block
+        // here too so nothing can complete a `tests` gate without tests running.
+        Gate::Tests => GateResult::blocked(
+            "tests gate is not implemented yet — no test command was run; use the \
+             `verdict` gate until test execution lands (S6)",
+        ),
     }
 }
 
@@ -298,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn tests_gate_degrades_to_verdict() {
+    fn tests_gate_blocks_even_with_done_verdict() {
         let v = verdict(VerdictResult::Done, "ok");
         let r = evaluate(
             &Gate::Tests,
@@ -307,11 +303,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(r.outcome, GateOutcome::Done);
-        assert!(
-            r.reason.contains("degraded to verdict"),
-            "reason: {}",
-            r.reason
-        );
+        assert_eq!(r.outcome, GateOutcome::Blocked);
+        assert!(r.reason.contains("not implemented"), "reason: {}", r.reason);
     }
 }

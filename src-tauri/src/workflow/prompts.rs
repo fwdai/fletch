@@ -172,12 +172,11 @@ fn gate_statement(gate: &Gate) -> String {
              `verdict.json`. A human will review and approve before the workflow \
              continues."
             .to_string(),
-        // Tests gate is not evaluated until S6; the engine only checks
-        // `verdict.json`, so the prompt must not promise enforcement it
-        // doesn't have — passing tests is on the agent until then.
-        Gate::Tests => "Run the project's tests. The engine does not verify test results \
-             yet — it trusts your verdict — so only write `verdict.json` with \
-             `result` \"done\" once the tests actually pass."
+        // Tests gate lands in S6. Spec validation rejects definitions that
+        // declare it and gate evaluation blocks it, so this arm is unreachable
+        // in a validated run — kept only so the match stays total.
+        Gate::Tests => "The `tests` gate is not implemented yet and cannot pass. Write \
+             `verdict.json` describing your work; the run will pause blocked."
             .to_string(),
     }
 }
