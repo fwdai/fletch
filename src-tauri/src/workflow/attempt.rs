@@ -104,6 +104,9 @@ pub struct AttemptEvent {
 pub struct AttemptRun {
     /// The spawned agent, if spawn succeeded — for linking its chat / archival.
     pub agent_id: Option<String>,
+    /// The spawned agent's checkout path — where the scheduler runs the boundary
+    /// commit + ferry after a `done` (§6.3 steps 7–8). `None` if spawn failed.
+    pub worktree: Option<PathBuf>,
     pub outcome: AttemptOutcome,
     pub events: Vec<AttemptEvent>,
 }
@@ -140,12 +143,14 @@ pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> Att
             events.push(ev(event_type::ATTEMPT_ERROR, json!({ "error": error })));
             return AttemptRun {
                 agent_id: None,
+                worktree: None,
                 outcome: AttemptOutcome::Error { error },
                 events,
             };
         }
     };
     let agent_id = spawned.agent_id.clone();
+    let worktree = spawned.worktree.clone();
     events.push(ev(
         event_type::ATTEMPT_SPAWNED,
         json!({ "agent_id": agent_id, "fork_base": fork_base }),
@@ -272,6 +277,7 @@ pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> Att
             GateOutcome::Done => {
                 return AttemptRun {
                     agent_id: Some(agent_id),
+                    worktree: Some(worktree),
                     outcome: AttemptOutcome::Done { verdict },
                     events,
                 }
@@ -279,6 +285,7 @@ pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> Att
             GateOutcome::AwaitingApproval => {
                 return AttemptRun {
                     agent_id: Some(agent_id),
+                    worktree: Some(worktree),
                     outcome: AttemptOutcome::AwaitingApproval,
                     events,
                 }
@@ -292,6 +299,7 @@ pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> Att
                 }
                 return AttemptRun {
                     agent_id: Some(agent_id),
+                    worktree: Some(worktree),
                     outcome: AttemptOutcome::Blocked {
                         reason: result.reason,
                     },
@@ -315,6 +323,7 @@ async fn terminal_error(
     events.push(ev(event_type::ATTEMPT_ERROR, json!({ "error": error })));
     AttemptRun {
         agent_id: Some(agent_id.to_string()),
+        worktree: None,
         outcome: AttemptOutcome::Error {
             error: error.to_string(),
         },
@@ -494,6 +503,7 @@ mod tests {
                 skills: vec![],
                 mcp_servers: vec![],
                 fork_base: Some("base-sha".into()),
+                run_repo: None,
                 owner_run_id: "run-1".into(),
             },
             blackboard,
