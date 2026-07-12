@@ -66,7 +66,7 @@ CREATE INDEX idx_wf_run_parent ON wf_run(parent_run_id);
 -- keyed by (attempt, iteration). agent_id is NULL until spawned and never reused.
 CREATE TABLE wf_step_exec (
   id           TEXT PRIMARY KEY,
-  run_id       TEXT NOT NULL REFERENCES wf_run(id),
+  run_id       TEXT NOT NULL REFERENCES wf_run(id) ON DELETE CASCADE,
   step_id      TEXT NOT NULL,           -- id of the step in the spec block tree
   attempt      INTEGER NOT NULL,        -- 1-based; retries increment
   iteration    INTEGER NOT NULL,        -- loop iteration, 0-based
@@ -85,7 +85,7 @@ CREATE INDEX idx_wf_exec_run ON wf_step_exec(run_id);
 -- Append-only journal. `seq` is per-run and monotonically increasing; no UPDATE
 -- or DELETE while a run is live. Deleting a run cascades its events.
 CREATE TABLE wf_event (
-  run_id       TEXT NOT NULL REFERENCES wf_run(id),
+  run_id       TEXT NOT NULL REFERENCES wf_run(id) ON DELETE CASCADE,
   seq          INTEGER NOT NULL,        -- per-run, monotonically increasing
   ts           INTEGER NOT NULL,
   step_exec_id TEXT,
@@ -98,7 +98,7 @@ CREATE TABLE wf_event (
 -- decisions all land here; NULL from/to endpoints mean the engine or the human.
 CREATE TABLE wf_message (
   id                TEXT PRIMARY KEY,
-  run_id            TEXT NOT NULL REFERENCES wf_run(id),
+  run_id            TEXT NOT NULL REFERENCES wf_run(id) ON DELETE CASCADE,
   from_step_exec_id TEXT,               -- NULL = engine or human
   to_step_exec_id   TEXT,               -- NULL = human (or orchestrator resolution)
   kind              TEXT NOT NULL,      -- report|ask|answer|notify|decision
@@ -111,11 +111,12 @@ CREATE INDEX idx_wf_msg_run ON wf_message(run_id);
 
 -- Run-owned step agents are ordinary workspaces tagged with the owning run, so
 -- they can be filtered out of the normal sidebar (§6.3) and discarded when the
--- run is deleted (§13). A plain tag column, NOT a foreign key with ON DELETE
--- CASCADE: run deletion goes through wf_delete_run, which discards these
--- workspaces via the app's workspace path so the on-disk worktrees/checkouts are
--- cleaned too — a DB-level cascade would drop the row but orphan those files and
--- leave supervisor state dangling. This mirrors the wf_* run_id FKs above, which
--- are RESTRICT for the same reason (children are deleted app-side, in order).
--- NULL for every normal (user-launched) agent.
+-- run is deleted (§13). Unlike the pure-data child tables above (which carry
+-- ON DELETE CASCADE — deleting a run row removes its attempts/events/messages),
+-- this is deliberately a plain tag column with no FK cascade: a run-owned
+-- workspace owns on-disk state (a git worktree/checkout) and live supervisor
+-- state, so wf_delete_run must discard it through the app's workspace path.
+-- A DB-level cascade would delete the row but orphan the files and dangle
+-- supervisor state, so cleanup here is app-level by design. NULL for every
+-- normal (user-launched) agent.
 ALTER TABLE workspaces ADD COLUMN owner_run_id TEXT;
