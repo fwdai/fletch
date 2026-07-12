@@ -85,6 +85,9 @@ pub struct PerTurnSpec {
     /// every subsequent spawn, so a settings change never re-engines an
     /// existing agent (see `supervisor::lifecycle`).
     pub engine: EngineKind,
+    /// The run blackboard dir to grant this per-turn step agent write access to
+    /// (§8). `None` for a normal spawn.
+    pub blackboard: Option<PathBuf>,
 }
 
 /// The per-turn inputs a `*_build_args` builder turns into CLI argv. Bundled
@@ -931,6 +934,10 @@ pub struct SpawnSpec<'a> {
     /// every subsequent spawn (fresh, view-switch, resume), so a settings
     /// change never re-engines an existing agent (see `supervisor::lifecycle`).
     pub engine: EngineKind,
+    /// The run blackboard dir to grant this agent write access to, when it is a
+    /// workflow step agent (§8). `None` for a normal spawn. The sandbox engine
+    /// turns it into the seatbelt subpath / Docker mount + `WF_BLACKBOARD`.
+    pub blackboard: Option<&'a Path>,
 }
 
 /// The environment Fletch injects into every agent child: the absolute path to
@@ -963,7 +970,7 @@ impl Agent {
             cwd: &spec.cwd,
             home: &home,
             interactive: true,
-            blackboard: None,
+            blackboard: spec.blackboard,
         };
         let LaunchPlan {
             program,
@@ -1053,7 +1060,7 @@ impl Agent {
             cwd: &spec.cwd,
             home: &home,
             interactive: true,
-            blackboard: None,
+            blackboard: spec.blackboard,
         };
         let LaunchPlan {
             program,
@@ -1115,7 +1122,7 @@ impl Agent {
             cwd: &spec.cwd,
             home: &home,
             interactive: false,
-            blackboard: None,
+            blackboard: spec.blackboard,
         };
         let LaunchPlan {
             program,
@@ -1258,7 +1265,7 @@ impl Agent {
             cwd: &spec.cwd,
             home: &home,
             interactive: false,
-            blackboard: None,
+            blackboard: spec.blackboard.as_deref(),
         };
         let LaunchPlan {
             program: launch_program,

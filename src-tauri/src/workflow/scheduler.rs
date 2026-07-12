@@ -424,12 +424,11 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     model: agent_spec.model.clone(),
                     instructions: agent_spec.instructions.clone(),
                     custom_agent_id: agent_spec.custom_agent.clone(),
-                    // Follow-ups (documented in the S4b PR): (1) resolving the
+                    // Follow-up (documented in the S4b PR): resolving the
                     // spec's agent skill/MCP names to snapshots — the linear
-                    // engine spawns with the provider + brief for now; (2) the
-                    // blackboard write-grant at spawn (the S3 seam), needed for
-                    // verdict-gate agents to write verdict.json (commit-gated
-                    // steps work today, exercised by the integration test).
+                    // engine spawns with the provider + brief for now. The
+                    // blackboard write-grant is derived from `owner_run_id`
+                    // at spawn (supervisor::lifecycle).
                     skills: vec![],
                     mcp_servers: vec![],
                     fork_base: Some(last_ref.clone()),
@@ -1208,6 +1207,52 @@ mod tests {
             .unwrap();
         assert_eq!(status, "paused");
         assert_eq!(reason.as_deref(), Some("blocked_gate"));
+    }
+
+    #[tokio::test]
+    async fn resume_abandons_a_stale_attempt_then_retries_to_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-resume", "wf/r-1");
+        // A prior driver died mid-attempt, leaving a non-terminal step_exec
+        // (spec §6.4). Resume must abandon it and start a fresh attempt.
+        db.lock()
+            .execute(
+                "INSERT INTO wf_step_exec (id, run_id, step_id, attempt, iteration, status,
+                    gate_mode, agent_id)
+                 VALUES ('exec-stale','run-resume','only',1,0,'running','commit','ghost')",
+                [],
+            )
+            .unwrap();
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: StubDriver::new(ws, true),
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+        };
+        drive_run(&ctx, "run-resume").await;
+
+        // The stale attempt was abandoned...
+        let stale: String = db
+            .lock()
+            .query_row("SELECT status FROM wf_step_exec WHERE id='exec-stale'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stale, "abandoned");
+        // ...a fresh attempt ran to done and the run completed.
+        let done: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-resume' AND status='done'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(done, 1);
+        let status: String = db
+            .lock()
+            .query_row("SELECT status FROM wf_run WHERE id='run-resume'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "done");
     }
 }
 

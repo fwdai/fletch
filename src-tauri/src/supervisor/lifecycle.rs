@@ -118,6 +118,9 @@ struct ProcessLaunch {
     per_turn: bool,
     effective_fresh: bool,
     my_gen: u64,
+    /// The run blackboard dir to grant a workflow step agent (§8), derived from
+    /// the record's `owner_run_id`. `None` for a normal, non-run-owned agent.
+    blackboard: Option<PathBuf>,
 }
 
 /// Pick the turn-end detector for an agent by provider class and view, and
@@ -527,6 +530,17 @@ impl Supervisor {
         // and per-turn alike) now runs under sandbox-exec rooted here.
         let sandbox_root = agent_parent_dir(agent_id)?;
 
+        // A workflow step agent additionally gets a write grant to its run's
+        // blackboard (§8), derived from the record's `owner_run_id` so the run
+        // directory stays the single source of truth. The scheduler provisions
+        // the dir at launch; here we only compute the path to grant.
+        let blackboard = match &record.owner_run_id {
+            Some(run_id) => Some(crate::workflow::blackboard::blackboard_dir(
+                &crate::workflow::blackboard::run_dir(run_id)?,
+            )),
+            None => None,
+        };
+
         // The agent's file-mailbox RPC dir, created before spawn so the watcher
         // (and the agent's `FLETCH_RPC_DIR`) have a target from turn one.
         let rpc_dir = rpc::mailbox_dir(agent_id)?;
@@ -574,6 +588,7 @@ impl Supervisor {
                 per_turn,
                 effective_fresh,
                 my_gen,
+                blackboard,
             },
         )?;
 
@@ -650,6 +665,7 @@ impl Supervisor {
             per_turn,
             effective_fresh,
             my_gen,
+            blackboard,
         } = launch;
         let agent_id_str = agent_id.to_string();
 
@@ -707,6 +723,7 @@ impl Supervisor {
                         cols: 120,
                         rows: 32,
                         engine,
+                        blackboard: blackboard.as_deref(),
                     };
                     spawn_pty_per_turn_agent(
                         spec,
@@ -732,6 +749,7 @@ impl Supervisor {
                         mcp_servers: record.mcp_servers.clone(),
                         rpc_dir,
                         engine,
+                        blackboard: blackboard.clone(),
                     },
                     app.clone(),
                     agent_id_str.clone(),
@@ -760,6 +778,7 @@ impl Supervisor {
                 cols: 120,
                 rows: 32,
                 engine,
+                blackboard: blackboard.as_deref(),
             };
             match record.view {
                 AgentView::Native => spawn_pty_agent(
