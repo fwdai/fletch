@@ -31,6 +31,7 @@ mod sentry_scrub;
 mod supervisor;
 mod telemetry;
 mod transcripts;
+mod workflow;
 mod workflows;
 mod workspace;
 
@@ -1126,6 +1127,9 @@ pub fn run() {
             workflows::workflow_head_sha,
             workflows::workflow_file_exists,
             workflows::workflow_finalize,
+            workflow::wf_list_runs,
+            workflow::wf_get_run,
+            workflow::wf_events,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::get_agent_diff_stats,
