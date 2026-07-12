@@ -187,6 +187,13 @@ pub struct AgentRecord {
     /// existed — such agents always ran (and keep running) under sandbox-exec.
     #[serde(default)]
     pub sandbox_engine: Option<String>,
+    /// The workflow run that owns this agent, when it was spawned as a
+    /// workflow step (see `workflow::scheduler`). Run-owned agents are hidden
+    /// from the normal sidebar (they render under their run) and are cleaned up
+    /// by `wf_delete_run` rather than by DB cascade. `None` for a normal,
+    /// user-spawned agent.
+    #[serde(default)]
+    pub owner_run_id: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -343,7 +350,7 @@ const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created
             s.provider, s.view, s.provider_session_id, s.last_error,
             s.effort, s.model, s.instructions, s.custom_agent_id,
             s.skills, s.mcp_servers,
-            w.sandbox_engine
+            w.sandbox_engine, w.owner_run_id
      FROM workspaces w
      LEFT JOIN sessions s ON s.workspace_id = w.id";
 
@@ -367,6 +374,7 @@ type AgentRow = (
     Option<String>, // s.skills (JSON array of SkillSnapshot)
     Option<String>, // s.mcp_servers (JSON array of McpServerSnapshot)
     Option<String>, // w.sandbox_engine
+    Option<String>, // w.owner_run_id
 );
 
 impl WorkspaceManager {
@@ -592,8 +600,8 @@ impl WorkspaceManager {
 
         // The workspace is the durable work-area (identity + task metadata).
         tx.execute(
-            "INSERT INTO workspaces (id, project_id, name, task, created_at, sandbox_engine)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO workspaces (id, project_id, name, task, created_at, sandbox_engine, owner_run_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 record.id,
                 project_id,
@@ -601,6 +609,7 @@ impl WorkspaceManager {
                 record.task,
                 created_millis,
                 record.sandbox_engine,
+                record.owner_run_id,
             ],
         )?;
 
@@ -1018,6 +1027,30 @@ impl WorkspaceManager {
             |r| r.get(0),
         )?;
         Ok(count.max(0) as usize)
+    }
+
+    /// Ingest timestamp (ms epoch) of the most recent `session_records` row for
+    /// the workspace's current session, or `None` if nothing has been ingested
+    /// yet. The workflow stall watchdog compares this against `stall_timeout` to
+    /// tell a working agent from a silent one (see `workflow::attempt`).
+    pub fn last_activity(&self, workspace_id: &str) -> Option<i64> {
+        let conn = self.db.lock();
+        let sid: String = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .ok()?;
+        // MAX over an empty set is SQL NULL, so decode into an Option and let a
+        // session with no records yet report `None` rather than 0.
+        conn.query_row(
+            "SELECT MAX(created_at) FROM session_records WHERE session_id = ?1",
+            [&sid],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
     }
 
     /// All canonical records for the workspace's current session, in seq order.
@@ -1527,7 +1560,11 @@ impl WorkspaceManager {
     }
 
     fn query_all_agents(conn: &Connection) -> Vec<AgentRecord> {
-        let mut stmt = match conn.prepare(&format!("{AGENT_SELECT} ORDER BY w.created_at")) {
+        // Run-owned step agents live under their workflow run, not the
+        // sidebar; the frontend never sees owner_run_id, so filter here.
+        let mut stmt = match conn.prepare(&format!(
+            "{AGENT_SELECT} WHERE w.owner_run_id IS NULL ORDER BY w.created_at"
+        )) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
@@ -1756,7 +1793,7 @@ impl WorkspaceManager {
     }
 
     /// Map a row from an [`AGENT_SELECT`] query into the raw column tuple.
-    /// Shared by `query_all_agents` and `load_agent` so the 18-column layout
+    /// Shared by `query_all_agents` and `load_agent` so the 19-column layout
     /// is decoded in exactly one place.
     fn map_agent_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRow> {
         Ok((
@@ -1778,6 +1815,7 @@ impl WorkspaceManager {
             row.get(15)?,
             row.get(16)?,
             row.get(17)?,
+            row.get(18)?,
         ))
     }
 
@@ -1804,6 +1842,7 @@ impl WorkspaceManager {
             skills_json,
             mcp_servers_json,
             sandbox_engine,
+            owner_run_id,
         ) = row;
 
         let is_archived = archived_millis.is_some();
@@ -1842,6 +1881,7 @@ impl WorkspaceManager {
             skills: decode_json_vec(skills_json.as_deref()),
             mcp_servers: decode_json_vec(mcp_servers_json.as_deref()),
             sandbox_engine,
+            owner_run_id,
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,
@@ -1915,6 +1955,9 @@ pub fn new_agent_record(
         // from the live setting — callers building records directly (tests)
         // default to the pre-selection NULL, which spawns under sandbox-exec.
         sandbox_engine: None,
+        // Set by the workflow scheduler at step spawn; a plain spawn leaves it
+        // unowned so the agent shows in the normal sidebar.
+        owner_run_id: None,
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         archive: None,
@@ -2580,6 +2623,33 @@ mod tests {
         let plain_loaded = wm.agent(&plain_id).unwrap();
         assert_eq!(plain_loaded.instructions, None);
         assert_eq!(plain_loaded.custom_agent_id, None);
+    }
+
+    #[test]
+    fn run_owned_agents_are_hidden_from_the_workspace_list() {
+        let db = test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        seed_repo(&db, "/r");
+
+        let mut rec = new_agent_record(
+            "denali".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "step task".into(),
+            AgentView::Custom,
+        );
+        let id = rec.id.clone();
+        rec.owner_run_id = Some("run-1".into());
+        wm.add_agent(&mut rec).unwrap();
+
+        // Hidden from the sidebar list…
+        assert!(wm.current().unwrap().agents.iter().all(|a| a.id != id));
+        // …but still loadable by id for the workflow engine.
+        assert_eq!(
+            wm.agent(&id).unwrap().owner_run_id.as_deref(),
+            Some("run-1")
+        );
     }
 
     #[test]

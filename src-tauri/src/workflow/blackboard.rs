@@ -217,7 +217,16 @@ pub fn archive_stale_verdict(
     }
     let history = step_dir.join("history");
     std::fs::create_dir_all(&history)?;
-    let dest = history.join(format!("attempt-{attempt}.iter-{iteration}.verdict.json"));
+    // The same attempt can archive more than once (a blocked gate's re-prompt
+    // archives again with the same labels) — never overwrite an earlier file.
+    let mut dest = history.join(format!("attempt-{attempt}.iter-{iteration}.verdict.json"));
+    let mut seq = 1;
+    while dest.exists() {
+        seq += 1;
+        dest = history.join(format!(
+            "attempt-{attempt}.iter-{iteration}.{seq}.verdict.json"
+        ));
+    }
     std::fs::rename(&src, &dest)?;
     Ok(Some(dest))
 }
@@ -441,6 +450,29 @@ mod tests {
         );
         assert!(!step.join("verdict.json").exists());
         assert!(dest.is_file());
+    }
+
+    #[test]
+    fn archive_stale_verdict_never_overwrites_same_labels() {
+        // A blocked gate's re-prompt archives again with the same attempt/
+        // iteration labels; the second archive must not replace the first.
+        let dir = tmp();
+        let step = dir.path();
+        std::fs::write(step.join("verdict.json"), r#"{"result":"revise"}"#).unwrap();
+        let first = archive_stale_verdict(step, 1, 0).expect("archive").unwrap();
+
+        std::fs::write(step.join("verdict.json"), r#"{"result":"blocked"}"#).unwrap();
+        let second = archive_stale_verdict(step, 1, 0).expect("archive").unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(
+            std::fs::read_to_string(&first).unwrap(),
+            r#"{"result":"revise"}"#
+        );
+        assert_eq!(
+            std::fs::read_to_string(&second).unwrap(),
+            r#"{"result":"blocked"}"#
+        );
     }
 
     #[test]

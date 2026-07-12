@@ -14,9 +14,13 @@
 //! The allow is removed once those callers land.
 #![allow(dead_code)]
 
+pub mod attempt;
 pub mod blackboard;
 pub mod definition;
+pub mod driver;
+pub mod gates;
 pub mod journal;
+pub mod prompts;
 pub mod spec;
 pub mod types;
 pub mod yaml;

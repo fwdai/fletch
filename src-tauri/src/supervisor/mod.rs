@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::AppHandle;
+use tokio::sync::broadcast;
 
 use crate::activity::Activity;
 use crate::agent::Agent;
@@ -30,6 +31,19 @@ use crate::workspace::{AgentRecord, AgentStatus, ClosedTurn, Workspace, Workspac
 
 use events::emit_status;
 use messaging::{drain_message_queue, drain_pending_bin_respawn};
+
+/// A runtime status transition, broadcast to in-process subscribers the moment
+/// it is recorded. The workflow scheduler (`workflow::driver`) subscribes to
+/// this channel so it can catch an arbitrarily fast `Running → Idle` flap
+/// without polling: the Tauri `agent:status` event is the renderer's copy of
+/// the same signal, but a broadcast receiver lets Rust code await transitions
+/// deterministically. Distinct from the DB-persisted disposition — this is the
+/// live in-memory value at the instant it changed.
+#[derive(Debug, Clone)]
+pub struct StatusEvent {
+    pub agent_id: String,
+    pub status: AgentStatus,
+}
 
 pub struct Supervisor {
     pub workspace: Arc<WorkspaceManager>,
@@ -77,6 +91,10 @@ pub struct Supervisor {
     /// never persisted (see `session_sync`). Behind an `Arc` so the fire-and-
     /// forget sync task can hold it without borrowing `self`.
     pub sync_health: Arc<Mutex<HashMap<String, session_sync::SyncHealth>>>,
+    /// Fan-out of every runtime status transition (see [`StatusEvent`]). Held
+    /// as the sender; subscribers call [`Supervisor::subscribe_status`]. The
+    /// supervisor never reads it, so a dropped-receiver `send` error is ignored.
+    status_tx: broadcast::Sender<StatusEvent>,
 }
 
 impl Supervisor {
@@ -94,7 +112,33 @@ impl Supervisor {
             message_queue: Mutex::new(MessageQueue::new()),
             interrupted: Mutex::new(HashSet::new()),
             sync_health: Arc::new(Mutex::new(HashMap::new())),
+            // Capacity is generous: a lagging subscriber gets `Lagged` and
+            // re-reads `status_of`, so overflow degrades to a resync, never a
+            // lost terminal state. 1024 covers bursts across many live agents.
+            status_tx: broadcast::channel(1024).0,
         }
+    }
+
+    /// Subscribe to runtime status transitions across all agents. To avoid a
+    /// race the caller MUST subscribe *first*, then read [`Supervisor::status_of`],
+    /// then loop on `recv()` — the subscribe-before-read discipline is what makes
+    /// a fast `Running → Idle` flap unlosable (see `workflow::attempt`).
+    pub fn subscribe_status(&self) -> broadcast::Receiver<StatusEvent> {
+        self.status_tx.subscribe()
+    }
+
+    /// The authoritative current status of an agent: the live in-memory value
+    /// while it is tracked, else the DB-derived resting status on its record,
+    /// else `None` once the agent no longer exists.
+    pub fn status_of(&self, agent_id: &str) -> Option<AgentStatus> {
+        self.live_status(agent_id)
+            .or_else(|| self.workspace.agent(agent_id).ok().map(|r| r.status))
+    }
+
+    /// Ingest timestamp (ms) of this agent's most recent session record — the
+    /// stall-detection clock. `None` before the first record lands.
+    pub fn last_activity(&self, agent_id: &str) -> Option<i64> {
+        self.workspace.last_activity(agent_id)
     }
 
     /// Invalidate this agent's current spawn generation. Any gen-guarded
@@ -249,6 +293,13 @@ impl Supervisor {
                 Err(e) => tracing::warn!(error = %e, agent_id, "stamp user turn end failed"),
             }
         }
+        // Fan the transition out to in-process subscribers (the workflow
+        // scheduler) before the Tauri emit. `send` errs only when there are no
+        // receivers, which is the common case for user-spawned agents — ignore.
+        let _ = self.status_tx.send(StatusEvent {
+            agent_id: agent_id.to_string(),
+            status: status.clone(),
+        });
         emit_status(app, agent_id, status, last_error);
     }
 

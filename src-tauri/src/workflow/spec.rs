@@ -406,6 +406,16 @@ fn check_step(
     if let Gate::Artifact { path } = &step.gate {
         check_artifact_path(&step.id, path, errors);
     }
+    // The `tests` gate (spec §9.4) is not implemented until S6. Reject it at
+    // validation so a definition can't launch a step whose gate would either
+    // never pass or falsely pass without running any tests.
+    if matches!(step.gate, Gate::Tests) {
+        errors.push(format!(
+            "step '{}' declares gate 'tests', which is not implemented yet — \
+             use 'verdict' until test execution lands (S6)",
+            step.id
+        ));
+    }
     if let Some(b) = &step.budgets {
         check_budgets(&format!("step '{}'", step.id), b, errors);
     }
@@ -699,6 +709,17 @@ mod tests {
         assert!(errors(&s)
             .iter()
             .any(|e| e.contains("'notify'") && e.contains("orchestrator-only")));
+    }
+
+    #[test]
+    fn tests_gate_rejected_until_implemented() {
+        let mut s = minimal();
+        if let Block::Step(step) = &mut s.workflow[0] {
+            step.gate = Gate::Tests;
+        }
+        assert!(errors(&s)
+            .iter()
+            .any(|e| e.contains("'tests'") && e.contains("not implemented")));
     }
 
     #[test]
