@@ -167,23 +167,71 @@ impl WorkflowService {
     /// Resume a paused run (`wf_resume`): re-drive from the cursor. A fresh
     /// attempt is started for a blocked/stalled step by the drive loop.
     pub fn resume(&self, run_id: &str) -> Result<()> {
-        self.spawn_drive(run_id.to_string());
-        Ok(())
+        self.resume_paused(run_id, "resume")
     }
 
     /// User-initiated retry after `paused(blocked_gate|stalled)` — same as
     /// resume; the drive loop starts a fresh attempt (one beyond `max_attempts`,
     /// since this is an explicit human decision, §6.5).
     pub fn retry(&self, run_id: &str) -> Result<()> {
+        self.resume_paused(run_id, "retry")
+    }
+
+    /// Shared resume/retry guard: only a `paused(blocked_gate|stalled)` run may
+    /// be re-driven. A terminal run must not restart, and a `paused(approval)`
+    /// run must go through `wf_approve` — re-driving it would start a fresh
+    /// attempt for a step whose result is already ferried.
+    fn resume_paused(&self, run_id: &str, action: &str) -> Result<()> {
+        {
+            let conn = self.db.lock();
+            let (status, reason) = run_status(&conn, run_id)?;
+            if status != "paused" {
+                return Err(Error::Other(format!("cannot {action} a {status} run")));
+            }
+            if reason.as_deref() == Some("approval") {
+                return Err(Error::Other(
+                    "run is awaiting approval — use wf_approve (or wf_cancel)".into(),
+                ));
+            }
+        }
         self.spawn_drive(run_id.to_string());
         Ok(())
     }
 
     /// Approve an `awaiting_approval` step: the boundary commit was already
-    /// ferried at the pause, so approval just advances the cursor and resumes.
+    /// ferried at the pause, so approval promotes that attempt to `done` (so the
+    /// next fork and the finalize push include it), advances the cursor, and
+    /// resumes.
     pub fn approve(&self, run_id: &str) -> Result<()> {
         {
             let conn = self.db.lock();
+            let (status, reason) = run_status(&conn, run_id)?;
+            if status != "paused" || reason.as_deref() != Some("approval") {
+                return Err(Error::Other(format!(
+                    "run is not awaiting approval (status: {status})"
+                )));
+            }
+            let exec_id: String = conn
+                .query_row(
+                    "SELECT id FROM wf_step_exec WHERE run_id = ?1 AND status = 'awaiting_approval'
+                     ORDER BY rowid DESC LIMIT 1",
+                    [run_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| Error::Other(format!("no awaiting_approval attempt: {e}")))?;
+            conn.execute(
+                "UPDATE wf_step_exec SET status = 'done' WHERE id = ?1",
+                [&exec_id],
+            )
+            .map_err(|e| Error::Other(e.to_string()))?;
+            journal_event(
+                &conn,
+                Some(&self.app),
+                run_id,
+                event_type::DECISION,
+                Some(&exec_id),
+                &json!({ "decision": "approved" }),
+            );
             let cursor = get_cursor_index(&conn, run_id);
             set_cursor_index(&conn, run_id, cursor + 1);
         }
@@ -606,6 +654,15 @@ fn slugify(name: &str) -> String {
     } else {
         s.chars().take(40).collect()
     }
+}
+
+fn run_status(conn: &Connection, run_id: &str) -> Result<(String, Option<String>)> {
+    conn.query_row(
+        "SELECT status, paused_reason FROM wf_run WHERE id = ?1",
+        [run_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(|e| Error::Other(format!("run {run_id} not found: {e}")))
 }
 
 fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
