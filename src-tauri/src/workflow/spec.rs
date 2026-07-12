@@ -311,6 +311,11 @@ fn walk_blocks(
                 if par.steps.is_empty() {
                     errors.push("parallel block has no steps".into());
                 }
+                if matches!(par.max_concurrent, Some(0)) {
+                    // A cap of 0 launches no children, so the join can never be
+                    // met — the stage would stall forever. `None` = unbounded.
+                    errors.push("parallel.max_concurrent must be ≥ 1".into());
+                }
                 for step in &par.steps {
                     check_step(step, spec, seen_ids, errors);
                 }
@@ -318,6 +323,15 @@ fn walk_blocks(
             Block::Loop(lp) => check_loop(lp, spec, seen_ids, errors),
             Block::Orchestrate(orch) => {
                 check_agent_ref("orchestrate", &orch.agent, spec, errors);
+                if orch.comms.contains(&CommsCap::Notify) {
+                    // `comms` is the children's caps; children are steps, so
+                    // `notify` (orchestrator-only, §5.1) is invalid here too.
+                    errors.push(format!(
+                        "orchestrate '{}' comms grants children 'notify', which is \
+                         orchestrator-only",
+                        orch.agent
+                    ));
+                }
                 if let Some(children) = &orch.children {
                     check_agent_ref("orchestrate children", &children.agent, spec, errors);
                     if children.max < 1 {
@@ -394,6 +408,15 @@ fn check_step(
     }
     if let Some(b) = &step.budgets {
         check_budgets(&format!("step '{}'", step.id), b, errors);
+    }
+    // `notify` is orchestrator-only (spec §5.1); a plain step may only declare
+    // `report`/`ask`. Reject a step that claims it so an unsupported capability
+    // never persists.
+    if step.comms.contains(&CommsCap::Notify) {
+        errors.push(format!(
+            "step '{}' declares comms cap 'notify', which is orchestrator-only",
+            step.id
+        ));
     }
 }
 
@@ -644,6 +667,65 @@ mod tests {
             steps: vec![],
         })];
         assert!(errors(&s).iter().any(|e| e.contains("has no steps")));
+    }
+
+    #[test]
+    fn parallel_max_concurrent_zero_rejected() {
+        let mut s = minimal();
+        s.workflow = vec![Block::Parallel(Parallel {
+            join: Join::All,
+            integrate: Integrate::None,
+            max_concurrent: Some(0),
+            steps: vec![Step {
+                id: "a".into(),
+                agent: "coder".into(),
+                goal: "g".into(),
+                gate: Gate::Verdict,
+                budgets: None,
+                comms: vec![],
+            }],
+        })];
+        assert!(errors(&s)
+            .iter()
+            .any(|e| e.contains("max_concurrent must be")));
+    }
+
+    #[test]
+    fn notify_cap_on_plain_step_rejected() {
+        let mut s = minimal();
+        if let Block::Step(step) = &mut s.workflow[0] {
+            step.comms = vec![CommsCap::Report, CommsCap::Notify];
+        }
+        assert!(errors(&s)
+            .iter()
+            .any(|e| e.contains("'notify'") && e.contains("orchestrator-only")));
+    }
+
+    #[test]
+    fn report_and_ask_caps_on_step_allowed() {
+        let mut s = minimal();
+        if let Block::Step(step) = &mut s.workflow[0] {
+            step.comms = vec![CommsCap::Report, CommsCap::Ask];
+        }
+        assert!(validate(&s).is_ok(), "{:?}", errors(&s));
+    }
+
+    #[test]
+    fn notify_cap_on_orchestrate_children_rejected() {
+        let mut s = minimal();
+        s.workflow = vec![Block::Orchestrate(Orchestrate {
+            agent: "coder".into(),
+            goal: "lead".into(),
+            children: None,
+            body: vec![],
+            join: Join::All,
+            integrate: Integrate::None,
+            comms: vec![CommsCap::Notify],
+            compose: None,
+        })];
+        assert!(errors(&s)
+            .iter()
+            .any(|e| e.contains("'notify'") && e.contains("orchestrator-only")));
     }
 
     #[test]
