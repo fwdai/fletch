@@ -1,53 +1,105 @@
-// data.ts — static descriptors for the builder UI.
+// data.ts — static descriptors for the block-editor UI (labels, icons, copy).
+// The semantics live in the Rust engine (spec §9/§6); only presentation here.
 
 import type { IconName } from "../components/Icon";
-import type { AdvanceMode } from "./storage";
+import type { CommsCap, Gate } from "./spec";
 
-export interface AdvanceModeDef {
-  id: AdvanceMode;
+export type GateKind = Gate["type"];
+
+export interface GateModeDef {
+  id: GateKind;
   label: string;
   short: string;
   icon: IconName;
   note: string;
 }
 
-/** How a step decides it's finished and hands off. Mirrors the design
- *  prototype; only the copy/labels live here — the run engine (a later PR)
- *  interprets the semantics. */
-export const ADVANCE_MODES: AdvanceModeDef[] = [
+/** How a step attempt is judged done (spec §9). `verdict` is the default. */
+export const GATE_MODES: GateModeDef[] = [
   {
-    id: "signal",
-    label: "Agent signals done",
-    short: "signals done",
+    id: "verdict",
+    label: "Writes a verdict",
+    short: "verdict",
     icon: "check",
-    note: "The agent decides it's finished and explicitly hands off. Simplest; each agent is told the full workflow shape and its place in it.",
+    note: 'The agent writes verdict.json with result "done". The default, and the only gate a loop can exit on.',
   },
   {
     id: "commit",
     label: "On commit",
-    short: "on commit",
+    short: "commit",
     icon: "commit",
-    note: "Advance as soon as the step makes a git commit.",
-  },
-  {
-    id: "tests",
-    label: "When tests pass",
-    short: "tests pass",
-    icon: "check",
-    note: "Run the project's test command; advance only when it's green.",
+    note: "Done as soon as the step moves HEAD (makes a git commit).",
   },
   {
     id: "artifact",
-    label: "When file is written",
-    short: "file written",
+    label: "A file is written",
+    short: "file",
     icon: "file",
-    note: "Advance once a named file (e.g. PLAN.md) is committed to the checkout.",
+    note: "Done once a named repo-relative file exists in the checkout (e.g. PLAN.md).",
+  },
+  {
+    id: "tests",
+    label: "Tests pass",
+    short: "tests",
+    icon: "flask",
+    note: "Runs the project's test command in the step worktree; done only when it exits 0.",
   },
   {
     id: "approval",
-    label: "Manual approval",
-    short: "you approve",
-    icon: "user",
-    note: "Pause and wait for you to approve the handoff.",
+    label: "You approve",
+    short: "approval",
+    icon: "hand",
+    note: "Pauses the run for you to approve the handoff — no gate the agent can satisfy itself.",
+  },
+];
+
+export interface CommsCapDef {
+  id: CommsCap;
+  label: string;
+  note: string;
+}
+
+/** The comms permissions a plain step / orchestrate child may hold. `notify` is
+ *  orchestrator-only (spec §5.1) and never offered here. */
+export const STEP_COMMS: CommsCapDef[] = [
+  {
+    id: "report",
+    label: "Report",
+    note: "Post progress/done notes to the orchestrator (or timeline).",
+  },
+  {
+    id: "ask",
+    label: "Ask",
+    note: "Ask a question — routed to the orchestrator, else pauses for you.",
+  },
+];
+
+export interface BlockTypeDef {
+  id: "step" | "parallel" | "loop" | "orchestrate";
+  label: string;
+  icon: IconName;
+  note: string;
+}
+
+/** The block kinds the sequence "add" menu offers. */
+export const BLOCK_TYPES: BlockTypeDef[] = [
+  { id: "step", label: "Step", icon: "arrowR", note: "One agent works, then hands off." },
+  {
+    id: "parallel",
+    label: "Parallel",
+    icon: "layers",
+    note: "Several agents work at once, then join.",
+  },
+  {
+    id: "loop",
+    label: "Loop",
+    icon: "loop",
+    note: "Repeat a body until a step's verdict says done.",
+  },
+  {
+    id: "orchestrate",
+    label: "Orchestrate",
+    icon: "combine",
+    note: "A lead agent coordinates children (execution lands in a later release).",
   },
 ];

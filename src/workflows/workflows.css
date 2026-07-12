@@ -922,3 +922,239 @@
   display: flex;
   flex-direction: column;
 }
+
+/* ───────────────────────── Builder v2: block editor ───────────────────────── */
+
+/* A sequence of blocks laid out left-to-right; the top-level one scrolls, nested
+   loop bodies sit inline. */
+.wb-seq {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+.wb-canvas > .wb-seq {
+  padding: 44px 24px 26px;
+  overflow-x: auto;
+}
+.wb-loop-body .wb-seq {
+  padding: 2px 0;
+}
+
+/* Small control chips shared by the top bar and container headers. */
+.wb-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.14s var(--ease);
+}
+.wb-chip-btn.lg {
+  height: 30px;
+}
+.wb-chip-btn:hover {
+  border-color: var(--bd-strong);
+  color: var(--fg-1);
+}
+
+.ca-select.sm,
+.ca-input.sm {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 11.5px;
+}
+
+/* Container blocks (parallel / loop / orchestrate). */
+.wb-cont {
+  flex: 0 0 auto;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--shadow-1);
+}
+.wb-cont-h {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.wb-cont-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-2);
+}
+.wb-ctl {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+.wb-cont-body {
+  padding: 14px;
+}
+.wb-parallel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.wb-loop {
+  border-left: 3px solid oklch(0.65 0.13 265);
+}
+.wb-loop-body {
+  padding: 8px 14px 14px;
+}
+
+/* Orchestrate internals. */
+.wb-orch-lead {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.wb-orch-children {
+  padding: 12px 14px;
+}
+.wb-sub-h,
+.wb-comms-l {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-3);
+  margin-bottom: 8px;
+}
+.wb-orch-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--bd-soft);
+}
+.wb-opt-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-left: 22px;
+}
+.wb-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--fg-1);
+  cursor: pointer;
+}
+
+/* Comms caps + artifact path inside a step card. */
+.wb-comms {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 10px;
+}
+.wb-comms-l {
+  margin-bottom: 0;
+}
+.wb-comm {
+  padding: 2px 9px;
+  border: 1px solid var(--bd);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.14s var(--ease);
+}
+.wb-comm.on {
+  border-color: transparent;
+  background: color-mix(in oklch, var(--accent, oklch(0.65 0.13 265)) 18%, transparent);
+  color: var(--fg-1);
+}
+.wb-artifact {
+  margin: 0 12px 8px;
+}
+
+/* Add-block menu (a sequence's "Add block" dropdown). */
+.wb-addwrap {
+  position: relative;
+  align-self: stretch;
+  display: flex;
+}
+.wb-add.sm {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 0;
+  flex-direction: row;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 11.5px;
+}
+.wb-add-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 56;
+  width: 260px;
+  margin-top: 6px;
+}
+
+/* Inline validation. */
+.wb-step.has-err {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--bd));
+}
+.wb-errs {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 12px 10px;
+}
+.wb-err {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--danger);
+}
+
+/* Finalize bar + save summary. */
+.wb-finish {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+.wb-finish-l {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-3);
+}
+.wb-summary-err {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--danger);
+}

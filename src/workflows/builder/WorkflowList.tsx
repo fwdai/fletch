@@ -1,14 +1,13 @@
-// WorkflowList.tsx — the list view: one card per workflow with a compact
-// step-chain preview, plus the "New workflow" entry point.
+// WorkflowList.tsx — the list view: one card per definition with a compact
+// block-chain preview, plus the "New workflow" entry point.
 
 import { Fragment } from "react";
 import { Icon } from "../../components/Icon";
 import { SetHead } from "../../components/SettingsScreen/primitives";
 import type { ModelMeta } from "../../data/modelCatalog/types";
 import type { CustomAgent } from "../../storage/customAgents";
-import type { AgentResolver } from "../shared";
 import { resolveAgent } from "../shared";
-import type { Workflow } from "../storage";
+import type { AgentSpec, Block, Definition, Spec } from "../spec";
 import { AgentAvatar } from "./AgentAvatar";
 
 function timeAgo(ms: number): string {
@@ -22,49 +21,85 @@ function timeAgo(ms: number): string {
   return `${d}d ago`;
 }
 
-function WorkflowMini({ workflow, resolve }: { workflow: Workflow; resolve: AgentResolver }) {
-  const loopStep = workflow.steps.find((s) => s.loop);
+/** An alias's AgentSpec collapses to the picked identity: a custom agent (by its
+ *  local id) or a bare base provider. */
+function resolveAlias(
+  spec: Spec,
+  alias: string | undefined,
+  agents: CustomAgent[],
+  modelsByAgent: Record<string, ModelMeta[]>,
+) {
+  if (!alias) return null;
+  const a: AgentSpec | undefined = spec.agents?.[alias];
+  if (!a) return null;
+  return resolveAgent(a.custom_agent ?? a.base, agents, modelsByAgent);
+}
+
+function StepChip({ label, agent }: { label: string; agent: ReturnType<typeof resolveAgent> }) {
   return (
-    <div className="wf-mini">
-      {workflow.steps.map((s, i) => {
-        const a = resolve(s.agent);
-        return (
-          <Fragment key={s.id}>
-            {i > 0 && (
-              <span className="wf-mini-arrow">
-                <Icon name="arrowR" />
-              </span>
-            )}
-            <span className="wf-mini-step">
-              {a ? (
-                <AgentAvatar
-                  custom={a.custom}
-                  slug={a.providerId}
-                  short={a.short}
-                  hue={a.hue}
-                  size={16}
-                />
-              ) : (
-                <span className="wf-mini-mono" style={{ "--h": 250 } as React.CSSProperties}>
-                  ?
-                </span>
-              )}
-              {a?.name || "Unassigned"}
-            </span>
-          </Fragment>
-        );
-      })}
-      {loopStep && (
-        <span className="wf-mini-loop">
-          <Icon name="loop" /> until {loopStep.loop!.when?.split(" ")[0] || "done"}
+    <span className="wf-mini-step">
+      {agent ? (
+        <AgentAvatar
+          custom={agent.custom}
+          slug={agent.providerId}
+          short={agent.short}
+          hue={agent.hue}
+          size={16}
+        />
+      ) : (
+        <span className="wf-mini-mono" style={{ "--h": 250 } as React.CSSProperties}>
+          ?
         </span>
       )}
+      {agent?.name ?? label}
+    </span>
+  );
+}
+
+function WorkflowMini({
+  spec,
+  agents,
+  modelsByAgent,
+}: {
+  spec: Spec;
+  agents: CustomAgent[];
+  modelsByAgent: Record<string, ModelMeta[]>;
+}) {
+  const resolve = (alias?: string) => resolveAlias(spec, alias, agents, modelsByAgent);
+  const blocks = spec.workflow ?? [];
+  return (
+    <div className="wf-mini">
+      {blocks.map((b: Block, i) => (
+        <Fragment key={i}>
+          {i > 0 && (
+            <span className="wf-mini-arrow">
+              <Icon name="arrowR" />
+            </span>
+          )}
+          {"step" in b && <StepChip label={b.step.id} agent={resolve(b.step.agent)} />}
+          {"parallel" in b && (
+            <span className="wf-mini-loop">
+              <Icon name="layers" /> {b.parallel.steps.length} parallel
+            </span>
+          )}
+          {"loop" in b && (
+            <span className="wf-mini-loop">
+              <Icon name="loop" /> loop ×{b.loop.max}
+            </span>
+          )}
+          {"orchestrate" in b && (
+            <span className="wf-mini-loop">
+              <Icon name="combine" /> orchestrate
+            </span>
+          )}
+        </Fragment>
+      ))}
     </div>
   );
 }
 
 export function WorkflowList({
-  workflows,
+  definitions,
   loading,
   agents,
   modelsByAgent,
@@ -73,17 +108,15 @@ export function WorkflowList({
   onDuplicate,
   onDelete,
 }: {
-  workflows: Workflow[];
+  definitions: Definition[];
   loading: boolean;
   agents: CustomAgent[];
   modelsByAgent: Record<string, ModelMeta[]>;
   onNew: () => void;
-  onEdit: (w: Workflow) => void;
-  onDuplicate: (w: Workflow) => void;
+  onEdit: (d: Definition) => void;
+  onDuplicate: (d: Definition) => void;
   onDelete: (id: string) => void;
 }) {
-  const resolve = (id: string | null) => resolveAgent(id, agents, modelsByAgent);
-
   return (
     <div className="set-pane">
       <SetHead
@@ -94,7 +127,7 @@ export function WorkflowList({
 
       <div className="set-list-head">
         <span className="sl-count">
-          {workflows.length} workflow{workflows.length === 1 ? "" : "s"}
+          {definitions.length} workflow{definitions.length === 1 ? "" : "s"}
         </span>
         <button className="btn-t primary" onClick={onNew}>
           <Icon name="plus" size={13} /> New workflow
@@ -102,24 +135,24 @@ export function WorkflowList({
       </div>
 
       <div className="wf-list">
-        {workflows.map((w) => (
-          <div key={w.id} className="wf-card" onClick={() => onEdit(w)}>
+        {definitions.map((d) => (
+          <div key={d.id} className="wf-card" onClick={() => onEdit(d)}>
             <div className="wf-card-h">
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="wf-name">{w.name}</div>
-                <div className="wf-desc">{w.description}</div>
+                <div className="wf-name">{d.name}</div>
+                <div className="wf-desc">{d.description}</div>
               </div>
               <div className="wf-meta">
-                <span>{w.run_count ?? 0} runs</span>
+                <span>{d.run_count ?? 0} runs</span>
                 <span>·</span>
-                <span>edited {timeAgo(w.updated_at)}</span>
+                <span>edited {timeAgo(d.updated_at)}</span>
               </div>
               <div className="wf-acts" onClick={(e) => e.stopPropagation()}>
                 <button
                   className="btn-i sm tip"
                   data-tip-down
                   data-tip="Duplicate"
-                  onClick={() => onDuplicate(w)}
+                  onClick={() => onDuplicate(d)}
                 >
                   <Icon name="copy" />
                 </button>
@@ -127,16 +160,16 @@ export function WorkflowList({
                   className="btn-i sm tip"
                   data-tip-down
                   data-tip="Delete"
-                  onClick={() => onDelete(w.id)}
+                  onClick={() => onDelete(d.id)}
                 >
                   <Icon name="trash" />
                 </button>
               </div>
             </div>
-            <WorkflowMini workflow={w} resolve={resolve} />
+            <WorkflowMini spec={d.spec} agents={agents} modelsByAgent={modelsByAgent} />
           </div>
         ))}
-        {!loading && workflows.length === 0 && (
+        {!loading && definitions.length === 0 && (
           <button className="wb-add" style={{ width: "100%", minHeight: 120 }} onClick={onNew}>
             <span className="wb-add-ic">
               <Icon name="plus" />
