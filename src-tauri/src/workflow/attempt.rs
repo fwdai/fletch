@@ -157,9 +157,7 @@ pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> Att
         Ready::Errored => {
             return terminal_error(driver, &agent_id, "agent error before ready", events).await
         }
-        Ready::Timeout => {
-            return terminal_error(driver, &agent_id, "spawn_timeout", events).await
-        }
+        Ready::Timeout => return terminal_error(driver, &agent_id, "spawn_timeout", events).await,
         Ready::Closed => {
             return terminal_error(driver, &agent_id, "supervisor stopped", events).await
         }
@@ -193,7 +191,8 @@ pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> Att
         // Move any leftover verdict aside so this turn's gate only ever reads a
         // verdict written after this prompt (spec §8.3). Journaled on the
         // prompt_sent event rather than a dedicated type.
-        let stale_archived = match blackboard::archive_stale_verdict(&step_dir, attempt, iteration) {
+        let stale_archived = match blackboard::archive_stale_verdict(&step_dir, attempt, iteration)
+        {
             Ok(archived) => archived.map(|p| p.to_string_lossy().into_owned()),
             Err(e) => {
                 tracing::warn!(error = %e, step = %step_id, "stale-verdict archival failed");
@@ -212,11 +211,17 @@ pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> Att
 
         // Turn: wait for start (deadline) then end (stall watchdog). `rx` was
         // subscribed *before* the send above, so the flap is already buffered.
-        match drive_turn(driver, &agent_id, &mut rx, snapshot, &deadlines, &mut events).await {
-            TurnEnd::Ended => events.push(ev(
-                event_type::TURN_ENDED,
-                json!({ "status": "idle" }),
-            )),
+        match drive_turn(
+            driver,
+            &agent_id,
+            &mut rx,
+            snapshot,
+            &deadlines,
+            &mut events,
+        )
+        .await
+        {
+            TurnEnd::Ended => events.push(ev(event_type::TURN_ENDED, json!({ "status": "idle" }))),
             TurnEnd::AgentErrored => {
                 events.push(ev(event_type::TURN_ENDED, json!({ "status": "error" })));
                 return terminal_error(driver, &agent_id, "agent errored mid-turn", events).await;
@@ -224,9 +229,7 @@ pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> Att
             TurnEnd::TurnStartTimeout => {
                 return terminal_error(driver, &agent_id, "turn_start_timeout", events).await
             }
-            TurnEnd::Stalled => {
-                return terminal_error(driver, &agent_id, "stalled", events).await
-            }
+            TurnEnd::Stalled => return terminal_error(driver, &agent_id, "stalled", events).await,
             TurnEnd::Closed => {
                 return terminal_error(driver, &agent_id, "supervisor stopped", events).await
             }
@@ -528,8 +531,16 @@ mod tests {
         let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
         d.set_complete_verdict(step_dir, r#"{"result":"done","summary":"ok"}"#);
 
-        let run = run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast())).await;
-        assert!(matches!(run.outcome, AttemptOutcome::Done { .. }), "{:?}", run.outcome);
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+        )
+        .await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::Done { .. }),
+            "{:?}",
+            run.outcome
+        );
         assert!(types_present(&run.events, event_type::ATTEMPT_SPAWNED));
         assert!(types_present(&run.events, event_type::ATTEMPT_READY));
         assert!(types_present(&run.events, event_type::PROMPT_SENT));
@@ -542,7 +553,11 @@ mod tests {
         let bb = tempfile::tempdir().unwrap();
         let d = MockDriver::new();
         // ready_on_spawn stays false → agent parks in Spawning forever.
-        let run = run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast())).await;
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+        )
+        .await;
         match run.outcome {
             AttemptOutcome::Error { error } => assert_eq!(error, "spawn_timeout"),
             other => panic!("expected spawn_timeout, got {other:?}"),
@@ -555,7 +570,11 @@ mod tests {
         let d = MockDriver::new();
         d.set_ready_on_spawn(true);
         d.set_turn_behavior(TurnBehavior::Silent); // prompt lands, no turn
-        let run = run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast())).await;
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+        )
+        .await;
         match run.outcome {
             AttemptOutcome::Error { error } => assert_eq!(error, "turn_start_timeout"),
             other => panic!("expected turn_start_timeout, got {other:?}"),
@@ -575,8 +594,16 @@ mod tests {
         let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
         d.set_complete_verdict(step_dir, r#"{"result":"done","summary":"flap"}"#);
 
-        let run = run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast())).await;
-        assert!(matches!(run.outcome, AttemptOutcome::Done { .. }), "{:?}", run.outcome);
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+        )
+        .await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::Done { .. }),
+            "{:?}",
+            run.outcome
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -585,7 +612,11 @@ mod tests {
         let d = MockDriver::new();
         d.set_ready_on_spawn(true);
         d.set_turn_behavior(TurnBehavior::RunningOnly); // turn starts, never ends
-        let run = run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast())).await;
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+        )
+        .await;
         match run.outcome {
             AttemptOutcome::Error { error } => assert_eq!(error, "stalled"),
             other => panic!("expected stalled, got {other:?}"),
@@ -607,8 +638,16 @@ mod tests {
         let d = MockDriver::new();
         d.set_ready_on_spawn(true);
         d.set_turn_behavior(TurnBehavior::ErrorOut);
-        let run = run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast())).await;
-        assert!(matches!(run.outcome, AttemptOutcome::Error { .. }), "{:?}", run.outcome);
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+        )
+        .await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::Error { .. }),
+            "{:?}",
+            run.outcome
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -616,7 +655,11 @@ mod tests {
         let bb = tempfile::tempdir().unwrap();
         let d = MockDriver::new();
         d.fail_next_spawn("no repo");
-        let run = run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast())).await;
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+        )
+        .await;
         assert!(run.agent_id.is_none());
         assert!(matches!(run.outcome, AttemptOutcome::Error { .. }));
     }
@@ -631,7 +674,11 @@ mod tests {
         let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
         d.set_complete_verdict(step_dir, r#"{"result":"revise","summary":"more work"}"#);
 
-        let run = run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast())).await;
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+        )
+        .await;
         match &run.outcome {
             AttemptOutcome::Blocked { reason } => assert!(reason.contains("revise")),
             other => panic!("expected Blocked, got {other:?}"),
@@ -652,8 +699,16 @@ mod tests {
         let d = MockDriver::new();
         d.set_ready_on_spawn(true);
         d.set_turn_behavior(TurnBehavior::Complete);
-        let run = run_attempt(d.as_ref(), params(Gate::Approval, bb.path().to_path_buf(), fast())).await;
-        assert!(matches!(run.outcome, AttemptOutcome::AwaitingApproval), "{:?}", run.outcome);
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Approval, bb.path().to_path_buf(), fast()),
+        )
+        .await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::AwaitingApproval),
+            "{:?}",
+            run.outcome
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -664,13 +719,25 @@ mod tests {
         let bb = tempfile::tempdir().unwrap();
         let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
         std::fs::create_dir_all(&step_dir).unwrap();
-        std::fs::write(step_dir.join("verdict.json"), r#"{"result":"done","summary":"stale"}"#).unwrap();
+        std::fs::write(
+            step_dir.join("verdict.json"),
+            r#"{"result":"done","summary":"stale"}"#,
+        )
+        .unwrap();
 
         let d = MockDriver::new();
         d.set_ready_on_spawn(true);
         d.set_turn_behavior(TurnBehavior::Complete); // completes but writes no verdict
-        let run = run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast())).await;
-        assert!(matches!(run.outcome, AttemptOutcome::Blocked { .. }), "{:?}", run.outcome);
+        let run = run_attempt(
+            d.as_ref(),
+            params(Gate::Verdict, bb.path().to_path_buf(), fast()),
+        )
+        .await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::Blocked { .. }),
+            "{:?}",
+            run.outcome
+        );
         // The stale verdict was archived, journaled on the prompt_sent event.
         assert!(run
             .events

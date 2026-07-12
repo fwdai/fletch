@@ -84,7 +84,10 @@ pub fn evaluate(gate: &Gate, inputs: &GateInputs) -> GateResult {
         // that declares it still runs. The caller journals the degrade note.
         Gate::Tests => {
             let mut res = evaluate_verdict(inputs);
-            res.reason = format!("tests gate not yet available; degraded to verdict — {}", res.reason);
+            res.reason = format!(
+                "tests gate not yet available; degraded to verdict — {}",
+                res.reason
+            );
             res
         }
     }
@@ -115,7 +118,9 @@ fn evaluate_commit(inputs: &GateInputs) -> GateResult {
         (Some(start), Some(end)) if start != end => {
             GateResult::done(format!("HEAD advanced {} → {}", short(start), short(end)))
         }
-        (Some(_), Some(_)) => GateResult::blocked("no commit was made this attempt (HEAD unchanged)"),
+        (Some(_), Some(_)) => {
+            GateResult::blocked("no commit was made this attempt (HEAD unchanged)")
+        }
         // A missing HEAD means the worktree facts couldn't be read; treat as
         // unmet rather than asserting completion.
         _ => GateResult::blocked("could not read worktree HEAD to check for a commit"),
@@ -303,6 +308,10 @@ mod tests {
             },
         );
         assert_eq!(r.outcome, GateOutcome::Done);
-        assert!(r.reason.contains("degraded to verdict"), "reason: {}", r.reason);
+        assert!(
+            r.reason.contains("degraded to verdict"),
+            "reason: {}",
+            r.reason
+        );
     }
 }

@@ -137,9 +137,7 @@ impl AgentDriver for SupervisorDriver {
             // The primary checkout path — provisioned by the spawn's background
             // task; the caller waits for `Idle` before reading it.
             let worktree = match record.repos.first() {
-                Some(primary) => {
-                    crate::workspace::repo_checkout_path(&record.id, &primary.subdir)?
-                }
+                Some(primary) => crate::workspace::repo_checkout_path(&record.id, &primary.subdir)?,
                 None => {
                     return Err(crate::error::Error::Other(
                         "spawned step agent has no tracked repo".into(),
@@ -174,7 +172,12 @@ impl AgentDriver for SupervisorDriver {
     }
 
     fn stop<'a>(&'a self, agent_id: &'a str) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.sup.clone().stop_agent(self.app.clone(), agent_id).await })
+        Box::pin(async move {
+            self.sup
+                .clone()
+                .stop_agent(self.app.clone(), agent_id)
+                .await
+        })
     }
 
     fn archive<'a>(&'a self, agent_id: &'a str) -> BoxFuture<'a, Result<()>> {

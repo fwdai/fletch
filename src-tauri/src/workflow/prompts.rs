@@ -115,11 +115,7 @@ pub fn retry_prompt(previous_failure: &str, ctx: &StepPromptCtx) -> String {
 }
 
 fn position_line(pos: &Position) -> String {
-    let mut line = format!(
-        "This is step {} of {}.",
-        pos.step_index + 1,
-        pos.step_count
-    );
+    let mut line = format!("This is step {} of {}.", pos.step_index + 1, pos.step_count);
     if let Some(it) = &pos.iteration {
         line.push_str(&format!(
             " You are on iteration {} of at most {}.",
@@ -163,8 +159,7 @@ fn verdict_schema_block() -> String {
 fn gate_statement(gate: &Gate) -> String {
     match gate {
         Gate::Verdict => {
-            "You are done when you write `verdict.json` with `result` set to \"done\"."
-                .to_string()
+            "You are done when you write `verdict.json` with `result` set to \"done\".".to_string()
         }
         Gate::Commit => {
             "You are done when you have made at least one git commit in this repository."
@@ -173,21 +168,17 @@ fn gate_statement(gate: &Gate) -> String {
         Gate::Artifact { path } => {
             format!("You are done when the file `{path}` exists in the repository.")
         }
-        Gate::Approval => {
-            "When you believe the work is complete, write your handoff notes and \
+        Gate::Approval => "When you believe the work is complete, write your handoff notes and \
              `verdict.json`. A human will review and approve before the workflow \
              continues."
-                .to_string()
-        }
+            .to_string(),
         // Tests gate is not evaluated until S6; the engine only checks
         // `verdict.json`, so the prompt must not promise enforcement it
         // doesn't have — passing tests is on the agent until then.
-        Gate::Tests => {
-            "Run the project's tests. The engine does not verify test results \
+        Gate::Tests => "Run the project's tests. The engine does not verify test results \
              yet — it trusts your verdict — so only write `verdict.json` with \
              `result` \"done\" once the tests actually pass."
-                .to_string()
-        }
+            .to_string(),
     }
 }
 
@@ -247,7 +238,10 @@ mod tests {
     fn gate_statement_matches_gate() {
         assert!(gate_statement(&Gate::Verdict).contains("verdict.json"));
         assert!(gate_statement(&Gate::Commit).contains("commit"));
-        assert!(gate_statement(&Gate::Artifact { path: "X.md".into() }).contains("X.md"));
+        assert!(gate_statement(&Gate::Artifact {
+            path: "X.md".into()
+        })
+        .contains("X.md"));
         assert!(gate_statement(&Gate::Approval).contains("human"));
     }
 
@@ -262,7 +256,10 @@ mod tests {
 
     #[test]
     fn reprompt_quotes_the_gate_reason() {
-        let r = reprompt(&Gate::Verdict, "verdict.json result is \"revise\": fix the loop");
+        let r = reprompt(
+            &Gate::Verdict,
+            "verdict.json result is \"revise\": fix the loop",
+        );
         assert!(r.contains("fix the loop"));
         assert!(r.contains("verdict.json"));
     }
@@ -274,7 +271,10 @@ mod tests {
         let r = retry_prompt("agent errored: spawn_timeout", &c);
         let failure_at = r.find("spawn_timeout").expect("failure present");
         let goal_at = r.find("the goal").expect("goal present");
-        assert!(failure_at < goal_at, "failure should precede the restated step");
+        assert!(
+            failure_at < goal_at,
+            "failure should precede the restated step"
+        );
     }
 
     #[test]
