@@ -46,10 +46,11 @@ dependencies are the truth).
 
 - **Spec:** §4, §7.1–7.2, §3.1 (types/journal only).
 - **Scope:** Add `0019_workflows_v1.sql`: drop the v0 tables, create the
-  five new tables, and add the nullable `owner_run_id` column to the
-  persisted agent/worktree record (0018 stays as shipped — it is already
-  applied to dev databases and `user_version` tracking would skip a
-  rewrite). Create
+  four **runtime** tables (`wf_run`, `wf_step_exec`, `wf_event`,
+  `wf_message` — `wf_definition` belongs to S2), and add the nullable
+  `owner_run_id` column to the persisted agent/worktree record (0018
+  stays as shipped — it is already applied to dev databases and
+  `user_version` tracking would skip a rewrite). Create
   `workflow/types.rs` (run/attempt/event/message types, status enums,
   serde), `workflow/journal.rs` (append within caller's transaction,
   paged reads, `wf:event` + `wf:run` tauri emission). Commands:
@@ -71,8 +72,13 @@ dependencies are the truth).
   full §5.2 validation with precise error messages), `workflow/yaml.rs`
   (round-trip serde_yaml; export stripping rules; `ImportReport` with
   agent-resolution proposals + skill warnings). Commands: `wf_def_save/
-  list/delete/export_yaml/import_yaml`. Persist to `wf_definition`
-  (coordinate with S1's table; if developed in parallel, land after S1).
+  list/delete/export_yaml/import_yaml`, persisting to `wf_definition` —
+  created here, in this slice's own migration `0020_wf_definitions.sql`.
+  No dependency on S1: `wf_run.definition_id` carries no FK constraint,
+  so the two migrations are order-independent. (Migration numbers are
+  assigned here — S1=0019, S2=0020 — so parallel agents can't collide;
+  whichever merges second resolves a one-line registration conflict in
+  `database.rs`.)
 - **Out of scope:** any execution; builder UI (F1).
 - **Acceptance:** the canonical YAML in spec §5.3 round-trips to identical
   Spec; every §5.2 rule has a failing-fixture test; import of a YAML
