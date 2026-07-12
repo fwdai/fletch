@@ -112,8 +112,21 @@ pub async fn wf_get_run(
     }))
 }
 
+/// Hard cap on one journal page. `limit` is caller-controlled and feeds
+/// SQLite's `LIMIT`, where a negative value means "unbounded" — so a client
+/// passing `-1` (or a huge number) could pull an entire run's journal in a
+/// single IPC response and exhaust memory. Callers page via `after_seq`.
+const MAX_EVENTS_PAGE: i64 = 1000;
+
+/// Clamp caller-supplied paging inputs to a safe window: `limit` into
+/// `[1, MAX_EVENTS_PAGE]` (so a negative — SQLite's "unbounded" — or huge value
+/// can't bypass paging) and `after_seq` to non-negative.
+fn page_bounds(after_seq: i64, limit: i64) -> (i64, i64) {
+    (after_seq.max(0), limit.clamp(1, MAX_EVENTS_PAGE))
+}
+
 /// A page of a run's journal (§7.2): events strictly after `after_seq`, oldest
-/// first, capped at `limit`.
+/// first, bounded by [`page_bounds`].
 #[tauri::command]
 pub async fn wf_events(
     run_id: String,
@@ -121,6 +134,23 @@ pub async fn wf_events(
     limit: i64,
     db: tauri::State<'_, Db>,
 ) -> Result<Vec<Event>, String> {
+    let (after_seq, limit) = page_bounds(after_seq, limit);
     let conn = db.lock();
     journal::read_events(&conn, &run_id, after_seq, limit).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_bounds;
+
+    #[test]
+    fn page_bounds_clamps_hostile_inputs() {
+        // Negative limit (SQLite "unbounded") is capped, not passed through.
+        assert_eq!(page_bounds(0, -1), (0, 1));
+        // Oversized limit is capped to the page maximum.
+        assert_eq!(page_bounds(5, 1_000_000), (5, super::MAX_EVENTS_PAGE));
+        // Negative after_seq floors to 0; a normal request is untouched.
+        assert_eq!(page_bounds(-7, 50), (0, 50));
+        assert_eq!(page_bounds(10, 100), (10, 100));
+    }
 }

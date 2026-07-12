@@ -5,6 +5,11 @@
 -- silently never re-run there). It therefore stays as shipped and v1 lands as a
 -- fresh migration: drop the v0 tables, then create the five new ones.
 --
+-- v0 was never released, so its definitions/runs are dev-era scratch data and
+-- are intentionally dropped, not migrated (§17 reuse map: "v0 run tables —
+-- deleted / replaced"). The v0 command surface + builder/run UI are cut over to
+-- the wf_* commands in S4; until then those old commands query dropped tables.
+--
 -- v1 is event-sourced: wf_event is an append-only journal per run, and every
 -- wf_run / wf_step_exec status change is written in the same transaction as the
 -- journal event that caused it. spec_json on wf_run is immutable after launch
@@ -105,6 +110,12 @@ CREATE TABLE wf_message (
 CREATE INDEX idx_wf_msg_run ON wf_message(run_id);
 
 -- Run-owned step agents are ordinary workspaces tagged with the owning run, so
--- they can be filtered out of the normal sidebar and cleaned by cascade when the
--- run is deleted (§6.3, §13). NULL for every normal (user-launched) agent.
+-- they can be filtered out of the normal sidebar (§6.3) and discarded when the
+-- run is deleted (§13). A plain tag column, NOT a foreign key with ON DELETE
+-- CASCADE: run deletion goes through wf_delete_run, which discards these
+-- workspaces via the app's workspace path so the on-disk worktrees/checkouts are
+-- cleaned too — a DB-level cascade would drop the row but orphan those files and
+-- leave supervisor state dangling. This mirrors the wf_* run_id FKs above, which
+-- are RESTRICT for the same reason (children are deleted app-side, in order).
+-- NULL for every normal (user-launched) agent.
 ALTER TABLE workspaces ADD COLUMN owner_run_id TEXT;
