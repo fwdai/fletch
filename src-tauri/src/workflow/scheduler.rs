@@ -38,15 +38,15 @@ type Db = Arc<Mutex<Connection>>;
 
 /// App-state singleton: the active-run registry plus launch / control.
 pub struct WorkflowService {
-    db: Db,
+    pub(super) db: Db,
     driver: Arc<dyn AgentDriver>,
-    app: AppHandle,
+    pub(super) app: AppHandle,
     /// Active-run registry. Behind an `Arc` so a drive task can remove its own
     /// entry on exit without borrowing the service.
-    runs: Arc<Mutex<HashMap<String, RunHandle>>>,
+    pub(super) runs: Arc<Mutex<HashMap<String, RunHandle>>>,
 }
 
-struct RunHandle {
+pub(super) struct RunHandle {
     cancel: Arc<AtomicBool>,
     /// Set when a spawn request arrives while this driver is winding down (its
     /// paused status already written, registry entry not yet removed). The
@@ -54,6 +54,11 @@ struct RunHandle {
     /// request — an approve that raced the wind-down would otherwise leave the
     /// run paused forever with nothing left to approve.
     respawn: Arc<AtomicBool>,
+    /// Raised by the comms router (§10.4) when a live step raises a `wf_ask`
+    /// routed to the human: the running attempt observes it at turn end and
+    /// returns `AwaitingAnswer`, so the run pauses `question` without gating.
+    /// Shared with that run's in-flight attempt (`AttemptParams::pending_ask`).
+    pub(super) pending_ask: Arc<AtomicBool>,
 }
 
 impl WorkflowService {
@@ -264,7 +269,7 @@ impl WorkflowService {
         Ok(())
     }
 
-    fn spawn_drive(&self, run_id: String) {
+    pub(super) fn spawn_drive(&self, run_id: String) {
         spawn_drive_task(
             self.db.clone(),
             self.driver.clone(),
@@ -300,6 +305,7 @@ fn spawn_drive_task(
 ) {
     let cancel = Arc::new(AtomicBool::new(false));
     let respawn = Arc::new(AtomicBool::new(false));
+    let pending_ask = Arc::new(AtomicBool::new(false));
     {
         let mut m = runs.lock();
         if let Some(existing) = m.get(&run_id) {
@@ -311,6 +317,7 @@ fn spawn_drive_task(
             RunHandle {
                 cancel: cancel.clone(),
                 respawn: respawn.clone(),
+                pending_ask: pending_ask.clone(),
             },
         );
     }
@@ -320,6 +327,7 @@ fn spawn_drive_task(
         driver: driver.clone(),
         app: Some(app.clone()),
         cancel,
+        pending_ask,
         deadlines: Deadlines::default(),
     };
     let id = run_id.clone();
@@ -365,6 +373,9 @@ struct RunCtx {
     /// skipped.
     app: Option<AppHandle>,
     cancel: Arc<AtomicBool>,
+    /// The run's pending-ask flag (§10.4), shared with the [`RunHandle`] so the
+    /// comms router can raise it; threaded into each attempt.
+    pending_ask: Arc<AtomicBool>,
     deadlines: Deadlines,
 }
 
@@ -523,6 +534,8 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                 &last_ref,
                 &eff,
                 &mut ledger,
+                &test_override,
+                &setup_override,
             )
             .await?
             {
@@ -608,10 +621,25 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     },
                     gate: &step.gate,
                     turns_per_attempt: step.budgets.as_ref().and_then(|b| b.turns_per_attempt),
+                    comms: &step.comms,
                 };
-                match &last_failure {
+                let base = match &last_failure {
                     Some(f) => prompts::retry_prompt(f, &ctx_prompt),
                     None => prompts::step_prompt(&ctx_prompt),
+                };
+                // Fold any messages queued for this step while it was paused
+                // (a human's `wf_answer`, later an orchestrator notify) into
+                // this one prompt — coalesced, so many messages cost one turn
+                // (§10.4). Marking them delivered here means later attempts of
+                // the same step don't re-fold them.
+                let delivered = {
+                    let conn = ctx.db.lock();
+                    super::comms::take_pending_deliveries(&conn, run_id, &step.id)
+                };
+                if delivered.is_empty() {
+                    base
+                } else {
+                    format!("{}\n\n{}", super::comms::compose_delivery(&delivered), base)
                 }
             };
 
@@ -645,6 +673,7 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                 // Linear steps are never cancelled mid-attempt (only parallel
                 // losers are, §6.6), so this flag is never set.
                 cancel: Arc::new(AtomicBool::new(false)),
+                pending_ask: ctx.pending_ask.clone(),
             };
 
             let started = super::now_ms();
@@ -781,6 +810,47 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                         run_id,
                         "paused",
                         Some("approval"),
+                        None,
+                    );
+                    return Ok(());
+                }
+                AttemptOutcome::AwaitingAnswer => {
+                    // The step asked the human a question (§10.4). No gate, no
+                    // ferry: abandon this attempt (a fresh one runs on
+                    // `wf_answer`), stop the agent — pausing stops processes
+                    // (§6.5) and a human answer can be a long way off — and pause
+                    // `question`. The cursor is left where it is so the fresh
+                    // attempt re-runs this same step with the answer folded in.
+                    {
+                        let conn = ctx.db.lock();
+                        finish_step_exec(&conn, &exec_id, "abandoned", None);
+                    }
+                    if let Some(agent_id) = &result.agent_id {
+                        let _ = ctx.driver.stop(agent_id).await;
+                    }
+                    let conn = ctx.db.lock();
+                    journal_event(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        event_type::ATTEMPT_ABANDONED,
+                        Some(&exec_id),
+                        &json!({ "cause": "question" }),
+                    );
+                    journal_event(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        event_type::RUN_PAUSED,
+                        Some(&exec_id),
+                        &json!({ "reason": "question" }),
+                    );
+                    set_status(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        "paused",
+                        Some("question"),
                         None,
                     );
                     return Ok(());
@@ -1082,6 +1152,12 @@ struct ChildCtx {
     run_repo: PathBuf,
     block_index: usize,
     block_count: usize,
+    /// Project test/setup command overrides (spec §9.4), resolved once for the
+    /// run and cloned per child so a `tests`-gated child resolves its command the
+    /// same way a linear step does. The child builds its own `SandboxTestRunner`
+    /// (honoring its own `tests_timeout_secs`) in [`drive_child`].
+    test_override: Option<String>,
+    setup_override: Option<String>,
     /// Set by the stage to wind this child down (loser cancellation, §6.6).
     stage_cancel: Arc<AtomicBool>,
 }
@@ -1131,6 +1207,8 @@ async fn run_parallel_stage(
     fork_base: &str,
     eff: &EffectiveBudgets,
     ledger: &mut Ledger,
+    test_override: &Option<String>,
+    setup_override: &Option<String>,
 ) -> Result<StageFlow> {
     // Enforcement point: before spawning the stage (§11.2). Pause at the block
     // boundary if the run budget is already spent, spawning nothing.
@@ -1207,6 +1285,8 @@ async fn run_parallel_stage(
             run_repo: run_repo.to_path_buf(),
             block_index,
             block_count,
+            test_override: test_override.clone(),
+            setup_override: setup_override.clone(),
             stage_cancel: stage_cancel.clone(),
         });
     }
@@ -1341,6 +1421,26 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
         ledger,
     };
 
+    // Tests-gate runner for this child, honoring its own `tests_timeout_secs`
+    // and the run's project overrides (spec §9.4) — parity with the linear path.
+    // Only a `tests`-gated child consults it; construction fails only if HOME is
+    // unavailable, which fails the child rather than silently skipping the gate.
+    let test_runner = match super::tests_gate::SandboxTestRunner::new(
+        c.test_override.clone(),
+        c.setup_override.clone(),
+        step_eff.tests_timeout_secs.max(1) as u64,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return done(
+                ChildOutcome::Failure {
+                    reason: format!("could not initialize the tests runner: {e}"),
+                },
+                child_ledger,
+            )
+        }
+    };
+
     let mut attempt_no = next_attempt_no(&c.db.lock(), &c.run_id, &c.step.id);
     let mut last_failure: Option<String> = None;
 
@@ -1374,6 +1474,7 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
                 },
                 gate: &c.step.gate,
                 turns_per_attempt: c.step.budgets.as_ref().and_then(|b| b.turns_per_attempt),
+                comms: &c.step.comms,
             };
             match &last_failure {
                 Some(f) => prompts::retry_prompt(f, &ctx_prompt),
@@ -1399,11 +1500,21 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
             deadlines: deadlines.clone(),
             reprompt_on_block: true,
             cancel: c.stage_cancel.clone(),
+            // Parallel children have no human-ask deferral wired yet (comms is a
+            // linear-run concern in S10); a never-set flag preserves existing
+            // behavior until orchestrator routing lands (S11).
+            pending_ask: Arc::new(AtomicBool::new(false)),
         };
 
         let started = super::now_ms();
-        let result =
-            attempt::run_attempt(c.driver.as_ref(), params, &mut child_ledger, &step_eff).await;
+        let result = attempt::run_attempt(
+            c.driver.as_ref(),
+            &test_runner,
+            params,
+            &mut child_ledger,
+            &step_eff,
+        )
+        .await;
 
         // Journal the attempt's events + stamp its agent id (linear-path parity).
         {
@@ -1532,6 +1643,24 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
                     child_ledger,
                 );
             }
+            AttemptOutcome::AwaitingAnswer => {
+                // A parallel child never sets `pending_ask` (human Q&A is a
+                // linear-run concern in S10, §10.4), so this is unreachable in
+                // practice — fail with a clear cause rather than hang the stage.
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "error", None);
+                }
+                if let Some(agent_id) = &result.agent_id {
+                    let _ = c.driver.archive(agent_id).await;
+                }
+                return done(
+                    ChildOutcome::Failure {
+                        reason: "human questions are not supported inside a parallel stage".into(),
+                    },
+                    child_ledger,
+                );
+            }
         }
     }
 }
@@ -1610,7 +1739,7 @@ fn check_resumable(conn: &Connection, run_id: &str, action: &str) -> Result<()> 
     Ok(())
 }
 
-fn run_status(conn: &Connection, run_id: &str) -> Result<(String, Option<String>)> {
+pub(super) fn run_status(conn: &Connection, run_id: &str) -> Result<(String, Option<String>)> {
     conn.query_row(
         "SELECT status, paused_reason FROM wf_run WHERE id = ?1",
         [run_id],
@@ -1682,7 +1811,7 @@ fn set_status(
 }
 
 /// Append a journal event and emit `wf:event` (when an app handle is present).
-fn journal_event(
+pub(super) fn journal_event(
     conn: &Connection,
     app: Option<&AppHandle>,
     run_id: &str,
@@ -2183,6 +2312,7 @@ mod tests {
             driver,
             app: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
         };
         drive_run(&ctx, run_id).await;
@@ -2307,6 +2437,7 @@ mod tests {
             driver: StubDriver::new(ws, true),
             app: None,
             cancel: Arc::new(AtomicBool::new(true)), // pre-canceled
+            pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
         };
         drive_run(&ctx, "run-cancel").await;
@@ -2331,6 +2462,7 @@ mod tests {
             driver: StubDriver::new(ws, true),
             app: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
         };
         drive_run(&ctx, "run-term").await;
@@ -2358,6 +2490,7 @@ mod tests {
             driver: StubDriver::new(ws, false),
             app: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
         };
         drive_run(&ctx, "run-blocked").await;
@@ -2371,6 +2504,218 @@ mod tests {
             .unwrap();
         assert_eq!(status, "paused");
         assert_eq!(reason.as_deref(), Some("blocked_gate"));
+    }
+
+    /// A stub whose "agent" raises the run's pending-ask flag on its very first
+    /// turn (standing in for a `wf_ask` routed to the human) and commits on every
+    /// later turn. It shares the run's `pending_ask` Arc and records every prompt
+    /// it is sent, so the test can prove the deferral, the pause, and the
+    /// answer-fold on resume.
+    struct AskStub {
+        root: PathBuf,
+        pending_ask: Arc<AtomicBool>,
+        tx: broadcast::Sender<StatusEvent>,
+        state: parking_lot::Mutex<AskStubState>,
+    }
+    #[derive(Default)]
+    struct AskStubState {
+        statuses: HashMap<String, AgentStatus>,
+        worktrees: HashMap<String, PathBuf>,
+        spawns: usize,
+        turns: usize,
+        prompts: Vec<String>,
+    }
+    impl AskStub {
+        fn new(root: PathBuf, pending_ask: Arc<AtomicBool>) -> Arc<Self> {
+            Arc::new(Self {
+                root,
+                pending_ask,
+                tx: broadcast::channel(256).0,
+                state: parking_lot::Mutex::new(AskStubState::default()),
+            })
+        }
+        fn set(&self, id: &str, s: AgentStatus) {
+            self.state.lock().statuses.insert(id.to_string(), s.clone());
+            let _ = self.tx.send(StatusEvent {
+                agent_id: id.to_string(),
+                status: s,
+            });
+        }
+    }
+    impl AgentDriver for AskStub {
+        fn spawn(
+            &self,
+            req: SpawnReq,
+        ) -> super::super::driver::BoxFuture<'_, Result<super::super::driver::SpawnedAgent>>
+        {
+            Box::pin(async move {
+                let id = {
+                    let mut st = self.state.lock();
+                    st.spawns += 1;
+                    format!("ask-{}", st.spawns)
+                };
+                let dest = self.root.join(&id);
+                let base_ref = req.fork_base.clone().unwrap();
+                let spec = crate::sandbox::provision::CheckoutSpec {
+                    source_repo: &req.repo_path,
+                    base_ref: &base_ref,
+                    dest: &dest,
+                };
+                crate::sandbox::provision::provision_forking_run_repo(
+                    &spec,
+                    req.run_repo.as_ref().unwrap(),
+                )
+                .await?;
+                sh(&dest, &["config", "user.email", "t@t.t"]);
+                sh(&dest, &["config", "user.name", "t"]);
+                self.state.lock().worktrees.insert(id.clone(), dest.clone());
+                self.set(&id, AgentStatus::Idle);
+                Ok(super::super::driver::SpawnedAgent {
+                    agent_id: id,
+                    worktree: dest,
+                })
+            })
+        }
+        fn status(&self, id: &str) -> Option<AgentStatus> {
+            self.state.lock().statuses.get(id).cloned()
+        }
+        fn subscribe(&self) -> broadcast::Receiver<StatusEvent> {
+            self.tx.subscribe()
+        }
+        fn send_message<'a>(
+            &'a self,
+            id: &'a str,
+            text: String,
+        ) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                let (turn, wt) = {
+                    let mut st = self.state.lock();
+                    st.turns += 1;
+                    st.prompts.push(text);
+                    (st.turns, st.worktrees.get(id).cloned().unwrap())
+                };
+                self.set(id, AgentStatus::Running);
+                if turn == 1 {
+                    // First turn: ask the human (defer the gate) — no commit.
+                    self.pending_ask.store(true, Ordering::SeqCst);
+                } else {
+                    // Later turns: do the work so the commit gate is met.
+                    std::fs::write(wt.join(format!("{id}.txt")), "work").unwrap();
+                    sh(&wt, &["add", "-A"]);
+                    sh(&wt, &["commit", "-qm", "work"]);
+                }
+                self.set(id, AgentStatus::Idle);
+                Ok(())
+            })
+        }
+        fn stop<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn archive<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn last_activity(&self, _id: &str) -> Option<i64> {
+            None
+        }
+        fn turn_usage(&self, _id: &str) -> Option<super::super::driver::TurnUsage> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_pauses_question_then_answer_resumes_to_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-ask", "wf/ask-1");
+        let pending_ask = Arc::new(AtomicBool::new(false));
+        let driver = AskStub::new(ws, pending_ask.clone());
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: driver.clone(),
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: pending_ask.clone(),
+            deadlines: Deadlines::default(),
+        };
+
+        // ── First drive: the step asks; the run pauses `question`. ──
+        drive_run(&ctx, "run-ask").await;
+        let (status, reason): (String, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, paused_reason FROM wf_run WHERE id='run-ask'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "paused");
+        assert_eq!(reason.as_deref(), Some("question"));
+
+        // The asking attempt was abandoned, and its gate was never evaluated
+        // (deferred, §10.4).
+        let (exec_id, exec_status): (String, String) = db
+            .lock()
+            .query_row(
+                "SELECT id, status FROM wf_step_exec WHERE run_id='run-ask' ORDER BY rowid LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(exec_status, "abandoned");
+        let gates: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_event WHERE run_id='run-ask' AND type='gate_evaluated'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            gates, 0,
+            "gate must not be evaluated while an ask is pending"
+        );
+
+        // ── The human answers (queued for the asking step) and the flag clears,
+        // mimicking the fresh RunHandle a real resume creates. ──
+        db.lock()
+            .execute(
+                "INSERT INTO wf_message (id, run_id, from_step_exec_id, to_step_exec_id, kind,
+                    body_json, status, created_at)
+                 VALUES ('ans-1','run-ask',NULL,?1,'answer',?2,'queued',0)",
+                rusqlite::params![exec_id, r#"{"text":"use Postgres"}"#],
+            )
+            .unwrap();
+        pending_ask.store(false, Ordering::SeqCst);
+
+        // ── Resume: a fresh attempt runs, the answer is folded into its prompt,
+        // and the run completes. ──
+        drive_run(&ctx, "run-ask").await;
+        let status: String = db
+            .lock()
+            .query_row("SELECT status FROM wf_run WHERE id='run-ask'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "done");
+
+        // The answer reached the agent, coalesced into the resumed attempt's
+        // single prompt.
+        let prompts = driver.state.lock().prompts.clone();
+        assert_eq!(prompts.len(), 2, "one ask turn + one resumed turn");
+        assert!(
+            prompts[1].contains("use Postgres"),
+            "answer folded into resumed prompt: {}",
+            prompts[1]
+        );
+        // The queued answer was marked delivered (not re-folded).
+        let undelivered: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_message WHERE id='ans-1' AND status='queued'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(undelivered, 0, "answer should be marked delivered");
     }
 
     #[tokio::test]
@@ -2392,6 +2737,7 @@ mod tests {
             driver: StubDriver::new(ws, true),
             app: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
         };
         drive_run(&ctx, "run-resume").await;
@@ -2514,6 +2860,7 @@ mod tests {
             driver: StubDriver::new(ws, true),
             app: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
         };
         drive_run(&ctx, "run-b0").await;
@@ -2552,6 +2899,7 @@ mod tests {
             driver: StubDriver::new(ws, true),
             app: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
         };
         drive_run(&ctx, "run-b1").await;
@@ -2898,6 +3246,7 @@ mod tests {
             driver,
             app: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
         }
     }

@@ -1153,6 +1153,7 @@ pub fn run() {
             workflow::scheduler::wf_resume,
             workflow::scheduler::wf_retry,
             workflow::scheduler::wf_approve,
+            workflow::comms::wf_answer,
             workflow::definition::wf_def_save,
             workflow::definition::wf_def_list,
             workflow::definition::wf_def_delete,
