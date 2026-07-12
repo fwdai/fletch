@@ -653,13 +653,18 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                         Err(e) => {
                             last_failure = Some(format!("ferry failed: {e}"));
                             // The attempt reached `done`, so its agent is idle but
-                            // still alive. Marking the exec `error` hides it from
-                            // `live_step_agents` (which only sees in-flight execs),
-                            // so stop+archive it here — otherwise the CLI process
-                            // leaks past the retry/fail and its chat is orphaned.
+                            // still alive, and marking the exec `error` hides it
+                            // from `live_step_agents` (which only sees in-flight
+                            // execs). Stop it here — the same cleanup every other
+                            // errored attempt gets (`terminal_error`,
+                            // `abandon_stale_attempts`) — so the CLI process can't
+                            // leak past the retry/fail. Deliberately not archived:
+                            // `archive` rejects a not-yet-stopped agent (a race),
+                            // and the chat stays replayable by `agent_id` anyway
+                            // (run agents are hidden from the sidebar via
+                            // `owner_run_id`, not by archiving).
                             if let Some(agent_id) = &result.agent_id {
                                 let _ = ctx.driver.stop(agent_id).await;
-                                let _ = ctx.driver.archive(agent_id).await;
                             }
                             let give_up = attempt_no >= max_attempts;
                             {
