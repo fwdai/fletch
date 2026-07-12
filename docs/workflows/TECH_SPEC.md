@@ -569,11 +569,18 @@ re-run" in place.
 
 - **Sequence** (top level, loop body): blocks execute in order; each step
   forks from the previous `head_end`.
-- **Loop:** execute body; when the `until.step`'s attempt completes, read
-  its verdict: `done` → exit loop; `revise` → if `iterations < max`,
-  increment and restart body (fork from current HEAD; blackboard persists so
-  feedback carries over); else exit with journal `loop_max_reached` and
-  continue the outer sequence. (Policy: loop exhaustion is not failure; the
+- **Loop:** execute body in order; when the `until.step`'s attempt completes,
+  read its verdict. `done` → the loop is finished: **exit immediately**,
+  skipping any body steps that follow the `until` step (they are remediation
+  for a non-`done` verdict — e.g. the `fix` after `review` in §5.3 — and there
+  is nothing to remediate). `revise`/anything-not-`done` → **run the remaining
+  body steps** (the remediation) to the end of this pass, then, if
+  `iterations < max`, increment and restart the body from the top (fork from
+  current HEAD; blackboard persists so feedback carries over); if
+  `iterations == max`, exit with journal `loop_max_reached` and continue the
+  outer sequence. So in the canonical `[review, fix]` body, a `revise` review
+  lets `fix` run before the next iteration, while a `done` review ends the loop
+  without a final needless `fix`. (Policy: loop exhaustion is not failure; the
   reviewer's last verdict rides along in the PR body.)
 - **Parallel:** children fork from the same stage-entry ref, run
   concurrently up to `max_concurrent` (default: all). Join:
@@ -607,7 +614,9 @@ re-run" in place.
 attempt_ready, prompt_sent {kind: step|nudge|reprompt|message},
 turn_ended {status, usage?}, gate_evaluated {mode, inputs, verdict, reason},
 boundary_commit {sha}, attempt_abandoned {cause}, attempt_error {error},
-watchdog_stalled, budget_tick {ledger}, budget_exceeded {which},
+watchdog_stalled, loop_iteration {iteration, max},
+loop_max_reached {iterations}, budget_tick {ledger},
+budget_exceeded {which},
 message_routed {message_id, kind, from, to}, decision {payload},
 child_spawn_requested/approved/denied {reason},
 subrun_launched {sub_run_id}, subrun_finished {status},

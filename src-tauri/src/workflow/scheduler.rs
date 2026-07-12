@@ -1,9 +1,11 @@
 //! The run scheduler (spec §6). One tokio task per active run walks the block
 //! tree, drives each step through [`attempt::run_attempt`], ferries the `done`
 //! commit into the run repo (§12.1), advances the cursor, and finalizes. S4b
-//! covers **linear** runs — a top-level sequence of `step` blocks; loop /
-//! parallel / orchestrate execution arrive in S7 / S8 / S11 (a non-step block
-//! fails the run with a clear cause rather than being silently skipped).
+//! covered **linear** runs, S8 added **parallel** stages, and S7 adds **loop**
+//! blocks (§6.6): the walker dispatches each top-level block, and a `loop` runs
+//! its body sequence per iteration until the `until` step's verdict is `done` or
+//! `loop.max` is reached. Orchestrate execution arrives in S11 (a block of that
+//! kind fails the run with a clear cause rather than being silently skipped).
 //!
 //! `WorkflowService` (app state) owns the registry of active runs and the
 //! launch / control commands. Panic containment (§6.1): the service awaits each
@@ -30,8 +32,8 @@ use super::budget::{EffectiveBudgets, Ledger};
 use super::driver::{AgentDriver, SpawnReq};
 use super::gitops;
 use super::journal;
-use super::prompts::{self, Position, StepPromptCtx};
-use super::spec::{AgentSpec, Block, Budgets, Gate, Integrate, Join, Parallel, Spec, Step};
+use super::prompts::{self, IterationPos, Position, StepPromptCtx};
+use super::spec::{AgentSpec, Block, Budgets, Gate, Integrate, Join, Loop, Parallel, Spec, Step};
 use super::types::event_type;
 
 type Db = Arc<Mutex<Connection>>;
@@ -262,8 +264,15 @@ impl WorkflowService {
                 Some(&exec_id),
                 &json!({ "decision": "approved" }),
             );
-            let cursor = get_cursor_index(&conn, run_id);
-            set_cursor_index(&conn, run_id, cursor + 1);
+            // Advance the cursor only when the approved step is a top-level step:
+            // its `done` ref is the next block's fork source. An approval inside a
+            // loop body must NOT bump the top-level index (that would skip the rest
+            // of the loop) — the loop's resume-skip promotes it on re-drive (§6.6).
+            let mut cursor = get_cursor(&conn, run_id);
+            if top_level_block_is_step(&conn, run_id, cursor.index) {
+                cursor.index += 1;
+                set_cursor(&conn, run_id, &cursor);
+            }
         }
         self.spawn_drive(run_id.to_string());
         Ok(())
@@ -472,7 +481,8 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     let mut ledger = Ledger::from_json(&spent_val);
     ledger.start_drive(super::now_ms());
 
-    let mut index = get_cursor_index(&ctx.db.lock(), run_id) as usize;
+    let mut cursor = get_cursor(&ctx.db.lock(), run_id);
+    let mut index = cursor.index as usize;
     // The fork source for the current block: the last *linear step* before the
     // cursor that reached `done`, else the run base. A parallel `integrate: none`
     // stage never advances the line (§12.3), so its done children must not be
@@ -480,6 +490,19 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     // than "the most recent done exec".
     let (mut last_ref, mut last_exec_id) =
         resume_line_state(&ctx.db.lock(), run_id, blocks, index, &run.base_sha);
+
+    // Run-wide invariants every step attempt reads, bundled so the walker and the
+    // loop executor share a single `execute_step` (spec §6.6).
+    let env = StepEnv {
+        repo: &repo,
+        run_repo: &run_repo,
+        blackboard: &blackboard,
+        eff: &eff,
+        test_override: &test_override,
+        setup_override: &setup_override,
+        run_task: &run.task,
+        spec_name: &spec.name,
+    };
 
     while index < blocks.len() {
         if ctx.cancel.load(Ordering::SeqCst) {
@@ -502,469 +525,93 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
             return Ok(());
         }
 
-        // `ensure_executable` (above) rejects loop / orchestrate / merge before
-        // any block runs, so those arms are defensive-unreachable; a parallel
-        // stage here is always `integrate: none`.
-        let par = match &blocks[index] {
-            Block::Step(_) => None,
-            Block::Parallel(par) => Some(par),
-            Block::Loop(_) => {
-                return Err(Error::Other(
-                    "loop blocks are not supported yet (S7)".into(),
-                ))
+        match &blocks[index] {
+            Block::Step(step) => {
+                let agent_spec = resolve_agent(&spec, step)?;
+                let position = Position {
+                    step_index: index,
+                    step_count: blocks.len(),
+                    iteration: None,
+                };
+                match execute_step(
+                    ctx,
+                    run_id,
+                    &env,
+                    step,
+                    agent_spec,
+                    position,
+                    0,
+                    &last_ref,
+                    false,
+                    &mut ledger,
+                )
+                .await?
+                {
+                    StepFlow::Done { exec_id, head_ref } => {
+                        last_ref = head_ref;
+                        last_exec_id = Some(exec_id);
+                    }
+                    StepFlow::Halt => return Ok(()),
+                    // Only a loop's `until` step yields a loop signal.
+                    StepFlow::LoopContinue => unreachable!("top-level step is never a loop until"),
+                }
             }
+            Block::Parallel(par) => {
+                match run_parallel_stage(
+                    ctx,
+                    run_id,
+                    &run,
+                    &spec,
+                    par,
+                    index,
+                    blocks.len(),
+                    &blackboard,
+                    &repo,
+                    &run_repo,
+                    &last_ref,
+                    &eff,
+                    &mut ledger,
+                    &test_override,
+                    &setup_override,
+                )
+                .await?
+                {
+                    // `integrate: none` — the stage HEAD is its entry HEAD, so the
+                    // line's fork source is unchanged; just advance the cursor.
+                    StageFlow::Advance => {}
+                    StageFlow::Stop => return Ok(()),
+                }
+            }
+            Block::Loop(lp) => {
+                match run_loop(
+                    ctx,
+                    run_id,
+                    &env,
+                    &spec,
+                    lp,
+                    index,
+                    &mut cursor,
+                    &mut last_ref,
+                    &mut last_exec_id,
+                    &mut ledger,
+                )
+                .await?
+                {
+                    BlockFlow::Advance => {}
+                    BlockFlow::Halt => return Ok(()),
+                }
+            }
+            // `ensure_executable` rejects orchestrate before any block runs.
             Block::Orchestrate(_) => {
                 return Err(Error::Other(
                     "orchestrate blocks are not supported yet (S11)".into(),
                 ))
             }
-        };
-        if let Some(par) = par {
-            match run_parallel_stage(
-                ctx,
-                run_id,
-                &run,
-                &spec,
-                par,
-                index,
-                blocks.len(),
-                &blackboard,
-                &repo,
-                &run_repo,
-                &last_ref,
-                &eff,
-                &mut ledger,
-                &test_override,
-                &setup_override,
-            )
-            .await?
-            {
-                // `integrate: none` — the stage HEAD is its entry HEAD, so the
-                // line's fork source is unchanged; just advance the cursor.
-                StageFlow::Advance => {
-                    index += 1;
-                    set_cursor_index(&ctx.db.lock(), run_id, index as i64);
-                }
-                StageFlow::Stop => return Ok(()),
-            }
-            continue;
         }
 
-        let step = match &blocks[index] {
-            Block::Step(step) => step,
-            _ => unreachable!("dispatched above"),
-        };
-        let agent_spec = spec.agents.get(&step.agent).ok_or_else(|| {
-            Error::Other(format!(
-                "step '{}' references unknown agent '{}'",
-                step.id, step.agent
-            ))
-        })?;
-        // Step-effective budgets: run-level frozen caps with this step's own
-        // `budgets` overlaid (§11.1). Feeds the attempt timeouts and retry cap.
-        let step_eff = eff.for_step(step.budgets.as_ref());
-        let max_attempts = step_eff.max_attempts;
-        let deadlines = deadlines_from(&ctx.deadlines, &step_eff);
-        // Tests-gate runner for this step, honoring its effective
-        // `tests_timeout_secs` (spec §9.4, §11.1). Only the `tests` gate consults
-        // it; a fresh runner per step means setup runs once per step workspace.
-        let test_runner = super::tests_gate::SandboxTestRunner::new(
-            test_override.clone(),
-            setup_override.clone(),
-            step_eff.tests_timeout_secs.max(1) as u64,
-        )?;
-
-        let mut attempt_no = next_attempt_no(&ctx.db.lock(), run_id, &step.id);
-        let mut last_failure: Option<String> = None;
-
-        loop {
-            // Enforcement point: before every spawn (§11.2). No attempt row is
-            // created — the run pauses at the block boundary.
-            if let Some(which) = ledger.exceeded(&step_eff, super::now_ms()) {
-                {
-                    let conn = ctx.db.lock();
-                    journal_event(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        event_type::BUDGET_EXCEEDED,
-                        None,
-                        &json!({ "which": which.as_str() }),
-                    );
-                }
-                finish_budget_pause(ctx, run_id, None, &mut ledger);
-                return Ok(());
-            }
-
-            let exec_id = format!("exec-{}", uuid::Uuid::new_v4());
-            {
-                let conn = ctx.db.lock();
-                create_step_exec(
-                    &conn,
-                    &exec_id,
-                    run_id,
-                    &step.id,
-                    attempt_no,
-                    gate_mode(&step.gate),
-                );
-            }
-
-            let prompt = {
-                let ctx_prompt = StepPromptCtx {
-                    run_task: &run.task,
-                    step_id: &step.id,
-                    step_goal: &step.goal,
-                    position: Position {
-                        step_index: index,
-                        step_count: blocks.len(),
-                        iteration: None,
-                    },
-                    gate: &step.gate,
-                    turns_per_attempt: step.budgets.as_ref().and_then(|b| b.turns_per_attempt),
-                    comms: &step.comms,
-                };
-                let base = match &last_failure {
-                    Some(f) => prompts::retry_prompt(f, &ctx_prompt),
-                    None => prompts::step_prompt(&ctx_prompt),
-                };
-                // Fold any messages queued for this step while it was paused
-                // (a human's `wf_answer`, later an orchestrator notify) into
-                // this one prompt — coalesced, so many messages cost one turn
-                // (§10.4). Marking them delivered here means later attempts of
-                // the same step don't re-fold them.
-                let delivered = {
-                    let conn = ctx.db.lock();
-                    super::comms::take_pending_deliveries(&conn, run_id, &step.id)
-                };
-                if delivered.is_empty() {
-                    base
-                } else {
-                    format!("{}\n\n{}", super::comms::compose_delivery(&delivered), base)
-                }
-            };
-
-            let params = AttemptParams {
-                spawn_req: SpawnReq {
-                    repo_path: repo.clone(),
-                    provider: agent_spec.base.clone(),
-                    model: agent_spec.model.clone(),
-                    instructions: agent_spec.instructions.clone(),
-                    custom_agent_id: agent_spec.custom_agent.clone(),
-                    // Follow-up (documented in the S4b PR): resolving the
-                    // spec's agent skill/MCP names to snapshots — the linear
-                    // engine spawns with the provider + brief for now. The
-                    // blackboard write-grant is derived from `owner_run_id`
-                    // at spawn (supervisor::lifecycle).
-                    skills: vec![],
-                    mcp_servers: vec![],
-                    fork_base: Some(last_ref.clone()),
-                    run_repo: Some(run_repo.clone()),
-                    owner_run_id: run_id.to_string(),
-                },
-                blackboard: blackboard.clone(),
-                exec_id: exec_id.clone(),
-                step_id: step.id.clone(),
-                attempt: attempt_no as u32,
-                iteration: 0,
-                gate: step.gate.clone(),
-                prompt,
-                deadlines: deadlines.clone(),
-                reprompt_on_block: true,
-                // Linear steps are never cancelled mid-attempt (only parallel
-                // losers are, §6.6), so this flag is never set.
-                cancel: Arc::new(AtomicBool::new(false)),
-                pending_ask: ctx.pending_ask.clone(),
-            };
-
-            let started = super::now_ms();
-            let result = attempt::run_attempt(
-                ctx.driver.as_ref(),
-                &test_runner,
-                params,
-                &mut ledger,
-                &step_eff,
-            )
-            .await;
-            // Journal the attempt's events and stamp its agent id.
-            {
-                let conn = ctx.db.lock();
-                if let Some(agent_id) = &result.agent_id {
-                    let _ = conn.execute(
-                        "UPDATE wf_step_exec SET agent_id = ?1, started_at = ?2 WHERE id = ?3",
-                        rusqlite::params![agent_id, started, exec_id],
-                    );
-                }
-                for e in &result.events {
-                    journal_event(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        e.event_type,
-                        Some(&exec_id),
-                        &e.payload,
-                    );
-                }
-                // Persist the ledger this attempt spent (turns/tokens charged in
-                // `run_attempt`), folding in the drive's active wall-clock so a
-                // resume reads a current spend snapshot (§11.2).
-                ledger.checkpoint_wall(super::now_ms());
-                persist_spent(&conn, run_id, &ledger);
-            }
-
-            // Drain the agent's RPC mailbox now, before deciding what to do with
-            // the turn: a `wf_ask` the agent wrote during the turn may still be
-            // sitting undispatched (the per-agent watcher polls on a tick). This
-            // dispatches and persists it deterministically, closing the window
-            // where the run could act on the gate while a question is in flight
-            // (§10.4). The agent is idle here (its turn ended), so nothing new
-            // arrives after this drain.
-            if let Some(agent_id) = &result.agent_id {
-                ctx.driver.settle_rpc(agent_id).await;
-            }
-
-            // Authoritative pending-ask backstop (§10.4): with the mailbox drained
-            // above, the *persisted* ask is the source of truth — more reliable
-            // than the best-effort in-memory poke (which can be missed if the RPC
-            // op raced this driver's wind-down). If this attempt raised a `wf_ask`
-            // still awaiting a human answer, pause `question` regardless of the
-            // gate outcome; the gate's result is never acted on (no ferry, no
-            // advance) while an answer is outstanding. `AwaitingAnswer` from the
-            // fast path lands here too.
-            let outcome = if super::comms::has_unanswered_ask(&ctx.db.lock(), &exec_id) {
-                AttemptOutcome::AwaitingAnswer
-            } else {
-                result.outcome
-            };
-
-            match outcome {
-                AttemptOutcome::Done { .. } => {
-                    let wt = result
-                        .worktree
-                        .ok_or_else(|| Error::Other("done attempt without a worktree".into()))?;
-                    // Boundary commit + pin + ferry — the `done` precondition
-                    // (§6.3 steps 7–8). A ferry failure keeps the attempt out of
-                    // `done` and drops to the retry policy.
-                    let msg = format!("wf({}): {} attempt {}", spec.name, step.id, attempt_no);
-                    let ferry = ferry_step(ctx, run_id, &exec_id, &msg, &wt, &run_repo).await;
-                    match ferry {
-                        Ok(head) => {
-                            // Atomic commit point: a `wf_ask` can be routed while
-                            // `ferry` runs (the drain + pre-check above see only
-                            // the state before it), so re-check under the same lock
-                            // that finalizes `done` (§10.4). See
-                            // `commit_done_unless_ask`.
-                            let committed = commit_done_unless_ask(&ctx.db.lock(), &exec_id, &head);
-                            if !committed {
-                                // A late ask landed during the ferry. The boundary
-                                // commit is inert (never referenced as a `done`
-                                // ref); pause `question` and let `wf_answer` resume
-                                // with a fresh attempt.
-                                pause_question(ctx, run_id, &exec_id, result.agent_id.as_deref())
-                                    .await;
-                                return Ok(());
-                            }
-                            if let Some(agent_id) = &result.agent_id {
-                                let _ = ctx.driver.archive(agent_id).await;
-                            }
-                            last_ref = gitops::step_ref(&exec_id);
-                            last_exec_id = Some(exec_id.clone());
-                            index += 1;
-                            set_cursor_index(&ctx.db.lock(), run_id, index as i64);
-                            break;
-                        }
-                        Err(e) => {
-                            last_failure = Some(format!("ferry failed: {e}"));
-                            // The attempt reached `done`, so its agent is idle but
-                            // still alive, and marking the exec `error` hides it
-                            // from `live_step_agents` (which only sees in-flight
-                            // execs). Stop it here — the same cleanup every other
-                            // errored attempt gets (`terminal_error`,
-                            // `abandon_stale_attempts`) — so the CLI process can't
-                            // leak past the retry/fail. Deliberately not archived:
-                            // `archive` rejects a not-yet-stopped agent (a race),
-                            // and the chat stays replayable by `agent_id` anyway
-                            // (run agents are hidden from the sidebar via
-                            // `owner_run_id`, not by archiving).
-                            if let Some(agent_id) = &result.agent_id {
-                                let _ = ctx.driver.stop(agent_id).await;
-                            }
-                            let give_up = attempt_no >= max_attempts;
-                            {
-                                let conn = ctx.db.lock();
-                                finish_step_exec(&conn, &exec_id, "error", None);
-                                if give_up {
-                                    set_status(
-                                        &conn,
-                                        ctx.app.as_ref(),
-                                        run_id,
-                                        "failed",
-                                        None,
-                                        Some(&format!("ferry failed: {e}")),
-                                    );
-                                }
-                            }
-                            if give_up {
-                                return Ok(());
-                            }
-                        }
-                    }
-                    attempt_no += 1;
-                }
-                AttemptOutcome::AwaitingApproval => {
-                    // Commit the work now so approval only decides whether to
-                    // advance (§6.3 step 8, §9). The agent is archived; the run
-                    // pauses until `wf_approve` bumps the cursor and resumes.
-                    let msg = format!("wf({}): {} attempt {}", spec.name, step.id, attempt_no);
-                    let head = ferry_step(
-                        ctx,
-                        run_id,
-                        &exec_id,
-                        &msg,
-                        result.worktree.as_ref().unwrap(),
-                        &run_repo,
-                    )
-                    .await?;
-                    {
-                        let conn = ctx.db.lock();
-                        finish_step_exec(&conn, &exec_id, "awaiting_approval", Some(&head));
-                    }
-                    if let Some(agent_id) = &result.agent_id {
-                        let _ = ctx.driver.archive(agent_id).await;
-                    }
-                    let conn = ctx.db.lock();
-                    journal_event(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        event_type::RUN_PAUSED,
-                        Some(&exec_id),
-                        &json!({ "reason": "approval" }),
-                    );
-                    set_status(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        "paused",
-                        Some("approval"),
-                        None,
-                    );
-                    return Ok(());
-                }
-                AttemptOutcome::AwaitingAnswer => {
-                    // The step asked the human a question (§10.4). No gate, no
-                    // ferry, no advance — pause `question`; the cursor is left in
-                    // place so a fresh attempt re-runs this step with the answer.
-                    pause_question(ctx, run_id, &exec_id, result.agent_id.as_deref()).await;
-                    return Ok(());
-                }
-                AttemptOutcome::Blocked { reason } => {
-                    {
-                        let conn = ctx.db.lock();
-                        finish_step_exec(&conn, &exec_id, "blocked", None);
-                    }
-                    if let Some(agent_id) = &result.agent_id {
-                        let _ = ctx.driver.stop(agent_id).await;
-                    }
-                    let conn = ctx.db.lock();
-                    journal_event(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        event_type::RUN_PAUSED,
-                        Some(&exec_id),
-                        &json!({ "reason": "blocked_gate", "detail": reason }),
-                    );
-                    set_status(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        "paused",
-                        Some("blocked_gate"),
-                        None,
-                    );
-                    return Ok(());
-                }
-                AttemptOutcome::Error { error } => {
-                    {
-                        let conn = ctx.db.lock();
-                        finish_step_exec(&conn, &exec_id, "error", None);
-                    }
-                    last_failure = Some(error.clone());
-                    if attempt_no >= max_attempts {
-                        // Stall pauses for inspection (resumable); other errors
-                        // fail the run (§6.5).
-                        let conn = ctx.db.lock();
-                        if error == "stalled" {
-                            journal_event(
-                                &conn,
-                                ctx.app.as_ref(),
-                                run_id,
-                                event_type::RUN_PAUSED,
-                                Some(&exec_id),
-                                &json!({ "reason": "stalled" }),
-                            );
-                            set_status(
-                                &conn,
-                                ctx.app.as_ref(),
-                                run_id,
-                                "paused",
-                                Some("stalled"),
-                                None,
-                            );
-                        } else {
-                            set_status(
-                                &conn,
-                                ctx.app.as_ref(),
-                                run_id,
-                                "failed",
-                                None,
-                                Some(&error),
-                            );
-                        }
-                        return Ok(());
-                    }
-                    attempt_no += 1;
-                }
-                AttemptOutcome::BudgetExceeded { .. } => {
-                    // A run-level cap was hit mid-attempt (§11.2). The attempt
-                    // already journaled `budget_exceeded`; finish its bookkeeping
-                    // — stop the agent, abandon the incomplete attempt — and pause.
-                    // Resume-with-patch (§13) starts a fresh attempt for this step.
-                    if let Some(agent_id) = &result.agent_id {
-                        let _ = ctx.driver.stop(agent_id).await;
-                    }
-                    {
-                        let conn = ctx.db.lock();
-                        let _ = conn.execute(
-                            "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
-                            rusqlite::params![super::now_ms(), exec_id],
-                        );
-                        journal_event(
-                            &conn,
-                            ctx.app.as_ref(),
-                            run_id,
-                            event_type::ATTEMPT_ABANDONED,
-                            Some(&exec_id),
-                            &json!({ "cause": "budget_exceeded" }),
-                        );
-                    }
-                    finish_budget_pause(ctx, run_id, Some(&exec_id), &mut ledger);
-                    return Ok(());
-                }
-                AttemptOutcome::Canceled => {
-                    // Linear steps never pass a live cancel flag, so this is
-                    // unreachable in practice; handle it defensively as an
-                    // abandonment rather than panicking (the agent is already
-                    // stopped by `run_attempt`).
-                    let conn = ctx.db.lock();
-                    let _ = conn.execute(
-                        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
-                        rusqlite::params![super::now_ms(), exec_id],
-                    );
-                    return Ok(());
-                }
-            }
-        }
+        index += 1;
+        cursor.index = index as i64;
+        set_cursor(&ctx.db.lock(), run_id, &cursor);
     }
 
     // Every step done → finalize + mark done.
@@ -1147,10 +794,17 @@ fn ensure_executable(blocks: &[Block]) -> Result<()> {
                     ));
                 }
             }
-            Block::Loop(_) => {
-                return Err(Error::Other(
-                    "loop blocks are not supported yet (S7)".into(),
-                ))
+            Block::Loop(lp) => {
+                // S7 executes loop bodies of plain steps; nested parallel/loop/
+                // orchestrate inside a body isn't wired yet. spec.rs already
+                // validates the `until` step + `max`.
+                for b in &lp.body {
+                    if !matches!(b, Block::Step(_)) {
+                        return Err(Error::Other(
+                            "nested non-step blocks inside a loop are not supported yet".into(),
+                        ));
+                    }
+                }
             }
             Block::Orchestrate(_) => {
                 return Err(Error::Other(
@@ -1502,7 +1156,7 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
         }
     };
 
-    let mut attempt_no = next_attempt_no(&c.db.lock(), &c.run_id, &c.step.id);
+    let mut attempt_no = next_attempt_no(&c.db.lock(), &c.run_id, &c.step.id, 0);
     let mut last_failure: Option<String> = None;
 
     loop {
@@ -1519,6 +1173,7 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
                 &c.run_id,
                 &c.step.id,
                 attempt_no,
+                0,
                 gate_mode(&c.step.gate),
             );
         }
@@ -1751,6 +1406,599 @@ fn build_spawn_req(
     }
 }
 
+// ─────────────────────────── linear steps & loops (§6.6) ────────────────────
+
+/// Run-wide invariants every step attempt reads, bundled so the walker and the
+/// loop executor share a single [`execute_step`] without a dozen positional args.
+struct StepEnv<'a> {
+    repo: &'a Path,
+    run_repo: &'a Path,
+    blackboard: &'a Path,
+    eff: &'a EffectiveBudgets,
+    test_override: &'a Option<String>,
+    setup_override: &'a Option<String>,
+    run_task: &'a str,
+    spec_name: &'a str,
+}
+
+/// What executing one step (through its attempt/retry lifecycle) resolved to.
+enum StepFlow {
+    /// Gate met and ferried into the run repo. `head_ref` is the fork source for
+    /// whatever comes next; `exec_id` is the durable record.
+    Done { exec_id: String, head_ref: String },
+    /// A loop's `until` step ended without a `done` verdict (revise / blocked /
+    /// missing) — the loop iterates again rather than pausing. Returned only when
+    /// `is_until` is set.
+    LoopContinue,
+    /// The run reached a paused or terminal state; the status row is already
+    /// written and the drive loop must return.
+    Halt,
+}
+
+/// Whether a loop block completed (advance to the next) or halted the run.
+enum BlockFlow {
+    Advance,
+    Halt,
+}
+
+fn resolve_agent<'a>(spec: &'a Spec, step: &Step) -> Result<&'a AgentSpec> {
+    spec.agents.get(&step.agent).ok_or_else(|| {
+        Error::Other(format!(
+            "step '{}' references unknown agent '{}'",
+            step.id, step.agent
+        ))
+    })
+}
+
+/// Cancel handling shared by the loop executor and the top-level walker: stop
+/// every live step agent (bind the id list first so the lock guard drops before
+/// the awaits — a guard held across `.await` makes the drive future `!Send`),
+/// then journal and mark the run canceled.
+async fn cancel_run(ctx: &RunCtx, run_id: &str) {
+    let agents = live_step_agents(&ctx.db.lock(), run_id);
+    for a in agents {
+        let _ = ctx.driver.stop(&a).await;
+    }
+    let conn = ctx.db.lock();
+    journal_event(
+        &conn,
+        ctx.app.as_ref(),
+        run_id,
+        event_type::RUN_CANCELED,
+        None,
+        &json!({}),
+    );
+    set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
+}
+
+/// Execute one loop block (spec §6.6): run the body sequence once per iteration,
+/// exiting the moment the `until` step's verdict is `done`, and continuing the
+/// outer sequence after `loop.max` iterations (loop exhaustion is not failure —
+/// the reviewer's last verdict rides along in the PR body). The iteration counter
+/// lives in the run cursor so a resumed run picks up mid-loop rather than
+/// restarting at iteration 0. `last_ref` / `last_exec_id` thread the ferried HEAD
+/// across iterations so feedback and commits accumulate; the budget `ledger` is
+/// threaded through so a loop's turns/tokens count against the run caps (§11).
+#[allow(clippy::too_many_arguments)]
+async fn run_loop(
+    ctx: &RunCtx,
+    run_id: &str,
+    env: &StepEnv<'_>,
+    spec: &Spec,
+    lp: &Loop,
+    block_index: usize,
+    cursor: &mut Cursor,
+    last_ref: &mut String,
+    last_exec_id: &mut Option<String>,
+    ledger: &mut Ledger,
+) -> Result<BlockFlow> {
+    let key = block_index.to_string();
+    let mut iter = cursor.iterations.get(&key).copied().unwrap_or(0);
+
+    while iter < lp.max {
+        // Persist the iteration before the body runs so a crash/restart resumes
+        // this iteration (spec §6.4), not iteration 0.
+        cursor.iterations.insert(key.clone(), iter);
+        set_cursor(&ctx.db.lock(), run_id, cursor);
+        {
+            let conn = ctx.db.lock();
+            journal_event(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                event_type::LOOP_ITERATION,
+                None,
+                &json!({ "iteration": iter, "max": lp.max }),
+            );
+        }
+
+        let mut exit_done = false;
+        for (body_index, body_block) in lp.body.iter().enumerate() {
+            if ctx.cancel.load(Ordering::SeqCst) {
+                cancel_run(ctx, run_id).await;
+                return Ok(BlockFlow::Halt);
+            }
+            // `ensure_executable` already rejected non-step loop bodies.
+            let Block::Step(step) = body_block else {
+                let conn = ctx.db.lock();
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "failed",
+                    None,
+                    Some("nested non-step blocks inside a loop are not supported yet"),
+                );
+                return Ok(BlockFlow::Halt);
+            };
+            let is_until = step.id == lp.until.step;
+
+            // Resume-skip: a body step already `done` this iteration (its work is
+            // ferried and reflected in `last_ref`) must not re-run — attempts are
+            // immutable (§6.4). This also promotes a loop-body approval that
+            // `wf_approve` marked `done` without bumping the top-level cursor.
+            if let Some(exec_id) = done_body_exec(&ctx.db.lock(), run_id, &step.id, iter) {
+                *last_ref = gitops::step_ref(&exec_id);
+                *last_exec_id = Some(exec_id);
+                if is_until {
+                    exit_done = true;
+                    break;
+                }
+                continue;
+            }
+
+            let agent_spec = resolve_agent(spec, step)?;
+            let position = Position {
+                step_index: body_index,
+                step_count: lp.body.len(),
+                iteration: Some(IterationPos {
+                    current: iter + 1,
+                    max: lp.max,
+                }),
+            };
+            match execute_step(
+                ctx, run_id, env, step, agent_spec, position, iter, last_ref, is_until, ledger,
+            )
+            .await?
+            {
+                StepFlow::Done { exec_id, head_ref } => {
+                    *last_ref = head_ref;
+                    *last_exec_id = Some(exec_id);
+                    if is_until {
+                        // Exit condition met (§6.6): the `until` verdict is
+                        // `done`, so the loop is finished. Break out of the body
+                        // *now* — any body steps after the `until` step are
+                        // remediation for a non-`done` verdict (e.g. `fix` after
+                        // `review` in the §5.3 example) and must be skipped when
+                        // there is nothing to remediate.
+                        exit_done = true;
+                        break;
+                    }
+                }
+                // The `until` step returned a non-`done` verdict (revise/blocked).
+                // Do NOT restart the body here: the remaining body steps *are* the
+                // remediation for that verdict — in the canonical `[review, fix]`
+                // loop, `review` is the `until` step and `fix` runs in response to
+                // its `revise`. Falling through lets the rest of this iteration's
+                // body run; the loop then restarts for the next iteration. (Only
+                // the `until` step ever yields `LoopContinue`.)
+                StepFlow::LoopContinue => {}
+                StepFlow::Halt => return Ok(BlockFlow::Halt),
+            }
+        }
+
+        if exit_done {
+            return Ok(BlockFlow::Advance);
+        }
+        iter += 1;
+    }
+
+    // `loop.max` iterations without a `done` verdict: not a failure — journal it
+    // and continue the outer sequence (spec §6.6, open question #1 default).
+    let conn = ctx.db.lock();
+    journal_event(
+        &conn,
+        ctx.app.as_ref(),
+        run_id,
+        event_type::LOOP_MAX_REACHED,
+        None,
+        &json!({ "iterations": lp.max }),
+    );
+    Ok(BlockFlow::Advance)
+}
+
+/// Drive one step through its full attempt/retry lifecycle (spec §6.3, §6.5),
+/// enforcing the budget ledger (§11), the tests gate (§9.4), and comms delivery /
+/// pending-ask deferral (§10.4). Shared by the top-level walker and loop bodies.
+/// On a met gate it boundary-commits + ferries and returns [`StepFlow::Done`]; a
+/// blocked/stalled/errored/over-budget/awaiting terminal writes the paused/failed
+/// status and returns [`StepFlow::Halt`]. When `is_until` is set (a loop's exit
+/// step) a blocked gate is *not* a pause — a non-`done` verdict is the "iterate
+/// again" signal, so it returns [`StepFlow::LoopContinue`] and the single
+/// in-attempt re-prompt is suppressed (nagging a reviewer to flip "revise" →
+/// "done" would defeat the loop). A pending human `wf_ask` still pauses the run
+/// `question` regardless of `is_until` (§10.4).
+#[allow(clippy::too_many_arguments)]
+async fn execute_step(
+    ctx: &RunCtx,
+    run_id: &str,
+    env: &StepEnv<'_>,
+    step: &Step,
+    agent_spec: &AgentSpec,
+    position: Position,
+    iteration: u32,
+    fork_ref: &str,
+    is_until: bool,
+    ledger: &mut Ledger,
+) -> Result<StepFlow> {
+    // Step-effective budgets: run-level frozen caps with this step's own
+    // `budgets` overlaid (§11.1). Feeds the attempt timeouts and retry cap.
+    let step_eff = env.eff.for_step(step.budgets.as_ref());
+    let max_attempts = step_eff.max_attempts;
+    let deadlines = deadlines_from(&ctx.deadlines, &step_eff);
+    // Tests-gate runner for this step, honoring its effective `tests_timeout_secs`
+    // (spec §9.4, §11.1). A fresh runner per step means setup runs once per step
+    // workspace.
+    let test_runner = super::tests_gate::SandboxTestRunner::new(
+        env.test_override.clone(),
+        env.setup_override.clone(),
+        step_eff.tests_timeout_secs.max(1) as u64,
+    )?;
+
+    let mut attempt_no = next_attempt_no(&ctx.db.lock(), run_id, &step.id, iteration as i64);
+    let mut last_failure: Option<String> = None;
+
+    loop {
+        // Enforcement point: before every spawn (§11.2). No attempt row is
+        // created — the run pauses at the block boundary.
+        if let Some(which) = ledger.exceeded(&step_eff, super::now_ms()) {
+            {
+                let conn = ctx.db.lock();
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::BUDGET_EXCEEDED,
+                    None,
+                    &json!({ "which": which.as_str() }),
+                );
+            }
+            finish_budget_pause(ctx, run_id, None, ledger);
+            return Ok(StepFlow::Halt);
+        }
+
+        let exec_id = format!("exec-{}", uuid::Uuid::new_v4());
+        {
+            let conn = ctx.db.lock();
+            create_step_exec(
+                &conn,
+                &exec_id,
+                run_id,
+                &step.id,
+                attempt_no,
+                iteration as i64,
+                gate_mode(&step.gate),
+            );
+        }
+
+        let prompt = {
+            let ctx_prompt = StepPromptCtx {
+                run_task: env.run_task,
+                step_id: &step.id,
+                step_goal: &step.goal,
+                position: position.clone(),
+                gate: &step.gate,
+                turns_per_attempt: step.budgets.as_ref().and_then(|b| b.turns_per_attempt),
+                comms: &step.comms,
+            };
+            let base = match &last_failure {
+                Some(f) => prompts::retry_prompt(f, &ctx_prompt),
+                None => prompts::step_prompt(&ctx_prompt),
+            };
+            // Fold any messages queued for this step (a human's `wf_answer`, an
+            // orchestrator notify) into this one prompt — coalesced, so many
+            // messages cost one turn (§10.4). Marked delivered here so later
+            // attempts of the same step don't re-fold them.
+            let delivered = {
+                let conn = ctx.db.lock();
+                super::comms::take_pending_deliveries(&conn, run_id, &step.id)
+            };
+            if delivered.is_empty() {
+                base
+            } else {
+                format!("{}\n\n{}", super::comms::compose_delivery(&delivered), base)
+            }
+        };
+
+        let params = AttemptParams {
+            spawn_req: build_spawn_req(agent_spec, fork_ref, env.repo, env.run_repo, run_id),
+            blackboard: env.blackboard.to_path_buf(),
+            exec_id: exec_id.clone(),
+            step_id: step.id.clone(),
+            attempt: attempt_no as u32,
+            iteration,
+            gate: step.gate.clone(),
+            prompt,
+            deadlines: deadlines.clone(),
+            // A loop's `until` step must not be re-prompted on "revise": that is
+            // a legitimate turn end, not an unmet gate to nag about (§6.6).
+            reprompt_on_block: !is_until,
+            // Linear/loop steps are never cancelled mid-attempt (only parallel
+            // losers are, §6.6), so this flag is never set.
+            cancel: Arc::new(AtomicBool::new(false)),
+            // Shared with the run's `RunHandle` so the comms router and this
+            // attempt observe the same pending-ask flag (§10.4).
+            pending_ask: ctx.pending_ask.clone(),
+        };
+
+        let started = super::now_ms();
+        let result =
+            attempt::run_attempt(ctx.driver.as_ref(), &test_runner, params, ledger, &step_eff)
+                .await;
+        // Journal the attempt's events, stamp its agent id, persist the ledger.
+        {
+            let conn = ctx.db.lock();
+            if let Some(agent_id) = &result.agent_id {
+                let _ = conn.execute(
+                    "UPDATE wf_step_exec SET agent_id = ?1, started_at = ?2 WHERE id = ?3",
+                    rusqlite::params![agent_id, started, exec_id],
+                );
+            }
+            for e in &result.events {
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    e.event_type,
+                    Some(&exec_id),
+                    &e.payload,
+                );
+            }
+            ledger.checkpoint_wall(super::now_ms());
+            persist_spent(&conn, run_id, ledger);
+        }
+
+        // Drain the agent's RPC mailbox before acting on the gate: a `wf_ask`
+        // written during the turn may still be undispatched (§10.4). The agent is
+        // idle here, so nothing new arrives after this drain.
+        if let Some(agent_id) = &result.agent_id {
+            ctx.driver.settle_rpc(agent_id).await;
+        }
+        // Authoritative pending-ask backstop (§10.4): a persisted, unanswered ask
+        // pauses `question` regardless of the gate outcome (which is never acted
+        // on while an answer is outstanding).
+        let outcome = if super::comms::has_unanswered_ask(&ctx.db.lock(), &exec_id) {
+            AttemptOutcome::AwaitingAnswer
+        } else {
+            result.outcome
+        };
+
+        match outcome {
+            AttemptOutcome::Done { .. } => {
+                let wt = result
+                    .worktree
+                    .ok_or_else(|| Error::Other("done attempt without a worktree".into()))?;
+                // Boundary commit + pin + ferry — the `done` precondition (§6.3
+                // steps 7–8). A ferry failure keeps the attempt out of `done` and
+                // drops to the retry policy.
+                let msg = format!("wf({}): {} attempt {}", env.spec_name, step.id, attempt_no);
+                match ferry_step(ctx, run_id, &exec_id, &msg, &wt, env.run_repo).await {
+                    Ok(head) => {
+                        // Atomic commit point: a late `wf_ask` can be routed during
+                        // `ferry`, so re-check under the finalizing lock (§10.4).
+                        let committed = commit_done_unless_ask(&ctx.db.lock(), &exec_id, &head);
+                        if !committed {
+                            pause_question(ctx, run_id, &exec_id, result.agent_id.as_deref()).await;
+                            return Ok(StepFlow::Halt);
+                        }
+                        if let Some(agent_id) = &result.agent_id {
+                            let _ = ctx.driver.archive(agent_id).await;
+                        }
+                        return Ok(StepFlow::Done {
+                            head_ref: gitops::step_ref(&exec_id),
+                            exec_id,
+                        });
+                    }
+                    Err(e) => {
+                        last_failure = Some(format!("ferry failed: {e}"));
+                        // Idle but alive; marking the exec `error` hides it from
+                        // `live_step_agents`, so stop it here (not archive —
+                        // `archive` rejects a not-yet-stopped agent) to keep the
+                        // CLI process from leaking past retry/fail.
+                        if let Some(agent_id) = &result.agent_id {
+                            let _ = ctx.driver.stop(agent_id).await;
+                        }
+                        let give_up = attempt_no >= max_attempts;
+                        {
+                            let conn = ctx.db.lock();
+                            finish_step_exec(&conn, &exec_id, "error", None);
+                            if give_up {
+                                set_status(
+                                    &conn,
+                                    ctx.app.as_ref(),
+                                    run_id,
+                                    "failed",
+                                    None,
+                                    Some(&format!("ferry failed: {e}")),
+                                );
+                            }
+                        }
+                        if give_up {
+                            return Ok(StepFlow::Halt);
+                        }
+                    }
+                }
+                attempt_no += 1;
+            }
+            AttemptOutcome::AwaitingApproval => {
+                // Commit the work now so approval only decides whether to advance
+                // (§6.3 step 8, §9). The agent is archived; the run pauses until
+                // `wf_approve` promotes the attempt and resumes.
+                let msg = format!("wf({}): {} attempt {}", env.spec_name, step.id, attempt_no);
+                let head = ferry_step(
+                    ctx,
+                    run_id,
+                    &exec_id,
+                    &msg,
+                    result.worktree.as_ref().unwrap(),
+                    env.run_repo,
+                )
+                .await?;
+                {
+                    let conn = ctx.db.lock();
+                    finish_step_exec(&conn, &exec_id, "awaiting_approval", Some(&head));
+                }
+                if let Some(agent_id) = &result.agent_id {
+                    let _ = ctx.driver.archive(agent_id).await;
+                }
+                let conn = ctx.db.lock();
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::RUN_PAUSED,
+                    Some(&exec_id),
+                    &json!({ "reason": "approval" }),
+                );
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "paused",
+                    Some("approval"),
+                    None,
+                );
+                return Ok(StepFlow::Halt);
+            }
+            AttemptOutcome::AwaitingAnswer => {
+                // The step asked the human a question (§10.4). No gate, no ferry,
+                // no advance — pause `question`; the cursor is left in place so a
+                // fresh attempt re-runs this step with the answer folded in.
+                pause_question(ctx, run_id, &exec_id, result.agent_id.as_deref()).await;
+                return Ok(StepFlow::Halt);
+            }
+            AttemptOutcome::Blocked { reason } => {
+                if is_until {
+                    // A loop exit step's non-`done` verdict: record the attempt
+                    // and let the loop iterate again. Archive (not stop) so the
+                    // reviewer's chat stays replayable from the timeline.
+                    {
+                        let conn = ctx.db.lock();
+                        finish_step_exec(&conn, &exec_id, "blocked", None);
+                    }
+                    if let Some(agent_id) = &result.agent_id {
+                        let _ = ctx.driver.archive(agent_id).await;
+                    }
+                    return Ok(StepFlow::LoopContinue);
+                }
+                {
+                    let conn = ctx.db.lock();
+                    finish_step_exec(&conn, &exec_id, "blocked", None);
+                }
+                if let Some(agent_id) = &result.agent_id {
+                    let _ = ctx.driver.stop(agent_id).await;
+                }
+                let conn = ctx.db.lock();
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::RUN_PAUSED,
+                    Some(&exec_id),
+                    &json!({ "reason": "blocked_gate", "detail": reason }),
+                );
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "paused",
+                    Some("blocked_gate"),
+                    None,
+                );
+                return Ok(StepFlow::Halt);
+            }
+            AttemptOutcome::Error { error } => {
+                {
+                    let conn = ctx.db.lock();
+                    finish_step_exec(&conn, &exec_id, "error", None);
+                }
+                last_failure = Some(error.clone());
+                if attempt_no >= max_attempts {
+                    // Stall pauses for inspection (resumable); other errors fail
+                    // the run (§6.5).
+                    let conn = ctx.db.lock();
+                    if error == "stalled" {
+                        journal_event(
+                            &conn,
+                            ctx.app.as_ref(),
+                            run_id,
+                            event_type::RUN_PAUSED,
+                            Some(&exec_id),
+                            &json!({ "reason": "stalled" }),
+                        );
+                        set_status(
+                            &conn,
+                            ctx.app.as_ref(),
+                            run_id,
+                            "paused",
+                            Some("stalled"),
+                            None,
+                        );
+                    } else {
+                        set_status(
+                            &conn,
+                            ctx.app.as_ref(),
+                            run_id,
+                            "failed",
+                            None,
+                            Some(&error),
+                        );
+                    }
+                    return Ok(StepFlow::Halt);
+                }
+                attempt_no += 1;
+            }
+            AttemptOutcome::BudgetExceeded { .. } => {
+                // A run-level cap was hit mid-attempt (§11.2). The attempt already
+                // journaled `budget_exceeded`; finish its bookkeeping — stop the
+                // agent, abandon the incomplete attempt — and pause. Resume-with-
+                // patch (§13) starts a fresh attempt for this step.
+                if let Some(agent_id) = &result.agent_id {
+                    let _ = ctx.driver.stop(agent_id).await;
+                }
+                {
+                    let conn = ctx.db.lock();
+                    let _ = conn.execute(
+                        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
+                        rusqlite::params![super::now_ms(), exec_id],
+                    );
+                    journal_event(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        event_type::ATTEMPT_ABANDONED,
+                        Some(&exec_id),
+                        &json!({ "cause": "budget_exceeded" }),
+                    );
+                }
+                finish_budget_pause(ctx, run_id, Some(&exec_id), ledger);
+                return Ok(StepFlow::Halt);
+            }
+            AttemptOutcome::Canceled => {
+                // Linear/loop steps never pass a live cancel flag, so this is
+                // unreachable in practice; handle it defensively as an abandonment
+                // (the agent is already stopped by `run_attempt`).
+                let conn = ctx.db.lock();
+                let _ = conn.execute(
+                    "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
+                    rusqlite::params![super::now_ms(), exec_id],
+                );
+                return Ok(StepFlow::Halt);
+            }
+        }
+    }
+}
+
 fn gate_mode(gate: &Gate) -> &'static str {
     match gate {
         Gate::Verdict => "verdict",
@@ -1903,12 +2151,13 @@ fn create_step_exec(
     run_id: &str,
     step_id: &str,
     attempt: i64,
+    iteration: i64,
     gate_mode: &str,
 ) {
     let _ = conn.execute(
         "INSERT INTO wf_step_exec (id, run_id, step_id, attempt, iteration, status, gate_mode)
-         VALUES (?1, ?2, ?3, ?4, 0, 'spawning', ?5)",
-        rusqlite::params![id, run_id, step_id, attempt, gate_mode],
+         VALUES (?1, ?2, ?3, ?4, ?5, 'spawning', ?6)",
+        rusqlite::params![id, run_id, step_id, attempt, iteration, gate_mode],
     );
 }
 
@@ -1919,17 +2168,35 @@ fn finish_step_exec(conn: &Connection, id: &str, status: &str, head_end: Option<
     );
 }
 
-fn next_attempt_no(conn: &Connection, run_id: &str, step_id: &str) -> i64 {
+/// The next attempt number for a step *within one iteration* — retries increment
+/// `attempt`, while each loop iteration is a fresh execution counted separately by
+/// the `iteration` column (spec §4). Scoping by iteration keeps `attempt` a true
+/// retry count and the §8.3 `attempt-<n>.iter-<i>` archive labels meaningful.
+fn next_attempt_no(conn: &Connection, run_id: &str, step_id: &str, iteration: i64) -> i64 {
     conn.query_row(
-        "SELECT COALESCE(MAX(attempt), 0) + 1 FROM wf_step_exec WHERE run_id = ?1 AND step_id = ?2",
-        rusqlite::params![run_id, step_id],
+        "SELECT COALESCE(MAX(attempt), 0) + 1 FROM wf_step_exec
+         WHERE run_id = ?1 AND step_id = ?2 AND iteration = ?3",
+        rusqlite::params![run_id, step_id, iteration],
         |r| r.get(0),
     )
     .unwrap_or(1)
 }
 
-fn get_cursor_index(conn: &Connection, run_id: &str) -> i64 {
-    let cursor: Option<String> = conn
+/// The scheduler cursor (spec §6.4): the index into the top-level block sequence
+/// plus, for any loop entered, its current iteration keyed by the loop's
+/// top-level block index. A run's `spec_json` is immutable after launch, so the
+/// index is a stable key. The old `{ "index": N }` shape still deserializes
+/// (`iterations` defaults empty).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct Cursor {
+    #[serde(default)]
+    index: i64,
+    #[serde(default)]
+    iterations: std::collections::BTreeMap<String, u32>,
+}
+
+fn get_cursor(conn: &Connection, run_id: &str) -> Cursor {
+    let raw: Option<String> = conn
         .query_row(
             "SELECT cursor_json FROM wf_run WHERE id = ?1",
             [run_id],
@@ -1938,21 +2205,56 @@ fn get_cursor_index(conn: &Connection, run_id: &str) -> i64 {
         .optional()
         .ok()
         .flatten();
-    cursor
-        .and_then(|c| serde_json::from_str::<Value>(&c).ok())
-        .and_then(|v| v.get("index").and_then(|i| i.as_i64()))
-        .unwrap_or(0)
+    raw.and_then(|c| serde_json::from_str::<Cursor>(&c).ok())
+        .unwrap_or_default()
 }
 
-fn set_cursor_index(conn: &Connection, run_id: &str, index: i64) {
+fn set_cursor(conn: &Connection, run_id: &str, cursor: &Cursor) {
+    let json = serde_json::to_string(cursor).unwrap_or_else(|_| "{}".to_string());
     let _ = conn.execute(
         "UPDATE wf_run SET cursor_json = ?1, updated_at = ?2 WHERE id = ?3",
-        rusqlite::params![
-            json!({ "index": index }).to_string(),
-            super::now_ms(),
-            run_id
-        ],
+        rusqlite::params![json, super::now_ms(), run_id],
     );
+}
+
+/// Whether the top-level block at `index` is a plain `step` (vs a loop/parallel/
+/// orchestrate container) — governs whether `wf_approve` advances the cursor
+/// (§6.6): a top-level step's approval advances; a loop-body approval is advanced
+/// by the loop's resume-skip on re-drive.
+fn top_level_block_is_step(conn: &Connection, run_id: &str, index: i64) -> bool {
+    let Ok(spec_json) = conn.query_row(
+        "SELECT spec_json FROM wf_run WHERE id = ?1",
+        [run_id],
+        |r| r.get::<_, String>(0),
+    ) else {
+        return false;
+    };
+    serde_json::from_str::<Spec>(&spec_json)
+        .ok()
+        .and_then(|s| s.workflow.get(index as usize).cloned())
+        .map(|b| matches!(b, Block::Step(_)))
+        .unwrap_or(false)
+}
+
+/// The exec id of a body step already `done` this loop iteration, if any — the
+/// resume-skip key (spec §6.4): its ferried work is durable, so it must not
+/// re-run. Scoped to `(step_id, iteration)`; `attempt` is ignored.
+fn done_body_exec(
+    conn: &Connection,
+    run_id: &str,
+    step_id: &str,
+    iteration: u32,
+) -> Option<String> {
+    conn.query_row(
+        "SELECT id FROM wf_step_exec
+         WHERE run_id = ?1 AND step_id = ?2 AND iteration = ?3 AND status = 'done'
+         ORDER BY rowid DESC LIMIT 1",
+        rusqlite::params![run_id, step_id, iteration],
+        |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
 }
 
 /// Persist the run's ledger snapshot to `spent_json` (§11.2).
@@ -3709,5 +4011,479 @@ mod tests {
             .unwrap();
         assert_eq!(todo_done, 1, "the unfinished child ran to done");
         assert_eq!(run_status_str(&db, "run-rp"), "done");
+    }
+
+    // ───────────────────────────── loop blocks (S7) ─────────────────────────
+
+    /// A real-git stub whose "agent" writes a configured `verdict.json` into the
+    /// until-step's blackboard dir each turn (instead of committing code) — the
+    /// verdict-gated shape a loop's exit step needs. Spawns a real `--shared`
+    /// clone forking from the run repo so a `done` verdict still ferries.
+    struct VerdictStub {
+        root: PathBuf,
+        blackboard: PathBuf,
+        step_id: String,
+        verdict: String,
+        /// When true, each turn also makes a commit in the agent's workspace so a
+        /// `commit`-gated body step (e.g. `fix`) advances HEAD. A verdict-gated
+        /// `until` step ignores its own commit (that attempt never ferries).
+        commit: bool,
+        tx: broadcast::Sender<StatusEvent>,
+        state: parking_lot::Mutex<StubState>,
+    }
+    impl VerdictStub {
+        fn new(
+            root: PathBuf,
+            blackboard: PathBuf,
+            step_id: &str,
+            verdict: &str,
+            commit: bool,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                root,
+                blackboard,
+                step_id: step_id.to_string(),
+                verdict: verdict.to_string(),
+                commit,
+                tx: broadcast::channel(256).0,
+                state: parking_lot::Mutex::new(StubState::default()),
+            })
+        }
+        fn set(&self, id: &str, s: AgentStatus) {
+            self.state.lock().statuses.insert(id.to_string(), s.clone());
+            let _ = self.tx.send(StatusEvent {
+                agent_id: id.to_string(),
+                status: s,
+            });
+        }
+    }
+    impl AgentDriver for VerdictStub {
+        fn spawn(
+            &self,
+            req: SpawnReq,
+        ) -> super::super::driver::BoxFuture<'_, Result<super::super::driver::SpawnedAgent>>
+        {
+            Box::pin(async move {
+                let id = {
+                    let mut st = self.state.lock();
+                    st.count += 1;
+                    format!("stub-{}", st.count)
+                };
+                let dest = self.root.join(&id);
+                let base_ref = req.fork_base.clone().unwrap();
+                let spec = crate::sandbox::provision::CheckoutSpec {
+                    source_repo: &req.repo_path,
+                    base_ref: &base_ref,
+                    dest: &dest,
+                };
+                crate::sandbox::provision::provision_forking_run_repo(
+                    &spec,
+                    req.run_repo.as_ref().unwrap(),
+                )
+                .await?;
+                self.state.lock().worktrees.insert(id.clone(), dest.clone());
+                self.set(&id, AgentStatus::Idle);
+                Ok(super::super::driver::SpawnedAgent {
+                    agent_id: id,
+                    worktree: dest,
+                })
+            })
+        }
+        fn status(&self, id: &str) -> Option<AgentStatus> {
+            self.state.lock().statuses.get(id).cloned()
+        }
+        fn subscribe(&self) -> broadcast::Receiver<StatusEvent> {
+            self.tx.subscribe()
+        }
+        fn send_message<'a>(
+            &'a self,
+            id: &'a str,
+            _text: String,
+        ) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                self.set(id, AgentStatus::Running);
+                // Written after the attempt has subscribed and archived any stale
+                // verdict — the ordering the real supervisor produces.
+                let dir = blackboard::step_dir(&self.blackboard, &self.step_id).unwrap();
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("verdict.json"), &self.verdict).unwrap();
+                if self.commit {
+                    let wt = self.state.lock().worktrees.get(id).cloned().unwrap();
+                    sh(&wt, &["config", "user.email", "t@t.t"]);
+                    sh(&wt, &["config", "user.name", "t"]);
+                    std::fs::write(wt.join(format!("{id}.txt")), "work").unwrap();
+                    sh(&wt, &["add", "-A"]);
+                    sh(&wt, &["commit", "-qm", "agent work"]);
+                }
+                self.set(id, AgentStatus::Idle);
+                Ok(())
+            })
+        }
+        fn stop<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn archive<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn last_activity(&self, _id: &str) -> Option<i64> {
+            None
+        }
+        fn turn_usage(&self, _id: &str) -> Option<super::super::driver::TurnUsage> {
+            None
+        }
+    }
+
+    /// Scaffold a run whose whole workflow is one loop with a verdict-gated
+    /// `review` exit step. With `with_fix`, a commit-gated `fix` step follows it
+    /// in the body (the canonical `[review, fix]` shape) so tests can assert what
+    /// happens to a body step *after* the `until` step. Returns the db, the
+    /// workspaces root the stub provisions under, and the blackboard dir.
+    fn scaffold_loop(
+        tmp: &Path,
+        run_id: &str,
+        branch: &str,
+        max: u32,
+        with_fix: bool,
+    ) -> (Db, PathBuf, PathBuf) {
+        let source = tmp.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        sh(&source, &["init", "-q", "-b", "main"]);
+        sh(&source, &["config", "user.email", "t@t.t"]);
+        sh(&source, &["config", "user.name", "t"]);
+        std::fs::write(source.join("README"), "base").unwrap();
+        sh(&source, &["add", "-A"]);
+        sh(&source, &["commit", "-qm", "base"]);
+        let base_sha = {
+            let o = Sh::new("git")
+                .current_dir(&source)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let run_dir = tmp.join("rundir");
+        let blackboard = blackboard::blackboard_dir(&run_dir);
+        std::fs::create_dir_all(&blackboard).unwrap();
+
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "coder".to_string(),
+            super::super::spec::AgentSpec {
+                base: "codex".to_string(),
+                model: None,
+                instructions: None,
+                skills: vec![],
+                custom_agent: None,
+            },
+        );
+        let review = Step {
+            id: "review".to_string(),
+            agent: "coder".to_string(),
+            goal: "review the work".to_string(),
+            gate: Gate::Verdict,
+            budgets: None,
+            comms: vec![],
+        };
+        let mut body = vec![Block::Step(review)];
+        if with_fix {
+            body.push(Block::Step(Step {
+                id: "fix".to_string(),
+                agent: "coder".to_string(),
+                goal: "address the feedback".to_string(),
+                gate: Gate::Commit,
+                budgets: None,
+                comms: vec![],
+            }));
+        }
+        let spec = Spec {
+            version: 1,
+            name: "demo".to_string(),
+            description: None,
+            budgets: None,
+            agents,
+            workflow: vec![Block::Loop(Loop {
+                max,
+                until: super::super::spec::Until {
+                    step: "review".to_string(),
+                    verdict: super::super::spec::LoopVerdict::Done,
+                },
+                body,
+            })],
+            finalize: None,
+        };
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        let db = crate::database::init(tmp).unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,'demo',?2,'t','p',?3,?4,?5,?6,'pending','{}','{}',0,0)",
+                rusqlite::params![
+                    run_id,
+                    spec_json,
+                    source.to_string_lossy(),
+                    run_dir.to_string_lossy(),
+                    branch,
+                    base_sha,
+                ],
+            )
+            .unwrap();
+        (db, tmp.join("ws"), blackboard)
+    }
+
+    fn count(db: &Db, sql: &str) -> i64 {
+        db.lock().query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    fn loop_ctx(db: Db, driver: Arc<VerdictStub>) -> RunCtx {
+        RunCtx {
+            db,
+            driver,
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn loop_exits_on_first_done_verdict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws, bb) = scaffold_loop(tmp.path(), "run-loop-done", "wf/ld-1", 3, false);
+        let driver = VerdictStub::new(
+            ws,
+            bb,
+            "review",
+            r#"{"result":"done","summary":"lgtm"}"#,
+            false,
+        );
+        drive_run(&loop_ctx(db.clone(), driver), "run-loop-done").await;
+
+        // Exactly one iteration ran (iteration 0), its review is done, the loop
+        // never hit its max, and the run completed.
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-loop-done'"
+            ),
+            1,
+            "one review attempt only"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-loop-done' \
+                 AND iteration=0 AND status='done'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &db,
+                &format!(
+                    "SELECT COUNT(*) FROM wf_event WHERE run_id='run-loop-done' AND type='{}'",
+                    event_type::LOOP_MAX_REACHED
+                )
+            ),
+            0,
+            "loop_max_reached must NOT fire on an early done"
+        );
+        assert_eq!(run_status_str(&db, "run-loop-done"), "done");
+    }
+
+    #[tokio::test]
+    async fn loop_revises_until_max_then_continues() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws, bb) = scaffold_loop(tmp.path(), "run-loop-max", "wf/lm-1", 3, false);
+        // "revise" every turn → the loop runs all `max` iterations, then continues
+        // (exhaustion is not failure — spec §6.6).
+        let driver = VerdictStub::new(
+            ws,
+            bb,
+            "review",
+            r#"{"result":"revise","summary":"again"}"#,
+            false,
+        );
+        drive_run(&loop_ctx(db.clone(), driver), "run-loop-max").await;
+
+        // One blocked review per iteration, at iterations 0..3.
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-loop-max' AND status='blocked'"
+            ),
+            3
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(DISTINCT iteration) FROM wf_step_exec WHERE run_id='run-loop-max'"
+            ),
+            3,
+            "iterations 0,1,2"
+        );
+        assert_eq!(
+            count(
+                &db,
+                &format!(
+                    "SELECT COUNT(*) FROM wf_event WHERE run_id='run-loop-max' AND type='{}'",
+                    event_type::LOOP_MAX_REACHED
+                )
+            ),
+            1
+        );
+        assert_eq!(
+            run_status_str(&db, "run-loop-max"),
+            "done",
+            "loop exhaustion continues to done"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_mid_loop_restores_the_iteration_counter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws, bb) = scaffold_loop(tmp.path(), "run-loop-resume", "wf/lr-1", 3, false);
+        // A prior driver died during iteration 1: the cursor records it and a
+        // non-terminal attempt is left behind. Resume must pick up at iteration 1
+        // (not restart at 0) and run only iterations 1 and 2 before max.
+        {
+            let conn = db.lock();
+            conn.execute(
+                "UPDATE wf_run SET cursor_json=?1 WHERE id='run-loop-resume'",
+                [r#"{"index":0,"iterations":{"0":1}}"#],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO wf_step_exec (id, run_id, step_id, attempt, iteration, status,
+                    gate_mode, agent_id)
+                 VALUES ('exec-stale','run-loop-resume','review',1,1,'running','verdict','ghost')",
+                [],
+            )
+            .unwrap();
+        }
+        let driver = VerdictStub::new(
+            ws,
+            bb,
+            "review",
+            r#"{"result":"revise","summary":"again"}"#,
+            false,
+        );
+        drive_run(&loop_ctx(db.clone(), driver), "run-loop-resume").await;
+
+        // The counter was restored: nothing ran at iteration 0.
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-loop-resume' AND iteration=0"
+            ),
+            0,
+            "resume must not restart the loop at iteration 0"
+        );
+        // The stale attempt was abandoned; fresh reviews ran at iterations 1 and 2.
+        let stale: String = db
+            .lock()
+            .query_row(
+                "SELECT status FROM wf_step_exec WHERE id='exec-stale'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale, "abandoned");
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-loop-resume' \
+                 AND iteration=2 AND status='blocked'"
+            ),
+            1,
+            "the final iteration ran"
+        );
+        assert_eq!(
+            count(
+                &db,
+                &format!(
+                    "SELECT COUNT(*) FROM wf_event WHERE run_id='run-loop-resume' AND type='{}'",
+                    event_type::LOOP_MAX_REACHED
+                )
+            ),
+            1
+        );
+        assert_eq!(run_status_str(&db, "run-loop-resume"), "done");
+    }
+
+    /// `until` not last (§6.6): with body `[review, fix]` and a `revise` review
+    /// each iteration, the trailing `fix` runs *within the same iteration* before
+    /// the loop restarts — the remaining body is the remediation for a non-`done`
+    /// verdict, not something to skip.
+    #[tokio::test]
+    async fn loop_runs_trailing_body_after_a_revise() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws, bb) = scaffold_loop(tmp.path(), "run-loop-fix", "wf/lf-1", 2, true);
+        let driver = VerdictStub::new(
+            ws,
+            bb,
+            "review",
+            r#"{"result":"revise","summary":"again"}"#,
+            true,
+        );
+        drive_run(&loop_ctx(db.clone(), driver), "run-loop-fix").await;
+
+        // `fix` ran and completed in BOTH iterations (0 and 1) — a revise does not
+        // short-circuit the rest of the body.
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-loop-fix' \
+                 AND step_id='fix' AND status='done'"
+            ),
+            2,
+            "fix runs once per revise iteration"
+        );
+        assert_eq!(
+            count(
+                &db,
+                &format!(
+                    "SELECT COUNT(*) FROM wf_event WHERE run_id='run-loop-fix' AND type='{}'",
+                    event_type::LOOP_MAX_REACHED
+                )
+            ),
+            1
+        );
+        assert_eq!(run_status_str(&db, "run-loop-fix"), "done");
+    }
+
+    /// `until` not last (§6.6): a `done` review exits the loop *immediately*,
+    /// skipping the trailing `fix` — there is nothing to remediate.
+    #[tokio::test]
+    async fn loop_skips_trailing_body_on_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws, bb) = scaffold_loop(tmp.path(), "run-loop-skip", "wf/ls-1", 3, true);
+        let driver = VerdictStub::new(
+            ws,
+            bb,
+            "review",
+            r#"{"result":"done","summary":"lgtm"}"#,
+            true,
+        );
+        drive_run(&loop_ctx(db.clone(), driver), "run-loop-skip").await;
+
+        // review is done at iteration 0 → the loop exits and `fix` never spawns.
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-loop-skip' AND step_id='fix'"
+            ),
+            0,
+            "a done review skips the trailing fix"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-loop-skip' \
+                 AND step_id='review' AND status='done'"
+            ),
+            1
+        );
+        assert_eq!(run_status_str(&db, "run-loop-skip"), "done");
     }
 }
