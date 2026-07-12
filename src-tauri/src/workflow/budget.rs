@@ -95,17 +95,43 @@ impl EffectiveBudgets {
 
     /// The effective budgets for one step: the run-level frozen set with the
     /// step's own `budgets` overlaid (spec §11.1: "step values override run
-    /// values"). Only the step-scoped fields differ; the run caps are unchanged.
+    /// values"). **Only the step/attempt-scoped fields** (`turns_per_attempt`,
+    /// `max_attempts`, the timeouts) are overridable here. The run-scoped caps
+    /// (`turns` / `tokens` / `wall_clock_mins`) stay frozen at the run level —
+    /// `exceeded` reads them run-wide, so a step must not be able to widen or
+    /// tighten the run's budget for itself.
     pub fn for_step(&self, step_budgets: Option<&Budgets>) -> Self {
         let mut eff = self.clone();
         if let Some(b) = step_budgets {
-            eff.overlay(b);
+            if let Some(v) = b.turns_per_attempt {
+                eff.turns_per_attempt = v;
+            }
+            if let Some(v) = b.max_attempts {
+                eff.max_attempts = v;
+            }
+            if let Some(v) = b.spawn_timeout_secs {
+                eff.spawn_timeout_secs = v;
+            }
+            if let Some(v) = b.turn_start_timeout_secs {
+                eff.turn_start_timeout_secs = v;
+            }
+            if let Some(v) = b.stall_timeout_secs {
+                eff.stall_timeout_secs = v;
+            }
+            if let Some(v) = b.nudge_timeout_secs {
+                eff.nudge_timeout_secs = v;
+            }
+            if let Some(v) = b.tests_timeout_secs {
+                eff.tests_timeout_secs = v;
+            }
         }
         eff
     }
 
-    /// Overlay any set field of `b` onto `self`. Positivity is already enforced
-    /// by `spec::validate`, so values are trusted here.
+    /// Overlay any set field of `b` onto `self` — used only for the run-level
+    /// resolve, where the spec's run budgets may set both the run caps and the
+    /// step-scoped defaults. Positivity is already enforced by `spec::validate`,
+    /// so values are trusted here.
     fn overlay(&mut self, b: &Budgets) {
         if let Some(v) = b.turns {
             self.turns = v;
@@ -363,6 +389,18 @@ mod tests {
         assert_eq!(step.turns_per_attempt, 3);
         // Run-level caps are inherited unchanged.
         assert_eq!(step.turns, 50);
+    }
+
+    #[test]
+    fn step_budgets_cannot_move_run_caps() {
+        // The run-scoped caps drive run-wide enforcement; a step's budgets must
+        // not widen or tighten them, even if the step sets turns/tokens/wall.
+        let run =
+            EffectiveBudgets::resolve(&spec_with(Some(budgets(Some(50), Some(1000), Some(60)))));
+        let step = run.for_step(Some(&budgets(Some(5), Some(10), Some(1))));
+        assert_eq!(step.turns, 50, "run turn cap frozen");
+        assert_eq!(step.tokens, Some(1000), "run token cap frozen");
+        assert_eq!(step.wall_clock_mins, 60, "run wall-clock cap frozen");
     }
 
     #[test]

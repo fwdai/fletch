@@ -172,26 +172,34 @@ impl WorkflowService {
     /// lifts the tripped cap is what lets a `budget_exceeded` run make progress;
     /// resuming without one simply re-pauses at the same cap.
     pub fn resume(&self, run_id: &str, budget_patch: Option<Budgets>) -> Result<()> {
-        if let Some(patch) = budget_patch {
+        {
             let conn = self.db.lock();
-            let budgets_json: String = conn
-                .query_row(
-                    "SELECT budgets_json FROM wf_run WHERE id = ?1",
-                    [run_id],
-                    |r| r.get(0),
+            // Validate resumability BEFORE touching the budget — a rejected
+            // resume (terminal or approval-paused run) must not mutate the
+            // otherwise-immutable `budgets_json`.
+            check_resumable(&conn, run_id, "resume")?;
+            if let Some(patch) = budget_patch {
+                let budgets_json: String = conn
+                    .query_row(
+                        "SELECT budgets_json FROM wf_run WHERE id = ?1",
+                        [run_id],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| Error::Other(format!("run {run_id} not found: {e}")))?;
+                let mut eff: EffectiveBudgets = serde_json::from_str(&budgets_json)
+                    .map_err(|e| Error::Other(format!("bad budgets_json: {e}")))?;
+                eff.apply_patch(&patch);
+                let patched =
+                    serde_json::to_string(&eff).map_err(|e| Error::Other(e.to_string()))?;
+                conn.execute(
+                    "UPDATE wf_run SET budgets_json = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![patched, super::now_ms(), run_id],
                 )
-                .map_err(|e| Error::Other(format!("run {run_id} not found: {e}")))?;
-            let mut eff: EffectiveBudgets = serde_json::from_str(&budgets_json)
-                .map_err(|e| Error::Other(format!("bad budgets_json: {e}")))?;
-            eff.apply_patch(&patch);
-            let patched = serde_json::to_string(&eff).map_err(|e| Error::Other(e.to_string()))?;
-            conn.execute(
-                "UPDATE wf_run SET budgets_json = ?1, updated_at = ?2 WHERE id = ?3",
-                rusqlite::params![patched, super::now_ms(), run_id],
-            )
-            .map_err(|e| Error::Other(e.to_string()))?;
+                .map_err(|e| Error::Other(e.to_string()))?;
+            }
         }
-        self.resume_paused(run_id, "resume")
+        self.spawn_drive(run_id.to_string());
+        Ok(())
     }
 
     /// User-initiated retry after `paused(blocked_gate|stalled)` — same as
@@ -208,15 +216,7 @@ impl WorkflowService {
     fn resume_paused(&self, run_id: &str, action: &str) -> Result<()> {
         {
             let conn = self.db.lock();
-            let (status, reason) = run_status(&conn, run_id)?;
-            if status != "paused" {
-                return Err(Error::Other(format!("cannot {action} a {status} run")));
-            }
-            if reason.as_deref() == Some("approval") {
-                return Err(Error::Other(
-                    "run is awaiting approval — use wf_approve (or wf_cancel)".into(),
-                ));
-            }
+            check_resumable(&conn, run_id, action)?;
         }
         self.spawn_drive(run_id.to_string());
         Ok(())
@@ -936,6 +936,23 @@ fn slugify(name: &str) -> String {
     } else {
         s.chars().take(40).collect()
     }
+}
+
+/// The resume/retry guard: only a `paused(blocked_gate|stalled|budget_exceeded)`
+/// run may be re-driven. A terminal run must not restart, and a
+/// `paused(approval)` run must go through `wf_approve`. Callers run this before
+/// any state mutation so a rejected resume changes nothing.
+fn check_resumable(conn: &Connection, run_id: &str, action: &str) -> Result<()> {
+    let (status, reason) = run_status(conn, run_id)?;
+    if status != "paused" {
+        return Err(Error::Other(format!("cannot {action} a {status} run")));
+    }
+    if reason.as_deref() == Some("approval") {
+        return Err(Error::Other(
+            "run is awaiting approval — use wf_approve (or wf_cancel)".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn run_status(conn: &Connection, run_id: &str) -> Result<(String, Option<String>)> {
@@ -1918,5 +1935,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(done, 2, "both steps completed after the patch");
+    }
+
+    #[test]
+    fn check_resumable_gates_resume_and_retry() {
+        // The guard runs before `resume` applies any budget patch, so a rejected
+        // resume leaves state untouched. Terminal and approval-paused runs are
+        // rejected; resumable pauses pass.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let insert = |id: &str, status: &str, reason: Option<&str>| {
+            db.lock()
+                .execute(
+                    "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,
+                        branch,base_sha,status,paused_reason,budgets_json,spent_json,
+                        created_at,updated_at)
+                     VALUES (?1,'n','{}','t','p','/r','/d','wf/x','sha',?2,?3,'{}','{}',0,0)",
+                    rusqlite::params![id, status, reason],
+                )
+                .unwrap();
+        };
+        insert("r-done", "done", None);
+        insert("r-appr", "paused", Some("approval"));
+        insert("r-budg", "paused", Some("budget_exceeded"));
+        insert("r-blk", "paused", Some("blocked_gate"));
+
+        let conn = db.lock();
+        assert!(check_resumable(&conn, "r-done", "resume").is_err());
+        assert!(check_resumable(&conn, "r-appr", "resume").is_err());
+        assert!(check_resumable(&conn, "r-budg", "resume").is_ok());
+        assert!(check_resumable(&conn, "r-blk", "retry").is_ok());
     }
 }
