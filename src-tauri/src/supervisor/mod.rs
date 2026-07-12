@@ -91,6 +91,12 @@ pub struct Supervisor {
     /// never persisted (see `session_sync`). Behind an `Arc` so the fire-and-
     /// forget sync task can hold it without borrowing `self`.
     pub sync_health: Arc<Mutex<HashMap<String, session_sync::SyncHealth>>>,
+    /// Per-agent RPC dispatchers, so the mailbox can be drained on demand
+    /// (`settle_agent_rpc`) in addition to the polling watcher — the scheduler
+    /// drains a step agent's mailbox at turn end so a `wf_ask` is dispatched
+    /// before it acts on the gate (§10.4). Overwritten on each (re)spawn; removed
+    /// on teardown.
+    pub rpc_dispatchers: Mutex<HashMap<String, Arc<dyn crate::rpc::RpcDispatcher>>>,
     /// Fan-out of every runtime status transition (see [`StatusEvent`]). Held
     /// as the sender; subscribers call [`Supervisor::subscribe_status`]. The
     /// supervisor never reads it, so a dropped-receiver `send` error is ignored.
@@ -112,11 +118,29 @@ impl Supervisor {
             message_queue: Mutex::new(MessageQueue::new()),
             interrupted: Mutex::new(HashSet::new()),
             sync_health: Arc::new(Mutex::new(HashMap::new())),
+            rpc_dispatchers: Mutex::new(HashMap::new()),
             // Capacity is generous: a lagging subscriber gets `Lagged` and
             // re-reads `status_of`, so overflow degrades to a resync, never a
             // lost terminal state. 1024 covers bursts across many live agents.
             status_tx: broadcast::channel(1024).0,
         }
+    }
+
+    /// Drain `agent_id`'s RPC mailbox once, synchronously, dispatching any
+    /// requests it has already written (e.g. a `wf_ask` from the turn that just
+    /// ended) before the caller acts on that turn's result. The per-agent watcher
+    /// also processes on its tick; `process_pending` is idempotent and
+    /// in-flight-guarded, so the two never double-dispatch. A no-op for an agent
+    /// with no registered dispatcher.
+    pub async fn settle_agent_rpc(self: &Arc<Self>, app: &tauri::AppHandle, agent_id: &str) {
+        let dispatcher = self.rpc_dispatchers.lock().get(agent_id).cloned();
+        let Some(dispatcher) = dispatcher else {
+            return;
+        };
+        let Ok(rpc_dir) = crate::rpc::mailbox_dir(agent_id) else {
+            return;
+        };
+        rpc_watch::process_agent_rpc_once(self, app, agent_id, dispatcher.as_ref(), &rpc_dir).await;
     }
 
     /// Subscribe to runtime status transitions across all agents. To avoid a

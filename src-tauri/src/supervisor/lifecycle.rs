@@ -645,6 +645,13 @@ impl Supervisor {
 
         spawn_turn_watchdog(self.clone(), app.clone(), agent_id_str.clone(), my_gen);
 
+        // Register the dispatcher so the mailbox can also be drained on demand
+        // (`settle_agent_rpc`), not only on the watcher's tick. Overwrites any
+        // prior generation's entry.
+        self.rpc_dispatchers
+            .lock()
+            .insert(agent_id_str.clone(), rpc_dispatcher.clone());
+
         // Watch this agent's RPC mailbox for the life of this generation,
         // executing allowlisted ops and writing responses back.
         spawn_rpc_watcher(

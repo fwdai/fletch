@@ -256,6 +256,7 @@ impl Supervisor {
         self.activities.lock().remove(agent_id);
         self.statuses.lock().remove(agent_id);
         self.native_inputs.lock().remove(agent_id);
+        self.rpc_dispatchers.lock().remove(agent_id);
         // Clear the in-memory queue and its durable mirror under one hold of
         // the queue lock. Dropping the mirror stops an archived agent's queue
         // from rehydrating on the next launch (discard also cascades via the FK

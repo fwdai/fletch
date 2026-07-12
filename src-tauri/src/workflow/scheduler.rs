@@ -711,14 +711,25 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                 persist_spent(&conn, run_id, &ledger);
             }
 
-            // Authoritative pending-ask backstop (§10.4): the in-memory
-            // `pending_ask` poke is best-effort — it can be missed if the RPC op
-            // raced this driver's wind-down or landed just after the turn-end
-            // check — so the *persisted* ask is the source of truth. If this
-            // attempt raised a `wf_ask` still awaiting a human answer, pause
-            // `question` regardless of the gate outcome; the gate's result is
-            // never acted on (no ferry, no advance) while an answer is
-            // outstanding. `AwaitingAnswer` from the fast path lands here too.
+            // Drain the agent's RPC mailbox now, before deciding what to do with
+            // the turn: a `wf_ask` the agent wrote during the turn may still be
+            // sitting undispatched (the per-agent watcher polls on a tick). This
+            // dispatches and persists it deterministically, closing the window
+            // where the run could act on the gate while a question is in flight
+            // (§10.4). The agent is idle here (its turn ended), so nothing new
+            // arrives after this drain.
+            if let Some(agent_id) = &result.agent_id {
+                ctx.driver.settle_rpc(agent_id).await;
+            }
+
+            // Authoritative pending-ask backstop (§10.4): with the mailbox drained
+            // above, the *persisted* ask is the source of truth — more reliable
+            // than the best-effort in-memory poke (which can be missed if the RPC
+            // op raced this driver's wind-down). If this attempt raised a `wf_ask`
+            // still awaiting a human answer, pause `question` regardless of the
+            // gate outcome; the gate's result is never acted on (no ferry, no
+            // advance) while an answer is outstanding. `AwaitingAnswer` from the
+            // fast path lands here too.
             let outcome = if super::comms::has_unanswered_ask(&ctx.db.lock(), &exec_id) {
                 AttemptOutcome::AwaitingAnswer
             } else {
@@ -2541,6 +2552,10 @@ mod tests {
         /// exercises the scheduler's DB backstop: the ask is persisted but the
         /// poke is "missed", and the run must still pause `question`.
         set_flag: bool,
+        /// When set, the ask isn't persisted during the turn — it only becomes
+        /// visible when `settle_rpc` drains the mailbox. Proves the scheduler
+        /// drains *before* the backstop check (§10.4).
+        persist_in_settle: bool,
         tx: broadcast::Sender<StatusEvent>,
         state: parking_lot::Mutex<AskStubState>,
     }
@@ -2551,6 +2566,7 @@ mod tests {
         spawns: usize,
         turns: usize,
         prompts: Vec<String>,
+        ask_persisted: bool,
     }
     impl AskStub {
         fn new(
@@ -2559,6 +2575,7 @@ mod tests {
             run_id: &str,
             pending_ask: Arc<AtomicBool>,
             set_flag: bool,
+            persist_in_settle: bool,
         ) -> Arc<Self> {
             Arc::new(Self {
                 root,
@@ -2566,9 +2583,37 @@ mod tests {
                 run_id: run_id.to_string(),
                 pending_ask,
                 set_flag,
+                persist_in_settle,
                 tx: broadcast::channel(256).0,
                 state: parking_lot::Mutex::new(AskStubState::default()),
             })
+        }
+        /// Persist a queued ask against the run's live attempt (agent_id is still
+        /// NULL mid-turn, so resolution is by run) — exactly as the router does.
+        fn persist_ask(&self) {
+            let mut st = self.state.lock();
+            if st.ask_persisted {
+                return;
+            }
+            st.ask_persisted = true;
+            let conn = self.db.lock();
+            let exec: String = conn
+                .query_row(
+                    "SELECT id FROM wf_step_exec WHERE run_id = ?1
+                     AND status IN ('spawning','running','gating')
+                     ORDER BY rowid DESC LIMIT 1",
+                    [&self.run_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            conn.execute(
+                "INSERT INTO wf_message (id, run_id, from_step_exec_id, to_step_exec_id,
+                    kind, body_json, status, created_at)
+                 VALUES ('ask-msg-1', ?1, ?2, NULL, 'ask', '{\"question\":\"which db?\"}',
+                    'queued', 0)",
+                rusqlite::params![self.run_id, exec],
+            )
+            .unwrap();
         }
         fn set(&self, id: &str, s: AgentStatus) {
             self.state.lock().statuses.insert(id.to_string(), s.clone());
@@ -2633,31 +2678,14 @@ mod tests {
                 self.set(id, AgentStatus::Running);
                 if turn == 1 {
                     // First turn: ask the human (defer the gate) — no commit.
-                    // Persist a real queued ask against the run's live attempt,
-                    // exactly as the router does (agent_id is still NULL here, so
-                    // resolution is by run). The poke is raised only when
-                    // `set_flag`; otherwise the scheduler's DB backstop must catch
-                    // the queued ask.
-                    let conn = self.db.lock();
-                    let exec: String = conn
-                        .query_row(
-                            "SELECT id FROM wf_step_exec WHERE run_id = ?1
-                             AND status IN ('spawning','running','gating')
-                             ORDER BY rowid DESC LIMIT 1",
-                            [&self.run_id],
-                            |r| r.get(0),
-                        )
-                        .unwrap();
-                    conn.execute(
-                        "INSERT INTO wf_message (id, run_id, from_step_exec_id, to_step_exec_id,
-                            kind, body_json, status, created_at)
-                         VALUES (?1, ?2, ?3, NULL, 'ask', '{\"question\":\"which db?\"}', 'queued', 0)",
-                        rusqlite::params![format!("ask-msg-{turn}"), self.run_id, exec],
-                    )
-                    .unwrap();
-                    drop(conn);
-                    if self.set_flag {
-                        self.pending_ask.store(true, Ordering::SeqCst);
+                    // Unless the ask is deferred to `settle_rpc` (mailbox-drain
+                    // test), persist it now and raise the poke only when
+                    // `set_flag`; otherwise the DB backstop must catch it.
+                    if !self.persist_in_settle {
+                        self.persist_ask();
+                        if self.set_flag {
+                            self.pending_ask.store(true, Ordering::SeqCst);
+                        }
                     }
                 } else {
                     // Later turns: do the work so the commit gate is met.
@@ -2667,6 +2695,15 @@ mod tests {
                 }
                 self.set(id, AgentStatus::Idle);
                 Ok(())
+            })
+        }
+        fn settle_rpc<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, ()> {
+            Box::pin(async move {
+                // Models the real drain: a wf_ask the agent wrote during the turn
+                // is only dispatched (persisted) when the mailbox is settled.
+                if self.persist_in_settle {
+                    self.persist_ask();
+                }
             })
         }
         fn stop<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
@@ -2688,7 +2725,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (db, ws) = scaffold_one_step(tmp.path(), "run-ask", "wf/ask-1");
         let pending_ask = Arc::new(AtomicBool::new(false));
-        let driver = AskStub::new(ws, db.clone(), "run-ask", pending_ask.clone(), true);
+        let driver = AskStub::new(ws, db.clone(), "run-ask", pending_ask.clone(), true, false);
         let ctx = RunCtx {
             db: db.clone(),
             driver: driver.clone(),
@@ -2789,7 +2826,14 @@ mod tests {
         let (db, ws) = scaffold_one_step(tmp.path(), "run-ask2", "wf/ask2-1");
         let pending_ask = Arc::new(AtomicBool::new(false));
         // set_flag = false → the ask is persisted, but the flag is never raised.
-        let driver = AskStub::new(ws, db.clone(), "run-ask2", pending_ask.clone(), false);
+        let driver = AskStub::new(
+            ws,
+            db.clone(),
+            "run-ask2",
+            pending_ask.clone(),
+            false,
+            false,
+        );
         let ctx = RunCtx {
             db: db.clone(),
             driver,
@@ -2825,6 +2869,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(commits, 0, "no ferry while an answer is outstanding");
+    }
+
+    #[tokio::test]
+    async fn mailbox_drain_surfaces_a_late_ask_before_the_check() {
+        // The tightest race: the agent wrote a wf_ask during its turn, but it is
+        // still undispatched when the turn ends — it only becomes persisted when
+        // the scheduler drains the mailbox (settle_rpc). If the scheduler checked
+        // for a pending ask *without* draining first, it would miss it and act on
+        // the gate. persist_in_settle models exactly that ordering.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-ask3", "wf/ask3-1");
+        let pending_ask = Arc::new(AtomicBool::new(false));
+        // No in-turn persist, no flag — the ask surfaces only via settle_rpc.
+        let driver = AskStub::new(ws, db.clone(), "run-ask3", pending_ask.clone(), false, true);
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver,
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask,
+            deadlines: Deadlines::default(),
+        };
+
+        drive_run(&ctx, "run-ask3").await;
+
+        let (status, reason): (String, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, paused_reason FROM wf_run WHERE id='run-ask3'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "paused");
+        assert_eq!(
+            reason.as_deref(),
+            Some("question"),
+            "draining the mailbox before the check must surface the late ask"
+        );
     }
 
     #[tokio::test]
