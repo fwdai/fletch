@@ -141,6 +141,16 @@ impl Supervisor {
         self.workspace.last_activity(agent_id)
     }
 
+    /// This agent's canonical session records (seq order) — the raw provider
+    /// bodies as ingested. The workflow budget ledger reads token `usage` out of
+    /// them (spec §11.2); a read error degrades to an empty slice (tokens then
+    /// go uncounted, exactly as for a provider that exposes no usage).
+    pub fn read_session_records(&self, agent_id: &str) -> Vec<crate::workspace::SessionRecord> {
+        self.workspace
+            .read_session_records(agent_id)
+            .unwrap_or_default()
+    }
+
     /// Invalidate this agent's current spawn generation. Any gen-guarded
     /// background task (turn watchdog, RPC watcher) and any late process-exit
     /// handler captured the old number, so after this bump they see

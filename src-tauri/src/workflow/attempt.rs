@@ -27,6 +27,7 @@ use crate::workspace::AgentStatus;
 // are already buffered by the time it reads them.
 
 use super::blackboard::{self, Verdict, VerdictError};
+use super::budget::{BudgetLimit, EffectiveBudgets, Ledger};
 use super::driver::{AgentDriver, SpawnReq};
 use super::gates::{self, GateInputs, GateOutcome};
 use super::prompts;
@@ -65,6 +66,8 @@ pub struct AttemptParams {
     pub spawn_req: SpawnReq,
     /// The run's blackboard directory (`…/blackboard`).
     pub blackboard: PathBuf,
+    /// The `wf_step_exec` row id — for the ledger's per-attempt turn rollup.
+    pub exec_id: String,
     pub step_id: String,
     pub attempt: u32,
     pub iteration: u32,
@@ -88,6 +91,10 @@ pub enum AttemptOutcome {
     /// Spawn/turn-start timeout, agent error, or an exhausted stall → the
     /// scheduler applies the retry policy (spec §6.5).
     Error { error: String },
+    /// A run-level budget cap was reached at an enforcement point (spec §11.2) →
+    /// the scheduler pauses the run `budget_exceeded`. `which` is `turns` /
+    /// `tokens` / `wall_clock`.
+    BudgetExceeded { which: String },
 }
 
 /// One journalable event the attempt produced, in order. The scheduler attaches
@@ -119,10 +126,22 @@ fn ev(event_type: &'static str, payload: Value) -> AttemptEvent {
 }
 
 /// Drive one step attempt to a terminal outcome (spec §6.3 steps 1–6).
-pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> AttemptRun {
+///
+/// `ledger` / `eff` carry budget enforcement (spec §11.2): the attempt checks
+/// `ledger.exceeded()` before each prompt send and charges one turn (plus any
+/// token usage) at each turn end, bailing with [`AttemptOutcome::BudgetExceeded`]
+/// the moment a run-level cap is reached. The scheduler owns the pre-spawn check
+/// and persistence of the mutated ledger.
+pub async fn run_attempt(
+    driver: &dyn AgentDriver,
+    params: AttemptParams,
+    ledger: &mut Ledger,
+    eff: &EffectiveBudgets,
+) -> AttemptRun {
     let AttemptParams {
         spawn_req,
         blackboard,
+        exec_id,
         step_id,
         attempt,
         iteration,
@@ -188,6 +207,13 @@ pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> Att
     let mut reprompts_left: u32 = if reprompt_on_block { 1 } else { 0 };
 
     loop {
+        // Enforcement point: before every prompt/message send (spec §11.2). A run
+        // that has spent its turn / token / wall-clock budget pauses now rather
+        // than driving another turn.
+        if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
+            return budget_exceeded_run(agent_id, worktree, which, events);
+        }
+
         // Subscribe BEFORE sending so an arbitrarily fast Running→Idle flap is
         // unlosable (spec §6.3 step 4). Snapshot, archive any stale verdict,
         // then send — in that order.
@@ -238,6 +264,19 @@ pub async fn run_attempt(driver: &dyn AgentDriver, params: AttemptParams) -> Att
             TurnEnd::Closed => {
                 return terminal_error(driver, &agent_id, "supervisor stopped", events).await
             }
+        }
+
+        // Turn complete: count it (the universal unit, spec §11.2) and charge any
+        // token usage the provider reported, then journal the ledger tick.
+        ledger.charge_turn(&step_id, &exec_id);
+        ledger.charge_tokens(&agent_id, &step_id, driver.turn_usage(&agent_id));
+        events.push(ev(
+            event_type::BUDGET_TICK,
+            json!({ "turns": ledger.turns, "tokens": ledger.tokens }),
+        ));
+        // Enforcement point: at every turn end (spec §11.2).
+        if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
+            return budget_exceeded_run(agent_id, worktree, which, events);
         }
 
         // Gate — pure evaluation over freshly gathered facts (spec §6.3 step 6).
@@ -326,6 +365,29 @@ async fn terminal_error(
         worktree: None,
         outcome: AttemptOutcome::Error {
             error: error.to_string(),
+        },
+        events,
+    }
+}
+
+/// Build the `BudgetExceeded` result. The agent is left alive and idle — the
+/// scheduler stops it as part of pausing the run (spec §6.5 "pausing stops
+/// processes"), mirroring how a `Blocked` attempt is handled.
+fn budget_exceeded_run(
+    agent_id: String,
+    worktree: PathBuf,
+    which: BudgetLimit,
+    mut events: Vec<AttemptEvent>,
+) -> AttemptRun {
+    events.push(ev(
+        event_type::BUDGET_EXCEEDED,
+        json!({ "which": which.as_str() }),
+    ));
+    AttemptRun {
+        agent_id: Some(agent_id),
+        worktree: Some(worktree),
+        outcome: AttemptOutcome::BudgetExceeded {
+            which: which.as_str().to_string(),
         },
         events,
     }
@@ -490,7 +552,7 @@ fn outcome_label(outcome: &GateOutcome) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::driver::{MockDriver, TurnBehavior};
+    use crate::workflow::driver::{MockDriver, TurnBehavior, TurnUsage};
 
     fn params(gate: Gate, blackboard: PathBuf, deadlines: Deadlines) -> AttemptParams {
         AttemptParams {
@@ -507,6 +569,7 @@ mod tests {
                 owner_run_id: "run-1".into(),
             },
             blackboard,
+            exec_id: "exec-1".into(),
             step_id: "plan".into(),
             attempt: 1,
             iteration: 0,
@@ -515,6 +578,13 @@ mod tests {
             deadlines,
             reprompt_on_block: true,
         }
+    }
+
+    /// Run an attempt with an effectively unbounded budget — the default for the
+    /// lifecycle tests that don't exercise enforcement.
+    async fn run(driver: &dyn AgentDriver, params: AttemptParams) -> AttemptRun {
+        let mut ledger = Ledger::default();
+        run_attempt(driver, params, &mut ledger, &EffectiveBudgets::default()).await
     }
 
     fn fast() -> Deadlines {
@@ -541,7 +611,7 @@ mod tests {
         let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
         d.set_complete_verdict(step_dir, r#"{"result":"done","summary":"ok"}"#);
 
-        let run = run_attempt(
+        let run = run(
             d.as_ref(),
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
@@ -563,7 +633,7 @@ mod tests {
         let bb = tempfile::tempdir().unwrap();
         let d = MockDriver::new();
         // ready_on_spawn stays false → agent parks in Spawning forever.
-        let run = run_attempt(
+        let run = run(
             d.as_ref(),
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
@@ -580,7 +650,7 @@ mod tests {
         let d = MockDriver::new();
         d.set_ready_on_spawn(true);
         d.set_turn_behavior(TurnBehavior::Silent); // prompt lands, no turn
-        let run = run_attempt(
+        let run = run(
             d.as_ref(),
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
@@ -604,7 +674,7 @@ mod tests {
         let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
         d.set_complete_verdict(step_dir, r#"{"result":"done","summary":"flap"}"#);
 
-        let run = run_attempt(
+        let run = run(
             d.as_ref(),
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
@@ -622,7 +692,7 @@ mod tests {
         let d = MockDriver::new();
         d.set_ready_on_spawn(true);
         d.set_turn_behavior(TurnBehavior::RunningOnly); // turn starts, never ends
-        let run = run_attempt(
+        let run = run(
             d.as_ref(),
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
@@ -648,7 +718,7 @@ mod tests {
         let d = MockDriver::new();
         d.set_ready_on_spawn(true);
         d.set_turn_behavior(TurnBehavior::ErrorOut);
-        let run = run_attempt(
+        let run = run(
             d.as_ref(),
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
@@ -665,7 +735,7 @@ mod tests {
         let bb = tempfile::tempdir().unwrap();
         let d = MockDriver::new();
         d.fail_next_spawn("no repo");
-        let run = run_attempt(
+        let run = run(
             d.as_ref(),
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
@@ -684,7 +754,7 @@ mod tests {
         let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
         d.set_complete_verdict(step_dir, r#"{"result":"revise","summary":"more work"}"#);
 
-        let run = run_attempt(
+        let run = run(
             d.as_ref(),
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
@@ -709,7 +779,7 @@ mod tests {
         let d = MockDriver::new();
         d.set_ready_on_spawn(true);
         d.set_turn_behavior(TurnBehavior::Complete);
-        let run = run_attempt(
+        let run = run(
             d.as_ref(),
             params(Gate::Approval, bb.path().to_path_buf(), fast()),
         )
@@ -738,7 +808,7 @@ mod tests {
         let d = MockDriver::new();
         d.set_ready_on_spawn(true);
         d.set_turn_behavior(TurnBehavior::Complete); // completes but writes no verdict
-        let run = run_attempt(
+        let run = run(
             d.as_ref(),
             params(Gate::Verdict, bb.path().to_path_buf(), fast()),
         )
@@ -754,5 +824,99 @@ mod tests {
             .iter()
             .any(|e| e.event_type == event_type::PROMPT_SENT
                 && e.payload.get("stale_verdict_archived").is_some()));
+    }
+
+    // ── budget enforcement (spec §11.2) ──────────────────────────────────────
+
+    #[tokio::test(start_paused = true)]
+    async fn turn_budget_pauses_at_turn_end() {
+        let bb = tempfile::tempdir().unwrap();
+        let d = MockDriver::new();
+        d.set_ready_on_spawn(true);
+        // A "revise" verdict would normally trigger the re-prompt, but the turn
+        // budget of 1 stops the attempt at the first turn end instead.
+        d.set_turn_behavior(TurnBehavior::Complete);
+        let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
+        d.set_complete_verdict(step_dir, r#"{"result":"revise","summary":"more"}"#);
+
+        let mut ledger = Ledger::default();
+        let eff = EffectiveBudgets {
+            turns: 1,
+            ..Default::default()
+        };
+        let run =
+            run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast()), &mut ledger, &eff)
+                .await;
+        match run.outcome {
+            AttemptOutcome::BudgetExceeded { which } => assert_eq!(which, "turns"),
+            other => panic!("expected BudgetExceeded(turns), got {other:?}"),
+        }
+        assert_eq!(ledger.turns, 1, "the completed turn was counted");
+        // The turn ran (so it's charged) but the gate was never reached.
+        assert!(types_present(&run.events, event_type::TURN_ENDED));
+        assert!(types_present(&run.events, event_type::BUDGET_TICK));
+        assert!(!types_present(&run.events, event_type::GATE_EVALUATED));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn token_budget_pauses_at_turn_end() {
+        let bb = tempfile::tempdir().unwrap();
+        let d = MockDriver::new();
+        d.set_ready_on_spawn(true);
+        d.set_turn_behavior(TurnBehavior::Complete);
+        // The first spawned agent is deterministically "mock-agent-1"; give it a
+        // cumulative usage above the cap so the turn-end charge trips tokens.
+        d.set_usage(
+            "mock-agent-1",
+            TurnUsage {
+                input_tokens: 400,
+                output_tokens: 200,
+            },
+        );
+
+        let mut ledger = Ledger::default();
+        let eff = EffectiveBudgets {
+            turns: 100,
+            tokens: Some(500),
+            ..Default::default()
+        };
+        let run =
+            run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast()), &mut ledger, &eff)
+                .await;
+        match run.outcome {
+            AttemptOutcome::BudgetExceeded { which } => assert_eq!(which, "tokens"),
+            other => panic!("expected BudgetExceeded(tokens), got {other:?}"),
+        }
+        assert_eq!(ledger.tokens, 600);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn exhausted_budget_pauses_before_any_send() {
+        // Models a resume where the ledger is already at the cap: the pre-send
+        // enforcement point fires before the first prompt is ever sent.
+        let bb = tempfile::tempdir().unwrap();
+        let d = MockDriver::new();
+        d.set_ready_on_spawn(true);
+        d.set_turn_behavior(TurnBehavior::Complete);
+
+        let mut ledger = Ledger::default();
+        ledger.charge_turn("plan", "prev");
+        ledger.charge_turn("plan", "prev");
+        let eff = EffectiveBudgets {
+            turns: 2,
+            ..Default::default()
+        };
+        let run =
+            run_attempt(d.as_ref(), params(Gate::Verdict, bb.path().to_path_buf(), fast()), &mut ledger, &eff)
+                .await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::BudgetExceeded { .. }),
+            "{:?}",
+            run.outcome
+        );
+        // Spawned + ready, but no prompt was sent and no turn ran.
+        assert!(types_present(&run.events, event_type::ATTEMPT_READY));
+        assert!(!types_present(&run.events, event_type::PROMPT_SENT));
+        assert!(d.sent_messages().is_empty());
     }
 }
