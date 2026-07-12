@@ -173,7 +173,11 @@ pub async fn wf_def_import_yaml(
     let conn = db.lock();
     let local_skills = list_skill_names(&conn)?;
     let local_agents = list_custom_agents(&conn)?;
-    Ok(yaml::build_import_report(spec, &local_skills, &local_agents))
+    Ok(yaml::build_import_report(
+        spec,
+        &local_skills,
+        &local_agents,
+    ))
 }
 
 // ───────────────────────────── local library lookups ─────────────────────────
@@ -313,8 +317,10 @@ mod tests {
         conn.query_row(
             "SELECT id,name,description,hue,spec_json,run_count,created_at,updated_at \
              FROM wf_definition WHERE id=?1",
-            [&id], row_to_definition,
-        ).unwrap()
+            [&id],
+            row_to_definition,
+        )
+        .unwrap()
     }
 
     #[test]
