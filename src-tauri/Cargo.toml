@@ -23,6 +23,10 @@ tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Portable YAML export/import of workflow definitions (workflow/yaml.rs). 0.9 is
+# feature-frozen but stable and is the round-trip serializer the workflows spec
+# names; the file format is the only place we (de)serialize YAML.
+serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
