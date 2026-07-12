@@ -8,24 +8,16 @@
 //! malformed definition can never reach the table (or, later, a launch).
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, Row};
 use serde::Serialize;
 
+use super::now_ms;
 use super::spec::{self, Spec};
 use super::yaml::{self, ImportReport, LocalAgent};
 
 type Db = Arc<Mutex<Connection>>;
-
-/// Epoch milliseconds, matching the core schema's timestamp convention.
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 fn new_id() -> String {
     format!("wf-{}", uuid::Uuid::new_v4())

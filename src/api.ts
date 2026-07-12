@@ -657,6 +657,15 @@ export const api = {
    *  The frontend enriches these against models.dev. */
   discoverSupportedModels: () => invoke<AgentModels[]>("discover_supported_models"),
 
+  // ── Workflows v1 (read-only surface; scheduler slices populate the data) ──
+  /** Runs newest-updated first, optionally scoped to one project. */
+  wfListRuns: (projectId?: string) => invoke<WfRun[]>("wf_list_runs", { projectId }),
+  /** A run plus its attempts and messages; null if the run doesn't exist. */
+  wfGetRun: (runId: string) => invoke<WfRunDetail | null>("wf_get_run", { runId }),
+  /** A page of a run's journal: events strictly after `afterSeq`, oldest first. */
+  wfEvents: (runId: string, afterSeq: number, limit: number) =>
+    invoke<WfEvent[]>("wf_events", { runId, afterSeq, limit }),
+
   // ── Workflows v1: definition storage (spec §13, `wf_def_*`) ──
   /** Validate and persist a workflow definition. Omit `id` to create; pass an
    *  existing id to edit in place (run_count/created_at are preserved). Rejects
@@ -673,6 +682,121 @@ export const api = {
    *  Missing skills / unknown providers come back as warnings, not errors. */
   wfDefImportYaml: (yamlText: string) => invoke<ImportReport>("wf_def_import_yaml", { yamlText }),
 };
+
+// ───────────────────────────── Workflows v1 types ───────────────────────────
+// Mirror the serialized Rust rows in src-tauri/src/workflow/types.rs (TECH_SPEC
+// §4). JSON-typed columns arrive as parsed objects (`unknown`), not strings.
+
+export type WfRunStatus = "pending" | "running" | "paused" | "done" | "failed" | "canceled";
+
+export type WfPausedReason =
+  | "approval"
+  | "question"
+  | "blocked_gate"
+  | "budget_exceeded"
+  | "conflict"
+  | "stalled";
+
+export type WfAttemptStatus =
+  | "pending"
+  | "spawning"
+  | "running"
+  | "gating"
+  | "done"
+  | "blocked"
+  | "awaiting_approval"
+  | "error"
+  | "abandoned";
+
+export type WfMessageKind = "report" | "ask" | "answer" | "notify" | "decision";
+
+export type WfMessageStatus = "queued" | "delivered" | "answered" | "expired";
+
+export interface WfRun {
+  id: string;
+  definition_id: string | null;
+  parent_run_id: string | null;
+  name: string;
+  spec: unknown;
+  task: string;
+  project_id: string;
+  repo_path: string;
+  run_dir: string;
+  branch: string;
+  base_sha: string;
+  status: WfRunStatus;
+  paused_reason: WfPausedReason | null;
+  cursor: unknown | null;
+  budgets: unknown;
+  spent: unknown;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface WfStepExec {
+  id: string;
+  run_id: string;
+  step_id: string;
+  attempt: number;
+  iteration: number;
+  agent_id: string | null;
+  status: WfAttemptStatus;
+  gate_mode: string;
+  head_start: string | null;
+  head_end: string | null;
+  verdict: unknown | null;
+  error: string | null;
+  started_at: number | null;
+  ended_at: number | null;
+}
+
+export interface WfEvent {
+  run_id: string;
+  seq: number;
+  ts: number;
+  step_exec_id: string | null;
+  type: string;
+  payload: unknown;
+}
+
+export interface WfMessage {
+  id: string;
+  run_id: string;
+  from_step_exec_id: string | null;
+  to_step_exec_id: string | null;
+  kind: WfMessageKind;
+  body: unknown;
+  status: WfMessageStatus;
+  created_at: number;
+  delivered_at: number | null;
+}
+
+export interface WfRunDetail {
+  run: WfRun;
+  attempts: WfStepExec[];
+  messages: WfMessage[];
+}
+
+/** `wf:event` envelope (§7.2): the addressing fields only — fetch the payload
+ *  on demand via `api.wfEvents`. */
+export interface WfEventEnvelope {
+  run_id: string;
+  seq: number;
+  type: string;
+  ts: number;
+  step_exec_id: string | null;
+}
+
+/** Fires on every journal append for any run. */
+export function onWfEvent(cb: (e: WfEventEnvelope) => void): Promise<UnlistenFn> {
+  return listen<WfEventEnvelope>("wf:event", (event) => cb(event.payload));
+}
+
+/** Fires whenever a run row changes; carries the full row. */
+export function onWfRun(cb: (e: WfRun) => void): Promise<UnlistenFn> {
+  return listen<WfRun>("wf:run", (event) => cb(event.payload));
+}
 
 /** Payload of the `agent-install:state` event: progress of a one-click agent
  *  CLI install (`api.installAgent`). `line` carries installer output while
