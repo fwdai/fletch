@@ -179,11 +179,13 @@ fn gate_statement(gate: &Gate) -> String {
              continues."
                 .to_string()
         }
-        // Tests gate is not evaluated until S6; it currently behaves as a
-        // verdict gate, so the instruction matches.
+        // Tests gate is not evaluated until S6; the engine only checks
+        // `verdict.json`, so the prompt must not promise enforcement it
+        // doesn't have — passing tests is on the agent until then.
         Gate::Tests => {
-            "You are done when the project's tests pass. Also write `verdict.json` \
-             with `result` \"done\" so the step is recorded."
+            "Run the project's tests. The engine does not verify test results \
+             yet — it trusts your verdict — so only write `verdict.json` with \
+             `result` \"done\" once the tests actually pass."
                 .to_string()
         }
     }

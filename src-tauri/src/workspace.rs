@@ -1560,7 +1560,11 @@ impl WorkspaceManager {
     }
 
     fn query_all_agents(conn: &Connection) -> Vec<AgentRecord> {
-        let mut stmt = match conn.prepare(&format!("{AGENT_SELECT} ORDER BY w.created_at")) {
+        // Run-owned step agents live under their workflow run, not the
+        // sidebar; the frontend never sees owner_run_id, so filter here.
+        let mut stmt = match conn.prepare(&format!(
+            "{AGENT_SELECT} WHERE w.owner_run_id IS NULL ORDER BY w.created_at"
+        )) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
@@ -2619,6 +2623,33 @@ mod tests {
         let plain_loaded = wm.agent(&plain_id).unwrap();
         assert_eq!(plain_loaded.instructions, None);
         assert_eq!(plain_loaded.custom_agent_id, None);
+    }
+
+    #[test]
+    fn run_owned_agents_are_hidden_from_the_workspace_list() {
+        let db = test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        seed_repo(&db, "/r");
+
+        let mut rec = new_agent_record(
+            "denali".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "step task".into(),
+            AgentView::Custom,
+        );
+        let id = rec.id.clone();
+        rec.owner_run_id = Some("run-1".into());
+        wm.add_agent(&mut rec).unwrap();
+
+        // Hidden from the sidebar list…
+        assert!(wm.current().unwrap().agents.iter().all(|a| a.id != id));
+        // …but still loadable by id for the workflow engine.
+        assert_eq!(
+            wm.agent(&id).unwrap().owner_run_id.as_deref(),
+            Some("run-1")
+        );
     }
 
     #[test]
