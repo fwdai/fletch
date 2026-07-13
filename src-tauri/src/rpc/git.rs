@@ -725,11 +725,20 @@ mod tests {
         run_git(&a, &["commit", "-q", "-m", "c1"]);
         run_git(&a, &["push", "-u", "-q", "origin", "main"]);
 
-        // Repo B advances the remote with a commit A never fetches.
+        // Repo B advances the remote with a commit A never fetches. Clone with
+        // an explicit `-b main` so the checkout doesn't depend on the bare
+        // repo's default HEAD (which follows the host's `init.defaultBranch`).
         let b = td.path().join("b");
         run_git(
             td.path(),
-            &["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()],
+            &[
+                "clone",
+                "-q",
+                "-b",
+                "main",
+                remote.to_str().unwrap(),
+                b.to_str().unwrap(),
+            ],
         );
         run_git(&b, &["config", "user.email", "b@example.com"]);
         run_git(&b, &["config", "user.name", "B"]);
