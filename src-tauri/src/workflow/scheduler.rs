@@ -34,7 +34,9 @@ use super::driver::{AgentDriver, SpawnReq};
 use super::gitops;
 use super::journal;
 use super::prompts::{self, IterationPos, Position, StepPromptCtx};
-use super::spec::{AgentSpec, Block, Budgets, Gate, Integrate, Join, Loop, Parallel, Spec, Step};
+use super::spec::{
+    AgentSpec, Block, Budgets, Gate, Integrate, Join, Loop, Orchestrate, Parallel, Spec, Step,
+};
 use super::types::event_type;
 
 type Db = Arc<Mutex<Connection>>;
@@ -602,11 +604,31 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     BlockFlow::Halt => return Ok(()),
                 }
             }
-            // `ensure_executable` rejects orchestrate before any block runs.
-            Block::Orchestrate(_) => {
-                return Err(Error::Other(
-                    "orchestrate blocks are not supported yet (S11)".into(),
-                ))
+            Block::Orchestrate(orch) => {
+                match run_orchestrate_stage(
+                    ctx,
+                    run_id,
+                    &run,
+                    &spec,
+                    orch,
+                    index,
+                    blocks.len(),
+                    &blackboard,
+                    &repo,
+                    &run_repo,
+                    &last_ref,
+                    &eff,
+                    &mut ledger,
+                    &test_override,
+                    &setup_override,
+                )
+                .await?
+                {
+                    // `integrate: none` — the stage HEAD is its entry HEAD (§12.3),
+                    // so the line's fork source is unchanged; just advance.
+                    StageFlow::Advance => {}
+                    StageFlow::Stop => return Ok(()),
+                }
             }
         }
 
@@ -807,10 +829,15 @@ fn ensure_executable(blocks: &[Block]) -> Result<()> {
                     }
                 }
             }
-            Block::Orchestrate(_) => {
-                return Err(Error::Other(
-                    "orchestrate blocks are not supported yet (S11)".into(),
-                ))
+            Block::Orchestrate(o) => {
+                // S11 executes orchestrate stages with `integrate: none` (the
+                // orchestrator supervises note-producing children). `integrate:
+                // merge` reuses the code-merge machinery that arrives with S9.
+                if matches!(o.integrate, Integrate::Merge) {
+                    return Err(Error::Other(
+                        "orchestrate integrate: merge is not supported yet (S9)".into(),
+                    ));
+                }
             }
         }
     }
@@ -1207,6 +1234,7 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
                 &c.run_repo,
                 &c.run_id,
             ),
+            pre_spawned: None,
             blackboard: c.blackboard.clone(),
             exec_id: exec_id.clone(),
             step_id: c.step.id.clone(),
@@ -1404,6 +1432,1290 @@ fn build_spawn_req(
         fork_base: Some(fork_base.to_string()),
         run_repo: Some(run_repo.to_path_buf()),
         owner_run_id: run_id.to_string(),
+    }
+}
+
+// ───────────────────────── orchestrate stages (§6.6, §10.2) ─────────────────
+
+/// An orchestrate child's terminal outcome plus the exec id (for lifecycle
+/// forwarding) — the orchestrate analogue of [`ChildResult`].
+struct OrchChildResult {
+    step_id: String,
+    exec_id: String,
+    outcome: ChildOutcome,
+    ledger: Ledger,
+}
+
+/// The stage-visible status of an orchestrate child, for the join decision.
+#[derive(Clone)]
+enum ChildStatus {
+    Success,
+    Failure(String),
+    /// The orchestrator dropped it with `skip_child` — satisfied, not a failure.
+    Skipped,
+}
+
+/// Result of waiting for the orchestrator to answer a child's ask (§10.4).
+enum AnswerWait {
+    Answered,
+    Timeout,
+    Canceled,
+}
+
+/// Outcome of driving one orchestrator turn (§10.2), mapping the turn result onto
+/// the stage's control flow.
+enum OrchStepResult {
+    Ok,
+    Stalled,
+    Error(String),
+    Budget(String),
+}
+
+/// Run an orchestrate stage (spec §6.6, §10.2): a stage-lived orchestrator agent
+/// supervises children with `integrate: none`. Static `body` children auto-start;
+/// the orchestrator may spawn dynamic children (bounded by `children.max`), answer
+/// their questions, notify them, and end the stage. The stage completes when the
+/// join over all children is met **and** the orchestrator writes its concluding
+/// `verdict.json`; `stage_done` ends it early. A stalled orchestrator escalates to
+/// the human (§10.2). Children run against their own ledgers, folded into the run
+/// ledger (§11.2).
+#[allow(clippy::too_many_arguments)]
+async fn run_orchestrate_stage(
+    ctx: &RunCtx,
+    run_id: &str,
+    run: &RunEssentials,
+    spec: &Spec,
+    orch: &Orchestrate,
+    block_index: usize,
+    block_count: usize,
+    blackboard: &Path,
+    repo: &Path,
+    run_repo: &Path,
+    fork_base: &str,
+    eff: &EffectiveBudgets,
+    ledger: &mut Ledger,
+    test_override: &Option<String>,
+    setup_override: &Option<String>,
+) -> Result<StageFlow> {
+    // Enforcement point: before spawning the stage (§11.2).
+    if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
+        {
+            let conn = ctx.db.lock();
+            journal_event(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                event_type::BUDGET_EXCEEDED,
+                None,
+                &json!({ "which": which.as_str() }),
+            );
+        }
+        finish_budget_pause(ctx, run_id, None, ledger);
+        return Ok(StageFlow::Stop);
+    }
+
+    let orch_step_id = super::comms::orch_step_id(block_index);
+    // Resume: the orchestrator already concluded in a prior drive → stage done.
+    if child_already_done(&ctx.db.lock(), run_id, &orch_step_id) {
+        return Ok(StageFlow::Advance);
+    }
+
+    let stage_entry_sha = crate::git::rev_parse(run_repo, fork_base).await.ok();
+    let orch_step_eff = eff.for_step(None);
+    let orch_deadlines = deadlines_from(&ctx.deadlines, &orch_step_eff);
+
+    // ── Spawn the stage-lived orchestrator; stamp its agent id at spawn so its
+    //    mid-turn `wf_decide`/`wf_notify` resolve by agent id (§10.2). ──
+    let orch_agent = spec.agents.get(&orch.agent).ok_or_else(|| {
+        Error::Other(format!(
+            "orchestrate references unknown agent '{}'",
+            orch.agent
+        ))
+    })?;
+    let orch_exec = format!("exec-{}", uuid::Uuid::new_v4());
+    {
+        let conn = ctx.db.lock();
+        create_step_exec(&conn, &orch_exec, run_id, &orch_step_id, 1, 0, "verdict");
+    }
+    let spawned = match ctx
+        .driver
+        .spawn(build_spawn_req(
+            orch_agent, fork_base, repo, run_repo, run_id,
+        ))
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            let conn = ctx.db.lock();
+            finish_step_exec(&conn, &orch_exec, "error", None);
+            set_status(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                "failed",
+                None,
+                Some(&format!("orchestrator spawn failed: {e}")),
+            );
+            return Ok(StageFlow::Stop);
+        }
+    };
+    let orch_agent_id = spawned.agent_id.clone();
+    {
+        let conn = ctx.db.lock();
+        let _ = conn.execute(
+            "UPDATE wf_step_exec SET agent_id = ?1, status = 'running', started_at = ?2 WHERE id = ?3",
+            rusqlite::params![orch_agent_id, super::now_ms(), orch_exec],
+        );
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::ATTEMPT_SPAWNED,
+            Some(&orch_exec),
+            &json!({ "agent_id": orch_agent_id, "fork_base": fork_base, "role": "orchestrator" }),
+        );
+    }
+    if let Err(e) = attempt::await_agent_ready(
+        ctx.driver.as_ref(),
+        &orch_agent_id,
+        orch_deadlines.spawn_timeout,
+    )
+    .await
+    {
+        let conn = ctx.db.lock();
+        finish_step_exec(&conn, &orch_exec, "error", None);
+        set_status(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            "failed",
+            None,
+            Some(&format!("orchestrator not ready: {e}")),
+        );
+        return Ok(StageFlow::Stop);
+    }
+    {
+        let conn = ctx.db.lock();
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::ATTEMPT_READY,
+            Some(&orch_exec),
+            &json!({ "role": "orchestrator" }),
+        );
+    }
+
+    // ── Launch static body children, then drive the orchestrator's first turn. ──
+    let stage_cancel = Arc::new(AtomicBool::new(false));
+    let mut set: JoinSet<OrchChildResult> = JoinSet::new();
+    let mut dyn_count = 0u32;
+    let mut outcomes: HashMap<String, ChildStatus> = HashMap::new();
+
+    for step in &orch.body {
+        let agent_spec = spec.agents.get(&step.agent).ok_or_else(|| {
+            Error::Other(format!(
+                "orchestrate child '{}' references unknown agent '{}'",
+                step.id, step.agent
+            ))
+        })?;
+        let c = build_orch_child_ctx(
+            ctx,
+            run_id,
+            run,
+            agent_spec.clone(),
+            step.clone(),
+            block_index,
+            block_count,
+            blackboard,
+            repo,
+            run_repo,
+            fork_base,
+            eff,
+            test_override,
+            setup_override,
+            &stage_cancel,
+        );
+        let entry = stage_entry_sha.clone();
+        set.spawn(async move { drive_orch_child(c, entry).await });
+    }
+
+    let init_prompt = {
+        let static_children: Vec<String> = orch.body.iter().map(|s| s.id.clone()).collect();
+        let dynamic = orch.children.as_ref().map(|c| (c.agent.as_str(), c.max));
+        let base = prompts::orchestrator_prompt(&prompts::OrchestratorPromptCtx {
+            run_task: &run.task,
+            orch_step_id: &orch_step_id,
+            goal: &orch.goal,
+            position: Position {
+                step_index: block_index,
+                step_count: block_count,
+                iteration: None,
+            },
+            static_children: &static_children,
+            dynamic,
+        });
+        // On a resume after escalation, an answer for the orchestrator is folded in.
+        let delivered = {
+            let conn = ctx.db.lock();
+            super::comms::take_pending_deliveries(&conn, run_id, &orch_step_id)
+        };
+        if delivered.is_empty() {
+            base
+        } else {
+            format!("{}\n\n{}", super::comms::compose_delivery(&delivered), base)
+        }
+    };
+
+    match drive_orch_turn(
+        ctx,
+        run_id,
+        &orch_exec,
+        &orch_step_id,
+        &orch_agent_id,
+        init_prompt,
+        "step",
+        &orch_deadlines,
+        ledger,
+        eff,
+    )
+    .await
+    {
+        OrchStepResult::Ok => {}
+        other => {
+            return finish_orch_turn_failure(
+                ctx,
+                run_id,
+                &orch_exec,
+                &orch_agent_id,
+                &stage_cancel,
+                &mut set,
+                ledger,
+                other,
+            )
+            .await;
+        }
+    }
+
+    // ── The stage event loop (§6.6): alternate driving the orchestrator with
+    //    reaping children until the join is met and it concludes. ──
+    let mut concluded_early = false;
+    let mut conclude_sent = false;
+    let mut conclude_tries = 0u32;
+    const MAX_CONCLUDE_TRIES: u32 = 2;
+
+    loop {
+        if ctx.cancel.load(Ordering::SeqCst) {
+            drain_children(&stage_cancel, &mut set).await;
+            cancel_run(ctx, run_id).await;
+            return Ok(StageFlow::Stop);
+        }
+
+        // Orchestrator escalated or asked the human on its last turn → pause
+        // `question` (§10.2, §10.4). The backstop mirrors the linear path.
+        if super::comms::has_unanswered_ask(&ctx.db.lock(), &orch_exec) {
+            drain_children(&stage_cancel, &mut set).await;
+            pause_question(ctx, run_id, &orch_exec, Some(&orch_agent_id)).await;
+            return Ok(StageFlow::Stop);
+        }
+
+        // Execute the decisions the orchestrator issued last turn (§10.2).
+        let decisions = {
+            let conn = ctx.db.lock();
+            super::comms::take_orchestrator_decisions(&conn, run_id, &orch_exec)
+        };
+        for d in decisions {
+            match d {
+                super::comms::Decision::StageDone => concluded_early = true,
+                super::comms::Decision::SpawnChild { agent, goal } => {
+                    if let Some(agent_spec) = spec.agents.get(&agent).cloned() {
+                        let step = Step {
+                            id: format!("{orch_step_id}::dyn-{dyn_count}"),
+                            agent: agent.clone(),
+                            goal,
+                            gate: Gate::Verdict,
+                            budgets: None,
+                            comms: orch.comms.clone(),
+                        };
+                        dyn_count += 1;
+                        let c = build_orch_child_ctx(
+                            ctx,
+                            run_id,
+                            run,
+                            agent_spec,
+                            step,
+                            block_index,
+                            block_count,
+                            blackboard,
+                            repo,
+                            run_repo,
+                            fork_base,
+                            eff,
+                            test_override,
+                            setup_override,
+                            &stage_cancel,
+                        );
+                        let entry = stage_entry_sha.clone();
+                        set.spawn(async move { drive_orch_child(c, entry).await });
+                    }
+                }
+                super::comms::Decision::SkipChild { step_id, .. } => {
+                    // Satisfied, not failed. A still-running child's later outcome
+                    // is ignored (this entry wins the join decision).
+                    outcomes.insert(step_id, ChildStatus::Skipped);
+                }
+                super::comms::Decision::RetryChild { step_id, guidance } => {
+                    if let Some(orig) = orch.body.iter().find(|s| s.id == step_id).cloned() {
+                        if let Some(agent_spec) = spec.agents.get(&orig.agent).cloned() {
+                            // Fold the guidance into the fresh attempt via a notice.
+                            {
+                                let conn = ctx.db.lock();
+                                super::comms::queue_child_note(&conn, run_id, &orig.id, &guidance);
+                            }
+                            outcomes.remove(&orig.id);
+                            let step = orig.clone();
+                            let c = build_orch_child_ctx(
+                                ctx,
+                                run_id,
+                                run,
+                                agent_spec,
+                                step,
+                                block_index,
+                                block_count,
+                                blackboard,
+                                repo,
+                                run_repo,
+                                fork_base,
+                                eff,
+                                test_override,
+                                setup_override,
+                                &stage_cancel,
+                            );
+                            let entry = stage_entry_sha.clone();
+                            set.spawn(async move { drive_orch_child(c, entry).await });
+                        }
+                    }
+                }
+            }
+        }
+        if concluded_early {
+            break;
+        }
+
+        // Reap finished children without blocking (§11.2 fold + §10.1 forward).
+        while let Some(joined) = set.try_join_next() {
+            handle_orch_child(
+                ctx,
+                run_id,
+                &orch_exec,
+                orch.join,
+                ledger,
+                joined,
+                &mut outcomes,
+                &stage_cancel,
+            );
+        }
+
+        // join `all`: the first child failure fails the stage.
+        if matches!(orch.join, Join::All) {
+            if let Some(reason) = outcomes.values().find_map(|s| match s {
+                ChildStatus::Failure(r) => Some(r.clone()),
+                _ => None,
+            }) {
+                drain_children(&stage_cancel, &mut set).await;
+                let _ = ctx.driver.stop(&orch_agent_id).await;
+                let conn = ctx.db.lock();
+                finish_step_exec(&conn, &orch_exec, "error", None);
+                persist_spent(&conn, run_id, ledger);
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "failed",
+                    None,
+                    Some(&format!("orchestrate stage failed: {reason}")),
+                );
+                return Ok(StageFlow::Stop);
+            }
+        }
+
+        if set.is_empty() {
+            // Every child is terminal. join `any` with no success and ≥1 failure
+            // fails the stage; otherwise the orchestrator concludes.
+            if matches!(orch.join, Join::Any)
+                && !outcomes.values().any(|s| matches!(s, ChildStatus::Success))
+                && outcomes
+                    .values()
+                    .any(|s| matches!(s, ChildStatus::Failure(_)))
+            {
+                let _ = ctx.driver.stop(&orch_agent_id).await;
+                let conn = ctx.db.lock();
+                finish_step_exec(&conn, &orch_exec, "error", None);
+                persist_spent(&conn, run_id, ledger);
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "failed",
+                    None,
+                    Some("orchestrate stage failed: all children failed"),
+                );
+                return Ok(StageFlow::Stop);
+            }
+
+            if !conclude_sent {
+                let prompt = {
+                    let inbox = {
+                        let conn = ctx.db.lock();
+                        super::comms::take_orchestrator_inbox(&conn, run_id, &orch_exec)
+                    };
+                    let mut p = if inbox.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{}\n\n", super::comms::compose_orchestrator_inbox(&inbox))
+                    };
+                    p.push_str(&prompts::orchestrator_conclude_prompt(&orch_step_id));
+                    p
+                };
+                conclude_sent = true;
+                conclude_tries += 1;
+                match drive_orch_turn(
+                    ctx,
+                    run_id,
+                    &orch_exec,
+                    &orch_step_id,
+                    &orch_agent_id,
+                    prompt,
+                    "reprompt",
+                    &orch_deadlines,
+                    ledger,
+                    eff,
+                )
+                .await
+                {
+                    OrchStepResult::Ok => continue,
+                    other => {
+                        return finish_orch_turn_failure(
+                            ctx,
+                            run_id,
+                            &orch_exec,
+                            &orch_agent_id,
+                            &stage_cancel,
+                            &mut set,
+                            ledger,
+                            other,
+                        )
+                        .await;
+                    }
+                }
+            }
+
+            // Read the orchestrator's concluding verdict — the stage gate (§6.6).
+            let step_dir = blackboard::step_dir(blackboard, &orch_step_id)?;
+            let verdict = blackboard::read_verdict(&step_dir);
+            let done = matches!(
+                &verdict,
+                Ok(v) if matches!(v.result, super::blackboard::VerdictResult::Done)
+            );
+            {
+                let conn = ctx.db.lock();
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::GATE_EVALUATED,
+                    Some(&orch_exec),
+                    &json!({
+                        "mode": "verdict",
+                        "outcome": if done { "done" } else { "blocked" },
+                        "reason": if done { "orchestrator concluded" } else { "orchestrator has not concluded yet" },
+                    }),
+                );
+            }
+            if done {
+                let _ = ctx.driver.archive(&orch_agent_id).await;
+                let conn = ctx.db.lock();
+                finish_step_exec(&conn, &orch_exec, "done", None);
+                persist_spent(&conn, run_id, ledger);
+                return Ok(StageFlow::Advance);
+            }
+            if conclude_tries < MAX_CONCLUDE_TRIES {
+                conclude_tries += 1;
+                match drive_orch_turn(
+                    ctx,
+                    run_id,
+                    &orch_exec,
+                    &orch_step_id,
+                    &orch_agent_id,
+                    prompts::orchestrator_conclude_prompt(&orch_step_id),
+                    "reprompt",
+                    &orch_deadlines,
+                    ledger,
+                    eff,
+                )
+                .await
+                {
+                    OrchStepResult::Ok => continue,
+                    other => {
+                        return finish_orch_turn_failure(
+                            ctx,
+                            run_id,
+                            &orch_exec,
+                            &orch_agent_id,
+                            &stage_cancel,
+                            &mut set,
+                            ledger,
+                            other,
+                        )
+                        .await;
+                    }
+                }
+            }
+            // Could not conclude → pause `blocked_gate` for a human retry (§6.5).
+            let _ = ctx.driver.stop(&orch_agent_id).await;
+            let conn = ctx.db.lock();
+            finish_step_exec(&conn, &orch_exec, "blocked", None);
+            persist_spent(&conn, run_id, ledger);
+            journal_event(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                event_type::RUN_PAUSED,
+                Some(&orch_exec),
+                &json!({ "reason": "blocked_gate", "detail": "orchestrator did not conclude the stage" }),
+            );
+            set_status(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                "paused",
+                Some("blocked_gate"),
+                None,
+            );
+            return Ok(StageFlow::Stop);
+        }
+
+        // Children still running: prompt the orchestrator if it has inbox to act
+        // on, else wait for the next child event or a poll tick.
+        let inbox = {
+            let conn = ctx.db.lock();
+            super::comms::take_orchestrator_inbox(&conn, run_id, &orch_exec)
+        };
+        if !inbox.is_empty() {
+            let prompt = super::comms::compose_orchestrator_inbox(&inbox);
+            match drive_orch_turn(
+                ctx,
+                run_id,
+                &orch_exec,
+                &orch_step_id,
+                &orch_agent_id,
+                prompt,
+                "message",
+                &orch_deadlines,
+                ledger,
+                eff,
+            )
+            .await
+            {
+                OrchStepResult::Ok => continue,
+                other => {
+                    return finish_orch_turn_failure(
+                        ctx,
+                        run_id,
+                        &orch_exec,
+                        &orch_agent_id,
+                        &stage_cancel,
+                        &mut set,
+                        ledger,
+                        other,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        // Bound the idle wait by the run wall-clock (§11.3 — "no wait without a
+        // deadline"): a wedged stage pauses `budget_exceeded` rather than hanging.
+        if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
+            drain_children(&stage_cancel, &mut set).await;
+            let _ = ctx.driver.stop(&orch_agent_id).await;
+            {
+                let conn = ctx.db.lock();
+                finish_step_exec(&conn, &orch_exec, "abandoned", None);
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::BUDGET_EXCEEDED,
+                    Some(&orch_exec),
+                    &json!({ "which": which.as_str() }),
+                );
+            }
+            finish_budget_pause(ctx, run_id, Some(&orch_exec), ledger);
+            return Ok(StageFlow::Stop);
+        }
+        tokio::select! {
+            joined = set.join_next() => {
+                if let Some(j) = joined {
+                    handle_orch_child(ctx, run_id, &orch_exec, orch.join, ledger, j, &mut outcomes, &stage_cancel);
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
+        }
+    }
+
+    // `stage_done`: wind the remaining children down and mark the stage done.
+    drain_children(&stage_cancel, &mut set).await;
+    let _ = ctx.driver.archive(&orch_agent_id).await;
+    let conn = ctx.db.lock();
+    finish_step_exec(&conn, &orch_exec, "done", None);
+    persist_spent(&conn, run_id, ledger);
+    Ok(StageFlow::Advance)
+}
+
+/// Assemble one orchestrate child's owned [`ChildCtx`] (all fields cloned so the
+/// child task is `'static`).
+#[allow(clippy::too_many_arguments)]
+fn build_orch_child_ctx(
+    ctx: &RunCtx,
+    run_id: &str,
+    run: &RunEssentials,
+    agent_spec: AgentSpec,
+    step: Step,
+    block_index: usize,
+    block_count: usize,
+    blackboard: &Path,
+    repo: &Path,
+    run_repo: &Path,
+    fork_base: &str,
+    eff: &EffectiveBudgets,
+    test_override: &Option<String>,
+    setup_override: &Option<String>,
+    stage_cancel: &Arc<AtomicBool>,
+) -> ChildCtx {
+    ChildCtx {
+        db: ctx.db.clone(),
+        driver: ctx.driver.clone(),
+        app: ctx.app.clone(),
+        base_deadlines: ctx.deadlines.clone(),
+        eff: eff.clone(),
+        run_id: run_id.to_string(),
+        run_task: run.task.clone(),
+        step,
+        agent_spec,
+        fork_base: fork_base.to_string(),
+        blackboard: blackboard.to_path_buf(),
+        repo: repo.to_path_buf(),
+        run_repo: run_repo.to_path_buf(),
+        block_index,
+        block_count,
+        test_override: test_override.clone(),
+        setup_override: setup_override.clone(),
+        stage_cancel: stage_cancel.clone(),
+    }
+}
+
+/// Drive one orchestrate child (spec §6.6, §10.4). Like a parallel child it spawns,
+/// runs its turn, and gates under `integrate: none` — but it stamps its agent id
+/// at spawn (so a mid-turn `wf_ask` resolves to it), and when it raises a question
+/// routed to the orchestrator it parks for the answer and re-attempts with it
+/// folded in rather than failing.
+async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchChildResult {
+    let step_eff = c.eff.for_step(c.step.budgets.as_ref());
+    let deadlines = deadlines_from(&c.base_deadlines, &step_eff);
+    let max_attempts = step_eff.max_attempts;
+    let mut child_ledger = Ledger::default();
+    let mut last_exec = String::new();
+
+    let done =
+        |step_id: String, exec_id: String, outcome: ChildOutcome, ledger: Ledger| OrchChildResult {
+            step_id,
+            exec_id,
+            outcome,
+            ledger,
+        };
+
+    let test_runner = match super::tests_gate::SandboxTestRunner::new(
+        c.test_override.clone(),
+        c.setup_override.clone(),
+        step_eff.tests_timeout_secs.max(1) as u64,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return done(
+                c.step.id.clone(),
+                last_exec,
+                ChildOutcome::Failure {
+                    reason: format!("could not initialize the tests runner: {e}"),
+                },
+                child_ledger,
+            )
+        }
+    };
+
+    let mut attempt_no = next_attempt_no(&c.db.lock(), &c.run_id, &c.step.id, 0);
+    let mut last_failure: Option<String> = None;
+
+    loop {
+        if c.stage_cancel.load(Ordering::SeqCst) {
+            return done(
+                c.step.id.clone(),
+                last_exec,
+                ChildOutcome::Canceled,
+                child_ledger,
+            );
+        }
+
+        let exec_id = format!("exec-{}", uuid::Uuid::new_v4());
+        last_exec = exec_id.clone();
+        {
+            let conn = c.db.lock();
+            create_step_exec(
+                &conn,
+                &exec_id,
+                &c.run_id,
+                &c.step.id,
+                attempt_no,
+                0,
+                gate_mode(&c.step.gate),
+            );
+        }
+
+        // Spawn and stamp the agent id BEFORE the turn (§10.2).
+        let spawned = match c
+            .driver
+            .spawn(build_spawn_req(
+                &c.agent_spec,
+                &c.fork_base,
+                &c.repo,
+                &c.run_repo,
+                &c.run_id,
+            ))
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let error = format!("spawn failed: {e}");
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "error", None);
+                }
+                last_failure = Some(error.clone());
+                if attempt_no >= max_attempts {
+                    return done(
+                        c.step.id.clone(),
+                        last_exec,
+                        ChildOutcome::Failure { reason: error },
+                        child_ledger,
+                    );
+                }
+                attempt_no += 1;
+                continue;
+            }
+        };
+        let child_agent_id = spawned.agent_id.clone();
+        {
+            let conn = c.db.lock();
+            let _ = conn.execute(
+                "UPDATE wf_step_exec SET agent_id = ?1, started_at = ?2 WHERE id = ?3",
+                rusqlite::params![child_agent_id, super::now_ms(), exec_id],
+            );
+        }
+
+        let prompt = {
+            let ctx_prompt = StepPromptCtx {
+                run_task: &c.run_task,
+                step_id: &c.step.id,
+                step_goal: &c.step.goal,
+                position: Position {
+                    step_index: c.block_index,
+                    step_count: c.block_count,
+                    iteration: None,
+                },
+                gate: &c.step.gate,
+                turns_per_attempt: c.step.budgets.as_ref().and_then(|b| b.turns_per_attempt),
+                comms: &c.step.comms,
+            };
+            let base = match &last_failure {
+                Some(f) => prompts::retry_prompt(f, &ctx_prompt),
+                None => prompts::step_prompt(&ctx_prompt),
+            };
+            // Fold a delivered answer (to a prior ask) or a notify/guidance (§10.4).
+            let delivered = {
+                let conn = c.db.lock();
+                super::comms::take_pending_deliveries(&conn, &c.run_id, &c.step.id)
+            };
+            if delivered.is_empty() {
+                base
+            } else {
+                format!("{}\n\n{}", super::comms::compose_delivery(&delivered), base)
+            }
+        };
+
+        let params = AttemptParams {
+            spawn_req: build_spawn_req(
+                &c.agent_spec,
+                &c.fork_base,
+                &c.repo,
+                &c.run_repo,
+                &c.run_id,
+            ),
+            pre_spawned: Some(spawned),
+            blackboard: c.blackboard.clone(),
+            exec_id: exec_id.clone(),
+            step_id: c.step.id.clone(),
+            attempt: attempt_no as u32,
+            iteration: 0,
+            gate: c.step.gate.clone(),
+            prompt,
+            deadlines: deadlines.clone(),
+            reprompt_on_block: true,
+            cancel: c.stage_cancel.clone(),
+            pending_ask: Arc::new(AtomicBool::new(false)),
+        };
+
+        let started = super::now_ms();
+        let result = attempt::run_attempt(
+            c.driver.as_ref(),
+            &test_runner,
+            params,
+            &mut child_ledger,
+            &step_eff,
+        )
+        .await;
+        {
+            let conn = c.db.lock();
+            let _ = conn.execute(
+                "UPDATE wf_step_exec SET started_at = ?1 WHERE id = ?2 AND started_at IS NULL",
+                rusqlite::params![started, exec_id],
+            );
+            for e in &result.events {
+                journal_event(
+                    &conn,
+                    c.app.as_ref(),
+                    &c.run_id,
+                    e.event_type,
+                    Some(&exec_id),
+                    &e.payload,
+                );
+            }
+        }
+
+        // Drain the mailbox so a `wf_ask` from this turn is persisted (§10.4).
+        c.driver.settle_rpc(&child_agent_id).await;
+
+        // Asked the orchestrator? Park for the answer, then re-attempt (§10.4).
+        if super::comms::has_unanswered_ask(&c.db.lock(), &exec_id) {
+            {
+                let conn = c.db.lock();
+                let _ = conn.execute(
+                    "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
+                    rusqlite::params![super::now_ms(), exec_id],
+                );
+                journal_event(
+                    &conn,
+                    c.app.as_ref(),
+                    &c.run_id,
+                    event_type::ATTEMPT_ABANDONED,
+                    Some(&exec_id),
+                    &json!({ "cause": "question" }),
+                );
+            }
+            let _ = c.driver.stop(&child_agent_id).await;
+            let _ = c.driver.archive(&child_agent_id).await;
+            match wait_for_answer(&c, &exec_id, &deadlines).await {
+                AnswerWait::Answered => {
+                    attempt_no += 1;
+                    continue;
+                }
+                AnswerWait::Canceled => {
+                    return done(
+                        c.step.id.clone(),
+                        last_exec,
+                        ChildOutcome::Canceled,
+                        child_ledger,
+                    )
+                }
+                AnswerWait::Timeout => {
+                    return done(
+                        c.step.id.clone(),
+                        last_exec,
+                        ChildOutcome::Failure {
+                            reason: "no answer from the orchestrator".into(),
+                        },
+                        child_ledger,
+                    )
+                }
+            }
+        }
+
+        match result.outcome {
+            AttemptOutcome::Done { .. } => {
+                let head = match &result.worktree {
+                    Some(wt) => gitops::head_sha(wt).await.ok(),
+                    None => None,
+                };
+                let moved_head = match (&head, &stage_entry_sha) {
+                    (Some(h), Some(entry)) => h != entry,
+                    _ => false,
+                };
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "done", head.as_deref());
+                }
+                let _ = c.driver.archive(&child_agent_id).await;
+                return done(
+                    c.step.id.clone(),
+                    last_exec,
+                    ChildOutcome::Success { moved_head, head },
+                    child_ledger,
+                );
+            }
+            AttemptOutcome::Canceled => {
+                {
+                    let conn = c.db.lock();
+                    let _ = conn.execute(
+                        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
+                        rusqlite::params![super::now_ms(), exec_id],
+                    );
+                    journal_event(
+                        &conn,
+                        c.app.as_ref(),
+                        &c.run_id,
+                        event_type::ATTEMPT_ABANDONED,
+                        Some(&exec_id),
+                        &json!({ "cause": "canceled" }),
+                    );
+                }
+                let _ = c.driver.archive(&child_agent_id).await;
+                return done(
+                    c.step.id.clone(),
+                    last_exec,
+                    ChildOutcome::Canceled,
+                    child_ledger,
+                );
+            }
+            AttemptOutcome::Error { error } => {
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "error", None);
+                }
+                last_failure = Some(error.clone());
+                if attempt_no >= max_attempts {
+                    return done(
+                        c.step.id.clone(),
+                        last_exec,
+                        ChildOutcome::Failure { reason: error },
+                        child_ledger,
+                    );
+                }
+                attempt_no += 1;
+            }
+            AttemptOutcome::Blocked { reason } => {
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "blocked", None);
+                }
+                let _ = c.driver.stop(&child_agent_id).await;
+                let _ = c.driver.archive(&child_agent_id).await;
+                return done(
+                    c.step.id.clone(),
+                    last_exec,
+                    ChildOutcome::Failure {
+                        reason: format!("gate unmet: {reason}"),
+                    },
+                    child_ledger,
+                );
+            }
+            AttemptOutcome::BudgetExceeded { which } => {
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "error", None);
+                }
+                let _ = c.driver.stop(&child_agent_id).await;
+                let _ = c.driver.archive(&child_agent_id).await;
+                return done(
+                    c.step.id.clone(),
+                    last_exec,
+                    ChildOutcome::Failure {
+                        reason: format!("budget_exceeded: {which}"),
+                    },
+                    child_ledger,
+                );
+            }
+            AttemptOutcome::AwaitingApproval => {
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "error", None);
+                }
+                let _ = c.driver.archive(&child_agent_id).await;
+                return done(
+                    c.step.id.clone(),
+                    last_exec,
+                    ChildOutcome::Failure {
+                        reason: "approval gates are not supported inside an orchestrate stage"
+                            .into(),
+                    },
+                    child_ledger,
+                );
+            }
+            AttemptOutcome::AwaitingAnswer => {
+                // Children never set `pending_ask`; the `has_unanswered_ask` check
+                // above handles asks. Defensive.
+                {
+                    let conn = c.db.lock();
+                    finish_step_exec(&conn, &exec_id, "error", None);
+                }
+                let _ = c.driver.archive(&child_agent_id).await;
+                return done(
+                    c.step.id.clone(),
+                    last_exec,
+                    ChildOutcome::Failure {
+                        reason: "unexpected awaiting-answer state".into(),
+                    },
+                    child_ledger,
+                );
+            }
+        }
+    }
+}
+
+/// Poll for the orchestrator's answer to this child's ask, bounded by the child's
+/// stall timeout (§10.4 — no wait without a deadline). The persisted ask flips to
+/// `answered` when the orchestrator replies; the answer itself is folded into the
+/// next attempt's prompt.
+async fn wait_for_answer(c: &ChildCtx, exec_id: &str, d: &Deadlines) -> AnswerWait {
+    let deadline = tokio::time::Instant::now() + d.stall_timeout;
+    loop {
+        if c.stage_cancel.load(Ordering::SeqCst) {
+            return AnswerWait::Canceled;
+        }
+        if !super::comms::has_unanswered_ask(&c.db.lock(), exec_id) {
+            return AnswerWait::Answered;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return AnswerWait::Timeout;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// Fold a reaped orchestrate child into the stage: sum its ledger, forward its
+/// terminal outcome to the orchestrator (§10.1), and record its join status. A
+/// join-`any` success winds the losers down.
+#[allow(clippy::too_many_arguments)]
+fn handle_orch_child(
+    ctx: &RunCtx,
+    run_id: &str,
+    orch_exec: &str,
+    join: Join,
+    ledger: &mut Ledger,
+    joined: std::result::Result<OrchChildResult, tokio::task::JoinError>,
+    outcomes: &mut HashMap<String, ChildStatus>,
+    stage_cancel: &Arc<AtomicBool>,
+) {
+    let res = match joined {
+        Ok(r) => r,
+        Err(e) => {
+            // A child task panicked — contain it as a failure (§6.1).
+            outcomes.insert(
+                format!("panicked-{}", outcomes.len()),
+                ChildStatus::Failure(format!("child task error: {e}")),
+            );
+            return;
+        }
+    };
+    fold_child_ledger(ledger, &res.ledger);
+    let conn = ctx.db.lock();
+    match res.outcome {
+        ChildOutcome::Success { moved_head, head } => {
+            if moved_head {
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::INTEGRATE_SKIPPED,
+                    None,
+                    &json!({ "step_id": res.step_id, "sha": head }),
+                );
+            }
+            super::comms::forward_lifecycle(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                orch_exec,
+                &res.exec_id,
+                "done",
+                &format!("child `{}` finished", res.step_id),
+            );
+            // Don't overwrite a `skip` the orchestrator already recorded.
+            outcomes.entry(res.step_id).or_insert(ChildStatus::Success);
+            if matches!(join, Join::Any) {
+                stage_cancel.store(true, Ordering::SeqCst);
+            }
+        }
+        ChildOutcome::Failure { reason } => {
+            super::comms::forward_lifecycle(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                orch_exec,
+                &res.exec_id,
+                "error",
+                &format!("child `{}` failed: {reason}", res.step_id),
+            );
+            outcomes
+                .entry(res.step_id)
+                .or_insert(ChildStatus::Failure(reason));
+        }
+        ChildOutcome::Canceled => {}
+    }
+    persist_spent(&conn, run_id, ledger);
+}
+
+/// Wind down every remaining orchestrate child: raise the stage cancel and drain
+/// the set (each child stops its own agent and returns `Canceled`).
+async fn drain_children(stage_cancel: &Arc<AtomicBool>, set: &mut JoinSet<OrchChildResult>) {
+    stage_cancel.store(true, Ordering::SeqCst);
+    while set.join_next().await.is_some() {}
+}
+
+/// Drive one orchestrator turn and fold its budget in (§10.2, §11.2).
+#[allow(clippy::too_many_arguments)]
+async fn drive_orch_turn(
+    ctx: &RunCtx,
+    run_id: &str,
+    orch_exec: &str,
+    orch_step_id: &str,
+    orch_agent_id: &str,
+    prompt: String,
+    kind: &'static str,
+    deadlines: &Deadlines,
+    ledger: &mut Ledger,
+    eff: &EffectiveBudgets,
+) -> OrchStepResult {
+    if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
+        return OrchStepResult::Budget(which.as_str().to_string());
+    }
+    let (turn, events) =
+        attempt::drive_prompt_turn(ctx.driver.as_ref(), orch_agent_id, prompt, kind, deadlines)
+            .await;
+    {
+        let conn = ctx.db.lock();
+        for e in &events {
+            journal_event(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                e.event_type,
+                Some(orch_exec),
+                &e.payload,
+            );
+        }
+    }
+    ledger.charge_turn(orch_step_id, orch_exec);
+    ledger.charge_tokens(
+        orch_agent_id,
+        orch_step_id,
+        ctx.driver.turn_usage(orch_agent_id),
+    );
+    {
+        let conn = ctx.db.lock();
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::BUDGET_TICK,
+            None,
+            &json!({ "turns": ledger.turns, "tokens": ledger.tokens }),
+        );
+        ledger.checkpoint_wall(super::now_ms());
+        persist_spent(&conn, run_id, ledger);
+    }
+    match turn {
+        attempt::OrchTurn::Ended => {
+            if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
+                return OrchStepResult::Budget(which.as_str().to_string());
+            }
+            OrchStepResult::Ok
+        }
+        attempt::OrchTurn::Stalled => OrchStepResult::Stalled,
+        attempt::OrchTurn::Error(e) => OrchStepResult::Error(e),
+    }
+}
+
+/// Handle a non-`Ok` orchestrator turn: wind the children down and pause/fail the
+/// run per the cause (§10.2). A stall escalates to the human (`question`).
+#[allow(clippy::too_many_arguments)]
+async fn finish_orch_turn_failure(
+    ctx: &RunCtx,
+    run_id: &str,
+    orch_exec: &str,
+    orch_agent_id: &str,
+    stage_cancel: &Arc<AtomicBool>,
+    set: &mut JoinSet<OrchChildResult>,
+    ledger: &mut Ledger,
+    result: OrchStepResult,
+) -> Result<StageFlow> {
+    drain_children(stage_cancel, set).await;
+    match result {
+        OrchStepResult::Stalled => {
+            // A stalled orchestrator must not hang the stage — escalate to the
+            // human (§10.2). `pause_question` abandons the exec, stops the agent,
+            // and pauses `question`; a `wf_answer` resumes and re-drives the stage.
+            {
+                let conn = ctx.db.lock();
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::WATCHDOG_STALLED,
+                    Some(orch_exec),
+                    &json!({ "role": "orchestrator", "escalated": true }),
+                );
+            }
+            // Record an engine ask so the human sees why the run paused and can
+            // answer it (§10.4) — the orchestrator is unresponsive.
+            {
+                let conn = ctx.db.lock();
+                super::comms::queue_engine_ask(
+                    &conn,
+                    run_id,
+                    orch_exec,
+                    "The orchestrator stalled. Provide guidance to continue, or cancel the run.",
+                );
+            }
+            pause_question(ctx, run_id, orch_exec, Some(orch_agent_id)).await;
+            Ok(StageFlow::Stop)
+        }
+        OrchStepResult::Budget(_) => {
+            let _ = ctx.driver.stop(orch_agent_id).await;
+            {
+                let conn = ctx.db.lock();
+                let _ = conn.execute(
+                    "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
+                    rusqlite::params![super::now_ms(), orch_exec],
+                );
+            }
+            finish_budget_pause(ctx, run_id, Some(orch_exec), ledger);
+            Ok(StageFlow::Stop)
+        }
+        OrchStepResult::Error(e) => {
+            let _ = ctx.driver.stop(orch_agent_id).await;
+            let conn = ctx.db.lock();
+            finish_step_exec(&conn, orch_exec, "error", None);
+            persist_spent(&conn, run_id, ledger);
+            set_status(
+                &conn,
+                ctx.app.as_ref(),
+                run_id,
+                "failed",
+                None,
+                Some(&format!("orchestrator error: {e}")),
+            );
+            Ok(StageFlow::Stop)
+        }
+        OrchStepResult::Ok => Ok(StageFlow::Advance),
     }
 }
 
@@ -1713,6 +3025,7 @@ async fn execute_step(
 
         let params = AttemptParams {
             spawn_req: build_spawn_req(agent_spec, fork_ref, env.repo, env.run_repo, run_id),
+            pre_spawned: None,
             blackboard: env.blackboard.to_path_buf(),
             exec_id: exec_id.clone(),
             step_id: step.id.clone(),
@@ -4497,5 +5810,354 @@ mod tests {
             1
         );
         assert_eq!(run_status_str(&db, "run-loop-skip"), "done");
+    }
+
+    // ─────────────────────── orchestrate stages (S11) ───────────────────────
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum OrchMode {
+        /// Writes a `done` verdict on the concluding prompt.
+        Conclude,
+        /// Never writes a verdict — the stage should gate on it and pause.
+        NeverConclude,
+        /// Stalls its turn forever — the engine escalates to the human.
+        Stall,
+    }
+
+    /// A real-git stub for orchestrate stages (spec §10.2). Children commit (their
+    /// `commit` gate); the orchestrator writes its concluding `verdict.json` on the
+    /// conclude prompt, never writes one, or stalls — per [`OrchMode`]. Roles are
+    /// told apart by the prompt text the engine composes.
+    struct OrchDriver {
+        root: PathBuf,
+        blackboard: PathBuf,
+        mode: OrchMode,
+        tx: broadcast::Sender<StatusEvent>,
+        state: parking_lot::Mutex<StubState>,
+    }
+    impl OrchDriver {
+        fn new(root: PathBuf, blackboard: PathBuf, mode: OrchMode) -> Arc<Self> {
+            Arc::new(Self {
+                root,
+                blackboard,
+                mode,
+                tx: broadcast::channel(256).0,
+                state: parking_lot::Mutex::new(StubState::default()),
+            })
+        }
+        fn set(&self, id: &str, s: AgentStatus) {
+            self.state.lock().statuses.insert(id.to_string(), s.clone());
+            let _ = self.tx.send(StatusEvent {
+                agent_id: id.to_string(),
+                status: s,
+            });
+        }
+    }
+    impl AgentDriver for OrchDriver {
+        fn spawn(
+            &self,
+            req: SpawnReq,
+        ) -> super::super::driver::BoxFuture<'_, Result<super::super::driver::SpawnedAgent>>
+        {
+            Box::pin(async move {
+                let id = {
+                    let mut st = self.state.lock();
+                    st.count += 1;
+                    format!("o-{}", st.count)
+                };
+                let dest = self.root.join(&id);
+                let base_ref = req.fork_base.clone().unwrap();
+                let spec = crate::sandbox::provision::CheckoutSpec {
+                    source_repo: &req.repo_path,
+                    base_ref: &base_ref,
+                    dest: &dest,
+                };
+                crate::sandbox::provision::provision_forking_run_repo(
+                    &spec,
+                    req.run_repo.as_ref().unwrap(),
+                )
+                .await?;
+                self.state.lock().worktrees.insert(id.clone(), dest.clone());
+                self.set(&id, AgentStatus::Idle);
+                Ok(super::super::driver::SpawnedAgent {
+                    agent_id: id,
+                    worktree: dest,
+                })
+            })
+        }
+        fn status(&self, id: &str) -> Option<AgentStatus> {
+            self.state.lock().statuses.get(id).cloned()
+        }
+        fn subscribe(&self) -> broadcast::Receiver<StatusEvent> {
+            self.tx.subscribe()
+        }
+        fn send_message<'a>(
+            &'a self,
+            id: &'a str,
+            text: String,
+        ) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                let is_orch = text.contains("Workflow orchestrator")
+                    || text.contains("All children are done")
+                    || text.contains("Updates from your children");
+                let is_nudge = text.contains("gone quiet");
+                self.set(id, AgentStatus::Running);
+                if is_nudge {
+                    // Keep the (stalling) turn running so the watchdog escalates.
+                    return Ok(());
+                }
+                if is_orch {
+                    match self.mode {
+                        OrchMode::Stall => return Ok(()), // never goes Idle → stall
+                        OrchMode::Conclude => {
+                            if text.contains("All children are done") {
+                                let dir = self.blackboard.join("orchestrate-0");
+                                std::fs::create_dir_all(&dir).unwrap();
+                                std::fs::write(
+                                    dir.join("verdict.json"),
+                                    r#"{"result":"done","summary":"concluded"}"#,
+                                )
+                                .unwrap();
+                            }
+                        }
+                        OrchMode::NeverConclude => {}
+                    }
+                    self.set(id, AgentStatus::Idle);
+                } else {
+                    // A child: satisfy its `commit` gate.
+                    let wt = self.state.lock().worktrees.get(id).cloned().unwrap();
+                    sh(&wt, &["config", "user.email", "t@t.t"]);
+                    sh(&wt, &["config", "user.name", "t"]);
+                    std::fs::write(wt.join(format!("{id}.txt")), "work").unwrap();
+                    sh(&wt, &["add", "-A"]);
+                    sh(&wt, &["commit", "-qm", "child work"]);
+                    self.set(id, AgentStatus::Idle);
+                }
+                Ok(())
+            })
+        }
+        fn stop<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn archive<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn last_activity(&self, _id: &str) -> Option<i64> {
+            None
+        }
+        fn turn_usage(&self, _id: &str) -> Option<super::super::driver::TurnUsage> {
+            None
+        }
+    }
+
+    /// A run whose whole workflow is one orchestrate block (agent `orch`) with a
+    /// single static, commit-gated child `impl`. Returns the db, the workspace
+    /// root, the blackboard dir, and the base SHA.
+    fn scaffold_orchestrate(tmp: &Path, run_id: &str) -> (Db, PathBuf, PathBuf, String) {
+        let source = tmp.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        sh(&source, &["init", "-q", "-b", "main"]);
+        sh(&source, &["config", "user.email", "t@t.t"]);
+        sh(&source, &["config", "user.name", "t"]);
+        std::fs::write(source.join("README"), "base").unwrap();
+        sh(&source, &["add", "-A"]);
+        sh(&source, &["commit", "-qm", "base"]);
+        let base_sha = {
+            let o = Sh::new("git")
+                .current_dir(&source)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let run_dir = tmp.join("rundir");
+        let blackboard = blackboard::blackboard_dir(&run_dir);
+        std::fs::create_dir_all(&blackboard).unwrap();
+
+        let mut agents = BTreeMap::new();
+        for a in ["orch", "coder"] {
+            agents.insert(
+                a.to_string(),
+                super::super::spec::AgentSpec {
+                    base: "codex".to_string(),
+                    model: None,
+                    instructions: None,
+                    skills: vec![],
+                    custom_agent: None,
+                },
+            );
+        }
+        let child = Step {
+            id: "impl".to_string(),
+            agent: "coder".to_string(),
+            goal: "implement the slice".to_string(),
+            gate: Gate::Commit,
+            budgets: None,
+            comms: vec![],
+        };
+        let spec = Spec {
+            version: 1,
+            name: "orch".to_string(),
+            description: None,
+            // Short stall/nudge so the stall test escalates in ~2s of real time
+            // (no `start_paused` — the real-git provisioning needs the IO reactor).
+            // Harmless to the non-stalling tests: their turns end before any tick.
+            budgets: Some(Budgets {
+                turns: None,
+                tokens: None,
+                wall_clock_mins: None,
+                turns_per_attempt: None,
+                max_attempts: None,
+                spawn_timeout_secs: None,
+                turn_start_timeout_secs: None,
+                stall_timeout_secs: Some(1),
+                nudge_timeout_secs: Some(1),
+                tests_timeout_secs: None,
+            }),
+            agents,
+            workflow: vec![Block::Orchestrate(Orchestrate {
+                agent: "orch".to_string(),
+                goal: "lead the stage".to_string(),
+                children: None,
+                body: vec![child],
+                join: Join::All,
+                integrate: Integrate::None,
+                comms: vec![],
+                compose: None,
+            })],
+            finalize: None,
+        };
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        // Freeze the effective budgets from the spec so the short stall/nudge
+        // actually take effect (a bare '{}' would deserialize to the defaults).
+        let budgets_json = serde_json::to_string(&EffectiveBudgets::resolve(&spec)).unwrap();
+        let db = crate::database::init(tmp).unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,'orch',?2,'t','p',?3,?4,'wf/orch-x',?5,'pending',?6,'{}',0,0)",
+                rusqlite::params![
+                    run_id,
+                    spec_json,
+                    source.to_string_lossy(),
+                    run_dir.to_string_lossy(),
+                    base_sha,
+                    budgets_json,
+                ],
+            )
+            .unwrap();
+        (db, tmp.join("ws"), blackboard, base_sha)
+    }
+
+    fn orch_ctx(db: Db, driver: Arc<OrchDriver>) -> RunCtx {
+        RunCtx {
+            db,
+            driver,
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
+            // Tick the stall watchdog fast so the stall test resolves quickly.
+            deadlines: Deadlines {
+                watchdog_tick: std::time::Duration::from_millis(100),
+                ..Deadlines::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn orchestrate_concludes_after_children_and_reaches_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws, bb, _base) = scaffold_orchestrate(tmp.path(), "run-orch");
+        let ctx = orch_ctx(db.clone(), OrchDriver::new(ws, bb, OrchMode::Conclude));
+        drive_run(&ctx, "run-orch").await;
+
+        assert_eq!(run_status_str(&db, "run-orch"), "done");
+        // The child ran, and the orchestrator concluded — both terminal `done`.
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-orch' \
+                 AND step_id='impl' AND status='done'"
+            ),
+            1,
+            "the child completed"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-orch' \
+                 AND step_id='orchestrate-0' AND status='done'"
+            ),
+            1,
+            "the orchestrator concluded"
+        );
+        // The stage gate is the orchestrator's own verdict.
+        let concluded = count(
+            &db,
+            "SELECT COUNT(*) FROM wf_event WHERE run_id='run-orch' AND type='gate_evaluated' \
+             AND json_extract(payload_json,'$.outcome')='done' \
+             AND step_exec_id IN (SELECT id FROM wf_step_exec WHERE step_id='orchestrate-0')",
+        );
+        assert!(
+            concluded >= 1,
+            "orchestrator's concluding verdict gated the stage"
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrate_pauses_blocked_when_the_orchestrator_never_concludes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws, bb, _base) = scaffold_orchestrate(tmp.path(), "run-nc");
+        let ctx = orch_ctx(db.clone(), OrchDriver::new(ws, bb, OrchMode::NeverConclude));
+        drive_run(&ctx, "run-nc").await;
+
+        // The child finished, but the stage does NOT complete without the
+        // orchestrator's concluding verdict — it pauses `blocked_gate` (§6.6).
+        let (status, reason): (String, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, paused_reason FROM wf_run WHERE id='run-nc'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "paused");
+        assert_eq!(reason.as_deref(), Some("blocked_gate"));
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-nc' \
+                 AND step_id='impl' AND status='done'"
+            ),
+            1,
+            "the child still ran to completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrator_stall_escalates_to_the_human() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws, bb, _base) = scaffold_orchestrate(tmp.path(), "run-stall");
+        let ctx = orch_ctx(db.clone(), OrchDriver::new(ws, bb, OrchMode::Stall));
+        drive_run(&ctx, "run-stall").await;
+
+        // A stalled orchestrator does not hang the stage — the engine escalates to
+        // the human, pausing the run `question` (§10.2).
+        let (status, reason, error): (String, Option<String>, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, paused_reason, error FROM wf_run WHERE id='run-stall'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "paused", "run error: {error:?}");
+        assert_eq!(reason.as_deref(), Some("question"));
+        let stalled = count(
+            &db,
+            "SELECT COUNT(*) FROM wf_event WHERE run_id='run-stall' AND type='watchdog_stalled'",
+        );
+        assert!(stalled >= 1, "the orchestrator stall was journaled");
     }
 }

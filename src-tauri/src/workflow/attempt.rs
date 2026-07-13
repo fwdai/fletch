@@ -67,6 +67,14 @@ impl Default for Deadlines {
 /// text is composed here from the gate reason.
 pub struct AttemptParams {
     pub spawn_req: SpawnReq,
+    /// An already-spawned agent to adopt instead of spawning one here (spec
+    /// §10.2). Orchestrate children (and any concurrent-stage attempt) spawn
+    /// their agent in the scheduler and stamp `wf_step_exec.agent_id` *before*
+    /// the turn, so a mid-turn `wf_ask`/`wf_report` resolves by agent id among
+    /// the concurrent siblings. When `Some`, `spawn_req` is used only for the
+    /// `attempt_spawned` journal payload. The linear/parallel-note paths leave
+    /// this `None` and let the attempt spawn.
+    pub pre_spawned: Option<crate::workflow::driver::SpawnedAgent>,
     /// The run's blackboard directory (`…/blackboard`).
     pub blackboard: PathBuf,
     /// The `wf_step_exec` row id — for the ledger's per-attempt turn rollup.
@@ -168,6 +176,7 @@ pub async fn run_attempt(
 ) -> AttemptRun {
     let AttemptParams {
         spawn_req,
+        pre_spawned,
         blackboard,
         exec_id,
         step_id,
@@ -184,19 +193,22 @@ pub async fn run_attempt(
     let fork_base = spawn_req.fork_base.clone();
     let mut events: Vec<AttemptEvent> = Vec::new();
 
-    // ── 1. Spawn ─────────────────────────────────────────────────────────
-    let spawned = match driver.spawn(spawn_req).await {
-        Ok(s) => s,
-        Err(e) => {
-            let error = format!("spawn failed: {e}");
-            events.push(ev(event_type::ATTEMPT_ERROR, json!({ "error": error })));
-            return AttemptRun {
-                agent_id: None,
-                worktree: None,
-                outcome: AttemptOutcome::Error { error },
-                events,
-            };
-        }
+    // ── 1. Spawn (or adopt a pre-spawned agent, §10.2) ───────────────────
+    let spawned = match pre_spawned {
+        Some(s) => s,
+        None => match driver.spawn(spawn_req).await {
+            Ok(s) => s,
+            Err(e) => {
+                let error = format!("spawn failed: {e}");
+                events.push(ev(event_type::ATTEMPT_ERROR, json!({ "error": error })));
+                return AttemptRun {
+                    agent_id: None,
+                    worktree: None,
+                    outcome: AttemptOutcome::Error { error },
+                    events,
+                };
+            }
+        },
     };
     let agent_id = spawned.agent_id.clone();
     let worktree = spawned.worktree.clone();
@@ -428,6 +440,69 @@ pub async fn run_attempt(
     }
 }
 
+/// The result of one orchestrator turn (spec §10.2). Unlike a step attempt, the
+/// orchestrator is a single long-lived agent prompted many times across a stage,
+/// so the scheduler drives it turn-by-turn rather than through `run_attempt`.
+pub(super) enum OrchTurn {
+    /// The turn completed (the orchestrator went idle). The caller settles the
+    /// RPC mailbox, executes any decisions, and decides whether to prompt again.
+    Ended,
+    /// The turn stalled past the nudge deadline (spec §11.3). The caller escalates
+    /// to the human (a stalled orchestrator must not hang the stage, §10.2).
+    Stalled,
+    /// The turn could not be driven (send failure, turn-start timeout, agent
+    /// error, supervisor stop). Carries a human-readable cause.
+    Error(String),
+}
+
+/// Drive one turn of an already-spawned, ready orchestrator agent (spec §10.2).
+/// Encapsulates the subscribe-before-send discipline (§6.3 step 4) and the stall
+/// watchdog (§11.3) so the orchestrator reuses the exact turn mechanics a step
+/// attempt uses. Returns the turn result plus the journalable events
+/// (`prompt_sent`, `turn_ended`, any `watchdog_stalled`); the caller charges the
+/// budget and appends the events to the run journal.
+pub(super) async fn drive_prompt_turn(
+    driver: &dyn AgentDriver,
+    agent_id: &str,
+    prompt: String,
+    prompt_kind: &'static str,
+    deadlines: &Deadlines,
+) -> (OrchTurn, Vec<AttemptEvent>) {
+    let mut events = Vec::new();
+    // Subscribe BEFORE sending so an arbitrarily fast Running→Idle flap is
+    // unlosable (spec §6.3 step 4) — the same discipline as `run_attempt`.
+    let mut rx = driver.subscribe();
+    let snapshot = driver.status(agent_id);
+    if let Err(e) = driver.send_message(agent_id, prompt).await {
+        let error = format!("send failed: {e}");
+        events.push(ev(event_type::ATTEMPT_ERROR, json!({ "error": error })));
+        return (OrchTurn::Error(error), events);
+    }
+    events.push(ev(event_type::PROMPT_SENT, json!({ "kind": prompt_kind })));
+
+    let turn = drive_turn(driver, agent_id, &mut rx, snapshot, deadlines, &mut events).await;
+    let result = match turn {
+        TurnEnd::Ended => {
+            events.push(ev(event_type::TURN_ENDED, json!({ "status": "idle" })));
+            OrchTurn::Ended
+        }
+        TurnEnd::Stalled => {
+            events.push(ev(event_type::TURN_ENDED, json!({ "status": "stalled" })));
+            OrchTurn::Stalled
+        }
+        TurnEnd::AgentErrored => {
+            events.push(ev(event_type::TURN_ENDED, json!({ "status": "error" })));
+            OrchTurn::Error("orchestrator errored mid-turn".into())
+        }
+        TurnEnd::TurnStartTimeout => OrchTurn::Error("turn_start_timeout".into()),
+        TurnEnd::Closed => OrchTurn::Error("supervisor stopped".into()),
+        // `drive_turn` only yields `Canceled` via `run_attempt`'s cancel select,
+        // never on its own — unreachable here (no cancel is raced).
+        TurnEnd::Canceled => OrchTurn::Error("orchestrator turn canceled".into()),
+    };
+    (result, events)
+}
+
 /// Stop the (still-live) agent and return an `Error` outcome. Errored/timed-out
 /// attempts must not leave a CLI process running; the scheduler's retry/abandon
 /// path (S4b) also stops agents, and `stop` is safe to call more than once.
@@ -505,6 +580,24 @@ enum Ready {
     Timeout,
     Closed,
     Canceled,
+}
+
+/// Wait for a freshly spawned orchestrator to reach `Idle` before its first
+/// prompt (spec §10.2) — the readiness step `run_attempt` does internally,
+/// exposed for the scheduler's bespoke orchestrator loop. `Err` carries the
+/// cause (`spawn_timeout` / agent error / supervisor stop).
+pub(super) async fn await_agent_ready(
+    driver: &dyn AgentDriver,
+    agent_id: &str,
+    timeout: Duration,
+) -> std::result::Result<(), String> {
+    match wait_ready(driver, agent_id, timeout).await {
+        Ready::Idle => Ok(()),
+        Ready::Errored => Err("agent error before ready".into()),
+        Ready::Timeout => Err("spawn_timeout".into()),
+        Ready::Closed => Err("supervisor stopped".into()),
+        Ready::Canceled => Err("canceled".into()),
+    }
 }
 
 /// Wait for the agent to reach `Idle` (ready to prompt), subscribing before
@@ -693,6 +786,7 @@ mod tests {
                 run_repo: None,
                 owner_run_id: "run-1".into(),
             },
+            pre_spawned: None,
             blackboard,
             exec_id: "exec-1".into(),
             step_id: "plan".into(),
