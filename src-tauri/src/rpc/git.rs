@@ -629,14 +629,20 @@ mod tests {
     async fn git_push_force_rewrites_diverged_remote() {
         let td = tempfile::tempdir().unwrap();
         let remote = td.path().join("origin.git");
-        run_git(td.path(), &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        run_git(
+            td.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
 
         let repo = td.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         run_git(&repo, &["init", "-q", "-b", "main"]);
         run_git(&repo, &["config", "user.email", "t@example.com"]);
         run_git(&repo, &["config", "user.name", "Tester"]);
-        run_git(&repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
         std::fs::write(repo.join("a.txt"), b"x").unwrap();
         run_git(&repo, &["add", "-A"]);
         run_git(&repo, &["commit", "-q", "-m", "init"]);
@@ -649,9 +655,10 @@ mod tests {
         // First push seeds the remote branch.
         write_request(&requests, "p1.json", r#"{"id":"p1","op":"git_push"}"#);
         process_pending(&rpc_dir, &dispatcher).await;
-        let v: Value =
-            serde_json::from_str(&std::fs::read_to_string(rpc_dir.join("responses/p1.json")).unwrap())
-                .unwrap();
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(rpc_dir.join("responses/p1.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(v["ok"], true, "seed push should succeed: {v}");
 
         // Rewrite local history so the branch diverges from the remote.
@@ -660,9 +667,10 @@ mod tests {
         // A normal push is rejected as non-fast-forward.
         write_request(&requests, "p2.json", r#"{"id":"p2","op":"git_push"}"#);
         process_pending(&rpc_dir, &dispatcher).await;
-        let v: Value =
-            serde_json::from_str(&std::fs::read_to_string(rpc_dir.join("responses/p2.json")).unwrap())
-                .unwrap();
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(rpc_dir.join("responses/p2.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(v["ok"], false, "diverged push must be rejected: {v}");
 
         // Force (lease-guarded) push rewrites the remote branch.
@@ -672,9 +680,10 @@ mod tests {
             r#"{"id":"p3","op":"git_push","args":{"force":true}}"#,
         );
         process_pending(&rpc_dir, &dispatcher).await;
-        let v: Value =
-            serde_json::from_str(&std::fs::read_to_string(rpc_dir.join("responses/p3.json")).unwrap())
-                .unwrap();
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(rpc_dir.join("responses/p3.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(v["ok"], true, "force push should succeed: {v}");
 
         // Remote now points at the rewritten commit.
@@ -692,6 +701,82 @@ mod tests {
             String::from_utf8_lossy(&local.stdout).trim(),
             String::from_utf8_lossy(&remote_head.stdout).trim(),
             "remote main should match the rewritten local HEAD"
+        );
+    }
+
+    #[tokio::test]
+    async fn git_push_force_refuses_when_remote_advanced_unseen() {
+        let td = tempfile::tempdir().unwrap();
+        let remote = td.path().join("origin.git");
+        run_git(
+            td.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+
+        // Repo A seeds the remote and records origin/main = c1.
+        let a = td.path().join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        run_git(&a, &["init", "-q", "-b", "main"]);
+        run_git(&a, &["config", "user.email", "a@example.com"]);
+        run_git(&a, &["config", "user.name", "A"]);
+        run_git(&a, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        std::fs::write(a.join("f.txt"), b"1").unwrap();
+        run_git(&a, &["add", "-A"]);
+        run_git(&a, &["commit", "-q", "-m", "c1"]);
+        run_git(&a, &["push", "-u", "-q", "origin", "main"]);
+
+        // Repo B advances the remote with a commit A never fetches.
+        let b = td.path().join("b");
+        run_git(
+            td.path(),
+            &["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()],
+        );
+        run_git(&b, &["config", "user.email", "b@example.com"]);
+        run_git(&b, &["config", "user.name", "B"]);
+        std::fs::write(b.join("g.txt"), b"2").unwrap();
+        run_git(&b, &["add", "-A"]);
+        run_git(&b, &["commit", "-q", "-m", "c2"]);
+        run_git(&b, &["push", "-q", "origin", "main"]);
+
+        // A rewrites its own history WITHOUT integrating B's commit, then tries
+        // to force-push. A's origin/main tracking ref is stale (still c1).
+        run_git(&a, &["commit", "-q", "--amend", "-m", "c1-rewritten"]);
+
+        let rpc_dir = td.path().join("rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "p.json",
+            r#"{"id":"p","op":"git_push","args":{"force":true}}"#,
+        );
+        let dispatcher = dispatcher(&a);
+        process_pending(&rpc_dir, &dispatcher).await;
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(rpc_dir.join("responses/p.json")).unwrap(),
+        )
+        .unwrap();
+        // `--force-if-includes` must catch this even though the stale tracking
+        // ref would have passed a bare `--force-with-lease`.
+        assert_eq!(
+            v["ok"], false,
+            "force push must be refused when the remote advanced with a commit we never integrated: {v}"
+        );
+
+        // The remote still points at B's commit — nothing was clobbered.
+        let remote_head = std::process::Command::new("git")
+            .current_dir(&remote)
+            .args(["rev-parse", "refs/heads/main"])
+            .output()
+            .unwrap();
+        let b_head = std::process::Command::new("git")
+            .current_dir(&b)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&remote_head.stdout).trim(),
+            String::from_utf8_lossy(&b_head.stdout).trim(),
+            "remote main must be untouched after the refused force push"
         );
     }
 
