@@ -34,10 +34,7 @@ export function RunView({ id }: { id: string }) {
   // Composed sub-runs (§10.3) nest under this run in the monitor; each links to
   // its own RunView. Sourced from the live run list, filtered to our children.
   const allRuns = useRuns();
-  const subRuns = useMemo(
-    () => allRuns.filter((r) => r.parent_run_id === id),
-    [allRuns, id],
-  );
+  const subRuns = useMemo(() => allRuns.filter((r) => r.parent_run_id === id), [allRuns, id]);
 
   // Run-owned step agents come from the run (they're hidden from the workspace
   // snapshot); the monitor renders each attempt's chat from these records.
