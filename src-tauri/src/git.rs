@@ -1073,12 +1073,20 @@ pub async fn worktree_add_branch(repo: &Path, worktree_path: &Path, branch: &str
 
 /// Push the current branch to `origin`. Uses `-u` to set the upstream
 /// tracking ref on the first push.
+/// When `force` is set, pushes with `--force-with-lease`: the safe force that
+/// rewrites the remote branch (e.g. after a local rebase) but refuses if the
+/// remote moved in a way we haven't seen, so we never silently clobber someone
+/// else's work. A plain `--force` is intentionally not offered.
 /// Returns `"up-to-date"` when the remote already had everything (a no-op
 /// push), otherwise `"pushed"`. Lets the UI confirm the outcome instead of
 /// silently doing nothing when there was nothing to send.
-pub async fn push(checkout: &Path, branch: &str) -> Result<String> {
+pub async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> {
     let mut cmd = crate::git_dist::command(checkout);
-    cmd.args(["push", "-u", "origin", branch]);
+    cmd.args(["push", "-u"]);
+    if force {
+        cmd.arg("--force-with-lease");
+    }
+    cmd.args(["origin", branch]);
     // Auth for the https transport *and* hook-disabling — `pre-push` fires on
     // the host, so a workspace-planted hook must not run. Merge so neither
     // set's `GIT_CONFIG_COUNT` clobbers the other.

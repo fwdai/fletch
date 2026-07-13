@@ -488,7 +488,7 @@ pub async fn push_agent(
 ) -> Result<String> {
     let (repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     let branch = repo_branch(&repo)?.to_string();
-    let summary = git::push(&checkout, &branch).await?;
+    let summary = git::push(&checkout, &branch, false).await?;
     // After successful push, fetch PR state in background
     supervisor.inner().fetch_and_emit_pr_state(app, agent_id);
     Ok(summary)
