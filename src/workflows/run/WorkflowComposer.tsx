@@ -45,7 +45,6 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
   const setLastError = useAppStore((s) => s.setLastError);
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
-  const projects = useAppStore((s) => s.workspace?.projects ?? []);
 
   const definitions = useDefinitions();
   const [defId, setDefId] = useState("");
@@ -72,11 +71,12 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
     if (!def || !task.trim() || busy) return;
     setBusy(true);
     try {
-      const projectId = projects.find((p) => p.path === repoPath)?.project_id ?? "";
+      // project_id is resolved authoritatively from repo_path by the backend
+      // (wf_launch), so the launcher doesn't guess it from the workspace snapshot.
       const runId = await api.wfLaunch(
         def.spec,
         task.trim(),
-        projectId,
+        "",
         repoPath,
         def.id,
         baseBranch || undefined,

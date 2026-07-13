@@ -7,7 +7,7 @@
 // carry no payload, so an append refetches the page after our max seq to pick up
 // the payloads the timeline summarizes.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type AgentRecord,
   api,
@@ -50,49 +50,55 @@ export function useRunDetail(runId: string): RunDetailState {
 
   // Highest seq we hold, so live appends fetch only the tail.
   const maxSeq = useRef(0);
-  // Coalesce bursts of wf:event into one refresh.
-  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      const [d, tail, runAgents] = await Promise.all([
-        api.wfGetRun(runId),
-        loadAllEvents(runId, maxSeq.current),
-        api.wfRunAgents(runId),
-      ]);
-      if (d) setDetail(d);
-      setAgents(runAgents);
-      if (tail.length > 0) {
-        maxSeq.current = Math.max(maxSeq.current, tail[tail.length - 1].seq);
-        setEvents((prev) => {
-          const seen = new Set(prev.map((e) => e.seq));
-          const merged = prev.concat(tail.filter((e) => !seen.has(e.seq)));
-          merged.sort((a, b) => a.seq - b.seq);
-          return merged;
-        });
-      }
-    } catch {
-      /* transient — the next event or the caller's remount retries */
-    }
-  }, [runId]);
 
   useEffect(() => {
-    let alive = true;
+    // `cancelled` flips on unmount or a runId switch. Every fetch checks it
+    // before applying its setters, so a response for the previous run can never
+    // paint over the newly selected one (nor over an unmounted component).
+    let cancelled = false;
+    let pending: ReturnType<typeof setTimeout> | null = null;
     maxSeq.current = 0;
     setLoading(true);
     setEvents([]);
     setDetail(null);
     setAgents([]);
 
+    const refresh = async () => {
+      try {
+        const [d, tail, runAgents] = await Promise.all([
+          api.wfGetRun(runId),
+          loadAllEvents(runId, maxSeq.current),
+          api.wfRunAgents(runId),
+        ]);
+        if (cancelled) return;
+        // `d` is null when the run no longer exists (deleted): clear the view so
+        // the monitor falls to its "Run not found" state rather than showing a
+        // stale run.
+        setDetail(d);
+        setAgents(runAgents);
+        if (tail.length > 0) {
+          maxSeq.current = Math.max(maxSeq.current, tail[tail.length - 1].seq);
+          setEvents((prev) => {
+            const seen = new Set(prev.map((e) => e.seq));
+            const merged = prev.concat(tail.filter((e) => !seen.has(e.seq)));
+            merged.sort((a, b) => a.seq - b.seq);
+            return merged;
+          });
+        }
+      } catch {
+        /* transient — the next event or the caller's remount retries */
+      }
+    };
+
     void (async () => {
       await refresh();
-      if (alive) setLoading(false);
+      if (!cancelled) setLoading(false);
     })();
 
     const scheduleRefresh = () => {
-      if (pending.current) return;
-      pending.current = setTimeout(() => {
-        pending.current = null;
+      if (pending) return;
+      pending = setTimeout(() => {
+        pending = null;
         void refresh();
       }, 150);
     };
@@ -105,13 +111,12 @@ export function useRunDetail(runId: string): RunDetailState {
     });
 
     return () => {
-      alive = false;
-      if (pending.current) clearTimeout(pending.current);
-      pending.current = null;
+      cancelled = true;
+      if (pending) clearTimeout(pending);
       void offEvent.then((f) => f());
       void offRun.then((f) => f());
     };
-  }, [runId, refresh]);
+  }, [runId]);
 
   return { detail, events, agents, loading };
 }
