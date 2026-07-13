@@ -21,6 +21,7 @@ import { AttemptRail } from "./AttemptRail";
 import { BudgetMeter } from "./BudgetMeter";
 import { flattenSteps } from "./flatten";
 import { PausedBanner } from "./PausedBanner";
+import { selectPendingQuestion } from "./pendingQuestion";
 import { Timeline } from "./Timeline";
 import { useRunDetail } from "./useRunDetail";
 
@@ -46,14 +47,21 @@ export function RunView({ id }: { id: string }) {
   const attempts = detail?.attempts ?? [];
   const steps = useMemo(() => flattenSteps(spec), [spec]);
 
-  // The pending human question for a `paused(question)` run: the queued `ask`
-  // routed to the human (no orchestrator recipient). Powers the answer banner.
+  // The most recent `run_paused` event — the source of both the paused-reason
+  // detail and the exec whose question the human must answer.
+  const pausedEvent = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].type === "run_paused") return events[i];
+    }
+    return undefined;
+  }, [events]);
+
+  // The pending human question for a `paused(question)` run. Keyed on the paused
+  // exec (the ask's sender), mirroring the backend — never on the recipient,
+  // which escalations/engine-authored asks set to a step exec.
   const pendingQuestion = useMemo(
-    () =>
-      (detail?.messages ?? []).find(
-        (m) => m.kind === "ask" && m.status === "queued" && m.to_step_exec_id === null,
-      ),
-    [detail?.messages],
+    () => selectPendingQuestion(detail?.messages ?? [], pausedEvent?.step_exec_id ?? null),
+    [detail?.messages, pausedEvent],
   );
 
   // Resolve a spec agent alias to its display identity (custom agent or provider).
@@ -86,18 +94,13 @@ export function RunView({ id }: { id: string }) {
   }, [attempts, pickedAttemptId]);
 
   const pausedDetail = useMemo(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      if (events[i].type === "run_paused") {
-        const p = events[i].payload;
-        if (p && typeof p === "object" && "detail" in p) {
-          const d = (p as { detail: unknown }).detail;
-          if (typeof d === "string") return d;
-        }
-        return undefined;
-      }
+    const p = pausedEvent?.payload;
+    if (p && typeof p === "object" && "detail" in p) {
+      const d = (p as { detail: unknown }).detail;
+      if (typeof d === "string") return d;
     }
     return undefined;
-  }, [events]);
+  }, [pausedEvent]);
 
   if (loading && !run) {
     return (
