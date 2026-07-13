@@ -689,6 +689,11 @@ export const api = {
   wfRetry: (runId: string) => invoke<void>("wf_retry", { runId }),
   /** Resume a paused run (raise-budget patch arrives with the budget slice, S5). */
   wfResume: (runId: string) => invoke<void>("wf_resume", { runId }),
+  /** Resolve a run paused on a merge conflict (§12.3). `mode` is `"agent"`
+   *  (spawn a conflict-resolution step) or `"human"` (the user resolved in the
+   *  run repo's integration worktree and committed). */
+  wfResolveConflict: (runId: string, mode: "agent" | "human") =>
+    invoke<void>("wf_resolve_conflict", { runId, mode }),
 
   // ── Workflows v1: definition storage (spec §13, `wf_def_*`) ──
   /** Validate and persist a workflow definition. Omit `id` to create; pass an
