@@ -17,6 +17,7 @@ export type SettingsSection =
   | "agents"
   | "skills"
   | "tools"
+  | "workflows"
   | "experimental"
   | "developer";
 

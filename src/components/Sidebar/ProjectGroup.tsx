@@ -1,9 +1,10 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { useRef } from "react";
-import type { AgentRecord } from "@/api";
+import type { AgentRecord, WfRun } from "@/api";
 import { Icon } from "@/components/Icon";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
+import { RunRow } from "@/workflows/run/RunRow";
 import { AgentRow } from "./AgentRow";
 
 interface Props {
@@ -13,6 +14,8 @@ interface Props {
   repoPath: string;
   agents: AgentRecord[];
   drafts: DraftAgent[];
+  /** Workflow runs grouped under this repo. */
+  runs: WfRun[];
   /** Whether the user has expanded this group. */
   open: boolean;
   /** Show the remove (×) button — only true when this is a pinned-but-empty group. */
@@ -35,6 +38,7 @@ export function ProjectGroup({
   repoPath,
   agents,
   drafts,
+  runs,
   open,
   removable,
   onToggle,
@@ -45,13 +49,15 @@ export function ProjectGroup({
 }: Props) {
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
+  const selectedRunId = useAppStore((s) => s.selectedRunId);
   const selectAgent = useAppStore((s) => s.selectAgent);
   const selectDraft = useAppStore((s) => s.selectDraft);
+  const selectRun = useAppStore((s) => s.selectRun);
   const createDraft = useAppStore((s) => s.createDraft);
   const removeWorkspaceRepo = useAppStore((s) => s.removeWorkspaceRepo);
   const openProjectSettings = useAppStore((s) => s.openProjectSettings);
 
-  const count = agents.length + drafts.length;
+  const count = agents.length + drafts.length + runs.length;
 
   async function onRemove(e: React.MouseEvent) {
     e.stopPropagation();
@@ -154,6 +160,28 @@ export function ProjectGroup({
             onClick={() => selectAgent(a.id)}
           />
         ))}
+        {runs
+          .filter((run) => !run.parent_run_id)
+          .flatMap((run) => [
+            <RunRow
+              key={run.id}
+              run={run}
+              selected={selectedRunId === run.id}
+              onSelect={() => selectRun(run.id)}
+            />,
+            // Composed sub-runs (§10.3) render nested under their parent.
+            ...runs
+              .filter((sub) => sub.parent_run_id === run.id)
+              .map((sub) => (
+                <RunRow
+                  key={sub.id}
+                  run={sub}
+                  nested
+                  selected={selectedRunId === sub.id}
+                  onSelect={() => selectRun(sub.id)}
+                />
+              )),
+          ])}
       </div>
     </div>
   );

@@ -25,6 +25,14 @@ pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace
     supervisor.current_workspace()
 }
 
+/// A workflow run's step agents (live + archived). Run-owned agents are hidden
+/// from `get_workspace`, so the run monitor fetches them here to render each
+/// attempt's preserved chat.
+#[tauri::command]
+pub fn wf_run_agents(run_id: String, supervisor: State<'_, Arc<Supervisor>>) -> Vec<AgentRecord> {
+    supervisor.run_agents(&run_id)
+}
+
 /// Reveal Fletch's log folder in the OS file manager so a user can attach
 /// logs to a bug report. Creates the folder if no session has written to it
 /// yet. Fletch ships macOS-only (sandbox-exec), but the CI build runs on
@@ -300,6 +308,10 @@ pub async fn spawn_agent(
             skills: skills.unwrap_or_default(),
             mcp_servers: mcp_servers.unwrap_or_default(),
             fork_base,
+            // User-initiated spawns fork from the source repo, not a run repo,
+            // and are never run-owned; the scheduler sets both for a step spawn.
+            run_repo: None,
+            owner_run_id: None,
         },
     )
     .await

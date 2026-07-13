@@ -31,6 +31,7 @@ mod sentry_scrub;
 mod supervisor;
 mod telemetry;
 mod transcripts;
+mod workflow;
 mod workspace;
 
 use parking_lot::Mutex;
@@ -850,6 +851,7 @@ pub fn run() {
         .plugin(tauri_plugin_sentry::init(&_sentry))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init());
@@ -1037,9 +1039,27 @@ pub fn run() {
             // provisions any checkout so restores resolve to the new location.
             crate::workspace::migrate_default_checkouts_root();
 
+            let db_for_wf = db.clone();
             let workspace = Arc::new(WorkspaceManager::new(db));
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
+
+            // Workflow engine (S4): the run scheduler + active-run registry. Its
+            // driver wraps the supervisor; runs left `pending`/`running` by a
+            // prior session are re-driven now (paused runs wait for a user
+            // action).
+            let wf_driver: Arc<dyn crate::workflow::driver::AgentDriver> =
+                Arc::new(crate::workflow::driver::SupervisorDriver::new(
+                    supervisor.clone(),
+                    app.handle().clone(),
+                ));
+            let wf_service = Arc::new(crate::workflow::scheduler::WorkflowService::new(
+                db_for_wf,
+                wf_driver,
+                app.handle().clone(),
+            ));
+            app.manage(wf_service.clone());
+            wf_service.resume_active_runs();
             // Reload follow-ups that were queued behind an in-flight turn when a
             // prior run exited, so a mid-turn message survives a restart. They
             // rest in the queue and flush on the user's next send (no auto-spawn).
@@ -1111,8 +1131,25 @@ pub fn run() {
             submit_claude_setup_code,
             cancel_claude_container_auth,
             set_docker_launch_settings,
+            workflow::wf_list_runs,
+            workflow::wf_get_run,
+            workflow::wf_events,
+            workflow::scheduler::wf_launch,
+            workflow::scheduler::wf_cancel,
+            workflow::scheduler::wf_resume,
+            workflow::scheduler::wf_retry,
+            workflow::scheduler::wf_approve,
+            workflow::scheduler::wf_resolve_conflict,
+            workflow::scheduler::wf_delete_run,
+            workflow::comms::wf_answer,
+            workflow::definition::wf_def_save,
+            workflow::definition::wf_def_list,
+            workflow::definition::wf_def_delete,
+            workflow::definition::wf_def_export_yaml,
+            workflow::definition::wf_def_import_yaml,
             oauth::oauth_device_login,
             commands::get_workspace,
+            commands::wf_run_agents,
             commands::get_agent_diff_stats,
             commands::add_workspace_repo,
             commands::remove_workspace_repo,

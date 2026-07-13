@@ -3,6 +3,14 @@ node_modules/
 dist/
 .vite/
 .tmp/
+# We use bun; npm/yarn/pnpm lockfiles must never be committed.
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Local bun install cache/tmp (sandbox workaround; never committed)
+.bun-cache/
+.bun-tmp/
 
 # Rust / Tauri
 src-tauri/target/
@@ -37,8 +45,3 @@ docs/superpowers/
 
 # Material Icon Theme SVGs copied at build (see vite.config.ts)
 public/file-icons/
-
-# Extensions: the `extensions/` directory itself is tracked (public/community
-# extensions live there). Private extensions are their own repos cloned in
-# under a `*.local/` folder, which is never part of the open-source repo.
-extensions/*.local/

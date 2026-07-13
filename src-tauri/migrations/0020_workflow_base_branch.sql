@@ -1,0 +1,12 @@
+-- 0020_workflow_base_branch.sql — persist the launch base branch on wf_run.
+--
+-- launch() resolves the caller-selected base branch into base_sha (the fork
+-- point) but previously discarded the branch name. finalize_run() then rebuilt
+-- the PR base from finalize.pr_base or fell back to "main", so a run launched
+-- from a non-default branch (e.g. develop) without an explicit pr_base opened
+-- its final PR against main — the wrong review base, with unrelated diffs.
+--
+-- Store the caller-selected branch name so finalization can target it unless
+-- the spec explicitly sets pr_base. Empty string means no branch was selected
+-- (finalize keeps the "main" default).
+ALTER TABLE wf_run ADD COLUMN base_branch TEXT NOT NULL DEFAULT '';

@@ -113,6 +113,10 @@
   margin: 0 auto;
   padding: 52px 56px 96px;
 }
+/* Wider column for panes that opt in — e.g. the workflow builder canvas. */
+.set-content.is-wide {
+  max-width: 1080px;
+}
 @media (max-width: 1080px) {
   .set-content {
     padding: 40px 36px 80px;

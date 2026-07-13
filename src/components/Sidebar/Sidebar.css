@@ -468,6 +468,13 @@
 .ag-act:active {
   background: var(--selected);
 }
+/* An armed destructive action (a run row's delete after the first click):
+ * stays red until the pointer leaves the row, so the confirming second click
+ * is visibly different from the first. */
+.ag-act.confirm-del,
+.ag-act.confirm-del:hover {
+  color: var(--danger);
+}
 .ag-act.tip[data-tip]:hover::after {
   left: auto;
   right: 0;

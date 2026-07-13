@@ -31,8 +31,10 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       settingsScreenOpen: true,
       settingsSection: section ?? s.settingsSection,
       settingsIntent: intent ?? null,
-      // The full screen takes over — dismiss the quick popover behind it.
+      // The full screen takes over — dismiss the quick popover behind it and
+      // any selected workflow run (its main view would be hidden anyway).
       settingsOpen: false,
+      selectedRunId: null,
     })),
   closeSettingsScreen: () => set({ settingsScreenOpen: false }),
   setSettingsSection: (section) => set({ settingsSection: section }),

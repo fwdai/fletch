@@ -5,7 +5,7 @@ mod events;
 mod lifecycle;
 mod messaging;
 mod rpc_watch;
-mod run;
+pub(crate) mod run;
 mod session_sync;
 mod shell;
 
@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::AppHandle;
+use tokio::sync::broadcast;
 
 use crate::activity::Activity;
 use crate::agent::Agent;
@@ -30,6 +31,19 @@ use crate::workspace::{AgentRecord, AgentStatus, ClosedTurn, Workspace, Workspac
 
 use events::emit_status;
 use messaging::{drain_message_queue, drain_pending_bin_respawn};
+
+/// A runtime status transition, broadcast to in-process subscribers the moment
+/// it is recorded. The workflow scheduler (`workflow::driver`) subscribes to
+/// this channel so it can catch an arbitrarily fast `Running → Idle` flap
+/// without polling: the Tauri `agent:status` event is the renderer's copy of
+/// the same signal, but a broadcast receiver lets Rust code await transitions
+/// deterministically. Distinct from the DB-persisted disposition — this is the
+/// live in-memory value at the instant it changed.
+#[derive(Debug, Clone)]
+pub struct StatusEvent {
+    pub agent_id: String,
+    pub status: AgentStatus,
+}
 
 pub struct Supervisor {
     pub workspace: Arc<WorkspaceManager>,
@@ -77,6 +91,16 @@ pub struct Supervisor {
     /// never persisted (see `session_sync`). Behind an `Arc` so the fire-and-
     /// forget sync task can hold it without borrowing `self`.
     pub sync_health: Arc<Mutex<HashMap<String, session_sync::SyncHealth>>>,
+    /// Per-agent RPC dispatchers, so the mailbox can be drained on demand
+    /// (`settle_agent_rpc`) in addition to the polling watcher — the scheduler
+    /// drains a step agent's mailbox at turn end so a `wf_ask` is dispatched
+    /// before it acts on the gate (§10.4). Overwritten on each (re)spawn; removed
+    /// on teardown.
+    pub rpc_dispatchers: Mutex<HashMap<String, Arc<dyn crate::rpc::RpcDispatcher>>>,
+    /// Fan-out of every runtime status transition (see [`StatusEvent`]). Held
+    /// as the sender; subscribers call [`Supervisor::subscribe_status`]. The
+    /// supervisor never reads it, so a dropped-receiver `send` error is ignored.
+    status_tx: broadcast::Sender<StatusEvent>,
 }
 
 impl Supervisor {
@@ -94,7 +118,61 @@ impl Supervisor {
             message_queue: Mutex::new(MessageQueue::new()),
             interrupted: Mutex::new(HashSet::new()),
             sync_health: Arc::new(Mutex::new(HashMap::new())),
+            rpc_dispatchers: Mutex::new(HashMap::new()),
+            // Capacity is generous: a lagging subscriber gets `Lagged` and
+            // re-reads `status_of`, so overflow degrades to a resync, never a
+            // lost terminal state. 1024 covers bursts across many live agents.
+            status_tx: broadcast::channel(1024).0,
         }
+    }
+
+    /// Drain `agent_id`'s RPC mailbox once, synchronously, dispatching any
+    /// requests it has already written (e.g. a `wf_ask` from the turn that just
+    /// ended) before the caller acts on that turn's result. The per-agent watcher
+    /// also processes on its tick; `process_pending` is idempotent and
+    /// in-flight-guarded, so the two never double-dispatch. A no-op for an agent
+    /// with no registered dispatcher.
+    pub async fn settle_agent_rpc(self: &Arc<Self>, app: &tauri::AppHandle, agent_id: &str) {
+        let dispatcher = self.rpc_dispatchers.lock().get(agent_id).cloned();
+        let Some(dispatcher) = dispatcher else {
+            return;
+        };
+        let Ok(rpc_dir) = crate::rpc::mailbox_dir(agent_id) else {
+            return;
+        };
+        rpc_watch::process_agent_rpc_once(self, app, agent_id, dispatcher.as_ref(), &rpc_dir).await;
+    }
+
+    /// Subscribe to runtime status transitions across all agents. To avoid a
+    /// race the caller MUST subscribe *first*, then read [`Supervisor::status_of`],
+    /// then loop on `recv()` — the subscribe-before-read discipline is what makes
+    /// a fast `Running → Idle` flap unlosable (see `workflow::attempt`).
+    pub fn subscribe_status(&self) -> broadcast::Receiver<StatusEvent> {
+        self.status_tx.subscribe()
+    }
+
+    /// The authoritative current status of an agent: the live in-memory value
+    /// while it is tracked, else the DB-derived resting status on its record,
+    /// else `None` once the agent no longer exists.
+    pub fn status_of(&self, agent_id: &str) -> Option<AgentStatus> {
+        self.live_status(agent_id)
+            .or_else(|| self.workspace.agent(agent_id).ok().map(|r| r.status))
+    }
+
+    /// Ingest timestamp (ms) of this agent's most recent session record — the
+    /// stall-detection clock. `None` before the first record lands.
+    pub fn last_activity(&self, agent_id: &str) -> Option<i64> {
+        self.workspace.last_activity(agent_id)
+    }
+
+    /// This agent's canonical session records (seq order) — the raw provider
+    /// bodies as ingested. The workflow budget ledger reads token `usage` out of
+    /// them (spec §11.2); a read error degrades to an empty slice (tokens then
+    /// go uncounted, exactly as for a provider that exposes no usage).
+    pub fn read_session_records(&self, agent_id: &str) -> Vec<crate::workspace::SessionRecord> {
+        self.workspace
+            .read_session_records(agent_id)
+            .unwrap_or_default()
     }
 
     /// Invalidate this agent's current spawn generation. Any gen-guarded
@@ -249,6 +327,13 @@ impl Supervisor {
                 Err(e) => tracing::warn!(error = %e, agent_id, "stamp user turn end failed"),
             }
         }
+        // Fan the transition out to in-process subscribers (the workflow
+        // scheduler) before the Tauri emit. `send` errs only when there are no
+        // receivers, which is the common case for user-spawned agents — ignore.
+        let _ = self.status_tx.send(StatusEvent {
+            agent_id: agent_id.to_string(),
+            status: status.clone(),
+        });
         emit_status(app, agent_id, status, last_error);
     }
 
@@ -305,6 +390,17 @@ impl Supervisor {
             record.status = self.effective_status(&record.id, record);
         }
         Some(ws)
+    }
+
+    /// A workflow run's step agents (live + archived), with the supervisor's
+    /// in-memory runtime status overlaid — the run monitor renders each
+    /// attempt's chat from these records.
+    pub fn run_agents(&self, run_id: &str) -> Vec<AgentRecord> {
+        let mut agents = self.workspace.agents_for_run(run_id);
+        for record in &mut agents {
+            record.status = self.effective_status(&record.id, record);
+        }
+        agents
     }
 
     pub fn add_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {

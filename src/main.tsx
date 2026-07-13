@@ -8,6 +8,7 @@ import { revealAppWindow } from "./util/window";
 import "@fontsource/geist-sans/400.css";
 import "@fontsource/geist-sans/600.css";
 import "./app.css";
+import "./workflows/workflows.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root element missing");
