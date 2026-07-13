@@ -443,10 +443,27 @@ fn route_ask(
 fn deliver_answer(
     conn: &Connection,
     app: Option<&AppHandle>,
+    project_id: &str,
     run_id: &str,
     message_id: &str,
     body: &str,
 ) -> Result<()> {
+    // Scope the answer to the caller's project (mirrors `wf_list_runs`): the run
+    // must belong to `project_id`. Not a cross-user boundary — this is a
+    // single-user desktop app — but it keeps a confused frontend from answering a
+    // run outside the project context it's operating in.
+    let proj: Option<String> = conn
+        .query_row(
+            "SELECT project_id FROM wf_run WHERE id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| Error::Other(e.to_string()))?;
+    if proj.as_deref() != Some(project_id) {
+        return Err(Error::Other("run not found in this project".into()));
+    }
+
     let (status, reason) = scheduler::run_status(conn, run_id)?;
     if status != "paused" || reason.as_deref() != Some("question") {
         return Err(Error::Other(format!(
@@ -539,10 +556,16 @@ impl WorkflowService {
     /// Deliver a human's answer to a paused `question` run and resume it
     /// (`wf_answer`, spec §13). The scheduler folds the answer into the fresh
     /// attempt's prompt on resume.
-    pub(super) fn answer(&self, run_id: &str, message_id: &str, body: &str) -> Result<()> {
+    pub(super) fn answer(
+        &self,
+        project_id: &str,
+        run_id: &str,
+        message_id: &str,
+        body: &str,
+    ) -> Result<()> {
         {
             let conn = self.db.lock();
-            deliver_answer(&conn, Some(&self.app), run_id, message_id, body)?;
+            deliver_answer(&conn, Some(&self.app), project_id, run_id, message_id, body)?;
         }
         // Resume: the drive loop starts a fresh attempt for the asking step (the
         // asking attempt was abandoned at the pause).
@@ -663,13 +686,14 @@ type Svc<'a> = tauri::State<'a, Arc<WorkflowService>>;
 /// Answer a paused `question` and resume the run (spec §13, §10.4).
 #[tauri::command]
 pub async fn wf_answer(
+    project_id: String,
     run_id: String,
     message_id: String,
     body: String,
     service: Svc<'_>,
 ) -> std::result::Result<(), String> {
     service
-        .answer(&run_id, &message_id, &body)
+        .answer(&project_id, &run_id, &message_id, &body)
         .map_err(|e| e.to_string())
 }
 
@@ -921,7 +945,7 @@ mod tests {
         let ask_id = resp.stdout.clone().unwrap();
 
         // The human answers.
-        deliver_answer(&conn, None, &run, &ask_id, "Postgres").unwrap();
+        deliver_answer(&conn, None, "p", &run, &ask_id, "Postgres").unwrap();
 
         // The ask is answered; a queued answer targets the asking attempt.
         let ask_status: String = conn
@@ -959,8 +983,33 @@ mod tests {
             [],
         )
         .unwrap();
-        let err = deliver_answer(&conn, None, &run, "nope", "x");
+        let err = deliver_answer(&conn, None, "p", &run, "nope", "x");
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn answer_rejects_a_run_outside_the_project() {
+        let (conn, run, _exec) = seed(vec![CommsCap::Ask]);
+        let (resp, _) = route(
+            &conn,
+            None,
+            "req-1",
+            "run",
+            "agent-1",
+            "wf_ask",
+            &json!({ "question": "q" }),
+        );
+        let ask_id = resp.stdout.unwrap();
+        // The run belongs to project "p"; a caller scoped to another project
+        // cannot answer it, and nothing is enqueued.
+        let err = deliver_answer(&conn, None, "other", &run, &ask_id, "x");
+        assert!(err.is_err(), "answer must be scoped to the run's project");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM wf_message WHERE kind='answer'"),
+            0
+        );
+        // The correct project succeeds.
+        deliver_answer(&conn, None, "p", &run, &ask_id, "x").unwrap();
     }
 
     #[test]
@@ -1065,7 +1114,7 @@ mod tests {
         );
         let ask_id = resp.stdout.unwrap();
         assert!(has_unanswered_ask(&conn, &exec), "queued ask is pending");
-        deliver_answer(&conn, None, &run, &ask_id, "yes").unwrap();
+        deliver_answer(&conn, None, "p", &run, &ask_id, "yes").unwrap();
         assert!(
             !has_unanswered_ask(&conn, &exec),
             "answered ask is no longer pending"
