@@ -8,6 +8,7 @@ export const DEFAULT_POLICY: DisplayPolicy = {
   "notice:turn_end": "hide",
   "notice:hook_output": "hide",
   "notice:info": "show",
+  "notice:background_task": "show",
   "notice:reasoning": "show",
   "notice:slash_command": "show",
   "notice:error": "show",

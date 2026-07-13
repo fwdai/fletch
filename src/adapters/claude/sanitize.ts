@@ -27,6 +27,35 @@ const SYSTEM_REMINDER_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/g;
 // type it. Convert to a compact_summary notice instead.
 const COMPACT_PREAMBLE_RE = /^This session is being continued from a previous conversation/;
 
+// When a background Task/Bash finishes, the harness re-invokes the agent with
+// a `<task-notification>` user-role event (origin.kind === "task-notification").
+// It carries neither isMeta nor isSynthetic, so it isn't caught by the injected
+// guard in reduce.ts and would otherwise render its raw XML as a user bubble.
+// Detect it by the wrapper tag — present on both the live wire and the persisted
+// transcript, unlike origin which the CLI reshapes between the two — and surface
+// only the human-readable <summary> as a quiet background_task notice. Stripped
+// inline (global, like the other wrappers) so a notification riding alongside
+// real user text doesn't leak its raw XML into the bubble.
+const TASK_NOTIFICATION_RE = /<task-notification>([\s\S]*?)<\/task-notification>/g;
+const TASK_SUMMARY_RE = /<summary>([\s\S]*?)<\/summary>/;
+const TASK_STATUS_RE = /<status>([\s\S]*?)<\/status>/;
+
+function taskNotificationNotice(body: string): NoticeItem | null {
+  const summary = body.match(TASK_SUMMARY_RE)?.[1]?.trim();
+  const status = body.match(TASK_STATUS_RE)?.[1]?.trim() ?? "";
+  // A contentless notification (no summary and no status) carries nothing worth
+  // showing — drop it like an empty system-reminder rather than emitting a
+  // misleading "Background task update" line.
+  if (!summary && !status) return null;
+  const text = summary || `Background task ${status}`;
+  // Anything other than a clean completion (e.g. "stopped", a nonzero exit)
+  // flags the dot red; the summary text already spells out the detail.
+  const isError = status !== "" && status !== "completed" && status !== "success";
+  return isError
+    ? { kind: "notice", subtype: "background_task", text, is_error: true }
+    : { kind: "notice", subtype: "background_task", text };
+}
+
 // Cursor (which reuses this sanitizer) wraps every user turn in its own
 // envelope: a `<timestamp>` line followed by the query inside `<user_query>`.
 // Neither is user-authored. Claude never emits these, so it's a no-op there.
@@ -43,8 +72,16 @@ export function sanitizeUserText(raw: string): SanitizeResult {
     };
   }
 
+  // Background-task notifications → background_task notices. Stripped inline so
+  // surrounding user text survives; contentless ones drop to nothing.
+  let text = raw.replace(TASK_NOTIFICATION_RE, (_match, body: string) => {
+    const notice = taskNotificationNotice(body);
+    if (notice) notices.push(notice);
+    return "";
+  });
+
   // Slash-command name → one notice per invocation. Strip the tag.
-  let text = raw.replace(COMMAND_NAME_RE, (_match, body: string) => {
+  text = text.replace(COMMAND_NAME_RE, (_match, body: string) => {
     const name = body.trim();
     if (name) {
       notices.push({
