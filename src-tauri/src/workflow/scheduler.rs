@@ -6571,7 +6571,10 @@ mod tests {
             &db,
             "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-stale' AND status='done'",
         );
-        assert_eq!(done, 0, "the stale `done` verdict must not satisfy the gate");
+        assert_eq!(
+            done, 0,
+            "the stale `done` verdict must not satisfy the gate"
+        );
     }
 
     /// A stub whose "agent" raises the run's pending-ask flag on its very first
