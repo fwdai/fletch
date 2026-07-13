@@ -296,6 +296,14 @@ async fn conflicted_files(wt: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Whether a checkout has no uncommitted changes (staged, unstaged, or
+/// untracked). Guards human conflict resolution (§12.3 mode c): an uncommitted
+/// tree must not be silently reset away when the merge continues.
+pub async fn is_worktree_clean(wt: &Path) -> Result<bool> {
+    let out = git::git_output(wt, &["status", "--porcelain"]).await?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().is_empty())
+}
+
 /// Pin a checkout's current HEAD as `refname` in the shared ref store (linked
 /// worktrees share the run repo's ref db and object store).
 pub async fn pin_ref(wt: &Path, refname: &str) -> Result<()> {

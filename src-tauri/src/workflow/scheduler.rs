@@ -1308,8 +1308,12 @@ async fn begin_merge_stage(
     let run_dir = PathBuf::from(&run.run_dir);
     let int_wt = gitops::integration_worktree_path(&run_dir, block_index);
 
-    // Successful children in spec order (join `any` leaves exactly the winner).
-    let winners: Vec<(String, String)> = {
+    // Successful children in spec order. Under join `any` a slow sibling can race
+    // past the stage-cancel and reach `done` too, so more than one child may have
+    // a done exec — but `any` integrates exactly ONE branch, never a loser's work.
+    // Merge only the first successful child (all its committed work is a complete,
+    // valid result); `all` merges every child.
+    let mut winners: Vec<(String, String)> = {
         let conn = ctx.db.lock();
         par.steps
             .iter()
@@ -1319,6 +1323,9 @@ async fn begin_merge_stage(
             })
             .collect()
     };
+    if matches!(par.join, Join::Any) {
+        winners.truncate(1);
+    }
     if winners.is_empty() {
         // No child produced a ferried ref — nothing to integrate; leave the line.
         return Ok(StageFlow::Advance { line: None });
@@ -1527,8 +1534,44 @@ async fn resume_merge_stage(
     };
 
     let new_acc: String = match resolution.as_str() {
-        // (c) The human resolved and committed in the integration worktree.
-        "human" => crate::git::rev_parse(&int_wt, "HEAD").await?,
+        // (c) The human resolved and committed in the integration worktree. Guard
+        // that they actually committed: if HEAD is still the conflict snapshot, or
+        // the tree has uncommitted edits, continuing would reset their work away
+        // (and merge on from a tree that still holds markers). Refuse — clear the
+        // choice and re-pause `conflict` so they can commit and retry.
+        "human" => {
+            let head = crate::git::rev_parse(&int_wt, "HEAD").await?;
+            let snapshot = crate::git::rev_parse(run_repo, &ci.conflict_ref).await.ok();
+            let clean = gitops::is_worktree_clean(&int_wt).await.unwrap_or(false);
+            if !clean || snapshot.as_deref() == Some(head.as_str()) {
+                if let Some(c) = cursor.merge.as_mut().and_then(|m| m.conflict.as_mut()) {
+                    c.resolution = None;
+                }
+                let conn = ctx.db.lock();
+                set_cursor(&conn, run_id, cursor);
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::RUN_PAUSED,
+                    None,
+                    &json!({
+                        "reason": "conflict",
+                        "detail": "resolve the conflicts and commit in the integration worktree before continuing"
+                    }),
+                );
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "paused",
+                    Some("conflict"),
+                    None,
+                );
+                return Ok(StageFlow::Stop);
+            }
+            head
+        }
         // (a) Spawn a conflict-resolution step forked from the pinned snapshot.
         "agent" => {
             let agent_alias = par
@@ -4918,6 +4961,116 @@ mod tests {
         assert!(
             body.contains("human-resolved"),
             "human resolution integrated: {body}"
+        );
+    }
+
+    /// A slow sibling can race past `any`'s stage-cancel and land its own `done`
+    /// exec; the merge must still integrate exactly ONE branch, never a loser's
+    /// code. Pre-seed both children `done` (the raced state) and drive the merge.
+    #[tokio::test]
+    async fn merge_any_integrates_only_one_of_multiple_done_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", ""), cstep("b", "")];
+        let (db, _ws, _base) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-ma1",
+            Join::Any,
+            Integrate::Merge,
+            &children,
+        );
+
+        // Provision the run repo and ferry two real child commits into it, then
+        // mark both children `done` — the raced-sibling state a live `any` stage
+        // can leave behind.
+        let source = tmp.path().join("src-run-ma1");
+        let run_dir = tmp.path().join("rd-run-ma1");
+        let run_repo = gitops::provision_run_repo(&source, &run_dir).await.unwrap();
+        for (child, exec) in [("a", "exec-a"), ("b", "exec-b")] {
+            let ws = tmp.path().join(format!("wsx-{child}"));
+            sh(
+                tmp.path(),
+                &[
+                    "clone",
+                    "-q",
+                    "--shared",
+                    source.to_str().unwrap(),
+                    ws.to_str().unwrap(),
+                ],
+            );
+            sh(&ws, &["config", "user.email", "t@t.t"]);
+            sh(&ws, &["config", "user.name", "t"]);
+            std::fs::write(ws.join(format!("{child}.txt")), "work").unwrap();
+            gitops::boundary_commit(&ws, "child").await.unwrap();
+            let r = gitops::pin_step_ref(&ws, exec).await.unwrap();
+            gitops::ferry(&ws, &run_repo, &r).await.unwrap();
+            db.lock()
+                .execute(
+                    "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,head_end)
+                     VALUES (?1,'run-ma1',?2,1,0,'done','commit','x')",
+                    rusqlite::params![exec, child],
+                )
+                .unwrap();
+        }
+        db.lock()
+            .execute("UPDATE wf_run SET status='running' WHERE id='run-ma1'", [])
+            .unwrap();
+
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(tmp.path().join("ws-run-ma1")));
+        drive_run(&ctx, "run-ma1").await;
+
+        assert_eq!(run_status_str(&db, "run-ma1"), "done");
+        assert_eq!(
+            count_events(&db, "run-ma1", event_type::MERGE_DONE),
+            1,
+            "exactly one branch merged under `any`"
+        );
+        let files = merge_tree(tmp.path(), &db, "run-ma1");
+        let n = ["a.txt", "b.txt"]
+            .iter()
+            .filter(|f| files.contains(**f))
+            .count();
+        assert_eq!(n, 1, "only one child's work integrated: {files}");
+    }
+
+    /// Human resolution must be committed: if the user edits the integration
+    /// worktree but continues without committing, the run refuses (re-pauses)
+    /// rather than resetting their edits away and merging on from a marker tree.
+    #[tokio::test]
+    async fn merge_human_resolution_requires_a_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", CONFLICT), cstep("b", CONFLICT)];
+        let (db, ws, _b) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-mhu",
+            Join::All,
+            Integrate::Merge,
+            &children,
+        );
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-mhu").await;
+        assert_eq!(run_status_str(&db, "run-mhu"), "paused");
+
+        // Human edits the conflicted file but does NOT commit, then continues.
+        let int_wt = tmp.path().join("rd-run-mhu").join("integrate-0");
+        std::fs::write(int_wt.join(CONFLICT_FILE), "edited but uncommitted\n").unwrap();
+        set_resolution(&db, "run-mhu", "human");
+        drive_run(&ctx, "run-mhu").await;
+
+        // Refused: still paused(conflict), not advanced; the choice is cleared so
+        // the user must commit and retry, and the edit is left in place (not reset).
+        assert_eq!(run_status_str(&db, "run-mhu"), "paused");
+        let cur = get_cursor(&db.lock(), "run-mhu");
+        assert!(
+            cur.merge
+                .and_then(|m| m.conflict)
+                .and_then(|c| c.resolution)
+                .is_none(),
+            "resolution cleared — the user must commit first"
+        );
+        let body = std::fs::read_to_string(int_wt.join(CONFLICT_FILE)).unwrap();
+        assert!(
+            body.contains("edited but uncommitted"),
+            "the uncommitted edit is preserved, not discarded: {body}"
         );
     }
 
