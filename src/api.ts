@@ -701,6 +701,10 @@ export const api = {
    *  asking step and resumes. `messageId` is the pending `ask` message id. */
   wfAnswer: (projectId: string, runId: string, messageId: string, body: string) =>
     invoke<void>("wf_answer", { projectId, runId, messageId, body }),
+  /** Delete a terminal run and everything it owns (§13): its run-owned step
+   *  agents (and their chats), `~/.fletch/runs/<id>/`, and its rows. Cascades
+   *  over composed sub-runs; rejected while any run in the tree is active. */
+  wfDeleteRun: (runId: string) => invoke<void>("wf_delete_run", { runId }),
 
   // ── Workflows v1: definition storage (spec §13, `wf_def_*`) ──
   /** Validate and persist a workflow definition. Omit `id` to create; pass an
@@ -832,6 +836,12 @@ export function onWfEvent(cb: (e: WfEventEnvelope) => void): Promise<UnlistenFn>
 /** Fires whenever a run row changes; carries the full row. */
 export function onWfRun(cb: (e: WfRun) => void): Promise<UnlistenFn> {
   return listen<WfRun>("wf:run", (event) => cb(event.payload));
+}
+
+/** `wf:run-deleted` fires the deleted run's id after `wf_delete_run` removes its
+ *  rows, so the sidebar drops the row instead of upserting it. */
+export function onWfRunDeleted(cb: (runId: string) => void): Promise<UnlistenFn> {
+  return listen<string>("wf:run-deleted", (event) => cb(event.payload));
 }
 
 /** Payload of the `agent-install:state` event: progress of a one-click agent

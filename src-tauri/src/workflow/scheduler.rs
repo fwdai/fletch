@@ -189,6 +189,50 @@ impl WorkflowService {
         Ok(())
     }
 
+    /// Delete a terminal run (`wf_delete_run`, spec §13): cascade over composed
+    /// sub-runs, discard every run-owned step-agent workspace (`owner_run_id`)
+    /// through the app path — a DB cascade would orphan checkouts and dangle
+    /// supervisor state (0019) — remove `~/.fletch/runs/<id>/` (blackboard +
+    /// run repo), and delete the run's rows (`wf_step_exec` / `wf_event` /
+    /// `wf_message` cascade off `wf_run`). Chats of deleted runs are gone; the
+    /// UI's confirm dialog says so. The whole tree is checked before anything
+    /// is touched, so a rejected delete changes nothing.
+    pub async fn delete_run(&self, supervisor: &Arc<Supervisor>, run_id: &str) -> Result<()> {
+        // Post-order (children before parents): `wf_run.parent_run_id` has no
+        // ON DELETE cascade, so a parent must never be deleted while a child
+        // row still points at it.
+        let order = {
+            let conn = self.db.lock();
+            let mut order = Vec::new();
+            run_tree_post_order(&conn, run_id, &mut order);
+            check_deletable(&conn, &order)?;
+            order
+        };
+        // A terminal run normally has no live driver, but a drive task can
+        // still be winding down (status written, registry entry not yet
+        // removed). Deleting its rows out from under it would race — reject.
+        {
+            let runs = self.runs.lock();
+            if let Some(id) = order.iter().find(|id| runs.contains_key(id.as_str())) {
+                return Err(Error::Other(format!(
+                    "run {id} is still winding down — try again in a moment"
+                )));
+            }
+        }
+
+        for id in &order {
+            for agent in supervisor.workspace.agents_for_run(id) {
+                supervisor.clone().discard_agent(&agent.id).await?;
+            }
+            {
+                let conn = self.db.lock();
+                delete_run_data(&conn, id)?;
+            }
+            journal::emit_run_deleted(&self.app, id);
+        }
+        Ok(())
+    }
+
     /// Resume a paused run (`wf_resume`): optionally raise the budget (§11.2,
     /// §13), then re-drive from the cursor. A fresh attempt is started for a
     /// blocked / stalled / budget-exceeded step by the drive loop. A patch that
@@ -5592,6 +5636,48 @@ fn child_run_ids(conn: &Connection, parent_run_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The run tree rooted at `run_id`, post-order — every child precedes its
+/// parent, so a delete walked in this order never dangles the `parent_run_id`
+/// FK (which deliberately has no cascade).
+fn run_tree_post_order(conn: &Connection, run_id: &str, out: &mut Vec<String>) {
+    for child in child_run_ids(conn, run_id) {
+        run_tree_post_order(conn, &child, out);
+    }
+    out.push(run_id.to_string());
+}
+
+/// The `wf_delete_run` guard (spec §13): every run in the tree must be terminal
+/// (`done` / `failed` / `canceled`). Checked before anything is deleted.
+fn check_deletable(conn: &Connection, run_ids: &[String]) -> Result<()> {
+    for id in run_ids {
+        let (status, _) = run_status(conn, id)?;
+        if !matches!(status.as_str(), "done" | "failed" | "canceled") {
+            return Err(Error::Other(format!(
+                "cannot delete a {status} run — cancel it first"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Delete one run's on-disk directory and its DB rows. The row delete cascades
+/// `wf_step_exec` / `wf_event` / `wf_message` (0019 + `PRAGMA foreign_keys`).
+/// A missing run dir is fine — a retried partial delete or a cleaned disk.
+fn delete_run_data(conn: &Connection, run_id: &str) -> Result<()> {
+    match std::fs::remove_dir_all(blackboard::run_dir(run_id)?) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(Error::Other(format!(
+                "cannot remove run dir for {run_id}: {e}"
+            )))
+        }
+    }
+    conn.execute("DELETE FROM wf_run WHERE id = ?1", [run_id])
+        .map_err(|e| Error::Other(e.to_string()))?;
+    Ok(())
+}
+
 /// Live (spawned, non-terminal) step agents for a run — stopped on cancel/pause.
 fn live_step_agents(conn: &Connection, run_id: &str) -> Vec<String> {
     conn.prepare(
@@ -5709,6 +5795,20 @@ pub async fn wf_retry(run_id: String, service: Svc<'_>) -> std::result::Result<(
 #[tauri::command]
 pub async fn wf_approve(run_id: String, service: Svc<'_>) -> std::result::Result<(), String> {
     service.approve(&run_id).map_err(|e| e.to_string())
+}
+
+/// Delete a terminal run and everything it owns (spec §13): run-owned step
+/// agents (and their chats), the run directory, and the run's rows.
+#[tauri::command]
+pub async fn wf_delete_run(
+    run_id: String,
+    service: Svc<'_>,
+    supervisor: tauri::State<'_, Arc<Supervisor>>,
+) -> std::result::Result<(), String> {
+    service
+        .delete_run(supervisor.inner(), &run_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Resolve a merge conflict (§12.3): `mode` is `"agent"` or `"human"`.
@@ -6822,6 +6922,100 @@ mod tests {
         assert!(check_resumable(&conn, "r-ques", "resume").is_err());
         assert!(check_resumable(&conn, "r-budg", "resume").is_ok());
         assert!(check_resumable(&conn, "r-blk", "retry").is_ok());
+    }
+
+    #[test]
+    fn delete_guard_and_tree_order_protect_the_cascade() {
+        // `wf_delete_run` (§13): the tree is collected children-first (the
+        // `parent_run_id` FK has no cascade), and the guard rejects the whole
+        // delete while any run in the tree is non-terminal.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let insert = |id: &str, parent: Option<&str>, status: &str| {
+            db.lock()
+                .execute(
+                    "INSERT INTO wf_run (id,parent_run_id,name,spec_json,task,project_id,
+                        repo_path,run_dir,branch,base_sha,status,budgets_json,spent_json,
+                        created_at,updated_at)
+                     VALUES (?1,?2,'n','{}','t','p','/r','/d','wf/x','sha',?3,'{}','{}',0,0)",
+                    rusqlite::params![id, parent, status],
+                )
+                .unwrap();
+        };
+        insert("r-parent", None, "done");
+        insert("r-child", Some("r-parent"), "canceled");
+        insert("r-grandchild", Some("r-child"), "running");
+
+        let conn = db.lock();
+        let mut order = Vec::new();
+        run_tree_post_order(&conn, "r-parent", &mut order);
+        assert_eq!(order, vec!["r-grandchild", "r-child", "r-parent"]);
+
+        // One live descendant blocks the whole delete.
+        let err = check_deletable(&conn, &order).unwrap_err().to_string();
+        assert!(err.contains("cannot delete a running run"), "{err}");
+
+        conn.execute(
+            "UPDATE wf_run SET status='failed' WHERE id='r-grandchild'",
+            [],
+        )
+        .unwrap();
+        assert!(check_deletable(&conn, &order).is_ok());
+    }
+
+    #[test]
+    fn delete_run_data_cascades_the_runs_rows() {
+        // Deleting the `wf_run` row must take its journal, execs, and messages
+        // with it (0019 ON DELETE CASCADE + the connection's foreign_keys
+        // pragma), and tolerate an already-missing run directory.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('r-del','n','{}','t','p','/r','/d','wf/x','sha','done','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode)
+             VALUES ('e1','r-del','s',1,0,'done','verdict')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_event (run_id,seq,ts,type,payload_json)
+             VALUES ('r-del',1,0,'run_launched','{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_message (id,run_id,kind,body_json,status,created_at)
+             VALUES ('m1','r-del','report','{}','delivered',0)",
+            [],
+        )
+        .unwrap();
+
+        delete_run_data(&conn, "r-del").expect("delete succeeds without a run dir on disk");
+
+        let count = |table: &str| -> i64 {
+            conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE run_id = 'r-del'"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let runs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wf_run WHERE id='r-del'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(runs, 0);
+        assert_eq!(count("wf_step_exec"), 0, "execs cascade");
+        assert_eq!(count("wf_event"), 0, "journal cascades");
+        assert_eq!(count("wf_message"), 0, "messages cascade");
     }
 
     #[test]

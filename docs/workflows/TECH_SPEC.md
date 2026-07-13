@@ -1005,11 +1005,16 @@ each attempt's preserved chat via the existing `ChatView` (§14.2). Read-only;
 implemented on the supervisor alongside `get_workspace` rather than on
 `WorkflowService`, since it is a workspace query.
 
-`wf_delete_run` cascades: discard all run-owned step-agent workspaces
-(matched by `owner_run_id`), delete `~/.fletch/runs/<run-id>/` (blackboard
-+ run repo), and delete the run's rows. Chats of deleted runs are gone —
-the confirm dialog says so. Until deletion, everything is retained (open
-question #4 covers automatic GC policy later).
+`wf_delete_run` cascades: composed sub-runs first (children-first — the
+`parent_run_id` FK deliberately has no cascade), then per run discard all
+run-owned step-agent workspaces (matched by `owner_run_id`) through the
+app path, delete `~/.fletch/runs/<run-id>/` (blackboard + run repo), and
+delete the run's rows (`wf_step_exec`/`wf_event`/`wf_message` cascade).
+The whole tree must be terminal — the guard runs before anything is
+touched. Chats of deleted runs are gone — the delete is a two-click
+armed button on the run row whose confirm state says so. A `wf:run-deleted`
+event drops the row from the sidebar. Until deletion, everything is
+retained (open question #4 covers automatic GC policy later).
 
 `ImportReport` = parsed spec + per-agent resolution proposals + warnings
 (missing skills, unknown providers).
