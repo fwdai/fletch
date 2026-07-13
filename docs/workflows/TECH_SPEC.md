@@ -382,6 +382,13 @@ Rejected at save/import/launch time with precise messages:
 - nested `orchestrate` inside `orchestrate` (depth is handled by sub-runs,
   not block nesting)
 - `parallel.steps` empty, or containing non-`Step` blocks (v1)
+- `loop` bodies containing non-`Step` blocks (v1 — the engine executes
+  plain-step bodies only; the builder's loop "add block" menu offers steps
+  only for the same reason)
+- `orchestrate` with `integrate: merge` (v1 — orchestrate stages run
+  `integrate: none` only; wiring the orchestrator over the parallel merge
+  machinery is a follow-up, and the builder doesn't offer `merge` on
+  orchestrate)
 - gate `artifact.path` absolute or containing `..`
 - budgets with zero/negative values
 - unknown `version`
@@ -419,7 +426,7 @@ workflow:
         When a slice a sibling depends on lands, notify that sibling.
       children: { agent: coder, max: 3 }
       join: all
-      integrate: merge
+      integrate: none
       comms: [report, ask]
       compose: { max_sub_runs: 2, max_depth: 2 }
 
@@ -605,7 +612,9 @@ re-run" in place.
   prompts the orchestrator once ("all children are terminal — write your
   verdict.json / issue final decisions"), and the stage's gate is the
   orchestrator's own verdict. An orchestrator may end the stage early with
-  `wf_decide {stage_done}`. Details in §10.
+  `wf_decide {stage_done}`. v1 runs orchestrate stages with
+  `integrate: none` only — `merge` is rejected at validation (§5.2).
+  Details in §10.
 
 ---
 
@@ -804,6 +813,10 @@ the authority.
 ### 10.3 Dynamic composition (`wf_compose`)
 
 Enabled per-orchestrate-block via `compose: { max_sub_runs, max_depth }`.
+When enabled, the orchestrator's opening prompt (`prompts.rs`) describes
+the op and its args alongside `wf_decide`/`wf_notify` — an orchestrator
+can only discover `wf_compose` there, so a stage without `compose` never
+mentions it.
 
 ```json
 {
@@ -992,11 +1005,28 @@ each attempt's preserved chat via the existing `ChatView` (§14.2). Read-only;
 implemented on the supervisor alongside `get_workspace` rather than on
 `WorkflowService`, since it is a workspace query.
 
-`wf_delete_run` cascades: discard all run-owned step-agent workspaces
-(matched by `owner_run_id`), delete `~/.fletch/runs/<run-id>/` (blackboard
-+ run repo), and delete the run's rows. Chats of deleted runs are gone —
-the confirm dialog says so. Until deletion, everything is retained (open
-question #4 covers automatic GC policy later).
+`wf_delete_run` cascades: composed sub-runs first (children-first — the
+`parent_run_id` FK deliberately has no cascade), then per run discard all
+run-owned step-agent workspaces (matched by `owner_run_id`) through the
+app path, delete `~/.fletch/runs/<run-id>/` (blackboard + run repo), and
+delete the run's rows (`wf_step_exec`/`wf_event`/`wf_message` cascade).
+The whole tree must be terminal — the guard runs before anything is
+touched. Tree deletion is best-effort per subtree: workspace discards and
+dir removals are irreversible, so a mid-tree failure cannot roll back —
+instead the failed run and all its ancestors stay fully intact (a run's
+rows are deleted last and are what a retry rediscovers its cleanup
+through), sibling subtrees still get cleaned, and the command returns one
+aggregated error stating that deleting again finishes the job. Within one
+run the row delete is the commit point: the run dir is staged aside with
+an atomic rename and renamed back if the row delete fails, so a surviving
+run row never points at a missing blackboard/run repo; the staged dir is
+removed only after the rows are gone. An app exit inside that window is
+reconciled at the next startup (`resume_active_runs`): a staged dir whose
+row survives is renamed back, one whose row is gone is swept. Chats of
+deleted runs are gone — the delete is a two-click armed button on the run
+row whose confirm state says so. A `wf:run-deleted` event drops each
+fully deleted row from the sidebar. Until deletion, everything is
+retained (open question #4 covers automatic GC policy later).
 
 `ImportReport` = parsed spec + per-agent resolution proposals + warnings
 (missing skills, unknown providers).

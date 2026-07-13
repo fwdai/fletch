@@ -144,8 +144,16 @@ impl WorkflowService {
     }
 
     /// Re-drive every run left `pending`/`running` at startup (spec §6.1); a
-    /// `paused` run waits for a user action. Best-effort per run.
+    /// `paused` run waits for a user action. Best-effort per run. Also
+    /// reconciles run dirs a crashed `wf_delete_run` left staged (§13), so a
+    /// surviving run is valid again before anyone opens it.
     pub fn resume_active_runs(&self) {
+        {
+            let conn = self.db.lock();
+            if let Ok(root) = blackboard::runs_root() {
+                recover_staged_run_dirs(&conn, &root);
+            }
+        }
         let ids: Vec<String> = {
             let conn = self.db.lock();
             conn.prepare("SELECT id FROM wf_run WHERE status IN ('pending','running')")
@@ -187,6 +195,115 @@ impl WorkflowService {
             }
         }
         Ok(())
+    }
+
+    /// Delete a terminal run (`wf_delete_run`, spec §13): cascade over composed
+    /// sub-runs, discard every run-owned step-agent workspace (`owner_run_id`)
+    /// through the app path — a DB cascade would orphan checkouts and dangle
+    /// supervisor state (0019) — remove `~/.fletch/runs/<id>/` (blackboard +
+    /// run repo), and delete the run's rows (`wf_step_exec` / `wf_event` /
+    /// `wf_message` cascade off `wf_run`). Chats of deleted runs are gone; the
+    /// UI's confirm dialog says so. The whole tree is checked before anything
+    /// is touched, so a rejected delete changes nothing.
+    ///
+    /// Deletion of the tree itself is best-effort per subtree: workspace
+    /// discards and dir removals are irreversible, so a mid-tree failure can't
+    /// roll back — instead a failed run keeps itself *and its ancestors* fully
+    /// intact (its `wf_run` row is what a retry rediscovers the cleanup
+    /// through, and the `parent_run_id` FK forbids deleting a parent under a
+    /// surviving child), sibling subtrees still get cleaned, and every failure
+    /// is aggregated into one error that says deleting again finishes the job.
+    pub async fn delete_run(&self, supervisor: &Arc<Supervisor>, run_id: &str) -> Result<()> {
+        let order = {
+            let conn = self.db.lock();
+            let mut order = Vec::new();
+            run_tree_post_order(&conn, run_id, &mut order);
+            check_deletable(&conn, &order)?;
+            order
+        };
+        // A terminal run normally has no live driver, but a drive task can
+        // still be winding down (status written, registry entry not yet
+        // removed). Deleting its rows out from under it would race — reject.
+        {
+            let runs = self.runs.lock();
+            if let Some(id) = order.iter().find(|id| runs.contains_key(id.as_str())) {
+                return Err(Error::Other(format!(
+                    "run {id} is still winding down — try again in a moment"
+                )));
+            }
+        }
+
+        let mut errors = Vec::new();
+        self.delete_tree(supervisor, run_id, &mut errors).await;
+        if errors.is_empty() {
+            return Ok(());
+        }
+        Err(Error::Other(format!(
+            "run deletion incomplete: {}. Every run that failed (and its \
+             parents) is untouched — delete again to finish.",
+            errors.join("; ")
+        )))
+    }
+
+    /// Delete `run_id`'s subtree, children first. Returns whether the whole
+    /// subtree is gone; a failure is pushed onto `errors` and keeps this run's
+    /// rows (deleted last, so the run stays discoverable for a retry) and, via
+    /// the `false` return, every ancestor's.
+    async fn delete_tree(
+        &self,
+        supervisor: &Arc<Supervisor>,
+        run_id: &str,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        let children = {
+            let conn = self.db.lock();
+            child_run_ids(&conn, run_id)
+        };
+        let mut children_deleted = true;
+        for child in children {
+            if !Box::pin(self.delete_tree(supervisor, &child, errors)).await {
+                children_deleted = false;
+            }
+        }
+        if !children_deleted {
+            // A surviving child row still points at this run (`parent_run_id`),
+            // and a half-gutted parent would strand the retry path — leave this
+            // run entirely alone.
+            return false;
+        }
+
+        // Discard every owned workspace before giving up, rather than bailing on
+        // the first failure: a single wedged agent must not strand the others,
+        // which would leave the surviving (kept-for-retry) run showing some
+        // agents already gone and others intact. A successful discard removes the
+        // workspace row, so `agents_for_run` no longer lists it — a re-delete
+        // only sees the ones that failed, and retries just those.
+        let agent_ids: Vec<String> = supervisor
+            .workspace
+            .agents_for_run(run_id)
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        let all_discarded = discard_all(&agent_ids, run_id, errors, |id| {
+            let sup = supervisor.clone();
+            async move { sup.discard_agent(&id).await }
+        })
+        .await;
+        if !all_discarded {
+            // A workspace survives; keep this run's row (and, via `false`, its
+            // ancestors') so a re-delete rediscovers and finishes the cleanup.
+            return false;
+        }
+        let deleted = {
+            let conn = self.db.lock();
+            delete_run_data(&conn, run_id)
+        };
+        if let Err(e) = deleted {
+            errors.push(format!("run {run_id}: {e}"));
+            return false;
+        }
+        journal::emit_run_deleted(&self.app, run_id);
+        true
     }
 
     /// Resume a paused run (`wf_resume`): optionally raise the budget (§11.2,
@@ -894,7 +1011,9 @@ async fn finalize_run(
 /// Reject blocks the engine can't yet execute, up front, so a run fails with a
 /// clear cause before doing any work rather than part-way through. S8/S9 execute
 /// `step` and `parallel` (both `integrate: none` and `integrate: merge`); loop
-/// (S7) executes bodies of plain steps; orchestrate (S11) is not wired yet.
+/// (S7) executes bodies of plain steps; orchestrate (S11) runs `integrate: none`
+/// only. `spec::validate` rejects both unsupported shapes at save/import now, so
+/// this is a backstop for definitions persisted before that rule existed.
 fn ensure_executable(blocks: &[Block]) -> Result<()> {
     for b in blocks {
         match b {
@@ -2550,6 +2669,7 @@ async fn run_orchestrate_stage(
             },
             static_children: &static_children,
             dynamic,
+            compose_max_sub_runs: orch.compose.as_ref().map(|c| c.max_sub_runs),
         });
         // On a resume after escalation, an answer for the orchestrator is folded in.
         let delivered = {
@@ -5589,6 +5709,139 @@ fn child_run_ids(conn: &Connection, parent_run_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The run tree rooted at `run_id`, post-order — every child precedes its
+/// parent, so a delete walked in this order never dangles the `parent_run_id`
+/// FK (which deliberately has no cascade).
+fn run_tree_post_order(conn: &Connection, run_id: &str, out: &mut Vec<String>) {
+    for child in child_run_ids(conn, run_id) {
+        run_tree_post_order(conn, &child, out);
+    }
+    out.push(run_id.to_string());
+}
+
+/// The `wf_delete_run` guard (spec §13): every run in the tree must be terminal
+/// (`done` / `failed` / `canceled`). Checked before anything is deleted.
+fn check_deletable(conn: &Connection, run_ids: &[String]) -> Result<()> {
+    for id in run_ids {
+        let (status, _) = run_status(conn, id)?;
+        if !matches!(status.as_str(), "done" | "failed" | "canceled") {
+            return Err(Error::Other(format!(
+                "cannot delete a {status} run — cancel it first"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Delete one run's on-disk directory and its DB rows. The row delete cascades
+/// `wf_step_exec` / `wf_event` / `wf_message` (0019 + `PRAGMA foreign_keys`).
+fn delete_run_data(conn: &Connection, run_id: &str) -> Result<()> {
+    delete_run_data_at(conn, run_id, &blackboard::run_dir(run_id)?)
+}
+
+/// Discard every id, pressing on past a failure instead of bailing on the first
+/// (the review blocker): one wedged agent must not strand the run's other
+/// workspaces. Returns whether *all* discards succeeded — the caller keeps the
+/// run row (for a re-delete) whenever any failed. A per-failure message lands in
+/// `errors`. Split out from [`WorkflowService::delete_tree`] so the policy is
+/// unit-testable without a real `Supervisor` (whose discards can't be made to
+/// fail on demand).
+async fn discard_all<F, Fut>(
+    ids: &[String],
+    run_id: &str,
+    errors: &mut Vec<String>,
+    discard: F,
+) -> bool
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let mut all = true;
+    for id in ids {
+        if let Err(e) = discard(id.clone()).await {
+            errors.push(format!("run {run_id}: discard agent {id}: {e}"));
+            all = false;
+        }
+    }
+    all
+}
+
+/// Inner form taking the resolved run dir, so tests can exercise the staging
+/// without the process-global `FLETCH_RUNS_ROOT` override.
+///
+/// The row delete is the commit point: the dir is first staged aside with an
+/// atomic rename and renamed back if the row delete fails, so a run that
+/// survives the command is always openable — never a visible row whose
+/// blackboard and run repo are already gone. An app exit inside that window
+/// can't rename back — [`recover_staged_run_dirs`] reconciles it at the next
+/// startup. Only once the rows are gone is the staged dir actually removed
+/// (best-effort: at that point the run no longer exists to retry against, and
+/// a leftover `<id>.deleting` dir is invisible junk, which the next attempt or
+/// startup would also sweep). A missing dir is fine — a retried partial delete
+/// or a cleaned disk.
+fn delete_run_data_at(conn: &Connection, run_id: &str, dir: &Path) -> Result<()> {
+    let staged = dir.with_file_name(format!(
+        "{}.deleting",
+        dir.file_name().and_then(|n| n.to_str()).unwrap_or(run_id)
+    ));
+    let dir_staged = match std::fs::rename(dir, &staged) {
+        Ok(()) => true,
+        // No live dir: never provisioned, a cleaned disk, or a previous
+        // attempt that crashed between this rename and the row delete — in
+        // that last case the staged dir survives and is swept below.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => staged.exists(),
+        Err(e) => {
+            return Err(Error::Other(format!(
+                "cannot stage run dir for {run_id}: {e}"
+            )))
+        }
+    };
+    if let Err(e) = conn.execute("DELETE FROM wf_run WHERE id = ?1", [run_id]) {
+        if dir_staged {
+            let _ = std::fs::rename(&staged, dir);
+        }
+        return Err(Error::Other(e.to_string()));
+    }
+    if dir_staged {
+        let _ = std::fs::remove_dir_all(&staged);
+    }
+    Ok(())
+}
+
+/// Startup reconciliation for `<id>.deleting` run dirs (§13): an app exit
+/// between `delete_run_data_at`'s staging rename and its row delete strands
+/// the staged dir with the run row still live — the exact broken state the
+/// staging exists to prevent, and one only a manual retry would otherwise
+/// clear. A staged dir whose row survives is renamed back (the run is fully
+/// openable again before anyone touches it); one whose row is gone is the
+/// tail of a completed delete and is swept. Best-effort throughout.
+fn recover_staged_run_dirs(conn: &Connection, runs_root: &Path) {
+    let Ok(entries) = std::fs::read_dir(runs_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(run_id) = name.to_str().and_then(|n| n.strip_suffix(".deleting")) else {
+            continue;
+        };
+        let row_exists =
+            match conn.query_row("SELECT COUNT(*) FROM wf_run WHERE id = ?1", [run_id], |r| {
+                r.get::<_, i64>(0)
+            }) {
+                Ok(n) => n > 0,
+                // Can't tell — never destroy data on a failed lookup.
+                Err(_) => continue,
+            };
+        if row_exists {
+            // Restore. Renaming onto an existing non-empty dir fails, which is
+            // the safe outcome if a live dir somehow reappeared.
+            let _ = std::fs::rename(entry.path(), runs_root.join(run_id));
+        } else {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// Live (spawned, non-terminal) step agents for a run — stopped on cancel/pause.
 fn live_step_agents(conn: &Connection, run_id: &str) -> Vec<String> {
     conn.prepare(
@@ -5706,6 +5959,20 @@ pub async fn wf_retry(run_id: String, service: Svc<'_>) -> std::result::Result<(
 #[tauri::command]
 pub async fn wf_approve(run_id: String, service: Svc<'_>) -> std::result::Result<(), String> {
     service.approve(&run_id).map_err(|e| e.to_string())
+}
+
+/// Delete a terminal run and everything it owns (spec §13): run-owned step
+/// agents (and their chats), the run directory, and the run's rows.
+#[tauri::command]
+pub async fn wf_delete_run(
+    run_id: String,
+    service: Svc<'_>,
+    supervisor: tauri::State<'_, Arc<Supervisor>>,
+) -> std::result::Result<(), String> {
+    service
+        .delete_run(supervisor.inner(), &run_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Resolve a merge conflict (§12.3): `mode` is `"agent"` or `"human"`.
@@ -6819,6 +7086,258 @@ mod tests {
         assert!(check_resumable(&conn, "r-ques", "resume").is_err());
         assert!(check_resumable(&conn, "r-budg", "resume").is_ok());
         assert!(check_resumable(&conn, "r-blk", "retry").is_ok());
+    }
+
+    #[test]
+    fn delete_guard_and_tree_order_protect_the_cascade() {
+        // `wf_delete_run` (§13): the tree is collected children-first (the
+        // `parent_run_id` FK has no cascade), and the guard rejects the whole
+        // delete while any run in the tree is non-terminal.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let insert = |id: &str, parent: Option<&str>, status: &str| {
+            db.lock()
+                .execute(
+                    "INSERT INTO wf_run (id,parent_run_id,name,spec_json,task,project_id,
+                        repo_path,run_dir,branch,base_sha,status,budgets_json,spent_json,
+                        created_at,updated_at)
+                     VALUES (?1,?2,'n','{}','t','p','/r','/d','wf/x','sha',?3,'{}','{}',0,0)",
+                    rusqlite::params![id, parent, status],
+                )
+                .unwrap();
+        };
+        insert("r-parent", None, "done");
+        insert("r-child", Some("r-parent"), "canceled");
+        insert("r-grandchild", Some("r-child"), "running");
+
+        let conn = db.lock();
+        let mut order = Vec::new();
+        run_tree_post_order(&conn, "r-parent", &mut order);
+        assert_eq!(order, vec!["r-grandchild", "r-child", "r-parent"]);
+
+        // One live descendant blocks the whole delete.
+        let err = check_deletable(&conn, &order).unwrap_err().to_string();
+        assert!(err.contains("cannot delete a running run"), "{err}");
+
+        conn.execute(
+            "UPDATE wf_run SET status='failed' WHERE id='r-grandchild'",
+            [],
+        )
+        .unwrap();
+        assert!(check_deletable(&conn, &order).is_ok());
+    }
+
+    #[tokio::test]
+    async fn discard_all_presses_past_a_failure_and_reports_it() {
+        // The review blocker: a discard failing mid-loop must not strand the
+        // run's other workspaces. Every id is attempted; the surviving one is
+        // reported; the "all succeeded" result is false so the caller keeps the
+        // run row for a re-delete.
+        let ids = vec!["a1".to_string(), "a2".to_string(), "a3".to_string()];
+        let mut errors = Vec::new();
+        let attempted = std::sync::Mutex::new(Vec::new());
+        let all = discard_all(&ids, "r", &mut errors, |id| {
+            attempted.lock().unwrap().push(id.clone());
+            async move {
+                if id == "a2" {
+                    Err(Error::Other("wedged checkout".into()))
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+
+        assert!(!all, "a failed discard means not-all-discarded");
+        assert_eq!(
+            *attempted.lock().unwrap(),
+            vec!["a1", "a2", "a3"],
+            "every agent is attempted even after a1..a2 — the loop does not bail"
+        );
+        assert_eq!(errors.len(), 1, "only the failed discard is reported");
+        assert!(
+            errors[0].contains("a2") && errors[0].contains("wedged checkout"),
+            "the failure names the agent and cause: {}",
+            errors[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_all_is_all_when_every_discard_succeeds() {
+        let ids = vec!["a1".to_string(), "a2".to_string()];
+        let mut errors = Vec::new();
+        let all = discard_all(&ids, "r", &mut errors, |_| async { Ok(()) }).await;
+        assert!(all);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn delete_run_data_cascades_the_runs_rows() {
+        // Deleting the `wf_run` row must take its journal, execs, and messages
+        // with it (0019 ON DELETE CASCADE + the connection's foreign_keys
+        // pragma), and tolerate an already-missing run directory.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('r-del','n','{}','t','p','/r','/d','wf/x','sha','done','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode)
+             VALUES ('e1','r-del','s',1,0,'done','verdict')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_event (run_id,seq,ts,type,payload_json)
+             VALUES ('r-del',1,0,'run_launched','{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_message (id,run_id,kind,body_json,status,created_at)
+             VALUES ('m1','r-del','report','{}','delivered',0)",
+            [],
+        )
+        .unwrap();
+
+        // A real run dir with content: it must be gone (not just staged) after.
+        let dir = tmp.path().join("runs").join("r-del");
+        std::fs::create_dir_all(dir.join("blackboard")).unwrap();
+        std::fs::write(dir.join("blackboard").join("task.md"), "t").unwrap();
+
+        delete_run_data_at(&conn, "r-del", &dir).expect("delete succeeds");
+
+        let count = |table: &str| -> i64 {
+            conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE run_id = 'r-del'"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let runs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wf_run WHERE id='r-del'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(runs, 0);
+        assert_eq!(count("wf_step_exec"), 0, "execs cascade");
+        assert_eq!(count("wf_event"), 0, "journal cascades");
+        assert_eq!(count("wf_message"), 0, "messages cascade");
+        assert!(!dir.exists(), "run dir removed");
+        assert!(
+            !dir.with_file_name("r-del.deleting").exists(),
+            "no staged dir left behind"
+        );
+    }
+
+    #[test]
+    fn delete_run_data_restores_the_dir_when_the_row_delete_fails() {
+        // The row delete is the commit point: if it fails, the staged dir is
+        // renamed back so the surviving run row never points at missing state.
+        // The failure here is real — a child run's parent_run_id FK (no
+        // cascade) rejects deleting the parent row.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        let insert = |id: &str, parent: Option<&str>| {
+            conn.execute(
+                "INSERT INTO wf_run (id,parent_run_id,name,spec_json,task,project_id,repo_path,
+                    run_dir,branch,base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,?2,'n','{}','t','p','/r','/d','wf/x','sha','done','{}','{}',0,0)",
+                rusqlite::params![id, parent],
+            )
+            .unwrap();
+        };
+        insert("r-parent", None);
+        insert("r-child", Some("r-parent"));
+        let dir = tmp.path().join("runs").join("r-parent");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("marker"), "m").unwrap();
+
+        let err = delete_run_data_at(&conn, "r-parent", &dir).unwrap_err();
+        assert!(err.to_string().contains("FOREIGN KEY"), "{err}");
+        assert!(dir.join("marker").exists(), "dir renamed back intact");
+        assert!(
+            !dir.with_file_name("r-parent.deleting").exists(),
+            "staged dir gone after restore"
+        );
+        let runs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wf_run WHERE id='r-parent'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(runs, 1, "row untouched");
+    }
+
+    #[test]
+    fn delete_run_data_sweeps_a_crashed_attempts_staged_dir() {
+        // A crash between the staging rename and the row delete leaves rows
+        // plus a `<id>.deleting` dir and no live dir; the retry must finish
+        // the job rather than orphan the staged dir.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('r-crash','n','{}','t','p','/r','/d','wf/x','sha','done','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        let dir = tmp.path().join("runs").join("r-crash");
+        let staged = dir.with_file_name("r-crash.deleting");
+        std::fs::create_dir_all(&staged).unwrap();
+
+        delete_run_data_at(&conn, "r-crash", &dir).expect("retry completes");
+        assert!(!staged.exists(), "leftover staged dir swept");
+        let runs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wf_run WHERE id='r-crash'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(runs, 0);
+    }
+
+    #[test]
+    fn startup_recovery_reconciles_staged_run_dirs() {
+        // An app exit between the staging rename and the row delete strands a
+        // `<id>.deleting` dir. At the next startup: a staged dir whose run row
+        // survives is renamed back (the run is openable again without user
+        // action); one whose row is gone is swept; live dirs are untouched.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('r-alive','n','{}','t','p','/r','/d','wf/x','sha','done','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        let root = tmp.path().join("runs");
+        std::fs::create_dir_all(root.join("r-alive.deleting")).unwrap();
+        std::fs::write(root.join("r-alive.deleting").join("marker"), "m").unwrap();
+        std::fs::create_dir_all(root.join("r-gone.deleting")).unwrap();
+        std::fs::create_dir_all(root.join("r-normal")).unwrap();
+
+        recover_staged_run_dirs(&conn, &root);
+
+        assert!(
+            root.join("r-alive").join("marker").exists(),
+            "surviving run's dir restored intact"
+        );
+        assert!(!root.join("r-alive.deleting").exists(), "staged name gone");
+        assert!(
+            !root.join("r-gone.deleting").exists(),
+            "completed delete's tail swept"
+        );
+        assert!(root.join("r-normal").exists(), "live dirs untouched");
     }
 
     #[test]

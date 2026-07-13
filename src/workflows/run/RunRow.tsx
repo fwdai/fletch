@@ -3,7 +3,7 @@
 // it as a run, a chip shows the flow's lead agent, a paused-reason badge names
 // why it's waiting, and it can be stopped the same way as an agent.
 
-import type { KeyboardEvent, MouseEvent } from "react";
+import { type KeyboardEvent, type MouseEvent, useState } from "react";
 import { api, type WfRun } from "../../api";
 import { Icon } from "../../components/Icon";
 import { useAppStore } from "../../store";
@@ -34,6 +34,11 @@ export function RunRow({
 
   const working = run.status === "running";
   const stoppable = run.status === "running" || run.status === "pending";
+  // Delete is the inverse gate (§13: terminal runs only). It is destructive and
+  // irreversible — the run's step-agent chats go with it — so it takes two
+  // clicks: the first arms the button and the tooltip states what is lost.
+  const deletable = run.status === "done" || run.status === "failed" || run.status === "canceled";
+  const [confirmDelete, setConfirmDelete] = useState(false);
   // Same left-spine vocabulary as an agent row: live → accent, failed → danger,
   // everything else (pending/paused/done/canceled) → the faint idle grey.
   const railClass = working ? "run" : run.status === "failed" ? "err" : "idle";
@@ -62,6 +67,20 @@ export function RunRow({
     }
   };
 
+  const onDelete = async (e: MouseEvent) => {
+    e.stopPropagation();
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    try {
+      await api.wfDeleteRun(run.id);
+    } catch (err) {
+      setLastError(`Failed to delete run: ${err}`);
+      setConfirmDelete(false);
+    }
+  };
+
   return (
     <div
       className={`agent ${selected ? "active" : ""} ${nested ? "run-nested" : ""}`}
@@ -77,6 +96,7 @@ export function RunRow({
           onSelect();
         }
       }}
+      onMouseLeave={() => setConfirmDelete(false)}
     >
       <span className={`ag-rail ${railClass}`} />
       <div className="agent-row">
@@ -112,6 +132,20 @@ export function RunRow({
                 aria-label="Stop"
               >
                 <Icon name="stop" size={11} />
+              </button>
+            )}
+            {deletable && (
+              <button
+                className={`ag-act tip ${confirmDelete ? "confirm-del" : ""}`}
+                data-tip={
+                  confirmDelete
+                    ? "Deletes this run's chats too — click again to confirm"
+                    : "Delete run"
+                }
+                onClick={(e) => void onDelete(e)}
+                aria-label="Delete run"
+              >
+                <Icon name="trash" size={11} />
               </button>
             )}
           </span>

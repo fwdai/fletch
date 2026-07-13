@@ -101,6 +101,12 @@ pub fn emit_run(app: &AppHandle, run: &Run) {
     let _ = app.emit("wf:run", run);
 }
 
+/// Notify the frontend that a run's rows were deleted (`wf_delete_run`, §13),
+/// so the sidebar drops the row instead of upserting it.
+pub fn emit_run_deleted(app: &AppHandle, run_id: &str) {
+    let _ = app.emit("wf:run-deleted", run_id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

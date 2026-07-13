@@ -323,6 +323,17 @@ fn walk_blocks(
             Block::Loop(lp) => check_loop(lp, spec, seen_ids, errors),
             Block::Orchestrate(orch) => {
                 check_agent_ref("orchestrate", &orch.agent, spec, errors);
+                if matches!(orch.integrate, Integrate::Merge) {
+                    // The engine runs orchestrate stages with `integrate: none`
+                    // only (§6.6); merge over the parallel-stage machinery is a
+                    // follow-up. Rejecting here keeps a definition that would
+                    // die at launch from ever persisting.
+                    errors.push(format!(
+                        "orchestrate '{}' integrate: merge is not supported yet — \
+                         use integrate: none",
+                        orch.agent
+                    ));
+                }
                 if orch.comms.contains(&CommsCap::Notify) {
                     // `comms` is the children's caps; children are steps, so
                     // `notify` (orchestrator-only, §5.1) is invalid here too.
@@ -371,6 +382,18 @@ fn check_loop(
 ) {
     if lp.max < 1 {
         errors.push("loop.max must be ≥ 1".into());
+    }
+    // The engine executes loop bodies of plain steps only (§6.6); nesting
+    // parallel/loop/orchestrate inside a body is a follow-up. Reject at
+    // validation so the shape never saves, rather than dying at launch.
+    for b in &lp.body {
+        if !matches!(b, Block::Step(_)) {
+            errors.push(
+                "loop body blocks must be steps — nested parallel/loop/orchestrate \
+                 inside a loop is not supported yet"
+                    .into(),
+            );
+        }
     }
     // The `until.step` must be a step *inside this loop's body*, and its gate
     // must be `verdict` — the exit reads that verdict, so a tests/commit gate
@@ -674,7 +697,7 @@ mod tests {
             }),
             body: vec![],
             join: Join::All,
-            integrate: Integrate::Merge,
+            integrate: Integrate::None,
             comms: vec![CommsCap::Report, CommsCap::Ask],
             compose: Some(ComposeLimits {
                 max_sub_runs: 2,
@@ -682,6 +705,66 @@ mod tests {
             }),
         })];
         assert!(validate(&s).is_ok(), "{:?}", errors(&s));
+    }
+
+    #[test]
+    fn orchestrate_integrate_merge_rejected() {
+        // The engine only runs orchestrate with `integrate: none` (§6.6) — the
+        // unsupported shape must fail validation, not die at launch.
+        let mut s = minimal();
+        s.workflow = vec![Block::Orchestrate(Orchestrate {
+            agent: "coder".into(),
+            goal: "lead".into(),
+            children: None,
+            body: vec![],
+            join: Join::All,
+            integrate: Integrate::Merge,
+            comms: vec![],
+            compose: None,
+        })];
+        assert!(errors(&s)
+            .iter()
+            .any(|e| e.contains("integrate: merge is not supported")));
+    }
+
+    #[test]
+    fn loop_with_nested_block_rejected() {
+        // Loop bodies are plain steps in v1 (§6.6) — a nested parallel must fail
+        // validation, not die at launch.
+        let mut s = minimal();
+        s.workflow = vec![Block::Loop(Loop {
+            max: 2,
+            until: Until {
+                step: "check".into(),
+                verdict: LoopVerdict::Done,
+            },
+            body: vec![
+                Block::Parallel(Parallel {
+                    join: Join::All,
+                    integrate: Integrate::None,
+                    max_concurrent: None,
+                    steps: vec![Step {
+                        id: "fan".into(),
+                        agent: "coder".into(),
+                        goal: "g".into(),
+                        gate: Gate::Verdict,
+                        budgets: None,
+                        comms: vec![],
+                    }],
+                }),
+                Block::Step(Step {
+                    id: "check".into(),
+                    agent: "coder".into(),
+                    goal: "g".into(),
+                    gate: Gate::Verdict,
+                    budgets: None,
+                    comms: vec![],
+                }),
+            ],
+        })];
+        assert!(errors(&s)
+            .iter()
+            .any(|e| e.contains("loop body blocks must be steps")));
     }
 
     #[test]

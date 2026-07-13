@@ -5,7 +5,7 @@
 // (`resume_active_runs` on startup), so this hook is a pure view.
 
 import { useEffect, useState } from "react";
-import { api, onWfRun, type WfRun } from "../../api";
+import { api, onWfRun, onWfRunDeleted, type WfRun } from "../../api";
 
 export function useRuns(): WfRun[] {
   const [runs, setRuns] = useState<WfRun[]>([]);
@@ -28,10 +28,14 @@ export function useRuns(): WfRun[] {
         return next;
       });
     });
+    const offDeleted = onWfRunDeleted((runId) => {
+      setRuns((prev) => prev.filter((r) => r.id !== runId));
+    });
 
     return () => {
       alive = false;
       void off.then((f) => f());
+      void offDeleted.then((f) => f());
     };
   }, []);
 

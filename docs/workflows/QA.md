@@ -169,9 +169,10 @@ returning `{status:'ok'}` with a test."* Press Enter to launch.
 
 ## 9. Cleanup
 
-- ✅ **Delete run** (terminal runs only): the confirm dialog states chats will
-  be gone. Confirm → run-owned workspaces discarded, `~/.fletch/runs/<id>/`
-  removed, rows deleted. The run leaves the sidebar; its chats no longer open.
+- ✅ **Delete run** (terminal runs only): the run row's delete button arms on
+  the first click and its tooltip states chats will be gone. Click again →
+  run-owned workspaces discarded, `~/.fletch/runs/<id>/` removed, rows deleted
+  (sub-runs cascade). The run leaves the sidebar; its chats no longer open.
 
 ---
 
