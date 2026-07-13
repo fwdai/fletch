@@ -975,6 +975,11 @@ struct ChildCtx {
     /// message so the fresh attempt is guaranteed to carry it. `None` for the
     /// common case.
     extra_note: Option<String>,
+    /// The launch generation for this child's `step_id` (spec §10.2). `retry_child`
+    /// bumps it and spawns a replacement; the stage ignores results from any
+    /// superseded (lower-generation) attempt so a stale finish of the cancelled
+    /// task can't win the join. Always `0` outside an orchestrate stage.
+    generation: u64,
     /// Set by the stage to wind this child down (loser cancellation, §6.6).
     stage_cancel: Arc<AtomicBool>,
 }
@@ -1163,6 +1168,7 @@ async fn run_parallel_stage(
             setup_override: setup_override.clone(),
             integrate: par.integrate,
             extra_note: None,
+            generation: 0,
             stage_cancel: stage_cancel.clone(),
         });
     }
@@ -2115,6 +2121,9 @@ fn build_spawn_req(
 struct OrchChildResult {
     step_id: String,
     exec_id: String,
+    /// The launch generation of the attempt that produced this result — the stage
+    /// discards it if a later `retry_child` has superseded this generation.
+    generation: u64,
     outcome: ChildOutcome,
     ledger: Ledger,
 }
@@ -2285,6 +2294,10 @@ async fn run_orchestrate_stage(
     // wind down one child, and a join-`any` winner or a stage teardown can wind
     // down all of them (§10.2, §6.6).
     let mut child_cancels: HashMap<String, Arc<AtomicBool>> = HashMap::new();
+    // Per-step launch generation. `retry_child` bumps it and spawns a replacement;
+    // `handle_orch_child` discards any result whose generation is stale, so a
+    // cancelled old attempt that still finishes can't win the join (§10.2).
+    let mut child_gen: HashMap<String, u64> = HashMap::new();
     // Seed the dynamic-child index from the DB so a resumed stage doesn't reuse an
     // id an earlier drive already created (ids stay unique across resume).
     let mut dyn_count = existing_dyn_child_count(&ctx.db.lock(), run_id, &orch_step_id);
@@ -2305,6 +2318,7 @@ async fn run_orchestrate_stage(
         })?;
         let cancel = Arc::new(AtomicBool::new(false));
         child_cancels.insert(step.id.clone(), cancel.clone());
+        child_gen.insert(step.id.clone(), 0);
         let c = build_orch_child_ctx(
             ctx,
             run_id,
@@ -2321,6 +2335,7 @@ async fn run_orchestrate_stage(
             test_override,
             setup_override,
             None,
+            0,
             cancel,
         );
         let entry = stage_entry_sha.clone();
@@ -2427,6 +2442,7 @@ async fn run_orchestrate_stage(
                         dyn_count += 1;
                         let cancel = Arc::new(AtomicBool::new(false));
                         child_cancels.insert(step.id.clone(), cancel.clone());
+                        child_gen.insert(step.id.clone(), 0);
                         let c = build_orch_child_ctx(
                             ctx,
                             run_id,
@@ -2443,6 +2459,7 @@ async fn run_orchestrate_stage(
                             test_override,
                             setup_override,
                             None,
+                            0,
                             cancel,
                         );
                         let entry = stage_entry_sha.clone();
@@ -2469,6 +2486,10 @@ async fn run_orchestrate_stage(
                             outcomes.remove(&orig.id);
                             let cancel = Arc::new(AtomicBool::new(false));
                             child_cancels.insert(orig.id.clone(), cancel.clone());
+                            // Bump the generation so the cancelled attempt's result
+                            // (if it still finishes) is discarded by the join (§10.2).
+                            let gen = child_gen.get(&orig.id).copied().unwrap_or(0) + 1;
+                            child_gen.insert(orig.id.clone(), gen);
                             let step = orig.clone();
                             // Thread the guidance straight into the replacement
                             // child's first prompt (not a queued note) so the fresh
@@ -2495,6 +2516,7 @@ async fn run_orchestrate_stage(
                                 test_override,
                                 setup_override,
                                 note,
+                                gen,
                                 cancel,
                             );
                             let entry = stage_entry_sha.clone();
@@ -2519,6 +2541,7 @@ async fn run_orchestrate_stage(
                 joined,
                 &mut outcomes,
                 &child_cancels,
+                &child_gen,
             );
         }
 
@@ -2763,7 +2786,7 @@ async fn run_orchestrate_stage(
         tokio::select! {
             joined = set.join_next() => {
                 if let Some(j) = joined {
-                    handle_orch_child(ctx, run_id, &orch_exec, orch.join, ledger, j, &mut outcomes, &child_cancels);
+                    handle_orch_child(ctx, run_id, &orch_exec, orch.join, ledger, j, &mut outcomes, &child_cancels, &child_gen);
                 }
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
@@ -2798,6 +2821,7 @@ fn build_orch_child_ctx(
     test_override: &Option<String>,
     setup_override: &Option<String>,
     extra_note: Option<String>,
+    generation: u64,
     cancel: Arc<AtomicBool>,
 ) -> ChildCtx {
     ChildCtx {
@@ -2822,6 +2846,7 @@ fn build_orch_child_ctx(
         // they never ferry — `drive_orch_child` always takes the none path.
         integrate: Integrate::None,
         extra_note,
+        generation,
         stage_cancel: cancel,
     }
 }
@@ -2838,10 +2863,12 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
     let mut child_ledger = Ledger::default();
     let mut last_exec = String::new();
 
+    let generation = c.generation;
     let done =
         |step_id: String, exec_id: String, outcome: ChildOutcome, ledger: Ledger| OrchChildResult {
             step_id,
             exec_id,
+            generation,
             outcome,
             ledger,
         };
@@ -3231,6 +3258,7 @@ fn handle_orch_child(
     joined: std::result::Result<OrchChildResult, tokio::task::JoinError>,
     outcomes: &mut HashMap<String, ChildStatus>,
     child_cancels: &HashMap<String, Arc<AtomicBool>>,
+    child_gen: &HashMap<String, u64>,
 ) {
     let res = match joined {
         Ok(r) => r,
@@ -3243,7 +3271,15 @@ fn handle_orch_child(
             return;
         }
     };
+    // Its spend counts regardless, but a result from an attempt a later
+    // `retry_child` superseded must not touch the join outcome or wind losers
+    // down — otherwise the stale attempt could decide the stage (§10.2).
     fold_child_ledger(ledger, &res.ledger);
+    if child_gen.get(&res.step_id).copied().unwrap_or(0) != res.generation {
+        let conn = ctx.db.lock();
+        persist_spent(&conn, run_id, ledger);
+        return;
+    }
     let conn = ctx.db.lock();
     match res.outcome {
         ChildOutcome::Success { moved_head, head } => {
@@ -7661,5 +7697,86 @@ mod tests {
             bad, 0,
             "skip_child must cancel the child, not let it stall or finish"
         );
+    }
+
+    #[test]
+    fn stale_retry_result_is_discarded_by_generation() {
+        // A superseded attempt (older generation) that still finishes must not
+        // decide the join; only the current generation's result counts (§10.2).
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES ('r','n','{}','t','p','/r','/d','wf/x','sha','running','{}','{}',0,0)",
+                [],
+            )
+            .unwrap();
+        for id in ["orch-exec", "c-old", "c-new"] {
+            db.lock()
+                .execute(
+                    "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode)
+                     VALUES (?1,'r','impl',1,0,'abandoned','verdict')",
+                    [id],
+                )
+                .unwrap();
+        }
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: StubDriver::new(tmp.path().join("ws"), true),
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+        };
+        let mut ledger = Ledger::default();
+        let mut outcomes: HashMap<String, ChildStatus> = HashMap::new();
+        let child_cancels: HashMap<String, Arc<AtomicBool>> = HashMap::new();
+        // Current generation for `impl` is 1 (a retry superseded generation 0).
+        let mut child_gen: HashMap<String, u64> = HashMap::new();
+        child_gen.insert("impl".to_string(), 1);
+
+        let result = |exec: &str, generation: u64| OrchChildResult {
+            step_id: "impl".to_string(),
+            exec_id: exec.to_string(),
+            generation,
+            outcome: ChildOutcome::Success {
+                moved_head: false,
+                head: None,
+            },
+            ledger: Ledger::default(),
+        };
+
+        // A stale (generation 0) success is ignored — records no join outcome.
+        handle_orch_child(
+            &ctx,
+            "r",
+            "orch-exec",
+            Join::Any,
+            &mut ledger,
+            Ok(result("c-old", 0)),
+            &mut outcomes,
+            &child_cancels,
+            &child_gen,
+        );
+        assert!(
+            !outcomes.contains_key("impl"),
+            "a superseded attempt must not decide the join"
+        );
+
+        // The current-generation result records the outcome.
+        handle_orch_child(
+            &ctx,
+            "r",
+            "orch-exec",
+            Join::Any,
+            &mut ledger,
+            Ok(result("c-new", 1)),
+            &mut outcomes,
+            &child_cancels,
+            &child_gen,
+        );
+        assert!(matches!(outcomes.get("impl"), Some(ChildStatus::Success)));
     }
 }
