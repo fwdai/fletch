@@ -520,14 +520,7 @@ fn spawn_drive_task(
         let panicked = join.await.is_err();
         if panicked {
             let conn = db.lock();
-            set_status(
-                &conn,
-                Some(&app),
-                &run_id,
-                "failed",
-                None,
-                Some("internal scheduler error"),
-            );
+            fail_run(&conn, Some(&app), &run_id, "internal scheduler error");
         }
         // Read the respawn flag under the same lock as the removal so a
         // request can't slip between the two.
@@ -586,14 +579,7 @@ struct RunEssentials {
 async fn drive_run(ctx: &RunCtx, run_id: &str) {
     if let Err(e) = drive_run_inner(ctx, run_id).await {
         let conn = ctx.db.lock();
-        set_status(
-            &conn,
-            ctx.app.as_ref(),
-            run_id,
-            "failed",
-            None,
-            Some(&e.to_string()),
-        );
+        fail_run(&conn, ctx.app.as_ref(), run_id, &e.to_string());
     }
 }
 
@@ -1447,13 +1433,11 @@ async fn run_parallel_stage(
         Join::All => {
             if let Some(reason) = stage_failed {
                 let conn = ctx.db.lock();
-                set_status(
+                fail_run(
                     &conn,
                     ctx.app.as_ref(),
                     run_id,
-                    "failed",
-                    None,
-                    Some(&format!("parallel stage failed: {reason}")),
+                    &format!("parallel stage failed: {reason}"),
                 );
                 Ok(StageFlow::Stop)
             } else {
@@ -1492,16 +1476,11 @@ async fn run_parallel_stage(
                 .await
             } else {
                 let conn = ctx.db.lock();
-                set_status(
+                fail_run(
                     &conn,
                     ctx.app.as_ref(),
                     run_id,
-                    "failed",
-                    None,
-                    Some(&format!(
-                        "all parallel children failed: {}",
-                        failures.join("; ")
-                    )),
+                    &format!("all parallel children failed: {}", failures.join("; ")),
                 );
                 Ok(StageFlow::Stop)
             }
@@ -2510,13 +2489,11 @@ async fn run_orchestrate_stage(
         Err(e) => {
             let conn = ctx.db.lock();
             finish_step_exec(&conn, &orch_exec, "error", None);
-            set_status(
+            fail_run(
                 &conn,
                 ctx.app.as_ref(),
                 run_id,
-                "failed",
-                None,
-                Some(&format!("orchestrator spawn failed: {e}")),
+                &format!("orchestrator spawn failed: {e}"),
             );
             return Ok(StageFlow::Stop);
         }
@@ -2546,13 +2523,11 @@ async fn run_orchestrate_stage(
     {
         let conn = ctx.db.lock();
         finish_step_exec(&conn, &orch_exec, "error", None);
-        set_status(
+        fail_run(
             &conn,
             ctx.app.as_ref(),
             run_id,
-            "failed",
-            None,
-            Some(&format!("orchestrator not ready: {e}")),
+            &format!("orchestrator not ready: {e}"),
         );
         return Ok(StageFlow::Stop);
     }
@@ -2957,13 +2932,11 @@ async fn run_orchestrate_stage(
                 let conn = ctx.db.lock();
                 finish_step_exec(&conn, &orch_exec, "error", None);
                 persist_spent(&conn, run_id, ledger);
-                set_status(
+                fail_run(
                     &conn,
                     ctx.app.as_ref(),
                     run_id,
-                    "failed",
-                    None,
-                    Some(&format!("orchestrate stage failed: {reason}")),
+                    &format!("orchestrate stage failed: {reason}"),
                 );
                 return Ok(StageFlow::Stop);
             }
@@ -2984,13 +2957,11 @@ async fn run_orchestrate_stage(
                 let conn = ctx.db.lock();
                 finish_step_exec(&conn, &orch_exec, "error", None);
                 persist_spent(&conn, run_id, ledger);
-                set_status(
+                fail_run(
                     &conn,
                     ctx.app.as_ref(),
                     run_id,
-                    "failed",
-                    None,
-                    Some("orchestrate stage failed: all children failed"),
+                    "orchestrate stage failed: all children failed",
                 );
                 return Ok(StageFlow::Stop);
             }
@@ -4568,13 +4539,11 @@ async fn finish_orch_turn_failure(
             let conn = ctx.db.lock();
             finish_step_exec(&conn, orch_exec, "error", None);
             persist_spent(&conn, run_id, ledger);
-            set_status(
+            fail_run(
                 &conn,
                 ctx.app.as_ref(),
                 run_id,
-                "failed",
-                None,
-                Some(&format!("orchestrator error: {e}")),
+                &format!("orchestrator error: {e}"),
             );
             Ok(StageFlow::Stop)
         }
@@ -4697,13 +4666,11 @@ async fn run_loop(
             // `ensure_executable` already rejected non-step loop bodies.
             let Block::Step(step) = body_block else {
                 let conn = ctx.db.lock();
-                set_status(
+                fail_run(
                     &conn,
                     ctx.app.as_ref(),
                     run_id,
-                    "failed",
-                    None,
-                    Some("nested non-step blocks inside a loop are not supported yet"),
+                    "nested non-step blocks inside a loop are not supported yet",
                 );
                 return Ok(BlockFlow::Halt);
             };
@@ -5003,13 +4970,11 @@ async fn execute_step(
                             let conn = ctx.db.lock();
                             finish_step_exec(&conn, &exec_id, "error", None);
                             if give_up {
-                                set_status(
+                                fail_run(
                                     &conn,
                                     ctx.app.as_ref(),
                                     run_id,
-                                    "failed",
-                                    None,
-                                    Some(&format!("ferry failed: {e}")),
+                                    &format!("ferry failed: {e}"),
                                 );
                             }
                         }
@@ -5135,14 +5100,7 @@ async fn execute_step(
                             None,
                         );
                     } else {
-                        set_status(
-                            &conn,
-                            ctx.app.as_ref(),
-                            run_id,
-                            "failed",
-                            None,
-                            Some(&error),
-                        );
+                        fail_run(&conn, ctx.app.as_ref(), run_id, &error);
                     }
                     return Ok(StepFlow::Halt);
                 }
@@ -5345,6 +5303,24 @@ fn set_status(
             journal::emit_run(app, &run);
         }
     }
+}
+
+/// Mark a run `failed`: journal `run_failed {error}` first, then update the row.
+/// A failure is an append-only timeline event (§6.1, §7.1) — the observability
+/// goal (§1.2) requires every terminal outcome to be a journal event, not only a
+/// materialized-row change. Mirrors the `run_done` journal+status pair, so a
+/// panic, ferry failure, or stage failure all leave a `run_failed` in the
+/// timeline with the same human-readable cause stored on `wf_run.error`.
+fn fail_run(conn: &Connection, app: Option<&AppHandle>, run_id: &str, error: &str) {
+    journal_event(
+        conn,
+        app,
+        run_id,
+        event_type::RUN_FAILED,
+        None,
+        &json!({ "error": error }),
+    );
+    set_status(conn, app, run_id, "failed", None, Some(error));
 }
 
 /// Append a journal event and emit `wf:event` (when an app handle is present).
@@ -6045,6 +6021,9 @@ mod tests {
         statuses: HashMap<String, AgentStatus>,
         worktrees: HashMap<String, PathBuf>,
         count: usize,
+        /// How many times `stop` was called — lets a test prove that entering
+        /// `paused` stops the live step agent (§6.5).
+        stops: usize,
     }
     impl StubDriver {
         fn new(root: PathBuf, commit: bool) -> Arc<Self> {
@@ -6061,6 +6040,9 @@ mod tests {
                 agent_id: id.to_string(),
                 status: s,
             });
+        }
+        fn stop_count(&self) -> usize {
+            self.state.lock().stops
         }
     }
     impl AgentDriver for StubDriver {
@@ -6121,7 +6103,10 @@ mod tests {
             })
         }
         fn stop<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
-            Box::pin(async { Ok(()) })
+            Box::pin(async move {
+                self.state.lock().stops += 1;
+                Ok(())
+            })
         }
         fn archive<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
             Box::pin(async { Ok(()) })
@@ -6289,7 +6274,7 @@ mod tests {
     }
 
     /// A single commit-gated step, no finalize — for the cancel / blocked tests.
-    fn scaffold_one_step(tmp: &Path, run_id: &str, branch: &str) -> (Db, PathBuf) {
+    fn scaffold_one_step(tmp: &Path, run_id: &str, branch: &str, gate: Gate) -> (Db, PathBuf) {
         let source = tmp.join("source");
         std::fs::create_dir_all(&source).unwrap();
         sh(&source, &["init", "-q", "-b", "main"]);
@@ -6325,7 +6310,14 @@ mod tests {
             description: None,
             budgets: None,
             agents,
-            workflow: vec![Block::Step(step("only"))],
+            workflow: vec![Block::Step(Step {
+                id: "only".to_string(),
+                agent: "coder".to_string(),
+                goal: "do only".to_string(),
+                gate,
+                budgets: None,
+                comms: vec![],
+            })],
             finalize: None,
         };
         let spec_json = serde_json::to_string(&spec).unwrap();
@@ -6351,7 +6343,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_marks_run_canceled_and_runs_no_step() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws) = scaffold_one_step(tmp.path(), "run-cancel", "wf/c-1");
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-cancel", "wf/c-1", Gate::Commit);
         let ctx = RunCtx {
             db: db.clone(),
             driver: StubDriver::new(ws, true),
@@ -6374,7 +6366,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_run_is_not_redriven() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws) = scaffold_one_step(tmp.path(), "run-term", "wf/t-1");
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-term", "wf/t-1", Gate::Commit);
         db.lock()
             .execute("UPDATE wf_run SET status='failed' WHERE id='run-term'", [])
             .unwrap();
@@ -6404,7 +6396,7 @@ mod tests {
     #[tokio::test]
     async fn unmet_commit_gate_pauses_blocked() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws) = scaffold_one_step(tmp.path(), "run-blocked", "wf/b-1");
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-blocked", "wf/b-1", Gate::Commit);
         // commit=false → the agent makes no commit → the commit gate stays unmet
         // through the attempt's one re-prompt, so the run pauses `blocked_gate`.
         let ctx = RunCtx {
@@ -6427,6 +6419,159 @@ mod tests {
             .unwrap();
         assert_eq!(status, "paused");
         assert_eq!(reason.as_deref(), Some("blocked_gate"));
+    }
+
+    #[tokio::test]
+    async fn pause_stops_the_live_step_agent() {
+        // §6.5: entering `paused` stops live step agents — a pause can last days
+        // and idle CLI processes must not accumulate. commit=false keeps the
+        // commit gate unmet, so the attempt exhausts its re-prompt and the run
+        // pauses `blocked_gate`; the engine must have called `driver.stop`.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-pausestop", "wf/ps-1", Gate::Commit);
+        let driver = StubDriver::new(ws, false);
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: driver.clone(),
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+            runs: None,
+        };
+        drive_run(&ctx, "run-pausestop").await;
+        assert_eq!(run_status_str(&db, "run-pausestop"), "paused");
+        assert!(
+            driver.stop_count() >= 1,
+            "pausing must stop the live step agent"
+        );
+    }
+
+    /// A driver whose `spawn` always errors — drives a run onto the terminal
+    /// failure path (attempt error → retry → `fail_run`).
+    struct SpawnFailDriver {
+        tx: broadcast::Sender<StatusEvent>,
+    }
+    impl SpawnFailDriver {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                tx: broadcast::channel(8).0,
+            })
+        }
+    }
+    impl AgentDriver for SpawnFailDriver {
+        fn spawn(
+            &self,
+            _req: SpawnReq,
+        ) -> super::super::driver::BoxFuture<'_, Result<super::super::driver::SpawnedAgent>>
+        {
+            Box::pin(async { Err(Error::Other("boom".into())) })
+        }
+        fn status(&self, _id: &str) -> Option<AgentStatus> {
+            None
+        }
+        fn subscribe(&self) -> broadcast::Receiver<StatusEvent> {
+            self.tx.subscribe()
+        }
+        fn send_message<'a>(
+            &'a self,
+            _id: &'a str,
+            _text: String,
+        ) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn stop<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn archive<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn last_activity(&self, _id: &str) -> Option<i64> {
+            None
+        }
+        fn turn_usage(&self, _id: &str) -> Option<super::super::driver::TurnUsage> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_run_emits_a_run_failed_event() {
+        // §6.1/§7.1: a run that fails must leave an append-only `run_failed`
+        // journal event, not only a materialized-row status — the observability
+        // goal requires every terminal outcome to be a timeline event.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, _ws) = scaffold_one_step(tmp.path(), "run-fail", "wf/f-1", Gate::Commit);
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: SpawnFailDriver::new(),
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+            runs: None,
+        };
+        drive_run(&ctx, "run-fail").await;
+
+        assert_eq!(run_status_str(&db, "run-fail"), "failed");
+        // Exactly one run_failed event, carrying the human-readable cause.
+        let (n, err): (i64, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*), MAX(json_extract(payload_json,'$.error'))
+                 FROM wf_event WHERE run_id='run-fail' AND type=?1",
+                [event_type::RUN_FAILED],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "one run_failed event");
+        assert!(
+            err.as_deref().is_some_and(|e| e.contains("spawn failed")),
+            "run_failed payload carries the cause, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_verdict_archival_failure_does_not_gate_on_the_stale_verdict() {
+        // §8.3: if a leftover verdict cannot be moved aside, the gate must not
+        // read it — the loop/retry staleness bug class. Block archival (make
+        // `<step-dir>/history` a file so `create_dir_all` fails) and plant a
+        // `done` verdict. The attempt must error rather than pass the gate, so
+        // the run ends `failed`, never `done`.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-stale", "wf/st-1", Gate::Verdict);
+        // The step dir lives under the run's blackboard; the run_dir is
+        // `<tmp>/rundir` (see `scaffold_one_step`).
+        let step_dir = blackboard::blackboard_dir(&tmp.path().join("rundir")).join("only");
+        std::fs::create_dir_all(&step_dir).unwrap();
+        std::fs::write(
+            step_dir.join("verdict.json"),
+            r#"{"result":"done","summary":"stale"}"#,
+        )
+        .unwrap();
+        // A regular file where the history dir must be created → archival errors.
+        std::fs::write(step_dir.join("history"), "not a dir").unwrap();
+
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: StubDriver::new(ws, true),
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+            runs: None,
+        };
+        drive_run(&ctx, "run-stale").await;
+
+        assert_eq!(
+            run_status_str(&db, "run-stale"),
+            "failed",
+            "a blocked archival must fail the attempt, not gate on the stale verdict"
+        );
+        let done = count(
+            &db,
+            "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-stale' AND status='done'",
+        );
+        assert_eq!(done, 0, "the stale `done` verdict must not satisfy the gate");
     }
 
     /// A stub whose "agent" raises the run's pending-ask flag on its very first
@@ -6614,7 +6759,7 @@ mod tests {
     #[tokio::test]
     async fn ask_pauses_question_then_answer_resumes_to_done() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws) = scaffold_one_step(tmp.path(), "run-ask", "wf/ask-1");
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-ask", "wf/ask-1", Gate::Commit);
         let pending_ask = Arc::new(AtomicBool::new(false));
         let driver = AskStub::new(ws, db.clone(), "run-ask", pending_ask.clone(), true, false);
         let ctx = RunCtx {
@@ -6715,7 +6860,7 @@ mod tests {
         // flag never set, the scheduler must pause `question` rather than act on
         // the gate outcome (§10.4).
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws) = scaffold_one_step(tmp.path(), "run-ask2", "wf/ask2-1");
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-ask2", "wf/ask2-1", Gate::Commit);
         let pending_ask = Arc::new(AtomicBool::new(false));
         // set_flag = false → the ask is persisted, but the flag is never raised.
         let driver = AskStub::new(
@@ -6772,7 +6917,7 @@ mod tests {
         // for a pending ask *without* draining first, it would miss it and act on
         // the gate. persist_in_settle models exactly that ordering.
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws) = scaffold_one_step(tmp.path(), "run-ask3", "wf/ask3-1");
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-ask3", "wf/ask3-1", Gate::Commit);
         let pending_ask = Arc::new(AtomicBool::new(false));
         // No in-turn persist, no flag — the ask surfaces only via settle_rpc.
         let driver = AskStub::new(ws, db.clone(), "run-ask3", pending_ask.clone(), false, true);
@@ -6807,7 +6952,7 @@ mod tests {
     #[tokio::test]
     async fn resume_abandons_a_stale_attempt_then_retries_to_done() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws) = scaffold_one_step(tmp.path(), "run-resume", "wf/r-1");
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-resume", "wf/r-1", Gate::Commit);
         // A prior driver died mid-attempt, leaving a non-terminal step_exec
         // (spec §6.4). Resume must abandon it and start a fresh attempt.
         db.lock()
@@ -9911,7 +10056,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_mid_turn_stops_the_attempt_and_cancels_the_run() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws) = scaffold_one_step(tmp.path(), "run-midcancel", "wf/mc-1");
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-midcancel", "wf/mc-1", Gate::Commit);
         let driver = HoldDriver::new(ws);
         let cancel = Arc::new(AtomicBool::new(false));
         let ctx = RunCtx {
@@ -10005,7 +10150,7 @@ mod tests {
     #[tokio::test]
     async fn resume_line_state_advances_past_a_completed_loop() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, _ws) = scaffold_one_step(tmp.path(), "run-loopresume", "wf/lr-1");
+        let (db, _ws) = scaffold_one_step(tmp.path(), "run-loopresume", "wf/lr-1", Gate::Commit);
         let blocks = vec![
             loop_block(&["review", "fix"], "review"),
             Block::Step(cstep("ship", "")),
@@ -10028,7 +10173,7 @@ mod tests {
     #[tokio::test]
     async fn resume_line_state_uses_an_orchestrate_stages_merge_exec() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, _ws) = scaffold_one_step(tmp.path(), "run-orchresume", "wf/or-1");
+        let (db, _ws) = scaffold_one_step(tmp.path(), "run-orchresume", "wf/or-1", Gate::Commit);
         let orch = Block::Orchestrate(super::super::spec::Orchestrate {
             agent: "coder".to_string(),
             goal: "coordinate".to_string(),
@@ -10054,7 +10199,7 @@ mod tests {
     #[tokio::test]
     async fn resume_line_state_falls_back_to_base_for_an_unmerged_orchestrate() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, _ws) = scaffold_one_step(tmp.path(), "run-orchnone", "wf/on-1");
+        let (db, _ws) = scaffold_one_step(tmp.path(), "run-orchnone", "wf/on-1", Gate::Commit);
         let orch = Block::Orchestrate(super::super::spec::Orchestrate {
             agent: "coder".to_string(),
             goal: "coordinate".to_string(),

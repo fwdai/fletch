@@ -704,6 +704,56 @@ pub(super) struct ComposePlan {
 /// [`take_orchestrator_decisions`]. Invalid decisions (unknown step, over
 /// `children.max`, missing fields) return a structured error and are journaled —
 /// the deterministic engine, not the orchestrator, is the authority.
+/// Whether `step_id` is a child the sender's orchestrate stage can address with
+/// `skip_child`/`retry_child` (§10.2). Validated against the definition-declared
+/// child namespace — a static `body` child id, or a dynamic `<orch>::dyn-<k>` id
+/// within the `children.max` bound — not spawned `wf_step_exec` rows: static
+/// children create their rows inside their own spawned task, so a DB check would
+/// race the still-pending spawn and wrongly reject a valid skip on the
+/// orchestrator's opening turn. The orchestrator's own step is never a valid
+/// target. `sender_step_id` is the orchestrator's id (`orchestrate-<n>`).
+fn orchestrate_child_is_declared(spec: &Spec, sender_step_id: &str, step_id: &str) -> bool {
+    if step_id == sender_step_id {
+        return false;
+    }
+    let Some(orch) = orchestrate_block(spec, sender_step_id) else {
+        return false;
+    };
+    if orch.body.iter().any(|s| s.id == step_id) {
+        return true;
+    }
+    if let Some(tmpl) = &orch.children {
+        if let Some(k) = step_id
+            .strip_prefix(&format!("{sender_step_id}::dyn-"))
+            .and_then(|k| k.parse::<u32>().ok())
+        {
+            return k < tmpl.max;
+        }
+    }
+    false
+}
+
+/// Reject a `skip_child`/`retry_child` naming a step outside the orchestrate
+/// stage's declared child namespace — returns the structured error to send back,
+/// or `None` when the target is valid. Loading the spec fails closed with a
+/// descriptive error rather than silently allowing an unknown step through.
+fn reject_unknown_child(
+    conn: &Connection,
+    sender: &Sender,
+    decision: &str,
+    step_id: &str,
+) -> Option<String> {
+    match load_spec(conn, &sender.run_id) {
+        Some(spec) if orchestrate_child_is_declared(&spec, &sender.step_id, step_id) => None,
+        Some(_) => Some(format!(
+            "wf_decide {decision}: unknown child step `{step_id}`"
+        )),
+        None => Some(format!(
+            "wf_decide {decision}: cannot resolve run spec to validate `{step_id}`"
+        )),
+    }
+}
+
 fn route_decide(
     conn: &Connection,
     app: Option<&AppHandle>,
@@ -753,6 +803,9 @@ fn route_decide(
                     Poke::None,
                 );
             }
+            if let Some(err) = reject_unknown_child(conn, sender, "skip_child", step_id) {
+                return (Response::err(id, err), Poke::None);
+            }
             let reason = args
                 .get("reason")
                 .and_then(|v| v.as_str())
@@ -773,6 +826,9 @@ fn route_decide(
                     Response::err(id, "wf_decide retry_child requires `step_id`"),
                     Poke::None,
                 );
+            }
+            if let Some(err) = reject_unknown_child(conn, sender, "retry_child", step_id) {
+                return (Response::err(id, err), Poke::None);
             }
             let guidance = args
                 .get("guidance")
@@ -2719,6 +2775,56 @@ mod tests {
         );
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("template's child agent"));
+    }
+
+    #[test]
+    fn skip_and_retry_child_reject_steps_outside_the_declared_namespace() {
+        // §10.2: an unknown-step decision must return a structured error, not be
+        // queued and silently dropped by the stage. Validated against the
+        // definition-declared child namespace (static body ids + `::dyn-<k>`
+        // within `children.max`), which is race-free vs. the child's own spawn.
+        let (conn, run, orch, _child) = seed_orchestrate(); // body: [], children.max = 2
+
+        // A dynamic child within the template bound is a valid target.
+        let (ok, _) = route(
+            &conn,
+            None,
+            "d0",
+            "run",
+            "orch-agent",
+            "wf_decide",
+            &json!({ "decision": "retry_child", "step_id": "orchestrate-0::dyn-0", "guidance": "again" }),
+        );
+        assert!(ok.ok, "a declared dynamic child must be accepted: {ok:?}");
+
+        // A dyn index at/over children.max, an undeclared id, and the
+        // orchestrator's own step are all rejected with a structured error.
+        for (label, step_id) in [
+            ("over-max", "orchestrate-0::dyn-2"),
+            ("unknown", "ghost"),
+            ("self", "orchestrate-0"),
+        ] {
+            let (resp, poke) = route(
+                &conn,
+                None,
+                label,
+                "run",
+                "orch-agent",
+                "wf_decide",
+                &json!({ "decision": "skip_child", "step_id": step_id, "reason": "x" }),
+            );
+            assert!(!resp.ok, "{label} ({step_id}) must be rejected");
+            assert!(
+                resp.error.unwrap().contains("unknown child step"),
+                "{label} must be a structured unknown-step error"
+            );
+            assert!(matches!(poke, Poke::None));
+        }
+
+        // Only the one valid decision was queued for the stage to consume.
+        let decisions = take_orchestrator_decisions(&conn, &run, &orch);
+        assert_eq!(decisions.len(), 1);
+        assert!(matches!(decisions[0], Decision::RetryChild { .. }));
     }
 
     #[test]

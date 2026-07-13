@@ -279,12 +279,25 @@ pub async fn run_attempt(
         // Move any leftover verdict aside so this turn's gate only ever reads a
         // verdict written after this prompt (spec §8.3). Journaled on the
         // prompt_sent event rather than a dedicated type.
+        //
+        // Freshness is guaranteed by the move-aside, not a timestamp: an error
+        // here means a leftover verdict was confirmed present but could not be
+        // moved (`archive_stale_verdict` only errors after `symlink_metadata`
+        // succeeded), so the gate would read a stale verdict — the exact
+        // loop/retry bug class §8.3 exists to prevent. Fail the attempt *before*
+        // sending (no turn spent) rather than fail open; the retry policy starts
+        // a fresh attempt and re-archives.
         let stale_archived = match blackboard::archive_stale_verdict(&step_dir, attempt, iteration)
         {
             Ok(archived) => archived.map(|p| p.to_string_lossy().into_owned()),
             Err(e) => {
-                tracing::warn!(error = %e, step = %step_id, "stale-verdict archival failed");
-                None
+                return terminal_error(
+                    driver,
+                    &agent_id,
+                    &format!("stale-verdict archival failed: {e}"),
+                    events,
+                )
+                .await;
             }
         };
 
