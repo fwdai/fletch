@@ -140,6 +140,12 @@ pub mod event_type {
     pub const CHILD_SPAWN_REQUESTED: &str = "child_spawn_requested";
     pub const CHILD_SPAWN_APPROVED: &str = "child_spawn_approved";
     pub const CHILD_SPAWN_DENIED: &str = "child_spawn_denied";
+    /// An orchestrator `wf_compose` passed validation and a sub-run was authorized
+    /// (spec §10.3). The `subrun_launched` event follows once its driver starts.
+    pub const COMPOSE_REQUESTED: &str = "compose_requested";
+    /// A `wf_compose` was rejected — invalid fragment, over-depth, over-budget, or
+    /// a caps escalation (spec §10.3, §15). Carries the human-readable reason.
+    pub const COMPOSE_DENIED: &str = "compose_denied";
     pub const SUBRUN_LAUNCHED: &str = "subrun_launched";
     pub const SUBRUN_FINISHED: &str = "subrun_finished";
     /// A parallel/orchestrate stage with `integrate: none` finished; a child's

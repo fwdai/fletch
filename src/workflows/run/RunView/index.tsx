@@ -16,6 +16,7 @@ import { useAppStore } from "../../../store";
 import { resolveAgent } from "../../shared";
 import type { Spec } from "../../spec";
 import { runChip } from "../status";
+import { useRuns } from "../useRuns";
 import { AttemptRail } from "./AttemptRail";
 import { BudgetMeter } from "./BudgetMeter";
 import { flattenSteps } from "./flatten";
@@ -28,6 +29,15 @@ export function RunView({ id }: { id: string }) {
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
+  const selectRun = useAppStore((s) => s.selectRun);
+
+  // Composed sub-runs (§10.3) nest under this run in the monitor; each links to
+  // its own RunView. Sourced from the live run list, filtered to our children.
+  const allRuns = useRuns();
+  const subRuns = useMemo(
+    () => allRuns.filter((r) => r.parent_run_id === id),
+    [allRuns, id],
+  );
 
   // Run-owned step agents come from the run (they're hidden from the workspace
   // snapshot); the monitor renders each attempt's chat from these records.
@@ -171,6 +181,28 @@ export function RunView({ id }: { id: string }) {
         </div>
 
         <div className="wf-run-side">
+          {subRuns.length > 0 && (
+            <div className="wf-subruns">
+              <div className="wf-side-head">Sub-runs</div>
+              {subRuns.map((sr) => {
+                const c = runChip(sr.status);
+                return (
+                  <button
+                    key={sr.id}
+                    type="button"
+                    className="wf-subrun-row"
+                    onClick={() => selectRun(sr.id)}
+                  >
+                    <span className="wf-srow-dot" style={{ background: c.tone }} />
+                    <span className="wf-subrun-name">{sr.name}</span>
+                    <span className="wf-subrun-status" style={{ color: c.tone }}>
+                      {c.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <div className="wf-side-head">Timeline</div>
           <Timeline events={events} />
         </div>

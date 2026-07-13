@@ -160,14 +160,28 @@ export function ProjectGroup({
             onClick={() => selectAgent(a.id)}
           />
         ))}
-        {runs.map((run) => (
-          <RunRow
-            key={run.id}
-            run={run}
-            selected={selectedRunId === run.id}
-            onSelect={() => selectRun(run.id)}
-          />
-        ))}
+        {runs
+          .filter((run) => !run.parent_run_id)
+          .flatMap((run) => [
+            <RunRow
+              key={run.id}
+              run={run}
+              selected={selectedRunId === run.id}
+              onSelect={() => selectRun(run.id)}
+            />,
+            // Composed sub-runs (§10.3) render nested under their parent.
+            ...runs
+              .filter((sub) => sub.parent_run_id === run.id)
+              .map((sub) => (
+                <RunRow
+                  key={sub.id}
+                  run={sub}
+                  nested
+                  selected={selectedRunId === sub.id}
+                  onSelect={() => selectRun(sub.id)}
+                />
+              )),
+          ])}
       </div>
     </div>
   );

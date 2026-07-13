@@ -781,6 +781,48 @@
   flex-shrink: 0;
 }
 
+/* A composed sub-run (§10.3) sits indented under its parent run in the sidebar,
+   with a faint guide rail so the nesting reads at a glance. */
+.agent.run-nested {
+  margin-left: 14px;
+  border-left: 1px solid var(--bd-soft);
+  padding-left: 6px;
+}
+
+/* Run monitor: the sub-runs section above the timeline (§10.3, §14.2). */
+.wf-subruns {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+.wf-subrun-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+.wf-subrun-row:hover {
+  background: var(--hover);
+}
+.wf-subrun-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-subrun-status {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
 /* Workflow tile (composer selector chip) + status dot (run monitor rail). The
    sidebar run row otherwise reuses the agent-row classes (.agent/.ag-*). */
 .wf-srow-tile {

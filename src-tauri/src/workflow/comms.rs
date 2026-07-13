@@ -34,9 +34,12 @@ use crate::error::{Error, Result};
 use crate::rpc::git::GitDispatcher;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
+use std::collections::BTreeMap;
+
+use super::budget::{EffectiveBudgets, Ledger};
 use super::now_ms;
 use super::scheduler::{self, WorkflowService};
-use super::spec::{Block, CommsCap, Orchestrate, Spec};
+use super::spec::{self, AgentSpec, Block, Budgets, CommsCap, Integrate, Orchestrate, Spec};
 use super::types::{event_type, Message, MessageKind};
 
 // ───────────────────────────── caps matrix (pure) ───────────────────────────
@@ -60,9 +63,10 @@ pub(super) fn cap_for_op(op: &str) -> Option<CommsCap> {
 }
 
 /// Is `op` one this router owns? (Everything else falls through to git.) Includes
-/// the orchestrator-only `wf_decide` (spec §10.2), which has no cap.
+/// the orchestrator-only `wf_decide` (spec §10.2) and `wf_compose` (spec §10.3),
+/// which are gated by role, not a cap.
 pub(super) fn is_comms_op(op: &str) -> bool {
-    cap_for_op(op).is_some() || op == "wf_decide"
+    cap_for_op(op).is_some() || op == "wf_decide" || op == "wf_compose"
 }
 
 /// Human-readable verb for a rejection message.
@@ -413,6 +417,17 @@ fn route(
         return route_decide(conn, app, &sender, id, args);
     }
 
+    // `wf_compose` is likewise orchestrator-only (spec §10.3) and additionally
+    // requires the stage to have `compose` enabled — checked in `route_compose`.
+    if op == "wf_compose" {
+        if !sender_is_orchestrator(&sender) {
+            let e = "wf_compose is available to the orchestrator only".to_string();
+            journal_denied(conn, app, &sender, op, &e);
+            return (Response::err(id, e), Poke::None);
+        }
+        return route_compose(conn, app, &sender, id, args);
+    }
+
     if let Err(e) = check_cap(op, &sender.caps) {
         // Journaled, never a silent drop (§10.1): the timeline shows the denied
         // attempt.
@@ -626,7 +641,10 @@ fn live_children(conn: &Connection, run_id: &str, step_id: Option<&str>) -> Vec<
 /// §10.2). `answer` and `escalate` are completed in the router (a pure DB write /
 /// a human pause), so they are not represented here; these are the ones that need
 /// the driver + child JoinSet the orchestrate stage owns.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// `Eq` is intentionally omitted: `Compose` carries a `Vec<Block>` fragment, and
+// `Block` is only `PartialEq` (specs aren't totally comparable). `PartialEq` is
+// all the tests need.
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum Decision {
     /// Start another dynamic child (already validated ≤ `children.max`).
     SpawnChild { agent: String, goal: String },
@@ -636,6 +654,42 @@ pub(super) enum Decision {
     RetryChild { step_id: String, guidance: String },
     /// End the stage now (early join, spec §6.6).
     StageDone,
+    /// Launch a validated composed sub-run (spec §10.3). The plan is fully
+    /// validated (fragment, depth, caps, budget-fit) in [`route_compose`]; the
+    /// scheduler only creates and drives it.
+    Compose(Box<ComposePlan>),
+}
+
+/// Which commit a composed sub-run forks from (spec §10.3).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ComposeBase {
+    /// The orchestrate stage's entry HEAD (the parent's current line).
+    ParentHead,
+    /// The run's original base commit.
+    RunBase,
+}
+
+/// A validated `wf_compose` request (spec §10.3), normalized into the fields the
+/// scheduler needs to create and drive the sub-run. Serialized into the queued
+/// `decision` message so a resume rebuilds it exactly.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(super) struct ComposePlan {
+    pub task: String,
+    pub fragment: Vec<Block>,
+    /// Sub-run agent map; `None` inherits the parent's agents (spec §10.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<BTreeMap<String, AgentSpec>>,
+    /// Reserved run-level turn slice (required, §10.3).
+    pub turns: i64,
+    /// Reserved run-level token slice, if the parent run has a token cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<i64>,
+    pub integrate: Integrate,
+    pub base: ComposeBase,
+    /// The orchestrate stage this sub-run belongs to (its top-level block index),
+    /// so it integrates at that stage's join.
+    pub block_index: usize,
 }
 
 /// Handle a `wf_decide` op (spec §10.2). Validates the decision, journals it, and
@@ -880,6 +934,450 @@ fn route_spawn_child(
     (Response::ok(id, 0, msg_id, String::new()), Poke::None)
 }
 
+/// Validate + record a `wf_compose` request (spec §10.3). Runs the fragment
+/// through the full [`spec::validate`], enforces the depth cap, the caps-escalation
+/// rules (§15), `max_sub_runs`, and the budget-fit check, then queues a
+/// [`Decision::Compose`] the orchestrate stage executes. Every rejection is a
+/// structured error plus a `compose_denied` journal entry — the deterministic
+/// engine is the authority, never the orchestrator.
+fn route_compose(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    sender: &Sender,
+    id: &str,
+    args: &Value,
+) -> (Response, Poke) {
+    let deny = |conn: &Connection, msg: String| -> (Response, Poke) {
+        journal_compose_denied(conn, app, sender, &msg);
+        (Response::err(id, msg), Poke::None)
+    };
+
+    // The stage must be an orchestrate block with `compose` enabled.
+    let Some(spec) = load_spec(conn, &sender.run_id) else {
+        return (Response::err(id, "run spec unavailable"), Poke::None);
+    };
+    let Some(orch) = orchestrate_block(&spec, &sender.step_id) else {
+        return deny(
+            conn,
+            "wf_compose is only valid within an orchestrate stage".into(),
+        );
+    };
+    let Some(limits) = orch.compose.clone() else {
+        return deny(
+            conn,
+            "dynamic composition is not enabled for this stage".into(),
+        );
+    };
+    let allowed_caps = orch.comms.clone();
+
+    // ── Parse the request (spec §10.3). ──
+    let task = args
+        .get("task")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if task.is_empty() {
+        return deny(conn, "wf_compose requires a non-empty `task`".into());
+    }
+    let Some(frag_val) = args.get("fragment") else {
+        return deny(conn, "wf_compose requires a `fragment` block list".into());
+    };
+    let fragment: Vec<Block> = match serde_json::from_value(frag_val.clone()) {
+        Ok(f) => f,
+        Err(e) => {
+            return deny(
+                conn,
+                format!("wf_compose `fragment` is not a valid block list: {e}"),
+            )
+        }
+    };
+    let agents: Option<BTreeMap<String, AgentSpec>> = match args.get("agents") {
+        Some(v) if !v.is_null() => match serde_json::from_value(v.clone()) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                return deny(
+                    conn,
+                    format!("wf_compose `agents` is not a valid agent map: {e}"),
+                )
+            }
+        },
+        _ => None,
+    };
+    let Some(budgets) = args.get("budgets") else {
+        return deny(
+            conn,
+            "wf_compose requires `budgets` with a `turns` slice (§10.3)".into(),
+        );
+    };
+    let turns = budgets.get("turns").and_then(|v| v.as_i64()).unwrap_or(0);
+    if turns <= 0 {
+        return deny(
+            conn,
+            "wf_compose `budgets.turns` must be a positive number".into(),
+        );
+    }
+    let req_tokens = budgets
+        .get("tokens")
+        .and_then(|v| v.as_i64())
+        .filter(|t| *t > 0);
+    let integrate = match args
+        .get("integrate")
+        .and_then(|v| v.as_str())
+        .unwrap_or("none")
+    {
+        "none" => Integrate::None,
+        "merge" => Integrate::Merge,
+        other => {
+            return deny(
+                conn,
+                format!("wf_compose `integrate` must be \"none\" or \"merge\", got \"{other}\""),
+            )
+        }
+    };
+    let base =
+        match args
+            .get("base")
+            .and_then(|v| v.as_str())
+            .unwrap_or("parent-head")
+        {
+            "parent-head" => ComposeBase::ParentHead,
+            "run-base" => ComposeBase::RunBase,
+            other => return deny(
+                conn,
+                format!(
+                    "wf_compose `base` must be \"parent-head\" or \"run-base\", got \"{other}\""
+                ),
+            ),
+        };
+
+    // ── Validate the fragment with the full spec.rs rules (§5.2), by wrapping it
+    //    in a synthetic Spec that also carries the reserved budget slice. ──
+    let eff_agents = agents.clone().unwrap_or_else(|| spec.agents.clone());
+    let sub_spec = Spec {
+        version: spec.version,
+        name: format!("{} — composed", spec.name),
+        description: None,
+        budgets: Some(Budgets {
+            turns: Some(turns),
+            tokens: req_tokens,
+            ..Budgets::default()
+        }),
+        agents: eff_agents,
+        workflow: fragment.clone(),
+        finalize: None,
+    };
+    if let Err(errs) = spec::validate(&sub_spec) {
+        return deny(
+            conn,
+            format!("wf_compose fragment is invalid: {}", errs.join("; ")),
+        );
+    }
+
+    // ── Depth (spec §10.3): parent depth + 1 ≤ max_depth, absolute cap 2. ──
+    let new_depth = run_depth(conn, &sender.run_id) + 1;
+    let max_depth = (limits.max_depth as i64).min(2);
+    if new_depth > max_depth {
+        return deny(
+            conn,
+            format!(
+                "wf_compose denied: composition depth {new_depth} exceeds the limit of {max_depth}"
+            ),
+        );
+    }
+
+    // ── Caps escalation (spec §15): the fragment can't grant caps broader than
+    //    this stage's children caps, and can't enable compose at max depth. ──
+    if let Some(msg) = caps_escalation(&fragment, &allowed_caps, new_depth >= max_depth) {
+        return deny(conn, msg);
+    }
+
+    // ── max_sub_runs: already-launched sub-runs + queued compose requests. ──
+    let launched = subrun_count(conn, &sender.run_id);
+    let queued = pending_compose_count(conn, &sender.run_id, &sender.step_id);
+    if launched + queued >= limits.max_sub_runs as i64 {
+        return deny(
+            conn,
+            format!(
+                "wf_compose denied: already at the max_sub_runs of {} for this stage",
+                limits.max_sub_runs
+            ),
+        );
+    }
+
+    // ── Budget-fit (spec §10.3): the slice must fit the parent's remaining budget,
+    //    net of slices already reserved by queued (not-yet-launched) composes. ──
+    let (eff, ledger) = load_budget(conn, &sender.run_id);
+    let (pending_turns, pending_tokens) =
+        pending_compose_reservations(conn, &sender.run_id, &sender.step_id);
+    let avail_turns = ledger.remaining_turns(&eff) - pending_turns;
+    if turns > avail_turns {
+        return deny(
+            conn,
+            format!(
+                "wf_compose denied: requested {turns} turns but only {} remain in the run budget",
+                avail_turns.max(0)
+            ),
+        );
+    }
+    if let (Some(cap_left), Some(req)) = (ledger.remaining_tokens(&eff), req_tokens) {
+        let avail = cap_left - pending_tokens;
+        if req > avail {
+            return deny(
+                conn,
+                format!(
+                    "wf_compose denied: requested {req} tokens but only {} remain in the run budget",
+                    avail.max(0)
+                ),
+            );
+        }
+    }
+
+    // ── Approved: journal the request and queue the plan for the stage loop. ──
+    let block_index = orch_index(&sender.step_id).unwrap_or(0);
+    let plan = ComposePlan {
+        task,
+        fragment,
+        agents,
+        turns,
+        tokens: req_tokens,
+        integrate,
+        base,
+        block_index,
+    };
+    scheduler::journal_event(
+        conn,
+        app,
+        &sender.run_id,
+        event_type::COMPOSE_REQUESTED,
+        Some(&sender.step_exec_id),
+        &json!({
+            "turns": turns,
+            "tokens": req_tokens,
+            "integrate": if matches!(integrate, Integrate::Merge) { "merge" } else { "none" },
+            "depth": new_depth,
+        }),
+    );
+    let msg_id = new_msg_id();
+    let body = json!({ "decision": "compose", "plan": plan });
+    if let Err(e) = insert_message(
+        conn,
+        &msg_id,
+        &sender.run_id,
+        Some(&sender.step_exec_id),
+        None,
+        "decision",
+        &body,
+        "queued",
+        false,
+    ) {
+        return (Response::err(id, e.to_string()), Poke::None);
+    }
+    (Response::ok(id, 0, msg_id, String::new()), Poke::None)
+}
+
+/// The composition depth of a run: 0 for a top-level run, +1 per `parent_run_id`
+/// hop (spec §10.3). Bounded by the absolute depth cap, so the walk is short.
+fn run_depth(conn: &Connection, run_id: &str) -> i64 {
+    let mut depth = 0i64;
+    let mut cur = run_id.to_string();
+    // The absolute cap is 2, so a valid chain is ≤ 3 rows; the guard bounds a
+    // corrupt self-referential chain regardless.
+    for _ in 0..8 {
+        let parent: Option<String> = conn
+            .query_row(
+                "SELECT parent_run_id FROM wf_run WHERE id = ?1",
+                [&cur],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        match parent {
+            Some(p) => {
+                depth += 1;
+                cur = p;
+            }
+            None => break,
+        }
+    }
+    depth
+}
+
+/// Sub-runs already created under `parent_run_id` (any status): they count toward
+/// `max_sub_runs` for the life of the run, like `children.max` bounds spawns.
+fn subrun_count(conn: &Connection, parent_run_id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM wf_run WHERE parent_run_id = ?1",
+        [parent_run_id],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+/// Queued (not-yet-launched) `compose` decisions for this orchestrate stage —
+/// counted like [`spawn_child_count`] so a burst within one turn stays within
+/// `max_sub_runs` before the stage loop has drained any of them.
+fn pending_compose_count(conn: &Connection, run_id: &str, orch_step_id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM wf_message m
+           JOIN wf_step_exec e ON m.from_step_exec_id = e.id
+         WHERE m.run_id = ?1 AND e.step_id = ?2 AND m.kind = 'decision' AND m.status = 'queued'
+           AND json_extract(m.body_json, '$.decision') = 'compose'",
+        params![run_id, orch_step_id],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+/// The turn/token slices of queued (not-yet-launched) composes for this stage, so
+/// the budget-fit check accounts for reservations the stage loop hasn't applied to
+/// the ledger yet (§10.3). Launched sub-runs' reservations are already in the
+/// ledger's `reserved_*`, so they are not re-counted here.
+fn pending_compose_reservations(conn: &Connection, run_id: &str, orch_step_id: &str) -> (i64, i64) {
+    conn.prepare(
+        "SELECT m.body_json FROM wf_message m
+           JOIN wf_step_exec e ON m.from_step_exec_id = e.id
+         WHERE m.run_id = ?1 AND e.step_id = ?2 AND m.kind = 'decision' AND m.status = 'queued'
+           AND json_extract(m.body_json, '$.decision') = 'compose'",
+    )
+    .and_then(|mut s| {
+        s.query_map(params![run_id, orch_step_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })
+    .map(|bodies| {
+        bodies.into_iter().fold((0i64, 0i64), |(t, k), b| {
+            let plan = serde_json::from_str::<Value>(&b)
+                .ok()
+                .and_then(|v| v.get("plan").cloned());
+            let turns = plan
+                .as_ref()
+                .and_then(|p| p.get("turns"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let tokens = plan
+                .as_ref()
+                .and_then(|p| p.get("tokens"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            (t + turns, k + tokens)
+        })
+    })
+    .unwrap_or((0, 0))
+}
+
+/// The parent run's frozen budgets and current ledger, for the compose fit-check.
+fn load_budget(conn: &Connection, run_id: &str) -> (EffectiveBudgets, Ledger) {
+    let (budgets_json, spent_json): (String, String) = conn
+        .query_row(
+            "SELECT budgets_json, spent_json FROM wf_run WHERE id = ?1",
+            [run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or_else(|_| ("{}".into(), "{}".into()));
+    let eff: EffectiveBudgets = serde_json::from_str(&budgets_json).unwrap_or_default();
+    let spent: Value = serde_json::from_str(&spent_json).unwrap_or_else(|_| json!({}));
+    (eff, Ledger::from_json(&spent))
+}
+
+/// Reject a fragment that would broaden comms caps beyond the parent block's
+/// children caps, or enable `compose` at the maximum depth (spec §15). Returns the
+/// first violation message, or `None` if the fragment is within bounds.
+fn caps_escalation(fragment: &[Block], allowed: &[CommsCap], at_max_depth: bool) -> Option<String> {
+    fn broader(caps: &[CommsCap], allowed: &[CommsCap]) -> Option<CommsCap> {
+        caps.iter().find(|c| !allowed.contains(c)).copied()
+    }
+    fn cap_name(c: CommsCap) -> &'static str {
+        match c {
+            CommsCap::Report => "report",
+            CommsCap::Ask => "ask",
+            CommsCap::Notify => "notify",
+        }
+    }
+    for block in fragment {
+        match block {
+            Block::Step(s) => {
+                if let Some(c) = broader(&s.comms, allowed) {
+                    return Some(format!(
+                        "wf_compose denied: fragment step '{}' declares comms cap '{}' \
+                         broader than the stage grants",
+                        s.id,
+                        cap_name(c)
+                    ));
+                }
+            }
+            Block::Parallel(p) => {
+                for s in &p.steps {
+                    if let Some(c) = broader(&s.comms, allowed) {
+                        return Some(format!(
+                            "wf_compose denied: fragment step '{}' declares comms cap '{}' \
+                             broader than the stage grants",
+                            s.id,
+                            cap_name(c)
+                        ));
+                    }
+                }
+            }
+            Block::Loop(l) => {
+                if let Some(m) = caps_escalation(&l.body, allowed, at_max_depth) {
+                    return Some(m);
+                }
+            }
+            Block::Orchestrate(o) => {
+                if let Some(c) = broader(&o.comms, allowed) {
+                    return Some(format!(
+                        "wf_compose denied: fragment orchestrate '{}' grants children comms \
+                         cap '{}' broader than the stage grants",
+                        o.agent,
+                        cap_name(c)
+                    ));
+                }
+                if at_max_depth && o.compose.is_some() {
+                    return Some(format!(
+                        "wf_compose denied: fragment orchestrate '{}' enables composition at \
+                         the maximum depth",
+                        o.agent
+                    ));
+                }
+                for s in &o.body {
+                    if let Some(c) = broader(&s.comms, allowed) {
+                        return Some(format!(
+                            "wf_compose denied: fragment step '{}' declares comms cap '{}' \
+                             broader than the stage grants",
+                            s.id,
+                            cap_name(c)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The top-level block index an orchestrator `step_id` (`orchestrate-<idx>`) refers
+/// to.
+fn orch_index(orch_step_id: &str) -> Option<usize> {
+    orch_step_id.strip_prefix(ORCH_PREFIX)?.parse().ok()
+}
+
+/// Journal a `wf_compose` rejection (spec §10.3): never a silent drop.
+fn journal_compose_denied(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    sender: &Sender,
+    reason: &str,
+) {
+    scheduler::journal_event(
+        conn,
+        app,
+        &sender.run_id,
+        event_type::COMPOSE_DENIED,
+        Some(&sender.step_exec_id),
+        &json!({ "reason": reason }),
+    );
+}
+
 /// How many `spawn_child` decisions this orchestrate *stage* has already had
 /// approved. Counted across every orchestrator exec that shares the stage's
 /// `step_id` (`orchestrate-<n>`), so a resume — which starts a fresh orchestrator
@@ -952,6 +1450,15 @@ pub(super) fn take_orchestrator_decisions(
                 guidance: s("guidance"),
             }),
             "stage_done" => out.push(Decision::StageDone),
+            "compose" => {
+                if let Some(plan) = body
+                    .get("plan")
+                    .cloned()
+                    .and_then(|p| serde_json::from_value::<ComposePlan>(p).ok())
+                {
+                    out.push(Decision::Compose(Box::new(plan)));
+                }
+            }
             _ => {}
         }
     }
@@ -1082,6 +1589,43 @@ pub(super) fn forward_lifecycle(
         event_type::MESSAGE_ROUTED,
         Some(child_exec),
         &json!({ "message_id": msg_id, "kind": "report", "from": child_exec, "to": orch_exec, "lifecycle": true }),
+    );
+}
+
+/// Auto-forward a composed sub-run's terminal outcome to the orchestrator (spec
+/// §10.3: "the orchestrator receives subrun_launched / subrun_finished messages").
+/// Delivered as a lifecycle report the orchestrator reads on its next turn.
+/// Attributed to the orchestrator's own exec so it resolves through the inbox
+/// join (a sub-run has no step exec in the parent run); the note names the
+/// sub-run.
+pub(super) fn forward_subrun_finished(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    run_id: &str,
+    orch_exec: &str,
+    sub_run_id: &str,
+    status: &str,
+) {
+    let msg_id = new_msg_id();
+    let note = format!("sub-run `{sub_run_id}` finished ({status})");
+    let _ = insert_message(
+        conn,
+        &msg_id,
+        run_id,
+        Some(orch_exec),
+        Some(orch_exec),
+        "report",
+        &json!({ "status": status, "note": note, "lifecycle": true, "sub_run_id": sub_run_id }),
+        "queued",
+        false,
+    );
+    scheduler::journal_event(
+        conn,
+        app,
+        run_id,
+        event_type::MESSAGE_ROUTED,
+        Some(orch_exec),
+        &json!({ "message_id": msg_id, "kind": "report", "from": orch_exec, "to": orch_exec, "lifecycle": true, "sub_run_id": sub_run_id }),
     );
 }
 
@@ -1462,7 +2006,7 @@ pub async fn wf_answer(
 mod tests {
     use super::*;
     use crate::workflow::spec::{
-        AgentSpec, ChildTemplate, Gate, Integrate, Join, Orchestrate, Step,
+        AgentSpec, ChildTemplate, ComposeLimits, Gate, Integrate, Join, Orchestrate, Step,
     };
     use crate::workflow::types::{MessageKind, MessageStatus};
     use std::collections::BTreeMap;
@@ -2275,5 +2819,309 @@ mod tests {
         );
         assert!(!resp.ok, "spawn limit must persist across resume: {resp:?}");
         assert!(resp.error.unwrap().contains("children.max"));
+    }
+
+    // ── dynamic composition, wf_compose (spec §10.3) ──────────────────────
+
+    /// A running orchestrate stage with `compose` enabled. `comms` are the stage's
+    /// children caps; `turns` seeds the run budget; `parent` sets `parent_run_id`
+    /// (drives the depth check). Returns (conn, orch_exec).
+    fn seed_compose(
+        limits: Option<ComposeLimits>,
+        comms: Vec<CommsCap>,
+        turns: i64,
+        parent: Option<&str>,
+    ) -> (Connection, String) {
+        let td = tempfile::tempdir().unwrap();
+        let db = crate::database::init(td.path()).unwrap();
+        std::mem::forget(td);
+        let conn = Arc::try_unwrap(db).ok().unwrap().into_inner();
+
+        let mut agents = BTreeMap::new();
+        for a in ["orch", "coder"] {
+            agents.insert(
+                a.to_string(),
+                AgentSpec {
+                    base: "claude".into(),
+                    model: None,
+                    instructions: None,
+                    skills: vec![],
+                    custom_agent: None,
+                },
+            );
+        }
+        let spec = Spec {
+            version: 1,
+            name: "demo".into(),
+            description: None,
+            budgets: None,
+            agents,
+            workflow: vec![Block::Orchestrate(Orchestrate {
+                agent: "orch".into(),
+                goal: "lead".into(),
+                children: Some(ChildTemplate {
+                    agent: "coder".into(),
+                    max: 2,
+                }),
+                body: vec![],
+                join: Join::All,
+                integrate: Integrate::Merge,
+                comms,
+                compose: limits,
+            })],
+            finalize: None,
+        };
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        let budgets_json = serde_json::to_string(&crate::workflow::budget::EffectiveBudgets {
+            turns,
+            ..Default::default()
+        })
+        .unwrap();
+        // Satisfy the parent_run_id FK when the run is itself a sub-run.
+        if let Some(p) = parent {
+            conn.execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,'p','{}','t','p','/repo','/rd','wf/p','sha','running','{}','{}',0,0)",
+                [p],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO wf_run (id,parent_run_id,name,spec_json,task,project_id,repo_path,run_dir,
+                branch,base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('run',?1,'demo',?2,'t','p','/repo','/rd','wf/x','sha','running',?3,'{}',0,0)",
+            rusqlite::params![parent, spec_json, budgets_json],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,agent_id)
+             VALUES ('orch-exec','run','orchestrate-0',1,0,'running','verdict','orch-agent')",
+            [],
+        )
+        .unwrap();
+        (conn, "orch-exec".to_string())
+    }
+
+    /// A minimal one-step fragment whose step declares `caps` and uses `agent`.
+    fn fragment(caps: Vec<&str>, agent: &str) -> Value {
+        json!([{ "step": { "id": "impl", "agent": agent, "goal": "do it", "comms": caps } }])
+    }
+
+    fn compose_args(fragment: Value, turns: i64) -> Value {
+        json!({
+            "task": "a composed slice",
+            "fragment": fragment,
+            "budgets": { "turns": turns },
+            "integrate": "merge",
+            "base": "parent-head",
+        })
+    }
+
+    fn compose(conn: &Connection, agent_id: &str, args: &Value) -> Response {
+        route(conn, None, "c1", "run", agent_id, "wf_compose", args).0
+    }
+
+    #[test]
+    fn wf_compose_is_orchestrator_only() {
+        let (conn, _orch) = seed_compose(
+            Some(ComposeLimits {
+                max_sub_runs: 2,
+                max_depth: 2,
+            }),
+            vec![CommsCap::Report],
+            100,
+            None,
+        );
+        // Add a non-orchestrator child exec and send as it. (Its step id must not
+        // start with the orchestrate prefix, which marks the orchestrator role.)
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,agent_id)
+             VALUES ('child-exec','run','child-1',1,0,'running','verdict','child-agent')",
+            [],
+        )
+        .unwrap();
+        let resp = compose(
+            &conn,
+            "child-agent",
+            &compose_args(fragment(vec![], "coder"), 10),
+        );
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("orchestrator only"));
+    }
+
+    #[test]
+    fn wf_compose_denied_when_composition_disabled() {
+        let (conn, _orch) = seed_compose(None, vec![CommsCap::Report], 100, None);
+        let resp = compose(
+            &conn,
+            "orch-agent",
+            &compose_args(fragment(vec![], "coder"), 10),
+        );
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("not enabled"));
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM wf_event WHERE type='compose_denied'"
+            ),
+            1,
+            "a rejection is always journaled"
+        );
+    }
+
+    #[test]
+    fn wf_compose_valid_request_queues_a_decision() {
+        let (conn, _orch) = seed_compose(
+            Some(ComposeLimits {
+                max_sub_runs: 2,
+                max_depth: 2,
+            }),
+            vec![CommsCap::Report, CommsCap::Ask],
+            100,
+            None,
+        );
+        let resp = compose(
+            &conn,
+            "orch-agent",
+            &compose_args(fragment(vec!["report"], "coder"), 30),
+        );
+        assert!(resp.ok, "valid compose should be accepted: {resp:?}");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM wf_message WHERE kind='decision'
+                   AND json_extract(body_json,'$.decision')='compose' AND status='queued'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM wf_event WHERE type='compose_requested'"
+            ),
+            1
+        );
+        // The scheduler decodes it into a typed Compose decision.
+        let decisions = take_orchestrator_decisions(&conn, "run", "orch-exec");
+        assert_eq!(decisions.len(), 1);
+        assert!(matches!(decisions[0], Decision::Compose(_)));
+    }
+
+    #[test]
+    fn wf_compose_rejects_over_budget() {
+        // Run turn cap is 20; a 50-turn slice can't fit.
+        let (conn, _orch) = seed_compose(
+            Some(ComposeLimits {
+                max_sub_runs: 2,
+                max_depth: 2,
+            }),
+            vec![CommsCap::Report],
+            20,
+            None,
+        );
+        let resp = compose(
+            &conn,
+            "orch-agent",
+            &compose_args(fragment(vec![], "coder"), 50),
+        );
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("remain in the run budget"));
+    }
+
+    #[test]
+    fn wf_compose_rejects_over_depth() {
+        // The run is itself a sub-run (parent set → depth 1); with max_depth 1 a
+        // further sub-run would be depth 2.
+        let (conn, _orch) = seed_compose(
+            Some(ComposeLimits {
+                max_sub_runs: 2,
+                max_depth: 1,
+            }),
+            vec![CommsCap::Report],
+            100,
+            Some("parent-run"),
+        );
+        let resp = compose(
+            &conn,
+            "orch-agent",
+            &compose_args(fragment(vec![], "coder"), 10),
+        );
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("depth"));
+    }
+
+    #[test]
+    fn wf_compose_rejects_caps_escalation() {
+        // Stage grants children only `report`; a fragment step wanting `ask` is a
+        // privilege escalation (spec §15).
+        let (conn, _orch) = seed_compose(
+            Some(ComposeLimits {
+                max_sub_runs: 2,
+                max_depth: 2,
+            }),
+            vec![CommsCap::Report],
+            100,
+            None,
+        );
+        let resp = compose(
+            &conn,
+            "orch-agent",
+            &compose_args(fragment(vec!["ask"], "coder"), 10),
+        );
+        assert!(!resp.ok);
+        assert!(resp
+            .error
+            .unwrap()
+            .contains("broader than the stage grants"));
+    }
+
+    #[test]
+    fn wf_compose_rejects_invalid_fragment() {
+        let (conn, _orch) = seed_compose(
+            Some(ComposeLimits {
+                max_sub_runs: 2,
+                max_depth: 2,
+            }),
+            vec![CommsCap::Report],
+            100,
+            None,
+        );
+        // References an agent that isn't in the (inherited) agent map.
+        let resp = compose(
+            &conn,
+            "orch-agent",
+            &compose_args(fragment(vec![], "nonexistent"), 10),
+        );
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("fragment is invalid"));
+    }
+
+    #[test]
+    fn wf_compose_rejects_over_max_sub_runs() {
+        let (conn, _orch) = seed_compose(
+            Some(ComposeLimits {
+                max_sub_runs: 1,
+                max_depth: 2,
+            }),
+            vec![CommsCap::Report],
+            100,
+            None,
+        );
+        // One sub-run already exists for this parent.
+        conn.execute(
+            "INSERT INTO wf_run (id,parent_run_id,name,spec_json,task,project_id,repo_path,run_dir,
+                branch,base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('sub-1','run','s','{}','t','p','/repo','/rd','wf/s','sha','running','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        let resp = compose(
+            &conn,
+            "orch-agent",
+            &compose_args(fragment(vec![], "coder"), 10),
+        );
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("max_sub_runs"));
     }
 }
