@@ -1035,21 +1035,22 @@ fn route_compose(
             )
         }
     };
-    let base =
-        match args
-            .get("base")
-            .and_then(|v| v.as_str())
-            .unwrap_or("parent-head")
-        {
-            "parent-head" => ComposeBase::ParentHead,
-            "run-base" => ComposeBase::RunBase,
-            other => return deny(
+    let base = match args
+        .get("base")
+        .and_then(|v| v.as_str())
+        .unwrap_or("parent-head")
+    {
+        "parent-head" => ComposeBase::ParentHead,
+        "run-base" => ComposeBase::RunBase,
+        other => {
+            return deny(
                 conn,
                 format!(
                     "wf_compose `base` must be \"parent-head\" or \"run-base\", got \"{other}\""
                 ),
-            ),
-        };
+            )
+        }
+    };
 
     // ── Validate the fragment with the full spec.rs rules (§5.2), by wrapping it
     //    in a synthetic Spec that also carries the reserved budget slice. ──
