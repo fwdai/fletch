@@ -1021,6 +1021,36 @@ mod tests {
     }
 
     #[test]
+    fn ask_is_rejected_once_the_exec_has_committed() {
+        // The other half of the commit-point serialization (§10.4): if the
+        // scheduler finalized the attempt first (its exec is terminal), a late
+        // ask from that turn is rejected — never queued against a completed step,
+        // so the run can't be left advanced with an orphan question.
+        let (conn, _run, exec) = seed(vec![CommsCap::Ask]);
+        conn.execute(
+            "UPDATE wf_step_exec SET status = 'done' WHERE id = ?1",
+            [&exec],
+        )
+        .unwrap();
+        let (resp, poke) = route(
+            &conn,
+            None,
+            "req-1",
+            "run",
+            "agent-1",
+            "wf_ask",
+            &json!({ "question": "q" }),
+        );
+        assert!(!resp.ok, "ask on a committed exec must be rejected");
+        assert!(matches!(poke, Poke::None));
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM wf_message"),
+            0,
+            "no orphan ask is queued"
+        );
+    }
+
+    #[test]
     fn has_unanswered_ask_tracks_queued_then_answered() {
         let (conn, run, exec) = seed(vec![CommsCap::Ask]);
         assert!(!has_unanswered_ask(&conn, &exec), "no ask yet");

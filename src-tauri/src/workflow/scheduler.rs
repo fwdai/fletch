@@ -748,9 +748,20 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     let ferry = ferry_step(ctx, run_id, &exec_id, &msg, &wt, &run_repo).await;
                     match ferry {
                         Ok(head) => {
-                            {
-                                let conn = ctx.db.lock();
-                                finish_step_exec(&conn, &exec_id, "done", Some(&head));
+                            // Atomic commit point: a `wf_ask` can be routed while
+                            // `ferry` runs (the drain + pre-check above see only
+                            // the state before it), so re-check under the same lock
+                            // that finalizes `done` (§10.4). See
+                            // `commit_done_unless_ask`.
+                            let committed = commit_done_unless_ask(&ctx.db.lock(), &exec_id, &head);
+                            if !committed {
+                                // A late ask landed during the ferry. The boundary
+                                // commit is inert (never referenced as a `done`
+                                // ref); pause `question` and let `wf_answer` resume
+                                // with a fresh attempt.
+                                pause_question(ctx, run_id, &exec_id, result.agent_id.as_deref())
+                                    .await;
+                                return Ok(());
                             }
                             if let Some(agent_id) = &result.agent_id {
                                 let _ = ctx.driver.archive(agent_id).await;
@@ -841,43 +852,9 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                 }
                 AttemptOutcome::AwaitingAnswer => {
                     // The step asked the human a question (§10.4). No gate, no
-                    // ferry: abandon this attempt (a fresh one runs on
-                    // `wf_answer`), stop the agent — pausing stops processes
-                    // (§6.5) and a human answer can be a long way off — and pause
-                    // `question`. The cursor is left where it is so the fresh
-                    // attempt re-runs this same step with the answer folded in.
-                    {
-                        let conn = ctx.db.lock();
-                        finish_step_exec(&conn, &exec_id, "abandoned", None);
-                    }
-                    if let Some(agent_id) = &result.agent_id {
-                        let _ = ctx.driver.stop(agent_id).await;
-                    }
-                    let conn = ctx.db.lock();
-                    journal_event(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        event_type::ATTEMPT_ABANDONED,
-                        Some(&exec_id),
-                        &json!({ "cause": "question" }),
-                    );
-                    journal_event(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        event_type::RUN_PAUSED,
-                        Some(&exec_id),
-                        &json!({ "reason": "question" }),
-                    );
-                    set_status(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        "paused",
-                        Some("question"),
-                        None,
-                    );
+                    // ferry, no advance — pause `question`; the cursor is left in
+                    // place so a fresh attempt re-runs this step with the answer.
+                    pause_question(ctx, run_id, &exec_id, result.agent_id.as_deref()).await;
                     return Ok(());
                 }
                 AttemptOutcome::Blocked { reason } => {
@@ -1030,6 +1007,65 @@ async fn ferry_step(
     let refname = gitops::pin_step_ref(worktree, exec_id).await?;
     gitops::ferry(worktree, run_repo, &refname).await?;
     Ok(bc.head)
+}
+
+/// The atomic commit point for a `done` attempt (§10.4). In ONE DB-lock hold,
+/// re-check for a late human `wf_ask` and either finalize the attempt `done`
+/// (returning `true`) or leave it uncommitted (`false`) so the caller pauses
+/// `question`. This is the load-bearing serialization: the comms router inserts
+/// an ask under this same connection mutex, and only after confirming the sender
+/// exec is still live — so this section and that insert can't interleave. Either
+/// the ask is committed before this runs (we observe it and don't finalize), or
+/// we finalize `done` first (and the router then rejects the late ask, whose
+/// exec is no longer live). No ordering can both queue an ask and advance the
+/// run — closing the window the mailbox drain alone leaves open during `ferry`.
+fn commit_done_unless_ask(conn: &Connection, exec_id: &str, head: &str) -> bool {
+    if super::comms::has_unanswered_ask(conn, exec_id) {
+        false
+    } else {
+        finish_step_exec(conn, exec_id, "done", Some(head));
+        true
+    }
+}
+
+/// Pause a run `question` for an outstanding human ask: abandon the current
+/// attempt (a fresh one runs on `wf_answer`), stop its agent — a human answer can
+/// be a long way off and pausing stops processes (§6.5) — and journal the pause.
+/// The cursor is left in place so the resumed attempt re-runs the same step with
+/// the answer folded in.
+async fn pause_question(ctx: &RunCtx, run_id: &str, exec_id: &str, agent_id: Option<&str>) {
+    {
+        let conn = ctx.db.lock();
+        finish_step_exec(&conn, exec_id, "abandoned", None);
+    }
+    if let Some(a) = agent_id {
+        let _ = ctx.driver.stop(a).await;
+    }
+    let conn = ctx.db.lock();
+    journal_event(
+        &conn,
+        ctx.app.as_ref(),
+        run_id,
+        event_type::ATTEMPT_ABANDONED,
+        Some(exec_id),
+        &json!({ "cause": "question" }),
+    );
+    journal_event(
+        &conn,
+        ctx.app.as_ref(),
+        run_id,
+        event_type::RUN_PAUSED,
+        Some(exec_id),
+        &json!({ "reason": "question" }),
+    );
+    set_status(
+        &conn,
+        ctx.app.as_ref(),
+        run_id,
+        "paused",
+        Some("question"),
+        None,
+    );
 }
 
 async fn finalize_run(
@@ -3206,6 +3242,67 @@ mod tests {
         assert!(check_resumable(&conn, "r-ques", "resume").is_err());
         assert!(check_resumable(&conn, "r-budg", "resume").is_ok());
         assert!(check_resumable(&conn, "r-blk", "retry").is_ok());
+    }
+
+    #[test]
+    fn commit_done_unless_ask_ties_the_gate_to_the_ask_check() {
+        // The atomic commit point (§10.4): finalize `done` only when no ask is
+        // queued for the exec; a pending ask blocks the commit so the caller can
+        // pause `question` instead of advancing.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('r','n','{}','t','p','/r','/d','wf/x','sha','running','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        let mk_exec = |id: &str| {
+            conn.execute(
+                "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode)
+                 VALUES (?1,'r','s',1,0,'running','verdict')",
+                [id],
+            )
+            .unwrap();
+        };
+
+        // No ask → commits `done` with the ferried head.
+        mk_exec("e-clean");
+        assert!(commit_done_unless_ask(&conn, "e-clean", "sha1"));
+        let (status, head): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, head_end FROM wf_step_exec WHERE id='e-clean'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "done");
+        assert_eq!(head.as_deref(), Some("sha1"));
+
+        // A queued ask against the exec → does NOT commit; the exec stays live so
+        // the caller pauses `question`.
+        mk_exec("e-ask");
+        conn.execute(
+            "INSERT INTO wf_message (id,run_id,from_step_exec_id,to_step_exec_id,kind,
+                body_json,status,created_at)
+             VALUES ('m1','r','e-ask',NULL,'ask','{}','queued',0)",
+            [],
+        )
+        .unwrap();
+        assert!(!commit_done_unless_ask(&conn, "e-ask", "sha2"));
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM wf_step_exec WHERE id='e-ask'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "running",
+            "must not finalize while an ask is pending"
+        );
     }
 
     // ───────────────────────── parallel stages (S8) ─────────────────────────
