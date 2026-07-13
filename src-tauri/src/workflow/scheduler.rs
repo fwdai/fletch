@@ -281,6 +281,39 @@ impl WorkflowService {
         Ok(())
     }
 
+    /// Resolve a `paused(conflict)` run (`wf_resolve_conflict`, §12.3). `mode` is
+    /// `"agent"` (spawn a conflict-resolution step forked from the snapshot) or
+    /// `"human"` (the user resolved in the run repo's integration worktree). The
+    /// choice is recorded on the merge cursor and the run re-driven; the merge
+    /// stage's resume path applies it. Mode `"orchestrator"` (§12.3 b) arrives
+    /// with S11.
+    pub fn resolve_conflict(&self, run_id: &str, mode: &str) -> Result<()> {
+        if !matches!(mode, "agent" | "human") {
+            return Err(Error::Other(format!(
+                "unknown conflict resolution mode '{mode}' (expected 'agent' or 'human')"
+            )));
+        }
+        {
+            let conn = self.db.lock();
+            let (status, reason) = run_status(&conn, run_id)?;
+            if status != "paused" || reason.as_deref() != Some("conflict") {
+                return Err(Error::Other(format!(
+                    "run is not paused on a conflict (status: {status})"
+                )));
+            }
+            let mut cursor = get_cursor(&conn, run_id);
+            let ci = cursor
+                .merge
+                .as_mut()
+                .and_then(|m| m.conflict.as_mut())
+                .ok_or_else(|| Error::Other("no recorded merge conflict to resolve".into()))?;
+            ci.resolution = Some(mode.to_string());
+            set_cursor(&conn, run_id, &cursor);
+        }
+        self.spawn_drive(run_id.to_string());
+        Ok(())
+    }
+
     pub(super) fn spawn_drive(&self, run_id: String) {
         spawn_drive_task(
             self.db.clone(),
@@ -576,12 +609,18 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     &mut ledger,
                     &test_override,
                     &setup_override,
+                    &mut cursor,
                 )
                 .await?
                 {
-                    // `integrate: none` — the stage HEAD is its entry HEAD, so the
-                    // line's fork source is unchanged; just advance the cursor.
-                    StageFlow::Advance => {}
+                    // `integrate: none` leaves the line unchanged (`line: None`);
+                    // `integrate: merge` advances it onto the integrated result.
+                    StageFlow::Advance { line } => {
+                        if let Some((head_ref, exec_id)) = line {
+                            last_ref = head_ref;
+                            last_exec_id = Some(exec_id);
+                        }
+                    }
                     StageFlow::Stop => return Ok(()),
                 }
             }
@@ -624,9 +663,15 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                 )
                 .await?
                 {
-                    // `integrate: none` — the stage HEAD is its entry HEAD (§12.3),
-                    // so the line's fork source is unchanged; just advance.
-                    StageFlow::Advance => {}
+                    // Orchestrate is `integrate: none` in v1 — the stage HEAD is its
+                    // entry HEAD (§12.3), so `line` is always `None` and the fork
+                    // source is unchanged. Handled uniformly with the parallel arm.
+                    StageFlow::Advance { line } => {
+                        if let Some((head_ref, exec_id)) = line {
+                            last_ref = head_ref;
+                            last_exec_id = Some(exec_id);
+                        }
+                    }
                     StageFlow::Stop => return Ok(()),
                 }
             }
@@ -662,12 +707,36 @@ async fn ferry_step(
     worktree: &Path,
     run_repo: &Path,
 ) -> Result<String> {
+    ferry_committed(
+        &ctx.db,
+        ctx.app.as_ref(),
+        run_id,
+        exec_id,
+        message,
+        worktree,
+        run_repo,
+    )
+    .await
+}
+
+/// Boundary-commit + pin + ferry, taking the raw db/app handles so it can also be
+/// called from a parallel child's own task (which owns those handles rather than
+/// a `&RunCtx`). Journals `boundary_commit`.
+async fn ferry_committed(
+    db: &Db,
+    app: Option<&AppHandle>,
+    run_id: &str,
+    exec_id: &str,
+    message: &str,
+    worktree: &Path,
+    run_repo: &Path,
+) -> Result<String> {
     let bc = gitops::boundary_commit(worktree, message).await?;
     {
-        let conn = ctx.db.lock();
+        let conn = db.lock();
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            app,
             run_id,
             event_type::BOUNDARY_COMMIT,
             Some(exec_id),
@@ -803,20 +872,14 @@ async fn finalize_run(
 // ───────────────────────────── helpers ──────────────────────────────────────
 
 /// Reject blocks the engine can't yet execute, up front, so a run fails with a
-/// clear cause before doing any work rather than part-way through. S8 executes
-/// `step` and `parallel` with `integrate: none`; loop (S7), orchestrate (S11),
-/// and `integrate: merge` (S9) are not implemented yet.
+/// clear cause before doing any work rather than part-way through. S8/S9 execute
+/// `step` and `parallel` (both `integrate: none` and `integrate: merge`); loop
+/// (S7) executes bodies of plain steps; orchestrate (S11) is not wired yet.
 fn ensure_executable(blocks: &[Block]) -> Result<()> {
     for b in blocks {
         match b {
             Block::Step(_) => {}
-            Block::Parallel(p) => {
-                if matches!(p.integrate, Integrate::Merge) {
-                    return Err(Error::Other(
-                        "parallel integrate: merge is not supported yet (S9)".into(),
-                    ));
-                }
-            }
+            Block::Parallel(_) => {}
             Block::Loop(lp) => {
                 // S7 executes loop bodies of plain steps; nested parallel/loop/
                 // orchestrate inside a body isn't wired yet. spec.rs already
@@ -831,11 +894,11 @@ fn ensure_executable(blocks: &[Block]) -> Result<()> {
             }
             Block::Orchestrate(o) => {
                 // S11 executes orchestrate stages with `integrate: none` (the
-                // orchestrator supervises note-producing children). `integrate:
-                // merge` reuses the code-merge machinery that arrives with S9.
+                // orchestrator supervises note-producing children). Wiring the
+                // orchestrator over S9's code-merge machinery is a follow-up.
                 if matches!(o.integrate, Integrate::Merge) {
                     return Err(Error::Other(
-                        "orchestrate integrate: merge is not supported yet (S9)".into(),
+                        "orchestrate integrate: merge is not supported yet".into(),
                     ));
                 }
             }
@@ -847,9 +910,11 @@ fn ensure_executable(blocks: &[Block]) -> Result<()> {
 // ─────────────────────────── parallel stages (§6.6) ─────────────────────────
 
 /// Whether a completed stage advances the run (`Advance`) or halts it (`Stop` —
-/// the stage wrote a terminal `failed`/paused status).
+/// the stage wrote a terminal `failed`/paused status). A merge stage carries the
+/// integrated result as the next block's fork source (`line`); an
+/// `integrate: none` stage leaves the line unchanged (`line: None`).
 enum StageFlow {
-    Advance,
+    Advance { line: Option<(String, String)> },
     Stop,
 }
 
@@ -901,6 +966,10 @@ struct ChildCtx {
     /// (honoring its own `tests_timeout_secs`) in [`drive_child`].
     test_override: Option<String>,
     setup_override: Option<String>,
+    /// The stage's integration mode (§12.3). `Merge` children boundary-commit,
+    /// pin, and ferry their work into the run repo (like a linear step) so the
+    /// stage can merge their refs; `None` children leave code on their fork.
+    integrate: Integrate,
     /// Set by the stage to wind this child down (loser cancellation, §6.6).
     stage_cancel: Arc<AtomicBool>,
 }
@@ -952,7 +1021,37 @@ async fn run_parallel_stage(
     ledger: &mut Ledger,
     test_override: &Option<String>,
     setup_override: &Option<String>,
+    cursor: &mut Cursor,
 ) -> Result<StageFlow> {
+    // Resume a merge stage paused mid-integration (§12.3): the children already
+    // ran and ferried, so don't re-run them — continue merging / apply the
+    // recorded conflict resolution.
+    if matches!(par.integrate, Integrate::Merge)
+        && cursor
+            .merge
+            .as_ref()
+            .is_some_and(|m| m.block_index == block_index)
+    {
+        return resume_merge_stage(
+            ctx,
+            run_id,
+            run,
+            spec,
+            par,
+            block_index,
+            block_count,
+            blackboard,
+            repo,
+            run_repo,
+            eff,
+            ledger,
+            test_override,
+            setup_override,
+            cursor,
+        )
+        .await;
+    }
+
     // Enforcement point: before spawning the stage (§11.2). Pause at the block
     // boundary if the run budget is already spent, spawning nothing.
     if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
@@ -988,11 +1087,38 @@ async fn run_parallel_stage(
         }
     }
     if matches!(par.join, Join::Any) && prior_success {
-        return Ok(StageFlow::Advance);
+        // Resume: no live winner to hand down — begin_merge_stage falls back to
+        // the earliest-finished done child.
+        return finish_stage_success(
+            ctx,
+            run_id,
+            run,
+            spec,
+            par,
+            block_index,
+            run_repo,
+            fork_base,
+            cursor,
+            None,
+        )
+        .await;
     }
     if pending.is_empty() {
-        // join `all`: every child already `done` (resume) → stage complete.
-        return Ok(StageFlow::Advance);
+        // Every child already `done` (resume). For `any`, no live winner survived
+        // the crash → fall back to the earliest-finished done child.
+        return finish_stage_success(
+            ctx,
+            run_id,
+            run,
+            spec,
+            par,
+            block_index,
+            run_repo,
+            fork_base,
+            cursor,
+            None,
+        )
+        .await;
     }
 
     let stage_cancel = Arc::new(AtomicBool::new(false));
@@ -1030,6 +1156,7 @@ async fn run_parallel_stage(
             block_count,
             test_override: test_override.clone(),
             setup_override: setup_override.clone(),
+            integrate: par.integrate,
             stage_cancel: stage_cancel.clone(),
         });
     }
@@ -1048,6 +1175,10 @@ async fn run_parallel_stage(
     let mut successes = 0usize;
     let mut failures: Vec<String> = Vec::new();
     let mut stage_failed: Option<String> = None;
+    // The authoritative join `any` winner: the FIRST child whose success satisfied
+    // the join (and cancelled the rest). Captured here rather than reconstructed
+    // from timestamps so a same-millisecond raced sibling can't be mistaken for it.
+    let mut any_winner: Option<String> = None;
 
     while let Some(joined) = set.join_next().await {
         let res = match joined {
@@ -1079,8 +1210,12 @@ async fn run_parallel_stage(
                         &json!({ "step_id": res.step_id, "sha": head }),
                     );
                 }
-                // join `any`: first winner → wind the losers down (no new starts).
+                // join `any`: first winner → record it and wind the losers down
+                // (no new starts). A raced sibling that finishes later is not it.
                 if matches!(par.join, Join::Any) {
+                    if any_winner.is_none() {
+                        any_winner = Some(res.step_id.clone());
+                    }
                     stage_cancel.store(true, Ordering::SeqCst);
                 }
             }
@@ -1121,12 +1256,39 @@ async fn run_parallel_stage(
                 );
                 Ok(StageFlow::Stop)
             } else {
-                Ok(StageFlow::Advance)
+                // `all` integrates every child, so no winner hint is needed.
+                finish_stage_success(
+                    ctx,
+                    run_id,
+                    run,
+                    spec,
+                    par,
+                    block_index,
+                    run_repo,
+                    fork_base,
+                    cursor,
+                    None,
+                )
+                .await
             }
         }
         Join::Any => {
             if successes > 0 {
-                Ok(StageFlow::Advance)
+                // Hand the authoritative winner down so a raced sibling is never
+                // integrated in its place.
+                finish_stage_success(
+                    ctx,
+                    run_id,
+                    run,
+                    spec,
+                    par,
+                    block_index,
+                    run_repo,
+                    fork_base,
+                    cursor,
+                    any_winner.as_deref(),
+                )
+                .await
             } else {
                 let conn = ctx.db.lock();
                 set_status(
@@ -1144,6 +1306,445 @@ async fn run_parallel_stage(
             }
         }
     }
+}
+
+/// A stage whose join condition is met: `integrate: none` advances the run with
+/// the line unchanged; `integrate: merge` merges the successful children's
+/// ferried refs into the stage accumulator (§12.3) and advances onto the result.
+#[allow(clippy::too_many_arguments)]
+async fn finish_stage_success(
+    ctx: &RunCtx,
+    run_id: &str,
+    run: &RunEssentials,
+    spec: &Spec,
+    par: &Parallel,
+    block_index: usize,
+    run_repo: &Path,
+    fork_base: &str,
+    cursor: &mut Cursor,
+    winner: Option<&str>,
+) -> Result<StageFlow> {
+    match par.integrate {
+        Integrate::None => Ok(StageFlow::Advance { line: None }),
+        Integrate::Merge => {
+            begin_merge_stage(
+                ctx,
+                run_id,
+                run,
+                spec,
+                par,
+                block_index,
+                run_repo,
+                fork_base,
+                cursor,
+                winner,
+            )
+            .await
+        }
+    }
+}
+
+/// Choose which children's ferried refs the stage integrates (§12.3).
+/// `all` merges every done child in spec order. `any` merges exactly ONE branch:
+/// the `winner` the join loop recorded when live, else — on resume, when no live
+/// winner survived — the child that finished first (least `ended_at`, ties broken
+/// by spec order via the stable input). `done` is `(step_id, ref, ended_at)` in
+/// spec order.
+fn pick_winners(
+    mut done: Vec<(String, String, i64)>,
+    join: Join,
+    winner: Option<&str>,
+) -> Vec<(String, String)> {
+    if !matches!(join, Join::Any) {
+        return done.into_iter().map(|(s, r, _)| (s, r)).collect();
+    }
+    if let Some(w) = winner {
+        if let Some((s, r, _)) = done.into_iter().find(|(s, _, _)| s == w) {
+            return vec![(s, r)];
+        }
+        return Vec::new();
+    }
+    done.sort_by_key(|(_, _, ended)| *ended);
+    done.into_iter().take(1).map(|(s, r, _)| (s, r)).collect()
+}
+
+/// Begin a fresh merge stage (§12.3): set up an integration worktree at the
+/// stage-entry ref and merge each successful child's ferried ref in spec order.
+#[allow(clippy::too_many_arguments)]
+async fn begin_merge_stage(
+    ctx: &RunCtx,
+    run_id: &str,
+    run: &RunEssentials,
+    spec: &Spec,
+    par: &Parallel,
+    block_index: usize,
+    run_repo: &Path,
+    fork_base: &str,
+    cursor: &mut Cursor,
+    winner: Option<&str>,
+) -> Result<StageFlow> {
+    let run_dir = PathBuf::from(&run.run_dir);
+    let int_wt = gitops::integration_worktree_path(&run_dir, block_index);
+
+    // Successful children with their completion time, in spec order.
+    let done: Vec<(String, String, i64)> = {
+        let conn = ctx.db.lock();
+        par.steps
+            .iter()
+            .filter_map(|s| {
+                done_exec_with_ended_at(&conn, run_id, &s.id)
+                    .map(|(e, ended)| (s.id.clone(), gitops::step_ref(&e), ended))
+            })
+            .collect()
+    };
+    let winners = pick_winners(done, par.join, winner);
+    if winners.is_empty() {
+        // No child produced a ferried ref — nothing to integrate; leave the line.
+        return Ok(StageFlow::Advance { line: None });
+    }
+
+    let base = crate::git::rev_parse(run_repo, fork_base).await?;
+    gitops::setup_integration_worktree(run_repo, &int_wt, &base).await?;
+    {
+        let conn = ctx.db.lock();
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::MERGE_STARTED,
+            None,
+            &json!({ "count": winners.len() }),
+        );
+    }
+    drive_merges(
+        ctx,
+        run_id,
+        &spec.name,
+        block_index,
+        run_repo,
+        &int_wt,
+        winners,
+        cursor,
+    )
+    .await
+}
+
+/// Merge each remaining `(step_id, ref)` into the integration worktree in order.
+/// A clean merge pins the accumulator and journals `merge_done`; a conflict pins
+/// the snapshot, persists the resumable state, journals `merge_conflict`, and
+/// pauses the run `conflict`. All merged → finalize the stage.
+#[allow(clippy::too_many_arguments)]
+async fn drive_merges(
+    ctx: &RunCtx,
+    run_id: &str,
+    spec_name: &str,
+    block_index: usize,
+    run_repo: &Path,
+    int_wt: &Path,
+    remaining: Vec<(String, String)>,
+    cursor: &mut Cursor,
+) -> Result<StageFlow> {
+    for (i, (step_id, child_ref)) in remaining.iter().enumerate() {
+        let msg = format!("wf({spec_name}): merge {step_id}");
+        match gitops::merge_child(int_wt, child_ref, &msg).await? {
+            gitops::MergeResult::Clean { head } => {
+                gitops::pin_ref(int_wt, &gitops::merge_acc_ref(block_index)).await?;
+                let conn = ctx.db.lock();
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::MERGE_DONE,
+                    None,
+                    &json!({ "step_id": step_id, "sha": head }),
+                );
+            }
+            gitops::MergeResult::Conflict { files, .. } => {
+                gitops::pin_ref(int_wt, &gitops::merge_conflict_ref(block_index)).await?;
+                let remaining_after: Vec<(String, String)> = remaining[i + 1..].to_vec();
+                cursor.merge = Some(MergeCursor {
+                    block_index,
+                    remaining: remaining_after,
+                    conflict: Some(ConflictInfo {
+                        step_id: step_id.clone(),
+                        files: files.clone(),
+                        conflict_ref: gitops::merge_conflict_ref(block_index),
+                        resolution: None,
+                    }),
+                });
+                let conn = ctx.db.lock();
+                set_cursor(&conn, run_id, cursor);
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::MERGE_CONFLICT,
+                    None,
+                    &json!({
+                        "step_id": step_id,
+                        "files": files,
+                        "worktree": int_wt.to_string_lossy(),
+                    }),
+                );
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::RUN_PAUSED,
+                    None,
+                    &json!({ "reason": "conflict", "files": files }),
+                );
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "paused",
+                    Some("conflict"),
+                    None,
+                );
+                return Ok(StageFlow::Stop);
+            }
+        }
+    }
+    finalize_merge_stage(ctx, run_id, block_index, run_repo, int_wt, cursor).await
+}
+
+/// All children merged cleanly: record the integrated result as a synthetic
+/// `__merge_<i>` step exec (the next block's fork source, §12.3), tear down the
+/// integration worktree, and advance the run onto it.
+async fn finalize_merge_stage(
+    ctx: &RunCtx,
+    run_id: &str,
+    block_index: usize,
+    run_repo: &Path,
+    int_wt: &Path,
+    cursor: &mut Cursor,
+) -> Result<StageFlow> {
+    let head = crate::git::rev_parse(int_wt, "HEAD").await?;
+    let exec_id = format!("exec-{}", uuid::Uuid::new_v4());
+    {
+        let conn = ctx.db.lock();
+        let now = super::now_ms();
+        let _ = conn.execute(
+            "INSERT INTO wf_step_exec
+               (id, run_id, step_id, attempt, iteration, status, gate_mode, head_end, started_at, ended_at)
+             VALUES (?1, ?2, ?3, 1, 0, 'done', 'merge', ?4, ?5, ?5)",
+            rusqlite::params![exec_id, run_id, merge_step_id(block_index), head, now],
+        );
+    }
+    // Pin the integrated result as the stage's step ref, then tear the worktree
+    // down (its state is durable in the run repo now). Order matters: the run
+    // repo owns the ref + objects, so removing the linked worktree is safe.
+    gitops::pin_ref(int_wt, &gitops::step_ref(&exec_id)).await?;
+    gitops::remove_integration_worktree(run_repo, int_wt).await;
+    cursor.merge = None;
+    set_cursor(&ctx.db.lock(), run_id, cursor);
+    Ok(StageFlow::Advance {
+        line: Some((gitops::step_ref(&exec_id), exec_id)),
+    })
+}
+
+/// Resume a merge stage paused mid-integration (§12.3). If a conflict is recorded
+/// with a chosen resolution, apply it — mode (a) drives a conflict-resolution
+/// step forked from the pinned snapshot (gate `commit`); mode (c) reads the human
+/// resolution the user committed in the integration worktree — then reset the
+/// accumulator onto the resolved commit and merge the remaining children.
+#[allow(clippy::too_many_arguments)]
+async fn resume_merge_stage(
+    ctx: &RunCtx,
+    run_id: &str,
+    run: &RunEssentials,
+    spec: &Spec,
+    par: &Parallel,
+    block_index: usize,
+    block_count: usize,
+    blackboard: &Path,
+    repo: &Path,
+    run_repo: &Path,
+    eff: &EffectiveBudgets,
+    ledger: &mut Ledger,
+    test_override: &Option<String>,
+    setup_override: &Option<String>,
+    cursor: &mut Cursor,
+) -> Result<StageFlow> {
+    let ms = cursor
+        .merge
+        .clone()
+        .ok_or_else(|| Error::Other("resume_merge_stage without merge cursor".into()))?;
+    let run_dir = PathBuf::from(&run.run_dir);
+    let int_wt = gitops::integration_worktree_path(&run_dir, block_index);
+
+    // No recorded conflict → a prior drive was interrupted mid-clean-merge; just
+    // continue with whatever remains.
+    let Some(ci) = ms.conflict.clone() else {
+        return drive_merges(
+            ctx,
+            run_id,
+            &spec.name,
+            block_index,
+            run_repo,
+            &int_wt,
+            ms.remaining,
+            cursor,
+        )
+        .await;
+    };
+
+    // A conflict awaiting the user's choice must not be silently re-driven; only
+    // `wf_resolve_conflict` (which sets `resolution`) may advance it. Re-pause.
+    let Some(resolution) = ci.resolution.clone() else {
+        let conn = ctx.db.lock();
+        set_status(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            "paused",
+            Some("conflict"),
+            None,
+        );
+        return Ok(StageFlow::Stop);
+    };
+
+    let new_acc: String = match resolution.as_str() {
+        // (c) The human resolved and committed in the integration worktree. Guard
+        // it three ways before continuing: (1) HEAD must have moved off the
+        // conflict snapshot and (2) the tree must be clean — else continuing would
+        // reset their work away; (3) none of the recorded conflicted files may
+        // still hold conflict markers — else the merge would finish with markers in
+        // the integrated result. On any failure, clear the choice and re-pause
+        // `conflict` with a precise cause so they can fix it and retry.
+        "human" => {
+            let head = crate::git::rev_parse(&int_wt, "HEAD").await?;
+            let snapshot = crate::git::rev_parse(run_repo, &ci.conflict_ref).await.ok();
+            let clean = gitops::is_worktree_clean(&int_wt).await.unwrap_or(false);
+            let uncommitted = !clean || snapshot.as_deref() == Some(head.as_str());
+            let markers =
+                gitops::resolution_retains_markers(&int_wt, &ci.conflict_ref, &ci.files).await;
+            if uncommitted || markers {
+                let detail = if uncommitted {
+                    "resolve the conflicts and commit in the integration worktree before continuing"
+                } else {
+                    "the committed resolution still contains conflict markers — remove them, commit, and continue"
+                };
+                if let Some(c) = cursor.merge.as_mut().and_then(|m| m.conflict.as_mut()) {
+                    c.resolution = None;
+                }
+                let conn = ctx.db.lock();
+                set_cursor(&conn, run_id, cursor);
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::RUN_PAUSED,
+                    None,
+                    &json!({ "reason": "conflict", "detail": detail }),
+                );
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "paused",
+                    Some("conflict"),
+                    None,
+                );
+                return Ok(StageFlow::Stop);
+            }
+            head
+        }
+        // (a) Spawn a conflict-resolution step forked from the pinned snapshot.
+        "agent" => {
+            let agent_alias = par
+                .steps
+                .iter()
+                .find(|s| s.id == ci.step_id)
+                .map(|s| s.agent.clone())
+                .ok_or_else(|| {
+                    Error::Other(format!("conflict step '{}' not in the stage", ci.step_id))
+                })?;
+            let agent_spec = spec.agents.get(&agent_alias).ok_or_else(|| {
+                Error::Other(format!(
+                    "conflict resolver references unknown agent '{agent_alias}'"
+                ))
+            })?;
+            let resolve_step = Step {
+                id: format!("__resolve_{block_index}"),
+                agent: agent_alias,
+                goal: format!(
+                    "A merge of parallel work produced conflicts in: {}. \
+                     Open each file, remove every conflict marker \
+                     (<<<<<<<, =======, >>>>>>>), reconcile both sides so the \
+                     result is coherent, and commit the resolution.",
+                    ci.files.join(", ")
+                ),
+                gate: Gate::Commit,
+                budgets: None,
+                comms: vec![],
+            };
+            let env = StepEnv {
+                repo,
+                run_repo,
+                blackboard,
+                eff,
+                test_override,
+                setup_override,
+                run_task: &run.task,
+                spec_name: &spec.name,
+            };
+            let position = Position {
+                step_index: block_index,
+                step_count: block_count,
+                iteration: None,
+            };
+            match execute_step(
+                ctx,
+                run_id,
+                &env,
+                &resolve_step,
+                agent_spec,
+                position,
+                0,
+                &ci.conflict_ref,
+                false,
+                ledger,
+            )
+            .await?
+            {
+                StepFlow::Done { head_ref, .. } => {
+                    crate::git::rev_parse(run_repo, &head_ref).await?
+                }
+                // The resolution step paused/failed (blocked gate, budget, error);
+                // its status is written. `wf_retry` re-enters this path.
+                StepFlow::Halt => return Ok(StageFlow::Stop),
+                StepFlow::LoopContinue => unreachable!("resolution step is never a loop until"),
+            }
+        }
+        other => {
+            return Err(Error::Other(format!(
+                "unknown conflict resolution mode '{other}'"
+            )))
+        }
+    };
+
+    // Reset the accumulator onto the resolved commit and continue merging.
+    gitops::setup_integration_worktree(run_repo, &int_wt, &new_acc).await?;
+    gitops::pin_ref(&int_wt, &gitops::merge_acc_ref(block_index)).await?;
+    cursor.merge = Some(MergeCursor {
+        block_index,
+        remaining: ms.remaining.clone(),
+        conflict: None,
+    });
+    set_cursor(&ctx.db.lock(), run_id, cursor);
+    drive_merges(
+        ctx,
+        run_id,
+        &spec.name,
+        block_index,
+        run_repo,
+        &int_wt,
+        ms.remaining,
+        cursor,
+    )
+    .await
 }
 
 /// Drive one parallel child to a terminal [`ChildOutcome`] on its own task
@@ -1284,25 +1885,91 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
 
         match result.outcome {
             AttemptOutcome::Done { .. } => {
-                // `integrate: none` — no boundary commit / ferry. Detect whether
-                // the child moved its own HEAD; if so its code is abandoned on
-                // the fork → `integrate_skipped`.
-                let head = match &result.worktree {
-                    Some(wt) => gitops::head_sha(wt).await.ok(),
-                    None => None,
+                let wt = match &result.worktree {
+                    Some(wt) => wt.clone(),
+                    None => {
+                        return done(
+                            ChildOutcome::Failure {
+                                reason: "done child without a worktree".into(),
+                            },
+                            child_ledger,
+                        )
+                    }
                 };
-                let moved_head = match (&head, &stage_entry_sha) {
-                    (Some(h), Some(entry)) => h != entry,
-                    _ => false,
-                };
-                {
-                    let conn = c.db.lock();
-                    finish_step_exec(&conn, &exec_id, "done", head.as_deref());
+                match c.integrate {
+                    // `merge` — boundary-commit + pin + ferry into the run repo so
+                    // the stage can merge the child's ref (§12.3). A ferry failure
+                    // keeps the child out of `done` → drops to the retry policy.
+                    Integrate::Merge => {
+                        let msg = format!("wf: parallel child {}", c.step.id);
+                        match ferry_committed(
+                            &c.db,
+                            c.app.as_ref(),
+                            &c.run_id,
+                            &exec_id,
+                            &msg,
+                            &wt,
+                            &c.run_repo,
+                        )
+                        .await
+                        {
+                            Ok(head) => {
+                                {
+                                    let conn = c.db.lock();
+                                    finish_step_exec(&conn, &exec_id, "done", Some(&head));
+                                }
+                                if let Some(agent_id) = &result.agent_id {
+                                    let _ = c.driver.archive(agent_id).await;
+                                }
+                                return done(
+                                    ChildOutcome::Success {
+                                        moved_head: true,
+                                        head: Some(head),
+                                    },
+                                    child_ledger,
+                                );
+                            }
+                            Err(e) => {
+                                last_failure = Some(format!("ferry failed: {e}"));
+                                if let Some(agent_id) = &result.agent_id {
+                                    let _ = c.driver.stop(agent_id).await;
+                                }
+                                {
+                                    let conn = c.db.lock();
+                                    finish_step_exec(&conn, &exec_id, "error", None);
+                                }
+                                if attempt_no >= max_attempts {
+                                    return done(
+                                        ChildOutcome::Failure {
+                                            reason: format!("ferry failed: {e}"),
+                                        },
+                                        child_ledger,
+                                    );
+                                }
+                                attempt_no += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    // `none` — no boundary commit / ferry. Detect whether the child
+                    // moved its own HEAD; if so its code is abandoned on the fork →
+                    // `integrate_skipped` (journaled by the stage).
+                    Integrate::None => {
+                        let head = gitops::head_sha(&wt).await.ok();
+                        let moved_head = match (&head, &stage_entry_sha) {
+                            (Some(h), Some(entry)) => h != entry,
+                            _ => false,
+                        };
+                        {
+                            let conn = c.db.lock();
+                            finish_step_exec(&conn, &exec_id, "done", head.as_deref());
+                        }
+                        if let Some(agent_id) = &result.agent_id {
+                            let _ = c.driver.archive(agent_id).await;
+                        }
+                        return done(ChildOutcome::Success { moved_head, head }, child_ledger);
+                    }
                 }
-                if let Some(agent_id) = &result.agent_id {
-                    let _ = c.driver.archive(agent_id).await;
-                }
-                return done(ChildOutcome::Success { moved_head, head }, child_ledger);
             }
             AttemptOutcome::Canceled => {
                 // A loser: `run_attempt` already stopped the agent (no leak).
@@ -1517,7 +2184,7 @@ async fn run_orchestrate_stage(
     let orch_step_id = super::comms::orch_step_id(block_index);
     // Resume: the orchestrator already concluded in a prior drive → stage done.
     if child_already_done(&ctx.db.lock(), run_id, &orch_step_id) {
-        return Ok(StageFlow::Advance);
+        return Ok(StageFlow::Advance { line: None });
     }
 
     let stage_entry_sha = crate::git::rev_parse(run_repo, fork_base).await.ok();
@@ -1963,7 +2630,7 @@ async fn run_orchestrate_stage(
                 let conn = ctx.db.lock();
                 finish_step_exec(&conn, &orch_exec, "done", None);
                 persist_spent(&conn, run_id, ledger);
-                return Ok(StageFlow::Advance);
+                return Ok(StageFlow::Advance { line: None });
             }
             if conclude_tries < MAX_CONCLUDE_TRIES {
                 conclude_tries += 1;
@@ -2096,7 +2763,7 @@ async fn run_orchestrate_stage(
     let conn = ctx.db.lock();
     finish_step_exec(&conn, &orch_exec, "done", None);
     persist_spent(&conn, run_id, ledger);
-    Ok(StageFlow::Advance)
+    Ok(StageFlow::Advance { line: None })
 }
 
 /// Assemble one orchestrate child's owned [`ChildCtx`] (all fields cloned so the
@@ -2137,6 +2804,9 @@ fn build_orch_child_ctx(
         block_count,
         test_override: test_override.clone(),
         setup_override: setup_override.clone(),
+        // Orchestrate children are note-producing in v1 (`integrate: none`), so
+        // they never ferry — `drive_orch_child` always takes the none path.
+        integrate: Integrate::None,
         stage_cancel: cancel,
     }
 }
@@ -2767,7 +3437,7 @@ async fn finish_orch_turn_failure(
             );
             Ok(StageFlow::Stop)
         }
-        OrchStepResult::Ok => Ok(StageFlow::Advance),
+        OrchStepResult::Ok => Ok(StageFlow::Advance { line: None }),
     }
 }
 
@@ -3418,6 +4088,11 @@ fn check_resumable(conn: &Connection, run_id: &str, action: &str) -> Result<()> 
             "run is awaiting an answer — use wf_answer (or wf_cancel)".into(),
         ));
     }
+    if reason.as_deref() == Some("conflict") {
+        return Err(Error::Other(
+            "run is paused on a merge conflict — use wf_resolve_conflict (or wf_cancel)".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -3559,6 +4234,41 @@ struct Cursor {
     index: i64,
     #[serde(default)]
     iterations: std::collections::BTreeMap<String, u32>,
+    /// In-progress state of a code-producing parallel merge (§12.3). Present only
+    /// while a `integrate: merge` stage is mid-merge or paused on a conflict; the
+    /// cursor `index` still points at that stage until it finalizes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    merge: Option<MergeCursor>,
+}
+
+/// The resumable state of a merge stage (§12.3): which children remain to merge
+/// (in spec order) and, if paused, the recorded conflict.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct MergeCursor {
+    block_index: usize,
+    /// `(step_id, ferried_ref)` children not yet merged, in spec order.
+    remaining: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conflict: Option<ConflictInfo>,
+}
+
+/// A recorded merge conflict awaiting resolution (§12.3 modes a/c).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ConflictInfo {
+    /// The child whose merge conflicted.
+    step_id: String,
+    files: Vec<String>,
+    /// The committed conflict snapshot a mode-(a) resolution step forks from.
+    conflict_ref: String,
+    /// Chosen by `wf_resolve_conflict`: `"agent"` (mode a) or `"human"` (mode c).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution: Option<String>,
+}
+
+/// The synthetic `wf_step_exec.step_id` for a merge stage's integrated result —
+/// the fork source the next block (and finalize) reads via [`resume_line_state`].
+fn merge_step_id(block_index: usize) -> String {
+    format!("__merge_{block_index}")
 }
 
 fn get_cursor(conn: &Connection, run_id: &str) -> Cursor {
@@ -3684,6 +4394,25 @@ fn latest_done_exec_for_step(conn: &Connection, run_id: &str, step_id: &str) -> 
     .flatten()
 }
 
+/// The step's `done` exec id and its completion time (`ended_at`, 0 if unset).
+/// Used to pick the `any`-join winner — the child that finished first (§12.3).
+fn done_exec_with_ended_at(
+    conn: &Connection,
+    run_id: &str,
+    step_id: &str,
+) -> Option<(String, i64)> {
+    conn.query_row(
+        "SELECT id, COALESCE(ended_at, 0) FROM wf_step_exec
+         WHERE run_id = ?1 AND step_id = ?2 AND status = 'done'
+         ORDER BY rowid DESC LIMIT 1",
+        rusqlite::params![run_id, step_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// Whether a step already has a `done` attempt (a parallel child that finished
 /// in an earlier, interrupted drive — resume must not re-run it, §12.3 / S8).
 fn child_already_done(conn: &Connection, run_id: &str, step_id: &str) -> bool {
@@ -3703,11 +4432,21 @@ fn resume_line_state(
     base_sha: &str,
 ) -> (String, Option<String>) {
     let upper = cursor.min(blocks.len());
-    for b in blocks[..upper].iter().rev() {
-        if let Block::Step(s) = b {
-            if let Some(exec_id) = latest_done_exec_for_step(conn, run_id, &s.id) {
-                return (gitops::step_ref(&exec_id), Some(exec_id));
+    for i in (0..upper).rev() {
+        match &blocks[i] {
+            Block::Step(s) => {
+                if let Some(exec_id) = latest_done_exec_for_step(conn, run_id, &s.id) {
+                    return (gitops::step_ref(&exec_id), Some(exec_id));
+                }
             }
+            // A merge stage advances the line via a synthetic `__merge_<i>` exec
+            // pinned in the run repo (§12.3); an `integrate: none` stage doesn't.
+            Block::Parallel(p) if matches!(p.integrate, Integrate::Merge) => {
+                if let Some(exec_id) = latest_done_exec_for_step(conn, run_id, &merge_step_id(i)) {
+                    return (gitops::step_ref(&exec_id), Some(exec_id));
+                }
+            }
+            _ => {}
         }
     }
     (base_sha.to_string(), None)
@@ -3830,6 +4569,18 @@ pub async fn wf_retry(run_id: String, service: Svc<'_>) -> std::result::Result<(
 #[tauri::command]
 pub async fn wf_approve(run_id: String, service: Svc<'_>) -> std::result::Result<(), String> {
     service.approve(&run_id).map_err(|e| e.to_string())
+}
+
+/// Resolve a merge conflict (§12.3): `mode` is `"agent"` or `"human"`.
+#[tauri::command]
+pub async fn wf_resolve_conflict(
+    run_id: String,
+    mode: String,
+    service: Svc<'_>,
+) -> std::result::Result<(), String> {
+    service
+        .resolve_conflict(&run_id, &mode)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -4990,12 +5741,22 @@ mod tests {
     /// per-child behaviour off the (goal-bearing) step prompt.
     const FAIL: &str = "PZFAIL";
     const HANG: &str = "PZHANG";
+    /// A child that creates the *same* file as its siblings so the second merge
+    /// of an `integrate: merge` stage conflicts (add/add). §12.3.
+    const CONFLICT: &str = "PZCONFLICT";
+    /// The shared file `CONFLICT` children (and the resolver) all touch.
+    const CONFLICT_FILE: &str = "conflict.txt";
 
     #[derive(Clone, Copy)]
     enum Beh {
         Success,
         Fail,
         Hang,
+        /// Write `CONFLICT_FILE` with unique content so siblings collide.
+        Conflict,
+        /// A conflict-resolution step: overwrite `CONFLICT_FILE` to a single
+        /// resolved value (removing the markers) and commit.
+        Resolve,
     }
 
     /// A real-git stub like [`StubDriver`] with per-child behaviour keyed off the
@@ -5085,7 +5846,14 @@ mod tests {
                     let mut st = self.state.lock();
                     let wt = st.worktrees.get(id).cloned().unwrap();
                     let beh = *st.behavior.entry(id.to_string()).or_insert_with(|| {
-                        if text.contains(HANG) {
+                        // The resolution step's prompt names conflict markers; a
+                        // `CONFLICT` child creates the shared file; others follow
+                        // their goal marker.
+                        if text.contains("conflict marker") {
+                            Beh::Resolve
+                        } else if text.contains(CONFLICT) {
+                            Beh::Conflict
+                        } else if text.contains(HANG) {
                             Beh::Hang
                         } else if text.contains(FAIL) {
                             Beh::Fail
@@ -5103,6 +5871,20 @@ mod tests {
                         std::fs::write(wt.join(format!("{id}.txt")), "work").unwrap();
                         sh(&wt, &["add", "-A"]);
                         sh(&wt, &["commit", "-qm", "child work"]);
+                    }
+                    Beh::Conflict => {
+                        // Unique content in a shared file → add/add conflict when a
+                        // sibling's ref is merged after this one.
+                        std::fs::write(wt.join(CONFLICT_FILE), format!("from {id}\n")).unwrap();
+                        sh(&wt, &["add", "-A"]);
+                        sh(&wt, &["commit", "-qm", "conflicting work"]);
+                    }
+                    Beh::Resolve => {
+                        // Overwrite the conflicted file with a single resolved value
+                        // (markers gone) and commit — satisfies the `commit` gate.
+                        std::fs::write(wt.join(CONFLICT_FILE), "resolved\n").unwrap();
+                        sh(&wt, &["add", "-A"]);
+                        sh(&wt, &["commit", "-qm", "resolve conflict"]);
                     }
                 }
                 self.set(id, AgentStatus::Idle);
@@ -5150,6 +5932,17 @@ mod tests {
         join: Join,
         children: &[Step],
     ) -> (Db, PathBuf, String) {
+        scaffold_parallel_integrate(tmp, run_id, join, Integrate::None, children)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn scaffold_parallel_integrate(
+        tmp: &Path,
+        run_id: &str,
+        join: Join,
+        integrate: Integrate,
+        children: &[Step],
+    ) -> (Db, PathBuf, String) {
         let source = tmp.join(format!("src-{run_id}"));
         std::fs::create_dir_all(&source).unwrap();
         sh(&source, &["init", "-q", "-b", "main"]);
@@ -5187,7 +5980,7 @@ mod tests {
             agents,
             workflow: vec![Block::Parallel(Parallel {
                 join,
-                integrate: Integrate::None,
+                integrate,
                 max_concurrent: None,
                 steps: children.to_vec(),
             })],
@@ -5388,6 +6181,471 @@ mod tests {
             .unwrap();
         assert_eq!(todo_done, 1, "the unfinished child ran to done");
         assert_eq!(run_status_str(&db, "run-rp"), "done");
+    }
+
+    // ──────────────────── code-producing parallel: merge (S9) ───────────────
+
+    /// `pick_winners`: `all` keeps every child in spec order; `any` uses the live
+    /// winner hint when present, else the earliest finisher (ties → spec order).
+    #[test]
+    fn pick_winners_selects_the_right_branch() {
+        // (step_id, ref, ended_at) in spec order: a is spec-first, b finished first.
+        let done = || {
+            vec![
+                ("a".to_string(), "ref-a".to_string(), 200),
+                ("b".to_string(), "ref-b".to_string(), 100),
+            ]
+        };
+
+        // `all` → every child, spec order, untouched.
+        assert_eq!(
+            pick_winners(done(), Join::All, None),
+            vec![
+                ("a".to_string(), "ref-a".to_string()),
+                ("b".to_string(), "ref-b".to_string())
+            ]
+        );
+
+        // `any` + live winner hint → exactly that child, even if spec-later.
+        assert_eq!(
+            pick_winners(done(), Join::Any, Some("b")),
+            vec![("b".to_string(), "ref-b".to_string())]
+        );
+
+        // `any`, no hint (resume) → earliest finisher (b @100), not spec-first (a).
+        assert_eq!(
+            pick_winners(done(), Join::Any, None),
+            vec![("b".to_string(), "ref-b".to_string())]
+        );
+
+        // `any`, no hint, tied ended_at → stable fallback to spec order (a).
+        let tied = vec![
+            ("a".to_string(), "ref-a".to_string(), 100),
+            ("b".to_string(), "ref-b".to_string(), 100),
+        ];
+        assert_eq!(
+            pick_winners(tied, Join::Any, None),
+            vec![("a".to_string(), "ref-a".to_string())]
+        );
+    }
+
+    fn sh_out(dir: &Path, args: &[&str]) -> String {
+        let out = Sh::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    fn count_events(db: &Db, run_id: &str, ty: &str) -> i64 {
+        db.lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_event WHERE run_id=?1 AND type=?2",
+                rusqlite::params![run_id, ty],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Record a resolution choice on the paused merge cursor — what
+    /// `wf_resolve_conflict` does, exercised directly so the test can also stage
+    /// the human's edit before re-driving.
+    fn set_resolution(db: &Db, run_id: &str, mode: &str) {
+        let conn = db.lock();
+        let mut cur = get_cursor(&conn, run_id);
+        cur.merge
+            .as_mut()
+            .unwrap()
+            .conflict
+            .as_mut()
+            .unwrap()
+            .resolution = Some(mode.to_string());
+        set_cursor(&conn, run_id, &cur);
+    }
+
+    /// The tree of the merge stage's integrated result, as a newline-joined file
+    /// list, read from the run repo (§12.1).
+    fn merge_tree(tmp: &Path, db: &Db, run_id: &str) -> String {
+        let run_repo = tmp.join(format!("rd-{run_id}")).join("repo");
+        let merge_ref = {
+            let conn = db.lock();
+            gitops::step_ref(&latest_done_exec_for_step(&conn, run_id, &merge_step_id(0)).unwrap())
+        };
+        sh_out(&run_repo, &["ls-tree", "--name-only", "-r", &merge_ref])
+    }
+
+    /// §16: clean merges in spec order integrate every child's work and the run
+    /// advances onto the merged result.
+    #[tokio::test]
+    async fn merge_stage_integrates_children_and_reaches_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Disjoint files → two clean merges.
+        let children = vec![cstep("a", ""), cstep("b", "")];
+        let (db, ws, _b) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-mg",
+            Join::All,
+            Integrate::Merge,
+            &children,
+        );
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-mg").await;
+
+        assert_eq!(run_status_str(&db, "run-mg"), "done");
+        assert_eq!(
+            count_events(&db, "run-mg", event_type::MERGE_DONE),
+            2,
+            "one merge_done per child, in spec order"
+        );
+        let files = merge_tree(tmp.path(), &db, "run-mg");
+        assert!(
+            files.contains("m-1.txt") && files.contains("m-2.txt"),
+            "both children's work is present in the integrated tree: {files}"
+        );
+    }
+
+    /// §16: an induced conflict pauses the run `conflict` and names the file.
+    #[tokio::test]
+    async fn merge_conflict_pauses_with_file_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", CONFLICT), cstep("b", CONFLICT)];
+        let (db, ws, _b) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-mc",
+            Join::All,
+            Integrate::Merge,
+            &children,
+        );
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-mc").await;
+
+        let (status, reason): (String, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, paused_reason FROM wf_run WHERE id='run-mc'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "paused");
+        assert_eq!(reason.as_deref(), Some("conflict"));
+
+        let payload: String = db
+            .lock()
+            .query_row(
+                "SELECT payload_json FROM wf_event WHERE run_id='run-mc' AND type=?1",
+                [event_type::MERGE_CONFLICT],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            payload.contains(CONFLICT_FILE),
+            "the conflict names its file: {payload}"
+        );
+        // The resumable conflict state is persisted on the cursor.
+        let cur = get_cursor(&db.lock(), "run-mc");
+        assert!(
+            cur.merge
+                .as_ref()
+                .and_then(|m| m.conflict.as_ref())
+                .is_some(),
+            "conflict recorded for resume"
+        );
+    }
+
+    /// §16 mode (a): an agent conflict-resolution step drives the run to done.
+    #[tokio::test]
+    async fn merge_conflict_resolved_by_agent_reaches_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", CONFLICT), cstep("b", CONFLICT)];
+        let (db, ws, _b) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-ma",
+            Join::All,
+            Integrate::Merge,
+            &children,
+        );
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-ma").await;
+        assert_eq!(run_status_str(&db, "run-ma"), "paused");
+
+        // `wf_resolve_conflict(run, "agent")` then re-drive.
+        set_resolution(&db, "run-ma", "agent");
+        drive_run(&ctx, "run-ma").await;
+
+        assert_eq!(run_status_str(&db, "run-ma"), "done");
+        // The resolution step ran (its `__resolve_0` exec is done) and the
+        // integrated file carries the resolved value, not markers.
+        let resolved: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_step_exec
+                 WHERE run_id='run-ma' AND step_id='__resolve_0' AND status='done'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 1, "the conflict-resolution step ran to done");
+        let run_repo = tmp.path().join("rd-run-ma").join("repo");
+        let merge_ref = {
+            let conn = db.lock();
+            gitops::step_ref(
+                &latest_done_exec_for_step(&conn, "run-ma", &merge_step_id(0)).unwrap(),
+            )
+        };
+        let body = sh_out(
+            &run_repo,
+            &["show", &format!("{merge_ref}:{CONFLICT_FILE}")],
+        );
+        assert!(body.contains("resolved"), "markers resolved: {body}");
+        assert!(!body.contains("<<<<<<<"), "no leftover markers: {body}");
+    }
+
+    /// §16 mode (c): the human resolves in the integration worktree and the run
+    /// resumes to done.
+    #[tokio::test]
+    async fn merge_conflict_resolved_by_human_reaches_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", CONFLICT), cstep("b", CONFLICT)];
+        let (db, ws, _b) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-mh",
+            Join::All,
+            Integrate::Merge,
+            &children,
+        );
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-mh").await;
+        assert_eq!(run_status_str(&db, "run-mh"), "paused");
+
+        // The human resolves in the run repo's integration worktree and commits.
+        let int_wt = tmp.path().join("rd-run-mh").join("integrate-0");
+        std::fs::write(int_wt.join(CONFLICT_FILE), "human-resolved\n").unwrap();
+        sh(&int_wt, &["add", "-A"]);
+        sh(&int_wt, &["commit", "-qm", "human resolution"]);
+
+        // `wf_resolve_conflict(run, "human")` then re-drive.
+        set_resolution(&db, "run-mh", "human");
+        drive_run(&ctx, "run-mh").await;
+
+        assert_eq!(run_status_str(&db, "run-mh"), "done");
+        let run_repo = tmp.path().join("rd-run-mh").join("repo");
+        let merge_ref = {
+            let conn = db.lock();
+            gitops::step_ref(
+                &latest_done_exec_for_step(&conn, "run-mh", &merge_step_id(0)).unwrap(),
+            )
+        };
+        let body = sh_out(
+            &run_repo,
+            &["show", &format!("{merge_ref}:{CONFLICT_FILE}")],
+        );
+        assert!(
+            body.contains("human-resolved"),
+            "human resolution integrated: {body}"
+        );
+    }
+
+    /// A slow sibling can race past `any`'s stage-cancel and land its own `done`
+    /// exec. The merge must integrate exactly ONE branch — the child that
+    /// FINISHED FIRST, not the first in spec order. Pre-seed both children `done`
+    /// with `b` (spec-second) finishing *before* `a` (spec-first), then assert the
+    /// integrated tree carries `b`'s work and drops `a`'s.
+    #[tokio::test]
+    async fn merge_any_integrates_the_child_that_finished_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", ""), cstep("b", "")];
+        let (db, _ws, _base) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-ma1",
+            Join::Any,
+            Integrate::Merge,
+            &children,
+        );
+
+        // Provision the run repo and ferry two real child commits into it, then
+        // mark both children `done` — the raced state a live `any` stage can leave
+        // behind. `b` finished first (smaller `ended_at`) so `b` is the winner,
+        // even though `a` is earlier in spec order.
+        let source = tmp.path().join("src-run-ma1");
+        let run_dir = tmp.path().join("rd-run-ma1");
+        let run_repo = gitops::provision_run_repo(&source, &run_dir).await.unwrap();
+        for (child, exec, ended) in [("a", "exec-a", 200_i64), ("b", "exec-b", 100_i64)] {
+            let ws = tmp.path().join(format!("wsx-{child}"));
+            sh(
+                tmp.path(),
+                &[
+                    "clone",
+                    "-q",
+                    "--shared",
+                    source.to_str().unwrap(),
+                    ws.to_str().unwrap(),
+                ],
+            );
+            sh(&ws, &["config", "user.email", "t@t.t"]);
+            sh(&ws, &["config", "user.name", "t"]);
+            std::fs::write(ws.join(format!("{child}.txt")), "work").unwrap();
+            gitops::boundary_commit(&ws, "child").await.unwrap();
+            let r = gitops::pin_step_ref(&ws, exec).await.unwrap();
+            gitops::ferry(&ws, &run_repo, &r).await.unwrap();
+            db.lock()
+                .execute(
+                    "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,head_end,ended_at)
+                     VALUES (?1,'run-ma1',?2,1,0,'done','commit','x',?3)",
+                    rusqlite::params![exec, child, ended],
+                )
+                .unwrap();
+        }
+        db.lock()
+            .execute("UPDATE wf_run SET status='running' WHERE id='run-ma1'", [])
+            .unwrap();
+
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(tmp.path().join("ws-run-ma1")));
+        drive_run(&ctx, "run-ma1").await;
+
+        assert_eq!(run_status_str(&db, "run-ma1"), "done");
+        assert_eq!(
+            count_events(&db, "run-ma1", event_type::MERGE_DONE),
+            1,
+            "exactly one branch merged under `any`"
+        );
+        let files = merge_tree(tmp.path(), &db, "run-ma1");
+        assert!(
+            files.contains("b.txt") && !files.contains("a.txt"),
+            "the first-finished child (b) is integrated, not the spec-first (a): {files}"
+        );
+    }
+
+    /// Human resolution must be committed: if the user edits the integration
+    /// worktree but continues without committing, the run refuses (re-pauses)
+    /// rather than resetting their edits away and merging on from a marker tree.
+    #[tokio::test]
+    async fn merge_human_resolution_requires_a_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", CONFLICT), cstep("b", CONFLICT)];
+        let (db, ws, _b) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-mhu",
+            Join::All,
+            Integrate::Merge,
+            &children,
+        );
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-mhu").await;
+        assert_eq!(run_status_str(&db, "run-mhu"), "paused");
+
+        // Human edits the conflicted file but does NOT commit, then continues.
+        let int_wt = tmp.path().join("rd-run-mhu").join("integrate-0");
+        std::fs::write(int_wt.join(CONFLICT_FILE), "edited but uncommitted\n").unwrap();
+        set_resolution(&db, "run-mhu", "human");
+        drive_run(&ctx, "run-mhu").await;
+
+        // Refused: still paused(conflict), not advanced; the choice is cleared so
+        // the user must commit and retry, and the edit is left in place (not reset).
+        assert_eq!(run_status_str(&db, "run-mhu"), "paused");
+        let cur = get_cursor(&db.lock(), "run-mhu");
+        assert!(
+            cur.merge
+                .and_then(|m| m.conflict)
+                .and_then(|c| c.resolution)
+                .is_none(),
+            "resolution cleared — the user must commit first"
+        );
+        let body = std::fs::read_to_string(int_wt.join(CONFLICT_FILE)).unwrap();
+        assert!(
+            body.contains("edited but uncommitted"),
+            "the uncommitted edit is preserved, not discarded: {body}"
+        );
+    }
+
+    /// A committed human "resolution" that still contains conflict markers must be
+    /// rejected — otherwise the merge would finish with markers in the integrated
+    /// result. The run re-pauses; it does not reach `done`.
+    #[tokio::test]
+    async fn merge_human_resolution_with_markers_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", CONFLICT), cstep("b", CONFLICT)];
+        let (db, ws, _b) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-mhm",
+            Join::All,
+            Integrate::Merge,
+            &children,
+        );
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-mhm").await;
+        assert_eq!(run_status_str(&db, "run-mhm"), "paused");
+
+        // Human commits a *partial* resolution: they stripped the outer
+        // <<<<<<< / >>>>>>> bounds but left the ======= divider behind.
+        let int_wt = tmp.path().join("rd-run-mhm").join("integrate-0");
+        std::fs::write(
+            int_wt.join(CONFLICT_FILE),
+            "from one side\n=======\nfrom the other side\n",
+        )
+        .unwrap();
+        sh(&int_wt, &["add", "-A"]);
+        sh(&int_wt, &["commit", "-qm", "partial resolution"]);
+        set_resolution(&db, "run-mhm", "human");
+        drive_run(&ctx, "run-mhm").await;
+
+        // Refused: still paused(conflict), not done; the choice is cleared.
+        assert_eq!(run_status_str(&db, "run-mhm"), "paused");
+        let reason: Option<String> = db
+            .lock()
+            .query_row(
+                "SELECT paused_reason FROM wf_run WHERE id='run-mhm'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reason.as_deref(), Some("conflict"));
+        let cur = get_cursor(&db.lock(), "run-mhm");
+        assert!(
+            cur.merge
+                .and_then(|m| m.conflict)
+                .and_then(|c| c.resolution)
+                .is_none(),
+            "resolution cleared — the user must strip the markers and retry"
+        );
+    }
+
+    /// Resolving by *renaming* a still-conflicted file must not slip markers past
+    /// the guard: the scan covers paths the resolution changed since the snapshot,
+    /// not just the originally-conflicted paths, so the renamed file is caught.
+    #[tokio::test]
+    async fn merge_human_resolution_that_renames_a_marker_file_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", CONFLICT), cstep("b", CONFLICT)];
+        let (db, ws, _b) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-mhr",
+            Join::All,
+            Integrate::Merge,
+            &children,
+        );
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-mhr").await;
+        assert_eq!(run_status_str(&db, "run-mhr"), "paused");
+
+        // Human "resolves" by renaming the conflicted file — its markers ride
+        // along to the new path, and the old path disappears.
+        let int_wt = tmp.path().join("rd-run-mhr").join("integrate-0");
+        sh(&int_wt, &["mv", CONFLICT_FILE, "renamed.txt"]);
+        sh(&int_wt, &["commit", "-qm", "rename instead of resolving"]);
+        set_resolution(&db, "run-mhr", "human");
+        drive_run(&ctx, "run-mhr").await;
+
+        assert_eq!(run_status_str(&db, "run-mhr"), "paused");
+        let cur = get_cursor(&db.lock(), "run-mhr");
+        assert!(
+            cur.merge
+                .and_then(|m| m.conflict)
+                .and_then(|c| c.resolution)
+                .is_none(),
+            "the renamed marker file is detected — resolution cleared"
+        );
     }
 
     // ───────────────────────────── loop blocks (S7) ─────────────────────────

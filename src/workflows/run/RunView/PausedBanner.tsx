@@ -30,6 +30,20 @@ interface BannerSpec {
 const APPROVE: Action = { label: "Approve", icon: "check", run: api.wfApprove, primary: true };
 const RETRY: Action = { label: "Retry", icon: "refresh", run: api.wfRetry, primary: true };
 const RESUME: Action = { label: "Resume", icon: "play", run: api.wfResume, primary: true };
+// Conflict resolution (§12.3): let an agent resolve the pinned conflict snapshot,
+// or continue after the user has resolved it in the run repo's integration
+// worktree and committed.
+const RESOLVE_AGENT: Action = {
+  label: "Resolve with agent",
+  icon: "play",
+  run: (id) => api.wfResolveConflict(id, "agent"),
+  primary: true,
+};
+const RESOLVE_HUMAN: Action = {
+  label: "I resolved it — continue",
+  icon: "check",
+  run: (id) => api.wfResolveConflict(id, "human"),
+};
 
 function specFor(run: WfRun, detail?: string): BannerSpec | null {
   if (run.status === "failed") {
@@ -84,9 +98,11 @@ function specFor(run: WfRun, detail?: string): BannerSpec | null {
       return {
         tone: "amber",
         title,
-        body: detail || "Merging parallel work hit a conflict that needs resolving.",
-        actions: [],
-        pending: "Conflict resolution arrives with the merge slice.",
+        body:
+          detail ||
+          "Merging parallel work hit a conflict. Let an agent resolve it, or resolve it " +
+            "yourself in the run's integration worktree and continue.",
+        actions: [RESOLVE_AGENT, RESOLVE_HUMAN],
       };
   }
 }
