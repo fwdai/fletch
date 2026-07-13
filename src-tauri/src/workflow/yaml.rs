@@ -428,7 +428,7 @@ workflow:
         When a slice a sibling depends on lands, notify that sibling.
       children: { agent: coder, max: 3 }
       join: all
-      integrate: merge
+      integrate: none
       comms: [report, ask]
       compose: { max_sub_runs: 2, max_depth: 2 }
 

@@ -2899,7 +2899,7 @@ mod tests {
                 }),
                 body: vec![],
                 join: Join::All,
-                integrate: Integrate::Merge,
+                integrate: Integrate::None,
                 comms,
                 compose: limits,
             })],

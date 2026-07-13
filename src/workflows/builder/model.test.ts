@@ -39,7 +39,7 @@ function canonicalSpec(): Spec {
           goal: "Assign one slice from PLAN.md per coder. Answer their questions.",
           children: { agent: "coder", max: 3 },
           join: "all",
-          integrate: "merge",
+          integrate: "none",
           comms: ["report", "ask"],
           compose: { max_sub_runs: 2, max_depth: 2 },
         },
@@ -187,6 +187,35 @@ describe("validation mirrors the load-bearing §5.2 rules", () => {
     const v = validateEditor(editor);
     expect(v.ok).toBe(false);
     if (loop) expect(v.byNode[loop.nid]?.some((m) => m.includes("max"))).toBe(true);
+  });
+
+  it("flags orchestrate integrate: merge as unsupported", () => {
+    const editor = fromDefinition(asDefinition(canonicalSpec()));
+    const orch = editor.blocks.find((b) => b.kind === "orchestrate");
+    if (orch?.kind === "orchestrate") orch.integrate = "merge";
+    const v = validateEditor(editor);
+    expect(v.ok).toBe(false);
+    if (orch) expect(v.byNode[orch.nid]?.some((m) => m.includes("not supported"))).toBe(true);
+  });
+
+  it("flags a non-step block inside a loop body", () => {
+    const editor = fromDefinition(asDefinition(canonicalSpec()));
+    const loop = editor.blocks.find((b) => b.kind === "loop");
+    if (loop?.kind === "loop") {
+      loop.body.push({
+        kind: "parallel",
+        nid: "n-par",
+        join: "all",
+        integrate: "none",
+        maxConcurrent: null,
+        steps: [],
+      });
+    }
+    const v = validateEditor(editor);
+    expect(v.ok).toBe(false);
+    if (loop) {
+      expect(v.byNode[loop.nid]?.some((m) => m.includes("must be steps"))).toBe(true);
+    }
   });
 
   it("rejects an absolute artifact path", () => {

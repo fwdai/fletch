@@ -1,8 +1,8 @@
 // OrchestrateContainer.tsx — a lead agent coordinating children (spec §6.6/§10).
 // The orchestrator card sits above its static children; toggles expose the
-// dynamic-children template, comms caps, and dynamic-composition limits. This
-// renders now even though orchestrate *execution* lands in a later slice — it is
-// gated behind the same validation as everything else.
+// dynamic-children template, comms caps, and dynamic-composition limits. The
+// engine runs orchestrate stages with `integrate: none` only, so `merge` is not
+// offered (a legacy value renders disabled and validation flags it).
 
 import { Icon } from "../../../components/Icon";
 import { STEP_COMMS } from "../../data";
@@ -53,7 +53,14 @@ export function OrchestrateContainer({ block, ctx }: { block: EOrchestrate; ctx:
             }
           >
             <option value="none">none</option>
-            <option value="merge">merge</option>
+            {/* The engine runs orchestrate with integrate: none only (§6.6); a
+                legacy definition may still carry merge — render it so the value
+                is visible and switchable, but don't offer it. */}
+            {block.integrate === "merge" && (
+              <option value="merge" disabled>
+                merge (unsupported)
+              </option>
+            )}
           </select>
         </label>
         <span className="grow" />

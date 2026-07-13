@@ -54,6 +54,9 @@ export function BlockSequence({
 }) {
   const [menu, setMenu] = useState(false);
   const canRemove = blocks.length > 1 || seqNid !== null;
+  // A non-null seqNid means this is a loop body, and the engine executes loop
+  // bodies of plain steps only (spec §6.6) — don't offer containers there.
+  const blockTypes = seqNid === null ? BLOCK_TYPES : BLOCK_TYPES.filter((t) => t.id === "step");
 
   return (
     <div className="wb-seq">
@@ -80,7 +83,7 @@ export function BlockSequence({
               onClick={() => setMenu(false)}
             />
             <div className="dd wb-add-menu">
-              {BLOCK_TYPES.map((t) => (
+              {blockTypes.map((t) => (
                 <div
                   key={t.id}
                   className="dd-item"

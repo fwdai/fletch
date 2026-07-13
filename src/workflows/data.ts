@@ -100,6 +100,6 @@ export const BLOCK_TYPES: BlockTypeDef[] = [
     id: "orchestrate",
     label: "Orchestrate",
     icon: "combine",
-    note: "A lead agent coordinates children (execution lands in a later release).",
+    note: "A lead agent assigns work to children and answers their questions.",
   },
 ];
