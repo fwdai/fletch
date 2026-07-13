@@ -1016,7 +1016,11 @@ dir removals are irreversible, so a mid-tree failure cannot roll back —
 instead the failed run and all its ancestors stay fully intact (a run's
 rows are deleted last and are what a retry rediscovers its cleanup
 through), sibling subtrees still get cleaned, and the command returns one
-aggregated error stating that deleting again finishes the job. Chats of
+aggregated error stating that deleting again finishes the job. Within one
+run the row delete is the commit point: the run dir is staged aside with
+an atomic rename and renamed back if the row delete fails, so a surviving
+run row never points at a missing blackboard/run repo; the staged dir is
+removed only after the rows are gone. Chats of
 deleted runs are gone — the delete is a two-click armed button on the run
 row whose confirm state says so. A `wf:run-deleted` event drops each
 fully deleted row from the sidebar. Until deletion, everything is

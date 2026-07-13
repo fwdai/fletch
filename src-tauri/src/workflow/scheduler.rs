@@ -5711,19 +5711,47 @@ fn check_deletable(conn: &Connection, run_ids: &[String]) -> Result<()> {
 
 /// Delete one run's on-disk directory and its DB rows. The row delete cascades
 /// `wf_step_exec` / `wf_event` / `wf_message` (0019 + `PRAGMA foreign_keys`).
-/// A missing run dir is fine — a retried partial delete or a cleaned disk.
 fn delete_run_data(conn: &Connection, run_id: &str) -> Result<()> {
-    match std::fs::remove_dir_all(blackboard::run_dir(run_id)?) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+    delete_run_data_at(conn, run_id, &blackboard::run_dir(run_id)?)
+}
+
+/// Inner form taking the resolved run dir, so tests can exercise the staging
+/// without the process-global `FLETCH_RUNS_ROOT` override.
+///
+/// The row delete is the commit point: the dir is first staged aside with an
+/// atomic rename and renamed back if the row delete fails, so a run that
+/// survives the command is always openable — never a visible row whose
+/// blackboard and run repo are already gone. Only once the rows are gone is
+/// the staged dir actually removed (best-effort: at that point the run no
+/// longer exists to retry against, and a leftover `<id>.deleting` dir is
+/// invisible junk, which the next attempt would also sweep). A missing dir is
+/// fine — a retried partial delete or a cleaned disk.
+fn delete_run_data_at(conn: &Connection, run_id: &str, dir: &Path) -> Result<()> {
+    let staged = dir.with_file_name(format!(
+        "{}.deleting",
+        dir.file_name().and_then(|n| n.to_str()).unwrap_or(run_id)
+    ));
+    let dir_staged = match std::fs::rename(dir, &staged) {
+        Ok(()) => true,
+        // No live dir: never provisioned, a cleaned disk, or a previous
+        // attempt that crashed between this rename and the row delete — in
+        // that last case the staged dir survives and is swept below.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => staged.exists(),
         Err(e) => {
             return Err(Error::Other(format!(
-                "cannot remove run dir for {run_id}: {e}"
+                "cannot stage run dir for {run_id}: {e}"
             )))
         }
+    };
+    if let Err(e) = conn.execute("DELETE FROM wf_run WHERE id = ?1", [run_id]) {
+        if dir_staged {
+            let _ = std::fs::rename(&staged, dir);
+        }
+        return Err(Error::Other(e.to_string()));
     }
-    conn.execute("DELETE FROM wf_run WHERE id = ?1", [run_id])
-        .map_err(|e| Error::Other(e.to_string()))?;
+    if dir_staged {
+        let _ = std::fs::remove_dir_all(&staged);
+    }
     Ok(())
 }
 
@@ -7046,7 +7074,12 @@ mod tests {
         )
         .unwrap();
 
-        delete_run_data(&conn, "r-del").expect("delete succeeds without a run dir on disk");
+        // A real run dir with content: it must be gone (not just staged) after.
+        let dir = tmp.path().join("runs").join("r-del");
+        std::fs::create_dir_all(dir.join("blackboard")).unwrap();
+        std::fs::write(dir.join("blackboard").join("task.md"), "t").unwrap();
+
+        delete_run_data_at(&conn, "r-del", &dir).expect("delete succeeds");
 
         let count = |table: &str| -> i64 {
             conn.query_row(
@@ -7065,6 +7098,79 @@ mod tests {
         assert_eq!(count("wf_step_exec"), 0, "execs cascade");
         assert_eq!(count("wf_event"), 0, "journal cascades");
         assert_eq!(count("wf_message"), 0, "messages cascade");
+        assert!(!dir.exists(), "run dir removed");
+        assert!(
+            !dir.with_file_name("r-del.deleting").exists(),
+            "no staged dir left behind"
+        );
+    }
+
+    #[test]
+    fn delete_run_data_restores_the_dir_when_the_row_delete_fails() {
+        // The row delete is the commit point: if it fails, the staged dir is
+        // renamed back so the surviving run row never points at missing state.
+        // The failure here is real — a child run's parent_run_id FK (no
+        // cascade) rejects deleting the parent row.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        let insert = |id: &str, parent: Option<&str>| {
+            conn.execute(
+                "INSERT INTO wf_run (id,parent_run_id,name,spec_json,task,project_id,repo_path,
+                    run_dir,branch,base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,?2,'n','{}','t','p','/r','/d','wf/x','sha','done','{}','{}',0,0)",
+                rusqlite::params![id, parent],
+            )
+            .unwrap();
+        };
+        insert("r-parent", None);
+        insert("r-child", Some("r-parent"));
+        let dir = tmp.path().join("runs").join("r-parent");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("marker"), "m").unwrap();
+
+        let err = delete_run_data_at(&conn, "r-parent", &dir).unwrap_err();
+        assert!(err.to_string().contains("FOREIGN KEY"), "{err}");
+        assert!(dir.join("marker").exists(), "dir renamed back intact");
+        assert!(
+            !dir.with_file_name("r-parent.deleting").exists(),
+            "staged dir gone after restore"
+        );
+        let runs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wf_run WHERE id='r-parent'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(runs, 1, "row untouched");
+    }
+
+    #[test]
+    fn delete_run_data_sweeps_a_crashed_attempts_staged_dir() {
+        // A crash between the staging rename and the row delete leaves rows
+        // plus a `<id>.deleting` dir and no live dir; the retry must finish
+        // the job rather than orphan the staged dir.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('r-crash','n','{}','t','p','/r','/d','wf/x','sha','done','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        let dir = tmp.path().join("runs").join("r-crash");
+        let staged = dir.with_file_name("r-crash.deleting");
+        std::fs::create_dir_all(&staged).unwrap();
+
+        delete_run_data_at(&conn, "r-crash", &dir).expect("retry completes");
+        assert!(!staged.exists(), "leftover staged dir swept");
+        let runs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wf_run WHERE id='r-crash'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(runs, 0);
     }
 
     #[test]
