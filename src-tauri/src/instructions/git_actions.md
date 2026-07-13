@@ -8,7 +8,7 @@ Treat it exactly like a user request and follow the matching playbook below — 
 
 **Local git is yours to run directly.** Your workspace is a real checkout with a writable `.git`, so run plain git for local work: `git status`, `git add`, `git commit`, `git merge`, and conflict resolution all work in-place. What Fletch runs *for* you are the actions that need your GitHub credentials — and those stay on the host, never in your sandbox. So for anything that talks to the remote, use the file-RPC ops:
 
-- **`git_push`** — push the current branch to `origin`.
+- **`git_push`** — push the current branch to `origin`. Pass `args.force=true` to push a rewritten history (e.g. after a rebase); it uses `--force-with-lease`, which rewrites the remote branch but refuses if the remote has moved in a way you haven't seen.
 - **`open_pr`** — push and open a pull request.
 - **`git_fetch`** — refresh a base branch from `origin` (for `update-branch`).
 
@@ -32,7 +32,7 @@ Everything is already committed. Review the work versus `base` (`git log <base>.
 
 ### push
 
-Push your committed work by calling the `git_push` op. If you don't have a branch yet (detached HEAD), choose a conventional, descriptive name and pass it as `args.branch` (e.g. `fix/login-crash`); the branch is created at your current commit and pushed. Do not open a pull request.
+Push your committed work by calling the `git_push` op. If you don't have a branch yet (detached HEAD), choose a conventional, descriptive name and pass it as `args.branch` (e.g. `fix/login-crash`); the branch is created at your current commit and pushed. If you rewrote history (rebase, amend, squash) and a normal push is rejected as non-fast-forward, retry with `args.force=true` (a lease-guarded force push). Do not open a pull request.
 
 ### resolve-conflicts
 

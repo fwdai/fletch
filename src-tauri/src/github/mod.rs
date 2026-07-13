@@ -1023,7 +1023,7 @@ pub async fn repo_create_and_push(
     )
     .await?;
     let branch = require_current_branch(target, "publish").await?;
-    crate::git::push(target, &branch).await?;
+    crate::git::push(target, &branch, false).await?;
     Ok(format!("https://github.com/{full_name}"))
 }
 
