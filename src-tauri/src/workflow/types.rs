@@ -131,6 +131,8 @@ pub mod event_type {
     pub const ATTEMPT_ABANDONED: &str = "attempt_abandoned";
     pub const ATTEMPT_ERROR: &str = "attempt_error";
     pub const WATCHDOG_STALLED: &str = "watchdog_stalled";
+    pub const LOOP_ITERATION: &str = "loop_iteration";
+    pub const LOOP_MAX_REACHED: &str = "loop_max_reached";
     pub const BUDGET_TICK: &str = "budget_tick";
     pub const BUDGET_EXCEEDED: &str = "budget_exceeded";
     pub const MESSAGE_ROUTED: &str = "message_routed";
