@@ -186,6 +186,11 @@ export function WorkflowList({
             <WorkflowMini spec={d.spec} agents={agents} modelsByAgent={modelsByAgent} />
           </div>
         ))}
+        {loading && definitions.length === 0 && (
+          <div className="wf-field-empty" style={{ textAlign: "center", padding: "28px 0" }}>
+            Loading workflows…
+          </div>
+        )}
         {!loading && definitions.length === 0 && (
           <button className="wb-add" style={{ width: "100%", minHeight: 120 }} onClick={onNew}>
             <span className="wb-add-ic">

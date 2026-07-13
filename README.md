@@ -73,6 +73,29 @@ No VM, no Docker, no containers.
 
 Every session is captured to a local SQLite store, so reopening it replays the full transcript.
 
+## Workflows
+
+Spawning agents one at a time is great for ad-hoc work. For a repeatable process — *plan, implement in parallel, review in a loop, ship* — Fletch has **workflows**: a definition you build once and launch on any task.
+
+A workflow is a tree of **blocks**:
+
+- **Step** — one sandboxed agent with a **goal** and a **gate** (the condition that means it's done: wrote a `verdict.json`, moved `HEAD`, produced an artifact, passed the project's tests, or got your approval).
+- **Parallel** — fan several agents out from the same point, with a join policy (`all` / `any`) and optional merge of their work.
+- **Loop** — repeat a body (e.g. `review → fix`) until a step's verdict says `done` or a max iteration count is hit.
+- **Orchestrate** — an orchestrator agent supervises child agents, answers their questions, and can dynamically compose bounded sub-workflows.
+
+The engine — not an LLM — owns control flow. It's built to be **robust and observable**:
+
+- **Filesystem handoffs.** Each run gets a per-run *blackboard* mounted read-write into every step's sandbox; steps leave notes and a structured verdict for the next agent.
+- **Host-brokered messaging.** Steps `report` / `ask` along edges you declare; questions with no orchestrator pause the run for *you* to answer.
+- **Bounded spend.** Turn, iteration, wall-clock, and (where the provider exposes it) token budgets are enforced. Exceeding one pauses the run — it never silently overspends or dies.
+- **No silent hangs.** Every wait has a deadline; every pause names its cause (approval, question, blocked gate, budget, conflict, stall) and offers its action in the monitor.
+- **Fully resumable.** Every engine decision is an append-only journal event; runs resume after an app restart, and each step attempt's chat is preserved and replayable forever.
+
+**Using it:** define a workflow in **Settings → Workflows** (or import a shareable [YAML](docs/workflows/TECH_SPEC.md#53-yaml) file); launch it on a task from a new workspace's **Workflow** tab; watch it in the run monitor — a live timeline, each attempt's chat, a budget meter, and banners for anything that needs you. Finalize pushes the run branch and opens a PR.
+
+See the [technical specification](docs/workflows/TECH_SPEC.md) for the full design and [QA.md](docs/workflows/QA.md) for an end-to-end walkthrough.
+
 ## Isolation & security
 
 Each agent runs as **your user** under a per-agent `sandbox-exec` profile that denies writes by default, re-allowing only:

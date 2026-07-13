@@ -46,6 +46,16 @@ export function RunView({ id }: { id: string }) {
   const attempts = detail?.attempts ?? [];
   const steps = useMemo(() => flattenSteps(spec), [spec]);
 
+  // The pending human question for a `paused(question)` run: the queued `ask`
+  // routed to the human (no orchestrator recipient). Powers the answer banner.
+  const pendingQuestion = useMemo(
+    () =>
+      (detail?.messages ?? []).find(
+        (m) => m.kind === "ask" && m.status === "queued" && m.to_step_exec_id === null,
+      ),
+    [detail?.messages],
+  );
+
   // Resolve a spec agent alias to its display identity (custom agent or provider).
   const resolve = useMemo(
     () => (alias: string) => {
@@ -151,7 +161,7 @@ export function RunView({ id }: { id: string }) {
 
       <BudgetMeter budgets={run.budgets} spent={run.spent} createdAt={run.created_at} />
 
-      <PausedBanner run={run} detail={pausedDetail} />
+      <PausedBanner run={run} detail={pausedDetail} question={pendingQuestion} />
 
       <div className="wf-run-main">
         <AttemptRail

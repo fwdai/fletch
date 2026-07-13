@@ -7,13 +7,23 @@ import { useEffect, useState } from "react";
 import { api } from "../../api";
 import type { Definition } from "../spec";
 
-export function useDefinitions(): Definition[] {
-  const [defs, setDefs] = useState<Definition[]>([]);
+export function useDefinitions(): { definitions: Definition[]; loading: boolean } {
+  const [definitions, setDefinitions] = useState<Definition[]>([]);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
+    let alive = true;
     api
       .wfDefList()
-      .then(setDefs)
-      .catch(() => {});
+      .then((d) => {
+        if (alive) setDefinitions(d);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
-  return defs;
+  return { definitions, loading };
 }

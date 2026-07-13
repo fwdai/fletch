@@ -46,7 +46,7 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
 
-  const definitions = useDefinitions();
+  const { definitions, loading } = useDefinitions();
   const [defId, setDefId] = useState("");
   const [task, setTask] = useState("");
   const [busy, setBusy] = useState(false);
@@ -87,6 +87,14 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
       setBusy(false);
     }
   };
+
+  if (loading) {
+    return (
+      <div className="wf-field-empty" style={{ textAlign: "center" }}>
+        Loading workflows…
+      </div>
+    );
+  }
 
   if (definitions.length === 0) {
     return (

@@ -7,10 +7,6 @@
 import type { ModelMeta } from "../data/modelCatalog/types";
 import { PROVIDERS } from "../data/providers";
 import type { CustomAgent } from "../storage/customAgents";
-import type { WorkflowDraft, WorkflowStep } from "./storage";
-
-/** Preset hues for a new workflow's accent (evenly spread around the wheel). */
-export const WF_HUES = [265, 150, 25, 215, 320, 95, 175, 50];
 
 /** Two-letter monogram from a name's initials, falling back to a neutral dot. */
 export function shortFor(name: string): string {
@@ -83,21 +79,3 @@ export function resolveAgent(
 /** A resolver bound to the current agent/model data — handy to pass to children
  *  so they don't each thread both arguments through. */
 export type AgentResolver = (agentId: string | null) => ResolvedAgent | null;
-
-// Monotonic counter so two steps added in the same millisecond get distinct ids.
-let stepSeq = 0;
-
-export function newStep(): WorkflowStep {
-  stepSeq += 1;
-  return { id: `s-${Date.now()}-${stepSeq}`, agent: null, goal: "", advance: "signal" };
-}
-
-export function blankWorkflow(seed: number): WorkflowDraft {
-  return {
-    id: `wf-${Date.now()}`,
-    name: "",
-    description: "",
-    hue: WF_HUES[seed % WF_HUES.length],
-    steps: [newStep()],
-  };
-}

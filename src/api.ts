@@ -4,7 +4,7 @@ import type { AgentModels } from "./data/modelCatalog/types";
 import type { McpServerSnapshot } from "./storage/mcpServers";
 import type { SandboxEngine } from "./storage/preferences";
 import type { SkillSnapshot } from "./storage/skills";
-import type { Definition, ImportReport, Spec } from "./workflows/spec";
+import type { Budgets, Definition, ImportReport, Spec } from "./workflows/spec";
 
 export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
@@ -687,13 +687,20 @@ export const api = {
   wfApprove: (runId: string) => invoke<void>("wf_approve", { runId }),
   /** Retry a run paused on `blocked_gate` / `stalled` with a fresh attempt. */
   wfRetry: (runId: string) => invoke<void>("wf_retry", { runId }),
-  /** Resume a paused run (raise-budget patch arrives with the budget slice, S5). */
-  wfResume: (runId: string) => invoke<void>("wf_resume", { runId }),
+  /** Resume a paused run (§13). An optional `budgetPatch` additively raises the
+   *  run-level caps (turns / tokens / wall_clock_mins) before re-driving — used
+   *  to resume a run paused on `budget_exceeded` (§11.2). */
+  wfResume: (runId: string, budgetPatch?: Budgets) =>
+    invoke<void>("wf_resume", { runId, budgetPatch }),
   /** Resolve a run paused on a merge conflict (§12.3). `mode` is `"agent"`
    *  (spawn a conflict-resolution step) or `"human"` (the user resolved in the
    *  run repo's integration worktree and committed). */
   wfResolveConflict: (runId: string, mode: "agent" | "human") =>
     invoke<void>("wf_resolve_conflict", { runId, mode }),
+  /** Answer a run paused on a human question (§10.4): delivers the reply to the
+   *  asking step and resumes. `messageId` is the pending `ask` message id. */
+  wfAnswer: (projectId: string, runId: string, messageId: string, body: string) =>
+    invoke<void>("wf_answer", { projectId, runId, messageId, body }),
 
   // ── Workflows v1: definition storage (spec §13, `wf_def_*`) ──
   /** Validate and persist a workflow definition. Omit `id` to create; pass an
