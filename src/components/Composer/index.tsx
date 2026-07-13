@@ -235,6 +235,15 @@ export function Composer({
     if (autoFocus) ta.current?.focus();
   }, [autoFocus]);
 
+  // On mount (including the remount a view switch causes) the restored draft
+  // text is in place but the textarea still renders at its single-row height,
+  // since `grow` only runs on edits. Resize once so a multi-line draft is
+  // expanded to fit its content (up to the max height).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount
+  useEffect(() => {
+    if (ta.current) grow(ta.current);
+  }, []);
+
   // Mirror the draft into the store on every edit so it survives the remount
   // that view switches cause. Sending clears `text`, which clears the entry.
   useEffect(() => {
