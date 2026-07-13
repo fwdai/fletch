@@ -74,6 +74,55 @@ describe("sanitizeUserText", () => {
     ]);
   });
 
+  it("converts a completed task-notification into a quiet background_task notice", () => {
+    const raw = [
+      "<task-notification>",
+      "<task-id>b99pbi1zk</task-id>",
+      "<tool-use-id>toolu_016T57Qykc1mPnzTRBxUM6eL</tool-use-id>",
+      "<output-file>/tmp/tasks/b99pbi1zk.output</output-file>",
+      "<status>completed</status>",
+      '<summary>Background command "Run typecheck" completed (exit code 0)</summary>',
+      "</task-notification>",
+    ].join("\n");
+    const out = sanitizeUserText(raw);
+    expect(out.text).toBe("");
+    expect(out.notices).toEqual([
+      {
+        kind: "notice",
+        subtype: "background_task",
+        text: 'Background command "Run typecheck" completed (exit code 0)',
+      },
+    ]);
+  });
+
+  it("flags a non-completed task-notification as an error", () => {
+    const raw = [
+      "<task-notification>",
+      "<task-id>bqlybe1oq</task-id>",
+      "<status>stopped</status>",
+      "<summary>No completion record was found for this task</summary>",
+      "</task-notification>",
+    ].join("\n");
+    const out = sanitizeUserText(raw);
+    expect(out.text).toBe("");
+    expect(out.notices).toEqual([
+      {
+        kind: "notice",
+        subtype: "background_task",
+        text: "No completion record was found for this task",
+        is_error: true,
+      },
+    ]);
+  });
+
+  it("falls back to the status when a task-notification has no summary", () => {
+    const raw = "<task-notification>\n<status>completed</status>\n</task-notification>";
+    const out = sanitizeUserText(raw);
+    expect(out.notices).toEqual([
+      { kind: "notice", subtype: "background_task", text: "Background task completed" },
+    ]);
+  });
+
   it("drops empty system-reminders without emitting notices", () => {
     const raw = "<system-reminder>   </system-reminder>";
     const out = sanitizeUserText(raw);

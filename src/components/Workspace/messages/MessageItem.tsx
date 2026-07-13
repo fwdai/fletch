@@ -246,6 +246,19 @@ function NoticeView({ item }: { item: Extract<ChatItem, { kind: "notice" }> }) {
       </div>
     );
   }
+  if (item.subtype === "background_task") {
+    // A quiet under-the-hood system line: a status dot + label + the harness's
+    // one-line summary. Deliberately not a bubble and not italic reasoning — it
+    // reads as chrome, so a stream of completed background tasks doesn't clutter
+    // the conversation.
+    return (
+      <div className={item.is_error ? "m-sysbit is-error" : "m-sysbit"}>
+        <span className="m-sysbit__dot" aria-hidden />
+        <span className="m-sysbit__label">background task</span>
+        <span className="m-sysbit__text">{item.text}</span>
+      </div>
+    );
+  }
   if (item.subtype === "compact_summary") {
     return (
       <div className="m-reasoning" style={{ fontStyle: "italic" }}>

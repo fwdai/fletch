@@ -27,6 +27,32 @@ const SYSTEM_REMINDER_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/g;
 // type it. Convert to a compact_summary notice instead.
 const COMPACT_PREAMBLE_RE = /^This session is being continued from a previous conversation/;
 
+// When a background Task/Bash finishes, the harness re-invokes the agent with
+// a `<task-notification>` user-role event (origin.kind === "task-notification").
+// It carries neither isMeta nor isSynthetic, so it isn't caught by the injected
+// guard in reduce.ts and would otherwise render its raw XML as a user bubble.
+// Detect it by the wrapper tag — present on both the live wire and the persisted
+// transcript, unlike origin which the CLI reshapes between the two — and surface
+// only the human-readable <summary> as a quiet background_task notice.
+const TASK_NOTIFICATION_RE = /^\s*<task-notification>([\s\S]*)<\/task-notification>\s*$/;
+const TASK_SUMMARY_RE = /<summary>([\s\S]*?)<\/summary>/;
+const TASK_STATUS_RE = /<status>([\s\S]*?)<\/status>/;
+
+function parseTaskNotification(raw: string): NoticeItem | null {
+  const match = raw.match(TASK_NOTIFICATION_RE);
+  if (!match) return null;
+  const body = match[1];
+  const summary = body.match(TASK_SUMMARY_RE)?.[1]?.trim();
+  const status = body.match(TASK_STATUS_RE)?.[1]?.trim() ?? "";
+  const text = summary || `Background task ${status || "update"}`;
+  // Anything other than a clean completion (e.g. "stopped", a nonzero exit)
+  // flags the dot red; the summary text already spells out the detail.
+  const isError = status !== "" && status !== "completed" && status !== "success";
+  return isError
+    ? { kind: "notice", subtype: "background_task", text, is_error: true }
+    : { kind: "notice", subtype: "background_task", text };
+}
+
 // Cursor (which reuses this sanitizer) wraps every user turn in its own
 // envelope: a `<timestamp>` line followed by the query inside `<user_query>`.
 // Neither is user-authored. Claude never emits these, so it's a no-op there.
@@ -41,6 +67,11 @@ export function sanitizeUserText(raw: string): SanitizeResult {
       text: "",
       notices: [{ kind: "notice", subtype: "compact_summary", text: "Conversation compacted" }],
     };
+  }
+
+  const taskNotice = parseTaskNotification(raw);
+  if (taskNotice) {
+    return { text: "", notices: [taskNotice] };
   }
 
   // Slash-command name → one notice per invocation. Strip the tag.

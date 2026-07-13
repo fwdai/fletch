@@ -80,7 +80,8 @@ export type NoticeSubtype =
   | "reasoning"
   | "slash_command"
   | "compact_summary"
-  | "hook_output";
+  | "hook_output"
+  | "background_task";
 
 export type RawEvent = Record<string, unknown> & { type?: string };
 

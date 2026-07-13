@@ -617,3 +617,39 @@
   margin-bottom: 4px;
   font-weight: 500;
 }
+
+/* A background-task notification, rendered as a single quiet system line
+   (status dot · label · summary) rather than a user bubble. Kept dim and
+   compact so a run of completed background tasks reads as chrome. */
+.m-sysbit {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 18px;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--fg-3);
+}
+.m-sysbit__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  align-self: center;
+  background: var(--success);
+}
+.m-sysbit.is-error .m-sysbit__dot {
+  background: var(--danger);
+}
+.m-sysbit__label {
+  flex: none;
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 500;
+  color: var(--fg-3);
+}
+.m-sysbit__text {
+  color: var(--fg-2);
+  white-space: pre-wrap;
+}
