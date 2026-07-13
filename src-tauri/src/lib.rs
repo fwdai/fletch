@@ -1136,6 +1136,7 @@ pub fn run() {
             workflow::wf_events,
             workflow::scheduler::wf_launch,
             workflow::scheduler::wf_cancel,
+            workflow::scheduler::wf_delete_run,
             workflow::scheduler::wf_resume,
             workflow::scheduler::wf_retry,
             workflow::scheduler::wf_approve,

@@ -326,6 +326,18 @@ impl WorkflowService {
         Ok(())
     }
 
+    /// Delete a run and everything it owns (`wf_delete_run`, spec §13): its
+    /// composed sub-runs (depth-first), its step-agent workspaces, its
+    /// journal/attempt/message rows (via `ON DELETE CASCADE`), and its run
+    /// directory. Refuses a run that still has a live driver — cancel it first —
+    /// so no drive task can race the teardown by spawning or re-statusing.
+    ///
+    /// Cleanup is ordered so a *surviving* run can never be left with part of
+    /// its owned state gone: see [`delete_run_tree`] / [`purge_one_run`].
+    pub async fn delete_run(&self, run_id: &str) -> Result<()> {
+        delete_run_tree(&self.db, &self.driver, &self.runs, run_id).await
+    }
+
     pub(super) fn spawn_drive(&self, run_id: String) {
         spawn_drive_task(
             self.db.clone(),
@@ -5578,6 +5590,106 @@ fn child_run_ids(conn: &Connection, parent_run_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Delete `run_id` and everything it owns, depth-first (see
+/// [`WorkflowService::delete_run`]). A free function, decoupled from the service
+/// like [`RunCtx`], so it is testable with a `MockDriver` and a temp DB and no
+/// `AppHandle`.
+async fn delete_run_tree(
+    db: &Db,
+    driver: &Arc<dyn AgentDriver>,
+    runs: &Arc<Mutex<HashMap<String, RunHandle>>>,
+    run_id: &str,
+) -> Result<()> {
+    if runs.lock().contains_key(run_id) {
+        return Err(Error::Other("cancel the run before deleting it".into()));
+    }
+    // Depth-first: sub-runs before the parent, so a `parent_run_id` reference
+    // never dangles and each level's directory is gone before the next. A
+    // sub-run under a deletable (terminal/paused) parent is itself terminal —
+    // the cancel-cascade winds children down first — so none has a live driver
+    // to trip the guard above.
+    let children = {
+        let conn = db.lock();
+        child_run_ids(&conn, run_id)
+    };
+    for child in children {
+        Box::pin(delete_run_tree(db, driver, runs, &child)).await?;
+    }
+    purge_one_run(db, driver, run_id).await
+}
+
+/// Discard one run's owned step-agent workspaces (best-effort) and then delete
+/// its data + run directory.
+///
+/// The ordering is the whole point (the review blocker this closes): a failed
+/// discard must never strand the run row. If the loop propagated the first
+/// `discard` error, an earlier agent's chats/checkouts would already be gone
+/// while the run row survived — a still-visible, retryable run whose earlier
+/// workspace data has vanished. Instead every discard is best-effort (a failure
+/// is logged, not returned), and only after attempting them all is the run row
+/// deleted. The worst case degrades to a few orphaned workspaces under an
+/// already-deleted run — never a partially-gutted surviving run.
+async fn purge_one_run(db: &Db, driver: &Arc<dyn AgentDriver>, run_id: &str) -> Result<()> {
+    let (agent_ids, run_dir) = {
+        let conn = db.lock();
+        (owned_agent_ids(&conn, run_id), run_dir_of(&conn, run_id))
+    };
+    // Best-effort, never early-return (§13): the run row must fall even if a
+    // workspace teardown fails. Not holding the DB lock across `discard` —
+    // discard reaches back into the same app DB to remove the workspace row.
+    for agent_id in agent_ids {
+        if let Err(e) = driver.discard(&agent_id).await {
+            tracing::warn!(
+                run = %run_id, agent = %agent_id, error = %e,
+                "discard during run delete failed; workspace left orphaned"
+            );
+        }
+    }
+    {
+        let conn = db.lock();
+        conn.execute("DELETE FROM wf_run WHERE id = ?1", [run_id])
+            .map_err(|e| Error::Other(format!("delete run row {run_id}: {e}")))?;
+    }
+    // Remove the run directory last — after the row is gone, so a failure here
+    // leaves an orphaned directory rather than a live run pointing at a
+    // half-deleted one. `NotFound` is fine (already reclaimed).
+    if let Some(dir) = run_dir {
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    run = %run_id, dir = %dir.display(), error = %e,
+                    "remove run dir failed; leaving on disk"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every step-agent workspace a run owns (live *and* archived), by id — the set
+/// `wf_delete_run` discards. Broader than [`live_step_agents`], which is only
+/// the currently-spawned ones to stop on cancel/pause.
+fn owned_agent_ids(conn: &Connection, run_id: &str) -> Vec<String> {
+    conn.prepare("SELECT id FROM workspaces WHERE owner_run_id = ?1")
+        .and_then(|mut s| {
+            s.query_map([run_id], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap_or_default()
+}
+
+/// The run's on-disk directory (`~/.fletch/runs/<id>/`), removed after its row
+/// on delete. `None` if the run row is already gone.
+fn run_dir_of(conn: &Connection, run_id: &str) -> Option<PathBuf> {
+    conn.query_row("SELECT run_dir FROM wf_run WHERE id = ?1", [run_id], |r| {
+        r.get::<_, String>(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
+    .map(PathBuf::from)
+}
+
 /// Live (spawned, non-terminal) step agents for a run — stopped on cancel/pause.
 fn live_step_agents(conn: &Connection, run_id: &str) -> Vec<String> {
     conn.prepare(
@@ -5672,6 +5784,14 @@ pub async fn wf_launch(
 #[tauri::command]
 pub async fn wf_cancel(run_id: String, service: Svc<'_>) -> std::result::Result<(), String> {
     service.cancel(&run_id).await.map_err(|e| e.to_string())
+}
+
+/// Delete a run and everything it owns (§13): sub-runs, step-agent workspaces,
+/// journal/attempt/message rows, and the run directory. The run must not be
+/// live — cancel it first.
+#[tauri::command]
+pub async fn wf_delete_run(run_id: String, service: Svc<'_>) -> std::result::Result<(), String> {
+    service.delete_run(&run_id).await.map_err(|e| e.to_string())
 }
 
 /// Resume a paused run (§13), optionally raising the budget with a patch
@@ -9014,6 +9134,174 @@ mod tests {
         kids.sort();
         assert_eq!(kids, vec!["c1".to_string(), "c2".to_string()]);
         assert!(child_run_ids(&conn, "other").is_empty());
+    }
+
+    // ───────────────────────── run deletion (§13) ───────────────────────────
+
+    /// Insert a project + a run with `run_dir`, and one owned step-agent
+    /// workspace per id. Returns the `Db`.
+    fn seed_run_with_agents(
+        dir: &Path,
+        run_id: &str,
+        parent: Option<&str>,
+        run_dir: &Path,
+        agent_ids: &[&str],
+    ) -> Db {
+        let db = crate::database::init(dir).unwrap();
+        let conn = db.lock();
+        conn.execute(
+            "INSERT OR IGNORE INTO projects (id,name,created_at) VALUES ('p','proj',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_run (id,parent_run_id,name,spec_json,task,project_id,repo_path,
+                run_dir,branch,base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES (?1,?2,'n','{}','t','p','/r',?3,'wf/x','s','failed','{}','{}',0,0)",
+            rusqlite::params![run_id, parent, run_dir.to_string_lossy()],
+        )
+        .unwrap();
+        for a in agent_ids {
+            conn.execute(
+                "INSERT INTO workspaces (id,project_id,name,task,created_at,owner_run_id)
+                 VALUES (?1,'p','agent','',0,?2)",
+                rusqlite::params![a, run_id],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        db
+    }
+
+    /// The review blocker: a discard failing mid-loop must NOT leave a surviving,
+    /// retryable run whose earlier agents were already torn down. Every discard
+    /// is attempted and the run row is deleted regardless.
+    #[tokio::test]
+    async fn purge_one_run_deletes_the_row_even_when_a_discard_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run_dir = tmp.path().join("rundir");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(run_dir.join("task.md"), b"x").unwrap();
+        let db = seed_run_with_agents(tmp.path(), "r", None, &run_dir, &["a1", "a2", "a3"]);
+        // Cascade fixtures: an attempt and a journal event under the run.
+        db.lock()
+            .execute(
+                "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode)
+                 VALUES ('e1','r','s',1,0,'done','verdict')",
+                [],
+            )
+            .unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_event (run_id,seq,ts,type,payload_json)
+                 VALUES ('r',1,0,'run_started','{}')",
+                [],
+            )
+            .unwrap();
+
+        let mock = crate::workflow::driver::MockDriver::new();
+        // The *first* agent's teardown fails — the loop must press on to a2/a3
+        // and still delete the run row (not the old early-`?` behavior).
+        mock.fail_discard_of("a1");
+        let driver: Arc<dyn AgentDriver> = mock.clone();
+
+        purge_one_run(&db, &driver, "r").await.unwrap();
+
+        let conn = db.lock();
+        let run_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wf_run WHERE id='r'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(run_rows, 0, "run row must be deleted despite the failed discard");
+        let exec_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wf_step_exec WHERE run_id='r'", [], |r| r.get(0))
+            .unwrap();
+        let event_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wf_event WHERE run_id='r'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(exec_rows, 0, "attempts cascade with the run row");
+        assert_eq!(event_rows, 0, "journal events cascade with the run row");
+        drop(conn);
+
+        // Every agent was attempted; the two that could be torn down were.
+        assert!(!mock.was_discarded("a1"), "a1's discard was the one that failed");
+        assert!(mock.was_discarded("a2"), "the loop pressed on past the failure");
+        assert!(mock.was_discarded("a3"));
+        assert!(!run_dir.exists(), "run directory is removed after the row");
+    }
+
+    /// Depth-first: a composed sub-run is fully deleted before its parent, so the
+    /// parent's row-delete never trips the `parent_run_id` FK.
+    #[tokio::test]
+    async fn delete_run_tree_removes_sub_runs_before_the_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent_dir = tmp.path().join("parent");
+        let child_dir = tmp.path().join("child");
+        std::fs::create_dir_all(&parent_dir).unwrap();
+        std::fs::create_dir_all(&child_dir).unwrap();
+        let db = seed_run_with_agents(tmp.path(), "parent", None, &parent_dir, &["pa"]);
+        // Add the sub-run (same DB) and its owned agent.
+        db.lock()
+            .execute(
+                "INSERT INTO wf_run (id,parent_run_id,name,spec_json,task,project_id,repo_path,
+                    run_dir,branch,base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES ('child','parent','n','{}','t','p','/r',?1,'wf/x','s','failed','{}','{}',0,0)",
+                [child_dir.to_string_lossy()],
+            )
+            .unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO workspaces (id,project_id,name,task,created_at,owner_run_id)
+                 VALUES ('ca','p','agent','',0,'child')",
+                [],
+            )
+            .unwrap();
+
+        let mock = crate::workflow::driver::MockDriver::new();
+        let driver: Arc<dyn AgentDriver> = mock.clone();
+        let runs: Arc<Mutex<HashMap<String, RunHandle>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        delete_run_tree(&db, &driver, &runs, "parent").await.unwrap();
+
+        let conn = db.lock();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wf_run WHERE id IN ('parent','child')", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(total, 0, "both the parent and its sub-run are deleted");
+        drop(conn);
+        assert!(mock.was_discarded("pa") && mock.was_discarded("ca"));
+        assert!(!parent_dir.exists() && !child_dir.exists());
+    }
+
+    /// A run with a live driver must be cancelled before deletion — the guard
+    /// keeps a drive task from racing the teardown.
+    #[tokio::test]
+    async fn delete_run_tree_refuses_a_live_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run_dir = tmp.path().join("rundir");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let db = seed_run_with_agents(tmp.path(), "r", None, &run_dir, &[]);
+        let mock = crate::workflow::driver::MockDriver::new();
+        let driver: Arc<dyn AgentDriver> = mock.clone();
+        let runs: Arc<Mutex<HashMap<String, RunHandle>>> = Arc::new(Mutex::new(HashMap::new()));
+        runs.lock().insert(
+            "r".to_string(),
+            RunHandle {
+                cancel: Arc::new(AtomicBool::new(false)),
+                respawn: Arc::new(AtomicBool::new(false)),
+                pending_ask: Arc::new(AtomicBool::new(false)),
+            },
+        );
+
+        let err = delete_run_tree(&db, &driver, &runs, "r").await.unwrap_err();
+        assert!(err.to_string().contains("cancel the run"));
+        let rows: i64 = db
+            .lock()
+            .query_row("SELECT COUNT(*) FROM wf_run WHERE id='r'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "a live run is left intact");
+        assert!(run_dir.exists());
     }
 
     #[test]

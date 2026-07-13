@@ -85,6 +85,14 @@ pub trait AgentDriver: Send + Sync {
     fn stop<'a>(&'a self, agent_id: &'a str) -> BoxFuture<'a, Result<()>>;
     /// Archive (never delete) a step agent so its chat stays replayable.
     fn archive<'a>(&'a self, agent_id: &'a str) -> BoxFuture<'a, Result<()>>;
+    /// Discard a step agent for good — tear down its runtime + checkout and
+    /// remove the workspace row. Called only by `wf_delete_run` when the owning
+    /// run is deleted; a completed run otherwise keeps its step agents (archived)
+    /// for replay. The default is a no-op for the test stubs that never delete a
+    /// run — the production supervisor-backed driver removes the workspace.
+    fn discard<'a>(&'a self, _agent_id: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Timestamp (ms) of the most recent ingested session record — stall clock.
     fn last_activity(&self, agent_id: &str) -> Option<i64>;
     /// Per-turn usage if the provider exposes it (else `None`).
@@ -207,6 +215,10 @@ impl AgentDriver for SupervisorDriver {
         })
     }
 
+    fn discard<'a>(&'a self, agent_id: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.sup.clone().discard_agent(agent_id).await })
+    }
+
     fn last_activity(&self, agent_id: &str) -> Option<i64> {
         self.sup.last_activity(agent_id)
     }
@@ -304,6 +316,10 @@ struct MockState {
     sent: Vec<(String, String)>,
     stopped: Vec<String>,
     archived: Vec<String>,
+    discarded: Vec<String>,
+    /// Agent ids whose `discard` must fail, modelling a mid-cleanup teardown
+    /// error so the delete path's best-effort ordering can be tested.
+    fail_discard: std::collections::HashSet<String>,
     spawn_count: usize,
     /// When set, `spawn` fails with this message (spawn-failure tests).
     fail_spawn: Option<String>,
@@ -390,6 +406,16 @@ impl MockDriver {
     pub(crate) fn was_archived(&self, agent_id: &str) -> bool {
         self.state.lock().archived.iter().any(|a| a == agent_id)
     }
+
+    pub(crate) fn was_discarded(&self, agent_id: &str) -> bool {
+        self.state.lock().discarded.iter().any(|a| a == agent_id)
+    }
+
+    /// Make `discard` fail for `agent_id`, so a test can assert the delete path
+    /// still tears down the rest and deletes the run row.
+    pub(crate) fn fail_discard_of(&self, agent_id: &str) {
+        self.state.lock().fail_discard.insert(agent_id.to_string());
+    }
 }
 
 #[cfg(test)]
@@ -469,6 +495,19 @@ impl AgentDriver for MockDriver {
     fn archive<'a>(&'a self, agent_id: &'a str) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             self.state.lock().archived.push(agent_id.to_string());
+            Ok(())
+        })
+    }
+
+    fn discard<'a>(&'a self, agent_id: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let mut st = self.state.lock();
+            if st.fail_discard.contains(agent_id) {
+                return Err(crate::error::Error::Other(format!(
+                    "discard of {agent_id} failed"
+                )));
+            }
+            st.discarded.push(agent_id.to_string());
             Ok(())
         })
     }
