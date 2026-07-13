@@ -2302,19 +2302,20 @@ async fn run_orchestrate_stage(
     // keyed by step id — so `retry_child` can rebuild any child, not just the
     // static-body ones (spec §10.2).
     let mut child_specs: HashMap<String, Step> = HashMap::new();
+    // The join outcome recorded for each child; restored from prior drives below.
+    let mut outcomes: HashMap<String, ChildStatus> = HashMap::new();
     // Rebuild the dynamic children of any prior drive into the registry from the
     // persisted `spawn_child` decisions (which carry their agent + goal), so a
     // resumed stage can still honor `retry_child` for `orchestrate-N::dyn-K`.
     // Spawn order == index order, matching how ids were assigned originally.
-    for (i, (agent, goal)) in prior_spawn_decisions(&ctx.db.lock(), run_id, &orch_step_id)
-        .into_iter()
-        .enumerate()
-    {
+    // Bind first so the DB guard drops before the loop — the body re-locks it.
+    let prior_dynamic = prior_spawn_decisions(&ctx.db.lock(), run_id, &orch_step_id);
+    for (i, (agent, goal)) in prior_dynamic.into_iter().enumerate() {
         let id = format!("{orch_step_id}::dyn-{i}");
         child_specs.insert(
             id.clone(),
             Step {
-                id,
+                id: id.clone(),
                 agent,
                 goal,
                 gate: Gate::Verdict,
@@ -2322,18 +2323,28 @@ async fn run_orchestrate_stage(
                 comms: orch.comms.clone(),
             },
         );
+        // Restore a prior dynamic child's terminal join outcome so the resumed
+        // stage doesn't decide the join without it (dynamic children aren't
+        // auto-relaunched — the orchestrator re-drives them via retry_child).
+        if let Some(status) = latest_exec_status(&ctx.db.lock(), run_id, &id) {
+            if let Some(restored) = restored_child_status(&status) {
+                outcomes.insert(id, restored);
+            }
+        }
     }
     // Seed the dynamic-child index from the DB so a resumed stage doesn't reuse an
     // id an earlier drive already created (ids stay unique across resume).
     let mut dyn_count = existing_dyn_child_count(&ctx.db.lock(), run_id, &orch_step_id);
-    let mut outcomes: HashMap<String, ChildStatus> = HashMap::new();
 
     for step in &orch.body {
-        // Resume: a static child that already finished is not re-run — its work is
-        // durable (parity with the parallel stage, §12.3).
-        if child_already_done(&ctx.db.lock(), run_id, &step.id) {
-            outcomes.insert(step.id.clone(), ChildStatus::Success);
-            continue;
+        // Resume: a static child that terminally finished in a prior drive keeps
+        // its join outcome and is not re-run (§6.6, §12.3); an in-flight one
+        // (abandoned by the resume) or one that never ran is launched fresh.
+        if let Some(status) = latest_exec_status(&ctx.db.lock(), run_id, &step.id) {
+            if let Some(restored) = restored_child_status(&status) {
+                outcomes.insert(step.id.clone(), restored);
+                continue;
+            }
         }
         let agent_spec = spec.agents.get(&step.agent).ok_or_else(|| {
             Error::Other(format!(
@@ -4542,6 +4553,35 @@ fn done_exec_with_ended_at(
 /// in an earlier, interrupted drive — resume must not re-run it, §12.3 / S8).
 fn child_already_done(conn: &Connection, run_id: &str, step_id: &str) -> bool {
     latest_done_exec_for_step(conn, run_id, step_id).is_some()
+}
+
+/// The status of a step's most recent attempt, if any — the resume signal for an
+/// orchestrate child. Distinguishes a terminally-finished child (whose join
+/// outcome must be restored, not recomputed) from an in-flight one.
+fn latest_exec_status(conn: &Connection, run_id: &str, step_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT status FROM wf_step_exec
+         WHERE run_id = ?1 AND step_id = ?2
+         ORDER BY rowid DESC LIMIT 1",
+        rusqlite::params![run_id, step_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// Map a child's most-recent exec status to the join outcome to restore on resume
+/// (spec §6.6): a terminally-finished child keeps its result; an in-flight one
+/// (`abandoned` by the resume, or none) returns `None` so the caller re-runs or
+/// leaves it to the orchestrator. Prevents a resumed stage from deciding the join
+/// on incomplete child outcomes.
+fn restored_child_status(exec_status: &str) -> Option<ChildStatus> {
+    match exec_status {
+        "done" => Some(ChildStatus::Success),
+        "error" | "blocked" => Some(ChildStatus::Failure("failed in a previous drive".into())),
+        _ => None,
+    }
 }
 
 /// Recompute the line's fork source at resume: the last **top-level `step`**
@@ -7901,5 +7941,76 @@ mod tests {
             ],
             "spawn decisions rebuild in order, excluding non-spawn decisions"
         );
+    }
+
+    #[test]
+    fn restored_child_status_maps_only_terminal_execs() {
+        assert!(matches!(
+            restored_child_status("done"),
+            Some(ChildStatus::Success)
+        ));
+        assert!(matches!(
+            restored_child_status("error"),
+            Some(ChildStatus::Failure(_))
+        ));
+        assert!(matches!(
+            restored_child_status("blocked"),
+            Some(ChildStatus::Failure(_))
+        ));
+        // In-flight / superseded attempts are not a restorable join outcome.
+        assert!(restored_child_status("abandoned").is_none());
+        assert!(restored_child_status("running").is_none());
+    }
+
+    #[tokio::test]
+    async fn resume_restores_a_failed_dynamic_childs_join_outcome() {
+        // A dynamic child that failed in a prior drive must still count in the
+        // join on resume — otherwise a join:all stage could wrongly conclude
+        // `done` from incomplete outcomes.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws, bb, _base) =
+            scaffold_orchestrate(tmp.path(), "run-djoin", "implement the slice");
+        // Simulate a prior drive: the orchestrator spawned dyn-0, which failed.
+        db.lock()
+            .execute(
+                "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,agent_id)
+                 VALUES ('orch-old','run-djoin','orchestrate-0',1,0,'abandoned','verdict','a-old')",
+                [],
+            )
+            .unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_message (id,run_id,from_step_exec_id,to_step_exec_id,kind,
+                    body_json,status,created_at)
+                 VALUES ('sp0','run-djoin','orch-old',NULL,'decision',
+                    '{\"decision\":\"spawn_child\",\"agent\":\"coder\",\"goal\":\"slice\"}',
+                    'delivered',1)",
+                [],
+            )
+            .unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode)
+                 VALUES ('dyn0','run-djoin','orchestrate-0::dyn-0',1,0,'error','verdict')",
+                [],
+            )
+            .unwrap();
+
+        let ctx = orch_ctx(db.clone(), OrchDriver::new(ws, bb, OrchMode::Conclude));
+        drive_run(&ctx, "run-djoin").await;
+
+        let (status, err): (String, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT status, error FROM wf_run WHERE id='run-djoin'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "failed",
+            "the restored dynamic-child failure must decide the join:all stage"
+        );
+        assert!(err.unwrap_or_default().contains("orchestrate stage failed"));
     }
 }
