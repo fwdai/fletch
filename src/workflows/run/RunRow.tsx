@@ -37,8 +37,7 @@ export function RunRow({
   // Delete is the inverse gate (§13: terminal runs only). It is destructive and
   // irreversible — the run's step-agent chats go with it — so it takes two
   // clicks: the first arms the button and the tooltip states what is lost.
-  const deletable =
-    run.status === "done" || run.status === "failed" || run.status === "canceled";
+  const deletable = run.status === "done" || run.status === "failed" || run.status === "canceled";
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Same left-spine vocabulary as an agent row: live → accent, failed → danger,
   // everything else (pending/paused/done/canceled) → the faint idle grey.
