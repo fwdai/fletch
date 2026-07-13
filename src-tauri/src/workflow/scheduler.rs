@@ -2298,6 +2298,10 @@ async fn run_orchestrate_stage(
     // `handle_orch_child` discards any result whose generation is stale, so a
     // cancelled old attempt that still finishes can't win the join (§10.2).
     let mut child_gen: HashMap<String, u64> = HashMap::new();
+    // The `Step` each child (static *or* dynamically spawned) was launched from,
+    // keyed by step id — so `retry_child` can rebuild any child, not just the
+    // static-body ones (spec §10.2).
+    let mut child_specs: HashMap<String, Step> = HashMap::new();
     // Seed the dynamic-child index from the DB so a resumed stage doesn't reuse an
     // id an earlier drive already created (ids stay unique across resume).
     let mut dyn_count = existing_dyn_child_count(&ctx.db.lock(), run_id, &orch_step_id);
@@ -2319,6 +2323,7 @@ async fn run_orchestrate_stage(
         let cancel = Arc::new(AtomicBool::new(false));
         child_cancels.insert(step.id.clone(), cancel.clone());
         child_gen.insert(step.id.clone(), 0);
+        child_specs.insert(step.id.clone(), step.clone());
         let c = build_orch_child_ctx(
             ctx,
             run_id,
@@ -2443,6 +2448,7 @@ async fn run_orchestrate_stage(
                         let cancel = Arc::new(AtomicBool::new(false));
                         child_cancels.insert(step.id.clone(), cancel.clone());
                         child_gen.insert(step.id.clone(), 0);
+                        child_specs.insert(step.id.clone(), step.clone());
                         let c = build_orch_child_ctx(
                             ctx,
                             run_id,
@@ -2476,7 +2482,10 @@ async fn run_orchestrate_stage(
                     outcomes.insert(step_id, ChildStatus::Skipped);
                 }
                 super::comms::Decision::RetryChild { step_id, guidance } => {
-                    if let Some(orig) = orch.body.iter().find(|s| s.id == step_id).cloned() {
+                    // Resolve from the live child registry, so a *dynamic* child
+                    // (`orchestrate-N::dyn-K`, absent from `orch.body`) can be
+                    // retried too, not just static-body children (§10.2).
+                    if let Some(orig) = child_specs.get(&step_id).cloned() {
                         if let Some(agent_spec) = spec.agents.get(&orig.agent).cloned() {
                             // Cancel the previous attempt's task so it can't race the
                             // retry into the join outcome (§10.2).
