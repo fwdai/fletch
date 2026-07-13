@@ -112,8 +112,8 @@ export function WorkflowsPane() {
     setImportError(null);
     try {
       await api.wfDefSave(spec);
-      setImportReport(null);
       await reload();
+      setImportReport(null);
     } catch (e) {
       setImportError(String(e));
     } finally {
