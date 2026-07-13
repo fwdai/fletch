@@ -71,6 +71,27 @@ export function summarizeEvent(ev: WfEvent): EventSummary {
 
     case "attempt_spawned":
       return { icon: "bot", tone: MUTED, title: "Agent spawned" };
+    case "skills_missing":
+      return {
+        icon: "minus",
+        tone: AMBER,
+        title: "Started without missing skills",
+        detail: strList(p, "skills"),
+      };
+    case "mcp_servers_missing":
+      return {
+        icon: "minus",
+        tone: AMBER,
+        title: "Started without missing MCP servers",
+        detail: strList(p, "mcp_servers"),
+      };
+    case "custom_agent_missing":
+      return {
+        icon: "minus",
+        tone: AMBER,
+        title: "Custom agent no longer exists — started without its skills and MCP servers",
+        detail: str(p, "custom_agent"),
+      };
     case "attempt_ready":
       return { icon: "dot", tone: MUTED, title: "Agent ready" };
     case "prompt_sent": {
@@ -160,7 +181,7 @@ export function summarizeEvent(ev: WfEvent): EventSummary {
     case "merge_started":
       return { icon: "merge", tone: ACCENT, title: "Merging children" };
     case "merge_conflict":
-      return { icon: "close", tone: DANGER, title: "Merge conflict", detail: fileList(p) };
+      return { icon: "close", tone: DANGER, title: "Merge conflict", detail: strList(p, "files") };
     case "merge_done":
       return { icon: "merge", tone: GREEN, title: `Merged ${short(str(p, "sha"))}` };
 
@@ -181,12 +202,12 @@ export function summarizeEvent(ev: WfEvent): EventSummary {
   }
 }
 
-/** A `merge_conflict` payload's `files` array rendered as a short detail line. */
-function fileList(payload: unknown): string | undefined {
-  if (payload && typeof payload === "object" && "files" in payload) {
-    const files = (payload as { files: unknown }).files;
-    if (Array.isArray(files) && files.length > 0) {
-      return files.filter((f) => typeof f === "string").join(", ");
+/** A payload's string-array field rendered as a short detail line. */
+function strList(payload: unknown, key: string): string | undefined {
+  if (payload && typeof payload === "object" && key in payload) {
+    const items = (payload as Record<string, unknown>)[key];
+    if (Array.isArray(items) && items.length > 0) {
+      return items.filter((f) => typeof f === "string").join(", ");
     }
   }
   return undefined;

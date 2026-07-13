@@ -254,6 +254,218 @@ fn resolve_skill_names(conn: &Connection, skill_ids_json: &str) -> Result<Vec<St
     Ok(names)
 }
 
+// ───────────────────────── spawn deliverables (§3.2) ─────────────────────────
+
+/// Which MCP transports a provider can deliver at spawn — mirrors the app's
+/// `MCP_SUPPORT` map in `src/data/providers.ts`; the two must not drift.
+fn mcp_support(provider: &str) -> &'static str {
+    match provider {
+        "claude" => "all",
+        "codex" => "stdio",
+        _ => "none",
+    }
+}
+
+fn mcp_attachable(support: &str, transport: &str) -> bool {
+    support == "all" || (support == "stdio" && transport != "http")
+}
+
+/// What [`resolve_step_deliverables`] found for a step at spawn: the by-value
+/// snapshots to deliver, plus everything the definition requested that no
+/// longer resolves — the caller journals those as warnings (warn-don't-fail,
+/// the same policy as import).
+pub(super) struct StepDeliverables {
+    pub skills: Vec<crate::agent_profile::SkillSnapshot>,
+    pub mcp_servers: Vec<crate::agent_profile::McpServerSnapshot>,
+    /// Skill names/ids the definition requested that no longer resolve
+    /// (deleted since the save) — or a descriptive entry when the custom
+    /// agent's `skill_ids` column itself is unreadable.
+    pub missing_skills: Vec<String>,
+    /// MCP server ids the custom agent assigned that no longer resolve
+    /// (deleted since the save) — or a descriptive entry when the agent's
+    /// `mcp_server_ids` column itself is unreadable. Provider-filtered
+    /// transports are *not* listed — that gating is by design and mirrors
+    /// the agent editor.
+    pub missing_mcp_servers: Vec<String>,
+    /// The step's `custom_agent` id when its row no longer resolves — the step
+    /// spawns without that agent's skills and MCP servers.
+    pub missing_custom_agent: Option<String>,
+}
+
+/// Resolve a step's skill/MCP deliverables at spawn (§3.2) — the Rust twin of
+/// the app's `snapshotAgentDeliverables`: the custom agent's assigned skills
+/// and servers by id, plus the spec's `skills` names resolved against the
+/// library, filtered to what the provider can deliver. Snapshots are by value
+/// (the same semantics as the draft spawn path), so later library edits never
+/// touch a spawned step. Anything that no longer resolves — a skill, or the
+/// custom agent itself — is reported on [`StepDeliverables`] so the caller can
+/// journal a warning; the step still spawns.
+pub(super) fn resolve_step_deliverables(
+    conn: &Connection,
+    custom_agent_id: Option<&str>,
+    skill_names: &[String],
+    provider: &str,
+) -> StepDeliverables {
+    let mut skills: Vec<crate::agent_profile::SkillSnapshot> = Vec::new();
+    let mut mcp: Vec<crate::agent_profile::McpServerSnapshot> = Vec::new();
+    let mut missing_skills: Vec<String> = Vec::new();
+    let mut missing_mcp_servers: Vec<String> = Vec::new();
+    let mut missing_custom_agent: Option<String> = None;
+
+    let assigned: (Vec<String>, Vec<String>) = match custom_agent_id {
+        None => Default::default(),
+        Some(id) => {
+            let row = conn
+                .query_row(
+                    "SELECT skill_ids, mcp_server_ids FROM custom_agents WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()
+                .ok()
+                .flatten();
+            match row {
+                // A malformed assignment column must not collapse to "nothing
+                // requested" — that would skip every missing-deliverable check
+                // below and lose the agent's capabilities with no warning. The
+                // parse failure lands in the respective missing list as a
+                // descriptive entry, so the usual event fires and the timeline
+                // says exactly what was unreadable.
+                Some((s, m)) => {
+                    let skill_ids = match serde_json::from_str(&s) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            missing_skills
+                                .push(format!("custom agent '{id}' skill_ids unreadable: {e}"));
+                            Vec::new()
+                        }
+                    };
+                    let server_ids = match serde_json::from_str(&m) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            missing_mcp_servers.push(format!(
+                                "custom agent '{id}' mcp_server_ids unreadable: {e}"
+                            ));
+                            Vec::new()
+                        }
+                    };
+                    (skill_ids, server_ids)
+                }
+                None => {
+                    missing_custom_agent = Some(id.to_string());
+                    Default::default()
+                }
+            }
+        }
+    };
+
+    // Custom-agent skills by id (assignment order), then spec names on top,
+    // deduped by name.
+    for skill_id in &assigned.0 {
+        match skill_row(conn, "id", skill_id) {
+            Ok(Some(s)) => {
+                if !skills.iter().any(|k| k.name == s.name) {
+                    skills.push(s);
+                }
+            }
+            _ => missing_skills.push(skill_id.clone()),
+        }
+    }
+    for name in skill_names {
+        match skill_row(conn, "name", name) {
+            Ok(Some(s)) => {
+                if !skills.iter().any(|k| k.name == s.name) {
+                    skills.push(s);
+                }
+            }
+            _ => missing_skills.push(name.clone()),
+        }
+    }
+
+    let support = mcp_support(provider);
+    for server_id in &assigned.1 {
+        match mcp_snapshot_row(conn, server_id) {
+            Ok(Some(snap)) => {
+                if mcp_attachable(support, &snap.transport) {
+                    mcp.push(snap);
+                }
+            }
+            // A dangling id (server deleted since the agent was saved) is a
+            // real capability loss — report it; a transport the provider can't
+            // run is filtered above by design and stays silent.
+            _ => missing_mcp_servers.push(server_id.clone()),
+        }
+    }
+    StepDeliverables {
+        skills,
+        mcp_servers: mcp,
+        missing_skills,
+        missing_mcp_servers,
+        missing_custom_agent,
+    }
+}
+
+fn skill_row(
+    conn: &Connection,
+    column: &str,
+    value: &str,
+) -> Result<Option<crate::agent_profile::SkillSnapshot>, rusqlite::Error> {
+    // `column` is a compile-time literal ("id" | "name"), never user input.
+    let sql = format!("SELECT name, description, body FROM skills WHERE {column} = ?1 LIMIT 1");
+    conn.query_row(&sql, [value], |r| {
+        Ok(crate::agent_profile::SkillSnapshot {
+            name: r.get(0)?,
+            description: r.get(1)?,
+            body: r.get(2)?,
+        })
+    })
+    .optional()
+}
+
+/// Resolve a registry row into the by-value spawn snapshot — the Rust twin of
+/// `snapshotMcpServer` in `src/storage/mcpServers.ts`: the command line is
+/// whitespace-split into command + args, env/header lines are parsed into
+/// pairs (KEY=VALUE / "Name: value", blanks and malformed lines skipped).
+fn mcp_snapshot_row(
+    conn: &Connection,
+    server_id: &str,
+) -> Result<Option<crate::agent_profile::McpServerSnapshot>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT name, transport, command, env, url, headers FROM mcp_servers WHERE id = ?1",
+        [server_id],
+        |r| {
+            let command_line: String = r.get(2)?;
+            let env_text: String = r.get(3)?;
+            let headers_text: String = r.get(5)?;
+            let mut tokens = command_line.split_whitespace().map(str::to_string);
+            Ok(crate::agent_profile::McpServerSnapshot {
+                name: r.get(0)?,
+                transport: r.get(1)?,
+                command: tokens.next().unwrap_or_default(),
+                args: tokens.collect(),
+                env: parse_pair_lines(&env_text, '='),
+                url: r.get::<_, String>(4)?.trim().to_string(),
+                headers: parse_pair_lines(&headers_text, ':'),
+            })
+        },
+    )
+    .optional()
+}
+
+fn parse_pair_lines(text: &str, sep: char) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (k, v) = line.split_once(sep)?;
+            let k = k.trim();
+            if k.is_empty() {
+                return None;
+            }
+            Some((k.to_string(), v.trim().to_string()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +596,137 @@ mod tests {
         // Local id cleared; the alias keeps its original base.
         assert!(spec.agents["coder"].custom_agent.is_none());
         assert_eq!(spec.agents["coder"].base, "claude");
+    }
+
+    // ───────────────────── spawn deliverables (§3.2) ─────────────────────────
+
+    /// A library DB with the columns `resolve_step_deliverables` reads.
+    fn library_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                transport TEXT NOT NULL DEFAULT 'stdio',
+                command TEXT NOT NULL DEFAULT '', env TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '', headers TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE custom_agents (
+                id TEXT PRIMARY KEY,
+                skill_ids TEXT NOT NULL DEFAULT '[]',
+                mcp_server_ids TEXT NOT NULL DEFAULT '[]'
+             );
+             INSERT INTO skills VALUES
+                ('sk1', 'code-review', 'review well', '# Review'),
+                ('sk2', 'tests-first', 'tests first', '# Tests');
+             INSERT INTO mcp_servers VALUES
+                ('m1', 'gh', 'stdio', 'npx -y gh-mcp',
+                 'TOKEN=t' || char(10) || 'BAD-LINE', '', ''),
+                ('m2', 'web', 'http', '', '', ' https://mcp.example ', 'X-Key: abc');
+             INSERT INTO custom_agents VALUES
+                ('ca1', '[\"sk1\",\"dangling\"]', '[\"m1\",\"m2\",\"gone\"]'),
+                ('ca-corrupt', 'not-json', '{\"nope\"');",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn deliverables_resolve_custom_agent_ids_plus_spec_names() {
+        let conn = library_db();
+        let d = resolve_step_deliverables(
+            &conn,
+            Some("ca1"),
+            &["tests-first".into(), "code-review".into(), "unknown".into()],
+            "claude",
+        );
+        // ca1's sk1 first (assignment order), then the spec name that isn't a
+        // duplicate; the dangling id and unknown name are reported as missing.
+        let names: Vec<&str> = d.skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["code-review", "tests-first"]);
+        assert_eq!(d.missing_skills, vec!["dangling", "unknown"]);
+        // ca1's deleted server id is reported — a saved agent must never lose
+        // part of its requested capability snapshot silently.
+        assert_eq!(d.missing_mcp_servers, vec!["gone"]);
+        assert!(d.missing_custom_agent.is_none());
+        let (skills, mcp) = (d.skills, d.mcp_servers);
+        assert_eq!(skills[0].body, "# Review");
+        // claude supports all transports: both servers, parsed.
+        assert_eq!(mcp.len(), 2);
+        assert_eq!(mcp[0].command, "npx");
+        assert_eq!(mcp[0].args, vec!["-y", "gh-mcp"]);
+        assert_eq!(mcp[0].env, vec![("TOKEN".to_string(), "t".to_string())]);
+        assert_eq!(mcp[1].url, "https://mcp.example");
+        assert_eq!(
+            mcp[1].headers,
+            vec![("X-Key".to_string(), "abc".to_string())]
+        );
+    }
+
+    #[test]
+    fn deliverables_filter_http_servers_for_stdio_only_providers() {
+        let conn = library_db();
+        let d = resolve_step_deliverables(&conn, Some("ca1"), &[], "codex");
+        assert_eq!(d.mcp_servers.len(), 1, "codex delivers stdio only");
+        assert_eq!(d.mcp_servers[0].name, "gh");
+        // The provider-filtered http server ('m2') is by-design gating, never a
+        // missing warning; only the genuinely deleted id is reported.
+        assert_eq!(d.missing_mcp_servers, vec!["gone"]);
+        let none = resolve_step_deliverables(&conn, Some("ca1"), &[], "cursor").mcp_servers;
+        assert!(none.is_empty(), "providers without MCP support get none");
+    }
+
+    #[test]
+    fn deliverables_without_custom_agent_resolve_names_only() {
+        let conn = library_db();
+        let d = resolve_step_deliverables(&conn, None, &["code-review".into()], "claude");
+        assert_eq!(d.skills.len(), 1);
+        assert_eq!(d.skills[0].name, "code-review");
+        assert!(d.missing_skills.is_empty(), "everything requested resolved");
+        assert!(d.missing_mcp_servers.is_empty());
+        assert!(d.missing_custom_agent.is_none());
+        assert!(
+            d.mcp_servers.is_empty(),
+            "MCP comes only via a custom agent (§5.1)"
+        );
+    }
+
+    #[test]
+    fn deliverables_report_a_deleted_custom_agent() {
+        let conn = library_db();
+        let d = resolve_step_deliverables(&conn, Some("gone"), &["code-review".into()], "claude");
+        assert_eq!(d.missing_custom_agent.as_deref(), Some("gone"));
+        // Spec-named skills still resolve; only the agent's assignments are lost.
+        assert_eq!(d.skills.len(), 1);
+        assert!(d.mcp_servers.is_empty());
+        assert!(d.missing_skills.is_empty());
+        // The agent row itself is the missing thing — its unknowable server
+        // assignments are not double-reported.
+        assert!(d.missing_mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn deliverables_report_unreadable_assignment_columns() {
+        let conn = library_db();
+        // The row exists but both assignment columns are malformed JSON: this
+        // must warn per class, not collapse to "nothing requested".
+        let d = resolve_step_deliverables(&conn, Some("ca-corrupt"), &[], "claude");
+        assert!(d.missing_custom_agent.is_none(), "the row itself resolves");
+        assert_eq!(d.missing_skills.len(), 1);
+        assert!(
+            d.missing_skills[0].contains("'ca-corrupt' skill_ids unreadable"),
+            "{:?}",
+            d.missing_skills
+        );
+        assert_eq!(d.missing_mcp_servers.len(), 1);
+        assert!(
+            d.missing_mcp_servers[0].contains("'ca-corrupt' mcp_server_ids unreadable"),
+            "{:?}",
+            d.missing_mcp_servers
+        );
+        assert!(d.skills.is_empty() && d.mcp_servers.is_empty());
     }
 }

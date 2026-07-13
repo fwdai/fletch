@@ -123,6 +123,20 @@ pub mod event_type {
     pub const RUN_FAILED: &str = "run_failed";
     pub const RUN_CANCELED: &str = "run_canceled";
     pub const ATTEMPT_SPAWNED: &str = "attempt_spawned";
+    /// A step spawned without skills its definition requested — they no longer
+    /// resolve against the local library (deleted since the save/import).
+    /// Carries the unresolved names/ids; the step still runs (warn-don't-fail,
+    /// the same policy as import).
+    pub const SKILLS_MISSING: &str = "skills_missing";
+    /// A step spawned without MCP servers its custom agent assigned — the
+    /// server rows no longer resolve (deleted since the save). Carries the
+    /// unresolved ids; the step still runs. Provider-filtered transports are
+    /// not reported (by-design gating, mirrors the agent editor).
+    pub const MCP_SERVERS_MISSING: &str = "mcp_servers_missing";
+    /// A step's `custom_agent` no longer resolves (deleted since the save) —
+    /// the step spawned without that agent's skills and MCP servers. Carries
+    /// the unresolved id; the step still runs.
+    pub const CUSTOM_AGENT_MISSING: &str = "custom_agent_missing";
     pub const ATTEMPT_READY: &str = "attempt_ready";
     pub const PROMPT_SENT: &str = "prompt_sent";
     pub const TURN_ENDED: &str = "turn_ended";

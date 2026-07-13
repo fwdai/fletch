@@ -83,6 +83,24 @@ describe("summarizeEvent", () => {
     expect(summarizeEvent(ev(1, "boundary_commit", {})).title).toBe("Committed ");
   });
 
+  it("lists the unresolved skills a step spawned without", () => {
+    const warn = summarizeEvent(ev(1, "skills_missing", { skills: ["code-review", "sk-gone"] }));
+    expect(warn.title).toBe("Started without missing skills");
+    expect(warn.detail).toBe("code-review, sk-gone");
+  });
+
+  it("lists the unresolved MCP servers a step spawned without", () => {
+    const warn = summarizeEvent(ev(1, "mcp_servers_missing", { mcp_servers: ["m-gone"] }));
+    expect(warn.title).toBe("Started without missing MCP servers");
+    expect(warn.detail).toBe("m-gone");
+  });
+
+  it("warns when a step's custom agent no longer exists", () => {
+    const warn = summarizeEvent(ev(1, "custom_agent_missing", { custom_agent: "ca-gone" }));
+    expect(warn.title).toContain("Custom agent no longer exists");
+    expect(warn.detail).toBe("ca-gone");
+  });
+
   it("shows finalize PR success and failure distinctly", () => {
     const ok = summarizeEvent(ev(1, "finalize_pr", { url: "https://example/pr/1" }));
     expect(ok.title).toBe("Pull request opened");

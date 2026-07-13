@@ -371,6 +371,10 @@ pub struct Finalize { pub push: bool, pub open_pr: bool, pub pr_base: Option<Str
 Rejected at save/import/launch time with precise messages:
 
 - duplicate/missing step ids; `agent` keys that don't resolve
+- step ids wearing an engine-reserved shape — prefix `orchestrate-` or
+  `__`, or containing `::` — since comms role checks and routing key off
+  those shapes (a composed fragment naming a step `orchestrate-…` would
+  otherwise acquire the orchestrator's caps and decision surface, §15)
 - `loop.until.step` not in the loop body; `loop.max` < 1
 - `loop.until.step` whose gate is not `verdict` (the exit condition reads
   the verdict; a `tests`/`commit`-gated judge would conflate "gate unmet"
@@ -611,6 +615,9 @@ re-run" in place.
 
 `run_launched, run_resumed, run_paused {reason}, run_done, run_failed
 {error}, run_canceled, attempt_spawned {agent_id, fork_base},
+skills_missing {skills[]} / mcp_servers_missing {mcp_servers[]} /
+custom_agent_missing {custom_agent} (a spawn resolved less than the
+definition requested — deleted library rows; warn-don't-fail),
 attempt_ready, prompt_sent {kind: step|nudge|reprompt|message},
 turn_ended {status, usage?}, gate_evaluated {mode, inputs, verdict, reason},
 boundary_commit {sha}, attempt_abandoned {cause}, attempt_error {error},
@@ -1038,7 +1045,10 @@ file-drop → `wf_def_import_yaml` → `ImportReport` mapping dialog
   caps broader than its parent block's, and can't enable `compose` itself
   at max depth.
 - Push stays constrained to the `wf/` namespace; finalize PR base is
-  validated as an existing branch name.
+  validated as an existing branch name. Run-owned step agents cannot push
+  at all: the workflow RPC dispatcher denies `git_push`/`open_pr` outright
+  (only `git_fetch` falls through to the git broker) — the engine's
+  finalize is the sole publish path for a run.
 - Step prompts never embed host credentials; RPC ops remain the only
   credentialed surface (unchanged from the agent playbooks).
 
