@@ -280,6 +280,10 @@ pub(super) struct StepDeliverables {
     /// Skill names/ids the definition requested that no longer resolve
     /// (deleted since the save).
     pub missing_skills: Vec<String>,
+    /// MCP server ids the custom agent assigned that no longer resolve
+    /// (deleted since the save). Provider-filtered transports are *not*
+    /// listed — that gating is by design and mirrors the agent editor.
+    pub missing_mcp_servers: Vec<String>,
     /// The step's `custom_agent` id when its row no longer resolves — the step
     /// spawns without that agent's skills and MCP servers.
     pub missing_custom_agent: Option<String>,
@@ -302,6 +306,7 @@ pub(super) fn resolve_step_deliverables(
     let mut skills: Vec<crate::agent_profile::SkillSnapshot> = Vec::new();
     let mut mcp: Vec<crate::agent_profile::McpServerSnapshot> = Vec::new();
     let mut missing_skills: Vec<String> = Vec::new();
+    let mut missing_mcp_servers: Vec<String> = Vec::new();
     let mut missing_custom_agent: Option<String> = None;
 
     let assigned: (Vec<String>, Vec<String>) = match custom_agent_id {
@@ -354,16 +359,23 @@ pub(super) fn resolve_step_deliverables(
 
     let support = mcp_support(provider);
     for server_id in &assigned.1 {
-        if let Ok(Some(snap)) = mcp_snapshot_row(conn, server_id) {
-            if mcp_attachable(support, &snap.transport) {
-                mcp.push(snap);
+        match mcp_snapshot_row(conn, server_id) {
+            Ok(Some(snap)) => {
+                if mcp_attachable(support, &snap.transport) {
+                    mcp.push(snap);
+                }
             }
+            // A dangling id (server deleted since the agent was saved) is a
+            // real capability loss — report it; a transport the provider can't
+            // run is filtered above by design and stays silent.
+            _ => missing_mcp_servers.push(server_id.clone()),
         }
     }
     StepDeliverables {
         skills,
         mcp_servers: mcp,
         missing_skills,
+        missing_mcp_servers,
         missing_custom_agent,
     }
 }
@@ -610,6 +622,9 @@ mod tests {
         let names: Vec<&str> = d.skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["code-review", "tests-first"]);
         assert_eq!(d.missing_skills, vec!["dangling", "unknown"]);
+        // ca1's deleted server id is reported — a saved agent must never lose
+        // part of its requested capability snapshot silently.
+        assert_eq!(d.missing_mcp_servers, vec!["gone"]);
         assert!(d.missing_custom_agent.is_none());
         let (skills, mcp) = (d.skills, d.mcp_servers);
         assert_eq!(skills[0].body, "# Review");
@@ -628,9 +643,12 @@ mod tests {
     #[test]
     fn deliverables_filter_http_servers_for_stdio_only_providers() {
         let conn = library_db();
-        let mcp = resolve_step_deliverables(&conn, Some("ca1"), &[], "codex").mcp_servers;
-        assert_eq!(mcp.len(), 1, "codex delivers stdio only");
-        assert_eq!(mcp[0].name, "gh");
+        let d = resolve_step_deliverables(&conn, Some("ca1"), &[], "codex");
+        assert_eq!(d.mcp_servers.len(), 1, "codex delivers stdio only");
+        assert_eq!(d.mcp_servers[0].name, "gh");
+        // The provider-filtered http server ('m2') is by-design gating, never a
+        // missing warning; only the genuinely deleted id is reported.
+        assert_eq!(d.missing_mcp_servers, vec!["gone"]);
         let none = resolve_step_deliverables(&conn, Some("ca1"), &[], "cursor").mcp_servers;
         assert!(none.is_empty(), "providers without MCP support get none");
     }
@@ -642,6 +660,7 @@ mod tests {
         assert_eq!(d.skills.len(), 1);
         assert_eq!(d.skills[0].name, "code-review");
         assert!(d.missing_skills.is_empty(), "everything requested resolved");
+        assert!(d.missing_mcp_servers.is_empty());
         assert!(d.missing_custom_agent.is_none());
         assert!(
             d.mcp_servers.is_empty(),
@@ -658,5 +677,8 @@ mod tests {
         assert_eq!(d.skills.len(), 1);
         assert!(d.mcp_servers.is_empty());
         assert!(d.missing_skills.is_empty());
+        // The agent row itself is the missing thing — its unknowable server
+        // assignments are not double-reported.
+        assert!(d.missing_mcp_servers.is_empty());
     }
 }

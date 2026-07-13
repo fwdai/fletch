@@ -615,6 +615,9 @@ re-run" in place.
 
 `run_launched, run_resumed, run_paused {reason}, run_done, run_failed
 {error}, run_canceled, attempt_spawned {agent_id, fork_base},
+skills_missing {skills[]} / mcp_servers_missing {mcp_servers[]} /
+custom_agent_missing {custom_agent} (a spawn resolved less than the
+definition requested — deleted library rows; warn-don't-fail),
 attempt_ready, prompt_sent {kind: step|nudge|reprompt|message},
 turn_ended {status, usage?}, gate_evaluated {mode, inputs, verdict, reason},
 boundary_commit {sha}, attempt_abandoned {cause}, attempt_error {error},

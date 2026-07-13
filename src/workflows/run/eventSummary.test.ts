@@ -89,6 +89,12 @@ describe("summarizeEvent", () => {
     expect(warn.detail).toBe("code-review, sk-gone");
   });
 
+  it("lists the unresolved MCP servers a step spawned without", () => {
+    const warn = summarizeEvent(ev(1, "mcp_servers_missing", { mcp_servers: ["m-gone"] }));
+    expect(warn.title).toBe("Started without missing MCP servers");
+    expect(warn.detail).toBe("m-gone");
+  });
+
   it("warns when a step's custom agent no longer exists", () => {
     const warn = summarizeEvent(ev(1, "custom_agent_missing", { custom_agent: "ca-gone" }));
     expect(warn.title).toContain("Custom agent no longer exists");

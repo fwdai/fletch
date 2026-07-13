@@ -78,6 +78,13 @@ export function summarizeEvent(ev: WfEvent): EventSummary {
         title: "Started without missing skills",
         detail: strList(p, "skills"),
       };
+    case "mcp_servers_missing":
+      return {
+        icon: "minus",
+        tone: AMBER,
+        title: "Started without missing MCP servers",
+        detail: strList(p, "mcp_servers"),
+      };
     case "custom_agent_missing":
       return {
         icon: "minus",

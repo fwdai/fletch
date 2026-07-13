@@ -2155,7 +2155,8 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
 /// carries its skills and deliverable MCP servers, and later library edits
 /// never touch a spawned step. Anything the definition requested that no
 /// longer resolves — skills, or the custom agent itself — is journaled as a
-/// `skills_missing` / `custom_agent_missing` warning against `warn_exec_id`;
+/// `skills_missing` / `mcp_servers_missing` / `custom_agent_missing` warning
+/// against `warn_exec_id`;
 /// the step still spawns. Pass `warn_exec_id: None` when the req describes an
 /// already-spawned agent (`pre_spawned`) whose spawn call warned already. The
 /// blackboard write-grant is derived from `owner_run_id` at spawn.
@@ -2195,6 +2196,16 @@ fn build_spawn_req(
                 event_type::SKILLS_MISSING,
                 Some(exec_id),
                 &json!({ "skills": deliverables.missing_skills }),
+            );
+        }
+        if !deliverables.missing_mcp_servers.is_empty() {
+            journal_event(
+                conn,
+                app,
+                run_id,
+                event_type::MCP_SERVERS_MISSING,
+                Some(exec_id),
+                &json!({ "mcp_servers": deliverables.missing_mcp_servers }),
             );
         }
     }
