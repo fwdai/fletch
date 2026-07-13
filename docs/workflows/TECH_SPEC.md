@@ -1020,7 +1020,9 @@ aggregated error stating that deleting again finishes the job. Within one
 run the row delete is the commit point: the run dir is staged aside with
 an atomic rename and renamed back if the row delete fails, so a surviving
 run row never points at a missing blackboard/run repo; the staged dir is
-removed only after the rows are gone. Chats of
+removed only after the rows are gone. An app exit inside that window is
+reconciled at the next startup (`resume_active_runs`): a staged dir whose
+row survives is renamed back, one whose row is gone is swept. Chats of
 deleted runs are gone — the delete is a two-click armed button on the run
 row whose confirm state says so. A `wf:run-deleted` event drops each
 fully deleted row from the sidebar. Until deletion, everything is
