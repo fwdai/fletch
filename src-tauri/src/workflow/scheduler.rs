@@ -970,6 +970,11 @@ struct ChildCtx {
     /// pin, and ferry their work into the run repo (like a linear step) so the
     /// stage can merge their refs; `None` children leave code on their fork.
     integrate: Integrate,
+    /// An orchestrator note folded into the child's *first* prompt (spec §10.2 —
+    /// `retry_child` guidance). Threaded directly rather than via a queued
+    /// message so the fresh attempt is guaranteed to carry it. `None` for the
+    /// common case.
+    extra_note: Option<String>,
     /// Set by the stage to wind this child down (loser cancellation, §6.6).
     stage_cancel: Arc<AtomicBool>,
 }
@@ -1157,6 +1162,7 @@ async fn run_parallel_stage(
             test_override: test_override.clone(),
             setup_override: setup_override.clone(),
             integrate: par.integrate,
+            extra_note: None,
             stage_cancel: stage_cancel.clone(),
         });
     }
@@ -2314,6 +2320,7 @@ async fn run_orchestrate_stage(
             eff,
             test_override,
             setup_override,
+            None,
             cancel,
         );
         let entry = stage_entry_sha.clone();
@@ -2435,6 +2442,7 @@ async fn run_orchestrate_stage(
                             eff,
                             test_override,
                             setup_override,
+                            None,
                             cancel,
                         );
                         let entry = stage_entry_sha.clone();
@@ -2458,15 +2466,19 @@ async fn run_orchestrate_stage(
                             if let Some(flag) = child_cancels.get(&orig.id) {
                                 flag.store(true, Ordering::SeqCst);
                             }
-                            // Fold the guidance into the fresh attempt via a notice.
-                            {
-                                let conn = ctx.db.lock();
-                                super::comms::queue_child_note(&conn, run_id, &orig.id, &guidance);
-                            }
                             outcomes.remove(&orig.id);
                             let cancel = Arc::new(AtomicBool::new(false));
                             child_cancels.insert(orig.id.clone(), cancel.clone());
                             let step = orig.clone();
+                            // Thread the guidance straight into the replacement
+                            // child's first prompt (not a queued note) so the fresh
+                            // attempt is guaranteed to carry it (spec §10.2).
+                            let note = (!guidance.trim().is_empty()).then(|| {
+                                format!(
+                                    "The orchestrator asked you to try this step again \
+                                     with this guidance:\n\n{guidance}"
+                                )
+                            });
                             let c = build_orch_child_ctx(
                                 ctx,
                                 run_id,
@@ -2482,6 +2494,7 @@ async fn run_orchestrate_stage(
                                 eff,
                                 test_override,
                                 setup_override,
+                                note,
                                 cancel,
                             );
                             let entry = stage_entry_sha.clone();
@@ -2784,6 +2797,7 @@ fn build_orch_child_ctx(
     eff: &EffectiveBudgets,
     test_override: &Option<String>,
     setup_override: &Option<String>,
+    extra_note: Option<String>,
     cancel: Arc<AtomicBool>,
 ) -> ChildCtx {
     ChildCtx {
@@ -2807,6 +2821,7 @@ fn build_orch_child_ctx(
         // Orchestrate children are note-producing in v1 (`integrate: none`), so
         // they never ferry — `drive_orch_child` always takes the none path.
         integrate: Integrate::None,
+        extra_note,
         stage_cancel: cancel,
     }
 }
@@ -2851,6 +2866,9 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
 
     let mut attempt_no = next_attempt_no(&c.db.lock(), &c.run_id, &c.step.id, 0);
     let mut last_failure: Option<String> = None;
+    // Orchestrator guidance (`retry_child`, §10.2) folded into the first prompt
+    // only, then consumed so later attempts don't repeat it.
+    let mut extra_note = c.extra_note.clone();
 
     loop {
         if c.stage_cancel.load(Ordering::SeqCst) {
@@ -2932,11 +2950,15 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
                 turns_per_attempt: c.step.budgets.as_ref().and_then(|b| b.turns_per_attempt),
                 comms: &c.step.comms,
             };
-            let base = match &last_failure {
+            let mut base = match &last_failure {
                 Some(f) => prompts::retry_prompt(f, &ctx_prompt),
                 None => prompts::step_prompt(&ctx_prompt),
             };
-            // Fold a delivered answer (to a prior ask) or a notify/guidance (§10.4).
+            // Orchestrator retry guidance leads the first prompt (§10.2).
+            if let Some(note) = extra_note.take() {
+                base = format!("{note}\n\n{base}");
+            }
+            // Fold a delivered answer (to a prior ask) or a notify (§10.4).
             let delivered = {
                 let conn = c.db.lock();
                 super::comms::take_pending_deliveries(&conn, &c.run_id, &c.step.id)
@@ -7142,6 +7164,10 @@ mod tests {
         root: PathBuf,
         blackboard: PathBuf,
         mode: OrchMode,
+        /// When set, a `wf_decide` body the orchestrator "issues" on its first turn
+        /// (persisted as a queued decision the way the router would), plus the DB
+        /// and run id needed to write it. Lets a test script skip/retry decisions.
+        first_decision: Option<(Db, String, serde_json::Value)>,
         tx: broadcast::Sender<StatusEvent>,
         state: parking_lot::Mutex<StubState>,
     }
@@ -7151,6 +7177,24 @@ mod tests {
                 root,
                 blackboard,
                 mode,
+                first_decision: None,
+                tx: broadcast::channel(256).0,
+                state: parking_lot::Mutex::new(StubState::default()),
+            })
+        }
+        fn new_scripted(
+            root: PathBuf,
+            blackboard: PathBuf,
+            mode: OrchMode,
+            db: Db,
+            run_id: &str,
+            decision: serde_json::Value,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                root,
+                blackboard,
+                mode,
+                first_decision: Some((db, run_id.to_string(), decision)),
                 tx: broadcast::channel(256).0,
                 state: parking_lot::Mutex::new(StubState::default()),
             })
@@ -7161,6 +7205,36 @@ mod tests {
                 agent_id: id.to_string(),
                 status: s,
             });
+        }
+        /// Persist `decision` as a queued `decision` message from the orchestrator
+        /// exec — exactly what `route_decide` does when the orchestrator calls
+        /// `wf_decide` (its exec is resolved by `agent_id`, stamped at spawn).
+        fn inject_decision(&self, orch_agent_id: &str) {
+            let Some((db, run_id, body)) = &self.first_decision else {
+                return;
+            };
+            let conn = db.lock();
+            let exec: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM wf_step_exec WHERE run_id = ?1 AND agent_id = ?2",
+                    rusqlite::params![run_id, orch_agent_id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(exec) = exec {
+                conn.execute(
+                    "INSERT INTO wf_message (id, run_id, from_step_exec_id, to_step_exec_id,
+                        kind, body_json, status, created_at)
+                     VALUES (?1, ?2, ?3, NULL, 'decision', ?4, 'queued', 0)",
+                    rusqlite::params![
+                        format!("dec-{}", uuid::Uuid::new_v4()),
+                        run_id,
+                        exec,
+                        body.to_string(),
+                    ],
+                )
+                .unwrap();
+            }
         }
     }
     impl AgentDriver for OrchDriver {
@@ -7207,7 +7281,8 @@ mod tests {
             text: String,
         ) -> super::super::driver::BoxFuture<'a, Result<()>> {
             Box::pin(async move {
-                let is_orch = text.contains("Workflow orchestrator")
+                let is_initial = text.contains("Workflow orchestrator");
+                let is_orch = is_initial
                     || text.contains("All children are done")
                     || text.contains("Updates from your children");
                 let is_nudge = text.contains("gone quiet");
@@ -7217,6 +7292,10 @@ mod tests {
                     return Ok(());
                 }
                 if is_orch {
+                    // Issue any scripted decision on the opening turn.
+                    if is_initial {
+                        self.inject_decision(id);
+                    }
                     match self.mode {
                         OrchMode::Stall => return Ok(()), // never goes Idle → stall
                         OrchMode::Conclude => {
@@ -7233,6 +7312,10 @@ mod tests {
                         OrchMode::NeverConclude => {}
                     }
                     self.set(id, AgentStatus::Idle);
+                } else if text.contains("HANGCHILD") {
+                    // A child that never finishes its turn — only a cancel (e.g.
+                    // `skip_child`) can wind it down.
+                    return Ok(());
                 } else {
                     // A child: satisfy its `commit` gate.
                     let wt = self.state.lock().worktrees.get(id).cloned().unwrap();
@@ -7261,9 +7344,14 @@ mod tests {
     }
 
     /// A run whose whole workflow is one orchestrate block (agent `orch`) with a
-    /// single static, commit-gated child `impl`. Returns the db, the workspace
-    /// root, the blackboard dir, and the base SHA.
-    fn scaffold_orchestrate(tmp: &Path, run_id: &str) -> (Db, PathBuf, PathBuf, String) {
+    /// single static, commit-gated child `impl` whose goal is `child_goal` (use
+    /// `HANGCHILD` for a child that never finishes its turn). Returns the db, the
+    /// workspace root, the blackboard dir, and the base SHA.
+    fn scaffold_orchestrate(
+        tmp: &Path,
+        run_id: &str,
+        child_goal: &str,
+    ) -> (Db, PathBuf, PathBuf, String) {
         let source = tmp.join("source");
         std::fs::create_dir_all(&source).unwrap();
         sh(&source, &["init", "-q", "-b", "main"]);
@@ -7300,7 +7388,7 @@ mod tests {
         let child = Step {
             id: "impl".to_string(),
             agent: "coder".to_string(),
-            goal: "implement the slice".to_string(),
+            goal: child_goal.to_string(),
             gate: Gate::Commit,
             budgets: None,
             comms: vec![],
@@ -7378,7 +7466,8 @@ mod tests {
     #[tokio::test]
     async fn orchestrate_concludes_after_children_and_reaches_done() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws, bb, _base) = scaffold_orchestrate(tmp.path(), "run-orch");
+        let (db, ws, bb, _base) =
+            scaffold_orchestrate(tmp.path(), "run-orch", "implement the slice");
         let ctx = orch_ctx(db.clone(), OrchDriver::new(ws, bb, OrchMode::Conclude));
         drive_run(&ctx, "run-orch").await;
 
@@ -7418,7 +7507,7 @@ mod tests {
     #[tokio::test]
     async fn orchestrate_pauses_blocked_when_the_orchestrator_never_concludes() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws, bb, _base) = scaffold_orchestrate(tmp.path(), "run-nc");
+        let (db, ws, bb, _base) = scaffold_orchestrate(tmp.path(), "run-nc", "implement the slice");
         let ctx = orch_ctx(db.clone(), OrchDriver::new(ws, bb, OrchMode::NeverConclude));
         drive_run(&ctx, "run-nc").await;
 
@@ -7448,7 +7537,8 @@ mod tests {
     #[tokio::test]
     async fn orchestrator_stall_escalates_to_the_human() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws, bb, _base) = scaffold_orchestrate(tmp.path(), "run-stall");
+        let (db, ws, bb, _base) =
+            scaffold_orchestrate(tmp.path(), "run-stall", "implement the slice");
         let ctx = orch_ctx(db.clone(), OrchDriver::new(ws, bb, OrchMode::Stall));
         drive_run(&ctx, "run-stall").await;
 
@@ -7474,7 +7564,8 @@ mod tests {
     #[tokio::test]
     async fn resume_does_not_rerun_a_completed_static_child() {
         let tmp = tempfile::tempdir().unwrap();
-        let (db, ws, bb, _base) = scaffold_orchestrate(tmp.path(), "run-resume");
+        let (db, ws, bb, _base) =
+            scaffold_orchestrate(tmp.path(), "run-resume", "implement the slice");
         // Simulate a prior drive that paused before the orchestrator concluded: the
         // static child already finished `done`.
         db.lock()
@@ -7537,6 +7628,38 @@ mod tests {
             existing_dyn_child_count(&conn, "r", "orchestrate-0"),
             2,
             "the next dynamic index skips the two already created"
+        );
+    }
+
+    #[tokio::test]
+    async fn skip_child_cancels_the_child_so_the_stage_can_conclude() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The child hangs its turn — only a cancel ends it. On its opening turn the
+        // orchestrator issues `skip_child`; the engine must cancel that child (not
+        // let it stall out) so the stage concludes on the orchestrator's verdict.
+        let (db, ws, bb, _base) =
+            scaffold_orchestrate(tmp.path(), "run-skip", "implement HANGCHILD");
+        let driver = OrchDriver::new_scripted(
+            ws,
+            bb,
+            OrchMode::Conclude,
+            db.clone(),
+            "run-skip",
+            serde_json::json!({ "decision": "skip_child", "step_id": "impl", "reason": "unneeded" }),
+        );
+        drive_run(&orch_ctx(db.clone(), driver), "run-skip").await;
+
+        assert_eq!(run_status_str(&db, "run-skip"), "done");
+        // The child was cancelled (abandoned), not left to stall out (`error`) or
+        // to complete (`done`).
+        let bad = count(
+            &db,
+            "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-skip' AND step_id='impl' \
+             AND status IN ('error','done')",
+        );
+        assert_eq!(
+            bad, 0,
+            "skip_child must cancel the child, not let it stall or finish"
         );
     }
 }

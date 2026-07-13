@@ -1085,38 +1085,6 @@ pub(super) fn forward_lifecycle(
     );
 }
 
-/// Queue a `notify` note for a child step (spec §10.2 `retry_child` guidance),
-/// targeting that step's latest attempt so a fresh attempt folds it in via
-/// [`take_pending_deliveries`]. A no-op when the step has no attempt yet.
-pub(super) fn queue_child_note(conn: &Connection, run_id: &str, step_id: &str, note: &str) {
-    if note.trim().is_empty() {
-        return;
-    }
-    let exec: Option<String> = conn
-        .query_row(
-            "SELECT id FROM wf_step_exec WHERE run_id = ?1 AND step_id = ?2
-             ORDER BY rowid DESC LIMIT 1",
-            params![run_id, step_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .ok()
-        .flatten();
-    if let Some(exec) = exec {
-        let _ = insert_message(
-            conn,
-            &new_msg_id(),
-            run_id,
-            None,
-            Some(&exec),
-            "notify",
-            &json!({ "message": note }),
-            "queued",
-            false,
-        );
-    }
-}
-
 /// Queue an engine-authored `ask` to the human on the orchestrator's behalf
 /// (spec §10.4) — used when the orchestrator stalls and the engine escalates, so
 /// there is a concrete question `wf_answer` can resolve on resume.
