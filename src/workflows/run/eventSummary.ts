@@ -78,6 +78,13 @@ export function summarizeEvent(ev: WfEvent): EventSummary {
         title: "Started without missing skills",
         detail: strList(p, "skills"),
       };
+    case "custom_agent_missing":
+      return {
+        icon: "minus",
+        tone: AMBER,
+        title: "Custom agent no longer exists — started without its skills and MCP servers",
+        detail: str(p, "custom_agent"),
+      };
     case "attempt_ready":
       return { icon: "dot", tone: MUTED, title: "Agent ready" };
     case "prompt_sent": {

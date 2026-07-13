@@ -270,47 +270,64 @@ fn mcp_attachable(support: &str, transport: &str) -> bool {
     support == "all" || (support == "stdio" && transport != "http")
 }
 
+/// What [`resolve_step_deliverables`] found for a step at spawn: the by-value
+/// snapshots to deliver, plus everything the definition requested that no
+/// longer resolves — the caller journals those as warnings (warn-don't-fail,
+/// the same policy as import).
+pub(super) struct StepDeliverables {
+    pub skills: Vec<crate::agent_profile::SkillSnapshot>,
+    pub mcp_servers: Vec<crate::agent_profile::McpServerSnapshot>,
+    /// Skill names/ids the definition requested that no longer resolve
+    /// (deleted since the save).
+    pub missing_skills: Vec<String>,
+    /// The step's `custom_agent` id when its row no longer resolves — the step
+    /// spawns without that agent's skills and MCP servers.
+    pub missing_custom_agent: Option<String>,
+}
+
 /// Resolve a step's skill/MCP deliverables at spawn (§3.2) — the Rust twin of
 /// the app's `snapshotAgentDeliverables`: the custom agent's assigned skills
 /// and servers by id, plus the spec's `skills` names resolved against the
 /// library, filtered to what the provider can deliver. Snapshots are by value
 /// (the same semantics as the draft spawn path), so later library edits never
-/// touch a spawned step. A skill that no longer resolves (deleted since the
-/// definition was saved) is returned in the third element so the caller can
-/// journal a warning — the step still spawns, matching import's
-/// warn-don't-fail policy.
+/// touch a spawned step. Anything that no longer resolves — a skill, or the
+/// custom agent itself — is reported on [`StepDeliverables`] so the caller can
+/// journal a warning; the step still spawns.
 pub(super) fn resolve_step_deliverables(
     conn: &Connection,
     custom_agent_id: Option<&str>,
     skill_names: &[String],
     provider: &str,
-) -> (
-    Vec<crate::agent_profile::SkillSnapshot>,
-    Vec<crate::agent_profile::McpServerSnapshot>,
-    Vec<String>,
-) {
+) -> StepDeliverables {
     let mut skills: Vec<crate::agent_profile::SkillSnapshot> = Vec::new();
     let mut mcp: Vec<crate::agent_profile::McpServerSnapshot> = Vec::new();
     let mut missing_skills: Vec<String> = Vec::new();
+    let mut missing_custom_agent: Option<String> = None;
 
-    let assigned: (Vec<String>, Vec<String>) = custom_agent_id
-        .and_then(|id| {
-            conn.query_row(
-                "SELECT skill_ids, mcp_server_ids FROM custom_agents WHERE id = ?1",
-                [id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            )
-            .optional()
-            .ok()
-            .flatten()
-        })
-        .map(|(s, m)| {
-            (
-                serde_json::from_str(&s).unwrap_or_default(),
-                serde_json::from_str(&m).unwrap_or_default(),
-            )
-        })
-        .unwrap_or_default();
+    let assigned: (Vec<String>, Vec<String>) = match custom_agent_id {
+        None => Default::default(),
+        Some(id) => {
+            let row = conn
+                .query_row(
+                    "SELECT skill_ids, mcp_server_ids FROM custom_agents WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()
+                .ok()
+                .flatten();
+            match row {
+                Some((s, m)) => (
+                    serde_json::from_str(&s).unwrap_or_default(),
+                    serde_json::from_str(&m).unwrap_or_default(),
+                ),
+                None => {
+                    missing_custom_agent = Some(id.to_string());
+                    Default::default()
+                }
+            }
+        }
+    };
 
     // Custom-agent skills by id (assignment order), then spec names on top,
     // deduped by name.
@@ -343,7 +360,12 @@ pub(super) fn resolve_step_deliverables(
             }
         }
     }
-    (skills, mcp, missing_skills)
+    StepDeliverables {
+        skills,
+        mcp_servers: mcp,
+        missing_skills,
+        missing_custom_agent,
+    }
 }
 
 fn skill_row(
@@ -577,7 +599,7 @@ mod tests {
     #[test]
     fn deliverables_resolve_custom_agent_ids_plus_spec_names() {
         let conn = library_db();
-        let (skills, mcp, missing) = resolve_step_deliverables(
+        let d = resolve_step_deliverables(
             &conn,
             Some("ca1"),
             &["tests-first".into(), "code-review".into(), "unknown".into()],
@@ -585,9 +607,11 @@ mod tests {
         );
         // ca1's sk1 first (assignment order), then the spec name that isn't a
         // duplicate; the dangling id and unknown name are reported as missing.
-        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        let names: Vec<&str> = d.skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["code-review", "tests-first"]);
-        assert_eq!(missing, vec!["dangling", "unknown"]);
+        assert_eq!(d.missing_skills, vec!["dangling", "unknown"]);
+        assert!(d.missing_custom_agent.is_none());
+        let (skills, mcp) = (d.skills, d.mcp_servers);
         assert_eq!(skills[0].body, "# Review");
         // claude supports all transports: both servers, parsed.
         assert_eq!(mcp.len(), 2);
@@ -604,21 +628,35 @@ mod tests {
     #[test]
     fn deliverables_filter_http_servers_for_stdio_only_providers() {
         let conn = library_db();
-        let (_, mcp, _) = resolve_step_deliverables(&conn, Some("ca1"), &[], "codex");
+        let mcp = resolve_step_deliverables(&conn, Some("ca1"), &[], "codex").mcp_servers;
         assert_eq!(mcp.len(), 1, "codex delivers stdio only");
         assert_eq!(mcp[0].name, "gh");
-        let (_, none, _) = resolve_step_deliverables(&conn, Some("ca1"), &[], "cursor");
+        let none = resolve_step_deliverables(&conn, Some("ca1"), &[], "cursor").mcp_servers;
         assert!(none.is_empty(), "providers without MCP support get none");
     }
 
     #[test]
     fn deliverables_without_custom_agent_resolve_names_only() {
         let conn = library_db();
-        let (skills, mcp, missing) =
-            resolve_step_deliverables(&conn, None, &["code-review".into()], "claude");
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "code-review");
-        assert!(missing.is_empty(), "everything requested resolved");
-        assert!(mcp.is_empty(), "MCP comes only via a custom agent (§5.1)");
+        let d = resolve_step_deliverables(&conn, None, &["code-review".into()], "claude");
+        assert_eq!(d.skills.len(), 1);
+        assert_eq!(d.skills[0].name, "code-review");
+        assert!(d.missing_skills.is_empty(), "everything requested resolved");
+        assert!(d.missing_custom_agent.is_none());
+        assert!(
+            d.mcp_servers.is_empty(),
+            "MCP comes only via a custom agent (§5.1)"
+        );
+    }
+
+    #[test]
+    fn deliverables_report_a_deleted_custom_agent() {
+        let conn = library_db();
+        let d = resolve_step_deliverables(&conn, Some("gone"), &["code-review".into()], "claude");
+        assert_eq!(d.missing_custom_agent.as_deref(), Some("gone"));
+        // Spec-named skills still resolve; only the agent's assignments are lost.
+        assert_eq!(d.skills.len(), 1);
+        assert!(d.mcp_servers.is_empty());
+        assert!(d.missing_skills.is_empty());
     }
 }

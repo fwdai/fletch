@@ -2153,12 +2153,13 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
 /// skill/MCP deliverables are resolved to by-value snapshots here — at spawn
 /// (§3.2), the same semantics as the draft spawn path — so a custom-agent step
 /// carries its skills and deliverable MCP servers, and later library edits
-/// never touch a spawned step. Skills the definition requested that no longer
-/// resolve (deleted since the save) are journaled as a `skills_missing`
-/// warning against `warn_exec_id`; the step still spawns. Pass
-/// `warn_exec_id: None` when the req describes an already-spawned agent
-/// (`pre_spawned`) whose spawn call warned already. The blackboard write-grant
-/// is derived from `owner_run_id` at spawn.
+/// never touch a spawned step. Anything the definition requested that no
+/// longer resolves — skills, or the custom agent itself — is journaled as a
+/// `skills_missing` / `custom_agent_missing` warning against `warn_exec_id`;
+/// the step still spawns. Pass `warn_exec_id: None` when the req describes an
+/// already-spawned agent (`pre_spawned`) whose spawn call warned already. The
+/// blackboard write-grant is derived from `owner_run_id` at spawn.
+#[allow(clippy::too_many_arguments)]
 fn build_spawn_req(
     conn: &Connection,
     app: Option<&AppHandle>,
@@ -2169,21 +2170,33 @@ fn build_spawn_req(
     run_id: &str,
     warn_exec_id: Option<&str>,
 ) -> SpawnReq {
-    let (skills, mcp_servers, missing_skills) = super::definition::resolve_step_deliverables(
+    let deliverables = super::definition::resolve_step_deliverables(
         conn,
         agent_spec.custom_agent.as_deref(),
         &agent_spec.skills,
         &agent_spec.base,
     );
-    if let Some(exec_id) = warn_exec_id.filter(|_| !missing_skills.is_empty()) {
-        journal_event(
-            conn,
-            app,
-            run_id,
-            event_type::SKILLS_MISSING,
-            Some(exec_id),
-            &json!({ "skills": missing_skills }),
-        );
+    if let Some(exec_id) = warn_exec_id {
+        if let Some(ca_id) = &deliverables.missing_custom_agent {
+            journal_event(
+                conn,
+                app,
+                run_id,
+                event_type::CUSTOM_AGENT_MISSING,
+                Some(exec_id),
+                &json!({ "custom_agent": ca_id }),
+            );
+        }
+        if !deliverables.missing_skills.is_empty() {
+            journal_event(
+                conn,
+                app,
+                run_id,
+                event_type::SKILLS_MISSING,
+                Some(exec_id),
+                &json!({ "skills": deliverables.missing_skills }),
+            );
+        }
     }
     SpawnReq {
         repo_path: repo.to_path_buf(),
@@ -2191,8 +2204,8 @@ fn build_spawn_req(
         model: agent_spec.model.clone(),
         instructions: agent_spec.instructions.clone(),
         custom_agent_id: agent_spec.custom_agent.clone(),
-        skills,
-        mcp_servers,
+        skills: deliverables.skills,
+        mcp_servers: deliverables.mcp_servers,
         fork_base: Some(fork_base.to_string()),
         run_repo: Some(run_repo.to_path_buf()),
         owner_run_id: run_id.to_string(),

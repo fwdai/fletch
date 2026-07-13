@@ -128,6 +128,10 @@ pub mod event_type {
     /// Carries the unresolved names/ids; the step still runs (warn-don't-fail,
     /// the same policy as import).
     pub const SKILLS_MISSING: &str = "skills_missing";
+    /// A step's `custom_agent` no longer resolves (deleted since the save) —
+    /// the step spawned without that agent's skills and MCP servers. Carries
+    /// the unresolved id; the step still runs.
+    pub const CUSTOM_AGENT_MISSING: &str = "custom_agent_missing";
     pub const ATTEMPT_READY: &str = "attempt_ready";
     pub const PROMPT_SENT: &str = "prompt_sent";
     pub const TURN_ENDED: &str = "turn_ended";
