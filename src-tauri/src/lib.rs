@@ -32,7 +32,6 @@ mod supervisor;
 mod telemetry;
 mod transcripts;
 mod workflow;
-mod workflows;
 mod workspace;
 
 use parking_lot::Mutex;
@@ -1132,20 +1131,6 @@ pub fn run() {
             submit_claude_setup_code,
             cancel_claude_container_auth,
             set_docker_launch_settings,
-            workflows::workflow_list,
-            workflows::workflow_save,
-            workflows::workflow_delete,
-            workflows::workflow_save_run,
-            workflows::workflow_get_run,
-            workflows::workflow_list_runs,
-            workflows::workflow_save_run_step,
-            workflows::workflow_delete_run,
-            workflows::workflow_prepare_repo,
-            workflows::workflow_ferry_notes,
-            workflows::workflow_boundary_commit,
-            workflows::workflow_head_sha,
-            workflows::workflow_file_exists,
-            workflows::workflow_finalize,
             workflow::wf_list_runs,
             workflow::wf_get_run,
             workflow::wf_events,

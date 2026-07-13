@@ -27,7 +27,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   // the page and swaps the whole block — it is not part of the prompt box. The
   // Workflow option only appears once at least one workflow has been defined.
   const [mode, setMode] = useState<"agent" | "workflow">("agent");
-  const hasWorkflows = useDefinitions().length > 0;
+  const { definitions } = useDefinitions();
+  const hasWorkflows = definitions.length > 0;
   const workflowMode = mode === "workflow" && hasWorkflows;
 
   return (

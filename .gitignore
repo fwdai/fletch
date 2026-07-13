@@ -3,6 +3,10 @@ node_modules/
 dist/
 .vite/
 .tmp/
+# We use bun; npm/yarn/pnpm lockfiles must never be committed.
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
 
 # Local bun install cache/tmp (sandbox workaround; never committed)
 .bun-cache/

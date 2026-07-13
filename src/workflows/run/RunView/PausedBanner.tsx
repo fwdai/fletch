@@ -1,14 +1,14 @@
 // RunView/PausedBanner.tsx — the paused/failed banner (spec §14.2). Every state a
-// run can rest in names its cause in plain language and offers its action. Actions
-// land as their slices do: approve (S4), retry/resume (S4), while answer (S10) and
-// conflict resolution (S9) render as clearly-labelled "arrives next" affordances
-// rather than dead buttons — the honest v1 state.
+// run can rest in names its cause in plain language and offers its action:
+// approve (S4), retry/resume (S4), answer a question (S10), and conflict
+// resolution (S9). No dead buttons — each paused reason wires to its command.
 
 import { useState } from "react";
-import { api, type WfRun } from "../../../api";
+import { api, type WfMessage, type WfRun } from "../../../api";
 import type { IconName } from "../../../components/Icon";
 import { Icon } from "../../../components/Icon";
 import { useAppStore } from "../../../store";
+import type { Budgets } from "../../spec";
 import { pausedLabel } from "../status";
 
 interface Action {
@@ -23,8 +23,6 @@ interface BannerSpec {
   title: string;
   body: string;
   actions: Action[];
-  /** A future-slice note shown in place of an action that isn't wired yet. */
-  pending?: string;
 }
 
 const APPROVE: Action = { label: "Approve", icon: "check", run: api.wfApprove, primary: true };
@@ -83,16 +81,17 @@ function specFor(run: WfRun, detail?: string): BannerSpec | null {
       return {
         tone: "amber",
         title,
-        body: detail || "The run reached a configured budget. Resume to keep going.",
-        actions: [RESUME],
+        body: detail || "The run reached a configured budget. Raise it to keep going.",
+        // The resume form (rendered in the body) raises the caps and re-drives;
+        // a plain Resume would just re-hit the same budget.
+        actions: [],
       };
     case "question":
       return {
         tone: "amber",
         title,
-        body: detail || "A step asked a question and is waiting for an answer.",
+        body: detail || "A step asked a question and is waiting for your answer.",
         actions: [],
-        pending: "Answering from the monitor arrives with the comms slice.",
       };
     case "conflict":
       return {
@@ -107,7 +106,16 @@ function specFor(run: WfRun, detail?: string): BannerSpec | null {
   }
 }
 
-export function PausedBanner({ run, detail }: { run: WfRun; detail?: string }) {
+export function PausedBanner({
+  run,
+  detail,
+  question,
+}: {
+  run: WfRun;
+  detail?: string;
+  /** The pending human `ask` message when `paused_reason === "question"`. */
+  question?: WfMessage;
+}) {
   const [busy, setBusy] = useState(false);
   const setLastError = useAppStore((s) => s.setLastError);
   const spec = specFor(run, detail);
@@ -127,6 +135,10 @@ export function PausedBanner({ run, detail }: { run: WfRun; detail?: string }) {
     }
   };
 
+  const paused = run.status === "paused";
+  const isQuestion = paused && run.paused_reason === "question";
+  const isBudget = paused && run.paused_reason === "budget_exceeded";
+
   return (
     <div className={`wf-banner ${spec.tone}`}>
       <span className="wf-banner-icon">
@@ -135,9 +147,10 @@ export function PausedBanner({ run, detail }: { run: WfRun; detail?: string }) {
       <div className="wf-banner-text">
         <div className="wf-banner-title">{spec.title}</div>
         <div className="wf-banner-body">{spec.body}</div>
+        {isQuestion && <AnswerForm run={run} question={question} onError={setLastError} />}
+        {isBudget && <ResumeBudgetForm run={run} onError={setLastError} />}
       </div>
       <div className="wf-banner-actions">
-        {spec.pending && <span className="wf-banner-pending">{spec.pending}</span>}
         {spec.actions.map((a) => (
           <button
             key={a.label}
@@ -150,6 +163,161 @@ export function PausedBanner({ run, detail }: { run: WfRun; detail?: string }) {
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** Inline answer form for a `paused(question)` run: shows the step's question
+ *  and options (if any) and delivers the reply via `wf_answer`, which resumes
+ *  the run (§10.4). */
+function AnswerForm({
+  run,
+  question,
+  onError,
+}: {
+  run: WfRun;
+  question?: WfMessage;
+  onError: (m: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const q = (question?.body ?? null) as { question?: string; options?: string[] } | null;
+
+  const send = async () => {
+    const body = text.trim();
+    if (!body || busy || !question) return;
+    setBusy(true);
+    try {
+      await api.wfAnswer(run.project_id, run.id, question.id, body);
+      // The `wf:run` subscription flips the run back to running; nothing else.
+    } catch (e) {
+      onError(`Answer failed: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!question) {
+    // Paused on a question but the message hasn't loaded yet — never a dead end.
+    return <div className="wf-answer-hint">Loading the question…</div>;
+  }
+
+  return (
+    <div className="wf-answer">
+      {q?.question && <div className="wf-answer-q">“{q.question}”</div>}
+      {q?.options && q.options.length > 0 && (
+        <div className="wf-answer-opts">
+          {q.options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              className="btn-t outline"
+              disabled={busy}
+              onClick={() => setText(opt)}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="wf-answer-row">
+        <textarea
+          className="wf-answer-input"
+          placeholder="Type your answer…"
+          value={text}
+          disabled={busy}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              void send();
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="btn-t primary"
+          disabled={busy || !text.trim()}
+          onClick={() => void send()}
+        >
+          <Icon name="check" size={13} /> Send
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Does the run have a token cap set? Token patches are ignored when the run's
+ *  token budget is unlimited (§11.2), so the field is only worth showing then. */
+function hasTokenCap(budgets: unknown): boolean {
+  if (!budgets || typeof budgets !== "object" || !("tokens" in budgets)) return false;
+  const t = (budgets as { tokens: unknown }).tokens;
+  return typeof t === "number" && t > 0;
+}
+
+/** Inline "raise the budget and resume" form for a `paused(budget_exceeded)`
+ *  run (§11.2). Each field is an additive bump to a run-level cap; resuming with
+ *  no bump would just re-hit the same budget, so at least one is required. */
+function ResumeBudgetForm({ run, onError }: { run: WfRun; onError: (m: string) => void }) {
+  const [turns, setTurns] = useState("");
+  const [tokens, setTokens] = useState("");
+  const [minutes, setMinutes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const showTokens = hasTokenCap(run.budgets);
+
+  const parse = (s: string): number | undefined => {
+    const n = Math.floor(Number(s));
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+  const patch: Budgets = {
+    turns: parse(turns),
+    tokens: showTokens ? parse(tokens) : undefined,
+    wall_clock_mins: parse(minutes),
+  };
+  const hasBump = patch.turns != null || patch.tokens != null || patch.wall_clock_mins != null;
+
+  const resume = async () => {
+    if (busy || !hasBump) return;
+    setBusy(true);
+    try {
+      await api.wfResume(run.id, patch);
+      // The `wf:run` subscription flips the run back to running on success.
+    } catch (e) {
+      onError(`Resume failed: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const field = (label: string, value: string, set: (v: string) => void) => (
+    <label className="wf-budget-field">
+      <span>+ {label}</span>
+      <input
+        type="number"
+        min="0"
+        step="1"
+        inputMode="numeric"
+        placeholder="0"
+        value={value}
+        disabled={busy}
+        onChange={(e) => set(e.target.value)}
+      />
+    </label>
+  );
+
+  return (
+    <div className="wf-budget-patch">
+      {field("turns", turns, setTurns)}
+      {showTokens && field("tokens", tokens, setTokens)}
+      {field("minutes", minutes, setMinutes)}
+      <button
+        type="button"
+        className="btn-t primary"
+        disabled={busy || !hasBump}
+        onClick={() => void resume()}
+      >
+        <Icon name="play" size={13} /> Resume
+      </button>
     </div>
   );
 }
