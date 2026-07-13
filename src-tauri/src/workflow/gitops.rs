@@ -324,6 +324,24 @@ pub async fn is_worktree_clean(wt: &Path) -> Result<bool> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().is_empty())
 }
 
+/// Whether any of `files` (repo-relative) in the checkout still contains a git
+/// conflict marker line (`<<<<<<<` / `>>>>>>>`). Rejects a human "resolution"
+/// that committed a tree still holding markers (§12.3 mode c). Files that no
+/// longer exist (deleted as the resolution) or aren't UTF-8 count as clean.
+pub async fn files_have_conflict_markers(wt: &Path, files: &[String]) -> bool {
+    for f in files {
+        if let Ok(body) = tokio::fs::read_to_string(wt.join(f)).await {
+            if body
+                .lines()
+                .any(|l| l.starts_with("<<<<<<<") || l.starts_with(">>>>>>>"))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Pin a checkout's current HEAD as `refname` in the shared ref store (linked
 /// worktrees share the run repo's ref db and object store).
 pub async fn pin_ref(wt: &Path, refname: &str) -> Result<()> {

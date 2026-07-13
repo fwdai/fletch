@@ -1054,6 +1054,8 @@ async fn run_parallel_stage(
         }
     }
     if matches!(par.join, Join::Any) && prior_success {
+        // Resume: no live winner to hand down — begin_merge_stage falls back to
+        // the earliest-finished done child.
         return finish_stage_success(
             ctx,
             run_id,
@@ -1064,11 +1066,13 @@ async fn run_parallel_stage(
             run_repo,
             fork_base,
             cursor,
+            None,
         )
         .await;
     }
     if pending.is_empty() {
-        // join `all`: every child already `done` (resume) → stage complete.
+        // Every child already `done` (resume). For `any`, no live winner survived
+        // the crash → fall back to the earliest-finished done child.
         return finish_stage_success(
             ctx,
             run_id,
@@ -1079,6 +1083,7 @@ async fn run_parallel_stage(
             run_repo,
             fork_base,
             cursor,
+            None,
         )
         .await;
     }
@@ -1137,6 +1142,10 @@ async fn run_parallel_stage(
     let mut successes = 0usize;
     let mut failures: Vec<String> = Vec::new();
     let mut stage_failed: Option<String> = None;
+    // The authoritative join `any` winner: the FIRST child whose success satisfied
+    // the join (and cancelled the rest). Captured here rather than reconstructed
+    // from timestamps so a same-millisecond raced sibling can't be mistaken for it.
+    let mut any_winner: Option<String> = None;
 
     while let Some(joined) = set.join_next().await {
         let res = match joined {
@@ -1168,8 +1177,12 @@ async fn run_parallel_stage(
                         &json!({ "step_id": res.step_id, "sha": head }),
                     );
                 }
-                // join `any`: first winner → wind the losers down (no new starts).
+                // join `any`: first winner → record it and wind the losers down
+                // (no new starts). A raced sibling that finishes later is not it.
                 if matches!(par.join, Join::Any) {
+                    if any_winner.is_none() {
+                        any_winner = Some(res.step_id.clone());
+                    }
                     stage_cancel.store(true, Ordering::SeqCst);
                 }
             }
@@ -1210,6 +1223,7 @@ async fn run_parallel_stage(
                 );
                 Ok(StageFlow::Stop)
             } else {
+                // `all` integrates every child, so no winner hint is needed.
                 finish_stage_success(
                     ctx,
                     run_id,
@@ -1220,12 +1234,15 @@ async fn run_parallel_stage(
                     run_repo,
                     fork_base,
                     cursor,
+                    None,
                 )
                 .await
             }
         }
         Join::Any => {
             if successes > 0 {
+                // Hand the authoritative winner down so a raced sibling is never
+                // integrated in its place.
                 finish_stage_success(
                     ctx,
                     run_id,
@@ -1236,6 +1253,7 @@ async fn run_parallel_stage(
                     run_repo,
                     fork_base,
                     cursor,
+                    any_winner.as_deref(),
                 )
                 .await
             } else {
@@ -1271,6 +1289,7 @@ async fn finish_stage_success(
     run_repo: &Path,
     fork_base: &str,
     cursor: &mut Cursor,
+    winner: Option<&str>,
 ) -> Result<StageFlow> {
     match par.integrate {
         Integrate::None => Ok(StageFlow::Advance { line: None }),
@@ -1285,10 +1304,35 @@ async fn finish_stage_success(
                 run_repo,
                 fork_base,
                 cursor,
+                winner,
             )
             .await
         }
     }
+}
+
+/// Choose which children's ferried refs the stage integrates (§12.3).
+/// `all` merges every done child in spec order. `any` merges exactly ONE branch:
+/// the `winner` the join loop recorded when live, else — on resume, when no live
+/// winner survived — the child that finished first (least `ended_at`, ties broken
+/// by spec order via the stable input). `done` is `(step_id, ref, ended_at)` in
+/// spec order.
+fn pick_winners(
+    mut done: Vec<(String, String, i64)>,
+    join: Join,
+    winner: Option<&str>,
+) -> Vec<(String, String)> {
+    if !matches!(join, Join::Any) {
+        return done.into_iter().map(|(s, r, _)| (s, r)).collect();
+    }
+    if let Some(w) = winner {
+        if let Some((s, r, _)) = done.into_iter().find(|(s, _, _)| s == w) {
+            return vec![(s, r)];
+        }
+        return Vec::new();
+    }
+    done.sort_by_key(|(_, _, ended)| *ended);
+    done.into_iter().take(1).map(|(s, r, _)| (s, r)).collect()
 }
 
 /// Begin a fresh merge stage (§12.3): set up an integration worktree at the
@@ -1304,12 +1348,13 @@ async fn begin_merge_stage(
     run_repo: &Path,
     fork_base: &str,
     cursor: &mut Cursor,
+    winner: Option<&str>,
 ) -> Result<StageFlow> {
     let run_dir = PathBuf::from(&run.run_dir);
     let int_wt = gitops::integration_worktree_path(&run_dir, block_index);
 
     // Successful children with their completion time, in spec order.
-    let mut done: Vec<(String, String, i64)> = {
+    let done: Vec<(String, String, i64)> = {
         let conn = ctx.db.lock();
         par.steps
             .iter()
@@ -1319,19 +1364,7 @@ async fn begin_merge_stage(
             })
             .collect()
     };
-    // `all` integrates every child (spec order). `any` integrates exactly ONE
-    // branch — the child that FINISHED FIRST (least `ended_at`), i.e. the one
-    // whose success satisfied the join and cancelled the rest. A slow sibling
-    // that raced past the stage-cancel and also reached `done` finished later, so
-    // it is never the one integrated. Ties keep spec order (stable sort). Using
-    // the persisted `ended_at` makes this correct on resume too, without mutating
-    // any terminal attempt row.
-    let winners: Vec<(String, String)> = if matches!(par.join, Join::Any) {
-        done.sort_by_key(|(_, _, ended)| *ended);
-        done.into_iter().take(1).map(|(s, r, _)| (s, r)).collect()
-    } else {
-        done.into_iter().map(|(s, r, _)| (s, r)).collect()
-    };
+    let winners = pick_winners(done, par.join, winner);
     if winners.is_empty() {
         // No child produced a ferried ref — nothing to integrate; leave the line.
         return Ok(StageFlow::Advance { line: None });
@@ -1541,15 +1574,24 @@ async fn resume_merge_stage(
 
     let new_acc: String = match resolution.as_str() {
         // (c) The human resolved and committed in the integration worktree. Guard
-        // that they actually committed: if HEAD is still the conflict snapshot, or
-        // the tree has uncommitted edits, continuing would reset their work away
-        // (and merge on from a tree that still holds markers). Refuse — clear the
-        // choice and re-pause `conflict` so they can commit and retry.
+        // it three ways before continuing: (1) HEAD must have moved off the
+        // conflict snapshot and (2) the tree must be clean — else continuing would
+        // reset their work away; (3) none of the recorded conflicted files may
+        // still hold conflict markers — else the merge would finish with markers in
+        // the integrated result. On any failure, clear the choice and re-pause
+        // `conflict` with a precise cause so they can fix it and retry.
         "human" => {
             let head = crate::git::rev_parse(&int_wt, "HEAD").await?;
             let snapshot = crate::git::rev_parse(run_repo, &ci.conflict_ref).await.ok();
             let clean = gitops::is_worktree_clean(&int_wt).await.unwrap_or(false);
-            if !clean || snapshot.as_deref() == Some(head.as_str()) {
+            let uncommitted = !clean || snapshot.as_deref() == Some(head.as_str());
+            let markers = gitops::files_have_conflict_markers(&int_wt, &ci.files).await;
+            if uncommitted || markers {
+                let detail = if uncommitted {
+                    "resolve the conflicts and commit in the integration worktree before continuing"
+                } else {
+                    "the committed resolution still contains conflict markers — remove them, commit, and continue"
+                };
                 if let Some(c) = cursor.merge.as_mut().and_then(|m| m.conflict.as_mut()) {
                     c.resolution = None;
                 }
@@ -1561,10 +1603,7 @@ async fn resume_merge_stage(
                     run_id,
                     event_type::RUN_PAUSED,
                     None,
-                    &json!({
-                        "reason": "conflict",
-                        "detail": "resolve the conflicts and commit in the integration worktree before continuing"
-                    }),
+                    &json!({ "reason": "conflict", "detail": detail }),
                 );
                 set_status(
                     &conn,
@@ -4771,6 +4810,50 @@ mod tests {
 
     // ──────────────────── code-producing parallel: merge (S9) ───────────────
 
+    /// `pick_winners`: `all` keeps every child in spec order; `any` uses the live
+    /// winner hint when present, else the earliest finisher (ties → spec order).
+    #[test]
+    fn pick_winners_selects_the_right_branch() {
+        // (step_id, ref, ended_at) in spec order: a is spec-first, b finished first.
+        let done = || {
+            vec![
+                ("a".to_string(), "ref-a".to_string(), 200),
+                ("b".to_string(), "ref-b".to_string(), 100),
+            ]
+        };
+
+        // `all` → every child, spec order, untouched.
+        assert_eq!(
+            pick_winners(done(), Join::All, None),
+            vec![
+                ("a".to_string(), "ref-a".to_string()),
+                ("b".to_string(), "ref-b".to_string())
+            ]
+        );
+
+        // `any` + live winner hint → exactly that child, even if spec-later.
+        assert_eq!(
+            pick_winners(done(), Join::Any, Some("b")),
+            vec![("b".to_string(), "ref-b".to_string())]
+        );
+
+        // `any`, no hint (resume) → earliest finisher (b @100), not spec-first (a).
+        assert_eq!(
+            pick_winners(done(), Join::Any, None),
+            vec![("b".to_string(), "ref-b".to_string())]
+        );
+
+        // `any`, no hint, tied ended_at → stable fallback to spec order (a).
+        let tied = vec![
+            ("a".to_string(), "ref-a".to_string(), 100),
+            ("b".to_string(), "ref-b".to_string(), 100),
+        ];
+        assert_eq!(
+            pick_winners(tied, Join::Any, None),
+            vec![("a".to_string(), "ref-a".to_string())]
+        );
+    }
+
     fn sh_out(dir: &Path, args: &[&str]) -> String {
         let out = Sh::new("git")
             .current_dir(dir)
@@ -5098,6 +5181,57 @@ mod tests {
         assert!(
             body.contains("edited but uncommitted"),
             "the uncommitted edit is preserved, not discarded: {body}"
+        );
+    }
+
+    /// A committed human "resolution" that still contains conflict markers must be
+    /// rejected — otherwise the merge would finish with markers in the integrated
+    /// result. The run re-pauses; it does not reach `done`.
+    #[tokio::test]
+    async fn merge_human_resolution_with_markers_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", CONFLICT), cstep("b", CONFLICT)];
+        let (db, ws, _b) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-mhm",
+            Join::All,
+            Integrate::Merge,
+            &children,
+        );
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-mhm").await;
+        assert_eq!(run_status_str(&db, "run-mhm"), "paused");
+
+        // Human commits a *partial* resolution that still holds a conflict marker.
+        let int_wt = tmp.path().join("rd-run-mhm").join("integrate-0");
+        std::fs::write(
+            int_wt.join(CONFLICT_FILE),
+            "keep\n<<<<<<< HEAD\nstill conflicted\n",
+        )
+        .unwrap();
+        sh(&int_wt, &["add", "-A"]);
+        sh(&int_wt, &["commit", "-qm", "partial resolution"]);
+        set_resolution(&db, "run-mhm", "human");
+        drive_run(&ctx, "run-mhm").await;
+
+        // Refused: still paused(conflict), not done; the choice is cleared.
+        assert_eq!(run_status_str(&db, "run-mhm"), "paused");
+        let reason: Option<String> = db
+            .lock()
+            .query_row(
+                "SELECT paused_reason FROM wf_run WHERE id='run-mhm'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reason.as_deref(), Some("conflict"));
+        let cur = get_cursor(&db.lock(), "run-mhm");
+        assert!(
+            cur.merge
+                .and_then(|m| m.conflict)
+                .and_then(|c| c.resolution)
+                .is_none(),
+            "resolution cleared — the user must strip the markers and retry"
         );
     }
 
