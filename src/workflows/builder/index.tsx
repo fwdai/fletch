@@ -5,10 +5,12 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api";
 import { useAppStore } from "../../store";
-import type { Definition } from "../spec";
+import type { Definition, ImportReport, Spec } from "../spec";
+import { ImportDialog } from "./ImportDialog";
 import { blankEditor, type EditorState, fromDefinition, toSpec } from "./model";
 import { WorkflowBuilder } from "./WorkflowBuilder";
 import { WorkflowList } from "./WorkflowList";
+import { exportDefinitionYaml, pickYamlText } from "./yamlFile";
 
 type Editing = { state: EditorState; isNew: boolean };
 
@@ -22,6 +24,9 @@ export function WorkflowsPane() {
   const [editing, setEditing] = useState<Editing | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [importReport, setImportReport] = useState<ImportReport | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
 
   const reload = async () => {
     try {
@@ -80,6 +85,42 @@ export function WorkflowsPane() {
     setEditing(next);
   };
 
+  const exportDef = async (d: Definition) => {
+    try {
+      await exportDefinitionYaml(d.id, d.spec.name);
+    } catch (e) {
+      setLastError(`Failed to export workflow: ${e}`);
+    }
+  };
+
+  // Pick a YAML file, parse+validate it in the backend, and open the mapping
+  // dialog. A parse/validation failure is reported; skill/provider issues come
+  // back as warnings inside the report, not as an error here.
+  const startImport = async () => {
+    try {
+      const yaml = await pickYamlText();
+      if (yaml == null) return;
+      setImportReport(await api.wfDefImportYaml(yaml));
+      setImportError(null);
+    } catch (e) {
+      setLastError(`Couldn't import that file: ${e}`);
+    }
+  };
+
+  const finishImport = async (spec: Spec) => {
+    setImporting(true);
+    setImportError(null);
+    try {
+      await api.wfDefSave(spec);
+      await reload();
+      setImportReport(null);
+    } catch (e) {
+      setImportError(String(e));
+    } finally {
+      setImporting(false);
+    }
+  };
+
   if (editing) {
     return (
       <WorkflowBuilder
@@ -96,15 +137,28 @@ export function WorkflowsPane() {
   }
 
   return (
-    <WorkflowList
-      definitions={definitions}
-      loading={loading}
-      agents={agents}
-      modelsByAgent={modelsByAgent}
-      onNew={() => openEditor({ state: blankEditor(definitions.length), isNew: true })}
-      onEdit={(d) => openEditor({ state: fromDefinition(d), isNew: false })}
-      onDuplicate={duplicate}
-      onDelete={remove}
-    />
+    <>
+      <WorkflowList
+        definitions={definitions}
+        loading={loading}
+        agents={agents}
+        modelsByAgent={modelsByAgent}
+        onNew={() => openEditor({ state: blankEditor(definitions.length), isNew: true })}
+        onEdit={(d) => openEditor({ state: fromDefinition(d), isNew: false })}
+        onDuplicate={duplicate}
+        onDelete={remove}
+        onExport={exportDef}
+        onImport={startImport}
+      />
+      {importReport && (
+        <ImportDialog
+          report={importReport}
+          saving={importing}
+          error={importError}
+          onCancel={() => setImportReport(null)}
+          onImport={finishImport}
+        />
+      )}
+    </>
   );
 }

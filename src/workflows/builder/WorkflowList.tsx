@@ -107,6 +107,8 @@ export function WorkflowList({
   onEdit,
   onDuplicate,
   onDelete,
+  onExport,
+  onImport,
 }: {
   definitions: Definition[];
   loading: boolean;
@@ -116,6 +118,8 @@ export function WorkflowList({
   onEdit: (d: Definition) => void;
   onDuplicate: (d: Definition) => void;
   onDelete: (id: string) => void;
+  onExport: (d: Definition) => void;
+  onImport: () => void;
 }) {
   return (
     <div className="set-pane">
@@ -129,9 +133,14 @@ export function WorkflowList({
         <span className="sl-count">
           {definitions.length} workflow{definitions.length === 1 ? "" : "s"}
         </span>
-        <button className="btn-t primary" onClick={onNew}>
-          <Icon name="plus" size={13} /> New workflow
-        </button>
+        <div className="wf-list-acts">
+          <button className="btn-t" onClick={onImport}>
+            <Icon name="upload" size={13} /> Import
+          </button>
+          <button className="btn-t primary" onClick={onNew}>
+            <Icon name="plus" size={13} /> New workflow
+          </button>
+        </div>
       </div>
 
       <div className="wf-list">
@@ -148,6 +157,14 @@ export function WorkflowList({
                 <span>edited {timeAgo(d.updated_at)}</span>
               </div>
               <div className="wf-acts" onClick={(e) => e.stopPropagation()}>
+                <button
+                  className="btn-i sm tip"
+                  data-tip-down
+                  data-tip="Export YAML"
+                  onClick={() => onExport(d)}
+                >
+                  <Icon name="download" />
+                </button>
                 <button
                   className="btn-i sm tip"
                   data-tip-down
