@@ -100,6 +100,10 @@ impl WorkflowService {
         let base_sha = crate::git::rev_parse(&repo, &base_ref)
             .await
             .map_err(|e| Error::Other(format!("cannot resolve base '{base_ref}': {e}")))?;
+        // Persist the caller-selected branch name (not the "HEAD"/pr_base
+        // fallback), so finalization can open the PR against the branch the run
+        // forked from when the spec doesn't pin `finalize.pr_base` (§12.2).
+        let base_branch = base_branch.unwrap_or_default();
 
         let run_dir = blackboard::run_dir(&run_id)?;
         let task_md = format!("# {}\n\n{}\n", spec.name, task);
@@ -118,9 +122,9 @@ impl WorkflowService {
             let conn = self.db.lock();
             conn.execute(
                 "INSERT INTO wf_run (id, definition_id, parent_run_id, name, spec_json, task,
-                     project_id, repo_path, run_dir, branch, base_sha, status, budgets_json,
-                     spent_json, created_at, updated_at)
-                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, '{}', ?12, ?12)",
+                     project_id, repo_path, run_dir, branch, base_sha, base_branch, status,
+                     budgets_json, spent_json, created_at, updated_at)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12, '{}', ?13, ?13)",
                 rusqlite::params![
                     run_id,
                     definition_id,
@@ -132,6 +136,7 @@ impl WorkflowService {
                     run_dir.to_string_lossy(),
                     branch,
                     base_sha,
+                    base_branch,
                     budgets_json,
                     now,
                 ],
@@ -568,6 +573,9 @@ struct RunEssentials {
     run_dir: String,
     branch: String,
     base_sha: String,
+    /// Caller-selected launch base branch, or empty when none was given — the
+    /// default PR base at finalization unless the spec pins `finalize.pr_base`.
+    base_branch: String,
     status: String,
     budgets_json: String,
     spent_json: String,
@@ -963,7 +971,15 @@ async fn finalize_run(
         return Ok(());
     };
     let final_ref = gitops::step_ref(exec_id);
-    let base = fin.pr_base.clone().unwrap_or_else(|| "main".to_string());
+    // The spec's explicit `pr_base` wins; otherwise fall back to the branch the
+    // run was launched from, so a run forked off `develop` opens its PR against
+    // `develop` rather than `main`. Empty `base_branch` means none was selected.
+    let base = fin
+        .pr_base
+        .clone()
+        .filter(|b| !b.is_empty())
+        .or_else(|| Some(run.base_branch.clone()).filter(|b| !b.is_empty()))
+        .unwrap_or_else(|| "main".to_string());
     let title = format!("wf: {}", spec.name);
     let outcome = gitops::finalize(
         run_repo,
@@ -5284,8 +5300,8 @@ fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<Str
 
 fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
     conn.query_row(
-        "SELECT spec_json, task, project_id, repo_path, run_dir, branch, base_sha, status,
-                budgets_json, spent_json
+        "SELECT spec_json, task, project_id, repo_path, run_dir, branch, base_sha, base_branch,
+                status, budgets_json, spent_json
          FROM wf_run WHERE id = ?1",
         [run_id],
         |r| {
@@ -5297,9 +5313,10 @@ fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
                 run_dir: r.get(4)?,
                 branch: r.get(5)?,
                 base_sha: r.get(6)?,
-                status: r.get(7)?,
-                budgets_json: r.get(8)?,
-                spent_json: r.get(9)?,
+                base_branch: r.get(7)?,
+                status: r.get(8)?,
+                budgets_json: r.get(9)?,
+                spent_json: r.get(10)?,
             })
         },
     )
