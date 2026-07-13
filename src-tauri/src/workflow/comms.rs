@@ -836,7 +836,7 @@ fn route_spawn_child(
         journal_spawn_denied(conn, app, sender, &e);
         return (Response::err(id, e), Poke::None);
     }
-    let spawned = spawn_child_count(conn, &sender.run_id, &sender.step_exec_id);
+    let spawned = spawn_child_count(conn, &sender.run_id, &sender.step_id);
     if spawned >= template.max as i64 {
         let e = format!(
             "spawn_child denied: already at the children.max of {} for this stage",
@@ -880,14 +880,19 @@ fn route_spawn_child(
     (Response::ok(id, 0, msg_id, String::new()), Poke::None)
 }
 
-/// How many `spawn_child` decisions this orchestrator has already had approved
-/// (status-agnostic, so consumed ones still count toward `children.max`).
-fn spawn_child_count(conn: &Connection, run_id: &str, orch_exec: &str) -> i64 {
+/// How many `spawn_child` decisions this orchestrate *stage* has already had
+/// approved. Counted across every orchestrator exec that shares the stage's
+/// `step_id` (`orchestrate-<n>`), so a resume — which starts a fresh orchestrator
+/// exec — cannot re-grant a whole `children.max` batch. Status-agnostic, so
+/// consumed decisions still count; counting persisted decisions (created
+/// synchronously under this lock) also keeps a burst within one turn race-free.
+fn spawn_child_count(conn: &Connection, run_id: &str, orch_step_id: &str) -> i64 {
     conn.query_row(
-        "SELECT COUNT(*) FROM wf_message
-         WHERE run_id = ?1 AND from_step_exec_id = ?2 AND kind = 'decision'
-           AND json_extract(body_json, '$.decision') = 'spawn_child'",
-        params![run_id, orch_exec],
+        "SELECT COUNT(*) FROM wf_message m
+           JOIN wf_step_exec e ON m.from_step_exec_id = e.id
+         WHERE m.run_id = ?1 AND e.step_id = ?2 AND m.kind = 'decision'
+           AND json_extract(m.body_json, '$.decision') = 'spawn_child'",
+        params![run_id, orch_step_id],
         |r| r.get(0),
     )
     .unwrap_or(0)
@@ -2259,5 +2264,48 @@ mod tests {
 
         let decisions = take_orchestrator_decisions(&conn, &run, &orch);
         assert_eq!(decisions, vec![Decision::StageDone]);
+    }
+
+    #[test]
+    fn spawn_limit_persists_across_resume() {
+        let (conn, _run, _orch, _child) = seed_orchestrate(); // children.max = 2
+        for i in 0..2 {
+            let (resp, _) = route(
+                &conn,
+                None,
+                &format!("s{i}"),
+                "run",
+                "orch-agent",
+                "wf_decide",
+                &json!({ "decision": "spawn_child", "agent": "coder", "goal": "slice" }),
+            );
+            assert!(resp.ok, "{resp:?}");
+        }
+        // Resume: the stage gets a fresh orchestrator exec (same `orchestrate-0`
+        // step id); the old one is no longer live.
+        conn.execute(
+            "UPDATE wf_step_exec SET status='abandoned' WHERE id='orch-exec'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,agent_id)
+             VALUES ('orch-exec-2','run','orchestrate-0',2,0,'running','verdict','orch-agent-2')",
+            [],
+        )
+        .unwrap();
+        // The resumed orchestrator cannot re-grant a whole new batch — the count is
+        // stage-wide, not per-exec.
+        let (resp, _) = route(
+            &conn,
+            None,
+            "s3",
+            "run",
+            "orch-agent-2",
+            "wf_decide",
+            &json!({ "decision": "spawn_child", "agent": "coder", "goal": "one too many" }),
+        );
+        assert!(!resp.ok, "spawn limit must persist across resume: {resp:?}");
+        assert!(resp.error.unwrap().contains("children.max"));
     }
 }

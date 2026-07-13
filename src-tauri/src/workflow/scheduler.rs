@@ -1607,18 +1607,31 @@ async fn run_orchestrate_stage(
     }
 
     // ── Launch static body children, then drive the orchestrator's first turn. ──
-    let stage_cancel = Arc::new(AtomicBool::new(false));
     let mut set: JoinSet<OrchChildResult> = JoinSet::new();
-    let mut dyn_count = 0u32;
+    // Per-child cancel flags (keyed by step id) so `skip_child`/`retry_child` can
+    // wind down one child, and a join-`any` winner or a stage teardown can wind
+    // down all of them (§10.2, §6.6).
+    let mut child_cancels: HashMap<String, Arc<AtomicBool>> = HashMap::new();
+    // Seed the dynamic-child index from the DB so a resumed stage doesn't reuse an
+    // id an earlier drive already created (ids stay unique across resume).
+    let mut dyn_count = existing_dyn_child_count(&ctx.db.lock(), run_id, &orch_step_id);
     let mut outcomes: HashMap<String, ChildStatus> = HashMap::new();
 
     for step in &orch.body {
+        // Resume: a static child that already finished is not re-run — its work is
+        // durable (parity with the parallel stage, §12.3).
+        if child_already_done(&ctx.db.lock(), run_id, &step.id) {
+            outcomes.insert(step.id.clone(), ChildStatus::Success);
+            continue;
+        }
         let agent_spec = spec.agents.get(&step.agent).ok_or_else(|| {
             Error::Other(format!(
                 "orchestrate child '{}' references unknown agent '{}'",
                 step.id, step.agent
             ))
         })?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        child_cancels.insert(step.id.clone(), cancel.clone());
         let c = build_orch_child_ctx(
             ctx,
             run_id,
@@ -1634,7 +1647,7 @@ async fn run_orchestrate_stage(
             eff,
             test_override,
             setup_override,
-            &stage_cancel,
+            cancel,
         );
         let entry = stage_entry_sha.clone();
         set.spawn(async move { drive_orch_child(c, entry).await });
@@ -1688,7 +1701,7 @@ async fn run_orchestrate_stage(
                 run_id,
                 &orch_exec,
                 &orch_agent_id,
-                &stage_cancel,
+                &child_cancels,
                 &mut set,
                 ledger,
                 other,
@@ -1706,7 +1719,7 @@ async fn run_orchestrate_stage(
 
     loop {
         if ctx.cancel.load(Ordering::SeqCst) {
-            drain_children(&stage_cancel, &mut set).await;
+            drain_children(&child_cancels, &mut set).await;
             cancel_run(ctx, run_id).await;
             return Ok(StageFlow::Stop);
         }
@@ -1714,7 +1727,7 @@ async fn run_orchestrate_stage(
         // Orchestrator escalated or asked the human on its last turn → pause
         // `question` (§10.2, §10.4). The backstop mirrors the linear path.
         if super::comms::has_unanswered_ask(&ctx.db.lock(), &orch_exec) {
-            drain_children(&stage_cancel, &mut set).await;
+            drain_children(&child_cancels, &mut set).await;
             pause_question(ctx, run_id, &orch_exec, Some(&orch_agent_id)).await;
             return Ok(StageFlow::Stop);
         }
@@ -1738,6 +1751,8 @@ async fn run_orchestrate_stage(
                             comms: orch.comms.clone(),
                         };
                         dyn_count += 1;
+                        let cancel = Arc::new(AtomicBool::new(false));
+                        child_cancels.insert(step.id.clone(), cancel.clone());
                         let c = build_orch_child_ctx(
                             ctx,
                             run_id,
@@ -1753,26 +1768,37 @@ async fn run_orchestrate_stage(
                             eff,
                             test_override,
                             setup_override,
-                            &stage_cancel,
+                            cancel,
                         );
                         let entry = stage_entry_sha.clone();
                         set.spawn(async move { drive_orch_child(c, entry).await });
                     }
                 }
                 super::comms::Decision::SkipChild { step_id, .. } => {
-                    // Satisfied, not failed. A still-running child's later outcome
-                    // is ignored (this entry wins the join decision).
+                    // Cancel the child's live task so it stops spending budget and
+                    // the stage can conclude without waiting on it, then record it
+                    // as satisfied for the join (§10.2).
+                    if let Some(flag) = child_cancels.get(&step_id) {
+                        flag.store(true, Ordering::SeqCst);
+                    }
                     outcomes.insert(step_id, ChildStatus::Skipped);
                 }
                 super::comms::Decision::RetryChild { step_id, guidance } => {
                     if let Some(orig) = orch.body.iter().find(|s| s.id == step_id).cloned() {
                         if let Some(agent_spec) = spec.agents.get(&orig.agent).cloned() {
+                            // Cancel the previous attempt's task so it can't race the
+                            // retry into the join outcome (§10.2).
+                            if let Some(flag) = child_cancels.get(&orig.id) {
+                                flag.store(true, Ordering::SeqCst);
+                            }
                             // Fold the guidance into the fresh attempt via a notice.
                             {
                                 let conn = ctx.db.lock();
                                 super::comms::queue_child_note(&conn, run_id, &orig.id, &guidance);
                             }
                             outcomes.remove(&orig.id);
+                            let cancel = Arc::new(AtomicBool::new(false));
+                            child_cancels.insert(orig.id.clone(), cancel.clone());
                             let step = orig.clone();
                             let c = build_orch_child_ctx(
                                 ctx,
@@ -1789,7 +1815,7 @@ async fn run_orchestrate_stage(
                                 eff,
                                 test_override,
                                 setup_override,
-                                &stage_cancel,
+                                cancel,
                             );
                             let entry = stage_entry_sha.clone();
                             set.spawn(async move { drive_orch_child(c, entry).await });
@@ -1812,7 +1838,7 @@ async fn run_orchestrate_stage(
                 ledger,
                 joined,
                 &mut outcomes,
-                &stage_cancel,
+                &child_cancels,
             );
         }
 
@@ -1822,7 +1848,7 @@ async fn run_orchestrate_stage(
                 ChildStatus::Failure(r) => Some(r.clone()),
                 _ => None,
             }) {
-                drain_children(&stage_cancel, &mut set).await;
+                drain_children(&child_cancels, &mut set).await;
                 let _ = ctx.driver.stop(&orch_agent_id).await;
                 let conn = ctx.db.lock();
                 finish_step_exec(&conn, &orch_exec, "error", None);
@@ -1900,7 +1926,7 @@ async fn run_orchestrate_stage(
                             run_id,
                             &orch_exec,
                             &orch_agent_id,
-                            &stage_cancel,
+                            &child_cancels,
                             &mut set,
                             ledger,
                             other,
@@ -1962,7 +1988,7 @@ async fn run_orchestrate_stage(
                             run_id,
                             &orch_exec,
                             &orch_agent_id,
-                            &stage_cancel,
+                            &child_cancels,
                             &mut set,
                             ledger,
                             other,
@@ -2024,7 +2050,7 @@ async fn run_orchestrate_stage(
                         run_id,
                         &orch_exec,
                         &orch_agent_id,
-                        &stage_cancel,
+                        &child_cancels,
                         &mut set,
                         ledger,
                         other,
@@ -2037,7 +2063,7 @@ async fn run_orchestrate_stage(
         // Bound the idle wait by the run wall-clock (§11.3 — "no wait without a
         // deadline"): a wedged stage pauses `budget_exceeded` rather than hanging.
         if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
-            drain_children(&stage_cancel, &mut set).await;
+            drain_children(&child_cancels, &mut set).await;
             let _ = ctx.driver.stop(&orch_agent_id).await;
             {
                 let conn = ctx.db.lock();
@@ -2057,7 +2083,7 @@ async fn run_orchestrate_stage(
         tokio::select! {
             joined = set.join_next() => {
                 if let Some(j) = joined {
-                    handle_orch_child(ctx, run_id, &orch_exec, orch.join, ledger, j, &mut outcomes, &stage_cancel);
+                    handle_orch_child(ctx, run_id, &orch_exec, orch.join, ledger, j, &mut outcomes, &child_cancels);
                 }
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
@@ -2065,7 +2091,7 @@ async fn run_orchestrate_stage(
     }
 
     // `stage_done`: wind the remaining children down and mark the stage done.
-    drain_children(&stage_cancel, &mut set).await;
+    drain_children(&child_cancels, &mut set).await;
     let _ = ctx.driver.archive(&orch_agent_id).await;
     let conn = ctx.db.lock();
     finish_step_exec(&conn, &orch_exec, "done", None);
@@ -2091,7 +2117,7 @@ fn build_orch_child_ctx(
     eff: &EffectiveBudgets,
     test_override: &Option<String>,
     setup_override: &Option<String>,
-    stage_cancel: &Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
 ) -> ChildCtx {
     ChildCtx {
         db: ctx.db.clone(),
@@ -2111,7 +2137,7 @@ fn build_orch_child_ctx(
         block_count,
         test_override: test_override.clone(),
         setup_override: setup_override.clone(),
-        stage_cancel: stage_cancel.clone(),
+        stage_cancel: cancel,
     }
 }
 
@@ -2512,7 +2538,7 @@ fn handle_orch_child(
     ledger: &mut Ledger,
     joined: std::result::Result<OrchChildResult, tokio::task::JoinError>,
     outcomes: &mut HashMap<String, ChildStatus>,
-    stage_cancel: &Arc<AtomicBool>,
+    child_cancels: &HashMap<String, Arc<AtomicBool>>,
 ) {
     let res = match joined {
         Ok(r) => r,
@@ -2551,7 +2577,8 @@ fn handle_orch_child(
             // Don't overwrite a `skip` the orchestrator already recorded.
             outcomes.entry(res.step_id).or_insert(ChildStatus::Success);
             if matches!(join, Join::Any) {
-                stage_cancel.store(true, Ordering::SeqCst);
+                // First success wins → wind every remaining child down (§6.6).
+                cancel_all(child_cancels);
             }
         }
         ChildOutcome::Failure { reason } => {
@@ -2573,10 +2600,35 @@ fn handle_orch_child(
     persist_spent(&conn, run_id, ledger);
 }
 
-/// Wind down every remaining orchestrate child: raise the stage cancel and drain
-/// the set (each child stops its own agent and returns `Canceled`).
-async fn drain_children(stage_cancel: &Arc<AtomicBool>, set: &mut JoinSet<OrchChildResult>) {
-    stage_cancel.store(true, Ordering::SeqCst);
+/// Raise every child's cancel flag (a join-`any` winner or a stage teardown).
+fn cancel_all(child_cancels: &HashMap<String, Arc<AtomicBool>>) {
+    for flag in child_cancels.values() {
+        flag.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The number of dynamic children an orchestrate stage has already created, from
+/// the DB — the next dynamic index, seeded so a resumed stage never reuses an id
+/// (§10.2). Dynamic child ids are `orchestrate-<n>::dyn-<k>`, `k` contiguous from
+/// 0, so the distinct count is the next `k`.
+fn existing_dyn_child_count(conn: &Connection, run_id: &str, orch_step_id: &str) -> u32 {
+    let pattern = format!("{orch_step_id}::dyn-%");
+    conn.query_row(
+        "SELECT COUNT(DISTINCT step_id) FROM wf_step_exec WHERE run_id = ?1 AND step_id LIKE ?2",
+        rusqlite::params![run_id, pattern],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n.max(0) as u32)
+    .unwrap_or(0)
+}
+
+/// Wind down every remaining orchestrate child: cancel them all and drain the set
+/// (each child stops its own agent and returns `Canceled`).
+async fn drain_children(
+    child_cancels: &HashMap<String, Arc<AtomicBool>>,
+    set: &mut JoinSet<OrchChildResult>,
+) {
+    cancel_all(child_cancels);
     while set.join_next().await.is_some() {}
 }
 
@@ -2652,12 +2704,12 @@ async fn finish_orch_turn_failure(
     run_id: &str,
     orch_exec: &str,
     orch_agent_id: &str,
-    stage_cancel: &Arc<AtomicBool>,
+    child_cancels: &HashMap<String, Arc<AtomicBool>>,
     set: &mut JoinSet<OrchChildResult>,
     ledger: &mut Ledger,
     result: OrchStepResult,
 ) -> Result<StageFlow> {
-    drain_children(stage_cancel, set).await;
+    drain_children(child_cancels, set).await;
     match result {
         OrchStepResult::Stalled => {
             // A stalled orchestrator must not hang the stage — escalate to the
@@ -6159,5 +6211,74 @@ mod tests {
             "SELECT COUNT(*) FROM wf_event WHERE run_id='run-stall' AND type='watchdog_stalled'",
         );
         assert!(stalled >= 1, "the orchestrator stall was journaled");
+    }
+
+    #[tokio::test]
+    async fn resume_does_not_rerun_a_completed_static_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws, bb, _base) = scaffold_orchestrate(tmp.path(), "run-resume");
+        // Simulate a prior drive that paused before the orchestrator concluded: the
+        // static child already finished `done`.
+        db.lock()
+            .execute(
+                "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,agent_id)
+                 VALUES ('impl-prior','run-resume','impl',1,0,'done','commit','prior-agent')",
+                [],
+            )
+            .unwrap();
+        let ctx = orch_ctx(db.clone(), OrchDriver::new(ws, bb, OrchMode::Conclude));
+        drive_run(&ctx, "run-resume").await;
+
+        assert_eq!(run_status_str(&db, "run-resume"), "done");
+        // The already-done child is not executed a second time (§12.3 parity).
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_step_exec WHERE run_id='run-resume' AND step_id='impl'"
+            ),
+            1,
+            "the completed child must not re-run on resume"
+        );
+    }
+
+    #[test]
+    fn dyn_child_index_is_seeded_from_existing_execs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('r','n','{}','t','p','/r','/d','wf/x','sha','running','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(existing_dyn_child_count(&conn, "r", "orchestrate-0"), 0);
+        for k in 0..2 {
+            conn.execute(
+                "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode)
+                 VALUES (?1,'r',?2,1,0,'done','verdict')",
+                rusqlite::params![format!("e{k}"), format!("orchestrate-0::dyn-{k}")],
+            )
+            .unwrap();
+        }
+        // A non-dynamic child and a different stage's children must not count.
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode)
+             VALUES ('x','r','impl',1,0,'done','commit')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode)
+             VALUES ('y','r','orchestrate-1::dyn-0',1,0,'done','verdict')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            existing_dyn_child_count(&conn, "r", "orchestrate-0"),
+            2,
+            "the next dynamic index skips the two already created"
+        );
     }
 }
