@@ -1212,7 +1212,24 @@ async fn run_parallel_stage(
     // from timestamps so a same-millisecond raced sibling can't be mistaken for it.
     let mut any_winner: Option<String> = None;
 
-    while let Some(joined) = set.join_next().await {
+    let run_cancel = ctx.cancel.clone();
+    loop {
+        // Race the join against a run-level cancel (§6.5): a user cancel must
+        // wind the whole stage down promptly, not after every child ran to its
+        // natural terminal. Setting `stage_cancel` stops new launches and trips
+        // the in-flight children's own cancel races; the loop keeps draining so
+        // their teardown (abandon + archive) completes.
+        let joined = tokio::select! {
+            biased;
+            _ = attempt::wait_cancelled(&run_cancel), if !stage_cancel.load(Ordering::SeqCst) => {
+                stage_cancel.store(true, Ordering::SeqCst);
+                continue;
+            }
+            j = set.join_next() => match j {
+                Some(j) => j,
+                None => break,
+            },
+        };
         let res = match joined {
             Ok(r) => r,
             Err(e) => {
@@ -1272,6 +1289,23 @@ async fn run_parallel_stage(
         let conn = ctx.db.lock();
         ledger.checkpoint_wall(super::now_ms());
         persist_spent(&conn, run_id, ledger);
+    }
+
+    // A run-level cancel supersedes join evaluation (§6.5): the children were
+    // wound down above; write the terminal status now — like the drive loop's
+    // between-blocks check, nothing after a Stop will.
+    if run_cancel.load(Ordering::SeqCst) {
+        let conn = ctx.db.lock();
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::RUN_CANCELED,
+            None,
+            &json!({}),
+        );
+        set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
+        return Ok(StageFlow::Stop);
     }
 
     match par.join {
@@ -1860,13 +1894,17 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
         };
 
         let params = AttemptParams {
-            spawn_req: build_spawn_req(
-                &c.agent_spec,
-                &c.fork_base,
-                &c.repo,
-                &c.run_repo,
-                &c.run_id,
-            ),
+            spawn_req: {
+                let conn = c.db.lock();
+                build_spawn_req(
+                    &conn,
+                    &c.agent_spec,
+                    &c.fork_base,
+                    &c.repo,
+                    &c.run_repo,
+                    &c.run_id,
+                )
+            },
             pre_spawned: None,
             blackboard: c.blackboard.clone(),
             exec_id: exec_id.clone(),
@@ -2109,25 +2147,34 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
     }
 }
 
-/// Assemble a [`SpawnReq`] for a step / parallel-child agent. Resolving the
-/// spec's skill / MCP names to snapshots is a documented S4b follow-up; the
-/// engine spawns with provider + brief for now (the blackboard write-grant is
-/// derived from `owner_run_id` at spawn).
+/// Assemble a [`SpawnReq`] for a step / parallel-child agent. The step's
+/// skill/MCP deliverables are resolved to by-value snapshots here — at spawn
+/// (§3.2), the same semantics as the draft spawn path — so a custom-agent step
+/// carries its skills and deliverable MCP servers, and later library edits
+/// never touch a spawned step. The blackboard write-grant is derived from
+/// `owner_run_id` at spawn.
 fn build_spawn_req(
+    conn: &Connection,
     agent_spec: &AgentSpec,
     fork_base: &str,
     repo: &Path,
     run_repo: &Path,
     run_id: &str,
 ) -> SpawnReq {
+    let (skills, mcp_servers) = super::definition::resolve_step_deliverables(
+        conn,
+        agent_spec.custom_agent.as_deref(),
+        &agent_spec.skills,
+        &agent_spec.base,
+    );
     SpawnReq {
         repo_path: repo.to_path_buf(),
         provider: agent_spec.base.clone(),
         model: agent_spec.model.clone(),
         instructions: agent_spec.instructions.clone(),
         custom_agent_id: agent_spec.custom_agent.clone(),
-        skills: vec![],
-        mcp_servers: vec![],
+        skills,
+        mcp_servers,
         fork_base: Some(fork_base.to_string()),
         run_repo: Some(run_repo.to_path_buf()),
         owner_run_id: run_id.to_string(),
@@ -2268,13 +2315,11 @@ async fn run_orchestrate_stage(
         let conn = ctx.db.lock();
         create_step_exec(&conn, &orch_exec, run_id, &orch_step_id, 1, 0, "verdict");
     }
-    let spawned = match ctx
-        .driver
-        .spawn(build_spawn_req(
-            orch_agent, fork_base, repo, run_repo, run_id,
-        ))
-        .await
-    {
+    let orch_req = {
+        let conn = ctx.db.lock();
+        build_spawn_req(&conn, orch_agent, fork_base, repo, run_repo, run_id)
+    };
+    let spawned = match ctx.driver.spawn(orch_req).await {
         Ok(s) => s,
         Err(e) => {
             let conn = ctx.db.lock();
@@ -3727,17 +3772,18 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
         }
 
         // Spawn and stamp the agent id BEFORE the turn (§10.2).
-        let spawned = match c
-            .driver
-            .spawn(build_spawn_req(
+        let child_req = {
+            let conn = c.db.lock();
+            build_spawn_req(
+                &conn,
                 &c.agent_spec,
                 &c.fork_base,
                 &c.repo,
                 &c.run_repo,
                 &c.run_id,
-            ))
-            .await
-        {
+            )
+        };
+        let spawned = match c.driver.spawn(child_req).await {
             Ok(s) => s,
             Err(e) => {
                 let error = format!("spawn failed: {e}");
@@ -3802,13 +3848,17 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
         };
 
         let params = AttemptParams {
-            spawn_req: build_spawn_req(
-                &c.agent_spec,
-                &c.fork_base,
-                &c.repo,
-                &c.run_repo,
-                &c.run_id,
-            ),
+            spawn_req: {
+                let conn = c.db.lock();
+                build_spawn_req(
+                    &conn,
+                    &c.agent_spec,
+                    &c.fork_base,
+                    &c.repo,
+                    &c.run_repo,
+                    &c.run_id,
+                )
+            },
             pre_spawned: Some(spawned),
             blackboard: c.blackboard.clone(),
             exec_id: exec_id.clone(),
@@ -4645,7 +4695,10 @@ async fn execute_step(
         };
 
         let params = AttemptParams {
-            spawn_req: build_spawn_req(agent_spec, fork_ref, env.repo, env.run_repo, run_id),
+            spawn_req: {
+                let conn = ctx.db.lock();
+                build_spawn_req(&conn, agent_spec, fork_ref, env.repo, env.run_repo, run_id)
+            },
             pre_spawned: None,
             blackboard: env.blackboard.to_path_buf(),
             exec_id: exec_id.clone(),
@@ -4658,9 +4711,10 @@ async fn execute_step(
             // A loop's `until` step must not be re-prompted on "revise": that is
             // a legitimate turn end, not an unmet gate to nag about (§6.6).
             reprompt_on_block: !is_until,
-            // Linear/loop steps are never cancelled mid-attempt (only parallel
-            // losers are, §6.6), so this flag is never set.
-            cancel: Arc::new(AtomicBool::new(false)),
+            // The run's cancel flag (§6.5): `WorkflowService::cancel` sets it and
+            // the attempt's cancel checkpoints/races observe it, so a cancel
+            // lands mid-spawn or mid-turn instead of after the block finishes.
+            cancel: ctx.cancel.clone(),
             // Shared with the run's `RunHandle` so the comms router and this
             // attempt observe the same pending-ask flag (§10.4).
             pending_ask: ctx.pending_ask.clone(),
@@ -4920,14 +4974,39 @@ async fn execute_step(
                 return Ok(StepFlow::Halt);
             }
             AttemptOutcome::Canceled => {
-                // Linear/loop steps never pass a live cancel flag, so this is
-                // unreachable in practice; handle it defensively as an abandonment
-                // (the agent is already stopped by `run_attempt`).
-                let conn = ctx.db.lock();
-                let _ = conn.execute(
-                    "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
-                    rusqlite::params![super::now_ms(), exec_id],
-                );
+                // The run was cancelled mid-attempt (§6.5). `run_attempt` already
+                // stopped the agent; abandon the row, archive the chat, and
+                // complete the cancel here — the drive loop's between-blocks
+                // check never runs again after a Halt, so the terminal status
+                // must be written now. Lock scoped so the guard drops before
+                // the archive await.
+                {
+                    let conn = ctx.db.lock();
+                    let _ = conn.execute(
+                        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
+                        rusqlite::params![super::now_ms(), exec_id],
+                    );
+                    journal_event(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        event_type::ATTEMPT_ABANDONED,
+                        Some(&exec_id),
+                        &json!({ "cause": "canceled" }),
+                    );
+                    journal_event(
+                        &conn,
+                        ctx.app.as_ref(),
+                        run_id,
+                        event_type::RUN_CANCELED,
+                        None,
+                        &json!({}),
+                    );
+                    set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
+                }
+                if let Some(agent_id) = &result.agent_id {
+                    let _ = ctx.driver.archive(agent_id).await;
+                }
                 return Ok(StepFlow::Halt);
             }
         }
@@ -5374,10 +5453,65 @@ fn resume_line_state(
                     return (gitops::step_ref(&exec_id), Some(exec_id));
                 }
             }
+            // A completed loop advances the line to its most recent `done` body
+            // step across iterations and retries (§6.6). Without this arm a
+            // resume past the loop refetches an earlier block's ref (or the run
+            // base) and every commit the loop ferried silently drops off the
+            // branch — and a finalize-on-resume skips the push entirely.
+            Block::Loop(l) => {
+                let ids: Vec<String> = l
+                    .body
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::Step(s) => Some(s.id.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(exec_id) = latest_done_exec_for_steps(conn, run_id, &ids) {
+                    return (gitops::step_ref(&exec_id), Some(exec_id));
+                }
+            }
+            // An orchestrate stage advances the line only when a composed
+            // sub-run merged (§10.3) — recorded via the same synthetic
+            // `__merge_<i>` exec as a parallel merge stage. `integrate: none`
+            // children never move it.
+            Block::Orchestrate(_) => {
+                if let Some(exec_id) = latest_done_exec_for_step(conn, run_id, &merge_step_id(i)) {
+                    return (gitops::step_ref(&exec_id), Some(exec_id));
+                }
+            }
             _ => {}
         }
     }
     (base_sha.to_string(), None)
+}
+
+/// The most recent `done` exec among a set of step ids (a loop's body): the
+/// line's tip after a completed loop. `rowid DESC` picks the latest completion
+/// across iterations and retries, exactly like [`latest_done_exec_for_step`].
+fn latest_done_exec_for_steps(
+    conn: &Connection,
+    run_id: &str,
+    step_ids: &[String],
+) -> Option<String> {
+    if step_ids.is_empty() {
+        return None;
+    }
+    let placeholders = vec!["?"; step_ids.len()].join(",");
+    let sql = format!(
+        "SELECT id FROM wf_step_exec
+         WHERE run_id = ? AND status = 'done' AND step_id IN ({placeholders})
+         ORDER BY rowid DESC LIMIT 1"
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(step_ids.len() + 1);
+    params.push(&run_id);
+    for s in step_ids {
+        params.push(s);
+    }
+    conn.query_row(&sql, params.as_slice(), |r| r.get(0))
+        .optional()
+        .ok()
+        .flatten()
 }
 
 /// The ids of a run's composed sub-runs (spec §10.3), for the cancel-cascade.
@@ -9058,5 +9192,282 @@ mod tests {
             ) >= 1,
             "the sub-run merged at the join"
         );
+    }
+
+    // ───────────────── run-level cancel mid-attempt / mid-stage (§6.5) ─────────
+
+    /// A driver whose turns never end: `send_message` flips the agent to
+    /// `Running` and returns, but `Idle` never follows — the attempt sits in its
+    /// turn until something (the cancel race) ends it. Models the H2 scenario:
+    /// a user cancel landing while work is in flight.
+    struct HoldDriver {
+        root: PathBuf,
+        tx: broadcast::Sender<StatusEvent>,
+        state: parking_lot::Mutex<StubState>,
+        turns_started: std::sync::atomic::AtomicUsize,
+        stopped: parking_lot::Mutex<Vec<String>>,
+    }
+    impl HoldDriver {
+        fn new(root: PathBuf) -> Arc<Self> {
+            Arc::new(Self {
+                root,
+                tx: broadcast::channel(256).0,
+                state: parking_lot::Mutex::new(StubState::default()),
+                turns_started: std::sync::atomic::AtomicUsize::new(0),
+                stopped: parking_lot::Mutex::new(Vec::new()),
+            })
+        }
+        fn set(&self, id: &str, s: AgentStatus) {
+            self.state.lock().statuses.insert(id.to_string(), s.clone());
+            let _ = self.tx.send(StatusEvent {
+                agent_id: id.to_string(),
+                status: s,
+            });
+        }
+    }
+    impl AgentDriver for HoldDriver {
+        fn spawn(
+            &self,
+            req: SpawnReq,
+        ) -> super::super::driver::BoxFuture<'_, Result<super::super::driver::SpawnedAgent>>
+        {
+            Box::pin(async move {
+                let id = {
+                    let mut st = self.state.lock();
+                    st.count += 1;
+                    format!("hold-{}", st.count)
+                };
+                let dest = self.root.join(&id);
+                let base_ref = req.fork_base.clone().unwrap();
+                let spec = crate::sandbox::provision::CheckoutSpec {
+                    source_repo: &req.repo_path,
+                    base_ref: &base_ref,
+                    dest: &dest,
+                };
+                crate::sandbox::provision::provision_forking_run_repo(
+                    &spec,
+                    req.run_repo.as_ref().unwrap(),
+                )
+                .await?;
+                self.state.lock().worktrees.insert(id.clone(), dest.clone());
+                self.set(&id, AgentStatus::Idle);
+                Ok(super::super::driver::SpawnedAgent {
+                    agent_id: id,
+                    worktree: dest,
+                })
+            })
+        }
+        fn status(&self, id: &str) -> Option<AgentStatus> {
+            self.state.lock().statuses.get(id).cloned()
+        }
+        fn subscribe(&self) -> broadcast::Receiver<StatusEvent> {
+            self.tx.subscribe()
+        }
+        fn send_message<'a>(
+            &'a self,
+            id: &'a str,
+            _text: String,
+        ) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                self.set(id, AgentStatus::Running);
+                self.turns_started
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(()) // Idle never arrives — the turn hangs until cancelled.
+            })
+        }
+        fn stop<'a>(&'a self, id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            self.stopped.lock().push(id.to_string());
+            Box::pin(async { Ok(()) })
+        }
+        fn archive<'a>(&'a self, _id: &'a str) -> super::super::driver::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn last_activity(&self, _id: &str) -> Option<i64> {
+            // "Recent activity" forever, so the stall watchdog never fires and
+            // the cancel race is the only thing that can end the turn.
+            Some(crate::workflow::now_ms())
+        }
+        fn turn_usage(&self, _id: &str) -> Option<super::super::driver::TurnUsage> {
+            None
+        }
+    }
+
+    /// Wait (bounded) until `n` turns have started on the driver.
+    async fn await_turns(driver: &HoldDriver, n: usize) {
+        for _ in 0..400 {
+            if driver
+                .turns_started
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= n
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("driver never reached {n} started turn(s)");
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_turn_stops_the_attempt_and_cancels_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, ws) = scaffold_one_step(tmp.path(), "run-midcancel", "wf/mc-1");
+        let driver = HoldDriver::new(ws);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: driver.clone(),
+            app: None,
+            cancel: cancel.clone(),
+            pending_ask: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+            runs: None,
+        };
+        let drive = tokio::spawn(async move { drive_run(&ctx, "run-midcancel").await });
+        await_turns(&driver, 1).await;
+        cancel.store(true, Ordering::SeqCst); // user cancel lands mid-turn
+        drive.await.unwrap();
+
+        assert_eq!(run_status_str(&db, "run-midcancel"), "canceled");
+        assert_eq!(
+            count_children(&db, "run-midcancel", "abandoned"),
+            1,
+            "the in-flight attempt was abandoned, not left running"
+        );
+        assert!(
+            !driver.stopped.lock().is_empty(),
+            "the live agent process was stopped"
+        );
+        assert!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_event WHERE run_id='run-midcancel' AND type='run_canceled'"
+            ) >= 1,
+            "the cancel was journaled"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_parallel_stage_winds_children_down_and_cancels_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", ""), cstep("b", "")];
+        let (db, ws, _base) = scaffold_parallel(tmp.path(), "run-pcancel", Join::All, &children);
+        let driver = HoldDriver::new(ws);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: driver.clone(),
+            app: None,
+            cancel: cancel.clone(),
+            pending_ask: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+            runs: None,
+        };
+        let drive = tokio::spawn(async move { drive_run(&ctx, "run-pcancel").await });
+        await_turns(&driver, 2).await; // both children mid-turn
+        cancel.store(true, Ordering::SeqCst);
+        drive.await.unwrap();
+
+        assert_eq!(run_status_str(&db, "run-pcancel"), "canceled");
+        assert_eq!(
+            count_children(&db, "run-pcancel", "abandoned"),
+            2,
+            "both in-flight children were abandoned"
+        );
+        assert_eq!(
+            count_children(&db, "run-pcancel", "running"),
+            0,
+            "no child was left running"
+        );
+    }
+
+    // ───────────── resume line state across loop / orchestrate blocks (H1) ─────
+
+    fn done_exec(conn: &Connection, id: &str, run_id: &str, step_id: &str, iter: i64) {
+        create_step_exec(conn, id, run_id, step_id, 1, iter, "verdict");
+        finish_step_exec(conn, id, "done", Some("head-sha"));
+    }
+
+    fn loop_block(body_ids: &[&str], until: &str) -> Block {
+        Block::Loop(super::super::spec::Loop {
+            max: 3,
+            until: super::super::spec::Until {
+                step: until.to_string(),
+                verdict: Default::default(),
+            },
+            body: body_ids
+                .iter()
+                .map(|id| Block::Step(cstep(id, "")))
+                .collect(),
+        })
+    }
+
+    #[tokio::test]
+    async fn resume_line_state_advances_past_a_completed_loop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, _ws) = scaffold_one_step(tmp.path(), "run-loopresume", "wf/lr-1");
+        let blocks = vec![
+            loop_block(&["review", "fix"], "review"),
+            Block::Step(cstep("ship", "")),
+        ];
+        {
+            let conn = db.lock();
+            // Two iterations: review/fix (iter 0), then the closing review (iter 1).
+            done_exec(&conn, "exec-r0", "run-loopresume", "review", 0);
+            done_exec(&conn, "exec-f0", "run-loopresume", "fix", 0);
+            done_exec(&conn, "exec-r1", "run-loopresume", "review", 1);
+        }
+        let conn = db.lock();
+        // Cursor past the loop (at `ship`): the line must be the loop's last
+        // done body exec — not the run base (the H1 silent-work-loss bug).
+        let (line_ref, exec) = resume_line_state(&conn, "run-loopresume", &blocks, 1, "base-sha");
+        assert_eq!(exec.as_deref(), Some("exec-r1"));
+        assert_eq!(line_ref, gitops::step_ref("exec-r1"));
+    }
+
+    #[tokio::test]
+    async fn resume_line_state_uses_an_orchestrate_stages_merge_exec() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, _ws) = scaffold_one_step(tmp.path(), "run-orchresume", "wf/or-1");
+        let orch = Block::Orchestrate(super::super::spec::Orchestrate {
+            agent: "coder".to_string(),
+            goal: "coordinate".to_string(),
+            children: None,
+            body: vec![],
+            join: Join::All,
+            integrate: Integrate::None,
+            comms: vec![],
+            compose: None,
+        });
+        let blocks = vec![orch, Block::Step(cstep("ship", ""))];
+        {
+            let conn = db.lock();
+            // A composed sub-run merged at the join → synthetic `__merge_0` exec.
+            done_exec(&conn, "exec-m0", "run-orchresume", &merge_step_id(0), 0);
+        }
+        let conn = db.lock();
+        let (line_ref, exec) = resume_line_state(&conn, "run-orchresume", &blocks, 1, "base-sha");
+        assert_eq!(exec.as_deref(), Some("exec-m0"));
+        assert_eq!(line_ref, gitops::step_ref("exec-m0"));
+    }
+
+    #[tokio::test]
+    async fn resume_line_state_falls_back_to_base_for_an_unmerged_orchestrate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, _ws) = scaffold_one_step(tmp.path(), "run-orchnone", "wf/on-1");
+        let orch = Block::Orchestrate(super::super::spec::Orchestrate {
+            agent: "coder".to_string(),
+            goal: "coordinate".to_string(),
+            children: None,
+            body: vec![],
+            join: Join::All,
+            integrate: Integrate::None,
+            comms: vec![],
+            compose: None,
+        });
+        let blocks = vec![orch, Block::Step(cstep("ship", ""))];
+        let conn = db.lock();
+        let (line_ref, exec) = resume_line_state(&conn, "run-orchnone", &blocks, 1, "base-sha");
+        assert_eq!(exec, None);
+        assert_eq!(line_ref, "base-sha");
     }
 }

@@ -254,6 +254,149 @@ fn resolve_skill_names(conn: &Connection, skill_ids_json: &str) -> Result<Vec<St
     Ok(names)
 }
 
+// ───────────────────────── spawn deliverables (§3.2) ─────────────────────────
+
+/// Which MCP transports a provider can deliver at spawn — mirrors the app's
+/// `MCP_SUPPORT` map in `src/data/providers.ts`; the two must not drift.
+fn mcp_support(provider: &str) -> &'static str {
+    match provider {
+        "claude" => "all",
+        "codex" => "stdio",
+        _ => "none",
+    }
+}
+
+fn mcp_attachable(support: &str, transport: &str) -> bool {
+    support == "all" || (support == "stdio" && transport != "http")
+}
+
+/// Resolve a step's skill/MCP deliverables at spawn (§3.2) — the Rust twin of
+/// the app's `snapshotAgentDeliverables`: the custom agent's assigned skills
+/// and servers by id, plus the spec's `skills` names resolved against the
+/// library, filtered to what the provider can deliver. Snapshots are by value
+/// (the same semantics as the draft spawn path), so later library edits never
+/// touch a spawned step. Dangling ids and unknown names drop out silently —
+/// the import already warned about them.
+pub(super) fn resolve_step_deliverables(
+    conn: &Connection,
+    custom_agent_id: Option<&str>,
+    skill_names: &[String],
+    provider: &str,
+) -> (
+    Vec<crate::agent_profile::SkillSnapshot>,
+    Vec<crate::agent_profile::McpServerSnapshot>,
+) {
+    let mut skills: Vec<crate::agent_profile::SkillSnapshot> = Vec::new();
+    let mut mcp: Vec<crate::agent_profile::McpServerSnapshot> = Vec::new();
+
+    let assigned: (Vec<String>, Vec<String>) = custom_agent_id
+        .and_then(|id| {
+            conn.query_row(
+                "SELECT skill_ids, mcp_server_ids FROM custom_agents WHERE id = ?1",
+                [id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()
+            .ok()
+            .flatten()
+        })
+        .map(|(s, m)| {
+            (
+                serde_json::from_str(&s).unwrap_or_default(),
+                serde_json::from_str(&m).unwrap_or_default(),
+            )
+        })
+        .unwrap_or_default();
+
+    // Custom-agent skills by id (assignment order), then spec names on top,
+    // deduped by name.
+    for skill_id in &assigned.0 {
+        if let Ok(Some(s)) = skill_row(conn, "id", skill_id) {
+            if !skills.iter().any(|k| k.name == s.name) {
+                skills.push(s);
+            }
+        }
+    }
+    for name in skill_names {
+        if let Ok(Some(s)) = skill_row(conn, "name", name) {
+            if !skills.iter().any(|k| k.name == s.name) {
+                skills.push(s);
+            }
+        }
+    }
+
+    let support = mcp_support(provider);
+    for server_id in &assigned.1 {
+        if let Ok(Some(snap)) = mcp_snapshot_row(conn, server_id) {
+            if mcp_attachable(support, &snap.transport) {
+                mcp.push(snap);
+            }
+        }
+    }
+    (skills, mcp)
+}
+
+fn skill_row(
+    conn: &Connection,
+    column: &str,
+    value: &str,
+) -> Result<Option<crate::agent_profile::SkillSnapshot>, rusqlite::Error> {
+    // `column` is a compile-time literal ("id" | "name"), never user input.
+    let sql = format!("SELECT name, description, body FROM skills WHERE {column} = ?1 LIMIT 1");
+    conn.query_row(&sql, [value], |r| {
+        Ok(crate::agent_profile::SkillSnapshot {
+            name: r.get(0)?,
+            description: r.get(1)?,
+            body: r.get(2)?,
+        })
+    })
+    .optional()
+}
+
+/// Resolve a registry row into the by-value spawn snapshot — the Rust twin of
+/// `snapshotMcpServer` in `src/storage/mcpServers.ts`: the command line is
+/// whitespace-split into command + args, env/header lines are parsed into
+/// pairs (KEY=VALUE / "Name: value", blanks and malformed lines skipped).
+fn mcp_snapshot_row(
+    conn: &Connection,
+    server_id: &str,
+) -> Result<Option<crate::agent_profile::McpServerSnapshot>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT name, transport, command, env, url, headers FROM mcp_servers WHERE id = ?1",
+        [server_id],
+        |r| {
+            let command_line: String = r.get(2)?;
+            let env_text: String = r.get(3)?;
+            let headers_text: String = r.get(5)?;
+            let mut tokens = command_line.split_whitespace().map(str::to_string);
+            Ok(crate::agent_profile::McpServerSnapshot {
+                name: r.get(0)?,
+                transport: r.get(1)?,
+                command: tokens.next().unwrap_or_default(),
+                args: tokens.collect(),
+                env: parse_pair_lines(&env_text, '='),
+                url: r.get::<_, String>(4)?.trim().to_string(),
+                headers: parse_pair_lines(&headers_text, ':'),
+            })
+        },
+    )
+    .optional()
+}
+
+fn parse_pair_lines(text: &str, sep: char) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (k, v) = line.split_once(sep)?;
+            let k = k.trim();
+            if k.is_empty() {
+                return None;
+            }
+            Some((k.to_string(), v.trim().to_string()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +527,86 @@ mod tests {
         // Local id cleared; the alias keeps its original base.
         assert!(spec.agents["coder"].custom_agent.is_none());
         assert_eq!(spec.agents["coder"].base, "claude");
+    }
+
+    // ───────────────────── spawn deliverables (§3.2) ─────────────────────────
+
+    /// A library DB with the columns `resolve_step_deliverables` reads.
+    fn library_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                transport TEXT NOT NULL DEFAULT 'stdio',
+                command TEXT NOT NULL DEFAULT '', env TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '', headers TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE custom_agents (
+                id TEXT PRIMARY KEY,
+                skill_ids TEXT NOT NULL DEFAULT '[]',
+                mcp_server_ids TEXT NOT NULL DEFAULT '[]'
+             );
+             INSERT INTO skills VALUES
+                ('sk1', 'code-review', 'review well', '# Review'),
+                ('sk2', 'tests-first', 'tests first', '# Tests');
+             INSERT INTO mcp_servers VALUES
+                ('m1', 'gh', 'stdio', 'npx -y gh-mcp',
+                 'TOKEN=t' || char(10) || 'BAD-LINE', '', ''),
+                ('m2', 'web', 'http', '', '', ' https://mcp.example ', 'X-Key: abc');
+             INSERT INTO custom_agents VALUES
+                ('ca1', '[\"sk1\",\"dangling\"]', '[\"m1\",\"m2\",\"gone\"]');",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn deliverables_resolve_custom_agent_ids_plus_spec_names() {
+        let conn = library_db();
+        let (skills, mcp) = resolve_step_deliverables(
+            &conn,
+            Some("ca1"),
+            &["tests-first".into(), "code-review".into(), "unknown".into()],
+            "claude",
+        );
+        // ca1's sk1 first (assignment order), then the spec name that isn't a
+        // duplicate; the dangling id and unknown name drop silently.
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["code-review", "tests-first"]);
+        assert_eq!(skills[0].body, "# Review");
+        // claude supports all transports: both servers, parsed.
+        assert_eq!(mcp.len(), 2);
+        assert_eq!(mcp[0].command, "npx");
+        assert_eq!(mcp[0].args, vec!["-y", "gh-mcp"]);
+        assert_eq!(mcp[0].env, vec![("TOKEN".to_string(), "t".to_string())]);
+        assert_eq!(mcp[1].url, "https://mcp.example");
+        assert_eq!(
+            mcp[1].headers,
+            vec![("X-Key".to_string(), "abc".to_string())]
+        );
+    }
+
+    #[test]
+    fn deliverables_filter_http_servers_for_stdio_only_providers() {
+        let conn = library_db();
+        let (_, mcp) = resolve_step_deliverables(&conn, Some("ca1"), &[], "codex");
+        assert_eq!(mcp.len(), 1, "codex delivers stdio only");
+        assert_eq!(mcp[0].name, "gh");
+        let (_, none) = resolve_step_deliverables(&conn, Some("ca1"), &[], "cursor");
+        assert!(none.is_empty(), "providers without MCP support get none");
+    }
+
+    #[test]
+    fn deliverables_without_custom_agent_resolve_names_only() {
+        let conn = library_db();
+        let (skills, mcp) =
+            resolve_step_deliverables(&conn, None, &["code-review".into()], "claude");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "code-review");
+        assert!(mcp.is_empty(), "MCP comes only via a custom agent (§5.1)");
     }
 }

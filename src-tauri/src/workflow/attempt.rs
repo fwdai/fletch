@@ -545,7 +545,7 @@ async fn terminal_canceled(
 /// Resolve once `flag` is set. Polls on a short cadence so a cancelled child
 /// reacts promptly under real time and deterministically under a paused test
 /// clock (an idle runtime auto-advances to the next pending timer).
-async fn wait_cancelled(flag: &AtomicBool) {
+pub(super) async fn wait_cancelled(flag: &AtomicBool) {
     while !flag.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

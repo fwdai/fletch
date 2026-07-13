@@ -401,6 +401,19 @@ fn check_step(
         errors.push("step id must not be empty".into());
     } else if seen_ids.insert(step.id.clone(), ()).is_some() {
         errors.push(format!("duplicate step id '{}'", step.id));
+    } else if step.id.starts_with("orchestrate-")
+        || step.id.starts_with("__")
+        || step.id.contains("::")
+    {
+        // Reserved for engine-synthesized execs (`orchestrate-<block>`,
+        // `__merge_<i>`, `__resolve_<i>`, `<id>::dyn-<n>`): comms role checks
+        // and routing key off these shapes, so a user-authored step must never
+        // wear them — a composed fragment naming a step `orchestrate-…` would
+        // otherwise acquire the orchestrator's caps and decision surface (§15).
+        errors.push(format!(
+            "step id '{}' uses a reserved pattern (prefix 'orchestrate-' or '__', or '::')",
+            step.id
+        ));
     }
     check_agent_ref(&format!("step '{}'", step.id), &step.agent, spec, errors);
     if let Gate::Artifact { path } = &step.gate {
@@ -519,6 +532,39 @@ mod tests {
     #[test]
     fn minimal_spec_is_valid() {
         assert!(validate(&minimal()).is_ok());
+    }
+
+    #[test]
+    fn reserved_step_ids_are_rejected() {
+        // Engine-synthesized exec shapes (§15): a user step wearing one would
+        // spoof the orchestrator role or collide with merge/resolve/dyn execs.
+        for bad in [
+            "orchestrate-0",
+            "orchestrate-anything",
+            "__merge_1",
+            "__x",
+            "impl::dyn-2",
+        ] {
+            let mut s = minimal();
+            if let Block::Step(step) = &mut s.workflow[0] {
+                step.id = bad.to_string();
+            }
+            assert!(
+                errors(&s).iter().any(|e| e.contains("reserved")),
+                "expected reserved-id rejection for '{bad}'"
+            );
+        }
+        // Legit ids that merely *contain* the words stay valid.
+        for ok in ["orchestrated-rollout", "my__step", "review"] {
+            let mut s = minimal();
+            if let Block::Step(step) = &mut s.workflow[0] {
+                step.id = ok.to_string();
+            }
+            assert!(
+                !errors(&s).iter().any(|e| e.contains("reserved")),
+                "'{ok}' must not be rejected"
+            );
+        }
     }
 
     #[test]
