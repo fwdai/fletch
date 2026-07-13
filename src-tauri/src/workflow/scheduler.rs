@@ -2302,6 +2302,27 @@ async fn run_orchestrate_stage(
     // keyed by step id — so `retry_child` can rebuild any child, not just the
     // static-body ones (spec §10.2).
     let mut child_specs: HashMap<String, Step> = HashMap::new();
+    // Rebuild the dynamic children of any prior drive into the registry from the
+    // persisted `spawn_child` decisions (which carry their agent + goal), so a
+    // resumed stage can still honor `retry_child` for `orchestrate-N::dyn-K`.
+    // Spawn order == index order, matching how ids were assigned originally.
+    for (i, (agent, goal)) in prior_spawn_decisions(&ctx.db.lock(), run_id, &orch_step_id)
+        .into_iter()
+        .enumerate()
+    {
+        let id = format!("{orch_step_id}::dyn-{i}");
+        child_specs.insert(
+            id.clone(),
+            Step {
+                id,
+                agent,
+                goal,
+                gate: Gate::Verdict,
+                budgets: None,
+                comms: orch.comms.clone(),
+            },
+        );
+    }
     // Seed the dynamic-child index from the DB so a resumed stage doesn't reuse an
     // id an earlier drive already created (ids stay unique across resume).
     let mut dyn_count = existing_dyn_child_count(&ctx.db.lock(), run_id, &orch_step_id);
@@ -3342,6 +3363,43 @@ fn cancel_all(child_cancels: &HashMap<String, Arc<AtomicBool>>) {
     for flag in child_cancels.values() {
         flag.store(true, Ordering::SeqCst);
     }
+}
+
+/// The `(agent, goal)` of each dynamic child the stage spawned in a prior drive,
+/// in spawn order (spec §10.2). Read from the persisted `spawn_child` decisions —
+/// joined across every orchestrator exec that shares the stage's `step_id` — so a
+/// resumed stage can rebuild those children into its registry and still honor
+/// `retry_child` for them. Spawn order matches the `dyn-<k>` index order.
+fn prior_spawn_decisions(
+    conn: &Connection,
+    run_id: &str,
+    orch_step_id: &str,
+) -> Vec<(String, String)> {
+    conn.prepare(
+        "SELECT m.body_json FROM wf_message m
+           JOIN wf_step_exec e ON m.from_step_exec_id = e.id
+         WHERE m.run_id = ?1 AND e.step_id = ?2 AND m.kind = 'decision'
+           AND json_extract(m.body_json, '$.decision') = 'spawn_child'
+         ORDER BY m.created_at, m.rowid",
+    )
+    .and_then(|mut s| {
+        s.query_map(rusqlite::params![run_id, orch_step_id], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+    })
+    .map(|bodies| {
+        bodies
+            .into_iter()
+            .filter_map(|b| {
+                let v: Value = serde_json::from_str(&b).ok()?;
+                let agent = v.get("agent")?.as_str()?.to_string();
+                let goal = v.get("goal")?.as_str()?.to_string();
+                Some((agent, goal))
+            })
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// The number of dynamic children an orchestrate stage has already created, from
@@ -7787,5 +7845,61 @@ mod tests {
             &child_gen,
         );
         assert!(matches!(outcomes.get("impl"), Some(ChildStatus::Success)));
+    }
+
+    #[test]
+    fn prior_spawn_decisions_rebuild_dynamic_children_in_order() {
+        // On resume, the dynamic children of a prior drive are rebuilt from their
+        // persisted spawn decisions (agent + goal), in spawn order, so retry_child
+        // can still target `orchestrate-0::dyn-K`.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('r','n','{}','t','p','/r','/d','wf/x','sha','running','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        // A prior orchestrator exec for the stage.
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,agent_id)
+             VALUES ('orch-old','r','orchestrate-0',1,0,'abandoned','verdict','a-old')",
+            [],
+        )
+        .unwrap();
+        // Two spawn decisions (ordered) + one unrelated decision that must be
+        // excluded.
+        let insert_msg = |id: &str, body: &str, ts: i64| {
+            conn.execute(
+                "INSERT INTO wf_message (id,run_id,from_step_exec_id,to_step_exec_id,kind,
+                    body_json,status,created_at)
+                 VALUES (?1,'r','orch-old',NULL,'decision',?2,'delivered',?3)",
+                rusqlite::params![id, body, ts],
+            )
+            .unwrap();
+        };
+        insert_msg(
+            "d0",
+            r#"{"decision":"spawn_child","agent":"coder","goal":"slice A"}"#,
+            1,
+        );
+        insert_msg(
+            "d1",
+            r#"{"decision":"spawn_child","agent":"coder","goal":"slice B"}"#,
+            2,
+        );
+        insert_msg("d2", r#"{"decision":"stage_done"}"#, 3);
+
+        let got = prior_spawn_decisions(&conn, "r", "orchestrate-0");
+        assert_eq!(
+            got,
+            vec![
+                ("coder".to_string(), "slice A".to_string()),
+                ("coder".to_string(), "slice B".to_string()),
+            ],
+            "spawn decisions rebuild in order, excluding non-spawn decisions"
+        );
     }
 }
