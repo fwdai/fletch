@@ -1585,7 +1585,8 @@ async fn resume_merge_stage(
             let snapshot = crate::git::rev_parse(run_repo, &ci.conflict_ref).await.ok();
             let clean = gitops::is_worktree_clean(&int_wt).await.unwrap_or(false);
             let uncommitted = !clean || snapshot.as_deref() == Some(head.as_str());
-            let markers = gitops::files_have_conflict_markers(&int_wt, &ci.files).await;
+            let markers =
+                gitops::resolution_retains_markers(&int_wt, &ci.conflict_ref, &ci.files).await;
             if uncommitted || markers {
                 let detail = if uncommitted {
                     "resolve the conflicts and commit in the integration worktree before continuing"
@@ -5233,6 +5234,43 @@ mod tests {
                 .and_then(|c| c.resolution)
                 .is_none(),
             "resolution cleared — the user must strip the markers and retry"
+        );
+    }
+
+    /// Resolving by *renaming* a still-conflicted file must not slip markers past
+    /// the guard: the scan covers paths the resolution changed since the snapshot,
+    /// not just the originally-conflicted paths, so the renamed file is caught.
+    #[tokio::test]
+    async fn merge_human_resolution_that_renames_a_marker_file_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let children = vec![cstep("a", CONFLICT), cstep("b", CONFLICT)];
+        let (db, ws, _b) = scaffold_parallel_integrate(
+            tmp.path(),
+            "run-mhr",
+            Join::All,
+            Integrate::Merge,
+            &children,
+        );
+        let ctx = par_ctx(db.clone(), MatrixDriver::new(ws));
+        drive_run(&ctx, "run-mhr").await;
+        assert_eq!(run_status_str(&db, "run-mhr"), "paused");
+
+        // Human "resolves" by renaming the conflicted file — its markers ride
+        // along to the new path, and the old path disappears.
+        let int_wt = tmp.path().join("rd-run-mhr").join("integrate-0");
+        sh(&int_wt, &["mv", CONFLICT_FILE, "renamed.txt"]);
+        sh(&int_wt, &["commit", "-qm", "rename instead of resolving"]);
+        set_resolution(&db, "run-mhr", "human");
+        drive_run(&ctx, "run-mhr").await;
+
+        assert_eq!(run_status_str(&db, "run-mhr"), "paused");
+        let cur = get_cursor(&db.lock(), "run-mhr");
+        assert!(
+            cur.merge
+                .and_then(|m| m.conflict)
+                .and_then(|c| c.resolution)
+                .is_none(),
+            "the renamed marker file is detected — resolution cleared"
         );
     }
 

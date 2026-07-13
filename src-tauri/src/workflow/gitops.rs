@@ -353,6 +353,33 @@ pub async fn files_have_conflict_markers(wt: &Path, files: &[String]) -> bool {
     false
 }
 
+/// Whether the committed human resolution still holds conflict markers (§12.3
+/// mode c). Scans the union of the originally-conflicted `recorded` paths (which
+/// catches a conflicted file left untouched or edited in place) and every path
+/// the resolution changed since `snapshot_ref` (which catches a marker carried
+/// into a *renamed* or newly-added file — a rename appears as delete-old +
+/// add-new, so the new path is covered). Scoped to what the human actually
+/// touched, so an unrelated tracked file that merely resembles a marker line
+/// can't block resolution.
+pub async fn resolution_retains_markers(
+    wt: &Path,
+    snapshot_ref: &str,
+    recorded: &[String],
+) -> bool {
+    let mut scan: Vec<String> = recorded.to_vec();
+    if let Ok(out) = git::git_output(wt, &["diff", "--name-only", snapshot_ref, "HEAD"]).await {
+        if out.status.success() {
+            for p in String::from_utf8_lossy(&out.stdout).lines() {
+                let p = p.trim();
+                if !p.is_empty() && !scan.iter().any(|s| s == p) {
+                    scan.push(p.to_string());
+                }
+            }
+        }
+    }
+    files_have_conflict_markers(wt, &scan).await
+}
+
 /// Pin a checkout's current HEAD as `refname` in the shared ref store (linked
 /// worktrees share the run repo's ref db and object store).
 pub async fn pin_ref(wt: &Path, refname: &str) -> Result<()> {
