@@ -278,11 +278,14 @@ pub(super) struct StepDeliverables {
     pub skills: Vec<crate::agent_profile::SkillSnapshot>,
     pub mcp_servers: Vec<crate::agent_profile::McpServerSnapshot>,
     /// Skill names/ids the definition requested that no longer resolve
-    /// (deleted since the save).
+    /// (deleted since the save) — or a descriptive entry when the custom
+    /// agent's `skill_ids` column itself is unreadable.
     pub missing_skills: Vec<String>,
     /// MCP server ids the custom agent assigned that no longer resolve
-    /// (deleted since the save). Provider-filtered transports are *not*
-    /// listed — that gating is by design and mirrors the agent editor.
+    /// (deleted since the save) — or a descriptive entry when the agent's
+    /// `mcp_server_ids` column itself is unreadable. Provider-filtered
+    /// transports are *not* listed — that gating is by design and mirrors
+    /// the agent editor.
     pub missing_mcp_servers: Vec<String>,
     /// The step's `custom_agent` id when its row no longer resolves — the step
     /// spawns without that agent's skills and MCP servers.
@@ -322,10 +325,32 @@ pub(super) fn resolve_step_deliverables(
                 .ok()
                 .flatten();
             match row {
-                Some((s, m)) => (
-                    serde_json::from_str(&s).unwrap_or_default(),
-                    serde_json::from_str(&m).unwrap_or_default(),
-                ),
+                // A malformed assignment column must not collapse to "nothing
+                // requested" — that would skip every missing-deliverable check
+                // below and lose the agent's capabilities with no warning. The
+                // parse failure lands in the respective missing list as a
+                // descriptive entry, so the usual event fires and the timeline
+                // says exactly what was unreadable.
+                Some((s, m)) => {
+                    let skill_ids = match serde_json::from_str(&s) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            missing_skills
+                                .push(format!("custom agent '{id}' skill_ids unreadable: {e}"));
+                            Vec::new()
+                        }
+                    };
+                    let server_ids = match serde_json::from_str(&m) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            missing_mcp_servers.push(format!(
+                                "custom agent '{id}' mcp_server_ids unreadable: {e}"
+                            ));
+                            Vec::new()
+                        }
+                    };
+                    (skill_ids, server_ids)
+                }
                 None => {
                     missing_custom_agent = Some(id.to_string());
                     Default::default()
@@ -602,7 +627,8 @@ mod tests {
                  'TOKEN=t' || char(10) || 'BAD-LINE', '', ''),
                 ('m2', 'web', 'http', '', '', ' https://mcp.example ', 'X-Key: abc');
              INSERT INTO custom_agents VALUES
-                ('ca1', '[\"sk1\",\"dangling\"]', '[\"m1\",\"m2\",\"gone\"]');",
+                ('ca1', '[\"sk1\",\"dangling\"]', '[\"m1\",\"m2\",\"gone\"]'),
+                ('ca-corrupt', 'not-json', '{\"nope\"');",
         )
         .unwrap();
         conn
@@ -680,5 +706,27 @@ mod tests {
         // The agent row itself is the missing thing — its unknowable server
         // assignments are not double-reported.
         assert!(d.missing_mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn deliverables_report_unreadable_assignment_columns() {
+        let conn = library_db();
+        // The row exists but both assignment columns are malformed JSON: this
+        // must warn per class, not collapse to "nothing requested".
+        let d = resolve_step_deliverables(&conn, Some("ca-corrupt"), &[], "claude");
+        assert!(d.missing_custom_agent.is_none(), "the row itself resolves");
+        assert_eq!(d.missing_skills.len(), 1);
+        assert!(
+            d.missing_skills[0].contains("'ca-corrupt' skill_ids unreadable"),
+            "{:?}",
+            d.missing_skills
+        );
+        assert_eq!(d.missing_mcp_servers.len(), 1);
+        assert!(
+            d.missing_mcp_servers[0].contains("'ca-corrupt' mcp_server_ids unreadable"),
+            "{:?}",
+            d.missing_mcp_servers
+        );
+        assert!(d.skills.is_empty() && d.mcp_servers.is_empty());
     }
 }
