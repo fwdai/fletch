@@ -1011,9 +1011,15 @@ run-owned step-agent workspaces (matched by `owner_run_id`) through the
 app path, delete `~/.fletch/runs/<run-id>/` (blackboard + run repo), and
 delete the run's rows (`wf_step_exec`/`wf_event`/`wf_message` cascade).
 The whole tree must be terminal — the guard runs before anything is
-touched. Chats of deleted runs are gone — the delete is a two-click
-armed button on the run row whose confirm state says so. A `wf:run-deleted`
-event drops the row from the sidebar. Until deletion, everything is
+touched. Tree deletion is best-effort per subtree: workspace discards and
+dir removals are irreversible, so a mid-tree failure cannot roll back —
+instead the failed run and all its ancestors stay fully intact (a run's
+rows are deleted last and are what a retry rediscovers its cleanup
+through), sibling subtrees still get cleaned, and the command returns one
+aggregated error stating that deleting again finishes the job. Chats of
+deleted runs are gone — the delete is a two-click armed button on the run
+row whose confirm state says so. A `wf:run-deleted` event drops each
+fully deleted row from the sidebar. Until deletion, everything is
 retained (open question #4 covers automatic GC policy later).
 
 `ImportReport` = parsed spec + per-agent resolution proposals + warnings

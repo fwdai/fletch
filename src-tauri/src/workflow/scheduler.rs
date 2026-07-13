@@ -197,10 +197,15 @@ impl WorkflowService {
     /// `wf_message` cascade off `wf_run`). Chats of deleted runs are gone; the
     /// UI's confirm dialog says so. The whole tree is checked before anything
     /// is touched, so a rejected delete changes nothing.
+    ///
+    /// Deletion of the tree itself is best-effort per subtree: workspace
+    /// discards and dir removals are irreversible, so a mid-tree failure can't
+    /// roll back — instead a failed run keeps itself *and its ancestors* fully
+    /// intact (its `wf_run` row is what a retry rediscovers the cleanup
+    /// through, and the `parent_run_id` FK forbids deleting a parent under a
+    /// surviving child), sibling subtrees still get cleaned, and every failure
+    /// is aggregated into one error that says deleting again finishes the job.
     pub async fn delete_run(&self, supervisor: &Arc<Supervisor>, run_id: &str) -> Result<()> {
-        // Post-order (children before parents): `wf_run.parent_run_id` has no
-        // ON DELETE cascade, so a parent must never be deleted while a child
-        // row still points at it.
         let order = {
             let conn = self.db.lock();
             let mut order = Vec::new();
@@ -220,17 +225,61 @@ impl WorkflowService {
             }
         }
 
-        for id in &order {
-            for agent in supervisor.workspace.agents_for_run(id) {
-                supervisor.clone().discard_agent(&agent.id).await?;
-            }
-            {
-                let conn = self.db.lock();
-                delete_run_data(&conn, id)?;
-            }
-            journal::emit_run_deleted(&self.app, id);
+        let mut errors = Vec::new();
+        self.delete_tree(supervisor, run_id, &mut errors).await;
+        if errors.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        Err(Error::Other(format!(
+            "run deletion incomplete: {}. Every run that failed (and its \
+             parents) is untouched — delete again to finish.",
+            errors.join("; ")
+        )))
+    }
+
+    /// Delete `run_id`'s subtree, children first. Returns whether the whole
+    /// subtree is gone; a failure is pushed onto `errors` and keeps this run's
+    /// rows (deleted last, so the run stays discoverable for a retry) and, via
+    /// the `false` return, every ancestor's.
+    async fn delete_tree(
+        &self,
+        supervisor: &Arc<Supervisor>,
+        run_id: &str,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        let children = {
+            let conn = self.db.lock();
+            child_run_ids(&conn, run_id)
+        };
+        let mut children_deleted = true;
+        for child in children {
+            if !Box::pin(self.delete_tree(supervisor, &child, errors)).await {
+                children_deleted = false;
+            }
+        }
+        if !children_deleted {
+            // A surviving child row still points at this run (`parent_run_id`),
+            // and a half-gutted parent would strand the retry path — leave this
+            // run entirely alone.
+            return false;
+        }
+
+        for agent in supervisor.workspace.agents_for_run(run_id) {
+            if let Err(e) = supervisor.clone().discard_agent(&agent.id).await {
+                errors.push(format!("run {run_id}: discard agent {}: {e}", agent.id));
+                return false;
+            }
+        }
+        let deleted = {
+            let conn = self.db.lock();
+            delete_run_data(&conn, run_id)
+        };
+        if let Err(e) = deleted {
+            errors.push(format!("run {run_id}: {e}"));
+            return false;
+        }
+        journal::emit_run_deleted(&self.app, run_id);
+        true
     }
 
     /// Resume a paused run (`wf_resume`): optionally raise the budget (§11.2,
