@@ -235,6 +235,17 @@ pub struct Ledger {
     #[serde(default)]
     pub attempts: HashMap<String, i64>,
 
+    /// Turns/tokens reserved by live composed sub-runs (spec §10.3): the parent
+    /// carves a budget slice out for each sub-run, so that capacity is unavailable
+    /// to the parent's own work while the sub-run runs. `exceeded` counts reserved
+    /// against the caps; when a sub-run finishes, the parent releases its
+    /// reservation and folds the sub-run's *actual* spend in — never both, so a
+    /// slice is never double-counted.
+    #[serde(default)]
+    pub reserved_turns: i64,
+    #[serde(default)]
+    pub reserved_tokens: i64,
+
     /// Transient (never serialized): the current drive's start, set by
     /// [`Self::start_drive`]. `wall_ms` already holds prior drives' time.
     #[serde(skip)]
@@ -311,12 +322,14 @@ impl Ledger {
     /// The first run-level cap this ledger has reached, if any (§11.2). Checked at
     /// each enforcement point; `Some` pauses the run. `>=` because a cap of N
     /// permits N units of spend — reaching N means the next unit would exceed.
+    /// Reserved sub-run capacity (§10.3) counts against the caps: the parent must
+    /// not spend budget it has already promised to a live sub-run.
     pub fn exceeded(&self, eff: &EffectiveBudgets, now_ms: i64) -> Option<BudgetLimit> {
-        if self.turns >= eff.turns {
+        if self.turns + self.reserved_turns >= eff.turns {
             return Some(BudgetLimit::Turns);
         }
         if let Some(cap) = eff.tokens {
-            if self.tokens >= cap {
+            if self.tokens + self.reserved_tokens >= cap {
                 return Some(BudgetLimit::Tokens);
             }
         }
@@ -324,6 +337,38 @@ impl Ledger {
             return Some(BudgetLimit::WallClock);
         }
         None
+    }
+
+    /// Turns still spendable under `eff` after committed spend and live reservations
+    /// (spec §10.3 budget-fit check). Never negative.
+    pub fn remaining_turns(&self, eff: &EffectiveBudgets) -> i64 {
+        (eff.turns - self.turns - self.reserved_turns).max(0)
+    }
+
+    /// Tokens still spendable, or `None` when the run has no token cap (so a token
+    /// reservation is unbounded and never rejected on token grounds).
+    pub fn remaining_tokens(&self, eff: &EffectiveBudgets) -> Option<i64> {
+        eff.tokens
+            .map(|cap| (cap - self.tokens - self.reserved_tokens).max(0))
+    }
+
+    /// Reserve a sub-run's budget slice out of the parent ledger (§10.3). The slice
+    /// is held until the sub-run finishes and [`Self::release_reservation`] returns
+    /// it. Caller has already checked it fits via [`Self::remaining_turns`] /
+    /// [`Self::remaining_tokens`].
+    pub fn reserve(&mut self, turns: i64, tokens: i64) {
+        self.reserved_turns += turns;
+        self.reserved_tokens += tokens;
+    }
+
+    /// Release a finished sub-run's reservation (§10.3), floored at zero so a
+    /// double release or a mismatched slice can never drive the reservation
+    /// negative. Pair with [`fold_child_ledger`](super::scheduler) which adds the
+    /// sub-run's *actual* spend — the two together replace a reservation with real
+    /// consumption.
+    pub fn release_reservation(&mut self, turns: i64, tokens: i64) {
+        self.reserved_turns = (self.reserved_turns - turns).max(0);
+        self.reserved_tokens = (self.reserved_tokens - tokens).max(0);
     }
 }
 
@@ -541,6 +586,72 @@ mod tests {
     }
 
     #[test]
+    fn reservation_counts_against_caps_and_remaining() {
+        let eff = EffectiveBudgets {
+            turns: 100,
+            tokens: Some(1_000_000),
+            wall_clock_mins: 480,
+            ..Default::default()
+        };
+        let mut l = Ledger::default();
+        l.charge_turn("orch", "e1"); // 1 turn spent
+        l.reserve(30, 500_000); // sub-run slice reserved
+        assert_eq!(l.remaining_turns(&eff), 69, "100 - 1 spent - 30 reserved");
+        // charge_turn spends no tokens, so only the reservation is deducted.
+        assert_eq!(l.remaining_tokens(&eff), Some(500_000));
+        // The reservation bites even though the parent itself has spent almost
+        // nothing: it must not hand out capacity it already promised.
+        let tight = EffectiveBudgets {
+            turns: 31,
+            ..eff.clone()
+        };
+        assert_eq!(
+            l.exceeded(&tight, 0),
+            Some(BudgetLimit::Turns),
+            "1 spent + 30 reserved >= 31"
+        );
+    }
+
+    #[test]
+    fn release_then_fold_replaces_reservation_with_actual_spend() {
+        let mut parent = Ledger::default();
+        parent.reserve(30, 500_000);
+        assert_eq!(parent.reserved_turns, 30);
+        // Sub-run actually spent 12 turns; release the slice and fold real spend.
+        let mut sub = Ledger::default();
+        for i in 0..12 {
+            sub.charge_turn("s", &format!("e{i}"));
+        }
+        parent.release_reservation(30, 500_000);
+        parent.turns += sub.turns; // mirrors fold_child_ledger
+        assert_eq!(parent.reserved_turns, 0, "reservation released");
+        assert_eq!(
+            parent.turns, 12,
+            "only actual spend counts, never the slice"
+        );
+        assert_eq!(parent.reserved_tokens, 0);
+    }
+
+    #[test]
+    fn release_is_floored_at_zero() {
+        let mut l = Ledger::default();
+        l.reserve(5, 0);
+        l.release_reservation(10, 100); // over-release
+        assert_eq!(l.reserved_turns, 0);
+        assert_eq!(l.reserved_tokens, 0);
+    }
+
+    #[test]
+    fn remaining_tokens_none_when_uncapped() {
+        let eff = EffectiveBudgets {
+            tokens: None,
+            ..Default::default()
+        };
+        let l = Ledger::default();
+        assert_eq!(l.remaining_tokens(&eff), None);
+    }
+
+    #[test]
     fn ledger_json_round_trips_persisted_fields() {
         let mut l = Ledger::default();
         l.charge_turn("s", "e1");
@@ -553,11 +664,16 @@ mod tests {
             }),
         );
         l.wall_ms = 1234;
+        l.reserve(7, 900);
         let restored = Ledger::from_json(&l.to_json());
         assert_eq!(restored.turns, 1);
         assert_eq!(restored.tokens, 10);
         assert_eq!(restored.wall_ms, 1234);
         assert_eq!(restored.steps["s"].turns, 1);
+        // Live reservations survive a pause/resume so the resumed parent still
+        // accounts for a sub-run in flight.
+        assert_eq!(restored.reserved_turns, 7);
+        assert_eq!(restored.reserved_tokens, 900);
         // Transient fields do not survive serialization.
         assert!(restored.agent_tokens_seen.is_empty());
     }

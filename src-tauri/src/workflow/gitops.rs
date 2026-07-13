@@ -159,6 +159,35 @@ pub async fn ferry(step_checkout: &Path, run_repo: &Path, refname: &str) -> Resu
     Ok(())
 }
 
+/// The ref a composed sub-run's final commit is pinned as in the *parent's* run
+/// repo after ferrying (spec §10.3). Distinct per sub-run so concurrent sub-runs
+/// integrating into the same parent never collide.
+pub fn subrun_ref(sub_run_id: &str) -> String {
+    format!("refs/wf/subruns/{sub_run_id}")
+}
+
+/// Ferry a ref from one run repo into another under a *different* destination name
+/// (spec §10.3 integrate-at-join): the sub-run's final ref lives in its own run
+/// repo; the parent fetches it as [`subrun_ref`] so it can be merged like any
+/// child ref. Both repos are `--shared` clones of the same source, so only the
+/// sub-run's new objects transfer — explicit refs, no `allowAnySHA1InWant`.
+pub async fn ferry_ref_as(
+    from_repo: &Path,
+    into_repo: &Path,
+    src_ref: &str,
+    dest_ref: &str,
+) -> Result<()> {
+    let from = path_str(from_repo)?;
+    let refspec = format!("{src_ref}:{dest_ref}");
+    git::run_git(
+        into_repo,
+        &["fetch", &from, &refspec],
+        "ferry sub-run ref into parent run repo",
+    )
+    .await?;
+    Ok(())
+}
+
 /// The result of finalizing a run.
 pub struct FinalizeOutcome {
     pub pushed: bool,

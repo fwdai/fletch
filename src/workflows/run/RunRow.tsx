@@ -19,10 +19,13 @@ export function RunRow({
   run,
   selected,
   onSelect,
+  nested = false,
 }: {
   run: WfRun;
   selected: boolean;
   onSelect: () => void;
+  /** A composed sub-run (§10.3), rendered indented under its parent run. */
+  nested?: boolean;
 }) {
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
@@ -61,7 +64,7 @@ export function RunRow({
 
   return (
     <div
-      className={`agent ${selected ? "active" : ""}`}
+      className={`agent ${selected ? "active" : ""} ${nested ? "run-nested" : ""}`}
       role="button"
       tabIndex={0}
       aria-current={selected ? "page" : undefined}

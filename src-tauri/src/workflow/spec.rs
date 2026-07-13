@@ -212,7 +212,7 @@ pub struct Finalize {
 /// §11.1. All optional — a missing field falls back to the app default at
 /// launch. Signed so a negative value parses and is caught by validation with a
 /// precise message rather than failing deserialization opaquely.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Budgets {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turns: Option<i64>,

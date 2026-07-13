@@ -161,8 +161,20 @@ impl WorkflowService {
     }
 
     /// Cancel a run: flag it, stop the live attempt's agent, and (if no driver
-    /// is live) mark it canceled directly.
+    /// is live) mark it canceled directly. Cancelling a parent cascades to its
+    /// composed sub-runs (spec §6.1, §10.3) — depth-first so the whole tree winds
+    /// down.
     pub async fn cancel(&self, run_id: &str) -> Result<()> {
+        // Cascade to sub-runs first, so a child can't outlive a parent that has
+        // already been marked canceled.
+        let children = {
+            let conn = self.db.lock();
+            child_run_ids(&conn, run_id)
+        };
+        for child in children {
+            Box::pin(self.cancel(&child)).await?;
+        }
+
         let handle = self.runs.lock().get(run_id).map(|h| h.cancel.clone());
         match handle {
             Some(cancel) => cancel.store(true, Ordering::SeqCst),
@@ -374,6 +386,7 @@ fn spawn_drive_task(
         cancel,
         pending_ask,
         deadlines: Deadlines::default(),
+        runs: Some(runs.clone()),
     };
     let id = run_id.clone();
     let join = tauri::async_runtime::spawn(async move {
@@ -422,6 +435,11 @@ struct RunCtx {
     /// comms router can raise it; threaded into each attempt.
     pending_ask: Arc<AtomicBool>,
     deadlines: Deadlines,
+    /// The active-run registry (spec §6.1, §10.3), so an orchestrate stage can
+    /// launch a composed sub-run's own driver task and register it for the
+    /// cancel-cascade. `None` under test — sub-runs are driven detached and the
+    /// stage tracks them by polling `wf_run.status`.
+    runs: Option<Arc<Mutex<HashMap<String, RunHandle>>>>,
 }
 
 /// The `wf_run` columns the walker reads.
@@ -660,12 +678,14 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                     &mut ledger,
                     &test_override,
                     &setup_override,
+                    &mut cursor,
                 )
                 .await?
                 {
-                    // Orchestrate is `integrate: none` in v1 — the stage HEAD is its
-                    // entry HEAD (§12.3), so `line` is always `None` and the fork
-                    // source is unchanged. Handled uniformly with the parallel arm.
+                    // With no composed `integrate: merge` sub-run the stage HEAD is
+                    // its entry HEAD (§12.3) and `line` is `None`; a merged sub-run
+                    // advances the line onto the integrated result (§10.3), handled
+                    // uniformly with the parallel arm.
                     StageFlow::Advance { line } => {
                         if let Some((head_ref, exec_id)) = line {
                             last_ref = head_ref;
@@ -2178,7 +2198,36 @@ async fn run_orchestrate_stage(
     ledger: &mut Ledger,
     test_override: &Option<String>,
     setup_override: &Option<String>,
+    cursor: &mut Cursor,
 ) -> Result<StageFlow> {
+    // Resume: a sub-run integration paused mid-merge or on a conflict (§10.3,
+    // §12.3). The sub-runs already ran and ferried; continue merging / apply the
+    // recorded resolution rather than re-driving the orchestrator.
+    if cursor
+        .merge
+        .as_ref()
+        .is_some_and(|m| m.block_index == block_index)
+    {
+        return resume_subrun_merge(
+            ctx,
+            run_id,
+            run,
+            spec,
+            orch,
+            block_index,
+            block_count,
+            blackboard,
+            repo,
+            run_repo,
+            eff,
+            ledger,
+            test_override,
+            setup_override,
+            cursor,
+        )
+        .await;
+    }
+
     // Enforcement point: before spawning the stage (§11.2).
     if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
         {
@@ -2336,6 +2385,18 @@ async fn run_orchestrate_stage(
     // id an earlier drive already created (ids stay unique across resume).
     let mut dyn_count = existing_dyn_child_count(&ctx.db.lock(), run_id, &orch_step_id);
 
+    // Composed sub-runs of this stage (spec §10.3), keyed by sub-run id. Rebuilt
+    // from the DB on resume so a restarted stage keeps tracking sub-runs launched
+    // by a prior drive (and re-drives any left `pending`/`running`).
+    let mut sub_runs: HashMap<String, SubRunState> =
+        rebuild_sub_runs(&ctx.db.lock(), run_id, block_index);
+    for (sub_id, st) in &sub_runs {
+        if st.terminal.is_none() {
+            // A live sub-run abandoned by the restart: re-drive its own task.
+            spawn_subrun(ctx, sub_id.clone());
+        }
+    }
+
     for step in &orch.body {
         // Resume: a static child that terminally finished in a prior drive keeps
         // its join outcome and is not re-run (§6.6, §12.3); an in-flight one
@@ -2446,6 +2507,7 @@ async fn run_orchestrate_stage(
     loop {
         if ctx.cancel.load(Ordering::SeqCst) {
             drain_children(&child_cancels, &mut set).await;
+            cancel_sub_runs(ctx, &sub_runs).await;
             cancel_run(ctx, run_id).await;
             return Ok(StageFlow::Stop);
         }
@@ -2454,6 +2516,7 @@ async fn run_orchestrate_stage(
         // `question` (§10.2, §10.4). The backstop mirrors the linear path.
         if super::comms::has_unanswered_ask(&ctx.db.lock(), &orch_exec) {
             drain_children(&child_cancels, &mut set).await;
+            cancel_sub_runs(ctx, &sub_runs).await;
             pause_question(ctx, run_id, &orch_exec, Some(&orch_agent_id)).await;
             return Ok(StageFlow::Stop);
         }
@@ -2466,6 +2529,58 @@ async fn run_orchestrate_stage(
         for d in decisions {
             match d {
                 super::comms::Decision::StageDone => concluded_early = true,
+                super::comms::Decision::Compose(plan) => {
+                    // Launch the validated sub-run's own driver (spec §10.3),
+                    // reserve its budget slice out of the parent ledger, and track
+                    // it for the join. A provisioning failure is journaled and the
+                    // slice is not reserved — the stage keeps running.
+                    match launch_subrun(ctx, run, run_id, run_repo, fork_base, &plan).await {
+                        Ok(sub_id) => {
+                            ledger.reserve(plan.turns, plan.tokens.unwrap_or(0));
+                            {
+                                let conn = ctx.db.lock();
+                                persist_spent(&conn, run_id, ledger);
+                                journal_event(
+                                    &conn,
+                                    ctx.app.as_ref(),
+                                    run_id,
+                                    event_type::SUBRUN_LAUNCHED,
+                                    Some(&orch_exec),
+                                    // The extra fields let a resumed stage rebuild
+                                    // its sub-run tracking without a side table.
+                                    &json!({
+                                        "sub_run_id": sub_id,
+                                        "block_index": block_index,
+                                        "integrate": if matches!(plan.integrate, Integrate::Merge) { "merge" } else { "none" },
+                                        "reserved_turns": plan.turns,
+                                        "reserved_tokens": plan.tokens.unwrap_or(0),
+                                    }),
+                                );
+                            }
+                            sub_runs.insert(
+                                sub_id.clone(),
+                                SubRunState {
+                                    integrate: plan.integrate,
+                                    reserved_turns: plan.turns,
+                                    reserved_tokens: plan.tokens.unwrap_or(0),
+                                    terminal: None,
+                                },
+                            );
+                            spawn_subrun(ctx, sub_id);
+                        }
+                        Err(e) => {
+                            let conn = ctx.db.lock();
+                            journal_event(
+                                &conn,
+                                ctx.app.as_ref(),
+                                run_id,
+                                event_type::COMPOSE_DENIED,
+                                Some(&orch_exec),
+                                &json!({ "reason": format!("sub-run launch failed: {e}") }),
+                            );
+                        }
+                    }
+                }
                 super::comms::Decision::SpawnChild { agent, goal } => {
                     if let Some(agent_spec) = spec.agents.get(&agent).cloned() {
                         let step = Step {
@@ -2586,6 +2701,18 @@ async fn run_orchestrate_stage(
             );
         }
 
+        // Reap finished sub-runs (spec §10.3): reconcile each one's reserved slice
+        // against its actual spend, forward its outcome to the orchestrator, and
+        // record its join status alongside the children's.
+        reap_sub_runs(
+            ctx,
+            run_id,
+            &orch_exec,
+            ledger,
+            &mut sub_runs,
+            &mut outcomes,
+        );
+
         // join `all`: the first child failure fails the stage.
         if matches!(orch.join, Join::All) {
             if let Some(reason) = outcomes.values().find_map(|s| match s {
@@ -2593,6 +2720,7 @@ async fn run_orchestrate_stage(
                 _ => None,
             }) {
                 drain_children(&child_cancels, &mut set).await;
+                cancel_sub_runs(ctx, &sub_runs).await;
                 let _ = ctx.driver.stop(&orch_agent_id).await;
                 let conn = ctx.db.lock();
                 finish_step_exec(&conn, &orch_exec, "error", None);
@@ -2609,7 +2737,9 @@ async fn run_orchestrate_stage(
             }
         }
 
-        if set.is_empty() {
+        // The join is met only when every child *and* every composed sub-run
+        // (spec §6.6, §10.3) is terminal.
+        if set.is_empty() && sub_runs.values().all(|s| s.terminal.is_some()) {
             // Every child is terminal. join `any` with no success and ≥1 failure
             // fails the stage; otherwise the orchestrator concludes.
             if matches!(orch.join, Join::Any)
@@ -2704,10 +2834,26 @@ async fn run_orchestrate_stage(
             }
             if done {
                 let _ = ctx.driver.archive(&orch_agent_id).await;
-                let conn = ctx.db.lock();
-                finish_step_exec(&conn, &orch_exec, "done", None);
-                persist_spent(&conn, run_id, ledger);
-                return Ok(StageFlow::Advance { line: None });
+                {
+                    let conn = ctx.db.lock();
+                    finish_step_exec(&conn, &orch_exec, "done", None);
+                    persist_spent(&conn, run_id, ledger);
+                }
+                // Integrate composed sub-runs at the join (spec §10.3): merge each
+                // `integrate: merge` sub-run's ferried ref into the stage line. No
+                // merge sub-runs → the stage HEAD is its entry HEAD (`line: None`).
+                return begin_subrun_merge(
+                    ctx,
+                    run_id,
+                    run,
+                    spec,
+                    block_index,
+                    run_repo,
+                    fork_base,
+                    &sub_runs,
+                    cursor,
+                )
+                .await;
             }
             if conclude_tries < MAX_CONCLUDE_TRIES {
                 conclude_tries += 1;
@@ -2808,6 +2954,7 @@ async fn run_orchestrate_stage(
         // deadline"): a wedged stage pauses `budget_exceeded` rather than hanging.
         if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
             drain_children(&child_cancels, &mut set).await;
+            cancel_sub_runs(ctx, &sub_runs).await;
             let _ = ctx.driver.stop(&orch_agent_id).await;
             {
                 let conn = ctx.db.lock();
@@ -2824,23 +2971,639 @@ async fn run_orchestrate_stage(
             finish_budget_pause(ctx, run_id, Some(&orch_exec), ledger);
             return Ok(StageFlow::Stop);
         }
-        tokio::select! {
-            joined = set.join_next() => {
-                if let Some(j) = joined {
-                    handle_orch_child(ctx, run_id, &orch_exec, orch.join, ledger, j, &mut outcomes, &child_cancels, &child_gen);
+        // Wait for the next event. With children still live, race a child join
+        // against a poll tick; with only sub-runs left (an empty `JoinSet` yields
+        // `None` immediately, which would busy-spin), just poll their status.
+        if set.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        } else {
+            tokio::select! {
+                joined = set.join_next() => {
+                    if let Some(j) = joined {
+                        handle_orch_child(ctx, run_id, &orch_exec, orch.join, ledger, j, &mut outcomes, &child_cancels, &child_gen);
+                    }
                 }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
             }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
         }
     }
 
-    // `stage_done`: wind the remaining children down and mark the stage done.
+    // `stage_done`: wind the remaining children and sub-runs down and mark the
+    // stage done. Composed sub-runs are canceled (not integrated) on an early
+    // `stage_done` — the orchestrator chose to end without waiting for them.
     drain_children(&child_cancels, &mut set).await;
+    cancel_sub_runs(ctx, &sub_runs).await;
     let _ = ctx.driver.archive(&orch_agent_id).await;
     let conn = ctx.db.lock();
     finish_step_exec(&conn, &orch_exec, "done", None);
     persist_spent(&conn, run_id, ledger);
     Ok(StageFlow::Advance { line: None })
+}
+
+// ───────────────────────── composed sub-runs (§10.3) ────────────────────────
+
+/// A composed sub-run tracked by its parent orchestrate stage.
+struct SubRunState {
+    integrate: Integrate,
+    /// The reserved budget slice, released and reconciled when the sub-run ends.
+    reserved_turns: i64,
+    reserved_tokens: i64,
+    /// `None` while the sub-run is live; its join outcome once terminal.
+    terminal: Option<ChildStatus>,
+}
+
+/// Create and provision a composed sub-run (spec §10.3): a synthetic spec from the
+/// validated fragment, the fork base resolved from the parent, its own run dir +
+/// run repo, and a `wf_run` row with `parent_run_id`. Returns the new sub-run id;
+/// the caller reserves the budget slice, spawns the driver, and tracks it.
+async fn launch_subrun(
+    ctx: &RunCtx,
+    parent: &RunEssentials,
+    parent_run_id: &str,
+    parent_run_repo: &Path,
+    fork_base: &str,
+    plan: &super::comms::ComposePlan,
+) -> Result<String> {
+    let sub_run_id = format!("run-{}", uuid::Uuid::new_v4());
+    let parent_spec: Spec =
+        serde_json::from_str(&parent.spec_json).map_err(|e| Error::Other(e.to_string()))?;
+    let agents = plan
+        .agents
+        .clone()
+        .unwrap_or_else(|| parent_spec.agents.clone());
+    let sub_spec = Spec {
+        version: parent_spec.version,
+        name: format!("{} — sub-run", parent_spec.name),
+        description: None,
+        budgets: Some(Budgets {
+            turns: Some(plan.turns),
+            tokens: plan.tokens,
+            ..Default::default()
+        }),
+        agents,
+        workflow: plan.fragment.clone(),
+        // A sub-run integrates at the parent's join; it never pushes/PRs itself.
+        finalize: None,
+    };
+    let spec_json = serde_json::to_string(&sub_spec).map_err(|e| Error::Other(e.to_string()))?;
+    let budgets_json = serde_json::to_string(&EffectiveBudgets::resolve(&sub_spec))
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+    let run_dir = blackboard::run_dir(&sub_run_id)?;
+    let task_md = format!("# {}\n\n{}\n", sub_spec.name, plan.task);
+    blackboard::provision(&run_dir, &task_md)?;
+    let repo = PathBuf::from(&parent.repo_path);
+    let sub_run_repo = gitops::provision_run_repo(&repo, &run_dir).await?;
+
+    // Resolve the fork base (§10.3). `run-base` is the parent's original base (a
+    // source commit, already in the sub-run's clone). `parent-head` is the stage's
+    // current line — a workflow commit that lives only in the parent run repo, so
+    // ferry its ref in before the sub-run's step 1 provisions from it.
+    let base_sha = match plan.base {
+        super::comms::ComposeBase::RunBase => parent.base_sha.clone(),
+        super::comms::ComposeBase::ParentHead => fork_base.to_string(),
+    };
+    if base_sha.starts_with("refs/") {
+        gitops::ferry_ref_as(parent_run_repo, &sub_run_repo, &base_sha, &base_sha).await?;
+    }
+
+    let branch = format!(
+        "wf/{}-{}",
+        slugify(&sub_spec.name),
+        &sub_run_id[sub_run_id.len() - 8..]
+    );
+    let now = super::now_ms();
+    {
+        let conn = ctx.db.lock();
+        conn.execute(
+            "INSERT INTO wf_run (id, definition_id, parent_run_id, name, spec_json, task,
+                 project_id, repo_path, run_dir, branch, base_sha, status, budgets_json,
+                 spent_json, created_at, updated_at)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, '{}', ?12, ?12)",
+            rusqlite::params![
+                sub_run_id,
+                parent_run_id,
+                sub_spec.name,
+                spec_json,
+                plan.task,
+                parent.project_id,
+                parent.repo_path,
+                run_dir.to_string_lossy(),
+                branch,
+                base_sha,
+                budgets_json,
+                now,
+            ],
+        )
+        .map_err(|e| Error::Other(e.to_string()))?;
+    }
+    Ok(sub_run_id)
+}
+
+/// Spawn (or, on resume, re-spawn) a composed sub-run's own driver task (spec
+/// §6.1, §10.3). In production the sub-run is registered in the run registry so
+/// the cancel-cascade reaches it and at most one driver runs; under test (`runs`
+/// = `None`) it is driven detached and the stage tracks it by polling
+/// `wf_run.status`.
+fn spawn_subrun(ctx: &RunCtx, sub_run_id: String) {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let pending_ask = Arc::new(AtomicBool::new(false));
+    if let Some(runs) = &ctx.runs {
+        let mut m = runs.lock();
+        if m.contains_key(&sub_run_id) {
+            return;
+        }
+        m.insert(
+            sub_run_id.clone(),
+            RunHandle {
+                cancel: cancel.clone(),
+                respawn: Arc::new(AtomicBool::new(false)),
+                pending_ask: pending_ask.clone(),
+            },
+        );
+    }
+    let child = RunCtx {
+        db: ctx.db.clone(),
+        driver: ctx.driver.clone(),
+        app: ctx.app.clone(),
+        cancel,
+        pending_ask,
+        deadlines: ctx.deadlines.clone(),
+        runs: ctx.runs.clone(),
+    };
+    let runs = ctx.runs.clone();
+    let id = sub_run_id.clone();
+    tokio::spawn(async move {
+        drive_run(&child, &id).await;
+        // Drop the registry entry on exit so the cancel-cascade and any list see
+        // the sub-run's driver as gone.
+        if let Some(runs) = &runs {
+            runs.lock().remove(&id);
+        }
+    });
+}
+
+/// The join status of a sub-run from its `wf_run.status`, or `None` while it is
+/// still `pending`/`running`/`paused`.
+fn subrun_terminal_status(conn: &Connection, sub_run_id: &str) -> Option<ChildStatus> {
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM wf_run WHERE id = ?1",
+            [sub_run_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    match status.as_deref() {
+        Some("done") => Some(ChildStatus::Success),
+        Some("failed") => Some(ChildStatus::Failure("sub-run failed".into())),
+        Some("canceled") => Some(ChildStatus::Skipped),
+        _ => None,
+    }
+}
+
+/// Rebuild an orchestrate stage's sub-run tracking from the journal on resume
+/// (spec §10.3): each `subrun_launched` event for this stage carries the sub-run
+/// id, integrate mode, and reserved slice. A sub-run already terminal in the DB is
+/// marked so (not reaped or reconciled again); a live one is left `None` for the
+/// stage to re-drive and await.
+fn rebuild_sub_runs(
+    conn: &Connection,
+    run_id: &str,
+    block_index: usize,
+) -> HashMap<String, SubRunState> {
+    let mut out = HashMap::new();
+    let rows: Vec<String> = conn
+        .prepare(
+            "SELECT payload_json FROM wf_event
+             WHERE run_id = ?1 AND type = ?2
+               AND json_extract(payload_json, '$.block_index') = ?3
+             ORDER BY seq",
+        )
+        .and_then(|mut s| {
+            s.query_map(
+                rusqlite::params![run_id, event_type::SUBRUN_LAUNCHED, block_index as i64],
+                |r| r.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap_or_default();
+    for body in rows {
+        let Ok(v) = serde_json::from_str::<Value>(&body) else {
+            continue;
+        };
+        let Some(sub_id) = v.get("sub_run_id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let integrate = if v.get("integrate").and_then(|x| x.as_str()) == Some("merge") {
+            Integrate::Merge
+        } else {
+            Integrate::None
+        };
+        out.insert(
+            sub_id.to_string(),
+            SubRunState {
+                integrate,
+                reserved_turns: v
+                    .get("reserved_turns")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0),
+                reserved_tokens: v
+                    .get("reserved_tokens")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0),
+                terminal: subrun_terminal_status(conn, sub_id),
+            },
+        );
+    }
+    out
+}
+
+/// The sub-run's persisted ledger (its actual spend), for reconciliation.
+fn subrun_ledger(conn: &Connection, sub_run_id: &str) -> Option<Ledger> {
+    let spent: String = conn
+        .query_row(
+            "SELECT spent_json FROM wf_run WHERE id = ?1",
+            [sub_run_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+    let val: Value = serde_json::from_str(&spent).unwrap_or_else(|_| json!({}));
+    Some(Ledger::from_json(&val))
+}
+
+/// Reconcile any sub-runs that reached a terminal state since the last poll (spec
+/// §10.3): release each one's reserved slice, fold its actual spend into the
+/// parent ledger (so a slice is replaced by real consumption, never both),
+/// journal `subrun_finished`, forward the outcome to the orchestrator, and record
+/// its join status alongside the children's.
+fn reap_sub_runs(
+    ctx: &RunCtx,
+    run_id: &str,
+    orch_exec: &str,
+    ledger: &mut Ledger,
+    sub_runs: &mut HashMap<String, SubRunState>,
+    outcomes: &mut HashMap<String, ChildStatus>,
+) {
+    let conn = ctx.db.lock();
+    for (sub_id, st) in sub_runs.iter_mut() {
+        if st.terminal.is_some() {
+            continue;
+        }
+        let Some(status) = subrun_terminal_status(&conn, sub_id) else {
+            continue;
+        };
+        ledger.release_reservation(st.reserved_turns, st.reserved_tokens);
+        if let Some(sub_ledger) = subrun_ledger(&conn, sub_id) {
+            fold_child_ledger(ledger, &sub_ledger);
+        }
+        persist_spent(&conn, run_id, ledger);
+        let status_str = match &status {
+            ChildStatus::Success => "done",
+            ChildStatus::Failure(_) => "failed",
+            ChildStatus::Skipped => "canceled",
+        };
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::SUBRUN_FINISHED,
+            Some(orch_exec),
+            &json!({ "sub_run_id": sub_id, "status": status_str }),
+        );
+        super::comms::forward_subrun_finished(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            orch_exec,
+            sub_id,
+            status_str,
+        );
+        outcomes.insert(sub_id.clone(), status.clone());
+        st.terminal = Some(status);
+    }
+}
+
+/// Cancel every live composed sub-run of a stage (spec §10.3): flag a registered
+/// driver so it winds itself down, else (under test) stop its agents and mark it
+/// canceled directly.
+async fn cancel_sub_runs(ctx: &RunCtx, sub_runs: &HashMap<String, SubRunState>) {
+    for (sub_id, st) in sub_runs {
+        if st.terminal.is_none() {
+            cancel_run_by_id(ctx, sub_id).await;
+        }
+    }
+}
+
+/// Cancel one sub-run by id: prefer flagging its live driver (which stops its
+/// agents and marks it canceled), else mark it directly.
+async fn cancel_run_by_id(ctx: &RunCtx, run_id: &str) {
+    if let Some(runs) = &ctx.runs {
+        if let Some(flag) = runs.lock().get(run_id).map(|h| h.cancel.clone()) {
+            flag.store(true, Ordering::SeqCst);
+            return;
+        }
+    }
+    let agents = live_step_agents(&ctx.db.lock(), run_id);
+    for a in agents {
+        let _ = ctx.driver.stop(&a).await;
+    }
+    let conn = ctx.db.lock();
+    set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
+}
+
+/// The sub-run's final line `(ref, exec_id)` — the commit its integration merges.
+/// `None` when the sub-run produced no commit (nothing to integrate).
+fn subrun_final_line(ctx: &RunCtx, sub_run_id: &str) -> Option<(String, String)> {
+    let conn = ctx.db.lock();
+    let (spec_json, base_sha): (String, String) = conn
+        .query_row(
+            "SELECT spec_json, base_sha FROM wf_run WHERE id = ?1",
+            [sub_run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+    let spec: Spec = serde_json::from_str(&spec_json).ok()?;
+    let (line_ref, exec) = resume_line_state(
+        &conn,
+        sub_run_id,
+        &spec.workflow,
+        spec.workflow.len(),
+        &base_sha,
+    );
+    exec.map(|e| (line_ref, e))
+}
+
+/// Integrate composed `integrate: merge` sub-runs at the orchestrate join (spec
+/// §10.3): ferry each successful sub-run's final ref into the parent run repo (in
+/// launch order), then merge them via the shared merge machinery (§12.3) — a clean
+/// run advances the stage line onto the integrated result; a conflict pauses
+/// `conflict`. No merge sub-runs → the stage line is unchanged (`line: None`).
+#[allow(clippy::too_many_arguments)]
+async fn begin_subrun_merge(
+    ctx: &RunCtx,
+    run_id: &str,
+    run: &RunEssentials,
+    spec: &Spec,
+    block_index: usize,
+    run_repo: &Path,
+    fork_base: &str,
+    sub_runs: &HashMap<String, SubRunState>,
+    cursor: &mut Cursor,
+) -> Result<StageFlow> {
+    // Launch order, so merges are deterministic (child order = spec order §12.3).
+    let ordered: Vec<String> = {
+        let conn = ctx.db.lock();
+        conn.prepare("SELECT id FROM wf_run WHERE parent_run_id = ?1 ORDER BY created_at, rowid")
+            .and_then(|mut s| {
+                s.query_map([run_id], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap_or_default()
+    };
+    let mut winners: Vec<(String, String)> = Vec::new();
+    for sub_id in ordered {
+        let Some(st) = sub_runs.get(&sub_id) else {
+            continue;
+        };
+        if !matches!(st.integrate, Integrate::Merge)
+            || !matches!(st.terminal, Some(ChildStatus::Success))
+        {
+            continue;
+        }
+        let Some((src_ref, _)) = subrun_final_line(ctx, &sub_id) else {
+            continue; // produced no commit
+        };
+        let sub_run_dir: String = {
+            let conn = ctx.db.lock();
+            conn.query_row("SELECT run_dir FROM wf_run WHERE id = ?1", [&sub_id], |r| {
+                r.get(0)
+            })
+            .map_err(|e| Error::Other(e.to_string()))?
+        };
+        let sub_run_repo = gitops::run_repo_path(&PathBuf::from(sub_run_dir));
+        let dest = gitops::subrun_ref(&sub_id);
+        gitops::ferry_ref_as(&sub_run_repo, run_repo, &src_ref, &dest).await?;
+        winners.push((sub_id.clone(), dest));
+    }
+    if winners.is_empty() {
+        return Ok(StageFlow::Advance { line: None });
+    }
+    let run_dir = PathBuf::from(&run.run_dir);
+    let int_wt = gitops::integration_worktree_path(&run_dir, block_index);
+    let base = crate::git::rev_parse(run_repo, fork_base).await?;
+    gitops::setup_integration_worktree(run_repo, &int_wt, &base).await?;
+    {
+        let conn = ctx.db.lock();
+        journal_event(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            event_type::MERGE_STARTED,
+            None,
+            &json!({ "count": winners.len(), "kind": "subrun" }),
+        );
+    }
+    drive_merges(
+        ctx,
+        run_id,
+        &spec.name,
+        block_index,
+        run_repo,
+        &int_wt,
+        winners,
+        cursor,
+    )
+    .await
+}
+
+/// Resume a sub-run integration paused mid-merge or on a conflict (spec §10.3,
+/// §12.3). Mirrors [`resume_merge_stage`] but the refs are already ferried and the
+/// mode-(a) resolver is the orchestrate stage's own agent (there is no `parallel`
+/// child list to resolve one from).
+#[allow(clippy::too_many_arguments)]
+async fn resume_subrun_merge(
+    ctx: &RunCtx,
+    run_id: &str,
+    run: &RunEssentials,
+    spec: &Spec,
+    orch: &Orchestrate,
+    block_index: usize,
+    block_count: usize,
+    blackboard: &Path,
+    repo: &Path,
+    run_repo: &Path,
+    eff: &EffectiveBudgets,
+    ledger: &mut Ledger,
+    test_override: &Option<String>,
+    setup_override: &Option<String>,
+    cursor: &mut Cursor,
+) -> Result<StageFlow> {
+    let ms = cursor
+        .merge
+        .clone()
+        .ok_or_else(|| Error::Other("resume_subrun_merge without merge cursor".into()))?;
+    let run_dir = PathBuf::from(&run.run_dir);
+    let int_wt = gitops::integration_worktree_path(&run_dir, block_index);
+
+    let Some(ci) = ms.conflict.clone() else {
+        // Interrupted mid-clean-merge — continue with what remains.
+        return drive_merges(
+            ctx,
+            run_id,
+            &spec.name,
+            block_index,
+            run_repo,
+            &int_wt,
+            ms.remaining,
+            cursor,
+        )
+        .await;
+    };
+    // A conflict awaiting the user's choice must not be silently re-driven.
+    let Some(resolution) = ci.resolution.clone() else {
+        let conn = ctx.db.lock();
+        set_status(
+            &conn,
+            ctx.app.as_ref(),
+            run_id,
+            "paused",
+            Some("conflict"),
+            None,
+        );
+        return Ok(StageFlow::Stop);
+    };
+
+    let new_acc: String = match resolution.as_str() {
+        // (c) The human committed a resolution in the integration worktree.
+        "human" => {
+            let head = crate::git::rev_parse(&int_wt, "HEAD").await?;
+            let snapshot = crate::git::rev_parse(run_repo, &ci.conflict_ref).await.ok();
+            let clean = gitops::is_worktree_clean(&int_wt).await.unwrap_or(false);
+            let uncommitted = !clean || snapshot.as_deref() == Some(head.as_str());
+            let markers =
+                gitops::resolution_retains_markers(&int_wt, &ci.conflict_ref, &ci.files).await;
+            if uncommitted || markers {
+                let detail = if uncommitted {
+                    "resolve the conflicts and commit in the integration worktree before continuing"
+                } else {
+                    "the committed resolution still contains conflict markers — remove them, commit, and continue"
+                };
+                if let Some(c) = cursor.merge.as_mut().and_then(|m| m.conflict.as_mut()) {
+                    c.resolution = None;
+                }
+                let conn = ctx.db.lock();
+                set_cursor(&conn, run_id, cursor);
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::RUN_PAUSED,
+                    None,
+                    &json!({ "reason": "conflict", "detail": detail }),
+                );
+                set_status(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    "paused",
+                    Some("conflict"),
+                    None,
+                );
+                return Ok(StageFlow::Stop);
+            }
+            head
+        }
+        // (a) Spawn a conflict-resolution step, forked from the pinned snapshot,
+        // run by the orchestrate stage's own agent.
+        "agent" => {
+            let agent_spec = spec.agents.get(&orch.agent).ok_or_else(|| {
+                Error::Other(format!(
+                    "conflict resolver references unknown agent '{}'",
+                    orch.agent
+                ))
+            })?;
+            let resolve_step = Step {
+                id: format!("__resolve_{block_index}"),
+                agent: orch.agent.clone(),
+                goal: format!(
+                    "A merge of composed sub-run work produced conflicts in: {}. \
+                     Open each file, remove every conflict marker \
+                     (<<<<<<<, =======, >>>>>>>), reconcile both sides so the \
+                     result is coherent, and commit the resolution.",
+                    ci.files.join(", ")
+                ),
+                gate: Gate::Commit,
+                budgets: None,
+                comms: vec![],
+            };
+            let env = StepEnv {
+                repo,
+                run_repo,
+                blackboard,
+                eff,
+                test_override,
+                setup_override,
+                run_task: &run.task,
+                spec_name: &spec.name,
+            };
+            let position = Position {
+                step_index: block_index,
+                step_count: block_count,
+                iteration: None,
+            };
+            match execute_step(
+                ctx,
+                run_id,
+                &env,
+                &resolve_step,
+                agent_spec,
+                position,
+                0,
+                &ci.conflict_ref,
+                false,
+                ledger,
+            )
+            .await?
+            {
+                StepFlow::Done { head_ref, .. } => {
+                    crate::git::rev_parse(run_repo, &head_ref).await?
+                }
+                StepFlow::Halt => return Ok(StageFlow::Stop),
+                StepFlow::LoopContinue => unreachable!("resolution step is never a loop until"),
+            }
+        }
+        other => {
+            return Err(Error::Other(format!(
+                "unknown conflict resolution mode '{other}'"
+            )))
+        }
+    };
+
+    gitops::setup_integration_worktree(run_repo, &int_wt, &new_acc).await?;
+    gitops::pin_ref(&int_wt, &gitops::merge_acc_ref(block_index)).await?;
+    cursor.merge = Some(MergeCursor {
+        block_index,
+        remaining: ms.remaining.clone(),
+        conflict: None,
+    });
+    set_cursor(&ctx.db.lock(), run_id, cursor);
+    drive_merges(
+        ctx,
+        run_id,
+        &spec.name,
+        block_index,
+        run_repo,
+        &int_wt,
+        ms.remaining,
+        cursor,
+    )
+    .await
 }
 
 /// Assemble one orchestrate child's owned [`ChildCtx`] (all fields cloned so the
@@ -4617,6 +5380,16 @@ fn resume_line_state(
     (base_sha.to_string(), None)
 }
 
+/// The ids of a run's composed sub-runs (spec §10.3), for the cancel-cascade.
+fn child_run_ids(conn: &Connection, parent_run_id: &str) -> Vec<String> {
+    conn.prepare("SELECT id FROM wf_run WHERE parent_run_id = ?1")
+        .and_then(|mut s| {
+            s.query_map([parent_run_id], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap_or_default()
+}
+
 /// Live (spawned, non-terminal) step agents for a run — stopped on cancel/pause.
 fn live_step_agents(conn: &Connection, run_id: &str) -> Vec<String> {
     conn.prepare(
@@ -4977,6 +5750,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
+            runs: None,
         };
         drive_run(&ctx, run_id).await;
 
@@ -5102,6 +5876,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(true)), // pre-canceled
             pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
+            runs: None,
         };
         drive_run(&ctx, "run-cancel").await;
         let status: String = db
@@ -5127,6 +5902,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
+            runs: None,
         };
         drive_run(&ctx, "run-term").await;
         let (status, execs): (String, i64) = db
@@ -5155,6 +5931,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
+            runs: None,
         };
         drive_run(&ctx, "run-blocked").await;
         let (status, reason): (String, Option<String>) = db
@@ -5364,6 +6141,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: pending_ask.clone(),
             deadlines: Deadlines::default(),
+            runs: None,
         };
 
         // ── First drive: the step asks; the run pauses `question`. ──
@@ -5472,6 +6250,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask,
             deadlines: Deadlines::default(),
+            runs: None,
         };
 
         drive_run(&ctx, "run-ask2").await;
@@ -5521,6 +6300,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask,
             deadlines: Deadlines::default(),
+            runs: None,
         };
 
         drive_run(&ctx, "run-ask3").await;
@@ -5562,6 +6342,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
+            runs: None,
         };
         drive_run(&ctx, "run-resume").await;
 
@@ -5685,6 +6466,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
+            runs: None,
         };
         drive_run(&ctx, "run-b0").await;
 
@@ -5724,6 +6506,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
+            runs: None,
         };
         drive_run(&ctx, "run-b1").await;
 
@@ -6178,6 +6961,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
+            runs: None,
         }
     }
 
@@ -7043,6 +7827,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
+            runs: None,
         }
     }
 
@@ -7603,6 +8388,7 @@ mod tests {
                 watchdog_tick: std::time::Duration::from_millis(100),
                 ..Deadlines::default()
             },
+            runs: None,
         }
     }
 
@@ -7836,6 +8622,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: Arc::new(AtomicBool::new(false)),
             deadlines: Deadlines::default(),
+            runs: None,
         };
         let mut ledger = Ledger::default();
         let mut outcomes: HashMap<String, ChildStatus> = HashMap::new();
@@ -8012,5 +8799,264 @@ mod tests {
             "the restored dynamic-child failure must decide the join:all stage"
         );
         assert!(err.unwrap_or_default().contains("orchestrate stage failed"));
+    }
+
+    // ───────────────────────── dynamic composition (S12, §10.3) ─────────────
+
+    #[test]
+    fn child_run_ids_lists_only_direct_sub_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        for (id, parent) in [
+            ("p", None),
+            ("c1", Some("p")),
+            ("c2", Some("p")),
+            ("other", None),
+        ] {
+            conn.execute(
+                "INSERT INTO wf_run (id,parent_run_id,name,spec_json,task,project_id,repo_path,
+                    run_dir,branch,base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,?2,'n','{}','t','p','/r','/rd','wf/x','s','running','{}','{}',0,0)",
+                rusqlite::params![id, parent],
+            )
+            .unwrap();
+        }
+        let mut kids = child_run_ids(&conn, "p");
+        kids.sort();
+        assert_eq!(kids, vec!["c1".to_string(), "c2".to_string()]);
+        assert!(child_run_ids(&conn, "other").is_empty());
+    }
+
+    #[test]
+    fn rebuild_sub_runs_reconstructs_tracking_from_the_journal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('run','n','{}','t','p','/r','/rd','wf/x','s','running','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_run (id,parent_run_id,name,spec_json,task,project_id,repo_path,run_dir,
+                branch,base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('sub','run','n','{}','t','p','/r','/rd','wf/s','s','done','{}','{}',0,0)",
+            [],
+        )
+        .unwrap();
+        journal_event(
+            &conn,
+            None,
+            "run",
+            event_type::SUBRUN_LAUNCHED,
+            Some("orch-exec"),
+            &json!({
+                "sub_run_id": "sub",
+                "block_index": 0,
+                "integrate": "merge",
+                "reserved_turns": 30,
+                "reserved_tokens": 500,
+            }),
+        );
+        let map = rebuild_sub_runs(&conn, "run", 0);
+        let st = map.get("sub").expect("sub-run rebuilt");
+        assert!(matches!(st.integrate, Integrate::Merge));
+        assert_eq!(st.reserved_turns, 30);
+        assert_eq!(st.reserved_tokens, 500);
+        assert!(
+            matches!(st.terminal, Some(ChildStatus::Success)),
+            "a `done` sub-run is terminal so it is not reaped again"
+        );
+        // A different stage's rebuild sees nothing.
+        assert!(rebuild_sub_runs(&conn, "run", 1).is_empty());
+    }
+
+    #[test]
+    fn subrun_terminal_status_maps_run_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::database::init(tmp.path()).unwrap();
+        let conn = db.lock();
+        for (id, status) in [
+            ("d", "done"),
+            ("f", "failed"),
+            ("c", "canceled"),
+            ("r", "running"),
+        ] {
+            conn.execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,'n','{}','t','p','/r','/rd','wf/x','s',?2,'{}','{}',0,0)",
+                rusqlite::params![id, status],
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            subrun_terminal_status(&conn, "d"),
+            Some(ChildStatus::Success)
+        ));
+        assert!(matches!(
+            subrun_terminal_status(&conn, "f"),
+            Some(ChildStatus::Failure(_))
+        ));
+        assert!(matches!(
+            subrun_terminal_status(&conn, "c"),
+            Some(ChildStatus::Skipped)
+        ));
+        assert!(subrun_terminal_status(&conn, "r").is_none());
+    }
+
+    /// A run whose whole workflow is one orchestrate block with `compose` enabled
+    /// and no static children. The orchestrator's scripted first decision is a
+    /// `wf_compose` (a one-step, commit-gated fragment). Returns (db, ws, bb).
+    fn scaffold_compose(tmp: &Path, run_id: &str) -> (Db, PathBuf, PathBuf) {
+        let source = tmp.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        sh(&source, &["init", "-q", "-b", "main"]);
+        sh(&source, &["config", "user.email", "t@t.t"]);
+        sh(&source, &["config", "user.name", "t"]);
+        std::fs::write(source.join("README"), "base").unwrap();
+        sh(&source, &["add", "-A"]);
+        sh(&source, &["commit", "-qm", "base"]);
+        let base_sha = {
+            let o = Sh::new("git")
+                .current_dir(&source)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let run_dir = tmp.join("rundir");
+        let blackboard = blackboard::blackboard_dir(&run_dir);
+        std::fs::create_dir_all(&blackboard).unwrap();
+
+        let mut agents = BTreeMap::new();
+        for a in ["orch", "coder"] {
+            agents.insert(
+                a.to_string(),
+                super::super::spec::AgentSpec {
+                    base: "codex".to_string(),
+                    model: None,
+                    instructions: None,
+                    skills: vec![],
+                    custom_agent: None,
+                },
+            );
+        }
+        let spec = Spec {
+            version: 1,
+            name: "compose".to_string(),
+            description: None,
+            budgets: None,
+            agents,
+            workflow: vec![Block::Orchestrate(Orchestrate {
+                agent: "orch".to_string(),
+                goal: "lead".to_string(),
+                children: None,
+                body: vec![],
+                join: Join::All,
+                integrate: Integrate::None,
+                comms: vec![],
+                compose: Some(super::super::spec::ComposeLimits {
+                    max_sub_runs: 2,
+                    max_depth: 2,
+                }),
+            })],
+            finalize: None,
+        };
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        let db = crate::database::init(tmp).unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,'compose',?2,'t','p',?3,?4,'wf/compose-x',?5,'pending','{}','{}',0,0)",
+                rusqlite::params![
+                    run_id,
+                    spec_json,
+                    source.to_string_lossy(),
+                    run_dir.to_string_lossy(),
+                    base_sha,
+                ],
+            )
+            .unwrap();
+        (db, tmp.join("ws"), blackboard)
+    }
+
+    #[tokio::test]
+    async fn composed_sub_run_runs_to_done_and_merges_at_the_join() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The sub-run provisions its own run dir under the runs root; point it at
+        // the (writable) tempdir. This is the only test that launches a sub-run,
+        // so the process-global override doesn't race other tests.
+        std::env::set_var("FLETCH_RUNS_ROOT", tmp.path().join("runs"));
+        let (db, ws, bb) = scaffold_compose(tmp.path(), "run-compose");
+        // The orchestrator composes a one-step, commit-gated sub-run that merges.
+        let decision = json!({
+            "decision": "compose",
+            "plan": {
+                "task": "implement the composed slice",
+                "fragment": [{
+                    "step": {
+                        "id": "impl",
+                        "agent": "coder",
+                        "goal": "write code",
+                        "gate": { "type": "commit" }
+                    }
+                }],
+                "turns": 20,
+                "integrate": "merge",
+                "base": "parent-head",
+                "block_index": 0
+            }
+        });
+        let driver = OrchDriver::new_scripted(
+            ws,
+            bb,
+            OrchMode::Conclude,
+            db.clone(),
+            "run-compose",
+            decision,
+        );
+        let ctx = orch_ctx(db.clone(), driver);
+        drive_run(&ctx, "run-compose").await;
+
+        assert_eq!(
+            run_status_str(&db, "run-compose"),
+            "done",
+            "the composed sub-run drove the parent to done"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_run WHERE parent_run_id='run-compose'"
+            ),
+            1,
+            "exactly one sub-run was created"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_run WHERE parent_run_id='run-compose' AND status='done'"
+            ),
+            1,
+            "the sub-run ran to done"
+        );
+        assert!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_event WHERE run_id='run-compose' AND type='subrun_finished'"
+            ) >= 1,
+            "the sub-run's completion was journaled"
+        );
+        assert!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM wf_event WHERE run_id='run-compose' AND type='merge_done'"
+            ) >= 1,
+            "the sub-run merged at the join"
+        );
     }
 }
