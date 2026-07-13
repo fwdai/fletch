@@ -382,6 +382,13 @@ Rejected at save/import/launch time with precise messages:
 - nested `orchestrate` inside `orchestrate` (depth is handled by sub-runs,
   not block nesting)
 - `parallel.steps` empty, or containing non-`Step` blocks (v1)
+- `loop` bodies containing non-`Step` blocks (v1 — the engine executes
+  plain-step bodies only; the builder's loop "add block" menu offers steps
+  only for the same reason)
+- `orchestrate` with `integrate: merge` (v1 — orchestrate stages run
+  `integrate: none` only; wiring the orchestrator over the parallel merge
+  machinery is a follow-up, and the builder doesn't offer `merge` on
+  orchestrate)
 - gate `artifact.path` absolute or containing `..`
 - budgets with zero/negative values
 - unknown `version`
@@ -419,7 +426,7 @@ workflow:
         When a slice a sibling depends on lands, notify that sibling.
       children: { agent: coder, max: 3 }
       join: all
-      integrate: merge
+      integrate: none
       comms: [report, ask]
       compose: { max_sub_runs: 2, max_depth: 2 }
 
@@ -605,7 +612,9 @@ re-run" in place.
   prompts the orchestrator once ("all children are terminal — write your
   verdict.json / issue final decisions"), and the stage's gate is the
   orchestrator's own verdict. An orchestrator may end the stage early with
-  `wf_decide {stage_done}`. Details in §10.
+  `wf_decide {stage_done}`. v1 runs orchestrate stages with
+  `integrate: none` only — `merge` is rejected at validation (§5.2).
+  Details in §10.
 
 ---
 
@@ -804,6 +813,10 @@ the authority.
 ### 10.3 Dynamic composition (`wf_compose`)
 
 Enabled per-orchestrate-block via `compose: { max_sub_runs, max_depth }`.
+When enabled, the orchestrator's opening prompt (`prompts.rs`) describes
+the op and its args alongside `wf_decide`/`wf_notify` — an orchestrator
+can only discover `wf_compose` there, so a stage without `compose` never
+mentions it.
 
 ```json
 {

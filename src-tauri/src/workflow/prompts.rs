@@ -142,6 +142,9 @@ pub struct OrchestratorPromptCtx<'a> {
     /// The dynamic-child template: `(agent alias, max)` when the block declares
     /// `children`; `None` when only static children exist.
     pub dynamic: Option<(&'a str, u32)>,
+    /// `max_sub_runs` when the block enables dynamic composition (spec §10.3);
+    /// `None` leaves `wf_compose` out of the prompt entirely.
+    pub compose_max_sub_runs: Option<u32>,
 }
 
 /// The orchestrator's opening prompt (spec §10.2). Describes its supervisory
@@ -185,7 +188,7 @@ pub fn orchestrator_prompt(ctx: &OrchestratorPromptCtx) -> String {
     }
     s.push('\n');
 
-    s.push_str(&orchestrator_comms_section());
+    s.push_str(&orchestrator_comms_section(ctx.compose_max_sub_runs));
     s.push('\n');
 
     s.push_str(&blackboard_contract(ctx.orch_step_id));
@@ -224,9 +227,11 @@ pub fn orchestrator_conclude_prompt(orch_step_id: &str) -> String {
 
 /// The orchestrator's comms section: it holds every cap (spec §5.1 — "orchestrator
 /// gets all"), so it may answer/route with `wf_decide`, push notices to children
-/// with `wf_notify`, and escalate to the human. Mirrors the git-actions mailbox
-/// style used by the step protocol (§8.5 item 6).
-fn orchestrator_comms_section() -> String {
+/// with `wf_notify`, and escalate to the human. When the stage enables dynamic
+/// composition (spec §10.3), `wf_compose` is described too — an op the agent can
+/// only discover here. Mirrors the git-actions mailbox style used by the step
+/// protocol (§8.5 item 6).
+fn orchestrator_comms_section(compose_max_sub_runs: Option<u32>) -> String {
     let mut s = String::new();
     s.push_str("## Directing the workflow\n\n");
     s.push_str(
@@ -256,6 +261,23 @@ fn orchestrator_comms_section() -> String {
          `args: { \"to\": \"<step-id>\" | \"all-children\", \"message\": \"…\" }`. \
          Push a notice to a running child (e.g. a sibling's slice landed).\n",
     );
+    if let Some(max) = compose_max_sub_runs {
+        s.push_str(&format!(
+            "- **Compose a sub-workflow** — `op: \"wf_compose\"`, \
+             `args: {{ \"task\": \"…\", \"fragment\": [ {{ \"step\": {{ \"id\": \"…\", \
+             \"agent\": \"<alias>\", \"goal\": \"…\" }} }}, … ], \
+             \"budgets\": {{ \"turns\": <n> }}, \"integrate\": \"none\" | \"merge\", \
+             \"base\": \"parent-head\" | \"run-base\" }}`. \
+             When the work needs a multi-step pipeline rather than one more child, \
+             describe it as a fragment of workflow blocks and the engine runs it as \
+             a sub-run that joins this stage. `budgets.turns` reserves a slice of \
+             this run's remaining turn budget (required; `budgets.tokens` optional). \
+             `agents` is an optional agent map — omit it to reuse this run's agents. \
+             The engine validates the fragment and enforces the limits; you may \
+             launch at most **{max}** sub-run{s_} this stage.\n",
+            s_ = if max == 1 { "" } else { "s" },
+        ));
+    }
     s
 }
 
@@ -497,6 +519,7 @@ mod tests {
             },
             static_children: &statics,
             dynamic: Some(("coder", 3)),
+            compose_max_sub_runs: None,
         });
         assert!(p.contains("Ship the feature"));
         assert!(p.contains("Assign slices"));
@@ -509,8 +532,35 @@ mod tests {
         assert!(p.contains("wf_decide"));
         assert!(p.contains("spawn_child") && p.contains("stage_done") && p.contains("escalate"));
         assert!(p.contains("wf_notify"));
+        // Composition is disabled for this stage, so the op is never mentioned.
+        assert!(!p.contains("wf_compose"), "compose off ⇒ unadvertised: {p}");
         // Writes its own verdict to conclude.
         assert!(p.contains("orchestrate-1/verdict.json"));
+    }
+
+    #[test]
+    fn orchestrator_prompt_advertises_compose_only_when_enabled() {
+        let p = orchestrator_prompt(&OrchestratorPromptCtx {
+            run_task: "Ship the feature",
+            orch_step_id: "orchestrate-0",
+            goal: "Split and supervise",
+            position: Position {
+                step_index: 0,
+                step_count: 1,
+                iteration: None,
+            },
+            static_children: &[],
+            dynamic: None,
+            compose_max_sub_runs: Some(2),
+        });
+        assert!(p.contains("wf_compose"), "{p}");
+        // The contract's load-bearing pieces: fragment shape, required budget
+        // slice, integrate/base vocabulary, and the stage limit.
+        assert!(p.contains("\"fragment\""));
+        assert!(p.contains("\"budgets\""));
+        assert!(p.contains("\"turns\""));
+        assert!(p.contains("\"parent-head\"") && p.contains("\"run-base\""));
+        assert!(p.contains("at most **2** sub-runs"), "{p}");
     }
 
     #[test]

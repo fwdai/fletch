@@ -894,7 +894,9 @@ async fn finalize_run(
 /// Reject blocks the engine can't yet execute, up front, so a run fails with a
 /// clear cause before doing any work rather than part-way through. S8/S9 execute
 /// `step` and `parallel` (both `integrate: none` and `integrate: merge`); loop
-/// (S7) executes bodies of plain steps; orchestrate (S11) is not wired yet.
+/// (S7) executes bodies of plain steps; orchestrate (S11) runs `integrate: none`
+/// only. `spec::validate` rejects both unsupported shapes at save/import now, so
+/// this is a backstop for definitions persisted before that rule existed.
 fn ensure_executable(blocks: &[Block]) -> Result<()> {
     for b in blocks {
         match b {
@@ -2550,6 +2552,7 @@ async fn run_orchestrate_stage(
             },
             static_children: &static_children,
             dynamic,
+            compose_max_sub_runs: orch.compose.as_ref().map(|c| c.max_sub_runs),
         });
         // On a resume after escalation, an answer for the orchestrator is folded in.
         let delivered = {
