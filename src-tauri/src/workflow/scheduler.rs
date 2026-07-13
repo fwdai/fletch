@@ -1898,11 +1898,13 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
                 let conn = c.db.lock();
                 build_spawn_req(
                     &conn,
+                    c.app.as_ref(),
                     &c.agent_spec,
                     &c.fork_base,
                     &c.repo,
                     &c.run_repo,
                     &c.run_id,
+                    Some(&exec_id),
                 )
             },
             pre_spawned: None,
@@ -2151,22 +2153,38 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
 /// skill/MCP deliverables are resolved to by-value snapshots here — at spawn
 /// (§3.2), the same semantics as the draft spawn path — so a custom-agent step
 /// carries its skills and deliverable MCP servers, and later library edits
-/// never touch a spawned step. The blackboard write-grant is derived from
-/// `owner_run_id` at spawn.
+/// never touch a spawned step. Skills the definition requested that no longer
+/// resolve (deleted since the save) are journaled as a `skills_missing`
+/// warning against `warn_exec_id`; the step still spawns. Pass
+/// `warn_exec_id: None` when the req describes an already-spawned agent
+/// (`pre_spawned`) whose spawn call warned already. The blackboard write-grant
+/// is derived from `owner_run_id` at spawn.
 fn build_spawn_req(
     conn: &Connection,
+    app: Option<&AppHandle>,
     agent_spec: &AgentSpec,
     fork_base: &str,
     repo: &Path,
     run_repo: &Path,
     run_id: &str,
+    warn_exec_id: Option<&str>,
 ) -> SpawnReq {
-    let (skills, mcp_servers) = super::definition::resolve_step_deliverables(
+    let (skills, mcp_servers, missing_skills) = super::definition::resolve_step_deliverables(
         conn,
         agent_spec.custom_agent.as_deref(),
         &agent_spec.skills,
         &agent_spec.base,
     );
+    if let Some(exec_id) = warn_exec_id.filter(|_| !missing_skills.is_empty()) {
+        journal_event(
+            conn,
+            app,
+            run_id,
+            event_type::SKILLS_MISSING,
+            Some(exec_id),
+            &json!({ "skills": missing_skills }),
+        );
+    }
     SpawnReq {
         repo_path: repo.to_path_buf(),
         provider: agent_spec.base.clone(),
@@ -2317,7 +2335,16 @@ async fn run_orchestrate_stage(
     }
     let orch_req = {
         let conn = ctx.db.lock();
-        build_spawn_req(&conn, orch_agent, fork_base, repo, run_repo, run_id)
+        build_spawn_req(
+            &conn,
+            ctx.app.as_ref(),
+            orch_agent,
+            fork_base,
+            repo,
+            run_repo,
+            run_id,
+            Some(&orch_exec),
+        )
     };
     let spawned = match ctx.driver.spawn(orch_req).await {
         Ok(s) => s,
@@ -3776,11 +3803,13 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
             let conn = c.db.lock();
             build_spawn_req(
                 &conn,
+                c.app.as_ref(),
                 &c.agent_spec,
                 &c.fork_base,
                 &c.repo,
                 &c.run_repo,
                 &c.run_id,
+                Some(&exec_id),
             )
         };
         let spawned = match c.driver.spawn(child_req).await {
@@ -3852,11 +3881,14 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
                 let conn = c.db.lock();
                 build_spawn_req(
                     &conn,
+                    c.app.as_ref(),
                     &c.agent_spec,
                     &c.fork_base,
                     &c.repo,
                     &c.run_repo,
                     &c.run_id,
+                    // The agent is pre-spawned above — that call warned already.
+                    None,
                 )
             },
             pre_spawned: Some(spawned),
@@ -4697,7 +4729,16 @@ async fn execute_step(
         let params = AttemptParams {
             spawn_req: {
                 let conn = ctx.db.lock();
-                build_spawn_req(&conn, agent_spec, fork_ref, env.repo, env.run_repo, run_id)
+                build_spawn_req(
+                    &conn,
+                    ctx.app.as_ref(),
+                    agent_spec,
+                    fork_ref,
+                    env.repo,
+                    env.run_repo,
+                    run_id,
+                    Some(&exec_id),
+                )
             },
             pre_spawned: None,
             blackboard: env.blackboard.to_path_buf(),

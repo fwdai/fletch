@@ -83,6 +83,12 @@ describe("summarizeEvent", () => {
     expect(summarizeEvent(ev(1, "boundary_commit", {})).title).toBe("Committed ");
   });
 
+  it("lists the unresolved skills a step spawned without", () => {
+    const warn = summarizeEvent(ev(1, "skills_missing", { skills: ["code-review", "sk-gone"] }));
+    expect(warn.title).toBe("Started without missing skills");
+    expect(warn.detail).toBe("code-review, sk-gone");
+  });
+
   it("shows finalize PR success and failure distinctly", () => {
     const ok = summarizeEvent(ev(1, "finalize_pr", { url: "https://example/pr/1" }));
     expect(ok.title).toBe("Pull request opened");

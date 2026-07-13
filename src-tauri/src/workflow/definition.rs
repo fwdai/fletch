@@ -275,8 +275,10 @@ fn mcp_attachable(support: &str, transport: &str) -> bool {
 /// and servers by id, plus the spec's `skills` names resolved against the
 /// library, filtered to what the provider can deliver. Snapshots are by value
 /// (the same semantics as the draft spawn path), so later library edits never
-/// touch a spawned step. Dangling ids and unknown names drop out silently —
-/// the import already warned about them.
+/// touch a spawned step. A skill that no longer resolves (deleted since the
+/// definition was saved) is returned in the third element so the caller can
+/// journal a warning — the step still spawns, matching import's
+/// warn-don't-fail policy.
 pub(super) fn resolve_step_deliverables(
     conn: &Connection,
     custom_agent_id: Option<&str>,
@@ -285,9 +287,11 @@ pub(super) fn resolve_step_deliverables(
 ) -> (
     Vec<crate::agent_profile::SkillSnapshot>,
     Vec<crate::agent_profile::McpServerSnapshot>,
+    Vec<String>,
 ) {
     let mut skills: Vec<crate::agent_profile::SkillSnapshot> = Vec::new();
     let mut mcp: Vec<crate::agent_profile::McpServerSnapshot> = Vec::new();
+    let mut missing_skills: Vec<String> = Vec::new();
 
     let assigned: (Vec<String>, Vec<String>) = custom_agent_id
         .and_then(|id| {
@@ -311,17 +315,23 @@ pub(super) fn resolve_step_deliverables(
     // Custom-agent skills by id (assignment order), then spec names on top,
     // deduped by name.
     for skill_id in &assigned.0 {
-        if let Ok(Some(s)) = skill_row(conn, "id", skill_id) {
-            if !skills.iter().any(|k| k.name == s.name) {
-                skills.push(s);
+        match skill_row(conn, "id", skill_id) {
+            Ok(Some(s)) => {
+                if !skills.iter().any(|k| k.name == s.name) {
+                    skills.push(s);
+                }
             }
+            _ => missing_skills.push(skill_id.clone()),
         }
     }
     for name in skill_names {
-        if let Ok(Some(s)) = skill_row(conn, "name", name) {
-            if !skills.iter().any(|k| k.name == s.name) {
-                skills.push(s);
+        match skill_row(conn, "name", name) {
+            Ok(Some(s)) => {
+                if !skills.iter().any(|k| k.name == s.name) {
+                    skills.push(s);
+                }
             }
+            _ => missing_skills.push(name.clone()),
         }
     }
 
@@ -333,7 +343,7 @@ pub(super) fn resolve_step_deliverables(
             }
         }
     }
-    (skills, mcp)
+    (skills, mcp, missing_skills)
 }
 
 fn skill_row(
@@ -567,16 +577,17 @@ mod tests {
     #[test]
     fn deliverables_resolve_custom_agent_ids_plus_spec_names() {
         let conn = library_db();
-        let (skills, mcp) = resolve_step_deliverables(
+        let (skills, mcp, missing) = resolve_step_deliverables(
             &conn,
             Some("ca1"),
             &["tests-first".into(), "code-review".into(), "unknown".into()],
             "claude",
         );
         // ca1's sk1 first (assignment order), then the spec name that isn't a
-        // duplicate; the dangling id and unknown name drop silently.
+        // duplicate; the dangling id and unknown name are reported as missing.
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["code-review", "tests-first"]);
+        assert_eq!(missing, vec!["dangling", "unknown"]);
         assert_eq!(skills[0].body, "# Review");
         // claude supports all transports: both servers, parsed.
         assert_eq!(mcp.len(), 2);
@@ -593,20 +604,21 @@ mod tests {
     #[test]
     fn deliverables_filter_http_servers_for_stdio_only_providers() {
         let conn = library_db();
-        let (_, mcp) = resolve_step_deliverables(&conn, Some("ca1"), &[], "codex");
+        let (_, mcp, _) = resolve_step_deliverables(&conn, Some("ca1"), &[], "codex");
         assert_eq!(mcp.len(), 1, "codex delivers stdio only");
         assert_eq!(mcp[0].name, "gh");
-        let (_, none) = resolve_step_deliverables(&conn, Some("ca1"), &[], "cursor");
+        let (_, none, _) = resolve_step_deliverables(&conn, Some("ca1"), &[], "cursor");
         assert!(none.is_empty(), "providers without MCP support get none");
     }
 
     #[test]
     fn deliverables_without_custom_agent_resolve_names_only() {
         let conn = library_db();
-        let (skills, mcp) =
+        let (skills, mcp, missing) =
             resolve_step_deliverables(&conn, None, &["code-review".into()], "claude");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "code-review");
+        assert!(missing.is_empty(), "everything requested resolved");
         assert!(mcp.is_empty(), "MCP comes only via a custom agent (§5.1)");
     }
 }
