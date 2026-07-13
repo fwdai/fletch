@@ -1308,24 +1308,30 @@ async fn begin_merge_stage(
     let run_dir = PathBuf::from(&run.run_dir);
     let int_wt = gitops::integration_worktree_path(&run_dir, block_index);
 
-    // Successful children in spec order. Under join `any` a slow sibling can race
-    // past the stage-cancel and reach `done` too, so more than one child may have
-    // a done exec — but `any` integrates exactly ONE branch, never a loser's work.
-    // Merge only the first successful child (all its committed work is a complete,
-    // valid result); `all` merges every child.
-    let mut winners: Vec<(String, String)> = {
+    // Successful children with their completion time, in spec order.
+    let mut done: Vec<(String, String, i64)> = {
         let conn = ctx.db.lock();
         par.steps
             .iter()
             .filter_map(|s| {
-                latest_done_exec_for_step(&conn, run_id, &s.id)
-                    .map(|e| (s.id.clone(), gitops::step_ref(&e)))
+                done_exec_with_ended_at(&conn, run_id, &s.id)
+                    .map(|(e, ended)| (s.id.clone(), gitops::step_ref(&e), ended))
             })
             .collect()
     };
-    if matches!(par.join, Join::Any) {
-        winners.truncate(1);
-    }
+    // `all` integrates every child (spec order). `any` integrates exactly ONE
+    // branch — the child that FINISHED FIRST (least `ended_at`), i.e. the one
+    // whose success satisfied the join and cancelled the rest. A slow sibling
+    // that raced past the stage-cancel and also reached `done` finished later, so
+    // it is never the one integrated. Ties keep spec order (stable sort). Using
+    // the persisted `ended_at` makes this correct on resume too, without mutating
+    // any terminal attempt row.
+    let winners: Vec<(String, String)> = if matches!(par.join, Join::Any) {
+        done.sort_by_key(|(_, _, ended)| *ended);
+        done.into_iter().take(1).map(|(s, r, _)| (s, r)).collect()
+    } else {
+        done.into_iter().map(|(s, r, _)| (s, r)).collect()
+    };
     if winners.is_empty() {
         // No child produced a ferried ref — nothing to integrate; leave the line.
         return Ok(StageFlow::Advance { line: None });
@@ -2968,6 +2974,25 @@ fn latest_done_exec_for_step(conn: &Connection, run_id: &str, step_id: &str) -> 
          ORDER BY rowid DESC LIMIT 1",
         rusqlite::params![run_id, step_id],
         |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// The step's `done` exec id and its completion time (`ended_at`, 0 if unset).
+/// Used to pick the `any`-join winner — the child that finished first (§12.3).
+fn done_exec_with_ended_at(
+    conn: &Connection,
+    run_id: &str,
+    step_id: &str,
+) -> Option<(String, i64)> {
+    conn.query_row(
+        "SELECT id, COALESCE(ended_at, 0) FROM wf_step_exec
+         WHERE run_id = ?1 AND step_id = ?2 AND status = 'done'
+         ORDER BY rowid DESC LIMIT 1",
+        rusqlite::params![run_id, step_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()
     .ok()
@@ -4965,10 +4990,12 @@ mod tests {
     }
 
     /// A slow sibling can race past `any`'s stage-cancel and land its own `done`
-    /// exec; the merge must still integrate exactly ONE branch, never a loser's
-    /// code. Pre-seed both children `done` (the raced state) and drive the merge.
+    /// exec. The merge must integrate exactly ONE branch — the child that
+    /// FINISHED FIRST, not the first in spec order. Pre-seed both children `done`
+    /// with `b` (spec-second) finishing *before* `a` (spec-first), then assert the
+    /// integrated tree carries `b`'s work and drops `a`'s.
     #[tokio::test]
-    async fn merge_any_integrates_only_one_of_multiple_done_children() {
+    async fn merge_any_integrates_the_child_that_finished_first() {
         let tmp = tempfile::tempdir().unwrap();
         let children = vec![cstep("a", ""), cstep("b", "")];
         let (db, _ws, _base) = scaffold_parallel_integrate(
@@ -4980,12 +5007,13 @@ mod tests {
         );
 
         // Provision the run repo and ferry two real child commits into it, then
-        // mark both children `done` — the raced-sibling state a live `any` stage
-        // can leave behind.
+        // mark both children `done` — the raced state a live `any` stage can leave
+        // behind. `b` finished first (smaller `ended_at`) so `b` is the winner,
+        // even though `a` is earlier in spec order.
         let source = tmp.path().join("src-run-ma1");
         let run_dir = tmp.path().join("rd-run-ma1");
         let run_repo = gitops::provision_run_repo(&source, &run_dir).await.unwrap();
-        for (child, exec) in [("a", "exec-a"), ("b", "exec-b")] {
+        for (child, exec, ended) in [("a", "exec-a", 200_i64), ("b", "exec-b", 100_i64)] {
             let ws = tmp.path().join(format!("wsx-{child}"));
             sh(
                 tmp.path(),
@@ -5005,9 +5033,9 @@ mod tests {
             gitops::ferry(&ws, &run_repo, &r).await.unwrap();
             db.lock()
                 .execute(
-                    "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,head_end)
-                     VALUES (?1,'run-ma1',?2,1,0,'done','commit','x')",
-                    rusqlite::params![exec, child],
+                    "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,head_end,ended_at)
+                     VALUES (?1,'run-ma1',?2,1,0,'done','commit','x',?3)",
+                    rusqlite::params![exec, child, ended],
                 )
                 .unwrap();
         }
@@ -5025,11 +5053,10 @@ mod tests {
             "exactly one branch merged under `any`"
         );
         let files = merge_tree(tmp.path(), &db, "run-ma1");
-        let n = ["a.txt", "b.txt"]
-            .iter()
-            .filter(|f| files.contains(**f))
-            .count();
-        assert_eq!(n, 1, "only one child's work integrated: {files}");
+        assert!(
+            files.contains("b.txt") && !files.contains("a.txt"),
+            "the first-finished child (b) is integrated, not the spec-first (a): {files}"
+        );
     }
 
     /// Human resolution must be committed: if the user edits the integration
