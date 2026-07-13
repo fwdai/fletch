@@ -89,6 +89,15 @@ pub trait AgentDriver: Send + Sync {
     fn last_activity(&self, agent_id: &str) -> Option<i64>;
     /// Per-turn usage if the provider exposes it (else `None`).
     fn turn_usage(&self, agent_id: &str) -> Option<TurnUsage>;
+    /// Synchronously drain any RPC requests the agent has already written but
+    /// whose per-agent watcher hasn't dispatched yet — so a `wf_ask` issued
+    /// during the just-finished turn is persisted before the scheduler acts on
+    /// that turn's gate (§10.4). The default is a no-op: only the real
+    /// supervisor-backed driver has a mailbox; `MockDriver` and the test stubs
+    /// signal comms directly.
+    fn settle_rpc<'a>(&'a self, _agent_id: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
 }
 
 /// The production driver: a thin adapter over the agent [`Supervisor`].
@@ -220,6 +229,12 @@ impl AgentDriver for SupervisorDriver {
             }
         }
         any.then_some(total)
+    }
+
+    fn settle_rpc<'a>(&'a self, agent_id: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.sup.settle_agent_rpc(&self.app, agent_id).await;
+        })
     }
 }
 

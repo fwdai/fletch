@@ -1,13 +1,13 @@
 //! Step protocol prompt assembly (spec §8.5). Pure string building: given the
-//! run task, the step goal, position, gate, and turn budget, produce the prompt
-//! the scheduler sends to a step agent. The comms section (§8.5 item 6) is
-//! deliberately omitted — it arrives with the comms router in S10; a step with
-//! declared caps gets those instructions appended there.
+//! run task, the step goal, position, gate, turn budget, and declared comms
+//! caps, produce the prompt the scheduler sends to a step agent. A step with
+//! `report`/`ask` caps gets the comms section (§8.5 item 6) appended, describing
+//! how to call the `wf_*` RPC ops through the mailbox.
 //!
 //! Everything here is deterministic and side-effect free so the exact text is
 //! unit-testable and stable across runs.
 
-use super::spec::Gate;
+use super::spec::{CommsCap, Gate};
 
 /// Where a step sits in the run, for the "step N of M, iteration i of max"
 /// context line (spec §8.5 item 3).
@@ -43,6 +43,9 @@ pub struct StepPromptCtx<'a> {
     pub gate: &'a Gate,
     /// The per-attempt turn budget, when one applies (§8.5 item 7).
     pub turns_per_attempt: Option<i64>,
+    /// The step's declared comms caps (§8.5 item 6). The comms section is
+    /// appended only when this is non-empty.
+    pub comms: &'a [CommsCap],
 }
 
 /// The full step prompt for a fresh attempt (spec §8.5).
@@ -71,12 +74,56 @@ pub fn step_prompt(ctx: &StepPromptCtx) -> String {
     s.push_str(&gate_statement(ctx.gate));
     s.push_str("\n\n");
 
+    if let Some(comms) = comms_section(ctx.comms) {
+        s.push_str(&comms);
+        s.push('\n');
+    }
+
     if let Some(budget) = budget_notice(ctx.turns_per_attempt) {
         s.push_str(&budget);
         s.push('\n');
     }
 
     s
+}
+
+/// The comms section (spec §8.5 item 6): how to talk to the host through the RPC
+/// mailbox, mirroring the git-actions playbook style. Only the ops the step is
+/// permitted to call are described. `None` when the step has no caps.
+fn comms_section(caps: &[CommsCap]) -> Option<String> {
+    let can_report = caps.contains(&CommsCap::Report);
+    let can_ask = caps.contains(&CommsCap::Ask);
+    if !can_report && !can_ask {
+        return None;
+    }
+
+    let mut s = String::new();
+    s.push_str("## Talking to the workflow\n\n");
+    s.push_str(
+        "You can send structured messages to the workflow host through your RPC \
+         mailbox (the same `$FLETCH_RPC_DIR` request/response channel the git \
+         actions use): write `requests/<id>.json` with an `op` and `args`, then \
+         read `responses/<id>.json`.\n\n",
+    );
+    if can_report {
+        s.push_str(
+            "- **Report progress** — `op: \"wf_report\"`, \
+             `args: { \"status\": \"progress\" | \"done\", \"note\": \"…\" }`. \
+             Use it to surface a milestone or your final status; it never ends \
+             your turn or replaces `verdict.json`.\n",
+        );
+    }
+    if can_ask {
+        s.push_str(
+            "- **Ask a question** — `op: \"wf_ask\"`, \
+             `args: { \"question\": \"…\", \"options\": [\"…\"] }` (options \
+             optional). Call it when you are genuinely blocked on a decision only \
+             a human can make, **then end your turn**: the workflow pauses, and \
+             you are re-prompted with the answer on your next turn. Don't ask \
+             about anything you can decide yourself.\n",
+        );
+    }
+    Some(s)
 }
 
 /// The re-prompt sent when the gate is unmet but the attempt still has turns
@@ -206,6 +253,7 @@ mod tests {
             },
             gate,
             turns_per_attempt: Some(3),
+            comms: &[],
         }
     }
 
@@ -245,12 +293,38 @@ mod tests {
     }
 
     #[test]
-    fn no_comms_section_in_v1_prompt() {
+    fn no_comms_section_without_caps() {
         let gate = Gate::Verdict;
         let p = step_prompt(&ctx(&gate, "task", "goal"));
-        // Comms instructions (wf_report/wf_ask) are S10; they must not leak in.
+        // A step with no declared caps gets no comms instructions.
         assert!(!p.contains("wf_report"));
         assert!(!p.contains("wf_ask"));
+        assert!(!p.contains("Talking to the workflow"));
+    }
+
+    #[test]
+    fn comms_section_lists_only_declared_caps() {
+        let gate = Gate::Verdict;
+        // Ask only.
+        let mut c = ctx(&gate, "task", "goal");
+        c.comms = &[CommsCap::Ask];
+        let p = step_prompt(&c);
+        assert!(p.contains("Talking to the workflow"));
+        assert!(p.contains("wf_ask"));
+        assert!(!p.contains("wf_report"), "report not declared: {p}");
+
+        // Report only.
+        let mut c = ctx(&gate, "task", "goal");
+        c.comms = &[CommsCap::Report];
+        let p = step_prompt(&c);
+        assert!(p.contains("wf_report"));
+        assert!(!p.contains("wf_ask"), "ask not declared: {p}");
+
+        // Both.
+        let mut c = ctx(&gate, "task", "goal");
+        c.comms = &[CommsCap::Report, CommsCap::Ask];
+        let p = step_prompt(&c);
+        assert!(p.contains("wf_report") && p.contains("wf_ask"));
     }
 
     #[test]

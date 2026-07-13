@@ -85,6 +85,13 @@ pub struct AttemptParams {
     /// can be stopped; no spawn-race leak) and during the ready/turn waits. The
     /// linear path passes a never-set flag.
     pub cancel: Arc<AtomicBool>,
+    /// Raised by the comms router when this step has an unanswered `wf_ask`
+    /// routed to the human (spec §10.4). Checked at each turn end: while set, the
+    /// gate is **not** evaluated — the run pauses `question` instead of gating on
+    /// the wrong turn. Shared with the run's [`RunHandle`] so the router (running
+    /// in the RPC watcher task) and this attempt observe the same flag. Defaults
+    /// to a never-set flag for runs without comms and for `MockDriver` tests.
+    pub pending_ask: Arc<AtomicBool>,
 }
 
 /// The terminal outcome of an attempt (maps onto the §6.2 attempt states).
@@ -97,6 +104,11 @@ pub enum AttemptOutcome {
     Blocked { reason: String },
     /// Approval gate → run pauses `approval`; a human resolves via `wf_approve`.
     AwaitingApproval,
+    /// The step raised a `wf_ask` routed to the human and the gate is deferred
+    /// (spec §10.4): the run pauses `question` without gating; the scheduler
+    /// stops the agent and, on `wf_answer`, resumes with a fresh attempt that
+    /// carries the answer.
+    AwaitingAnswer,
     /// Spawn/turn-start timeout, agent error, or an exhausted stall → the
     /// scheduler applies the retry policy (spec §6.5).
     Error { error: String },
@@ -166,6 +178,7 @@ pub async fn run_attempt(
         deadlines,
         reprompt_on_block,
         cancel,
+        pending_ask,
     } = params;
 
     let fork_base = spawn_req.fork_base.clone();
@@ -307,6 +320,20 @@ pub async fn run_attempt(
         // Enforcement point: at every turn end (spec §11.2).
         if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
             return budget_exceeded_run(agent_id, worktree, which, events);
+        }
+
+        // Pending-ask deferral (spec §6.3 step 5, §10.4): if the step raised a
+        // `wf_ask` routed to the human during this turn, the gate is not
+        // evaluated — the run pauses `question` and the answer arrives on a
+        // fresh attempt. Checked before gating so a turn that both asks and
+        // writes a done-verdict still defers.
+        if pending_ask.load(Ordering::SeqCst) {
+            return AttemptRun {
+                agent_id: Some(agent_id),
+                worktree: Some(worktree),
+                outcome: AttemptOutcome::AwaitingAnswer,
+                events,
+            };
         }
 
         // Gate — pure evaluation over freshly gathered facts (spec §6.3 step 6).
@@ -676,6 +703,7 @@ mod tests {
             deadlines,
             reprompt_on_block: true,
             cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -740,6 +768,34 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn pending_ask_defers_the_gate() {
+        // The step wrote a done-verdict during its turn, but it also raised a
+        // wf_ask routed to the human (pending_ask set). The gate must NOT fire;
+        // the attempt returns AwaitingAnswer so the run pauses `question`
+        // (spec §6.3 step 5, §10.4).
+        let bb = tempfile::tempdir().unwrap();
+        let d = MockDriver::new();
+        d.set_ready_on_spawn(true);
+        d.set_turn_behavior(TurnBehavior::Complete);
+        let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
+        d.set_complete_verdict(step_dir, r#"{"result":"done","summary":"ok"}"#);
+
+        let mut p = params(Gate::Verdict, bb.path().to_path_buf(), fast());
+        p.pending_ask = Arc::new(AtomicBool::new(true));
+        let run = run(d.as_ref(), &NeverTests, p).await;
+        assert!(
+            matches!(run.outcome, AttemptOutcome::AwaitingAnswer),
+            "{:?}",
+            run.outcome
+        );
+        // The gate was never evaluated while the ask was pending.
+        assert!(
+            !types_present(&run.events, event_type::GATE_EVALUATED),
+            "gate must not be evaluated with a pending ask"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn spawn_timeout_when_never_ready() {
         let bb = tempfile::tempdir().unwrap();
         let d = MockDriver::new();
@@ -785,7 +841,7 @@ mod tests {
         d.set_ready_on_spawn(true);
         let mut p = params(Gate::Verdict, bb.path().to_path_buf(), fast());
         p.cancel = Arc::new(AtomicBool::new(true)); // already cancelled at entry
-        let run = run(d.as_ref(), p).await;
+        let run = run(d.as_ref(), &NeverTests, p).await;
         assert!(
             matches!(run.outcome, AttemptOutcome::Canceled),
             "{:?}",

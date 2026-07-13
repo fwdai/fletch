@@ -40,12 +40,29 @@ pub(super) fn spawn_rpc_watcher(
                 return;
             }
 
-            let events = rpc::process_pending(&rpc_dir, dispatcher.as_ref()).await;
-            for event in events {
-                handle_rpc_event(&sup, &app, &agent_id, event);
-            }
+            process_agent_rpc_once(&sup, &app, &agent_id, dispatcher.as_ref(), &rpc_dir).await;
         }
     });
+}
+
+/// Process every request currently pending in `agent_id`'s mailbox once, applying
+/// the resulting git/PR events. Shared by the polling watcher and the scheduler's
+/// synchronous drain (`Supervisor::settle_agent_rpc`): `process_pending` is
+/// idempotent and in-flight-guarded, so a concurrent tick and drain never
+/// double-dispatch. A request the agent wrote during its turn (e.g. a `wf_ask`)
+/// is therefore dispatched — and its message persisted — deterministically before
+/// the scheduler acts on that turn's gate outcome (§10.4).
+pub(super) async fn process_agent_rpc_once(
+    sup: &Arc<Supervisor>,
+    app: &AppHandle,
+    agent_id: &str,
+    dispatcher: &dyn rpc::RpcDispatcher,
+    rpc_dir: &std::path::Path,
+) {
+    let events = rpc::process_pending(rpc_dir, dispatcher).await;
+    for event in events {
+        handle_rpc_event(sup, app, agent_id, event);
+    }
 }
 
 fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rpc::RpcEvent) {

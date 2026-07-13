@@ -551,7 +551,19 @@ impl Supervisor {
             .parent_branch
             .clone()
             .unwrap_or_else(|| "main".to_string());
-        let rpc_dispatcher = Arc::new(rpc::git::GitDispatcher::new(cwd.clone(), base_branch));
+        let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch);
+        // A run-owned step agent also gets the workflow comms ops (wf_report /
+        // wf_ask / wf_notify, §10); everything else still falls through to the
+        // git dispatcher. Plain agents keep the git dispatcher unchanged.
+        let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> = match &record.owner_run_id {
+            Some(run_id) => Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
+                app.clone(),
+                run_id.clone(),
+                agent_id.to_string(),
+                git_dispatcher,
+            )),
+            None => Arc::new(git_dispatcher),
+        };
 
         // Claude only writes a session file once the first turn lands.
         // If task is still empty (no first user message has ever been
@@ -632,6 +644,13 @@ impl Supervisor {
         }
 
         spawn_turn_watchdog(self.clone(), app.clone(), agent_id_str.clone(), my_gen);
+
+        // Register the dispatcher so the mailbox can also be drained on demand
+        // (`settle_agent_rpc`), not only on the watcher's tick. Overwrites any
+        // prior generation's entry.
+        self.rpc_dispatchers
+            .lock()
+            .insert(agent_id_str.clone(), rpc_dispatcher.clone());
 
         // Watch this agent's RPC mailbox for the life of this generation,
         // executing allowlisted ops and writing responses back.
