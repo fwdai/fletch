@@ -272,11 +272,27 @@ impl WorkflowService {
             return false;
         }
 
-        for agent in supervisor.workspace.agents_for_run(run_id) {
-            if let Err(e) = supervisor.clone().discard_agent(&agent.id).await {
-                errors.push(format!("run {run_id}: discard agent {}: {e}", agent.id));
-                return false;
-            }
+        // Discard every owned workspace before giving up, rather than bailing on
+        // the first failure: a single wedged agent must not strand the others,
+        // which would leave the surviving (kept-for-retry) run showing some
+        // agents already gone and others intact. A successful discard removes the
+        // workspace row, so `agents_for_run` no longer lists it — a re-delete
+        // only sees the ones that failed, and retries just those.
+        let agent_ids: Vec<String> = supervisor
+            .workspace
+            .agents_for_run(run_id)
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        let all_discarded = discard_all(&agent_ids, run_id, errors, |id| {
+            let sup = supervisor.clone();
+            async move { sup.discard_agent(&id).await }
+        })
+        .await;
+        if !all_discarded {
+            // A workspace survives; keep this run's row (and, via `false`, its
+            // ancestors') so a re-delete rediscovers and finishes the cleanup.
+            return false;
         }
         let deleted = {
             let conn = self.db.lock();
@@ -5723,6 +5739,33 @@ fn delete_run_data(conn: &Connection, run_id: &str) -> Result<()> {
     delete_run_data_at(conn, run_id, &blackboard::run_dir(run_id)?)
 }
 
+/// Discard every id, pressing on past a failure instead of bailing on the first
+/// (the review blocker): one wedged agent must not strand the run's other
+/// workspaces. Returns whether *all* discards succeeded — the caller keeps the
+/// run row (for a re-delete) whenever any failed. A per-failure message lands in
+/// `errors`. Split out from [`WorkflowService::delete_tree`] so the policy is
+/// unit-testable without a real `Supervisor` (whose discards can't be made to
+/// fail on demand).
+async fn discard_all<F, Fut>(
+    ids: &[String],
+    run_id: &str,
+    errors: &mut Vec<String>,
+    discard: F,
+) -> bool
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let mut all = true;
+    for id in ids {
+        if let Err(e) = discard(id.clone()).await {
+            errors.push(format!("run {run_id}: discard agent {id}: {e}"));
+            all = false;
+        }
+    }
+    all
+}
+
 /// Inner form taking the resolved run dir, so tests can exercise the staging
 /// without the process-global `FLETCH_RUNS_ROOT` override.
 ///
@@ -7082,6 +7125,50 @@ mod tests {
         )
         .unwrap();
         assert!(check_deletable(&conn, &order).is_ok());
+    }
+
+    #[tokio::test]
+    async fn discard_all_presses_past_a_failure_and_reports_it() {
+        // The review blocker: a discard failing mid-loop must not strand the
+        // run's other workspaces. Every id is attempted; the surviving one is
+        // reported; the "all succeeded" result is false so the caller keeps the
+        // run row for a re-delete.
+        let ids = vec!["a1".to_string(), "a2".to_string(), "a3".to_string()];
+        let mut errors = Vec::new();
+        let attempted = std::sync::Mutex::new(Vec::new());
+        let all = discard_all(&ids, "r", &mut errors, |id| {
+            attempted.lock().unwrap().push(id.clone());
+            async move {
+                if id == "a2" {
+                    Err(Error::Other("wedged checkout".into()))
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+
+        assert!(!all, "a failed discard means not-all-discarded");
+        assert_eq!(
+            *attempted.lock().unwrap(),
+            vec!["a1", "a2", "a3"],
+            "every agent is attempted even after a1..a2 — the loop does not bail"
+        );
+        assert_eq!(errors.len(), 1, "only the failed discard is reported");
+        assert!(
+            errors[0].contains("a2") && errors[0].contains("wedged checkout"),
+            "the failure names the agent and cause: {}",
+            errors[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_all_is_all_when_every_discard_succeeds() {
+        let ids = vec!["a1".to_string(), "a2".to_string()];
+        let mut errors = Vec::new();
+        let all = discard_all(&ids, "r", &mut errors, |_| async { Ok(()) }).await;
+        assert!(all);
+        assert!(errors.is_empty());
     }
 
     #[test]
