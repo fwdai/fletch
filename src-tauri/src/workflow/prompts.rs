@@ -126,6 +126,139 @@ fn comms_section(caps: &[CommsCap]) -> Option<String> {
     Some(s)
 }
 
+/// Everything the orchestrator prompt is assembled from (spec §10.2, §6.6). The
+/// orchestrator is a single agent that lives for the whole stage: it is prompted
+/// once here, again whenever a child asks it something or finishes, and a final
+/// time for its concluding verdict.
+#[derive(Debug, Clone)]
+pub struct OrchestratorPromptCtx<'a> {
+    pub run_task: &'a str,
+    /// The orchestrator's blackboard directory id (`orchestrate-<n>`).
+    pub orch_step_id: &'a str,
+    pub goal: &'a str,
+    pub position: Position,
+    /// Ids of static children that auto-start at stage entry (may be empty).
+    pub static_children: &'a [String],
+    /// The dynamic-child template: `(agent alias, max)` when the block declares
+    /// `children`; `None` when only static children exist.
+    pub dynamic: Option<(&'a str, u32)>,
+}
+
+/// The orchestrator's opening prompt (spec §10.2). Describes its supervisory
+/// role, the children it commands, and the `wf_decide` / `wf_notify` ops it drives
+/// them with — mirroring the step protocol's mailbox style (§8.5 item 6).
+pub fn orchestrator_prompt(ctx: &OrchestratorPromptCtx) -> String {
+    let mut s = String::new();
+    s.push_str("# Workflow orchestrator\n\n");
+    s.push_str(
+        "You lead a stage of an automated workflow. Child agents do the work; \
+         you assign it, answer their questions, and decide when the stage is \
+         done. The deterministic workflow engine validates and executes every \
+         decision you make — you advise, it acts.\n\n",
+    );
+
+    s.push_str("## The overall task\n\n");
+    s.push_str(ctx.run_task.trim());
+    s.push_str("\n\n");
+
+    s.push_str("## Your goal\n\n");
+    s.push_str(&position_line(&ctx.position));
+    s.push_str("\n\n");
+    s.push_str(ctx.goal.trim());
+    s.push_str("\n\n");
+
+    s.push_str("## Your children\n\n");
+    if ctx.static_children.is_empty() {
+        s.push_str("No children have started yet.");
+    } else {
+        s.push_str("These children start automatically now:\n");
+        for id in ctx.static_children {
+            s.push_str(&format!("- `{id}`\n"));
+        }
+    }
+    if let Some((agent, max)) = ctx.dynamic {
+        s.push_str(&format!(
+            "\nYou may spawn up to **{max}** additional `{agent}` children with \
+             `wf_decide` (`spawn_child`). Nothing spawns from this template on its \
+             own — you decide how many, if any.\n",
+        ));
+    }
+    s.push('\n');
+
+    s.push_str(&orchestrator_comms_section());
+    s.push('\n');
+
+    s.push_str(&blackboard_contract(ctx.orch_step_id));
+    s.push('\n');
+
+    s.push_str("## Ending the stage\n\n");
+    s.push_str(
+        "The stage ends when every child has finished **and** you have concluded. \
+         When the children are done, the workflow prompts you once more to write \
+         your `verdict.json` (`result` \"done\"). If the plan is already satisfied \
+         and remaining children are unnecessary, you may end early with \
+         `wf_decide` (`stage_done`).\n",
+    );
+    s
+}
+
+/// The concluding-verdict prompt (spec §6.6): sent once the join condition over
+/// all children is met, asking the orchestrator to write its verdict so the
+/// stage's gate (its own verdict) can be evaluated.
+pub fn orchestrator_conclude_prompt(orch_step_id: &str) -> String {
+    let mut s = String::new();
+    s.push_str("## All children are done\n\n");
+    s.push_str(
+        "Every child in this stage has reached a terminal state. Review their \
+         handoffs and verdicts on the blackboard, then conclude the stage: write \
+         your summary to your `handoff.md` and your completion signal to \
+         `verdict.json` with `result` \"done\". The stage does not advance until \
+         you do.\n\n",
+    );
+    s.push_str(&format!(
+        "Write `{orch_step_id}/verdict.json`:\n\n{}",
+        verdict_schema_block()
+    ));
+    s
+}
+
+/// The orchestrator's comms section: it holds every cap (spec §5.1 — "orchestrator
+/// gets all"), so it may answer/route with `wf_decide`, push notices to children
+/// with `wf_notify`, and escalate to the human. Mirrors the git-actions mailbox
+/// style used by the step protocol (§8.5 item 6).
+fn orchestrator_comms_section() -> String {
+    let mut s = String::new();
+    s.push_str("## Directing the workflow\n\n");
+    s.push_str(
+        "Send structured messages to the workflow host through your RPC mailbox \
+         (the same `$FLETCH_RPC_DIR` request/response channel the git actions \
+         use): write `requests/<id>.json` with an `op` and `args`, then read \
+         `responses/<id>.json`. Child questions and completion notices are \
+         delivered to you at the start of your turns.\n\n",
+    );
+    s.push_str(
+        "- **Decide** — `op: \"wf_decide\"`. One decision per call:\n\
+         \x20 - `{ \"decision\": \"answer\", \"message_id\": \"…\", \"body\": \"…\" }` — \
+         reply to a child's question (use the `message_id` from the delivered ask).\n\
+         \x20 - `{ \"decision\": \"spawn_child\", \"agent\": \"<alias>\", \"goal\": \"…\" }` — \
+         start another child (within your template's max).\n\
+         \x20 - `{ \"decision\": \"skip_child\", \"step_id\": \"…\", \"reason\": \"…\" }` — \
+         drop a child you no longer need.\n\
+         \x20 - `{ \"decision\": \"retry_child\", \"step_id\": \"…\", \"guidance\": \"…\" }` — \
+         ask a finished child to try again with guidance.\n\
+         \x20 - `{ \"decision\": \"stage_done\" }` — end the stage now (the plan is \
+         satisfied).\n\
+         \x20 - `{ \"decision\": \"escalate\", \"question\": \"…\" }` — hand a decision to \
+         the human; the run pauses until they answer.\n",
+    );
+    s.push_str(
+        "- **Notify** — `op: \"wf_notify\"`, \
+         `args: { \"to\": \"<step-id>\" | \"all-children\", \"message\": \"…\" }`. \
+         Push a notice to a running child (e.g. a sibling's slice landed).\n",
+    );
+    s
+}
+
 /// The re-prompt sent when the gate is unmet but the attempt still has turns
 /// left (spec §6.5) — quotes the gate reason and asks the agent to finish.
 pub fn reprompt(gate: &Gate, gate_reason: &str) -> String {
@@ -348,6 +481,44 @@ mod tests {
             failure_at < goal_at,
             "failure should precede the restated step"
         );
+    }
+
+    #[test]
+    fn orchestrator_prompt_lists_children_and_decisions() {
+        let statics = vec!["review".to_string()];
+        let p = orchestrator_prompt(&OrchestratorPromptCtx {
+            run_task: "Ship the feature",
+            orch_step_id: "orchestrate-1",
+            goal: "Assign slices and answer questions",
+            position: Position {
+                step_index: 1,
+                step_count: 3,
+                iteration: None,
+            },
+            static_children: &statics,
+            dynamic: Some(("coder", 3)),
+        });
+        assert!(p.contains("Ship the feature"));
+        assert!(p.contains("Assign slices"));
+        assert!(p.contains("`review`"), "static child listed: {p}");
+        assert!(
+            p.contains("up to **3**") && p.contains("`coder`"),
+            "dynamic template: {p}"
+        );
+        // The decision surface is described.
+        assert!(p.contains("wf_decide"));
+        assert!(p.contains("spawn_child") && p.contains("stage_done") && p.contains("escalate"));
+        assert!(p.contains("wf_notify"));
+        // Writes its own verdict to conclude.
+        assert!(p.contains("orchestrate-1/verdict.json"));
+    }
+
+    #[test]
+    fn conclude_prompt_asks_for_the_verdict() {
+        let p = orchestrator_conclude_prompt("orchestrate-0");
+        assert!(p.contains("All children are done"));
+        assert!(p.contains("orchestrate-0/verdict.json"));
+        assert!(p.contains("\"result\""));
     }
 
     #[test]

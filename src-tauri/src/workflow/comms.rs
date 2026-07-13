@@ -36,12 +36,20 @@ use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
 use super::now_ms;
 use super::scheduler::{self, WorkflowService};
-use super::spec::{Block, CommsCap, Spec};
+use super::spec::{Block, CommsCap, Orchestrate, Spec};
 use super::types::{event_type, Message, MessageKind};
 
 // ───────────────────────────── caps matrix (pure) ───────────────────────────
 
-/// The cap an RPC op requires, if it is a comms op (spec §10.1).
+/// The step-exec `step_id` prefix of a stage-lived orchestrator (spec §10.2).
+/// `orchestrate-<block-index>`: the block has no id of its own, so the engine
+/// synthesizes a stable one from its position in the immutable spec. Children of
+/// an orchestrate stage resolve their caps from that block (below).
+pub(super) const ORCH_PREFIX: &str = "orchestrate-";
+
+/// The cap an RPC op requires, if it is a *cap-gated* comms op (spec §10.1).
+/// `wf_decide` / `wf_compose` are gated by the orchestrator *role* (not a cap),
+/// so they return `None` here and are checked separately in [`route`].
 pub(super) fn cap_for_op(op: &str) -> Option<CommsCap> {
     match op {
         "wf_report" => Some(CommsCap::Report),
@@ -51,9 +59,10 @@ pub(super) fn cap_for_op(op: &str) -> Option<CommsCap> {
     }
 }
 
-/// Is `op` one this router owns? (Everything else falls through to git.)
+/// Is `op` one this router owns? (Everything else falls through to git.) Includes
+/// the orchestrator-only `wf_decide` (spec §10.2), which has no cap.
 pub(super) fn is_comms_op(op: &str) -> bool {
-    cap_for_op(op).is_some()
+    cap_for_op(op).is_some() || op == "wf_decide"
 }
 
 /// Human-readable verb for a rejection message.
@@ -297,8 +306,7 @@ fn resolve_sender(conn: &Connection, run_id: &str, agent_id: &str) -> Result<Sen
         )
         .map_err(|e| Error::Other(e.to_string()))?;
     let spec: Spec = serde_json::from_str(&spec_json).map_err(|e| Error::Other(e.to_string()))?;
-    let caps = step_caps(&spec, &step_id)
-        .ok_or_else(|| Error::Other(format!("step '{step_id}' not found in run spec")))?;
+    let caps = resolve_caps(conn, &spec, run_id, &step_id)?;
 
     Ok(Sender {
         run_id: run_id.to_string(),
@@ -306,6 +314,64 @@ fn resolve_sender(conn: &Connection, run_id: &str, agent_id: &str) -> Result<Sen
         step_id,
         caps,
     })
+}
+
+/// The declared comms caps of the sender (spec §10.1, §10.2):
+/// - the **orchestrator** (its `step_id` starts with [`ORCH_PREFIX`]) gets every
+///   cap ("orchestrator gets all", §5.1);
+/// - a **child of the active orchestrate stage** takes the orchestrate block's
+///   `comms` (its children's caps) — this covers both static-body children and
+///   dynamically spawned ones, whose synthetic ids aren't in the spec;
+/// - any other step resolves its own declared caps from the block tree.
+fn resolve_caps(
+    conn: &Connection,
+    spec: &Spec,
+    run_id: &str,
+    step_id: &str,
+) -> Result<Vec<CommsCap>> {
+    if step_id.starts_with(ORCH_PREFIX) {
+        return Ok(vec![CommsCap::Report, CommsCap::Ask, CommsCap::Notify]);
+    }
+    if let Some((_, orch_step_id)) = live_orchestrator(conn, run_id) {
+        if let Some(orch) = orchestrate_block(spec, &orch_step_id) {
+            return Ok(orch.comms.clone());
+        }
+    }
+    step_caps(spec, step_id)
+        .ok_or_else(|| Error::Other(format!("step '{step_id}' not found in run spec")))
+}
+
+/// The live orchestrator's `(step_exec_id, step_id)` for a run, if a stage is
+/// active. At most one orchestrate stage runs at a time (nested orchestrate is
+/// forbidden, §5.2; sequential stages don't overlap), so a single live exec whose
+/// `step_id` starts with [`ORCH_PREFIX`] identifies it.
+pub(super) fn live_orchestrator(conn: &Connection, run_id: &str) -> Option<(String, String)> {
+    conn.query_row(
+        "SELECT id, step_id FROM wf_step_exec
+         WHERE run_id = ?1 AND status IN ('spawning','running','gating')
+           AND step_id LIKE 'orchestrate-%'
+         ORDER BY rowid DESC LIMIT 1",
+        [run_id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// The `Orchestrate` block an orchestrator `step_id` (`orchestrate-<idx>`) refers
+/// to, by parsing the index and indexing the immutable top-level spec sequence.
+pub(super) fn orchestrate_block<'a>(spec: &'a Spec, orch_step_id: &str) -> Option<&'a Orchestrate> {
+    let idx: usize = orch_step_id.strip_prefix(ORCH_PREFIX)?.parse().ok()?;
+    match spec.workflow.get(idx)? {
+        Block::Orchestrate(o) => Some(o),
+        _ => None,
+    }
+}
+
+/// The synthetic `step_id` for the orchestrator of the top-level block at `index`.
+pub(super) fn orch_step_id(block_index: usize) -> String {
+    format!("{ORCH_PREFIX}{block_index}")
 }
 
 // ───────────────────────────── routing core (testable) ──────────────────────
@@ -335,6 +401,18 @@ fn route(
         Ok(s) => s,
         Err(e) => return (Response::err(id, e.to_string()), Poke::None),
     };
+
+    // `wf_decide` is gated by the orchestrator *role*, not a cap (spec §10.2):
+    // only the stage-lived orchestrator may issue decisions.
+    if op == "wf_decide" {
+        if !sender_is_orchestrator(&sender) {
+            let e = "wf_decide is available to the orchestrator only".to_string();
+            journal_denied(conn, app, &sender, op, &e);
+            return (Response::err(id, e), Poke::None);
+        }
+        return route_decide(conn, app, &sender, id, args);
+    }
+
     if let Err(e) = check_cap(op, &sender.caps) {
         // Journaled, never a silent drop (§10.1): the timeline shows the denied
         // attempt.
@@ -345,18 +423,20 @@ fn route(
     match op {
         "wf_report" => (route_report(conn, app, &sender, id, args), Poke::None),
         "wf_ask" => route_ask(conn, app, &sender, id, args),
-        // `wf_notify` is orchestrator-only; check_cap already rejected it for a
-        // step. Reachable only if a future block granted the cap — refuse until
-        // S11 wires orchestrator delivery.
-        "wf_notify" => (
-            Response::err(id, "notify is not available in this workflow yet"),
-            Poke::None,
-        ),
+        // `wf_notify` is orchestrator-only — `check_cap` already rejected it for a
+        // child (no step is granted `notify`, §5.2), so only the orchestrator
+        // reaches here.
+        "wf_notify" => (route_notify(conn, app, &sender, id, args), Poke::None),
         other => (
             Response::err(id, format!("unknown op: {other}")),
             Poke::None,
         ),
     }
+}
+
+/// Whether the sending attempt is the stage-lived orchestrator (spec §10.2).
+fn sender_is_orchestrator(sender: &Sender) -> bool {
+    sender.step_id.starts_with(ORCH_PREFIX)
 }
 
 fn route_report(
@@ -376,23 +456,39 @@ fn route_report(
     }
     let body = json!({ "status": status, "note": note });
     let msg_id = new_msg_id();
-    // No orchestrator in v1: a report is recorded on the timeline and otherwise a
-    // no-op (it never replaces the verdict). Marked delivered — nothing to route.
+    // Forwarded to the orchestrator when a stage is active (spec §10.1: "wf_report
+    // only adds color"); otherwise recorded on the timeline and delivered (a
+    // report never replaces the verdict). The orchestrator picks queued reports
+    // up at its next turn via `take_orchestrator_inbox`.
+    let orchestrator = child_orchestrator(conn, sender);
+    let (to, msg_status, delivered) = match &orchestrator {
+        Some((orch_exec, _)) => (Some(orch_exec.as_str()), "queued", false),
+        None => (None, "delivered", true),
+    };
     if let Err(e) = insert_message(
         conn,
         &msg_id,
         &sender.run_id,
         Some(&sender.step_exec_id),
-        None,
+        to,
         "report",
         &body,
-        "delivered",
-        true,
+        msg_status,
+        delivered,
     ) {
         return Response::err(id, e.to_string());
     }
-    journal_routed(conn, app, sender, &msg_id, "report", None);
+    journal_routed(conn, app, sender, &msg_id, "report", to);
     Response::ok(id, 0, msg_id, String::new())
+}
+
+/// The active orchestrator `(step_exec_id, step_id)` a *child* sender should route
+/// to — `None` when the sender is itself the orchestrator or no stage is active.
+fn child_orchestrator(conn: &Connection, sender: &Sender) -> Option<(String, String)> {
+    if sender_is_orchestrator(sender) {
+        return None;
+    }
+    live_orchestrator(conn, &sender.run_id)
 }
 
 fn route_ask(
@@ -414,13 +510,19 @@ fn route_ask(
         body["options"] = options.clone();
     }
     let msg_id = new_msg_id();
-    // Routed to the human (no orchestrator in v1): to_step_exec_id = NULL.
+    // A child's ask routes to the orchestrator when a stage is active (spec §10.1);
+    // otherwise (and for the orchestrator's own ask) it routes to the human, which
+    // pauses the run `question` (§10.4). Either way the ask stays `queued` — the
+    // sender's attempt sees an unanswered ask and defers its gate; it is marked
+    // `answered` when the orchestrator (or human) replies.
+    let orchestrator = child_orchestrator(conn, sender);
+    let to = orchestrator.as_ref().map(|(exec, _)| exec.as_str());
     if let Err(e) = insert_message(
         conn,
         &msg_id,
         &sender.run_id,
         Some(&sender.step_exec_id),
-        None,
+        to,
         "ask",
         &body,
         "queued",
@@ -428,13 +530,672 @@ fn route_ask(
     ) {
         return (Response::err(id, e.to_string()), Poke::None);
     }
-    journal_routed(conn, app, sender, &msg_id, "ask", None);
-    (
-        Response::ok(id, 0, msg_id, String::new()),
+    journal_routed(conn, app, sender, &msg_id, "ask", to);
+    // Routed to the orchestrator: the orchestrate loop polls its inbox, so no
+    // human pause. Routed to the human: raise the pending-ask flag so the run
+    // pauses `question` at turn end.
+    let poke = if orchestrator.is_some() {
+        Poke::None
+    } else {
         Poke::AskQueued {
             run_id: sender.run_id.clone(),
-        },
+        }
+    };
+    (Response::ok(id, 0, msg_id, String::new()), poke)
+}
+
+/// `wf_notify` (orchestrator only, spec §10.1): push a notice to one running child
+/// (`to: <step-id>`) or all of them (`to: "all-children"`). Each notice is queued
+/// to the child's live attempt; the child folds it into its next engine-composed
+/// prompt (§10.4). Best-effort — a notice to a child with no live attempt is a
+/// no-op, journaled with `to: null`.
+fn route_notify(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    sender: &Sender,
+    id: &str,
+    args: &Value,
+) -> Response {
+    let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    if message.trim().is_empty() {
+        return Response::err(id, "wf_notify requires a non-empty `message`");
+    }
+    let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("");
+    if to.trim().is_empty() {
+        return Response::err(
+            id,
+            "wf_notify requires `to` (a child step-id or \"all-children\")",
+        );
+    }
+    let recipients = live_children(
+        conn,
+        &sender.run_id,
+        if to == "all-children" { None } else { Some(to) },
+    );
+    if recipients.is_empty() {
+        journal_routed(conn, app, sender, &new_msg_id(), "notify", None);
+        return Response::ok(id, 0, String::new(), String::new());
+    }
+    let body = json!({ "message": message });
+    for child_exec in &recipients {
+        let msg_id = new_msg_id();
+        let _ = insert_message(
+            conn,
+            &msg_id,
+            &sender.run_id,
+            Some(&sender.step_exec_id),
+            Some(child_exec),
+            "notify",
+            &body,
+            "queued",
+            false,
+        );
+        journal_routed(conn, app, sender, &msg_id, "notify", Some(child_exec));
+    }
+    Response::ok(id, 0, String::new(), String::new())
+}
+
+/// Live (non-terminal) child attempts of the active orchestrate stage — every
+/// live step exec that is not the orchestrator, optionally filtered to one
+/// `step_id`. The recipients of `wf_notify`.
+fn live_children(conn: &Connection, run_id: &str, step_id: Option<&str>) -> Vec<String> {
+    let want = step_id.map(str::to_string);
+    conn.prepare(
+        "SELECT id, step_id FROM wf_step_exec
+         WHERE run_id = ?1 AND status IN ('spawning','running','gating')
+           AND step_id NOT LIKE 'orchestrate-%'
+         ORDER BY rowid",
     )
+    .and_then(|mut s| {
+        s.query_map([run_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map(|it| {
+            it.filter_map(std::result::Result::ok)
+                .filter(|(_, sid)| want.as_deref().map(|w| w == sid).unwrap_or(true))
+                .map(|(id, _)| id)
+                .collect()
+        })
+    })
+    .unwrap_or_default()
+}
+
+// ───────────────────────────── decisions (§10.2) ────────────────────────────
+
+/// A decision the orchestrator issued that the *scheduler* must execute (spec
+/// §10.2). `answer` and `escalate` are completed in the router (a pure DB write /
+/// a human pause), so they are not represented here; these are the ones that need
+/// the driver + child JoinSet the orchestrate stage owns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Decision {
+    /// Start another dynamic child (already validated ≤ `children.max`).
+    SpawnChild { agent: String, goal: String },
+    /// Drop a child that is no longer needed.
+    SkipChild { step_id: String, reason: String },
+    /// Ask a finished child to try again with guidance.
+    RetryChild { step_id: String, guidance: String },
+    /// End the stage now (early join, spec §6.6).
+    StageDone,
+}
+
+/// Handle a `wf_decide` op (spec §10.2). Validates the decision, journals it, and
+/// either completes it here (`answer` / `escalate`) or persists it as a queued
+/// `decision` message the orchestrate stage consumes via
+/// [`take_orchestrator_decisions`]. Invalid decisions (unknown step, over
+/// `children.max`, missing fields) return a structured error and are journaled —
+/// the deterministic engine, not the orchestrator, is the authority.
+fn route_decide(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    sender: &Sender,
+    id: &str,
+    args: &Value,
+) -> (Response, Poke) {
+    let decision = args.get("decision").and_then(|v| v.as_str()).unwrap_or("");
+    match decision {
+        "answer" => {
+            let message_id = args
+                .get("message_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
+            if message_id.is_empty() || body.trim().is_empty() {
+                return (
+                    Response::err(
+                        id,
+                        "wf_decide answer requires `message_id` and a non-empty `body`",
+                    ),
+                    Poke::None,
+                );
+            }
+            match deliver_orchestrator_answer(conn, app, sender, message_id, body) {
+                Ok(()) => {
+                    journal_decision(
+                        conn,
+                        app,
+                        sender,
+                        &json!({ "decision": "answer", "message_id": message_id }),
+                    );
+                    (
+                        Response::ok(id, 0, String::new(), String::new()),
+                        Poke::None,
+                    )
+                }
+                Err(e) => (Response::err(id, e.to_string()), Poke::None),
+            }
+        }
+        "spawn_child" => route_spawn_child(conn, app, sender, id, args),
+        "skip_child" => {
+            let step_id = args.get("step_id").and_then(|v| v.as_str()).unwrap_or("");
+            if step_id.is_empty() {
+                return (
+                    Response::err(id, "wf_decide skip_child requires `step_id`"),
+                    Poke::None,
+                );
+            }
+            let reason = args
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            queue_decision(
+                conn,
+                app,
+                sender,
+                id,
+                json!({ "decision": "skip_child", "step_id": step_id, "reason": reason }),
+            )
+        }
+        "retry_child" => {
+            let step_id = args.get("step_id").and_then(|v| v.as_str()).unwrap_or("");
+            if step_id.is_empty() {
+                return (
+                    Response::err(id, "wf_decide retry_child requires `step_id`"),
+                    Poke::None,
+                );
+            }
+            let guidance = args
+                .get("guidance")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            queue_decision(
+                conn,
+                app,
+                sender,
+                id,
+                json!({ "decision": "retry_child", "step_id": step_id, "guidance": guidance }),
+            )
+        }
+        "stage_done" => queue_decision(conn, app, sender, id, json!({ "decision": "stage_done" })),
+        "escalate" => {
+            let question = args.get("question").and_then(|v| v.as_str()).unwrap_or("");
+            if question.trim().is_empty() {
+                return (
+                    Response::err(id, "wf_decide escalate requires a non-empty `question`"),
+                    Poke::None,
+                );
+            }
+            // Escalation is the orchestrator asking the human: queue an ask from
+            // the orchestrator (to = NULL) so the orchestrate loop's pending-ask
+            // backstop pauses the run `question`, and `wf_answer` delivers back to
+            // the orchestrator (§10.4).
+            let msg_id = new_msg_id();
+            if let Err(e) = insert_message(
+                conn,
+                &msg_id,
+                &sender.run_id,
+                Some(&sender.step_exec_id),
+                None,
+                "ask",
+                &json!({ "question": question }),
+                "queued",
+                false,
+            ) {
+                return (Response::err(id, e.to_string()), Poke::None);
+            }
+            journal_decision(conn, app, sender, &json!({ "decision": "escalate" }));
+            journal_routed(conn, app, sender, &msg_id, "ask", None);
+            (
+                Response::ok(id, 0, msg_id, String::new()),
+                Poke::AskQueued {
+                    run_id: sender.run_id.clone(),
+                },
+            )
+        }
+        other => (
+            Response::err(id, format!("unknown decision: {other}")),
+            Poke::None,
+        ),
+    }
+}
+
+/// Journal a decision and persist it as a queued `decision` message for the
+/// orchestrate stage to execute (spec §10.2).
+fn queue_decision(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    sender: &Sender,
+    id: &str,
+    body: Value,
+) -> (Response, Poke) {
+    let msg_id = new_msg_id();
+    if let Err(e) = insert_message(
+        conn,
+        &msg_id,
+        &sender.run_id,
+        Some(&sender.step_exec_id),
+        None,
+        "decision",
+        &body,
+        "queued",
+        false,
+    ) {
+        return (Response::err(id, e.to_string()), Poke::None);
+    }
+    journal_decision(conn, app, sender, &body);
+    (Response::ok(id, 0, msg_id, String::new()), Poke::None)
+}
+
+/// Validate + record a `spawn_child` decision (spec §10.2): the agent must be the
+/// block's `children` template agent and the count must stay within
+/// `children.max`. Over-max or template-less spawns are denied with a structured
+/// error and a `child_spawn_denied` journal entry.
+fn route_spawn_child(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    sender: &Sender,
+    id: &str,
+    args: &Value,
+) -> (Response, Poke) {
+    let goal = args.get("goal").and_then(|v| v.as_str()).unwrap_or("");
+    if goal.trim().is_empty() {
+        return (
+            Response::err(id, "wf_decide spawn_child requires a non-empty `goal`"),
+            Poke::None,
+        );
+    }
+    let Some(spec) = load_spec(conn, &sender.run_id) else {
+        return (Response::err(id, "run spec unavailable"), Poke::None);
+    };
+    let template = orchestrate_block(&spec, &sender.step_id).and_then(|o| o.children.clone());
+    let Some(template) = template else {
+        let e = "this stage has no dynamic-child template (spawn_child unavailable)".to_string();
+        journal_spawn_denied(conn, app, sender, &e);
+        return (Response::err(id, e), Poke::None);
+    };
+    let agent = args
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&template.agent);
+    if agent != template.agent {
+        let e = format!(
+            "spawn_child agent must be the template's child agent '{}'",
+            template.agent
+        );
+        journal_spawn_denied(conn, app, sender, &e);
+        return (Response::err(id, e), Poke::None);
+    }
+    let spawned = spawn_child_count(conn, &sender.run_id, &sender.step_id);
+    if spawned >= template.max as i64 {
+        let e = format!(
+            "spawn_child denied: already at the children.max of {} for this stage",
+            template.max
+        );
+        journal_spawn_denied(conn, app, sender, &e);
+        return (Response::err(id, e), Poke::None);
+    }
+    // Approved: journal the request + approval, then queue the decision for the
+    // orchestrate stage to actually spawn.
+    scheduler::journal_event(
+        conn,
+        app,
+        &sender.run_id,
+        event_type::CHILD_SPAWN_REQUESTED,
+        Some(&sender.step_exec_id),
+        &json!({ "agent": agent, "goal": goal }),
+    );
+    scheduler::journal_event(
+        conn,
+        app,
+        &sender.run_id,
+        event_type::CHILD_SPAWN_APPROVED,
+        Some(&sender.step_exec_id),
+        &json!({ "agent": agent }),
+    );
+    let msg_id = new_msg_id();
+    if let Err(e) = insert_message(
+        conn,
+        &msg_id,
+        &sender.run_id,
+        Some(&sender.step_exec_id),
+        None,
+        "decision",
+        &json!({ "decision": "spawn_child", "agent": agent, "goal": goal }),
+        "queued",
+        false,
+    ) {
+        return (Response::err(id, e.to_string()), Poke::None);
+    }
+    (Response::ok(id, 0, msg_id, String::new()), Poke::None)
+}
+
+/// How many `spawn_child` decisions this orchestrate *stage* has already had
+/// approved. Counted across every orchestrator exec that shares the stage's
+/// `step_id` (`orchestrate-<n>`), so a resume — which starts a fresh orchestrator
+/// exec — cannot re-grant a whole `children.max` batch. Status-agnostic, so
+/// consumed decisions still count; counting persisted decisions (created
+/// synchronously under this lock) also keeps a burst within one turn race-free.
+fn spawn_child_count(conn: &Connection, run_id: &str, orch_step_id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM wf_message m
+           JOIN wf_step_exec e ON m.from_step_exec_id = e.id
+         WHERE m.run_id = ?1 AND e.step_id = ?2 AND m.kind = 'decision'
+           AND json_extract(m.body_json, '$.decision') = 'spawn_child'",
+        params![run_id, orch_step_id],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+/// Consume the queued `decision` messages the orchestrator issued (spec §10.2),
+/// marking them delivered. `answer` / `escalate` are already handled in the
+/// router, so only [`Decision`] variants the scheduler executes are returned.
+pub(super) fn take_orchestrator_decisions(
+    conn: &Connection,
+    run_id: &str,
+    orch_exec: &str,
+) -> Vec<Decision> {
+    let rows: Vec<(String, Value)> = conn
+        .prepare(
+            "SELECT id, body_json FROM wf_message
+             WHERE run_id = ?1 AND from_step_exec_id = ?2 AND kind = 'decision'
+               AND status = 'queued'
+             ORDER BY created_at, rowid",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![run_id, orch_exec], |r| {
+                let body: String = r.get(1)?;
+                Ok((
+                    r.get::<_, String>(0)?,
+                    serde_json::from_str(&body).unwrap_or(Value::Null),
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap_or_default();
+
+    let mut out = Vec::new();
+    for (msg_id, body) in rows {
+        let _ = conn.execute(
+            "UPDATE wf_message SET status = 'delivered', delivered_at = ?1 WHERE id = ?2",
+            params![now_ms(), msg_id],
+        );
+        let d = body.get("decision").and_then(|v| v.as_str()).unwrap_or("");
+        let s = |k: &str| {
+            body.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        match d {
+            "spawn_child" => out.push(Decision::SpawnChild {
+                agent: s("agent"),
+                goal: s("goal"),
+            }),
+            "skip_child" => out.push(Decision::SkipChild {
+                step_id: s("step_id"),
+                reason: s("reason"),
+            }),
+            "retry_child" => out.push(Decision::RetryChild {
+                step_id: s("step_id"),
+                guidance: s("guidance"),
+            }),
+            "stage_done" => out.push(Decision::StageDone),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// One message queued for the orchestrator's attention, with the sending child's
+/// step id resolved for a readable prompt.
+pub(super) struct InboxItem {
+    pub from_step_id: String,
+    pub message: Message,
+}
+
+/// Take the messages queued for the orchestrator (children's `wf_report`s, their
+/// `wf_ask`s, and engine lifecycle notices) that it has not yet been shown, in
+/// order (spec §10.1). Marks each shown via `delivered_at` — an **ask stays
+/// `queued`** (its `status` is what `has_unanswered_ask` reads, so the child keeps
+/// deferring until the orchestrator answers), it is just not shown twice.
+pub(super) fn take_orchestrator_inbox(
+    conn: &Connection,
+    run_id: &str,
+    orch_exec: &str,
+) -> Vec<InboxItem> {
+    let items: Vec<InboxItem> = conn
+        .prepare(
+            "SELECT m.*, e.step_id FROM wf_message m
+               JOIN wf_step_exec e ON m.from_step_exec_id = e.id
+             WHERE m.run_id = ?1 AND m.to_step_exec_id = ?2
+               AND m.kind IN ('report', 'ask') AND m.delivered_at IS NULL
+             ORDER BY m.created_at, m.rowid",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![run_id, orch_exec], |r| {
+                let from_step_id: String = r.get("step_id")?;
+                Ok(InboxItem {
+                    from_step_id,
+                    message: Message::from_row(r)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap_or_default();
+
+    let now = now_ms();
+    for item in &items {
+        let _ = conn.execute(
+            "UPDATE wf_message SET delivered_at = ?1 WHERE id = ?2",
+            params![now, item.message.id],
+        );
+    }
+    items
+}
+
+/// Compose the one engine-owned prompt preamble that hands the orchestrator its
+/// pending inbox (spec §10.1, §10.4). Asks carry their `message_id` so the
+/// orchestrator can answer them with `wf_decide`.
+pub(super) fn compose_orchestrator_inbox(items: &[InboxItem]) -> String {
+    let mut s = String::from(
+        "## Updates from your children\n\n\
+         Since your last turn, the following arrived. Act on them, then continue \
+         leading the stage.\n\n",
+    );
+    for item in items {
+        let m = &item.message;
+        let step = &item.from_step_id;
+        match m.kind {
+            MessageKind::Ask => {
+                let q = body_str(&m.body, "question");
+                s.push_str(&format!(
+                    "- **`{step}` asks** (answer with message_id `{}`): {q}\n",
+                    m.id
+                ));
+                if let Some(opts) = m.body.get("options").and_then(|v| v.as_array()) {
+                    let opts: Vec<String> = opts
+                        .iter()
+                        .filter_map(|o| o.as_str().map(str::to_string))
+                        .collect();
+                    if !opts.is_empty() {
+                        s.push_str(&format!("    options: {}\n", opts.join(", ")));
+                    }
+                }
+            }
+            MessageKind::Report => {
+                let note = body_str(&m.body, "note");
+                let status = body_str(&m.body, "status");
+                if m.body.get("lifecycle").and_then(|v| v.as_bool()) == Some(true) {
+                    s.push_str(&format!("- **`{step}` {status}** — {note}\n"));
+                } else if status == "done" {
+                    s.push_str(&format!("- **`{step}` reports done**: {note}\n"));
+                } else {
+                    s.push_str(&format!("- **`{step}` reports progress**: {note}\n"));
+                }
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
+/// Auto-forward a child's terminal outcome to the orchestrator as a lifecycle
+/// report (spec §10.1: a child can never *forget* to report completion). Journaled
+/// as a routed message; picked up on the orchestrator's next turn.
+pub(super) fn forward_lifecycle(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    run_id: &str,
+    orch_exec: &str,
+    child_exec: &str,
+    status: &str,
+    note: &str,
+) {
+    let msg_id = new_msg_id();
+    let _ = insert_message(
+        conn,
+        &msg_id,
+        run_id,
+        Some(child_exec),
+        Some(orch_exec),
+        "report",
+        &json!({ "status": status, "note": note, "lifecycle": true }),
+        "queued",
+        false,
+    );
+    scheduler::journal_event(
+        conn,
+        app,
+        run_id,
+        event_type::MESSAGE_ROUTED,
+        Some(child_exec),
+        &json!({ "message_id": msg_id, "kind": "report", "from": child_exec, "to": orch_exec, "lifecycle": true }),
+    );
+}
+
+/// Queue an engine-authored `ask` to the human on the orchestrator's behalf
+/// (spec §10.4) — used when the orchestrator stalls and the engine escalates, so
+/// there is a concrete question `wf_answer` can resolve on resume.
+pub(super) fn queue_engine_ask(conn: &Connection, run_id: &str, orch_exec: &str, question: &str) {
+    let _ = insert_message(
+        conn,
+        &new_msg_id(),
+        run_id,
+        Some(orch_exec),
+        None,
+        "ask",
+        &json!({ "question": question }),
+        "queued",
+        false,
+    );
+}
+
+/// Deliver the orchestrator's answer to a child's ask (spec §10.2). Marks the ask
+/// `answered` and queues an `answer` to the asking child, which folds it into its
+/// next prompt (§10.4). Rejects an answer to an ask not addressed to this
+/// orchestrator or already answered.
+fn deliver_orchestrator_answer(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    sender: &Sender,
+    message_id: &str,
+    body: &str,
+) -> Result<()> {
+    let (asking_exec, to_exec, status) = conn
+        .query_row(
+            "SELECT from_step_exec_id, to_step_exec_id, status FROM wf_message
+             WHERE id = ?1 AND run_id = ?2 AND kind = 'ask'",
+            params![message_id, sender.run_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| Error::Other(e.to_string()))?
+        .ok_or_else(|| Error::Other("no such question on this run".into()))?;
+    if to_exec.as_deref() != Some(sender.step_exec_id.as_str()) {
+        return Err(Error::Other("that question was not routed to you".into()));
+    }
+    if status != "queued" {
+        return Err(Error::Other("that question was already answered".into()));
+    }
+    let ans_id = new_msg_id();
+    insert_message(
+        conn,
+        &ans_id,
+        &sender.run_id,
+        Some(&sender.step_exec_id),
+        asking_exec.as_deref(),
+        "answer",
+        &json!({ "text": body }),
+        "queued",
+        false,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+    conn.execute(
+        "UPDATE wf_message SET status = 'answered' WHERE id = ?1",
+        [message_id],
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+    scheduler::journal_event(
+        conn,
+        app,
+        &sender.run_id,
+        event_type::MESSAGE_ROUTED,
+        asking_exec.as_deref(),
+        &json!({ "message_id": ans_id, "kind": "answer", "from": sender.step_exec_id, "to": asking_exec }),
+    );
+    Ok(())
+}
+
+fn journal_decision(conn: &Connection, app: Option<&AppHandle>, sender: &Sender, payload: &Value) {
+    scheduler::journal_event(
+        conn,
+        app,
+        &sender.run_id,
+        event_type::DECISION,
+        Some(&sender.step_exec_id),
+        payload,
+    );
+}
+
+fn journal_spawn_denied(conn: &Connection, app: Option<&AppHandle>, sender: &Sender, reason: &str) {
+    scheduler::journal_event(
+        conn,
+        app,
+        &sender.run_id,
+        event_type::CHILD_SPAWN_DENIED,
+        Some(&sender.step_exec_id),
+        &json!({ "reason": reason }),
+    );
+}
+
+/// Load a run's launch-frozen spec.
+fn load_spec(conn: &Connection, run_id: &str) -> Option<Spec> {
+    let spec_json: String = conn
+        .query_row(
+            "SELECT spec_json FROM wf_run WHERE id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .ok()?;
+    serde_json::from_str(&spec_json).ok()
 }
 
 /// Persist a human's answer to a paused `question` run and journal it. Does not
@@ -700,7 +1461,9 @@ pub async fn wf_answer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::spec::{AgentSpec, Gate, Step};
+    use crate::workflow::spec::{
+        AgentSpec, ChildTemplate, Gate, Integrate, Join, Orchestrate, Step,
+    };
     use crate::workflow::types::{MessageKind, MessageStatus};
     use std::collections::BTreeMap;
 
@@ -1119,5 +1882,398 @@ mod tests {
             !has_unanswered_ask(&conn, &exec),
             "answered ask is no longer pending"
         );
+    }
+
+    // ── orchestrator role + decisions (spec §10.2) ────────────────────────
+
+    /// A running orchestrate stage: an `orchestrate-0` block (agent `orch`,
+    /// dynamic `coder` children max 2, child caps `[report, ask]`), one live
+    /// orchestrator exec, and one live child exec. Returns (conn, run, orch_exec,
+    /// child_exec).
+    fn seed_orchestrate() -> (Connection, String, String, String) {
+        let td = tempfile::tempdir().unwrap();
+        let db = crate::database::init(td.path()).unwrap();
+        std::mem::forget(td);
+        let conn = Arc::try_unwrap(db).ok().unwrap().into_inner();
+
+        let mut agents = BTreeMap::new();
+        for a in ["orch", "coder"] {
+            agents.insert(
+                a.to_string(),
+                AgentSpec {
+                    base: "claude".into(),
+                    model: None,
+                    instructions: None,
+                    skills: vec![],
+                    custom_agent: None,
+                },
+            );
+        }
+        let spec = Spec {
+            version: 1,
+            name: "demo".into(),
+            description: None,
+            budgets: None,
+            agents,
+            workflow: vec![Block::Orchestrate(Orchestrate {
+                agent: "orch".into(),
+                goal: "lead".into(),
+                children: Some(ChildTemplate {
+                    agent: "coder".into(),
+                    max: 2,
+                }),
+                body: vec![],
+                join: Join::All,
+                integrate: Integrate::None,
+                comms: vec![CommsCap::Report, CommsCap::Ask],
+                compose: None,
+            })],
+            finalize: None,
+        };
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        conn.execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                base_sha,status,budgets_json,spent_json,created_at,updated_at)
+             VALUES ('run','demo',?1,'t','p','/repo','/rd','wf/x','sha','running','{}','{}',0,0)",
+            [spec_json],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,agent_id)
+             VALUES ('orch-exec','run','orchestrate-0',1,0,'running','verdict','orch-agent')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,agent_id)
+             VALUES ('child-exec','run','child-1',1,0,'running','verdict','child-agent')",
+            [],
+        )
+        .unwrap();
+        (
+            conn,
+            "run".to_string(),
+            "orch-exec".to_string(),
+            "child-exec".to_string(),
+        )
+    }
+
+    #[test]
+    fn wf_decide_is_orchestrator_only() {
+        let (conn, _run, _orch, _child) = seed_orchestrate();
+        let (resp, poke) = route(
+            &conn,
+            None,
+            "r1",
+            "run",
+            "child-agent",
+            "wf_decide",
+            &json!({ "decision": "stage_done" }),
+        );
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("orchestrator"));
+        assert!(matches!(poke, Poke::None));
+    }
+
+    #[test]
+    fn child_caps_come_from_the_orchestrate_block() {
+        let (conn, run, _orch, _child) = seed_orchestrate();
+        let spec = load_spec(&conn, &run).unwrap();
+        // Child inherits the block's [report, ask]; the orchestrator gets all.
+        let child_caps = resolve_caps(&conn, &spec, &run, "child-1").unwrap();
+        assert_eq!(child_caps, vec![CommsCap::Report, CommsCap::Ask]);
+        let orch_caps = resolve_caps(&conn, &spec, &run, "orchestrate-0").unwrap();
+        assert!(
+            orch_caps.contains(&CommsCap::Notify),
+            "orchestrator gets notify"
+        );
+    }
+
+    #[test]
+    fn child_ask_routes_to_the_orchestrator_not_the_human() {
+        let (conn, _run, orch, child) = seed_orchestrate();
+        let (resp, poke) = route(
+            &conn,
+            None,
+            "r1",
+            "run",
+            "child-agent",
+            "wf_ask",
+            &json!({ "question": "which db?" }),
+        );
+        assert!(resp.ok, "{resp:?}");
+        // No human pause — the orchestrator handles it.
+        assert!(
+            matches!(poke, Poke::None),
+            "child ask must not pause the run"
+        );
+        let to: String = conn
+            .query_row(
+                "SELECT to_step_exec_id FROM wf_message WHERE kind='ask'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(to, orch);
+        assert!(
+            has_unanswered_ask(&conn, &child),
+            "child defers until answered"
+        );
+    }
+
+    #[test]
+    fn orchestrator_answers_a_child_ask() {
+        let (conn, run, orch, child) = seed_orchestrate();
+        // The child asks.
+        let (resp, _) = route(
+            &conn,
+            None,
+            "r1",
+            "run",
+            "child-agent",
+            "wf_ask",
+            &json!({ "question": "which db?", "options": ["pg", "sqlite"] }),
+        );
+        let ask_id = resp.stdout.unwrap();
+
+        // The orchestrator sees it in its inbox with the message id to answer.
+        let inbox = take_orchestrator_inbox(&conn, &run, &orch);
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].from_step_id, "child-1");
+        assert_eq!(inbox[0].message.id, ask_id);
+        assert!(compose_orchestrator_inbox(&inbox).contains(&ask_id));
+
+        // The orchestrator answers via wf_decide.
+        let (resp2, poke2) = route(
+            &conn,
+            None,
+            "r2",
+            "run",
+            "orch-agent",
+            "wf_decide",
+            &json!({ "decision": "answer", "message_id": ask_id, "body": "use Postgres" }),
+        );
+        assert!(resp2.ok, "{resp2:?}");
+        assert!(matches!(poke2, Poke::None));
+
+        // The child is no longer waiting; the answer is queued for its next turn.
+        assert!(!has_unanswered_ask(&conn, &child));
+        let pending = take_pending_deliveries(&conn, &run, "child-1");
+        assert_eq!(pending.len(), 1);
+        assert!(compose_delivery(&pending).contains("use Postgres"));
+
+        // The decision is journaled.
+        let decided: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wf_event WHERE type='decision'
+                 AND json_extract(payload_json,'$.decision')='answer'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(decided, 1);
+    }
+
+    #[test]
+    fn spawn_child_is_bounded_by_children_max_and_denials_journal() {
+        let (conn, run, orch, _child) = seed_orchestrate(); // children.max = 2
+        for i in 0..2 {
+            let (resp, _) = route(
+                &conn,
+                None,
+                &format!("s{i}"),
+                "run",
+                "orch-agent",
+                "wf_decide",
+                &json!({ "decision": "spawn_child", "agent": "coder", "goal": "a slice" }),
+            );
+            assert!(resp.ok, "spawn {i} should be approved: {resp:?}");
+        }
+        // The third exceeds children.max → structured error + child_spawn_denied.
+        let (resp3, poke3) = route(
+            &conn,
+            None,
+            "s3",
+            "run",
+            "orch-agent",
+            "wf_decide",
+            &json!({ "decision": "spawn_child", "agent": "coder", "goal": "one too many" }),
+        );
+        assert!(!resp3.ok);
+        assert!(resp3.error.unwrap().contains("children.max"));
+        assert!(matches!(poke3, Poke::None));
+        let denied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wf_event WHERE type='child_spawn_denied'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(denied, 1);
+        let approved: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wf_event WHERE type='child_spawn_approved'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(approved, 2);
+
+        // The two approvals are consumable by the scheduler as SpawnChild decisions.
+        let decisions = take_orchestrator_decisions(&conn, &run, &orch);
+        assert_eq!(decisions.len(), 2);
+        assert!(decisions
+            .iter()
+            .all(|d| matches!(d, Decision::SpawnChild { .. })));
+    }
+
+    #[test]
+    fn spawn_child_agent_must_match_the_template() {
+        let (conn, _run, _orch, _child) = seed_orchestrate();
+        let (resp, _) = route(
+            &conn,
+            None,
+            "s1",
+            "run",
+            "orch-agent",
+            "wf_decide",
+            &json!({ "decision": "spawn_child", "agent": "orch", "goal": "wrong agent" }),
+        );
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("template's child agent"));
+    }
+
+    #[test]
+    fn notify_is_orchestrator_only_and_reaches_children() {
+        let (conn, run, _orch, _child) = seed_orchestrate();
+        // The orchestrator notifies the child.
+        let (resp, _) = route(
+            &conn,
+            None,
+            "n1",
+            "run",
+            "orch-agent",
+            "wf_notify",
+            &json!({ "to": "child-1", "message": "slice B landed" }),
+        );
+        assert!(resp.ok, "{resp:?}");
+        let pending = take_pending_deliveries(&conn, &run, "child-1");
+        assert_eq!(pending.len(), 1);
+        assert!(compose_delivery(&pending).contains("slice B landed"));
+
+        // A child cannot notify (its caps are [report, ask]).
+        let (resp2, _) = route(
+            &conn,
+            None,
+            "n2",
+            "run",
+            "child-agent",
+            "wf_notify",
+            &json!({ "to": "all-children", "message": "x" }),
+        );
+        assert!(!resp2.ok);
+    }
+
+    #[test]
+    fn lifecycle_is_auto_forwarded_to_the_orchestrator() {
+        let (conn, run, orch, child) = seed_orchestrate();
+        forward_lifecycle(
+            &conn,
+            None,
+            &run,
+            &orch,
+            &child,
+            "done",
+            "child `child-1` finished",
+        );
+        let inbox = take_orchestrator_inbox(&conn, &run, &orch);
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].from_step_id, "child-1");
+        let rendered = compose_orchestrator_inbox(&inbox);
+        assert!(
+            rendered.contains("child-1") && rendered.contains("finished"),
+            "{rendered}"
+        );
+        // Shown once — not re-delivered on the next turn.
+        assert!(take_orchestrator_inbox(&conn, &run, &orch).is_empty());
+    }
+
+    #[test]
+    fn stage_done_and_escalate_decisions() {
+        let (conn, run, orch, _child) = seed_orchestrate();
+        // stage_done queues a consumable decision.
+        let (resp, _) = route(
+            &conn,
+            None,
+            "d1",
+            "run",
+            "orch-agent",
+            "wf_decide",
+            &json!({ "decision": "stage_done" }),
+        );
+        assert!(resp.ok, "{resp:?}");
+        // escalate queues an ask to the human and pauses the run.
+        let (resp2, poke2) = route(
+            &conn,
+            None,
+            "d2",
+            "run",
+            "orch-agent",
+            "wf_decide",
+            &json!({ "decision": "escalate", "question": "which framework?" }),
+        );
+        assert!(resp2.ok, "{resp2:?}");
+        assert!(
+            matches!(poke2, Poke::AskQueued { .. }),
+            "escalate pauses for the human"
+        );
+        // The escalation appears as an unanswered ask from the orchestrator.
+        assert!(has_unanswered_ask(&conn, &orch));
+
+        let decisions = take_orchestrator_decisions(&conn, &run, &orch);
+        assert_eq!(decisions, vec![Decision::StageDone]);
+    }
+
+    #[test]
+    fn spawn_limit_persists_across_resume() {
+        let (conn, _run, _orch, _child) = seed_orchestrate(); // children.max = 2
+        for i in 0..2 {
+            let (resp, _) = route(
+                &conn,
+                None,
+                &format!("s{i}"),
+                "run",
+                "orch-agent",
+                "wf_decide",
+                &json!({ "decision": "spawn_child", "agent": "coder", "goal": "slice" }),
+            );
+            assert!(resp.ok, "{resp:?}");
+        }
+        // Resume: the stage gets a fresh orchestrator exec (same `orchestrate-0`
+        // step id); the old one is no longer live.
+        conn.execute(
+            "UPDATE wf_step_exec SET status='abandoned' WHERE id='orch-exec'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wf_step_exec (id,run_id,step_id,attempt,iteration,status,gate_mode,agent_id)
+             VALUES ('orch-exec-2','run','orchestrate-0',2,0,'running','verdict','orch-agent-2')",
+            [],
+        )
+        .unwrap();
+        // The resumed orchestrator cannot re-grant a whole new batch — the count is
+        // stage-wide, not per-exec.
+        let (resp, _) = route(
+            &conn,
+            None,
+            "s3",
+            "run",
+            "orch-agent-2",
+            "wf_decide",
+            &json!({ "decision": "spawn_child", "agent": "coder", "goal": "one too many" }),
+        );
+        assert!(!resp.ok, "spawn limit must persist across resume: {resp:?}");
+        assert!(resp.error.unwrap().contains("children.max"));
     }
 }
