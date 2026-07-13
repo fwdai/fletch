@@ -62,7 +62,27 @@ pub async fn provision_run_repo(source_repo: &Path, run_dir: &Path) -> Result<Pa
     )
     .await?;
     rewrite_origin(source_repo, &dest).await?;
+    seed_identity(source_repo, &dest).await?;
     Ok(dest)
+}
+
+/// Persist a commit identity into the run repo's local config so host-side merge
+/// / conflict-snapshot commits (§12.3) succeed on a machine with no global
+/// gitconfig (e.g. CI). Mirrors `sandbox/provision.rs::seed_identity`: write the
+/// identity the source repo resolves, filling any half from the neutral fallback.
+async fn seed_identity(source_repo: &Path, dest: &Path) -> Result<()> {
+    let (fallback_name, fallback_email) = crate::git_dist::fallback_identity();
+    for (key, fallback) in [("user.name", fallback_name), ("user.email", fallback_email)] {
+        let effective = git::git_output(source_repo, &["config", "--get", key])
+            .await
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .filter(|v| !v.is_empty());
+        let value = effective.unwrap_or(fallback);
+        git::run_git(dest, &["config", key, &value], "seed run repo identity").await?;
+    }
+    Ok(())
 }
 
 /// Point the run repo's `origin` at the source repo's real remote (so a finalize
