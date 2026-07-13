@@ -325,16 +325,27 @@ pub async fn is_worktree_clean(wt: &Path) -> Result<bool> {
 }
 
 /// Whether any of `files` (repo-relative) in the checkout still contains a git
-/// conflict marker line (`<<<<<<<` / `>>>>>>>`). Rejects a human "resolution"
-/// that committed a tree still holding markers (§12.3 mode c). Files that no
-/// longer exist (deleted as the resolution) or aren't UTF-8 count as clean.
+/// conflict marker line — the full set git writes: the `<<<<<<<` / `>>>>>>>`
+/// hunk bounds, the `|||||||` base marker (diff3 style), and the `=======`
+/// divider. Catching only the outer bounds would miss a sloppy resolution that
+/// stripped them but left the divider. Rejects a human "resolution" that
+/// committed a tree still holding markers (§12.3 mode c). Files that no longer
+/// exist (deleted as the resolution) or aren't UTF-8 count as clean.
+///
+/// The bound/base markers are matched as prefixes (7 identical special chars
+/// never legitimately begin a line); the divider is matched *exactly* (`=======`)
+/// so a Markdown/RST Setext underline inside a conflicted doc isn't misread as a
+/// leftover marker and permanently block resolution.
 pub async fn files_have_conflict_markers(wt: &Path, files: &[String]) -> bool {
     for f in files {
         if let Ok(body) = tokio::fs::read_to_string(wt.join(f)).await {
-            if body
-                .lines()
-                .any(|l| l.starts_with("<<<<<<<") || l.starts_with(">>>>>>>"))
-            {
+            if body.lines().any(|l| {
+                let t = l.trim_end();
+                t.starts_with("<<<<<<<")
+                    || t.starts_with(">>>>>>>")
+                    || t.starts_with("|||||||")
+                    || t == "======="
+            }) {
                 return true;
             }
         }
@@ -508,6 +519,38 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), final_sha);
+    }
+
+    /// Marker detection catches every git marker (incl. a leftover `=======`
+    /// divider and the diff3 `|||||||` base) but not a Markdown Setext underline.
+    #[tokio::test]
+    async fn conflict_marker_detection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let write = |name: &str, body: &str| std::fs::write(dir.join(name), body).unwrap();
+
+        write("bounds.txt", "a\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\n");
+        write("divider.txt", "one side\n=======\nother side\n"); // outer bounds stripped
+        write("base.txt", "a\n||||||| merged common ancestors\nb\n");
+        write("clean.txt", "fully resolved, no markers\n");
+        // A Markdown Setext H1: a legit `====` underline, not a conflict divider.
+        write("doc.md", "Title\n=========\n\nbody\n");
+
+        async fn has(dir: &Path, f: &str) -> bool {
+            files_have_conflict_markers(dir, &[f.to_string()]).await
+        }
+        assert!(has(dir, "bounds.txt").await);
+        assert!(
+            has(dir, "divider.txt").await,
+            "a leftover ======= divider is a marker"
+        );
+        assert!(has(dir, "base.txt").await, "the diff3 base marker counts");
+        assert!(!has(dir, "clean.txt").await);
+        assert!(
+            !has(dir, "doc.md").await,
+            "a Markdown ==== underline is not a conflict marker"
+        );
+        assert!(!has(dir, "missing.txt").await, "a deleted file is clean");
     }
 
     #[test]

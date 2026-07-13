@@ -5202,11 +5202,12 @@ mod tests {
         drive_run(&ctx, "run-mhm").await;
         assert_eq!(run_status_str(&db, "run-mhm"), "paused");
 
-        // Human commits a *partial* resolution that still holds a conflict marker.
+        // Human commits a *partial* resolution: they stripped the outer
+        // <<<<<<< / >>>>>>> bounds but left the ======= divider behind.
         let int_wt = tmp.path().join("rd-run-mhm").join("integrate-0");
         std::fs::write(
             int_wt.join(CONFLICT_FILE),
-            "keep\n<<<<<<< HEAD\nstill conflicted\n",
+            "from one side\n=======\nfrom the other side\n",
         )
         .unwrap();
         sh(&int_wt, &["add", "-A"]);
