@@ -665,6 +665,30 @@ export const api = {
   /** A page of a run's journal: events strictly after `afterSeq`, oldest first. */
   wfEvents: (runId: string, afterSeq: number, limit: number) =>
     invoke<WfEvent[]>("wf_events", { runId, afterSeq, limit }),
+  /** A run's step agents (live + archived). Run-owned agents are hidden from
+   *  `get_workspace`, so the monitor fetches them here to render attempt chats. */
+  wfRunAgents: (runId: string) => invoke<AgentRecord[]>("wf_run_agents", { runId }),
+
+  // ── Workflows v1: run control (spec §13; registered by the scheduler, S4) ──
+  /** Launch a run from a launch-time `spec` snapshot; returns the new run id.
+   *  Pass `definitionId` when launching a stored definition (bumps run_count);
+   *  `baseBranch` overrides the branch step 1 forks from. */
+  wfLaunch: (
+    spec: Spec,
+    task: string,
+    projectId: string,
+    repoPath: string,
+    definitionId?: string,
+    baseBranch?: string,
+  ) => invoke<string>("wf_launch", { spec, task, projectId, repoPath, definitionId, baseBranch }),
+  /** Cancel a run: stops the live attempt's agent and marks the run canceled. */
+  wfCancel: (runId: string) => invoke<void>("wf_cancel", { runId }),
+  /** Approve a run paused on an approval gate: boundary-commit + advance. */
+  wfApprove: (runId: string) => invoke<void>("wf_approve", { runId }),
+  /** Retry a run paused on `blocked_gate` / `stalled` with a fresh attempt. */
+  wfRetry: (runId: string) => invoke<void>("wf_retry", { runId }),
+  /** Resume a paused run (raise-budget patch arrives with the budget slice, S5). */
+  wfResume: (runId: string) => invoke<void>("wf_resume", { runId }),
 
   // ── Workflows v1: definition storage (spec §13, `wf_def_*`) ──
   /** Validate and persist a workflow definition. Omit `id` to create; pass an

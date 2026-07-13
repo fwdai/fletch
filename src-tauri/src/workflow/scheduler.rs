@@ -25,6 +25,7 @@ use tauri::AppHandle;
 use tokio::task::JoinSet;
 
 use crate::error::{Error, Result};
+use crate::supervisor::Supervisor;
 
 use super::attempt::{self, AttemptOutcome, AttemptParams, Deadlines};
 use super::blackboard;
@@ -2404,6 +2405,7 @@ async fn abandon_stale_attempts(ctx: &RunCtx, run_id: &str) {
 type Svc<'a> = tauri::State<'a, Arc<WorkflowService>>;
 
 /// Launch a run from a launch-time `spec` snapshot (spec §13).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn wf_launch(
     spec: Spec,
@@ -2413,7 +2415,17 @@ pub async fn wf_launch(
     definition_id: Option<String>,
     base_branch: Option<String>,
     service: Svc<'_>,
+    supervisor: tauri::State<'_, Arc<Supervisor>>,
 ) -> std::result::Result<String, String> {
+    // A run targets one repo, so its project is authoritatively that repo's.
+    // Resolve it from `repo_path` here rather than trusting the caller's
+    // snapshot: a path-normalization mismatch or a stale workspace snapshot
+    // could otherwise pass an empty id and orphan the run from project-scoped
+    // queries. Fall back to the caller's value only if resolution fails.
+    let project_id = supervisor
+        .workspace
+        .project_id_for_repo(&repo_path)
+        .unwrap_or(project_id);
     service
         .launch(
             spec,

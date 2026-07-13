@@ -1,29 +1,32 @@
 // run/RunRow.tsx — a workflow run as a sidebar row. Rendered with the exact
 // same markup/classes as an agent row (AgentRow): a leading workflow glyph marks
-// it as a run, the chip shows the current step's agent, and it can be stopped the
-// same way as an agent.
+// it as a run, a chip shows the flow's lead agent, a paused-reason badge names
+// why it's waiting, and it can be stopped the same way as an agent.
 
 import type { KeyboardEvent, MouseEvent } from "react";
+import { api, type WfRun } from "../../api";
 import { Icon } from "../../components/Icon";
 import { useAppStore } from "../../store";
 import { formatAge } from "../../util/format";
 import { useMinuteClock } from "../../util/hooks";
 import { AgentAvatar } from "../builder/AgentAvatar";
 import { resolveAgent } from "../shared";
-import { cancelRun } from "./engine";
-import type { WorkflowRun } from "./types";
+import type { Spec } from "../spec";
+import { flattenSteps } from "./RunView/flatten";
+import { pausedLabel } from "./status";
 
 export function RunRow({
   run,
   selected,
   onSelect,
 }: {
-  run: WorkflowRun;
+  run: WfRun;
   selected: boolean;
   onSelect: () => void;
 }) {
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
+  const setLastError = useAppStore((s) => s.setLastError);
   const now = useMinuteClock();
 
   const working = run.status === "running";
@@ -33,15 +36,27 @@ export function RunRow({
   const railClass = working ? "run" : run.status === "failed" ? "err" : "idle";
   const age = formatAge(new Date(run.created_at).toISOString(), now);
 
-  // The agent backing the current step (falls back to the first) — shown in the
-  // same chip slot an agent row uses; the combine prefix is what marks it a run.
-  const stepDef =
-    run.steps_snapshot.find((s) => s.id === run.current_step_id) ?? run.steps_snapshot[0];
-  const a = stepDef ? resolveAgent(stepDef.agent, customAgents, modelsByAgent) : null;
+  // The flow's lead (first) agent — a representative chip, the combine prefix is
+  // what marks the row as a run. Resolved from the launch-snapshot spec.
+  const spec = run.spec as Spec | null;
+  const first = flattenSteps(spec)[0];
+  const a = first
+    ? resolveAgent(
+        spec?.agents?.[first.agentAlias]?.custom_agent ??
+          spec?.agents?.[first.agentAlias]?.base ??
+          first.agentAlias,
+        customAgents,
+        modelsByAgent,
+      )
+    : null;
 
-  const onStop = (e: MouseEvent) => {
+  const onStop = async (e: MouseEvent) => {
     e.stopPropagation();
-    void cancelRun(run.id);
+    try {
+      await api.wfCancel(run.id);
+    } catch (err) {
+      setLastError(`Failed to stop run: ${err}`);
+    }
   };
 
   return (
@@ -80,11 +95,19 @@ export function RunRow({
         <span className="ag-slot">
           <span className="ag-meta">
             {working && <span className="ag-loader" aria-label="Working" />}
+            {run.status === "paused" && run.paused_reason && (
+              <span className="ag-badge warn">{pausedLabel(run.paused_reason)}</span>
+            )}
             {run.status === "failed" && <span className="ag-badge err">failed</span>}
           </span>
           <span className="ag-actions">
             {stoppable && (
-              <button className="ag-act tip" data-tip="Stop" onClick={onStop} aria-label="Stop">
+              <button
+                className="ag-act tip"
+                data-tip="Stop"
+                onClick={(e) => void onStop(e)}
+                aria-label="Stop"
+              >
                 <Icon name="stop" size={11} />
               </button>
             )}

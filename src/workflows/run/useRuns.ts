@@ -1,36 +1,39 @@
-// run/useRuns.ts — reactive list of workflow runs (engine notifications + slow
-// poll fallback). Used by the sidebar entity provider.
+// run/useRuns.ts — the reactive list of workflow runs for the sidebar. Loads the
+// runs (newest-updated first) and keeps the list live: `wf:run` fires the full
+// row on every run-row change, so a launch, a status flip, or a pause upserts in
+// place. Run resumption after an app restart is owned by the backend
+// (`resume_active_runs` on startup), so this hook is a pure view.
 
-import { useCallback, useEffect, useState } from "react";
-import { resumeActiveRuns, subscribeRuns } from "./engine";
-import { listRuns } from "./storage";
-import type { WorkflowRun } from "./types";
+import { useEffect, useState } from "react";
+import { api, onWfRun, type WfRun } from "../../api";
 
-// Resume interrupted runs once per app session. The sidebar (hence useRuns)
-// mounts at startup, so this is our app-start hook without a dedicated seam.
-let resumeKicked = false;
+export function useRuns(): WfRun[] {
+  const [runs, setRuns] = useState<WfRun[]>([]);
 
-export function useRuns(): WorkflowRun[] {
-  const [runs, setRuns] = useState<WorkflowRun[]>([]);
-  const reload = useCallback(async () => {
-    try {
-      setRuns(await listRuns());
-    } catch {
-      /* transient */
-    }
-  }, []);
   useEffect(() => {
-    if (!resumeKicked) {
-      resumeKicked = true;
-      void resumeActiveRuns();
-    }
-    void reload();
-    const off = subscribeRuns(() => void reload());
-    const timer = setInterval(() => void reload(), 2000);
+    let alive = true;
+    api
+      .wfListRuns()
+      .then((rows) => {
+        if (alive) setRuns(rows);
+      })
+      .catch(() => {});
+
+    const off = onWfRun((row) => {
+      setRuns((prev) => {
+        const next = prev.some((r) => r.id === row.id)
+          ? prev.map((r) => (r.id === row.id ? row : r))
+          : [row, ...prev];
+        next.sort((a, b) => b.updated_at - a.updated_at);
+        return next;
+      });
+    });
+
     return () => {
-      off();
-      clearInterval(timer);
+      alive = false;
+      void off.then((f) => f());
     };
-  }, [reload]);
+  }, []);
+
   return runs;
 }

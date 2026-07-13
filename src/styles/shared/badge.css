@@ -20,9 +20,15 @@
 .ag-badge.pr-closed,
 .ag-badge.pr-pass,
 .ag-badge.pr-fail,
+.ag-badge.warn,
 .ag-badge.err {
   background: color-mix(in oklch, var(--badge-color), transparent 86%);
   color: var(--badge-color);
+}
+/* paused workflow run — amber, names the reason (e.g. "needs approval") */
+.ag-badge.warn {
+  --badge-color: oklch(0.78 0.14 75);
+  text-transform: none;
 }
 .ag-badge.pr-open {
   --badge-color: var(--info);

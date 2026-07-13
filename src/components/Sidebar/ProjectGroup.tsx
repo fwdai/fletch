@@ -1,11 +1,10 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { useRef } from "react";
-import type { AgentRecord } from "@/api";
+import type { AgentRecord, WfRun } from "@/api";
 import { Icon } from "@/components/Icon";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { RunRow } from "@/workflows/run/RunRow";
-import type { WorkflowRun } from "@/workflows/run/types";
 import { AgentRow } from "./AgentRow";
 
 interface Props {
@@ -16,7 +15,7 @@ interface Props {
   agents: AgentRecord[];
   drafts: DraftAgent[];
   /** Workflow runs grouped under this repo. */
-  runs: WorkflowRun[];
+  runs: WfRun[];
   /** Whether the user has expanded this group. */
   open: boolean;
   /** Show the remove (×) button — only true when this is a pinned-but-empty group. */

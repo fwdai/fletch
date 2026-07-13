@@ -1162,6 +1162,7 @@ pub fn run() {
             workflow::definition::wf_def_import_yaml,
             oauth::oauth_device_login,
             commands::get_workspace,
+            commands::wf_run_agents,
             commands::get_agent_diff_stats,
             commands::add_workspace_repo,
             commands::remove_workspace_repo,

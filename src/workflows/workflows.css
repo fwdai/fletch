@@ -838,7 +838,7 @@
   font-size: 11px;
 }
 
-/* ── run monitor: step rail + embedded body ─────────────────────────── */
+/* ── run monitor (v2): header, budget, banner, 3-column body ──────────── */
 .wf-run {
   display: flex;
   flex-direction: column;
@@ -850,6 +850,8 @@
   gap: 6px;
   font-size: 11.5px;
   font-weight: 500;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .wf-run .t-ellipsis {
   overflow: hidden;
@@ -857,55 +859,72 @@
   white-space: nowrap;
   min-width: 0;
 }
-.wf-rrail {
+
+/* Three columns: the step/attempt rail, the selected attempt's chat, timeline. */
+.wf-run-main {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  overflow-x: auto;
+  align-items: stretch;
+}
+.wf-run-chat {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--bd-soft);
+  border-right: 1px solid var(--bd-soft);
+}
+.wf-run-side {
+  width: 340px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.wf-side-head {
+  padding: 9px 14px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
   border-bottom: 1px solid var(--bd-soft);
   flex-shrink: 0;
 }
-/* Run status + run-level action, pinned to the right end of the rail. */
-.wf-rrail-end {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
+
+/* Attempt rail — steps with their attempts stacked beneath. */
+.wf-rail {
+  width: 240px;
   flex-shrink: 0;
-  padding-left: 8px;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
-.wf-rstep {
-  display: inline-flex;
+.wf-step-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.wf-step-head {
+  display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 10px;
+  gap: 8px;
+  padding: 7px 9px;
   border: 1px solid var(--bd-soft);
-  border-radius: 999px;
+  border-radius: var(--r-md);
   background: var(--bg-1);
-  color: var(--fg-1);
+}
+.wf-step-idx {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--fg-3);
   flex-shrink: 0;
 }
-.wf-rstep:hover {
-  border-color: var(--bd-strong);
-}
-.wf-rstep.sel {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-.wf-rstep-idx {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  color: var(--fg-3);
-}
-.wf-rstep-name {
-  font-size: 12px;
-}
-.wf-rstep-chip {
-  display: inline-flex;
-  align-items: center;
-}
-.wf-rstep-q {
+.wf-step-q {
   width: 20px;
   height: 20px;
   border-radius: 6px;
@@ -915,12 +934,277 @@
   border: 1.5px dashed var(--bd-strong);
   color: var(--fg-3);
   font-size: 11px;
+  flex-shrink: 0;
 }
-.wf-run-body {
+.wf-step-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-step-tag {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  padding: 1px 4px;
+  flex-shrink: 0;
+}
+.wf-step-chip {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.wf-attempts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 14px;
+}
+.wf-attempt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.wf-attempt:hover {
+  background: var(--hover);
+}
+.wf-attempt.sel {
+  background: var(--accent-soft);
+  color: var(--fg-0);
+}
+.wf-attempt.dim {
+  opacity: 0.5;
+}
+.wf-attempt-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.wf-attempt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+/* Budget meter — a thin strip of turns / tokens / minutes bars under the head. */
+.wf-budget {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+  flex-shrink: 0;
+}
+.wf-budget-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+}
+.wf-budget-label {
+  color: var(--fg-3);
+  min-width: 44px;
+}
+.wf-budget-track {
+  width: 90px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+.wf-budget-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.3s var(--ease);
+}
+.wf-budget-fill.near {
+  background: var(--danger);
+}
+.wf-budget-num {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-1);
+}
+.wf-budget-cap {
+  color: var(--fg-3);
+}
+
+/* Paused / failed banner. */
+.wf-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+  flex-shrink: 0;
+}
+.wf-banner.amber {
+  background: oklch(0.78 0.14 75 / 0.12);
+}
+.wf-banner.danger {
+  background: oklch(0.63 0.2 25 / 0.12);
+}
+.wf-banner-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--fg-1);
+}
+.wf-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+.wf-banner-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.wf-banner-body {
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+  line-height: 1.4;
+}
+.wf-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.wf-banner-pending {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--fg-3);
+  max-width: 200px;
+}
+
+/* Timeline — virtualized uniform rows + a raw-payload drawer. */
+.wf-tl {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+.wf-tl-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.wf-tl-spacer {
+  position: relative;
+  width: 100%;
+}
+.wf-tl-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--fg-1);
+}
+.wf-tl-row:hover {
+  background: var(--hover);
+}
+.wf-tl-row.open {
+  background: var(--accent-soft);
+}
+.wf-tl-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.wf-tl-title {
+  font-size: 11.5px;
+  flex-shrink: 0;
+}
+.wf-tl-detail {
+  font-size: 11px;
+  color: var(--fg-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.wf-tl-time {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.wf-tl-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--fg-3);
+}
+.wf-tl-drawer {
+  border-top: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.wf-tl-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  font-size: 10.5px;
+  color: var(--fg-2);
+  border-bottom: 1px solid var(--bd-soft);
+}
+.wf-tl-drawer-close {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--fg-3);
+}
+.wf-tl-drawer-close:hover {
+  color: var(--fg-0);
+}
+.wf-tl-drawer-body {
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ───────────────────────── Builder v2: block editor ───────────────────────── */
