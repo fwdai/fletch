@@ -123,6 +123,33 @@ describe("sanitizeUserText", () => {
     ]);
   });
 
+  it("strips a task-notification inline while preserving surrounding user text", () => {
+    const raw = [
+      "Please review this once done.",
+      "<task-notification>",
+      "<status>completed</status>",
+      '<summary>Background command "lint" completed (exit code 0)</summary>',
+      "</task-notification>",
+      "Thanks!",
+    ].join("\n");
+    const out = sanitizeUserText(raw);
+    expect(out.text).toBe("Please review this once done.\n\nThanks!");
+    expect(out.notices).toEqual([
+      {
+        kind: "notice",
+        subtype: "background_task",
+        text: 'Background command "lint" completed (exit code 0)',
+      },
+    ]);
+  });
+
+  it("drops a contentless task-notification without emitting a notice", () => {
+    const raw = "<task-notification>   </task-notification>";
+    const out = sanitizeUserText(raw);
+    expect(out.text).toBe("");
+    expect(out.notices).toEqual([]);
+  });
+
   it("drops empty system-reminders without emitting notices", () => {
     const raw = "<system-reminder>   </system-reminder>";
     const out = sanitizeUserText(raw);
