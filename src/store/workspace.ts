@@ -99,6 +99,25 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
+  forkAgent: async (parentId, code, context) => {
+    set({ busy: true, lastError: null });
+    try {
+      const rec = await api.forkAgent(parentId, code, context);
+      const fresh = await api.getWorkspace();
+      // No optimistic managedLogs seed. When context is carried the fork is
+      // created with a non-empty task, so opening it triggers
+      // loadHistoryTranscript to render the copied history; a context-less fork
+      // opens as an empty chat.
+      set({ workspace: fresh, selectedAgentId: rec.id, activeDraftId: null });
+      return rec;
+    } catch (e) {
+      set({ lastError: String(e) });
+      return null;
+    } finally {
+      set({ busy: false });
+    }
+  },
+
   sendUserMessage: async (id, text, attachments = [], thinking) => {
     // Stable per-turn id, reused across the agent-not-ready retry below so the
     // backend's session_user_turns write is idempotent (one row per turn).

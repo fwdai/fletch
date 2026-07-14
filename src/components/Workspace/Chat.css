@@ -94,6 +94,13 @@
   margin-left: auto;
   color: var(--fg-2);
 }
+/* The fork affordance sits at the far right of the seam. `margin-left: auto`
+   pushes it right when it's the only trailing action; when the copy button is
+   also present that one takes the free space and the fork sits just after it. */
+.turn-meta .turn-fork {
+  margin-left: auto;
+  color: var(--fg-2);
+}
 
 /* The fixed 22px .btn-i.xs box clamps the copy glyph, so size the button to its
    content (plus a small hit-area pad) and let the 12px glyph through, on both

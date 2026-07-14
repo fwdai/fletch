@@ -10,6 +10,18 @@ export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
 export type AgentView = "custom" | "native";
 
+/** What a forked workspace's worktree starts from. Only `clean` (fork the
+ *  parent's base branch) is wired today; `carry` (bring the parent's current
+ *  working tree) ships in a follow-up slice. Mirrors the backend `ForkCode`. */
+export type ForkCode = "clean";
+
+/** How much of the parent conversation a fork carries. Mirrors the backend
+ *  `ForkContext`. Summarized context ships in a follow-up slice. */
+export type ForkContext =
+  | { kind: "none" }
+  | { kind: "full" }
+  | { kind: "up_to_message"; prompt: number };
+
 export interface TrackedRepo {
   repo_path: string;
   subdir: string;
@@ -530,6 +542,12 @@ export const api = {
       mcpServers: mcpServers ?? null,
       forkBase: forkBase ?? null,
     }),
+  /** Fork an existing workspace into a new one, seeding its worktree (`code`)
+   *  and conversation (`context`) independently. For `context.kind ===
+   *  "up_to_message"`, `prompt` is the 0-based ordinal of a navigable user
+   *  prompt (git-action turns excluded), matching the chat's turn list. */
+  forkAgent: (parentId: string, code: ForkCode, context: ForkContext) =>
+    invoke<AgentRecord>("fork_agent", { parentId, code, context }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   /** Resolves to `true` when the message was enqueued for a later turn boundary

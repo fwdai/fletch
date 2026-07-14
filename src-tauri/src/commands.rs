@@ -317,6 +317,22 @@ pub async fn spawn_agent(
     .await
 }
 
+/// Fork an existing workspace into a new one, seeding its worktree (`code`) and
+/// conversation (`context`) independently. `context = up_to_message` carries the
+/// parent conversation through the navigable prompt at a 0-based ordinal (the
+/// same ordinal the chat's turn list uses; git-action turns excluded).
+#[tauri::command]
+pub async fn fork_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    parent_id: String,
+    code: crate::supervisor::ForkCode,
+    context: crate::supervisor::ForkContext,
+) -> Result<AgentRecord> {
+    let sup = supervisor.inner().clone();
+    sup.fork_agent(app, &parent_id, code, context).await
+}
+
 #[tauri::command]
 pub fn write_to_agent(
     supervisor: State<'_, Arc<Supervisor>>,

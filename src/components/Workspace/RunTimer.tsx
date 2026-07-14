@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { ForkButton } from "./ForkButton";
 
 /** Whole seconds under a minute; `{m}m {ss}s` (zero-padded seconds) at a
  *  minute or more. Never a leading `0m`, never decimals or an hours field. */
@@ -29,15 +30,29 @@ export function LiveTimer({ startedAt }: { startedAt: number }) {
   return <span className="turn-clock">{fmtDur(sec)}</span>;
 }
 
-/** The footer closing an ended turn: the quiet "Ran 38s" record on the left and
- *  a dimmed copy of the turn's response on the right. Doubles as the seam
- *  between turns (the hairline lives in CSS). */
-export function TurnFooter({ runSec, copyText }: { runSec: number; copyText: string }) {
+/** The footer closing an ended turn: the quiet "Ran 38s" record on the left and,
+ *  on the right, a dimmed copy of the turn's response plus a "fork from here"
+ *  action. Doubles as the seam between turns (the hairline lives in CSS).
+ *
+ *  `agentId` + `turnOrdinal` (the 0-based navigable-prompt index this turn
+ *  closes) are what the fork action carries to seed the new conversation. */
+export function TurnFooter({
+  runSec,
+  copyText,
+  agentId,
+  turnOrdinal,
+}: {
+  runSec: number;
+  copyText: string;
+  agentId: string;
+  turnOrdinal: number;
+}) {
   return (
     <div className="turn-meta">
       <Icon name="clock" size={11} />
       <span>Ran {fmtDur(runSec)}</span>
       {copyText && <CopyButton text={copyText} className="turn-copy" />}
+      <ForkButton agentId={agentId} upToPrompt={turnOrdinal} />
     </div>
   );
 }

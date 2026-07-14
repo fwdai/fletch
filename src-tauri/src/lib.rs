@@ -1162,6 +1162,7 @@ pub fn run() {
             commands::publish_agent,
             commands::github_disconnect,
             commands::spawn_agent,
+            commands::fork_agent,
             commands::write_to_agent,
             commands::send_user_message,
             commands::answer_tool_use,
