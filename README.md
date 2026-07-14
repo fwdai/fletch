@@ -15,8 +15,6 @@ Run Claude Code, Codex, Cursor, OpenCode and more in parallel, each in an isolat
 ![Platform: macOS 13+](https://img.shields.io/badge/Platform-macOS%2013%2B-lightgrey.svg)
 ![Built with Tauri](https://img.shields.io/badge/Built%20with-Tauri%202-24C8DB.svg)
 
-<img src="docs/fletch_control_room.jpg" alt="Fletch: specialist AI coding agents running a deterministic workflow in parallel, each in its own sandboxed clone" width="820">
-
 </div>
 
 <!-- DEMO VIDEO: GitHub only renders an inline player for videos uploaded through
@@ -26,6 +24,9 @@ Run Claude Code, Codex, Cursor, OpenCode and more in parallel, each in an isolat
      github.com/user-attachments/... URL. Keep that URL on its own line, exactly
      here (outside the <div> above, or the player won't render), then delete the
      screenshot above. -->
+
+https://github.com/user-attachments/assets/a8fb53d6-d893-4382-894a-fb173cd29f10
+
 
 ---
 
