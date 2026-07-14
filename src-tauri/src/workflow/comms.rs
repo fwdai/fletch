@@ -1,4 +1,4 @@
-//! The comms router (TECH_SPEC §10.1, §10.4): host-brokered messaging between a
+//! The comms router: host-brokered messaging between a
 //! step agent and the workflow. Step agents call the `wf_report` / `wf_ask` /
 //! `wf_notify` RPC ops through their private mailbox; this module validates each
 //! against the step's declared caps, persists it to `wf_message`, journals it,

@@ -1,5 +1,5 @@
 // Workflow definition spec — the TypeScript mirror of the Rust `workflow::spec`
-// types (see src-tauri/src/workflow/spec.rs and docs/workflows/TECH_SPEC.md §5).
+// types (see src-tauri/src/workflow/spec.rs).
 //
 // These match the serde JSON representation exactly, so a `Spec` sent to
 // `wf_def_save` and one read back from `wf_def_list` are the same shape. The

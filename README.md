@@ -92,9 +92,7 @@ The engine — not an LLM — owns control flow. It's built to be **robust and o
 - **No silent hangs.** Every wait has a deadline; every pause names its cause (approval, question, blocked gate, budget, conflict, stall) and offers its action in the monitor.
 - **Fully resumable.** Every engine decision is an append-only journal event; runs resume after an app restart, and each step attempt's chat is preserved and replayable forever.
 
-**Using it:** define a workflow in **Settings → Workflows** (or import a shareable [YAML](docs/workflows/TECH_SPEC.md#53-yaml) file); launch it on a task from a new workspace's **Workflow** tab; watch it in the run monitor — a live timeline, each attempt's chat, a budget meter, and banners for anything that needs you. Finalize pushes the run branch and opens a PR.
-
-See the [technical specification](docs/workflows/TECH_SPEC.md) for the full design and [QA.md](docs/workflows/QA.md) for an end-to-end walkthrough.
+**Using it:** define a workflow in **Settings → Workflows** (or import a shareable YAML file); launch it on a task from a new workspace's **Workflow** tab; watch it in the run monitor — a live timeline, each attempt's chat, a budget meter, and banners for anything that needs you. Finalize pushes the run branch and opens a PR.
 
 ## Isolation & security
 

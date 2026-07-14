@@ -724,8 +724,8 @@ export const api = {
 };
 
 // ───────────────────────────── Workflows v1 types ───────────────────────────
-// Mirror the serialized Rust rows in src-tauri/src/workflow/types.rs (TECH_SPEC
-// §4). JSON-typed columns arrive as parsed objects (`unknown`), not strings.
+// Mirror the serialized Rust rows in src-tauri/src/workflow/types.rs.
+// JSON-typed columns arrive as parsed objects (`unknown`), not strings.
 
 export type WfRunStatus = "pending" | "running" | "paused" | "done" | "failed" | "canceled";
 

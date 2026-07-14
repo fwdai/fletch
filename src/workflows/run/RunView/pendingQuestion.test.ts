@@ -1,5 +1,5 @@
-// Regression tests for selectPendingQuestion (SLICES S10/S13 acceptance: a
-// human question pauses the run and wf_answer resumes it). The bug this guards:
+// Regression tests for selectPendingQuestion: a human question pauses the run
+// and wf_answer resumes it. The bug this guards:
 // keying the selection on `to_step_exec_id` hid escalation/engine-authored asks
 // (whose recipient is a step exec, not null), wedging the answer banner.
 

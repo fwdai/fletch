@@ -1,4 +1,4 @@
-//! The workflow journal (TECH_SPEC §7): an append-only `wf_event` log per run.
+//! The workflow journal: an append-only `wf_event` log per run.
 //!
 //! `append` allocates the next per-run `seq` and inserts within the caller's DB
 //! lock — every workflow writer serializes through the single connection mutex

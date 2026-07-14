@@ -1,4 +1,4 @@
-// Spec ↔ editor-state mapping (spec §5.3 / SLICES F1 acceptance). The load-bearing
+// Spec ↔ editor-state mapping. The load-bearing
 // property: for any spec the builder or importer can produce, round-tripping
 // through the editor is value-preserving.
 
