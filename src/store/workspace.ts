@@ -1,6 +1,6 @@
 import type { ChatItem } from "@/adapters";
 import { hasUsage, usageFromRecords } from "@/adapters/usage";
-import { api, type ForkContext } from "@/api";
+import { api, type ForkContext, type SessionRecord } from "@/api";
 import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
 import {
   applyUserTurns,
@@ -55,6 +55,27 @@ function forkContextDigest(log: ChatItem[], context: ForkContext): string | null
   }
   const digest = lines.join("\n\n").trim();
   return digest.length > 0 ? digest : null;
+}
+
+/** Read an agent's canonical log exactly as the transcript view does: pull its
+ *  session_records (lazily ingesting on-disk history when the DB is still empty),
+ *  reduce them for the provider, then overlay outgoing/pending user turns. Shared
+ *  by loadHistoryTranscript (display) and forkAgent (carried-context digest) so a
+ *  fork's injected brief is built from the very records the backend copies —
+ *  never from a possibly-unloaded managedLogs entry. */
+async function readReducedLog(
+  get: () => AppState,
+  id: string,
+): Promise<{ records: SessionRecord[]; items: ChatItem[] }> {
+  const provider = providerFor(get(), id);
+  let records = await api.readSessionRecords(id);
+  if (records.length === 0) {
+    await api.syncSession(id);
+    records = await api.readSessionRecords(id);
+  }
+  const turns = await api.readUserTurns(id);
+  const items = applyUserTurns(reduceRecords(provider, records), turns);
+  return { records, items };
 }
 
 // Labels shown alongside the busy spinner when a known slash command is
@@ -144,10 +165,15 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   forkAgent: async (parentId, code, context) => {
     set({ busy: true, lastError: null });
     try {
-      // Build the carried prose from the parent's normalized log so the injected
-      // context works across every provider and matches the copied display
-      // history. Falls back to null (no injection) when the log isn't loaded.
-      const digest = forkContextDigest(get().managedLogs[parentId] ?? [], context);
+      // Build the carried prose from the parent's canonical records — the same
+      // source the backend copies for display — so the injected context works
+      // across every provider and stays in step with the copied history even
+      // when the parent transcript has not been loaded into managedLogs. Skip
+      // the read entirely when no context is carried.
+      const digest =
+        context.kind === "none"
+          ? null
+          : forkContextDigest((await readReducedLog(get, parentId)).items, context);
       const rec = await api.forkAgent(parentId, code, context, digest);
       const fresh = await api.getWorkspace();
       // No optimistic managedLogs seed. When context is carried the fork is
@@ -437,18 +463,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       const provider = providerFor(get(), id);
       // session_records is the sole canonical store: per-provider verbatim
-      // transcript bodies, rendered via normalizeTranscript→reduce. If a session
-      // has no records yet (first open, or pre-cutover history), lazily ingest
-      // its on-disk transcript and re-read. No-op for agents with no transcript.
-      let records = await api.readSessionRecords(id);
-      if (records.length === 0) {
-        await api.syncSession(id);
-        records = await api.readSessionRecords(id);
-      }
-      // Overlay outgoing-turn attachments + any undelivered (pending) turns, so
-      // a failed send still shows on reload even when there are no records yet.
-      const turns = await api.readUserTurns(id);
-      const items = applyUserTurns(reduceRecords(provider, records), turns);
+      // transcript bodies, rendered via normalizeTranscript→reduce. readReducedLog
+      // lazily ingests on-disk history when the DB is empty and overlays
+      // outgoing/pending user turns, so a failed send still shows on reload.
+      const { records, items } = await readReducedLog(get, id);
       const usage = usageFromRecords(provider, records);
       if (hasUsage(usage)) {
         const projectId = get().workspace?.agents.find((a) => a.id === id)?.project_id;
