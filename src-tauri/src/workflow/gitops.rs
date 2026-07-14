@@ -115,6 +115,9 @@ pub async fn head_sha(checkout: &Path) -> Result<String> {
 /// The result of a boundary commit.
 pub struct BoundaryCommit {
     pub head: String,
+    /// Whether the boundary actually produced a commit (the tree was dirty).
+    /// Asserted in tests; production only cares about `head`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub committed: bool,
 }
 
@@ -190,6 +193,9 @@ pub async fn ferry_ref_as(
 
 /// The result of finalizing a run.
 pub struct FinalizeOutcome {
+    /// Whether the run branch was pushed. Asserted in tests; production reads
+    /// `branch`/`pr_url`/`pr_error`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub pushed: bool,
     pub branch: String,
     pub pr_url: Option<String>,
@@ -295,9 +301,9 @@ pub async fn setup_integration_worktree(run_repo: &Path, wt: &Path, base: &str) 
 pub enum MergeResult {
     /// Merged without conflicts; `head` is the new accumulator HEAD.
     Clean { head: String },
-    /// Conflicted. The conflicted merge is committed as a snapshot (`head`) and
-    /// `files` lists the paths git left with conflict markers.
-    Conflict { head: String, files: Vec<String> },
+    /// Conflicted. The conflicted merge is committed as a snapshot and `files`
+    /// lists the paths git left with conflict markers.
+    Conflict { files: Vec<String> },
 }
 
 /// Merge `child_ref` into the integration worktree (a `--no-ff` merge, so every
@@ -329,10 +335,7 @@ pub async fn merge_child(wt: &Path, child_ref: &str, message: &str) -> Result<Me
         "commit conflict snapshot",
     )
     .await?;
-    Ok(MergeResult::Conflict {
-        head: head_sha(wt).await?,
-        files,
-    })
+    Ok(MergeResult::Conflict { files })
 }
 
 /// Paths git left with conflict markers (unmerged index entries).
@@ -720,7 +723,7 @@ mod tests {
         ));
         // Second conflicts on the same line.
         match merge_child(&wt, &child_refs[1], "merge b").await.unwrap() {
-            MergeResult::Conflict { files, .. } => {
+            MergeResult::Conflict { files } => {
                 assert_eq!(files, vec!["f.txt".to_string()]);
                 let body = std::fs::read_to_string(wt.join("f.txt")).unwrap();
                 assert!(

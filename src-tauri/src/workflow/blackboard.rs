@@ -27,14 +27,7 @@
 //! Docker bind mount + the [`WF_BLACKBOARD_ENV`] env var); this module only
 //! computes the paths.
 
-// The provisioning / verdict / archival / scan helpers below are the S3→S4
-// seam: they are exercised by this module's unit tests but not yet called from
-// the engine, which lands in S4 (scheduler + attempt lifecycle). Remove this
-// allow when S4 wires them in.
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
@@ -231,66 +224,6 @@ pub fn archive_stale_verdict(
     Ok(Some(dest))
 }
 
-/// Files under `blackboard` modified strictly after `since` that the step with
-/// `own_step_id` does not own. A step owns its `<own_step_id>/` subtree and the
-/// shared `shared/` scratch space; everything else (other steps' dirs, the
-/// engine's `task.md`) is foreign. The engine runs this after a step's turn and
-/// journals a note if the result is non-empty (spec §8.4 — ownership is
-/// prompt-enforced in v1; this is the detector, not an enforcement gate). Paths
-/// are returned relative to `blackboard` for compact journaling.
-///
-/// Best-effort: unreadable entries and entries whose mtime can't be read are
-/// skipped rather than failing the scan (a missing mtime must not block a run).
-pub fn scan_foreign_writes(
-    blackboard: &Path,
-    own_step_id: &str,
-    since: SystemTime,
-) -> Result<Vec<PathBuf>> {
-    // Validate through `step_dir` so a `.` / `..` step id can't alias the whole
-    // blackboard (marking every file "owned" and hiding all foreign writes).
-    let own = step_dir(blackboard, own_step_id)?;
-    let shared = blackboard.join("shared");
-    let mut out = Vec::new();
-    collect_recent_files(blackboard, since, &mut |path| {
-        if path.starts_with(&own) || path.starts_with(&shared) {
-            return;
-        }
-        if let Ok(rel) = path.strip_prefix(blackboard) {
-            out.push(rel.to_path_buf());
-        }
-    })?;
-    out.sort();
-    Ok(out)
-}
-
-/// Recurse `dir`, invoking `visit` for every regular file whose mtime is
-/// strictly after `since`. Directories themselves are traversed but never
-/// reported. Best-effort per the caller's contract: an unreadable directory or
-/// a metadata read failure skips that entry.
-fn collect_recent_files(dir: &Path, since: SystemTime, visit: &mut dyn FnMut(&Path)) -> Result<()> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(Error::Io(e)),
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(ft) = entry.file_type() else { continue };
-        if ft.is_dir() {
-            collect_recent_files(&path, since, visit)?;
-        } else if ft.is_file() {
-            let Ok(meta) = entry.metadata() else { continue };
-            let Ok(modified) = meta.modified() else {
-                continue;
-            };
-            if modified > since {
-                visit(&path);
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,15 +257,6 @@ mod tests {
             step_dir(board, "review").expect("safe id"),
             board.join("review")
         );
-    }
-
-    #[test]
-    fn scan_foreign_writes_rejects_unsafe_step_id() {
-        let dir = tmp();
-        let board = provision(dir.path(), "task").expect("provision");
-        // A `.` own-step-id would otherwise alias the whole board as owned.
-        assert!(scan_foreign_writes(&board, ".", SystemTime::UNIX_EPOCH).is_err());
-        assert!(scan_foreign_writes(&board, "../x", SystemTime::UNIX_EPOCH).is_err());
     }
 
     #[test]
@@ -493,38 +417,5 @@ mod tests {
         std::fs::write(step.join("verdict.json"), r#"{"result":"done"}"#).unwrap();
         archive_stale_verdict(step, 1, 0).expect("archive");
         assert_eq!(read_verdict(step), Err(VerdictError::Missing));
-    }
-
-    #[test]
-    fn scan_foreign_writes_flags_other_lanes_only() {
-        let dir = tmp();
-        let board = provision(dir.path(), "task").expect("provision");
-        // A baseline in the past: everything created after counts as recent.
-        let since = SystemTime::UNIX_EPOCH;
-
-        std::fs::create_dir_all(board.join("plan")).unwrap();
-        std::fs::write(board.join("plan/handoff.md"), "own").unwrap();
-        std::fs::write(board.join("shared/scratch.txt"), "shared").unwrap();
-        std::fs::create_dir_all(board.join("other")).unwrap();
-        std::fs::write(board.join("other/verdict.json"), "foreign").unwrap();
-
-        let foreign = scan_foreign_writes(&board, "plan", since).expect("scan");
-        // Own lane and shared are exempt; task.md (engine-written, pre-`since`
-        // baseline aside it is foreign to every step) and the other step's file
-        // are flagged.
-        assert!(foreign.contains(&PathBuf::from("other/verdict.json")));
-        assert!(foreign.contains(&PathBuf::from("task.md")));
-        assert!(!foreign.iter().any(|p| p.starts_with("plan")));
-        assert!(!foreign.iter().any(|p| p.starts_with("shared")));
-    }
-
-    #[test]
-    fn scan_foreign_writes_respects_since_cutoff() {
-        let dir = tmp();
-        let board = provision(dir.path(), "task").expect("provision");
-        // Nothing modified after "now-ish" far in the future.
-        let future = SystemTime::now() + std::time::Duration::from_secs(3600);
-        let foreign = scan_foreign_writes(&board, "plan", future).expect("scan");
-        assert!(foreign.is_empty());
     }
 }

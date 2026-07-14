@@ -1639,7 +1639,7 @@ async fn drive_merges(
                     &json!({ "step_id": step_id, "sha": head }),
                 );
             }
-            gitops::MergeResult::Conflict { files, .. } => {
+            gitops::MergeResult::Conflict { files } => {
                 gitops::pin_ref(int_wt, &gitops::merge_conflict_ref(block_index)).await?;
                 let remaining_after: Vec<(String, String)> = remaining[i + 1..].to_vec();
                 cursor.merge = Some(MergeCursor {
@@ -2373,7 +2373,7 @@ enum OrchStepResult {
     Ok,
     Stalled,
     Error(String),
-    Budget(String),
+    Budget,
 }
 
 /// Run an orchestrate stage (spec §6.6, §10.2): a stage-lived orchestrator agent
@@ -4428,8 +4428,8 @@ async fn drive_orch_turn(
     ledger: &mut Ledger,
     eff: &EffectiveBudgets,
 ) -> OrchStepResult {
-    if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
-        return OrchStepResult::Budget(which.as_str().to_string());
+    if ledger.exceeded(eff, super::now_ms()).is_some() {
+        return OrchStepResult::Budget;
     }
     let (turn, events) =
         attempt::drive_prompt_turn(ctx.driver.as_ref(), orch_agent_id, prompt, kind, deadlines)
@@ -4468,8 +4468,8 @@ async fn drive_orch_turn(
     }
     match turn {
         attempt::OrchTurn::Ended => {
-            if let Some(which) = ledger.exceeded(eff, super::now_ms()) {
-                return OrchStepResult::Budget(which.as_str().to_string());
+            if ledger.exceeded(eff, super::now_ms()).is_some() {
+                return OrchStepResult::Budget;
             }
             OrchStepResult::Ok
         }
@@ -4522,7 +4522,7 @@ async fn finish_orch_turn_failure(
             pause_question(ctx, run_id, orch_exec, Some(orch_agent_id)).await;
             Ok(StageFlow::Stop)
         }
-        OrchStepResult::Budget(_) => {
+        OrchStepResult::Budget => {
             let _ = ctx.driver.stop(orch_agent_id).await;
             {
                 let conn = ctx.db.lock();
