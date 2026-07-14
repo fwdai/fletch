@@ -877,7 +877,9 @@ mod tests {
         assert!(!dst.join("ignored.txt").exists());
         // HEAD stays at base — the carried work reads as uncommitted changes.
         assert_eq!(rev_parse(&dst, "HEAD").await.unwrap(), base);
-        let status = run_git(&dst, &["status", "--porcelain"], "status").await.unwrap();
+        let status = run_git(&dst, &["status", "--porcelain"], "status")
+            .await
+            .unwrap();
         assert!(
             !String::from_utf8_lossy(&status.stdout).trim().is_empty(),
             "carried changes should show as uncommitted"
