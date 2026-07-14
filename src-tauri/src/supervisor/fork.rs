@@ -17,10 +17,17 @@
 //!  1. **Display** — the parent's `session_records` up to the cutoff are copied
 //!     into the new session, so the chat renders the prior history with no new
 //!     UI (it reduces exactly like any transcript).
-//!  2. **Agent knowledge** — those same records are rendered into a text digest
-//!     appended to the new agent's `instructions` (the standing brief, injected
-//!     every spawn and never shown as a chat bubble). Provider-portable; no
-//!     `--resume` / transcript-file synthesis.
+//!  2. **Agent knowledge** — a plain-text digest of that same range is appended
+//!     to the new agent's `instructions` (the standing brief, injected every
+//!     spawn and never shown as a chat bubble). Provider-portable; no `--resume`
+//!     / transcript-file synthesis.
+//!
+//! The digest text is built by the **frontend** and passed in as
+//! `context_digest`: the frontend has every provider's chat adapter, so it
+//! renders prose uniformly across providers (Claude, Codex, OpenCode, Pi, …) and
+//! the injected context always matches the history the child actually shows. The
+//! backend only decides the record cutoff (for the display copy) and wraps the
+//! digest into the brief.
 
 use std::collections::HashMap;
 
@@ -39,11 +46,14 @@ use super::{SpawnRequest, Supervisor};
 /// `APP_ACTION_PREFIX` (see `src/components/RightPanel/delegation.ts`).
 const APP_ACTION_PREFIX: &str = "[app-action] ";
 
-/// Delimiters bracketing the injected prior-conversation digest inside the
-/// agent's brief. Kept stable so forking a fork strips the parent's injected
-/// block (rebuilt fresh from records) instead of nesting digests unboundedly.
-const FORK_CONTEXT_OPEN: &str = "<forked-conversation-context>";
-const FORK_CONTEXT_CLOSE: &str = "</forked-conversation-context>";
+/// Machine-generated sentinels bracketing the injected prior-conversation digest
+/// inside the agent's brief. HTML-comment form, namespaced to Fletch, so:
+///  - a fork of a fork strips *our* prior block (rebuilding one fresh digest
+///    rather than nesting them), and
+///  - user-authored brief text — even a literal `<forked-conversation-context>`
+///    example — is never mistaken for an injected block and stripped.
+const FORK_CONTEXT_OPEN: &str = "<!-- fletch:forked-conversation-context -->";
+const FORK_CONTEXT_CLOSE: &str = "<!-- /fletch:forked-conversation-context -->";
 
 /// What the forked workspace's worktree starts from. Defined as an enum (rather
 /// than a bool) so `Carry` — bring the parent's current working tree, incl.
@@ -56,8 +66,9 @@ pub enum ForkCode {
     Clean,
 }
 
-/// How much of the parent conversation the fork carries. `Summary` (a
-/// summarized digest rather than verbatim) is a follow-up variant.
+/// How much of the parent conversation the fork carries. Drives the record
+/// cutoff for the display copy; the matching digest text is supplied separately
+/// by the frontend. `Summary` (a summarized digest) is a follow-up variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ForkContext {
@@ -75,6 +86,11 @@ impl Supervisor {
     /// Fork `parent_id` into a brand-new workspace, seeding its worktree
     /// (`code`) and conversation (`context`) independently.
     ///
+    /// `context_digest` is the frontend-rendered prose for the carried range
+    /// (empty/`None` when nothing is carried); it becomes the injected brief
+    /// context. `context` independently drives which `session_records` are copied
+    /// for display, so the two are built from the same cutoff and stay in step.
+    ///
     /// Returns the new agent record. Heavy provisioning runs in the background
     /// exactly like a normal spawn; any carried history and injected brief are
     /// in place before this returns, so the frontend can open the new agent and
@@ -85,6 +101,7 @@ impl Supervisor {
         parent_id: &str,
         code: ForkCode,
         context: ForkContext,
+        context_digest: Option<String>,
     ) -> Result<AgentRecord> {
         let parent = self.workspace.agent(parent_id)?;
         let primary = parent
@@ -93,7 +110,7 @@ impl Supervisor {
             .ok_or_else(|| Error::Other("parent agent has no tracked repos".into()))?
             .clone();
 
-        // Resolve which of the parent's records the fork carries (if any).
+        // Resolve which of the parent's records the fork carries for display.
         let records = self.workspace.read_session_records(parent_id)?;
         let cutoff = match context {
             ForkContext::None => None,
@@ -108,16 +125,15 @@ impl Supervisor {
             None => Vec::new(),
         };
 
-        // Brief: always start from the parent's brief with any *prior* fork
-        // digest stripped (so a fork of a fork carries one digest rebuilt from
-        // records, not a growing stack). Append a fresh digest only when
-        // carrying history.
+        // Brief: always start from the parent's brief with any *prior* injected
+        // fork block stripped (so a fork of a fork carries one digest, not a
+        // growing stack). Append the fresh digest only when the frontend actually
+        // supplied prose — provider-agnostic and matched to the display copy.
         let base_brief = strip_forked_context(parent.instructions.as_deref().unwrap_or(""));
-        let instructions = if carried.is_empty() {
-            (!base_brief.is_empty()).then_some(base_brief)
-        } else {
-            let digest = build_digest(&parent.provider, &carried);
-            Some(combine_instructions(base_brief, &digest))
+        let digest = context_digest.filter(|d| !d.trim().is_empty());
+        let instructions = match digest {
+            Some(prose) => Some(combine_instructions(base_brief, &wrap_context(&prose))),
+            None => (!base_brief.is_empty()).then_some(base_brief),
         };
 
         // Code: reuse the normal spawn/provision path. `Clean` forks the parent's
@@ -198,8 +214,10 @@ fn fork_cutoff_seq(
     let idx = up_to_prompt.min(real.len() - 1);
     let boundary_seq = real[idx].seq;
 
-    let native_to_seq: HashMap<&str, i64> =
-        records.iter().map(|r| (r.native_id.as_str(), r.seq)).collect();
+    let native_to_seq: HashMap<&str, i64> = records
+        .iter()
+        .map(|r| (r.native_id.as_str(), r.seq))
+        .collect();
 
     let cutoff = turns
         .iter()
@@ -211,63 +229,22 @@ fn fork_cutoff_seq(
     Ok(cutoff)
 }
 
-/// Render the carried records into a plain-text digest wrapped in the fork
-/// delimiters. Text turns only (tool calls/results are omitted to keep the brief
-/// tight).
-fn build_digest(_provider: &str, records: &[&SessionRecord]) -> String {
-    let mut blocks: Vec<String> = Vec::new();
-    for r in records {
-        if let Some((role, text)) = extract_message(&r.body) {
-            blocks.push(format!("{role}: {text}"));
-        }
-    }
-    let body = blocks.join("\n\n");
+/// Wrap the frontend-supplied conversation prose in the fork sentinels plus a
+/// short framing line the agent reads as instructions.
+fn wrap_context(prose: &str) -> String {
     format!(
         "{FORK_CONTEXT_OPEN}\n\
          The conversation below is the prior context this session was forked from. \
          Treat it as already-established history and continue from where it left off; \
          do not redo work that is already complete.\n\n\
-         {body}\n\
+         {prose}\n\
          {FORK_CONTEXT_CLOSE}"
     )
 }
 
-/// Pull a `(Role, text)` pair out of one transcript record body, or `None` for
-/// records that carry no user/assistant prose (tool-only turns, summaries,
-/// system events). Handles the Claude-family shape (`type` + `message.content`
-/// as a string or an array of typed blocks); other providers that share it work
-/// too, and those that don't simply contribute nothing to the digest.
-fn extract_message(body: &Value) -> Option<(&'static str, String)> {
-    let role = match body.get("type").and_then(Value::as_str)? {
-        "user" => "User",
-        "assistant" => "Assistant",
-        _ => return None,
-    };
-    let content = body.get("message")?.get("content")?;
-    let text = match content {
-        Value::String(s) => s.trim().to_string(),
-        Value::Array(blocks) => {
-            let mut parts: Vec<&str> = Vec::new();
-            for b in blocks {
-                if b.get("type").and_then(Value::as_str) == Some("text") {
-                    if let Some(t) = b.get("text").and_then(Value::as_str) {
-                        parts.push(t);
-                    }
-                }
-            }
-            parts.join("\n").trim().to_string()
-        }
-        _ => String::new(),
-    };
-    if text.is_empty() {
-        return None;
-    }
-    Some((role, text))
-}
-
-/// Remove any previously-injected fork digest block(s) from a brief, so a fork
-/// of a fork carries a single digest rebuilt from records rather than a growing
-/// stack of nested ones.
+/// Remove any previously-injected fork block(s) from a brief, so a fork of a
+/// fork carries a single fresh digest rather than a growing stack of nested
+/// ones. Matches only the machine sentinels, so user-authored text is untouched.
 fn strip_forked_context(brief: &str) -> String {
     let mut out = brief.to_string();
     while let Some(start) = out.find(FORK_CONTEXT_OPEN) {
@@ -280,13 +257,13 @@ fn strip_forked_context(brief: &str) -> String {
     out.trim().to_string()
 }
 
-/// Join the parent's (digest-stripped) brief with the fresh digest, or use the
+/// Join the parent's (block-stripped) brief with the wrapped digest, or use the
 /// digest alone when there was no brief.
-fn combine_instructions(base_brief: String, digest: &str) -> String {
+fn combine_instructions(base_brief: String, wrapped_digest: &str) -> String {
     if base_brief.is_empty() {
-        digest.to_string()
+        wrapped_digest.to_string()
     } else {
-        format!("{base_brief}\n\n{digest}")
+        format!("{base_brief}\n\n{wrapped_digest}")
     }
 }
 
@@ -402,20 +379,26 @@ mod tests {
     }
 
     #[test]
-    fn digest_wraps_text_turns_and_labels_roles() {
-        let records = sample_records();
-        let refs: Vec<&SessionRecord> = records.iter().take(2).collect();
-        let d = build_digest("claude", &refs);
-        assert!(d.starts_with(FORK_CONTEXT_OPEN));
-        assert!(d.trim_end().ends_with(FORK_CONTEXT_CLOSE));
-        assert!(d.contains("User: first"));
-        assert!(d.contains("Assistant: resp1"));
+    fn wrap_brackets_prose_with_sentinels() {
+        let w = wrap_context("User: hi\n\nAssistant: hey");
+        assert!(w.starts_with(FORK_CONTEXT_OPEN));
+        assert!(w.trim_end().ends_with(FORK_CONTEXT_CLOSE));
+        assert!(w.contains("User: hi"));
+        assert!(w.contains("Assistant: hey"));
     }
 
     #[test]
     fn strip_removes_prior_injected_block() {
-        let brief = format!("real brief\n\n{FORK_CONTEXT_OPEN}\nold stuff\n{FORK_CONTEXT_CLOSE}");
+        let brief = format!("real brief\n\n{}", wrap_context("old convo"));
         assert_eq!(strip_forked_context(&brief), "real brief");
+    }
+
+    #[test]
+    fn strip_leaves_user_authored_lookalike_untouched() {
+        // A user brief that literally mentions the tag text (not the machine
+        // sentinel) must survive verbatim — the regression the sentinel guards.
+        let brief = "Follow the <forked-conversation-context> convention when asked.";
+        assert_eq!(strip_forked_context(brief), brief);
     }
 
     #[test]
@@ -427,20 +410,6 @@ mod tests {
     fn combine_uses_digest_alone_when_no_brief() {
         assert_eq!(combine_instructions(String::new(), "DIGEST"), "DIGEST");
         assert_eq!(combine_instructions("B".into(), "D"), "B\n\nD");
-    }
-
-    #[test]
-    fn extract_handles_string_content() {
-        let body = json!({"type": "user", "message": {"content": "hello"}});
-        assert_eq!(extract_message(&body), Some(("User", "hello".to_string())));
-    }
-
-    #[test]
-    fn extract_skips_tool_only_and_unknown() {
-        let tool_only = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}});
-        assert_eq!(extract_message(&tool_only), None);
-        let sys = json!({"type": "summary", "message": {"content": "x"}});
-        assert_eq!(extract_message(&sys), None);
     }
 
     #[test]

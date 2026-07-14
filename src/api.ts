@@ -545,9 +545,18 @@ export const api = {
   /** Fork an existing workspace into a new one, seeding its worktree (`code`)
    *  and conversation (`context`) independently. For `context.kind ===
    *  "up_to_message"`, `prompt` is the 0-based ordinal of a navigable user
-   *  prompt (git-action turns excluded), matching the chat's turn list. */
-  forkAgent: (parentId: string, code: ForkCode, context: ForkContext) =>
-    invoke<AgentRecord>("fork_agent", { parentId, code, context }),
+   *  prompt (git-action turns excluded), matching the chat's turn list.
+   *
+   *  `contextDigest` is the rendered prose for the carried range, assembled by
+   *  the caller from the normalized chat log (so it works uniformly across every
+   *  provider and matches the history the child shows). `null` when nothing is
+   *  carried. */
+  forkAgent: (
+    parentId: string,
+    code: ForkCode,
+    context: ForkContext,
+    contextDigest: string | null,
+  ) => invoke<AgentRecord>("fork_agent", { parentId, code, context, contextDigest }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   /** Resolves to `true` when the message was enqueued for a later turn boundary

@@ -1,6 +1,7 @@
 import type { ChatItem } from "@/adapters";
 import { hasUsage, usageFromRecords } from "@/adapters/usage";
-import { api } from "@/api";
+import { api, type ForkContext } from "@/api";
+import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
 import {
   applyUserTurns,
   dropAgentEntries,
@@ -12,8 +13,49 @@ import {
 import { clearOutputBuffer } from "@/pty/buffers";
 import { setSetting } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
+import { stripInjectedInstructions } from "@/util/instructions";
 import { interruptedAgents } from "./interrupted";
 import type { AppState, SliceCreator, WorkspaceSlice } from "./types";
+
+/** Assemble the prose a fork carries into the child's brief, from the parent's
+ *  already-normalized chat log — so it renders uniformly for every provider and
+ *  matches the history the child shows. Mirrors the backend's record cutoff:
+ *  navigable prompts only (git-action turns excluded), up to the chosen point.
+ *  Returns null when nothing is carried. */
+function forkContextDigest(log: ChatItem[], context: ForkContext): string | null {
+  if (context.kind === "none") return null;
+
+  const isPrompt = (it: ChatItem) =>
+    it.kind === "user_message" && !it.text.startsWith(APP_ACTION_PREFIX);
+
+  // Exclusive item cutoff. `full` carries everything; `up_to_message` stops just
+  // before the prompt that follows the selected navigable ordinal.
+  let cutoff = log.length;
+  if (context.kind === "up_to_message") {
+    let seen = -1;
+    for (let i = 0; i < log.length; i += 1) {
+      if (isPrompt(log[i])) {
+        seen += 1;
+        if (seen === context.prompt + 1) {
+          cutoff = i;
+          break;
+        }
+      }
+    }
+  }
+
+  const lines: string[] = [];
+  for (let i = 0; i < cutoff; i += 1) {
+    const it = log[i];
+    if (isPrompt(it) && it.kind === "user_message") {
+      lines.push(`User: ${stripInjectedInstructions(it.text)}`);
+    } else if (it.kind === "agent_message" && it.text) {
+      lines.push(`Assistant: ${it.text}`);
+    }
+  }
+  const digest = lines.join("\n\n").trim();
+  return digest.length > 0 ? digest : null;
+}
 
 // Labels shown alongside the busy spinner when a known slash command is
 // dispatched. The key is the bare command name (no leading slash). Any
@@ -102,7 +144,11 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   forkAgent: async (parentId, code, context) => {
     set({ busy: true, lastError: null });
     try {
-      const rec = await api.forkAgent(parentId, code, context);
+      // Build the carried prose from the parent's normalized log so the injected
+      // context works across every provider and matches the copied display
+      // history. Falls back to null (no injection) when the log isn't loaded.
+      const digest = forkContextDigest(get().managedLogs[parentId] ?? [], context);
+      const rec = await api.forkAgent(parentId, code, context, digest);
       const fresh = await api.getWorkspace();
       // No optimistic managedLogs seed. When context is carried the fork is
       // created with a non-empty task, so opening it triggers

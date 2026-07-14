@@ -321,6 +321,10 @@ pub async fn spawn_agent(
 /// conversation (`context`) independently. `context = up_to_message` carries the
 /// parent conversation through the navigable prompt at a 0-based ordinal (the
 /// same ordinal the chat's turn list uses; git-action turns excluded).
+///
+/// `context_digest` is the frontend-rendered prose for the carried range — built
+/// there so it renders uniformly across every provider's chat adapter and always
+/// matches the history the child shows. `null`/empty when nothing is carried.
 #[tauri::command]
 pub async fn fork_agent(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -328,9 +332,11 @@ pub async fn fork_agent(
     parent_id: String,
     code: crate::supervisor::ForkCode,
     context: crate::supervisor::ForkContext,
+    context_digest: Option<String>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
-    sup.fork_agent(app, &parent_id, code, context).await
+    sup.fork_agent(app, &parent_id, code, context, context_digest)
+        .await
 }
 
 #[tauri::command]
