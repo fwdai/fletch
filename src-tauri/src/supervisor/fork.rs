@@ -265,15 +265,32 @@ fn wrap_context(prose: &str) -> String {
 
 /// Remove any previously-injected fork block(s) from a brief, so a fork of a
 /// fork carries a single fresh digest rather than a growing stack of nested
-/// ones. Matches only the machine sentinels, so user-authored text is untouched.
+/// ones.
+///
+/// Each `CLOSE` sentinel is paired with the *nearest preceding* `OPEN`, and only
+/// that well-matched pair is removed. A stray sentinel that isn't part of a
+/// matched pair — e.g. a user-authored brief that happens to contain the exact
+/// sentinel text — is left untouched, so the user's own instructions around it
+/// are never swept away with the machine block. (A brief that forges a full
+/// `OPEN…CLOSE` pair around user text is byte-identical to an injected block and
+/// can't be told apart; that pathological case is out of scope.)
 fn strip_forked_context(brief: &str) -> String {
     let mut out = brief.to_string();
-    while let Some(start) = out.find(FORK_CONTEXT_OPEN) {
-        let Some(rel_end) = out[start..].find(FORK_CONTEXT_CLOSE) else {
-            break;
-        };
-        let end = start + rel_end + FORK_CONTEXT_CLOSE.len();
-        out.replace_range(start..end, "");
+    // `from` marks text already settled (kept): everything before it holds no
+    // removable block. We advance it past orphan CLOSEs so a later genuine block
+    // is still found.
+    let mut from = 0;
+    while let Some(rel_close) = out[from..].find(FORK_CONTEXT_CLOSE) {
+        let close = from + rel_close;
+        match out[from..close].rfind(FORK_CONTEXT_OPEN) {
+            Some(rel_open) => {
+                let open = from + rel_open;
+                out.replace_range(open..close + FORK_CONTEXT_CLOSE.len(), "");
+                from = open;
+            }
+            // Orphan CLOSE (no OPEN between `from` and here) — keep it, look past.
+            None => from = close + FORK_CONTEXT_CLOSE.len(),
+        }
     }
     out.trim().to_string()
 }
@@ -467,6 +484,41 @@ mod tests {
         // sentinel) must survive verbatim — the regression the sentinel guards.
         let brief = "Follow the <forked-conversation-context> convention when asked.";
         assert_eq!(strip_forked_context(brief), brief);
+    }
+
+    #[test]
+    fn strip_keeps_user_instructions_around_a_stray_open_sentinel() {
+        // The user brief itself contains the exact OPEN sentinel, then the real
+        // injected block follows. The stray OPEN must NOT pair with the machine
+        // CLOSE (which would delete "keep me"); only the real block is removed.
+        let brief = format!(
+            "keep me before {FORK_CONTEXT_OPEN} keep me after\n\n{}",
+            wrap_context("old convo")
+        );
+        assert_eq!(
+            strip_forked_context(&brief),
+            format!("keep me before {FORK_CONTEXT_OPEN} keep me after")
+        );
+    }
+
+    #[test]
+    fn strip_keeps_orphan_close_then_removes_the_real_block() {
+        // A stray CLOSE with no OPEN before it is kept; a genuine block appearing
+        // afterwards is still stripped.
+        let brief = format!(
+            "stray {FORK_CONTEXT_CLOSE} text\n\n{}",
+            wrap_context("convo")
+        );
+        assert_eq!(
+            strip_forked_context(&brief),
+            format!("stray {FORK_CONTEXT_CLOSE} text")
+        );
+    }
+
+    #[test]
+    fn strip_removes_stacked_blocks() {
+        let brief = format!("{}\n\n{}", wrap_context("first"), wrap_context("second"));
+        assert_eq!(strip_forked_context(&brief), "");
     }
 
     #[test]
