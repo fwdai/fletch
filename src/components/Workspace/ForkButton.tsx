@@ -28,11 +28,11 @@ export function ForkButton({ agentId, upToPrompt }: { agentId: string; upToPromp
   return (
     <IconButton
       size="xs"
-      tip="Fork a new workspace from here (carries the conversation up to this point)"
+      tip="Fork to new workspace"
       className="turn-fork"
       onClick={onFork}
       disabled={forking}
-      aria-label="Fork a new workspace from here"
+      aria-label="Fork to new workspace"
     >
       <Icon name="split" size={12} />
     </IconButton>

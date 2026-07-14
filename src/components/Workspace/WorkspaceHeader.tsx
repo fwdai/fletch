@@ -95,7 +95,7 @@ export function WorkspaceHeader({ agent }: Props) {
       )}
 
       <IconButton
-        tip="Fork this workspace into a new one (carries the full conversation)"
+        tip="Fork this workspace and conversation"
         aria-label="Fork this workspace"
         disabled={forking}
         onClick={async () => {
