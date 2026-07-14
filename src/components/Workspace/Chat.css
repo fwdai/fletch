@@ -94,17 +94,20 @@
   margin-left: auto;
   color: var(--fg-2);
 }
-/* The fork affordance sits at the far right of the seam. `margin-left: auto`
-   pushes it right when it's the only trailing action; when the copy button is
-   also present that one takes the free space and the fork sits just after it. */
-.turn-meta .turn-fork {
+/* The fork affordance sits at the far right of the seam. Its menu wrapper takes
+   the `margin-left: auto`, so it pushes right when it's the only trailing action
+   and sits just after the copy button when both are present. */
+.turn-meta .fork-menu {
   margin-left: auto;
+}
+.turn-meta .turn-fork {
   color: var(--fg-2);
 }
 /* With copy present, its `margin-left: auto` already pushes the whole action
-   group right — reset the fork's so a second auto doesn't split the free space
-   (which would strand the copy button mid-row). The 7px flex gap spaces them. */
-.turn-meta .turn-copy + .turn-fork {
+   group right — reset the fork menu's so a second auto doesn't split the free
+   space (which would strand the copy button mid-row). The 7px flex gap spaces
+   them. */
+.turn-meta .turn-copy + .fork-menu {
   margin-left: 0;
 }
 /* The fork button is the rightmost footer action, so its centered tooltip
@@ -117,6 +120,27 @@
   left: auto;
   right: 0;
   transform: none;
+}
+
+/* Fork menu: a branch button that opens a small option list. The scrim is a
+   full-viewport click-catcher for outside-dismiss; the menu is positioned just
+   under the trigger's right edge. */
+.fork-menu {
+  position: relative;
+  display: inline-flex;
+}
+.fork-menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+}
+.fork-menu-dd {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  z-index: 200;
+  white-space: nowrap;
 }
 
 /* The fixed 22px .btn-i.xs box clamps the copy glyph, so size the button to its

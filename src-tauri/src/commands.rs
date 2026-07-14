@@ -312,6 +312,8 @@ pub async fn spawn_agent(
             // and are never run-owned; the scheduler sets both for a step spawn.
             run_repo: None,
             owner_run_id: None,
+            // Carrying another workspace's working tree is a fork-only path.
+            carry_from: None,
         },
     )
     .await

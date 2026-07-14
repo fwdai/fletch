@@ -476,6 +476,99 @@ pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// Capture `checkout`'s current working tree — tracked modifications plus
+/// untracked, non-ignored files, and deletions — into a commit object WITHOUT
+/// touching the checkout's real index, HEAD, or working tree, and return its
+/// sha. Used by fork "carry code": the snapshot is created in the *source*
+/// checkout's object store (so a live agent is left undisturbed) and later
+/// fetched into the fork by [`carry_worktree`]. The snapshot's parent is the
+/// source's HEAD, so it records the full state (committed + uncommitted).
+pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
+    // A throwaway index so `add -A` never stages into the live agent's index.
+    let tmp = tempfile::Builder::new()
+        .prefix("fletch-fork-index-")
+        .tempfile()
+        .map_err(Error::from)?;
+    let index_env = vec![(
+        "GIT_INDEX_FILE".to_string(),
+        tmp.path().display().to_string(),
+    )];
+
+    // Seed the temp index from HEAD, then stage every working-tree change
+    // (adds/mods/dels, honoring .gitignore) into it — the snapshot tree.
+    let stage_env = merge_git_env(&[&index_env, &no_hooks_env()]);
+    run_git_env(
+        checkout,
+        &["read-tree", "HEAD"],
+        &stage_env,
+        "fork snapshot read-tree",
+    )
+    .await?;
+    run_git_env(checkout, &["add", "-A"], &stage_env, "fork snapshot add").await?;
+    let tree = run_git_env(
+        checkout,
+        &["write-tree"],
+        &stage_env,
+        "fork snapshot write-tree",
+    )
+    .await?;
+    let tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+
+    // commit-tree writes no hooks but needs an identity, same fallback as commit.
+    let commit_env = merge_git_env(&[&index_env, &identity_env(checkout).await, &no_hooks_env()]);
+    let commit = run_git_env(
+        checkout,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            "HEAD",
+            "-m",
+            "fletch: fork snapshot",
+        ],
+        &commit_env,
+        "fork snapshot commit-tree",
+    )
+    .await?;
+    Ok(String::from_utf8_lossy(&commit.stdout).trim().to_string())
+}
+
+/// Point `dest`'s working tree at `snapshot` (fetched from the `source`
+/// checkout) while keeping `dest`'s HEAD on `base` — so the carried work shows
+/// as uncommitted changes against the fork's base, mirroring the parent's own
+/// diff. Used by fork "carry code" after `dest` is provisioned clean at `base`.
+pub async fn carry_worktree(dest: &Path, source: &Path, snapshot: &str, base: &str) -> Result<()> {
+    let source_str = source
+        .to_str()
+        .ok_or_else(|| Error::InvalidPath(source.display().to_string()))?;
+    // Bring the snapshot commit + its reachable objects into the fork's store.
+    run_git(
+        dest,
+        &["fetch", "--no-tags", source_str, snapshot],
+        "carry fetch",
+    )
+    .await?;
+    // Materialize the snapshot exactly (adds/mods/dels), then move HEAD + index
+    // back to base, leaving the working tree — so the delta reads as unstaged
+    // working-tree changes, exactly like the parent's uncommitted state.
+    let env = no_hooks_env();
+    run_git_env(
+        dest,
+        &["reset", "--hard", snapshot],
+        &env,
+        "carry reset --hard",
+    )
+    .await?;
+    run_git_env(
+        dest,
+        &["reset", "--mixed", base],
+        &env,
+        "carry reset --mixed",
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn worktree_remove(repo: &Path, worktree_path: &Path, force: bool) -> Result<()> {
     let mut args = vec!["worktree", "remove"];
     if force {
@@ -738,6 +831,57 @@ mod tests {
         // And the commit actually landed.
         let log = run_git(repo, &["log", "--oneline"], "log").await.unwrap();
         assert!(String::from_utf8_lossy(&log.stdout).contains("first"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_and_carry_reproduce_working_tree_at_base() {
+        // Parent checkout: a base commit (with a .gitignore), then uncommitted
+        // work covering every case — modify, delete, add, and an ignored file.
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        init_repo(&src).await.unwrap();
+        config(&src, "user.email", "t@example.com").await;
+        config(&src, "user.name", "Tester").await;
+        std::fs::write(src.join(".gitignore"), b"ignored.txt\n").unwrap();
+        std::fs::write(src.join("keep.txt"), b"base").unwrap();
+        std::fs::write(src.join("drop.txt"), b"remove me").unwrap();
+        commit_all(&src, "base").await.unwrap();
+        let base = rev_parse(&src, "HEAD").await.unwrap();
+
+        std::fs::write(src.join("keep.txt"), b"modified").unwrap();
+        std::fs::remove_file(src.join("drop.txt")).unwrap();
+        std::fs::write(src.join("new.txt"), b"added").unwrap();
+        std::fs::write(src.join("ignored.txt"), b"secret").unwrap();
+
+        let snap = snapshot_worktree(&src).await.unwrap();
+        // No side effects on the live checkout: HEAD is untouched.
+        assert_eq!(rev_parse(&src, "HEAD").await.unwrap(), base);
+
+        // Fork checkout: a clone sitting at base, like a freshly-provisioned one.
+        let dst = td.path().join("dst");
+        let clone = Command::new("git")
+            .args(["clone", "-q", src.to_str().unwrap(), dst.to_str().unwrap()])
+            .output()
+            .await
+            .unwrap();
+        assert!(clone.status.success());
+
+        carry_worktree(&dst, &src, &snap, &base).await.unwrap();
+
+        // Working tree now mirrors the parent's: mod/add applied, deletion gone,
+        // ignored file never carried.
+        assert_eq!(std::fs::read(dst.join("keep.txt")).unwrap(), b"modified");
+        assert_eq!(std::fs::read(dst.join("new.txt")).unwrap(), b"added");
+        assert!(!dst.join("drop.txt").exists());
+        assert!(!dst.join("ignored.txt").exists());
+        // HEAD stays at base — the carried work reads as uncommitted changes.
+        assert_eq!(rev_parse(&dst, "HEAD").await.unwrap(), base);
+        let status = run_git(&dst, &["status", "--porcelain"], "status").await.unwrap();
+        assert!(
+            !String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+            "carried changes should show as uncommitted"
+        );
     }
 
     #[test]
