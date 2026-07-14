@@ -9,10 +9,8 @@
 
 import type { WfEvent, WfPausedReason } from "../../api";
 import type { IconName } from "../../components/Icon";
-import { pausedLabel } from "./status";
+import { AMBER, GREEN, pausedLabel } from "./status";
 
-const GREEN = "oklch(0.72 0.15 150)";
-const AMBER = "oklch(0.78 0.14 75)";
 const ACCENT = "var(--accent)";
 const DANGER = "var(--danger)";
 const MUTED = "var(--fg-3)";

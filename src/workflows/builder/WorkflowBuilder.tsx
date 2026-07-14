@@ -3,11 +3,11 @@
 // edit or open a popover. Validation from `model.ts` renders inline and gates
 // the save. Persistence is the caller's job (Save hands back the editor state).
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { ModelMeta } from "../../data/modelCatalog/types";
 import type { CustomAgent } from "../../storage/customAgents";
-import { resolveAgent } from "../shared";
+import { resolveAlias } from "../shared";
 import type { Budgets, Gate } from "../spec";
 import { BlockSequence } from "./blocks/BlockSequence";
 import type { BuilderCtx, Pop, PopRect } from "./ctx";
@@ -22,6 +22,7 @@ import {
   setAgent,
   setField,
 } from "./edits";
+import { useDismissOnViewportChange } from "./hooks";
 import type { EditorState, NodeId } from "./model";
 import { validateEditor } from "./model";
 import { AgentPick, BudgetsPopover, GatePick } from "./pickers";
@@ -53,34 +54,15 @@ export function WorkflowBuilder({
   const [state, setState] = useState<EditorState>(initial);
   const [pop, setPop] = useState<Pop | null>(null);
   const closePop = () => setPop(null);
-
-  // Every popover is fixed-positioned from a rect captured at open time, which
-  // goes stale once the canvas scrolls or the window resizes. Dismiss on either
-  // so the popover can never float away from its trigger. Capture-phase catches
-  // scrolls in the horizontal canvas scroller (scroll events don't bubble).
-  useEffect(() => {
-    if (!pop) return;
-    const close = () => setPop(null);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [pop]);
+  useDismissOnViewportChange(!!pop, closePop);
 
   const validation = useMemo(() => validateEditor(state), [state]);
 
   const ctx: BuilderCtx = useMemo(
     () => ({
-      resolve: (id) => {
-        if (!id) return null;
-        // `id` is an alias into `state.agents`; resolve it to the underlying
-        // custom-agent id or base provider before rendering. (Base-provider
-        // aliases happen to equal the provider id, but custom ones don't.)
-        const spec = state.agents[id];
-        return resolveAgent(spec?.custom_agent ?? spec?.base ?? id, agents, modelsByAgent);
-      },
+      // `id` is an alias into `state.agents`; `resolveAlias` maps it to the
+      // underlying custom-agent id or base provider before rendering.
+      resolve: (id) => resolveAlias(state.agents, id ?? undefined, agents, modelsByAgent),
       errorsFor: (nid) => validation.byNode[nid],
       patchStep: (nid, patch) => setState((s) => patchStep(s, nid, patch)),
       patchBlock: (nid, patch) => setState((s) => patchBlock(s, nid, patch)),

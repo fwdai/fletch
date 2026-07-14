@@ -10,7 +10,7 @@ import { useAppStore } from "../../store";
 import { formatAge } from "../../util/format";
 import { useMinuteClock } from "../../util/hooks";
 import { AgentAvatar } from "../builder/AgentAvatar";
-import { resolveAgent } from "../shared";
+import { resolveAlias } from "../shared";
 import type { Spec } from "../spec";
 import { flattenSteps } from "./RunView/flatten";
 import { pausedLabel } from "./status";
@@ -49,13 +49,7 @@ export function RunRow({
   const spec = run.spec as Spec | null;
   const first = flattenSteps(spec)[0];
   const a = first
-    ? resolveAgent(
-        spec?.agents?.[first.agentAlias]?.custom_agent ??
-          spec?.agents?.[first.agentAlias]?.base ??
-          first.agentAlias,
-        customAgents,
-        modelsByAgent,
-      )
+    ? resolveAlias(spec?.agents, first.agentAlias, customAgents, modelsByAgent)
     : null;
 
   const onStop = async (e: MouseEvent) => {

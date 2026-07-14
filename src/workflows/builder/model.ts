@@ -15,6 +15,7 @@
 // the importer can produce — this is the property the vitest pins.
 
 import type { CustomAgent } from "../../storage/customAgents";
+import { slugify } from "../shared";
 import type {
   AgentSpec,
   Block,
@@ -399,16 +400,6 @@ export function toSpec(state: EditorState): Spec {
 
 // ───────────────────────────── agent aliasing ─────────────────────────────
 
-function slugify(s: string): string {
-  return (
-    s
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "agent"
-  );
-}
-
 /** Does an existing alias already stand for exactly this pick? Reusing it keeps
  *  the agents map small and stable across edits. */
 function aliasMatchesPick(spec: AgentSpec, agentId: string, customAgents: CustomAgent[]): boolean {
@@ -436,7 +427,7 @@ export function ensureAlias(
     if (aliasMatchesPick(spec, agentId, customAgents)) return { agents, alias };
   }
   const ca = customAgents.find((a) => a.id === agentId);
-  const base = slugify(ca ? ca.name : agentId);
+  const base = slugify(ca ? ca.name : agentId, "agent");
   let alias = base;
   let n = 1;
   while (agents[alias]) alias = `${base}-${++n}`;

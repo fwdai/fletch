@@ -8,6 +8,7 @@ import type { CommsCap } from "../../spec";
 import { AgentAvatar } from "../AgentAvatar";
 import type { BuilderCtx } from "../ctx";
 import type { EStep } from "../model";
+import { ContainerErrors } from "./ContainerErrors";
 
 export function StepCard({
   step,
@@ -125,15 +126,7 @@ export function StepCard({
         ))}
       </div>
 
-      {errors && (
-        <div className="wb-errs">
-          {errors.map((msg) => (
-            <span className="wb-err" key={msg}>
-              <Icon name="close" size={9} /> {msg}
-            </span>
-          ))}
-        </div>
-      )}
+      <ContainerErrors errors={errors} />
     </div>
   );
 }

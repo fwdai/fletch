@@ -2,10 +2,11 @@
 // and an "add block" menu. Used at the top level and (recursively) for loop
 // bodies, so it takes its owning sequence's nid (`null` = top level).
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useState } from "react";
 import { Icon } from "../../../components/Icon";
 import { BLOCK_TYPES } from "../../data";
 import type { BuilderCtx } from "../ctx";
+import { useDismissOnViewportChange } from "../hooks";
 import type { EBlock, NodeId } from "../model";
 import { LoopContainer } from "./LoopContainer";
 import { OrchestrateContainer } from "./OrchestrateContainer";
@@ -56,20 +57,7 @@ export function BlockSequence({
   // canvas's overflow clip (same trick as the builder's other popovers).
   const [menu, setMenu] = useState<{ top: number; left: number } | null>(null);
 
-  // The captured rect goes stale if the canvas scrolls or the window resizes
-  // (the trigger moves, the fixed menu doesn't). Dismiss on either — the
-  // conventional behavior for a transient dropdown. Capture-phase catches
-  // scrolls inside the horizontal canvas scroller, which don't bubble.
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [menu]);
+  useDismissOnViewportChange(!!menu, () => setMenu(null));
   const canRemove = blocks.length > 1 || seqNid !== null;
   // A non-null seqNid means this is a loop body, and the engine executes loop
   // bodies of plain steps only (spec §6.6) — don't offer containers there.
