@@ -3,7 +3,7 @@
 // edit or open a popover. Validation from `model.ts` renders inline and gates
 // the save. Persistence is the caller's job (Save hands back the editor state).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { ModelMeta } from "../../data/modelCatalog/types";
 import type { CustomAgent } from "../../storage/customAgents";
@@ -53,6 +53,21 @@ export function WorkflowBuilder({
   const [state, setState] = useState<EditorState>(initial);
   const [pop, setPop] = useState<Pop | null>(null);
   const closePop = () => setPop(null);
+
+  // Every popover is fixed-positioned from a rect captured at open time, which
+  // goes stale once the canvas scrolls or the window resizes. Dismiss on either
+  // so the popover can never float away from its trigger. Capture-phase catches
+  // scrolls in the horizontal canvas scroller (scroll events don't bubble).
+  useEffect(() => {
+    if (!pop) return;
+    const close = () => setPop(null);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [pop]);
 
   const validation = useMemo(() => validateEditor(state), [state]);
 
