@@ -1,7 +1,7 @@
 {
   "name": "fletch",
   "private": true,
-  "version": "0.7.8",
+  "version": "0.7.9",
   "license": "AGPL-3.0-only",
   "author": "Alex Chaplinsky and fwdai.org",
   "type": "module",
