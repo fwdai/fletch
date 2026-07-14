@@ -108,7 +108,7 @@ export function WorkspaceHeader({ agent }: Props) {
           }
         }}
       >
-        <Icon name="branch" />
+        <Icon name="split" />
       </IconButton>
 
       <IconButton
