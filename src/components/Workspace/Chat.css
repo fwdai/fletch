@@ -123,8 +123,9 @@
 }
 
 /* Fork menu: a branch button that opens a small option list. The scrim is a
-   full-viewport click-catcher for outside-dismiss; the menu is positioned just
-   under the trigger's right edge. */
+   full-viewport click-catcher for outside-dismiss; the menu anchors to the
+   trigger's right edge and opens down by default, flipping up (`.up`) when the
+   footer sits too close to the composer for the list to fit below. */
 .fork-menu {
   position: relative;
   display: inline-flex;
@@ -136,11 +137,17 @@
 }
 .fork-menu-dd {
   position: absolute;
-  top: 100%;
   right: 0;
-  margin-top: 4px;
   z-index: 200;
   white-space: nowrap;
+}
+.fork-menu-dd.down {
+  top: 100%;
+  margin-top: 4px;
+}
+.fork-menu-dd.up {
+  bottom: 100%;
+  margin-bottom: 4px;
 }
 
 /* The fixed 22px .btn-i.xs box clamps the copy glyph, so size the button to its
