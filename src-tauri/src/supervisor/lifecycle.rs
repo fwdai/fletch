@@ -191,6 +191,11 @@ pub struct SpawnRequest {
     /// normal sidebar and cleaned up by `wf_delete_run`. `None` for a normal
     /// user spawn.
     pub owner_run_id: Option<String>,
+    /// Fork "carry code": another workspace's primary checkout whose current
+    /// working tree (incl. uncommitted work) is overlaid onto this fresh
+    /// checkout after provisioning, so the fork starts from that workspace's
+    /// state. `None` for a normal spawn or a clean fork.
+    pub carry_from: Option<PathBuf>,
 }
 
 impl Supervisor {
@@ -214,6 +219,7 @@ impl Supervisor {
             fork_base,
             run_repo,
             owner_run_id,
+            carry_from,
         } = req;
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -266,6 +272,9 @@ impl Supervisor {
         let subdir_for_fork = subdir.clone();
         // A workflow step forks from its `fork_base` ref in this run repo.
         let run_repo_for_task = run_repo.clone();
+        // Fork "carry code": the source checkout whose working tree is overlaid
+        // onto the fresh checkout once it's provisioned.
+        let carry_from_task = carry_from.clone();
 
         let primary = TrackedRepo {
             repo_path: repo_path.clone(),
@@ -398,10 +407,40 @@ impl Supervisor {
             // Record the fork point so diffs measure against the exact starting
             // commit rather than a branch name that can drift. Non-fatal: a
             // missing base_sha just falls back to the parent branch name.
-            if let Ok(sha) = git::rev_parse(&primary_checkout, "HEAD").await {
+            let base_sha = git::rev_parse(&primary_checkout, "HEAD").await.ok();
+            if let Some(sha) = &base_sha {
                 let _ = sup
                     .workspace
-                    .set_repo_base_sha(&id_for_task, &subdir_for_fork, &sha);
+                    .set_repo_base_sha(&id_for_task, &subdir_for_fork, sha);
+            }
+
+            // Fork "carry code": overlay the source workspace's current working
+            // tree onto the fresh checkout, so the fork starts from that
+            // workspace's uncommitted work. Fatal on failure — the user asked to
+            // carry, so silently producing a clean fork would drop their changes.
+            // Tears down like the start_process failure path below (a workflow
+            // step never carries, so this is always a non-run clone).
+            if let Some(src) = &carry_from_task {
+                let carried = match &base_sha {
+                    Some(base) => match git::snapshot_worktree(src).await {
+                        Ok(snap) => git::carry_worktree(&primary_checkout, src, &snap, base).await,
+                        Err(e) => Err(e),
+                    },
+                    None => Err(Error::Other(
+                        "cannot carry working tree without a base commit".into(),
+                    )),
+                };
+                if let Err(e) = carried {
+                    let teardown_spec = CheckoutSpec {
+                        source_repo: &repo_path,
+                        base_ref: "HEAD",
+                        dest: &primary_checkout,
+                    };
+                    let _ = provision::teardown(workspace_mode, &teardown_spec).await;
+                    let _ = tokio::fs::remove_dir_all(&parent_dir).await;
+                    fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
+                    return;
+                }
             }
 
             tokio::time::sleep(Duration::from_millis(350)).await;

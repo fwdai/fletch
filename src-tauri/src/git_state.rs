@@ -222,9 +222,23 @@ async fn untracked_additions(checkout_path: &Path, rel: &str) -> u32 {
     }
 }
 
+/// Build a git command for this module's state queries with `GIT_OPTIONAL_LOCKS`
+/// disabled. Every invocation in `git_state` is read-only, but `git status` /
+/// `git diff HEAD` still take `.git/index.lock` for an *opportunistic* stat-cache
+/// refresh — which races a concurrent Fletch write on the same checkout (e.g. a
+/// fork's carry-code `reset`, or a user git-action) and fails with "Unable to
+/// create '.git/index.lock': File exists". `GIT_OPTIONAL_LOCKS=0` tells git to
+/// skip that refresh (the same knob editors/IDEs use); the only cost is a
+/// slightly staler stat cache, rebuilt by the next writing command.
+fn read_command(checkout_path: &Path) -> tokio::process::Command {
+    let mut cmd = crate::git_dist::command(checkout_path);
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd
+}
+
 /// HEAD commit SHA, or `None` when it can't be read.
 async fn query_head_sha(checkout_path: &Path) -> Option<String> {
-    let out = crate::git_dist::command(checkout_path)
+    let out = read_command(checkout_path)
         .args(["rev-parse", "HEAD"])
         .output()
         .await
@@ -239,7 +253,7 @@ async fn query_head_sha(checkout_path: &Path) -> Option<String> {
 /// The `origin` remote: whether one exists at all, and its GitHub web base
 /// (`None` when missing or not a github.com remote).
 async fn query_origin(checkout_path: &Path) -> (bool, Option<String>) {
-    let out = match crate::git_dist::command(checkout_path)
+    let out = match read_command(checkout_path)
         .args(["remote", "get-url", "origin"])
         .output()
         .await
@@ -287,7 +301,7 @@ pub(crate) fn github_web_url(remote: &str) -> Option<String> {
 /// there is no upstream configured (branch never pushed), so the caller can
 /// fall back appropriately.
 async fn query_unpushed(checkout_path: &Path) -> Option<u32> {
-    let out = crate::git_dist::command(checkout_path)
+    let out = read_command(checkout_path)
         .args(["rev-list", "--count", "@{upstream}..HEAD"])
         .output()
         .await
@@ -321,7 +335,7 @@ async fn query_ahead_behind(checkout_path: &Path, parent_branch: &str) -> (u32, 
 /// `git rev-list --left-right --count HEAD...<base>`, or `None` when the base
 /// doesn't resolve — so the caller can try an alternate ref spelling.
 async fn rev_list_counts(checkout_path: &Path, base: &str) -> Option<(u32, u32)> {
-    let out = crate::git_dist::command(checkout_path)
+    let out = read_command(checkout_path)
         .args([
             "rev-list",
             "--left-right",
@@ -339,7 +353,7 @@ async fn rev_list_counts(checkout_path: &Path, base: &str) -> Option<(u32, u32)>
 }
 
 async fn run_status(checkout_path: &Path) -> Result<String> {
-    let out = crate::git_dist::command(checkout_path)
+    let out = read_command(checkout_path)
         // `-uall` lists each file inside an untracked directory individually
         // (the default collapses them into one `dir/` entry, which can't be
         // diffed or counted per-file).
@@ -354,7 +368,7 @@ async fn run_status(checkout_path: &Path) -> Result<String> {
 }
 
 async fn run_numstat(checkout_path: &Path) -> Result<String> {
-    let out = crate::git_dist::command(checkout_path)
+    let out = read_command(checkout_path)
         .args(["diff", "--numstat", "HEAD"])
         .output()
         .await?;

@@ -64,6 +64,9 @@ const FORK_CONTEXT_CLOSE: &str = "<!-- /fletch:forked-conversation-context -->";
 pub enum ForkCode {
     /// A fresh worktree from the parent's base branch — no uncommitted work.
     Clean,
+    /// The parent's current working tree (incl. uncommitted work) overlaid onto
+    /// the fresh checkout — "build on unmerged work".
+    Carry,
 }
 
 /// How much of the parent conversation the fork carries. Drives the record
@@ -135,10 +138,17 @@ impl Supervisor {
             .filter(|d| !d.trim().is_empty())
             .map(|prose| wrap_context(&prose));
 
-        // Code: reuse the normal spawn/provision path. `Clean` forks the parent's
-        // own base branch, so the fork starts where the parent did.
-        let fork_base = match code {
-            ForkCode::Clean => primary.parent_branch.clone(),
+        // Code: reuse the normal spawn/provision path. Both modes fork the
+        // parent's own base branch (so the fork starts where the parent did);
+        // `Carry` additionally overlays the parent's current working tree after
+        // provisioning, so its uncommitted work reads as the fork's diff.
+        let fork_base = primary.parent_branch.clone();
+        let carry_from = match code {
+            ForkCode::Clean => None,
+            ForkCode::Carry => Some(crate::workspace::repo_checkout_path(
+                parent_id,
+                &primary.subdir,
+            )?),
         };
 
         let req = SpawnRequest {
@@ -156,6 +166,7 @@ impl Supervisor {
             fork_base,
             run_repo: None,
             owner_run_id: None,
+            carry_from,
         };
         let child = self.clone().spawn_agent(app, req).await?;
 
@@ -441,7 +452,9 @@ mod tests {
         let upto: ForkContext =
             serde_json::from_value(json!({"kind": "up_to_message", "prompt": 3})).unwrap();
         assert_eq!(upto, ForkContext::UpToMessage { prompt: 3 });
-        let code: ForkCode = serde_json::from_value(json!("clean")).unwrap();
-        assert_eq!(code, ForkCode::Clean);
+        let clean: ForkCode = serde_json::from_value(json!("clean")).unwrap();
+        assert_eq!(clean, ForkCode::Clean);
+        let carry: ForkCode = serde_json::from_value(json!("carry")).unwrap();
+        assert_eq!(carry, ForkCode::Carry);
     }
 }

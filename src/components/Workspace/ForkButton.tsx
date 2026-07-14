@@ -1,40 +1,23 @@
-import { useState } from "react";
-import { Icon } from "@/components/Icon";
-import { IconButton } from "@/components/ui/IconButton";
-import { useAppStore } from "@/store";
+import { ForkMenu, type ForkOption } from "./ForkMenu";
 
-/** "Fork from here" affordance under an ended turn. Creates a new workspace
- *  seeded with a clean worktree (from the parent's base branch) and the
- *  conversation carried up to this turn, then opens it. The token-slicing /
- *  branch-a-direction entry point.
- *
- *  Code is `clean` this slice (carrying the parent's working tree is a follow-up
- *  and will turn this into a small menu); context is fixed to "up to here" since
- *  that's what forking *from a turn* means. */
+/** "Fork from here" affordance under an ended turn: forks a new workspace
+ *  carrying the conversation up to this turn, with a choice of clean vs. current
+ *  code. The token-slicing / branch-a-direction entry point. */
 export function ForkButton({ agentId, upToPrompt }: { agentId: string; upToPrompt: number }) {
-  const forkAgent = useAppStore((s) => s.forkAgent);
-  const [forking, setForking] = useState(false);
-
-  const onFork = async () => {
-    if (forking) return;
-    setForking(true);
-    try {
-      await forkAgent(agentId, "clean", { kind: "up_to_message", prompt: upToPrompt });
-    } finally {
-      setForking(false);
-    }
-  };
-
-  return (
-    <IconButton
-      size="xs"
-      tip="Fork to new workspace"
-      className="turn-fork"
-      onClick={onFork}
-      disabled={forking}
-      aria-label="Fork to new workspace"
-    >
-      <Icon name="split" size={12} />
-    </IconButton>
-  );
+  const context = { kind: "up_to_message", prompt: upToPrompt } as const;
+  const options: ForkOption[] = [
+    {
+      key: "clean",
+      label: "Fork here · clean worktree",
+      code: "clean",
+      context,
+    },
+    {
+      key: "carry",
+      label: "Fork here · with current code",
+      code: "carry",
+      context,
+    },
+  ];
+  return <ForkMenu agentId={agentId} options={options} tip="Fork to new workspace" compact />;
 }

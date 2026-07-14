@@ -10,10 +10,11 @@ export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
 export type AgentView = "custom" | "native";
 
-/** What a forked workspace's worktree starts from. Only `clean` (fork the
- *  parent's base branch) is wired today; `carry` (bring the parent's current
- *  working tree) ships in a follow-up slice. Mirrors the backend `ForkCode`. */
-export type ForkCode = "clean";
+/** What a forked workspace's worktree starts from. `clean` forks the parent's
+ *  base branch; `carry` overlays the parent's current working tree (incl.
+ *  uncommitted work) so the fork builds on unmerged work. Mirrors the backend
+ *  `ForkCode`. */
+export type ForkCode = "clean" | "carry";
 
 /** How much of the parent conversation a fork carries. Mirrors the backend
  *  `ForkContext`. Summarized context ships in a follow-up slice. */

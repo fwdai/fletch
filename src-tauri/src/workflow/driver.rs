@@ -150,6 +150,7 @@ impl AgentDriver for SupervisorDriver {
                         fork_base,
                         run_repo,
                         owner_run_id: Some(owner_run_id),
+                        carry_from: None,
                     },
                 )
                 .await?;

@@ -2,6 +2,10 @@
 .dd {
   position: absolute;
   min-width: 220px;
+  /* A menu is its own surface — never inherit a mono/other face from whatever
+     context it's anchored in (e.g. the mono `.turn-meta` seam). `.di-m` still
+     opts back into mono explicitly. */
+  font-family: var(--font-sans);
   background: var(--bg-2);
   border: 1px solid var(--bd);
   border-radius: var(--r-md);
