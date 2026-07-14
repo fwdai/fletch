@@ -164,6 +164,10 @@ pub struct SpawnRequest {
     pub model: Option<String>,
     /// Custom agent's standing brief, re-injected on every spawn/resume.
     pub instructions: Option<String>,
+    /// Prior-conversation digest for a forked session, composed after
+    /// `instructions` on every spawn. `None` for a non-fork spawn. Kept separate
+    /// from `instructions` so the user brief is never parsed/mutated.
+    pub forked_context: Option<String>,
     /// Custom agent identity; `None` for a plain built-in spawn.
     pub custom_agent_id: Option<String>,
     /// Custom agent's skills, snapshotted by value (see `agent_profile`).
@@ -203,6 +207,7 @@ impl Supervisor {
             effort,
             model,
             instructions,
+            forked_context,
             custom_agent_id,
             skills,
             mcp_servers,
@@ -291,6 +296,9 @@ impl Supervisor {
         // Custom agent identity + snapshotted brief. Both `None` for a plain
         // built-in spawn. The brief is re-injected on every spawn/resume.
         record.instructions = instructions;
+        // Forked-conversation digest, kept separate from the brief and composed
+        // after it at launch (see start_process). `None` for a non-fork spawn.
+        record.forked_context = forked_context;
         record.custom_agent_id = custom_agent_id;
         // Skill/MCP snapshots, persisted like the brief so every process spawn
         // (fresh, view-switch, resume) re-materializes the same profile.
@@ -700,6 +708,7 @@ impl Supervisor {
         // neither a brief nor skills — the pre-profile behavior.
         let instructions = crate::agent_profile::effective_instructions(
             record.instructions.as_deref(),
+            record.forked_context.as_deref(),
             &record.skills,
             &sandbox_root,
         )?;

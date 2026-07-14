@@ -146,6 +146,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0018_workflows.sql"),
     include_str!("../migrations/0019_workflows_v1.sql"),
     include_str!("../migrations/0020_workflow_base_branch.sql"),
+    include_str!("../migrations/0021_session_forked_context.sql"),
 ];
 
 fn get_migrations() -> Migrations<'static> {

@@ -142,6 +142,8 @@ impl AgentDriver for SupervisorDriver {
                         effort: None,
                         model,
                         instructions,
+                        // Workflow steps are not forks; no carried conversation.
+                        forked_context: None,
                         custom_agent_id,
                         skills,
                         mcp_servers,

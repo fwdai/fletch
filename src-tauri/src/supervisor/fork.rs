@@ -46,12 +46,12 @@ use super::{SpawnRequest, Supervisor};
 /// `APP_ACTION_PREFIX` (see `src/components/RightPanel/delegation.ts`).
 const APP_ACTION_PREFIX: &str = "[app-action] ";
 
-/// Machine-generated sentinels bracketing the injected prior-conversation digest
-/// inside the agent's brief. HTML-comment form, namespaced to Fletch, so:
-///  - a fork of a fork strips *our* prior block (rebuilding one fresh digest
-///    rather than nesting them), and
-///  - user-authored brief text — even a literal `<forked-conversation-context>`
-///    example — is never mistaken for an injected block and stripped.
+/// Sentinels that visually bracket the injected prior-conversation digest inside
+/// the composed prompt, so the agent can see where the carried context begins and
+/// ends. HTML-comment form, namespaced to Fletch. These are purely presentational
+/// now: the digest is persisted in its own `forked_context` session column (never
+/// spliced into the user brief), so nothing ever parses these back out — a fork
+/// simply drops the parent's `forked_context` and rebuilds a fresh one.
 const FORK_CONTEXT_OPEN: &str = "<!-- fletch:forked-conversation-context -->";
 const FORK_CONTEXT_CLOSE: &str = "<!-- /fletch:forked-conversation-context -->";
 
@@ -123,16 +123,17 @@ impl Supervisor {
         };
         let carried = carried_records(&records, cutoff, snapshot_max_seq);
 
-        // Brief: always start from the parent's brief with any *prior* injected
-        // fork block stripped (so a fork of a fork carries one digest, not a
-        // growing stack). Append the fresh digest only when the frontend actually
-        // supplied prose — provider-agnostic and matched to the display copy.
-        let base_brief = strip_forked_context(parent.instructions.as_deref().unwrap_or(""));
-        let digest = context_digest.filter(|d| !d.trim().is_empty());
-        let instructions = match digest {
-            Some(prose) => Some(combine_instructions(base_brief, &wrap_context(&prose))),
-            None => (!base_brief.is_empty()).then_some(base_brief),
-        };
+        // Brief and forked-conversation context are stored in *separate* session
+        // columns and only composed at spawn (see `effective_instructions`). So
+        // the parent's brief passes through verbatim — never scanned for an
+        // injected block — and the fresh digest lands in its own field. A fork of
+        // a fork therefore inherits only the pure brief and gets a freshly built
+        // digest: no stacking, and no way for sentinel-looking brief text to be
+        // mistaken for a machine block and stripped.
+        let instructions = parent.instructions.clone();
+        let forked_context = context_digest
+            .filter(|d| !d.trim().is_empty())
+            .map(|prose| wrap_context(&prose));
 
         // Code: reuse the normal spawn/provision path. `Clean` forks the parent's
         // own base branch, so the fork starts where the parent did.
@@ -148,6 +149,7 @@ impl Supervisor {
             effort: parent.effort.clone(),
             model: parent.model.clone(),
             instructions,
+            forked_context,
             custom_agent_id: parent.custom_agent_id.clone(),
             skills: parent.skills.clone(),
             mcp_servers: parent.mcp_servers.clone(),
@@ -261,48 +263,6 @@ fn wrap_context(prose: &str) -> String {
          {prose}\n\
          {FORK_CONTEXT_CLOSE}"
     )
-}
-
-/// Remove any previously-injected fork block(s) from a brief, so a fork of a
-/// fork carries a single fresh digest rather than a growing stack of nested
-/// ones.
-///
-/// Each `CLOSE` sentinel is paired with the *nearest preceding* `OPEN`, and only
-/// that well-matched pair is removed. A stray sentinel that isn't part of a
-/// matched pair — e.g. a user-authored brief that happens to contain the exact
-/// sentinel text — is left untouched, so the user's own instructions around it
-/// are never swept away with the machine block. (A brief that forges a full
-/// `OPEN…CLOSE` pair around user text is byte-identical to an injected block and
-/// can't be told apart; that pathological case is out of scope.)
-fn strip_forked_context(brief: &str) -> String {
-    let mut out = brief.to_string();
-    // `from` marks text already settled (kept): everything before it holds no
-    // removable block. We advance it past orphan CLOSEs so a later genuine block
-    // is still found.
-    let mut from = 0;
-    while let Some(rel_close) = out[from..].find(FORK_CONTEXT_CLOSE) {
-        let close = from + rel_close;
-        match out[from..close].rfind(FORK_CONTEXT_OPEN) {
-            Some(rel_open) => {
-                let open = from + rel_open;
-                out.replace_range(open..close + FORK_CONTEXT_CLOSE.len(), "");
-                from = open;
-            }
-            // Orphan CLOSE (no OPEN between `from` and here) — keep it, look past.
-            None => from = close + FORK_CONTEXT_CLOSE.len(),
-        }
-    }
-    out.trim().to_string()
-}
-
-/// Join the parent's (block-stripped) brief with the wrapped digest, or use the
-/// digest alone when there was no brief.
-fn combine_instructions(base_brief: String, wrapped_digest: &str) -> String {
-    if base_brief.is_empty() {
-        wrapped_digest.to_string()
-    } else {
-        format!("{base_brief}\n\n{wrapped_digest}")
-    }
 }
 
 /// First non-empty candidate, falling back to the last.
@@ -470,66 +430,6 @@ mod tests {
         assert!(w.trim_end().ends_with(FORK_CONTEXT_CLOSE));
         assert!(w.contains("User: hi"));
         assert!(w.contains("Assistant: hey"));
-    }
-
-    #[test]
-    fn strip_removes_prior_injected_block() {
-        let brief = format!("real brief\n\n{}", wrap_context("old convo"));
-        assert_eq!(strip_forked_context(&brief), "real brief");
-    }
-
-    #[test]
-    fn strip_leaves_user_authored_lookalike_untouched() {
-        // A user brief that literally mentions the tag text (not the machine
-        // sentinel) must survive verbatim — the regression the sentinel guards.
-        let brief = "Follow the <forked-conversation-context> convention when asked.";
-        assert_eq!(strip_forked_context(brief), brief);
-    }
-
-    #[test]
-    fn strip_keeps_user_instructions_around_a_stray_open_sentinel() {
-        // The user brief itself contains the exact OPEN sentinel, then the real
-        // injected block follows. The stray OPEN must NOT pair with the machine
-        // CLOSE (which would delete "keep me"); only the real block is removed.
-        let brief = format!(
-            "keep me before {FORK_CONTEXT_OPEN} keep me after\n\n{}",
-            wrap_context("old convo")
-        );
-        assert_eq!(
-            strip_forked_context(&brief),
-            format!("keep me before {FORK_CONTEXT_OPEN} keep me after")
-        );
-    }
-
-    #[test]
-    fn strip_keeps_orphan_close_then_removes_the_real_block() {
-        // A stray CLOSE with no OPEN before it is kept; a genuine block appearing
-        // afterwards is still stripped.
-        let brief = format!(
-            "stray {FORK_CONTEXT_CLOSE} text\n\n{}",
-            wrap_context("convo")
-        );
-        assert_eq!(
-            strip_forked_context(&brief),
-            format!("stray {FORK_CONTEXT_CLOSE} text")
-        );
-    }
-
-    #[test]
-    fn strip_removes_stacked_blocks() {
-        let brief = format!("{}\n\n{}", wrap_context("first"), wrap_context("second"));
-        assert_eq!(strip_forked_context(&brief), "");
-    }
-
-    #[test]
-    fn strip_is_noop_without_a_block() {
-        assert_eq!(strip_forked_context("just a brief"), "just a brief");
-    }
-
-    #[test]
-    fn combine_uses_digest_alone_when_no_brief() {
-        assert_eq!(combine_instructions(String::new(), "DIGEST"), "DIGEST");
-        assert_eq!(combine_instructions("B".into(), "D"), "B\n\nD");
     }
 
     #[test]

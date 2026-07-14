@@ -167,6 +167,13 @@ pub struct AgentRecord {
     /// even if the custom agent is later edited or deleted.
     #[serde(default)]
     pub instructions: Option<String>,
+    /// Prior-conversation digest injected into a forked agent's brief, kept in
+    /// its own field so it is never co-mingled with (and heuristically parsed
+    /// out of) the user brief above. Composed after `instructions` on every
+    /// spawn. `None` for a non-fork session. A fork rebuilds this fresh from the
+    /// parent's records and never inherits the parent's value.
+    #[serde(default)]
+    pub forked_context: Option<String>,
     /// The custom agent this session was spawned from, used to show its
     /// name/color in the sidebar. `None` for a plain built-in spawn.
     #[serde(default)]
@@ -348,7 +355,7 @@ pub struct WorkspaceManager {
 const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
             w.stopped_at, w.archived_at,
             s.provider, s.view, s.provider_session_id, s.last_error,
-            s.effort, s.model, s.instructions, s.custom_agent_id,
+            s.effort, s.model, s.instructions, s.forked_context, s.custom_agent_id,
             s.skills, s.mcp_servers,
             w.sandbox_engine, w.owner_run_id
      FROM workspaces w
@@ -370,6 +377,7 @@ type AgentRow = (
     Option<String>, // s.effort
     Option<String>, // s.model
     Option<String>, // s.instructions
+    Option<String>, // s.forked_context
     Option<String>, // s.custom_agent_id
     Option<String>, // s.skills (JSON array of SkillSnapshot)
     Option<String>, // s.mcp_servers (JSON array of McpServerSnapshot)
@@ -625,8 +633,8 @@ impl WorkspaceManager {
         // not persisted — it derives from the workspace/session dispositions.
         let session_id = uuid::Uuid::new_v4().to_string();
         tx.execute(
-            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, instructions, custom_agent_id, skills, mcp_servers, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, instructions, forked_context, custom_agent_id, skills, mcp_servers, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
                 session_id,
                 record.id,
@@ -637,6 +645,7 @@ impl WorkspaceManager {
                 record.effort,
                 record.model,
                 record.instructions,
+                record.forked_context,
                 record.custom_agent_id,
                 encode_json_vec(&record.skills),
                 encode_json_vec(&record.mcp_servers),
@@ -1821,7 +1830,7 @@ impl WorkspaceManager {
     }
 
     /// Map a row from an [`AGENT_SELECT`] query into the raw column tuple.
-    /// Shared by `query_all_agents` and `load_agent` so the 19-column layout
+    /// Shared by `query_all_agents` and `load_agent` so the 20-column layout
     /// is decoded in exactly one place.
     fn map_agent_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRow> {
         Ok((
@@ -1844,6 +1853,7 @@ impl WorkspaceManager {
             row.get(16)?,
             row.get(17)?,
             row.get(18)?,
+            row.get(19)?,
         ))
     }
 
@@ -1866,6 +1876,7 @@ impl WorkspaceManager {
             effort,
             model,
             instructions,
+            forked_context,
             custom_agent_id,
             skills_json,
             mcp_servers_json,
@@ -1905,6 +1916,7 @@ impl WorkspaceManager {
             effort,
             model,
             instructions,
+            forked_context,
             custom_agent_id,
             skills: decode_json_vec(skills_json.as_deref()),
             mcp_servers: decode_json_vec(mcp_servers_json.as_deref()),
@@ -1976,6 +1988,7 @@ pub fn new_agent_record(
         effort: None,
         model: None,
         instructions: None,
+        forked_context: None,
         custom_agent_id: None,
         skills: Vec::new(),
         mcp_servers: Vec::new(),
@@ -2651,6 +2664,62 @@ mod tests {
         let plain_loaded = wm.agent(&plain_id).unwrap();
         assert_eq!(plain_loaded.instructions, None);
         assert_eq!(plain_loaded.custom_agent_id, None);
+    }
+
+    #[test]
+    fn forked_context_round_trips_separately_from_the_brief() {
+        let db = test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        seed_repo(&db, "/r");
+
+        // A forked session persists the user brief and the carried digest in
+        // separate columns; both must survive a round-trip, kept distinct.
+        let mut rec = new_agent_record(
+            "rainier".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        let id = rec.id.clone();
+        rec.instructions = Some("Be terse.".into());
+        rec.forked_context = Some("<!-- ctx -->\nprior convo\n<!-- /ctx -->".into());
+        wm.add_agent(&mut rec).unwrap();
+
+        // Single-row path (load_agent → map_agent_row).
+        let loaded = wm.agent(&id).unwrap();
+        assert_eq!(loaded.instructions.as_deref(), Some("Be terse."));
+        assert_eq!(
+            loaded.forked_context.as_deref(),
+            Some("<!-- ctx -->\nprior convo\n<!-- /ctx -->")
+        );
+
+        // Full-list path (query_all_agents → map_agent_row) decodes it too.
+        let listed = wm
+            .current()
+            .unwrap()
+            .agents
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap();
+        assert_eq!(
+            listed.forked_context.as_deref(),
+            Some("<!-- ctx -->\nprior convo\n<!-- /ctx -->")
+        );
+
+        // A non-fork session leaves the column null.
+        let mut plain = new_agent_record(
+            "hood".into(),
+            "b".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        let plain_id = plain.id.clone();
+        wm.add_agent(&mut plain).unwrap();
+        assert_eq!(wm.agent(&plain_id).unwrap().forked_context, None);
     }
 
     #[test]
