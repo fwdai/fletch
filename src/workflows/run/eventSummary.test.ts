@@ -1,5 +1,5 @@
-// Timeline reducer tests (spec §14.2 / SLICES F2 acceptance: "replaying a
-// recorded journal fixture renders a correct timeline"). The fixture below is a
+// Timeline reducer tests: replaying a recorded journal fixture renders a
+// correct timeline. The fixture below is a
 // realistic linear run's journal — the same event shapes the Rust engine emits
 // (see attempt.rs / scheduler.rs) — replayed through summarizeEvent.
 

@@ -1,4 +1,4 @@
-// Import-mapping logic (spec §14.3 / SLICES F3 acceptance). The load-bearing
+// Import-mapping logic. The load-bearing
 // property: "map to yours" attaches the local custom-agent id (so the workflow
 // runs against the user's agent) while "use embedded" keeps the file's portable
 // spec — which is what makes the §5.3 example runnable on a machine without the

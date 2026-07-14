@@ -1,4 +1,4 @@
-//! Workflow v1 domain types (TECH_SPEC §4, §6.2, §7.1) — the run / attempt /
+//! Workflow v1 domain types — the run / attempt /
 //! event / message rows and their status enums, with serde for the command
 //! surface and `from_row` constructors for the journal + read commands.
 //!

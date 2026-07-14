@@ -1,4 +1,4 @@
-//! Workflows v1 backend (TECH_SPEC §3.1).
+//! Workflows v1 backend.
 //!
 //! This module lands the persistence substrate: the domain types (`types`), the
 //! append-only journal (`journal`), and the read-only command surface below

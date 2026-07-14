@@ -4,8 +4,8 @@
 //! status sequences. `SupervisorDriver` is the one production implementation;
 //! it is a thin adapter over `Supervisor`.
 //!
-//! This is the *only* sanctioned abstraction layer in the workflow engine (see
-//! SLICES.md guiding constraints): it exists for testability, not generality.
+//! This is the *only* sanctioned abstraction layer in the workflow engine: it
+//! exists for testability, not generality.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -215,7 +215,7 @@ impl AgentDriver for SupervisorDriver {
         // Sum the `usage` reported across the agent's session records — the
         // cumulative session total (§11.2). Best-effort by design: we read only
         // fields the provider already wrote into the record body and build no
-        // per-provider parser (SLICES.md guardrail). A provider that reports no
+        // per-provider parser. A provider that reports no
         // usage yields `None`, so tokens stay uncounted and turn/clock budgets
         // bound the run instead.
         let records = self.sup.read_session_records(agent_id);

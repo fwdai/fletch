@@ -1,4 +1,4 @@
--- 0019_workflows_v1.sql — workflows v1 schema (TECH_SPEC §4).
+-- 0019_workflows_v1.sql — workflows v1 schema.
 --
 -- Replaces the v0 tables. 0018_workflows.sql has already been applied to dev
 -- databases (rusqlite_migration tracks user_version, so a rewritten 0018 would
