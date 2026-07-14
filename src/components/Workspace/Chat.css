@@ -101,6 +101,12 @@
   margin-left: auto;
   color: var(--fg-2);
 }
+/* With copy present, its `margin-left: auto` already pushes the whole action
+   group right — reset the fork's so a second auto doesn't split the free space
+   (which would strand the copy button mid-row). The 7px flex gap spaces them. */
+.turn-meta .turn-copy + .turn-fork {
+  margin-left: 0;
+}
 
 /* The fixed 22px .btn-i.xs box clamps the copy glyph, so size the button to its
    content (plus a small hit-area pad) and let the 12px glyph through, on both
