@@ -2162,18 +2162,7 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
                 // Abandon the row and archive the chat.
                 {
                     let conn = c.db.lock();
-                    let _ = conn.execute(
-                        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
-                        rusqlite::params![super::now_ms(), exec_id],
-                    );
-                    journal_event(
-                        &conn,
-                        c.app.as_ref(),
-                        &c.run_id,
-                        event_type::ATTEMPT_ABANDONED,
-                        Some(&exec_id),
-                        &json!({ "cause": "canceled" }),
-                    );
+                    abandon_exec(&conn, c.app.as_ref(), &c.run_id, &exec_id, "canceled");
                 }
                 if let Some(agent_id) = &result.agent_id {
                     let _ = c.driver.archive(agent_id).await;
@@ -4070,18 +4059,7 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
         if super::comms::has_unanswered_ask(&c.db.lock(), &exec_id) {
             {
                 let conn = c.db.lock();
-                let _ = conn.execute(
-                    "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
-                    rusqlite::params![super::now_ms(), exec_id],
-                );
-                journal_event(
-                    &conn,
-                    c.app.as_ref(),
-                    &c.run_id,
-                    event_type::ATTEMPT_ABANDONED,
-                    Some(&exec_id),
-                    &json!({ "cause": "question" }),
-                );
+                abandon_exec(&conn, c.app.as_ref(), &c.run_id, &exec_id, "question");
             }
             let _ = c.driver.stop(&child_agent_id).await;
             let _ = c.driver.archive(&child_agent_id).await;
@@ -4136,18 +4114,7 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
             AttemptOutcome::Canceled => {
                 {
                     let conn = c.db.lock();
-                    let _ = conn.execute(
-                        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
-                        rusqlite::params![super::now_ms(), exec_id],
-                    );
-                    journal_event(
-                        &conn,
-                        c.app.as_ref(),
-                        &c.run_id,
-                        event_type::ATTEMPT_ABANDONED,
-                        Some(&exec_id),
-                        &json!({ "cause": "canceled" }),
-                    );
+                    abandon_exec(&conn, c.app.as_ref(), &c.run_id, &exec_id, "canceled");
                 }
                 let _ = c.driver.archive(&child_agent_id).await;
                 return done(
@@ -5116,18 +5083,7 @@ async fn execute_step(
                 }
                 {
                     let conn = ctx.db.lock();
-                    let _ = conn.execute(
-                        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
-                        rusqlite::params![super::now_ms(), exec_id],
-                    );
-                    journal_event(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        event_type::ATTEMPT_ABANDONED,
-                        Some(&exec_id),
-                        &json!({ "cause": "budget_exceeded" }),
-                    );
+                    abandon_exec(&conn, ctx.app.as_ref(), run_id, &exec_id, "budget_exceeded");
                 }
                 finish_budget_pause(ctx, run_id, Some(&exec_id), ledger);
                 return Ok(StepFlow::Halt);
@@ -5141,18 +5097,7 @@ async fn execute_step(
                 // the archive await.
                 {
                     let conn = ctx.db.lock();
-                    let _ = conn.execute(
-                        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
-                        rusqlite::params![super::now_ms(), exec_id],
-                    );
-                    journal_event(
-                        &conn,
-                        ctx.app.as_ref(),
-                        run_id,
-                        event_type::ATTEMPT_ABANDONED,
-                        Some(&exec_id),
-                        &json!({ "cause": "canceled" }),
-                    );
+                    abandon_exec(&conn, ctx.app.as_ref(), run_id, &exec_id, "canceled");
                     journal_event(
                         &conn,
                         ctx.app.as_ref(),
@@ -5362,6 +5307,29 @@ fn finish_step_exec(conn: &Connection, id: &str, status: &str, head_end: Option<
     let _ = conn.execute(
         "UPDATE wf_step_exec SET status = ?1, head_end = ?2, ended_at = ?3 WHERE id = ?4",
         rusqlite::params![status, head_end, super::now_ms(), id],
+    );
+}
+
+/// Mark a step exec `abandoned` (ended now) and journal the reason as an
+/// `ATTEMPT_ABANDONED` event (§8.3). The caller holds `conn`.
+fn abandon_exec(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    run_id: &str,
+    exec_id: &str,
+    cause: &str,
+) {
+    let _ = conn.execute(
+        "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
+        rusqlite::params![super::now_ms(), exec_id],
+    );
+    journal_event(
+        conn,
+        app,
+        run_id,
+        event_type::ATTEMPT_ABANDONED,
+        Some(exec_id),
+        &json!({ "cause": cause }),
     );
 }
 
@@ -5872,18 +5840,7 @@ async fn abandon_stale_attempts(ctx: &RunCtx, run_id: &str) {
             let _ = ctx.driver.stop(a).await;
         }
         let conn = ctx.db.lock();
-        let _ = conn.execute(
-            "UPDATE wf_step_exec SET status = 'abandoned', ended_at = ?1 WHERE id = ?2",
-            rusqlite::params![super::now_ms(), exec_id],
-        );
-        journal_event(
-            &conn,
-            ctx.app.as_ref(),
-            run_id,
-            event_type::ATTEMPT_ABANDONED,
-            Some(&exec_id),
-            &json!({ "cause": "resume" }),
-        );
+        abandon_exec(&conn, ctx.app.as_ref(), run_id, &exec_id, "resume");
     }
 }
 
