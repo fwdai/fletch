@@ -52,7 +52,9 @@ export function BlockSequence({
   seqNid: NodeId | null;
   ctx: BuilderCtx;
 }) {
-  const [menu, setMenu] = useState(false);
+  // The menu is fixed-positioned from the button's rect so it escapes the
+  // canvas's overflow clip (same trick as the builder's other popovers).
+  const [menu, setMenu] = useState<{ top: number; left: number } | null>(null);
   const canRemove = blocks.length > 1 || seqNid !== null;
   // A non-null seqNid means this is a loop body, and the engine executes loop
   // bodies of plain steps only (spec §6.6) — don't offer containers there.
@@ -70,7 +72,13 @@ export function BlockSequence({
       {blocks.length > 0 && <Connector />}
 
       <div className="wb-addwrap">
-        <button className="wb-add" onClick={() => setMenu((m) => !m)}>
+        <button
+          className="wb-add"
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setMenu((m) => (m ? null : { top: r.bottom, left: r.left }));
+          }}
+        >
           <span className="wb-add-ic">
             <Icon name="plus" />
           </span>
@@ -80,16 +88,19 @@ export function BlockSequence({
           <>
             <div
               style={{ position: "fixed", inset: 0, zIndex: 55 }}
-              onClick={() => setMenu(false)}
+              onClick={() => setMenu(null)}
             />
-            <div className="dd wb-add-menu">
+            <div
+              className="dd wb-add-menu"
+              style={{ position: "fixed", top: menu.top, left: menu.left }}
+            >
               {blockTypes.map((t) => (
                 <div
                   key={t.id}
                   className="dd-item"
                   onClick={() => {
                     ctx.addBlock(seqNid, t.id);
-                    setMenu(false);
+                    setMenu(null);
                   }}
                   style={{ alignItems: "flex-start", flexDirection: "column", gap: 2 }}
                 >

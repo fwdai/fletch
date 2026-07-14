@@ -1330,7 +1330,10 @@
   align-items: stretch;
 }
 .wb-canvas > .wb-seq {
-  padding: 44px 24px 26px;
+  /* A horizontal scroller clips vertically too, so the vertical padding doubles
+     as breathing room that keeps `data-tip-down` tooltips inside the scrollport
+     instead of being cut off at the card edges. */
+  padding: 44px 24px 44px;
   overflow-x: auto;
 }
 .wb-loop-body .wb-seq {

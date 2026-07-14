@@ -58,7 +58,14 @@ export function WorkflowBuilder({
 
   const ctx: BuilderCtx = useMemo(
     () => ({
-      resolve: (id) => resolveAgent(id, agents, modelsByAgent),
+      resolve: (id) => {
+        if (!id) return null;
+        // `id` is an alias into `state.agents`; resolve it to the underlying
+        // custom-agent id or base provider before rendering. (Base-provider
+        // aliases happen to equal the provider id, but custom ones don't.)
+        const spec = state.agents[id];
+        return resolveAgent(spec?.custom_agent ?? spec?.base ?? id, agents, modelsByAgent);
+      },
       errorsFor: (nid) => validation.byNode[nid],
       patchStep: (nid, patch) => setState((s) => patchStep(s, nid, patch)),
       patchBlock: (nid, patch) => setState((s) => patchBlock(s, nid, patch)),
@@ -70,7 +77,7 @@ export function WorkflowBuilder({
       openGate: (nid, e) => setPop({ type: "gate", nid, rect: rectFrom(e) }),
       openBudgets: (target, e) => setPop({ type: "budgets", target, rect: rectFrom(e) }),
     }),
-    [agents, modelsByAgent, validation],
+    [agents, modelsByAgent, validation, state.agents],
   );
 
   const runBudgetLabel = state.budgets?.turns ? `${state.budgets.turns} turns` : "budgets";
