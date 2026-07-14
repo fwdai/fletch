@@ -34,7 +34,7 @@ export function ForkButton({ agentId, upToPrompt }: { agentId: string; upToPromp
       disabled={forking}
       aria-label="Fork a new workspace from here"
     >
-      <Icon name="branch" size={12} />
+      <Icon name="split" size={12} />
     </IconButton>
   );
 }
