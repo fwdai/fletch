@@ -166,7 +166,12 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   // the open turn (started, not ended) carries no footer, just its live timer
   // on the working strip.
   const { turnFooters, openTurnStartedAt } = useMemo(() => {
-    const footers: ({ runSec: number; copyText: string } | null)[] = items.map(() => null);
+    // `turnOrdinal` is the footer turn's index among navigable prompts (the same
+    // 0-based ordinal `turns` uses), which is exactly what the fork action needs
+    // as its "up to this message" cutoff.
+    const footers: ({ runSec: number; copyText: string; turnOrdinal: number } | null)[] = items.map(
+      () => null,
+    );
     let openStart: number | undefined;
     const starts: number[] = [];
     items.forEach((it, i) => {
@@ -189,6 +194,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
       footers[endExclusive - 1] = {
         runSec: (start.endedAt - start.startedAt) / 1000,
         copyText: texts.join("\n\n"),
+        turnOrdinal: k,
       };
     });
     return { turnFooters: footers, openTurnStartedAt: openStart };
@@ -300,7 +306,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                     busy={liveBusy && i >= openTurnStart}
                     turnId={turnIds[i]}
                   />
-                  {turnFooters[i] != null && <TurnFooter {...turnFooters[i]!} />}
+                  {turnFooters[i] != null && <TurnFooter {...turnFooters[i]!} agentId={agent.id} />}
                 </Fragment>
               ))
             )}

@@ -304,6 +304,8 @@ pub async fn spawn_agent(
             effort,
             model,
             instructions,
+            // Forked-conversation context is set only by the fork path.
+            forked_context: None,
             custom_agent_id,
             skills: skills.unwrap_or_default(),
             mcp_servers: mcp_servers.unwrap_or_default(),
@@ -313,6 +315,40 @@ pub async fn spawn_agent(
             run_repo: None,
             owner_run_id: None,
         },
+    )
+    .await
+}
+
+/// Fork an existing workspace into a new one, seeding its worktree (`code`) and
+/// conversation (`context`) independently. `context = up_to_message` carries the
+/// parent conversation through the navigable prompt at a 0-based ordinal (the
+/// same ordinal the chat's turn list uses; git-action turns excluded).
+///
+/// `context_digest` is the frontend-rendered prose for the carried range — built
+/// there so it renders uniformly across every provider's chat adapter and always
+/// matches the history the child shows. `null`/empty when nothing is carried.
+///
+/// `snapshot_max_seq` is the highest `session_records.seq` the frontend saw when
+/// it built the digest; the copy is capped at it so a sync that appends to the
+/// parent between the two reads can't seed the child with turns the brief omitted.
+#[tauri::command]
+pub async fn fork_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    parent_id: String,
+    code: crate::supervisor::ForkCode,
+    context: crate::supervisor::ForkContext,
+    context_digest: Option<String>,
+    snapshot_max_seq: Option<i64>,
+) -> Result<AgentRecord> {
+    let sup = supervisor.inner().clone();
+    sup.fork_agent(
+        app,
+        &parent_id,
+        code,
+        context,
+        context_digest,
+        snapshot_max_seq,
     )
     .await
 }

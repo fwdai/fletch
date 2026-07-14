@@ -200,21 +200,30 @@ pub fn materialize_skills(skills: &[SkillSnapshot], sandbox_root: &Path) -> Resu
 }
 
 /// The session's effective instruction suffix: the custom agent's standing
-/// brief plus the materialized skill index. `None` when both are absent —
+/// brief, then a forked session's carried-conversation digest, then the
+/// materialized skill index. Each is optional; `None` when all are absent —
 /// which keeps every `instructions.rs` helper a no-op, exactly like today.
+///
+/// `brief` and `forked_context` are stored in separate session columns (so the
+/// user brief is never parsed apart from an injected block) but are injected
+/// together here, brief first.
 pub fn effective_instructions(
     brief: Option<&str>,
+    forked_context: Option<&str>,
     skills: &[SkillSnapshot],
     sandbox_root: &Path,
 ) -> Result<Option<String>> {
     let index = materialize_skills(skills, sandbox_root)?;
-    let brief = brief.map(str::trim).filter(|s| !s.is_empty());
-    Ok(match (brief, index) {
-        (Some(b), Some(i)) => Some(format!("{b}\n\n{i}")),
-        (Some(b), None) => Some(b.to_string()),
-        (None, Some(i)) => Some(i),
-        (None, None) => None,
-    })
+    let clean = |s: Option<&str>| {
+        s.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let parts: Vec<String> = [clean(brief), clean(forked_context), index]
+        .into_iter()
+        .flatten()
+        .collect();
+    Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
 }
 
 /// Write claude's MCP config (`{"mcpServers": {…}}`) under the writable root
@@ -340,21 +349,45 @@ mod tests {
         let skills = vec![skill("Deploy", "cutting a release", "steps")];
 
         // Brief only.
-        let brief_only = effective_instructions(Some("Be terse."), &[], dir.path()).unwrap();
+        let brief_only = effective_instructions(Some("Be terse."), None, &[], dir.path()).unwrap();
         assert_eq!(brief_only.as_deref(), Some("Be terse."));
 
         // Both: brief first, index after.
-        let both = effective_instructions(Some("Be terse."), &skills, dir.path())
+        let both = effective_instructions(Some("Be terse."), None, &skills, dir.path())
             .unwrap()
             .unwrap();
         assert!(both.starts_with("Be terse.\n\n## Skills"));
 
         // Neither → None, so instructions.rs helpers stay no-ops.
-        assert_eq!(effective_instructions(None, &[], dir.path()).unwrap(), None);
         assert_eq!(
-            effective_instructions(Some("  "), &[], dir.path()).unwrap(),
+            effective_instructions(None, None, &[], dir.path()).unwrap(),
             None
         );
+        assert_eq!(
+            effective_instructions(Some("  "), None, &[], dir.path()).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn effective_instructions_orders_brief_then_forked_context_then_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = vec![skill("Deploy", "cutting a release", "steps")];
+
+        // Forked context alone (no brief) still injects.
+        let ctx_only = effective_instructions(None, Some("prior convo"), &[], dir.path()).unwrap();
+        assert_eq!(ctx_only.as_deref(), Some("prior convo"));
+
+        // All three compose in order: brief, forked context, skill index.
+        let all =
+            effective_instructions(Some("Be terse."), Some("prior convo"), &skills, dir.path())
+                .unwrap()
+                .unwrap();
+        assert!(all.starts_with("Be terse.\n\nprior convo\n\n## Skills"));
+
+        // Blank forked context is dropped like a blank brief.
+        let blank = effective_instructions(Some("Be terse."), Some("  "), &[], dir.path()).unwrap();
+        assert_eq!(blank.as_deref(), Some("Be terse."));
     }
 
     #[test]

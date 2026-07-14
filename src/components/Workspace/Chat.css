@@ -94,6 +94,30 @@
   margin-left: auto;
   color: var(--fg-2);
 }
+/* The fork affordance sits at the far right of the seam. `margin-left: auto`
+   pushes it right when it's the only trailing action; when the copy button is
+   also present that one takes the free space and the fork sits just after it. */
+.turn-meta .turn-fork {
+  margin-left: auto;
+  color: var(--fg-2);
+}
+/* With copy present, its `margin-left: auto` already pushes the whole action
+   group right — reset the fork's so a second auto doesn't split the free space
+   (which would strand the copy button mid-row). The 7px flex gap spaces them. */
+.turn-meta .turn-copy + .turn-fork {
+  margin-left: 0;
+}
+/* The fork button is the rightmost footer action, so its centered tooltip
+   overflows the chat scroll's right edge — which the scroll container clips
+   (overflow-y: auto forces overflow-x to clip too), and that edge sits right at
+   the seam with the right panel. A pseudo-element can't escape that clip, so
+   anchor the tooltip to the button's right edge and let it grow leftward, where
+   it stays fully inside the chat panel. */
+.turn-meta .turn-fork[data-tip]:hover::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
 
 /* The fixed 22px .btn-i.xs box clamps the copy glyph, so size the button to its
    content (plus a small hit-area pad) and let the 12px glyph through, on both

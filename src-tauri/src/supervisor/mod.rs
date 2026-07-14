@@ -2,6 +2,7 @@
 
 mod disposition;
 mod events;
+mod fork;
 mod lifecycle;
 mod messaging;
 mod rpc_watch;
@@ -9,6 +10,7 @@ pub(crate) mod run;
 mod session_sync;
 mod shell;
 
+pub use fork::{ForkCode, ForkContext};
 pub use lifecycle::SpawnRequest;
 pub use run::ProjectRunConfig;
 pub(crate) use session_sync::{persist_pr_snapshot, resolve_all_pr_states, resolve_pr_state};

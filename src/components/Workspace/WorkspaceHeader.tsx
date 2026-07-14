@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentRecord, AgentStatus, DiffStats } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -25,6 +25,8 @@ export function WorkspaceHeader({ agent }: Props) {
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const toggleRight = useAppStore((s) => s.toggleRight);
+  const forkAgent = useAppStore((s) => s.forkAgent);
+  const [forking, setForking] = useState(false);
   const now = useMinuteClock();
   // Use shortstats (5s app-wide poll) rather than full git state, since
   // the header shows shortstats regardless of which right-rail tab is
@@ -91,6 +93,23 @@ export function WorkspaceHeader({ agent }: Props) {
           nativeReason="Available after the agent's first turn"
         />
       )}
+
+      <IconButton
+        tip="Fork this workspace and conversation"
+        aria-label="Fork this workspace"
+        disabled={forking}
+        onClick={async () => {
+          if (forking) return;
+          setForking(true);
+          try {
+            await forkAgent(agent.id, "clean", { kind: "full" });
+          } finally {
+            setForking(false);
+          }
+        }}
+      >
+        <Icon name="split" />
+      </IconButton>
 
       <IconButton
         active={!rightCollapsed}

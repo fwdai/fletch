@@ -6,6 +6,8 @@ import type {
   AgentView,
   ContainerAuthStatus,
   DockerProbe,
+  ForkCode,
+  ForkContext,
   GhStatus,
   GitState,
   PrChecks,
@@ -136,6 +138,14 @@ export interface WorkspaceSlice {
   /** Select a workflow run for the main pane (clears agent/draft/settings selection). */
   selectRun: (id: string) => void;
   spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
+  /** Fork an existing workspace into a new one, seeding its worktree (`code`)
+   *  and conversation (`context`) independently. Refreshes the workspace and
+   *  selects the new agent. Resolves to the new record, or null on failure. */
+  forkAgent: (
+    parentId: string,
+    code: ForkCode,
+    context: ForkContext,
+  ) => Promise<AgentRecord | null>;
   sendUserMessage: (
     id: string,
     text: string,
