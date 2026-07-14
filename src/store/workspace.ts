@@ -1,7 +1,8 @@
-import type { ChatItem } from "@/adapters";
+import { applyPolicy, type ChatItem, getAdapter } from "@/adapters";
 import { hasUsage, usageFromRecords } from "@/adapters/usage";
 import { api, type ForkContext, type SessionRecord } from "@/api";
 import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
+import { renderToolResult, stringifyInput } from "@/components/Workspace/messages/presenters/util";
 import {
   applyUserTurns,
   dropAgentEntries,
@@ -17,11 +18,49 @@ import { stripInjectedInstructions } from "@/util/instructions";
 import { interruptedAgents } from "./interrupted";
 import type { AppState, SliceCreator, WorkspaceSlice } from "./types";
 
-/** Assemble the prose a fork carries into the child's brief, from the parent's
- *  already-normalized chat log — so it renders uniformly for every provider and
- *  matches the history the child shows. Mirrors the backend's record cutoff:
- *  navigable prompts only (git-action turns excluded), up to the chosen point.
- *  Returns null when nothing is carried. */
+/** Serialize one chat item into a line of the fork brief, or null to skip it.
+ *  Covers every kind the child transcript can render (tool calls/results,
+ *  reasoning, error notices) — not just messages — so the injected context
+ *  carries the tool output and diagnostics the copied history shows. */
+function serializeForkItem(it: ChatItem): string | null {
+  switch (it.kind) {
+    case "user_message":
+      // App-action turns (git delegation) are machinery, not conversation.
+      return it.text.startsWith(APP_ACTION_PREFIX)
+        ? null
+        : `User: ${stripInjectedInstructions(it.text)}`;
+    case "agent_message":
+      return it.text ? `Assistant: ${it.text}` : null;
+    case "tool_call": {
+      const input = stringifyInput(it.input, 2).trim();
+      const head = `Assistant used tool \`${it.name}\`${input ? `:\n${input}` : ""}`;
+      // Flatten a subagent's nested conversation under the call that spawned it.
+      const nested = (it.children ?? [])
+        .map(serializeForkItem)
+        .filter((line): line is string => line !== null);
+      return nested.length > 0 ? `${head}\n${nested.join("\n\n")}` : head;
+    }
+    case "tool_result": {
+      const text = renderToolResult(it.content).trim();
+      if (!text) return null;
+      return `${it.is_error ? "Tool error" : "Tool result"}:\n${text}`;
+    }
+    case "notice":
+      if (!it.text) return null;
+      if (it.subtype === "reasoning") return `Assistant (thinking): ${it.text}`;
+      if (it.subtype === "error") return `Error: ${it.text}`;
+      return it.text;
+    // Optimistic, store-only item never present in copied records.
+    case "queued_message":
+      return null;
+  }
+}
+
+/** Assemble the prose a fork carries into the child's brief. Built from the same
+ *  record-derived, policy-filtered surface the child renders (see forkAgent), so
+ *  it stays in step with the copied history for every provider. Mirrors the
+ *  backend's record cutoff: navigable prompts only (git-action turns excluded),
+ *  up to the chosen point. Returns null when nothing is carried. */
 function forkContextDigest(log: ChatItem[], context: ForkContext): string | null {
   if (context.kind === "none") return null;
 
@@ -46,12 +85,8 @@ function forkContextDigest(log: ChatItem[], context: ForkContext): string | null
 
   const lines: string[] = [];
   for (let i = 0; i < cutoff; i += 1) {
-    const it = log[i];
-    if (isPrompt(it) && it.kind === "user_message") {
-      lines.push(`User: ${stripInjectedInstructions(it.text)}`);
-    } else if (it.kind === "agent_message" && it.text) {
-      lines.push(`Assistant: ${it.text}`);
-    }
+    const line = serializeForkItem(log[i]);
+    if (line) lines.push(line);
   }
   const digest = lines.join("\n\n").trim();
   return digest.length > 0 ? digest : null;
@@ -165,15 +200,20 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   forkAgent: async (parentId, code, context) => {
     set({ busy: true, lastError: null });
     try {
-      // Build the carried prose from the parent's canonical records — the same
-      // source the backend copies for display — so the injected context works
-      // across every provider and stays in step with the copied history even
-      // when the parent transcript has not been loaded into managedLogs. Skip
-      // the read entirely when no context is carried.
-      const digest =
-        context.kind === "none"
-          ? null
-          : forkContextDigest((await readReducedLog(get, parentId)).items, context);
+      // Build the carried prose from the exact surface the backend copies into
+      // the child: the parent's session_records, reduced and passed through the
+      // display policy. Crucially NOT the turn-overlaid items — pending/unmatched
+      // user turns are never copied into the child, so keeping them out here
+      // stops the brief from carrying a prompt the child transcript won't show.
+      // Reading records directly (not managedLogs) also keeps this correct when
+      // the parent transcript has not been loaded into the UI yet.
+      let digest: string | null = null;
+      if (context.kind !== "none") {
+        const provider = providerFor(get(), parentId);
+        const { records } = await readReducedLog(get, parentId);
+        const visible = applyPolicy(reduceRecords(provider, records), getAdapter(provider).policy);
+        digest = forkContextDigest(visible, context);
+      }
       const rec = await api.forkAgent(parentId, code, context, digest);
       const fresh = await api.getWorkspace();
       // No optimistic managedLogs seed. When context is carried the fork is
