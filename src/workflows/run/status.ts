@@ -6,8 +6,8 @@
 import type { WfAttemptStatus, WfPausedReason, WfRunStatus } from "../../api";
 import type { IconName } from "../../components/Icon";
 
-const GREEN = "oklch(0.72 0.15 150)";
-const AMBER = "oklch(0.78 0.14 75)";
+export const GREEN = "oklch(0.72 0.15 150)";
+export const AMBER = "oklch(0.78 0.14 75)";
 
 export interface Chip {
   label: string;

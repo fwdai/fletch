@@ -6,19 +6,9 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { api } from "../../api";
+import { slugify } from "../shared";
 
 const YAML_FILTERS = [{ name: "YAML", extensions: ["yaml", "yml"] }];
-
-/** A filesystem-friendly stem for the default export filename. */
-function slug(name: string): string {
-  return (
-    name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "workflow"
-  );
-}
 
 /** Export a definition to a user-chosen `.yaml` file. Returns the written path,
  *  or `null` if the user dismissed the save dialog. */
@@ -26,7 +16,7 @@ export async function exportDefinitionYaml(id: string, name: string): Promise<st
   const yaml = await api.wfDefExportYaml(id);
   const path = await save({
     title: "Export workflow",
-    defaultPath: `${slug(name)}.yaml`,
+    defaultPath: `${slugify(name, "workflow")}.yaml`,
     filters: YAML_FILTERS,
   });
   if (!path) return null;

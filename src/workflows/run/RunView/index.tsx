@@ -13,7 +13,7 @@ import { Icon } from "../../../components/Icon";
 import { IconButton } from "../../../components/ui/IconButton";
 import { ChatView } from "../../../components/Workspace/ChatView";
 import { useAppStore } from "../../../store";
-import { resolveAgent } from "../../shared";
+import { resolveAlias } from "../../shared";
 import type { Spec } from "../../spec";
 import { runChip } from "../status";
 import { useRuns } from "../useRuns";
@@ -66,10 +66,7 @@ export function RunView({ id }: { id: string }) {
 
   // Resolve a spec agent alias to its display identity (custom agent or provider).
   const resolve = useMemo(
-    () => (alias: string) => {
-      const a = spec?.agents?.[alias];
-      return resolveAgent(a?.custom_agent ?? a?.base ?? alias, customAgents, modelsByAgent);
-    },
+    () => (alias: string) => resolveAlias(spec?.agents, alias, customAgents, modelsByAgent),
     [spec, customAgents, modelsByAgent],
   );
 

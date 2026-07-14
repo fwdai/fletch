@@ -1709,6 +1709,48 @@ pub(super) fn queue_engine_ask(conn: &Connection, run_id: &str, orch_exec: &str,
     );
 }
 
+/// Queue an `answer` to the asking child, mark the originating `ask` `answered`,
+/// and journal the route (§10.4). Shared by the orchestrator (§10.2) and human
+/// (§14) answer paths, which differ only in their preconditions and in `from`
+/// (the answering step exec, or `None` for a human).
+fn answer_ask(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    run_id: &str,
+    ask_message_id: &str,
+    asking_exec: Option<&str>,
+    from: Option<&str>,
+    body: &str,
+) -> Result<()> {
+    let ans_id = new_msg_id();
+    insert_message(
+        conn,
+        &ans_id,
+        run_id,
+        from,
+        asking_exec,
+        "answer",
+        &json!({ "text": body }),
+        "queued",
+        false,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+    conn.execute(
+        "UPDATE wf_message SET status = 'answered' WHERE id = ?1",
+        [ask_message_id],
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+    scheduler::journal_event(
+        conn,
+        app,
+        run_id,
+        event_type::MESSAGE_ROUTED,
+        asking_exec,
+        &json!({ "message_id": ans_id, "kind": "answer", "from": from, "to": asking_exec }),
+    );
+    Ok(())
+}
+
 /// Deliver the orchestrator's answer to a child's ask (spec §10.2). Marks the ask
 /// `answered` and queues an `answer` to the asking child, which folds it into its
 /// next prompt (§10.4). Rejects an answer to an ask not addressed to this
@@ -1742,33 +1784,15 @@ fn deliver_orchestrator_answer(
     if status != "queued" {
         return Err(Error::Other("that question was already answered".into()));
     }
-    let ans_id = new_msg_id();
-    insert_message(
-        conn,
-        &ans_id,
-        &sender.run_id,
-        Some(&sender.step_exec_id),
-        asking_exec.as_deref(),
-        "answer",
-        &json!({ "text": body }),
-        "queued",
-        false,
-    )
-    .map_err(|e| Error::Other(e.to_string()))?;
-    conn.execute(
-        "UPDATE wf_message SET status = 'answered' WHERE id = ?1",
-        [message_id],
-    )
-    .map_err(|e| Error::Other(e.to_string()))?;
-    scheduler::journal_event(
+    answer_ask(
         conn,
         app,
         &sender.run_id,
-        event_type::MESSAGE_ROUTED,
+        message_id,
         asking_exec.as_deref(),
-        &json!({ "message_id": ans_id, "kind": "answer", "from": sender.step_exec_id, "to": asking_exec }),
-    );
-    Ok(())
+        Some(&sender.step_exec_id),
+        body,
+    )
 }
 
 fn journal_decision(conn: &Connection, app: Option<&AppHandle>, sender: &Sender, payload: &Value) {
@@ -1853,40 +1877,16 @@ fn deliver_answer(
         return Err(Error::Other("that question was already answered".into()));
     }
 
-    let ans_id = new_msg_id();
-    let ans_body = json!({ "text": body });
-    insert_message(
-        conn,
-        &ans_id,
-        run_id,
-        None, // from the human
-        asking_exec.as_deref(),
-        "answer",
-        &ans_body,
-        "queued",
-        false,
-    )
-    .map_err(|e| Error::Other(e.to_string()))?;
-    conn.execute(
-        "UPDATE wf_message SET status = 'answered' WHERE id = ?1",
-        [message_id],
-    )
-    .map_err(|e| Error::Other(e.to_string()))?;
-
-    scheduler::journal_event(
+    // `from = None` → the answer is journaled as coming from the human.
+    answer_ask(
         conn,
         app,
         run_id,
-        event_type::MESSAGE_ROUTED,
+        message_id,
         asking_exec.as_deref(),
-        &json!({
-            "message_id": ans_id,
-            "kind": "answer",
-            "from": Value::Null,
-            "to": asking_exec,
-        }),
-    );
-    Ok(())
+        None,
+        body,
+    )
 }
 
 // ───────────────────────────── service glue ─────────────────────────────────

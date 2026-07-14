@@ -13,7 +13,7 @@ import { Icon } from "../../components/Icon";
 import { Chip } from "../../components/ui/Chip";
 import { useAppStore } from "../../store";
 import { AgentAvatar } from "../builder/AgentAvatar";
-import { resolveAgent } from "../shared";
+import { resolveAlias } from "../shared";
 import type { Definition, Spec } from "../spec";
 import { flattenSteps } from "./RunView/flatten";
 import { useDefinitions } from "./useDefinitions";
@@ -62,10 +62,8 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   };
 
-  const resolve = (alias: string) => {
-    const a = def?.spec.agents?.[alias];
-    return resolveAgent(a?.custom_agent ?? a?.base ?? alias, customAgents, modelsByAgent);
-  };
+  const resolve = (alias: string) =>
+    resolveAlias(def?.spec.agents, alias, customAgents, modelsByAgent);
 
   const launch = async () => {
     if (!def || !task.trim() || busy) return;

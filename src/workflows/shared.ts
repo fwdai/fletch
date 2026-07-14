@@ -7,6 +7,7 @@
 import type { ModelMeta } from "../data/modelCatalog/types";
 import { PROVIDERS } from "../data/providers";
 import type { CustomAgent } from "../storage/customAgents";
+import type { AgentSpec } from "./spec";
 
 /** Two-letter monogram from a name's initials, falling back to a neutral dot. */
 export function shortFor(name: string): string {
@@ -76,6 +77,35 @@ export function resolveAgent(
   return null;
 }
 
+/** Resolve a spec agent *alias* to its display identity: look the alias up in
+ *  the spec's `agents` map, then resolve the picked custom-agent id or base
+ *  provider. Returns `null` when the alias is missing or absent from the map —
+ *  callers render the unresolved-alias fallback rather than silently treating a
+ *  stale alias that happens to match a provider id as a valid agent. */
+export function resolveAlias(
+  agents: Record<string, AgentSpec> | undefined,
+  alias: string | undefined,
+  customAgents: CustomAgent[],
+  modelsByAgent: Record<string, ModelMeta[]>,
+): ResolvedAgent | null {
+  if (!alias) return null;
+  const a = agents?.[alias];
+  if (!a) return null;
+  return resolveAgent(a.custom_agent ?? a.base, customAgents, modelsByAgent);
+}
+
 /** A resolver bound to the current agent/model data — handy to pass to children
  *  so they don't each thread both arguments through. */
 export type AgentResolver = (agentId: string | null) => ResolvedAgent | null;
+
+/** A filesystem/alias-friendly slug of `s`, or `fallback` when it reduces to
+ *  nothing: lowercases, collapses runs of non-alphanumerics to `-`, trims dashes. */
+export function slugify(s: string, fallback: string): string {
+  return (
+    s
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || fallback
+  );
+}

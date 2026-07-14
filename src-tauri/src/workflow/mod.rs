@@ -7,12 +7,6 @@
 //! storage commands. The scheduler, gates, budgets, comms and git transport
 //! arrive in later slices; until one of them populates the run tables, the read
 //! commands simply return empty results.
-//!
-//! `dead_code` is allowed module-wide: this slice deliberately publishes the
-//! write API (`journal::append`, the `wf:event`/`wf:run` emitters, the §7.1
-//! event-type names) that the scheduler slice consumes but nothing calls yet.
-//! The allow is removed once those callers land.
-#![allow(dead_code)]
 
 pub mod attempt;
 pub mod blackboard;

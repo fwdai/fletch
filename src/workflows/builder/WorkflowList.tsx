@@ -6,8 +6,8 @@ import { Icon } from "../../components/Icon";
 import { SetHead } from "../../components/SettingsScreen/primitives";
 import type { ModelMeta } from "../../data/modelCatalog/types";
 import type { CustomAgent } from "../../storage/customAgents";
-import { resolveAgent } from "../shared";
-import type { AgentSpec, Block, Definition, Spec } from "../spec";
+import { type resolveAgent, resolveAlias } from "../shared";
+import type { Block, Definition, Spec } from "../spec";
 import { AgentAvatar } from "./AgentAvatar";
 
 function timeAgo(ms: number): string {
@@ -19,20 +19,6 @@ function timeAgo(ms: number): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return `${d}d ago`;
-}
-
-/** An alias's AgentSpec collapses to the picked identity: a custom agent (by its
- *  local id) or a bare base provider. */
-function resolveAlias(
-  spec: Spec,
-  alias: string | undefined,
-  agents: CustomAgent[],
-  modelsByAgent: Record<string, ModelMeta[]>,
-) {
-  if (!alias) return null;
-  const a: AgentSpec | undefined = spec.agents?.[alias];
-  if (!a) return null;
-  return resolveAgent(a.custom_agent ?? a.base, agents, modelsByAgent);
 }
 
 function StepChip({ label, agent }: { label: string; agent: ReturnType<typeof resolveAgent> }) {
@@ -65,7 +51,7 @@ function WorkflowMini({
   agents: CustomAgent[];
   modelsByAgent: Record<string, ModelMeta[]>;
 }) {
-  const resolve = (alias?: string) => resolveAlias(spec, alias, agents, modelsByAgent);
+  const resolve = (alias?: string) => resolveAlias(spec.agents, alias, agents, modelsByAgent);
   const blocks = spec.workflow ?? [];
   return (
     <div className="wf-mini">

@@ -306,7 +306,6 @@ struct MockState {
     usage: std::collections::HashMap<String, TurnUsage>,
     sent: Vec<(String, String)>,
     stopped: Vec<String>,
-    archived: Vec<String>,
     spawn_count: usize,
     /// When set, `spawn` fails with this message (spawn-failure tests).
     fail_spawn: Option<String>,
@@ -347,22 +346,10 @@ impl MockDriver {
         });
     }
 
-    /// Set the agent's last-activity timestamp (the stall clock's input).
-    pub(crate) fn set_activity(&self, agent_id: &str, ts_ms: i64) {
-        self.state
-            .lock()
-            .activity
-            .insert(agent_id.to_string(), ts_ms);
-    }
-
     /// Set the cumulative token usage `turn_usage` reports for an agent (the
     /// budget ledger's token input).
     pub(crate) fn set_usage(&self, agent_id: &str, usage: TurnUsage) {
         self.state.lock().usage.insert(agent_id.to_string(), usage);
-    }
-
-    pub(crate) fn set_worktree(&self, path: PathBuf) {
-        self.state.lock().worktree = path;
     }
 
     pub(crate) fn set_ready_on_spawn(&self, ready: bool) {
@@ -388,10 +375,6 @@ impl MockDriver {
 
     pub(crate) fn was_stopped(&self, agent_id: &str) -> bool {
         self.state.lock().stopped.iter().any(|a| a == agent_id)
-    }
-
-    pub(crate) fn was_archived(&self, agent_id: &str) -> bool {
-        self.state.lock().archived.iter().any(|a| a == agent_id)
     }
 }
 
@@ -469,11 +452,8 @@ impl AgentDriver for MockDriver {
         })
     }
 
-    fn archive<'a>(&'a self, agent_id: &'a str) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.state.lock().archived.push(agent_id.to_string());
-            Ok(())
-        })
+    fn archive<'a>(&'a self, _agent_id: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { Ok(()) })
     }
 
     fn last_activity(&self, agent_id: &str) -> Option<i64> {
