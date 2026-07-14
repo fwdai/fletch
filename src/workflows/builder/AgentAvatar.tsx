@@ -35,7 +35,7 @@ export function AgentAvatar({
     ["--ph" as string]: "oklch(.65 .13 var(--ph-h))",
   };
   return (
-    <span className="chip-mono" style={style}>
+    <span className="chip-mono iflex-center" style={style}>
       {short}
     </span>
   );
