@@ -79,8 +79,9 @@ export function resolveAgent(
 
 /** Resolve a spec agent *alias* to its display identity: look the alias up in
  *  the spec's `agents` map, then resolve the picked custom-agent id or base
- *  provider — falling back to the alias itself (which for a base provider equals
- *  its id). Returns `null` for a missing alias. */
+ *  provider. Returns `null` when the alias is missing or absent from the map —
+ *  callers render the unresolved-alias fallback rather than silently treating a
+ *  stale alias that happens to match a provider id as a valid agent. */
 export function resolveAlias(
   agents: Record<string, AgentSpec> | undefined,
   alias: string | undefined,
@@ -89,7 +90,8 @@ export function resolveAlias(
 ): ResolvedAgent | null {
   if (!alias) return null;
   const a = agents?.[alias];
-  return resolveAgent(a?.custom_agent ?? a?.base ?? alias, customAgents, modelsByAgent);
+  if (!a) return null;
+  return resolveAgent(a.custom_agent ?? a.base, customAgents, modelsByAgent);
 }
 
 /** A resolver bound to the current agent/model data — handy to pass to children
