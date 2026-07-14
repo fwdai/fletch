@@ -550,13 +550,27 @@ export const api = {
    *  `contextDigest` is the rendered prose for the carried range, assembled by
    *  the caller from the normalized chat log (so it works uniformly across every
    *  provider and matches the history the child shows). `null` when nothing is
-   *  carried. */
+   *  carried.
+   *
+   *  `snapshotMaxSeq` is the highest `session_records.seq` the caller saw when it
+   *  built the digest. The backend caps its own (possibly newer) record read at
+   *  this seq before copying, so a sync that appends to the parent between the
+   *  two reads can never seed the child with turns the digest omitted. `null`
+   *  when nothing is carried (or the caller saw no records). */
   forkAgent: (
     parentId: string,
     code: ForkCode,
     context: ForkContext,
     contextDigest: string | null,
-  ) => invoke<AgentRecord>("fork_agent", { parentId, code, context, contextDigest }),
+    snapshotMaxSeq: number | null,
+  ) =>
+    invoke<AgentRecord>("fork_agent", {
+      parentId,
+      code,
+      context,
+      contextDigest,
+      snapshotMaxSeq,
+    }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   /** Resolves to `true` when the message was enqueued for a later turn boundary

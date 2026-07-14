@@ -102,6 +102,7 @@ impl Supervisor {
         code: ForkCode,
         context: ForkContext,
         context_digest: Option<String>,
+        snapshot_max_seq: Option<i64>,
     ) -> Result<AgentRecord> {
         let parent = self.workspace.agent(parent_id)?;
         let primary = parent
@@ -120,10 +121,7 @@ impl Supervisor {
                 Some(fork_cutoff_seq(&records, &turns, prompt)?)
             }
         };
-        let carried: Vec<&SessionRecord> = match cutoff {
-            Some(c) => records.iter().filter(|r| r.seq < c).collect(),
-            None => Vec::new(),
-        };
+        let carried = carried_records(&records, cutoff, snapshot_max_seq);
 
         // Brief: always start from the parent's brief with any *prior* injected
         // fork block stripped (so a fork of a fork carries one digest, not a
@@ -185,6 +183,29 @@ impl Supervisor {
 
         // Re-read so the returned record reflects the stamped task.
         self.workspace.agent(&child.id)
+    }
+}
+
+/// Select the parent records a fork copies into the child for display: those
+/// below the context `cutoff` (`None` = carry nothing) and within the snapshot
+/// the frontend built its digest from (`snapshot_max_seq`).
+///
+/// The backend reads the parent's records after the frontend did, so a sync that
+/// lands in between can append newer rows. Capping at `snapshot_max_seq` keeps
+/// those out of the copy — otherwise the child would render turns the injected
+/// brief never mentioned. A carried context with `snapshot_max_seq == None`
+/// (the caller saw no records) copies nothing, matching the empty digest.
+fn carried_records(
+    records: &[SessionRecord],
+    cutoff: Option<i64>,
+    snapshot_max_seq: Option<i64>,
+) -> Vec<&SessionRecord> {
+    match cutoff {
+        Some(c) => records
+            .iter()
+            .filter(|r| r.seq < c && snapshot_max_seq.is_some_and(|m| r.seq <= m))
+            .collect(),
+        None => Vec::new(),
     }
 }
 
@@ -376,6 +397,53 @@ mod tests {
         // whose native_id "ga" is at re-sequenced record seq 3 → cutoff 3.
         let seq = fork_cutoff_seq(&records, &turns, 0).unwrap();
         assert_eq!(seq, 3);
+    }
+
+    fn carried_seqs(carried: &[&SessionRecord]) -> Vec<i64> {
+        carried.iter().map(|r| r.seq).collect()
+    }
+
+    #[test]
+    fn carried_none_context_copies_nothing() {
+        let records = sample_records();
+        let carried = carried_records(&records, None, Some(6));
+        assert!(carried.is_empty());
+    }
+
+    #[test]
+    fn carried_full_copies_every_record_within_snapshot() {
+        // cutoff = i64::MAX (Full), snapshot saw all six records.
+        let records = sample_records();
+        let carried = carried_records(&records, Some(i64::MAX), Some(6));
+        assert_eq!(carried_seqs(&carried), vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn carried_caps_at_snapshot_when_backend_read_has_newer_rows() {
+        // The frontend digested a 4-record snapshot (max seq 4); a sync then
+        // appended seq 5 & 6 before the backend read. A Full fork must copy only
+        // through seq 4 so the child never shows history the brief omitted.
+        let records = sample_records();
+        let carried = carried_records(&records, Some(i64::MAX), Some(4));
+        assert_eq!(carried_seqs(&carried), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn carried_missing_snapshot_copies_nothing() {
+        // Context carried but the caller reported no records (None) → copy
+        // nothing, staying consistent with a null digest.
+        let records = sample_records();
+        let carried = carried_records(&records, Some(i64::MAX), None);
+        assert!(carried.is_empty());
+    }
+
+    #[test]
+    fn carried_respects_both_cutoff_and_snapshot() {
+        // UpToMessage cutoff 5 (copy seq < 5) intersected with a snapshot capped
+        // at seq 3 → only seq 1..=3.
+        let records = sample_records();
+        let carried = carried_records(&records, Some(5), Some(3));
+        assert_eq!(carried_seqs(&carried), vec![1, 2, 3]);
     }
 
     #[test]

@@ -132,13 +132,22 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // Reading records directly (not managedLogs) also keeps this correct when
       // the parent transcript has not been loaded into the UI yet.
       let digest: string | null = null;
+      // Highest seq in the snapshot the digest is built from. Passed to the
+      // backend so it caps its own record read at the same boundary — otherwise
+      // a sync appending to the parent between our read and the backend's could
+      // seed the child with turns the brief never mentioned.
+      let snapshotMaxSeq: number | null = null;
       if (context.kind !== "none") {
         const provider = providerFor(get(), parentId);
         const { records } = await readReducedLog(get, parentId);
+        snapshotMaxSeq = records.reduce<number | null>(
+          (max, r) => (max === null || r.seq > max ? r.seq : max),
+          null,
+        );
         const visible = applyPolicy(reduceRecords(provider, records), getAdapter(provider).policy);
         digest = forkContextDigest(visible, context);
       }
-      const rec = await api.forkAgent(parentId, code, context, digest);
+      const rec = await api.forkAgent(parentId, code, context, digest, snapshotMaxSeq);
       const fresh = await api.getWorkspace();
       // No optimistic managedLogs seed. When context is carried the fork is
       // created with a non-empty task, so opening it triggers
