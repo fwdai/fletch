@@ -376,8 +376,8 @@
 .ob-authbtn .gl {
   position: absolute;
   left: 20px;
-  width: 19px;
-  height: 19px;
+  width: 20px;
+  height: 20px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -390,7 +390,7 @@
   position: absolute;
   right: 20px;
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-base);
   color: var(--fg-3);
   opacity: 0;
   transition: opacity 0.15s;
