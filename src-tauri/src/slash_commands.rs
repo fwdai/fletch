@@ -109,8 +109,15 @@ fn walk(
             return;
         }
         let path = entry.path();
-        let Ok(ft) = entry.file_type() else { continue };
-        if ft.is_dir() {
+        // Stat the target, not the link: `entry.file_type()` reports a symlink
+        // as a symlink, so a symlinked command dir (e.g. `commands/team` → a
+        // shared tree) would never be traversed. `metadata` follows the link;
+        // the MAX_DEPTH cap bounds any symlink loop. A broken link stats Err
+        // and is skipped.
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
             walk(base, &path, scope, parse, out, depth + 1);
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             if let Some(name) = command_name(base, &path) {
@@ -353,6 +360,31 @@ mod tests {
 
         let names: Vec<&str> = out.keys().map(String::as_str).collect();
         assert_eq!(names, vec!["build", "frontend:x"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_follows_symlinked_command_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = dir.path().join("commands");
+        std::fs::create_dir_all(&commands).unwrap();
+        // A shared tree living outside the commands dir, linked in as `team`.
+        let shared = dir.path().join("shared");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("deploy.md"), "shared deploy").unwrap();
+        std::os::unix::fs::symlink(&shared, commands.join("team")).unwrap();
+
+        let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        walk(
+            &commands,
+            &commands,
+            CommandScope::Project,
+            claude_parse_command,
+            &mut out,
+            0,
+        );
+
+        assert!(out.contains_key("team:deploy"));
     }
 
     #[test]
