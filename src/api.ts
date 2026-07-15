@@ -364,6 +364,13 @@ export interface ProjectRunConfig {
   configs: DetectedConfig[];
 }
 
+/** One `KEY=value` pair discovered in a project's `.env` (Rust
+ *  `run_env::EnvEntry`). Used by the Run & Environment settings list. */
+export interface EnvEntry {
+  key: string;
+  value: string;
+}
+
 export interface RunOutputEvent {
   agent_id: string;
   bytes: number[];
@@ -678,6 +685,13 @@ export const api = {
   detectRunConfig: (agentId: string) => invoke<DetectedConfig[]>("detect_run_config", { agentId }),
   projectRunConfig: (repoPath: string) =>
     invoke<ProjectRunConfig>("project_run_config", { repoPath }),
+  readEnvFileKeys: (repoPath: string) => invoke<EnvEntry[]>("read_env_file_keys", { repoPath }),
+  getEnvOverride: (projectId: string, key: string) =>
+    invoke<string | null>("get_env_override", { projectId, key }),
+  setEnvOverride: (projectId: string, key: string, value: string) =>
+    invoke<void>("set_env_override", { projectId, key, value }),
+  clearEnvOverride: (projectId: string, key: string) =>
+    invoke<void>("clear_env_override", { projectId, key }),
   listCheckoutTree: (agentId: string) => invoke<CheckoutFile[]>("list_checkout_tree", { agentId }),
   listDir: (path: string) => invoke<DirListing>("list_dir", { path }),
   discoverSlashCommands: (provider: string, projectDir?: string) =>

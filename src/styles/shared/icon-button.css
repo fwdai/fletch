@@ -3,6 +3,7 @@
   justify-content: center;
   width: 26px;
   height: 26px;
+  flex-shrink: 0;
   border-radius: var(--r-sm);
   color: var(--fg-1);
   transition: var(--transition-ui-ease);
