@@ -11,6 +11,7 @@
 //! belong on `PerTurnDescriptor`.
 
 use serde::Serialize;
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
@@ -122,10 +123,11 @@ fn walk(
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             if let Some(name) = command_name(base, &path) {
                 // First-wins: roots are scanned highest-precedence first, so an
-                // already-present name means a higher-precedence root claimed it.
-                if !out.contains_key(&name) {
-                    if let Some(cmd) = parse(&path, &name, scope) {
-                        out.insert(name, cmd);
+                // occupied name means a higher-precedence root claimed it — skip
+                // it (and its file read) rather than let a lower root shadow it.
+                if let Entry::Vacant(slot) = out.entry(name) {
+                    if let Some(cmd) = parse(&path, slot.key(), scope) {
+                        slot.insert(cmd);
                     }
                 }
             }
