@@ -819,7 +819,10 @@ pub fn get_env_override(
     project_id: String,
     key: String,
 ) -> Result<Option<String>> {
-    crate::secrets::get(&db.lock(), &crate::run_env::override_secret_key(&project_id, &key))
+    crate::secrets::get(
+        &db.lock(),
+        &crate::run_env::override_secret_key(&project_id, &key),
+    )
 }
 
 /// Store a project variable's override value in the keychain — never in the
@@ -832,7 +835,11 @@ pub fn set_env_override(
     key: String,
     value: String,
 ) -> Result<()> {
-    crate::secrets::set(&db.lock(), &crate::run_env::override_secret_key(&project_id, &key), &value)
+    crate::secrets::set(
+        &db.lock(),
+        &crate::run_env::override_secret_key(&project_id, &key),
+        &value,
+    )
 }
 
 /// Remove a project variable's override; resolution falls back to the `.env`
@@ -843,7 +850,10 @@ pub fn clear_env_override(
     project_id: String,
     key: String,
 ) -> Result<()> {
-    crate::secrets::delete(&db.lock(), &crate::run_env::override_secret_key(&project_id, &key))
+    crate::secrets::delete(
+        &db.lock(),
+        &crate::run_env::override_secret_key(&project_id, &key),
+    )
 }
 
 /// Returns git state for the agent's primary repo.

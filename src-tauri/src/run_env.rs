@@ -137,9 +137,7 @@ pub fn parse_env(text: &str) -> Vec<EnvEntry> {
 
 fn is_env_key(key: &str) -> bool {
     !key.is_empty()
-        && key
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
         && !key.as_bytes()[0].is_ascii_digit()
 }
 
@@ -208,10 +206,12 @@ pub fn resolve(
     let mut out = Vec::with_capacity(shared.len());
     for var in shared {
         let value = match var.source {
-            Source::Override => crate::secrets::get(conn, &override_secret_key(project_id, &var.key))
-                .ok()
-                .flatten()
-                .or_else(|| env_map.get(&var.key).cloned()),
+            Source::Override => {
+                crate::secrets::get(conn, &override_secret_key(project_id, &var.key))
+                    .ok()
+                    .flatten()
+                    .or_else(|| env_map.get(&var.key).cloned())
+            }
             Source::Mirror => env_map.get(&var.key).cloned(),
         };
         if let Some(value) = value {
@@ -253,8 +253,10 @@ BADKEY-DASH=nope
 FOO=override_wins
 EMPTY=
 ";
-        let got: Vec<(String, String)> =
-            parse_env(text).into_iter().map(|e| (e.key, e.value)).collect();
+        let got: Vec<(String, String)> = parse_env(text)
+            .into_iter()
+            .map(|e| (e.key, e.value))
+            .collect();
         assert!(got.contains(&("DATABASE_URL".into(), "postgres://localhost/dev".into())));
         assert!(got.contains(&("QUOTED".into(), "single".into())));
         assert!(got.contains(&("SPACED".into(), "padded".into())));
@@ -273,8 +275,7 @@ EMPTY=
             .vars
             .is_empty());
         // partial var: missing `shared`/`source` default to false/mirror
-        let doc: RunEnvDoc =
-            serde_json::from_str(r#"{"version":1,"vars":[{"key":"A"}]}"#).unwrap();
+        let doc: RunEnvDoc = serde_json::from_str(r#"{"version":1,"vars":[{"key":"A"}]}"#).unwrap();
         assert_eq!(doc.vars[0].key, "A");
         assert!(!doc.vars[0].shared);
         assert_eq!(doc.vars[0].source, Source::Mirror);
@@ -303,7 +304,11 @@ EMPTY=
     fn set_doc(conn: &Connection, project_id: &str, doc: &RunEnvDoc) {
         conn.execute(
             "INSERT INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3)",
-            rusqlite::params![project_id, RUN_ENV_SETTING, serde_json::to_string(doc).unwrap()],
+            rusqlite::params![
+                project_id,
+                RUN_ENV_SETTING,
+                serde_json::to_string(doc).unwrap()
+            ],
         )
         .unwrap();
     }
@@ -341,13 +346,20 @@ EMPTY=
         );
         let wt = PathBuf::from("/tmp/wt");
         let got = resolve(&conn, &project_id, dir.path(), &ctx("halifax", &wt));
-        assert_eq!(got, vec![("DATABASE_URL".into(), "postgres://real/dev".into())]);
+        assert_eq!(
+            got,
+            vec![("DATABASE_URL".into(), "postgres://real/dev".into())]
+        );
     }
 
     #[test]
     fn resolve_prefers_override_then_falls_back_to_env() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".env"), "DATABASE_URL=postgres://real/dev\n").unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "DATABASE_URL=postgres://real/dev\n",
+        )
+        .unwrap();
         let db = crate::database::init(dir.path()).unwrap();
         let conn = db.lock();
         let project_id = seed(&conn);
@@ -366,7 +378,10 @@ EMPTY=
         // No override stored yet → falls back to the .env value.
         let wt = PathBuf::from("/tmp/wt");
         let got = resolve(&conn, &project_id, dir.path(), &ctx("a", &wt));
-        assert_eq!(got, vec![("DATABASE_URL".into(), "postgres://real/dev".into())]);
+        assert_eq!(
+            got,
+            vec![("DATABASE_URL".into(), "postgres://real/dev".into())]
+        );
 
         // With an override (interpolated), the override wins.
         crate::secrets::set(
@@ -378,7 +393,10 @@ EMPTY=
         let got = resolve(&conn, &project_id, dir.path(), &ctx("halifax", &wt));
         assert_eq!(
             got,
-            vec![("DATABASE_URL".into(), "postgres://disposable/halifax".into())]
+            vec![(
+                "DATABASE_URL".into(),
+                "postgres://disposable/halifax".into()
+            )]
         );
     }
 
