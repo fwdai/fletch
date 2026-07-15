@@ -12,7 +12,7 @@
 
 use serde::Serialize;
 use std::collections::btree_map::Entry;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 /// Where a discovered command came from. Project entries shadow user entries
@@ -77,8 +77,19 @@ pub fn discover(provider: &str, project: Option<&Path>) -> Vec<DiscoveredCommand
     // rather than skipping a whole higher-precedence root. The BTreeMap also
     // yields the result already sorted by name.
     let mut by_name: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+    // Canonical dirs already scanned, shared across roots: cuts symlink cycles
+    // (`commands/team -> ..`) and dedups roots that resolve to the same tree.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     for root in (d.roots)(project).into_iter().rev() {
-        walk(&root.dir, &root.dir, root.scope, d.parse, &mut by_name, 0);
+        walk(
+            &root.dir,
+            &root.dir,
+            root.scope,
+            d.parse,
+            &mut by_name,
+            &mut seen,
+            0,
+        );
     }
     by_name.into_values().collect()
 }
@@ -95,9 +106,20 @@ fn walk(
     scope: CommandScope,
     parse: fn(&Path, &str, CommandScope) -> Option<DiscoveredCommand>,
     out: &mut BTreeMap<String, DiscoveredCommand>,
+    seen: &mut HashSet<PathBuf>,
     depth: usize,
 ) {
     if depth > MAX_DEPTH || out.len() >= MAX_COMMANDS {
+        return;
+    }
+    // Skip a directory tree already entered this scan (by canonical identity),
+    // so a symlink cycle like `commands/team -> ..` can't re-derive aliases
+    // (`team:team:…`) and exhaust MAX_COMMANDS. A dir we can't canonicalize is
+    // unreadable anyway, so bail.
+    let Ok(real) = std::fs::canonicalize(dir) else {
+        return;
+    };
+    if !seen.insert(real) {
         return;
     }
     // Missing dir / no permission just yields nothing — a project without a
@@ -113,13 +135,12 @@ fn walk(
         // Stat the target, not the link: `entry.file_type()` reports a symlink
         // as a symlink, so a symlinked command dir (e.g. `commands/team` → a
         // shared tree) would never be traversed. `metadata` follows the link;
-        // the MAX_DEPTH cap bounds any symlink loop. A broken link stats Err
-        // and is skipped.
+        // `seen` above bounds any loop. A broken link stats Err and is skipped.
         let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };
         if meta.is_dir() {
-            walk(base, &path, scope, parse, out, depth + 1);
+            walk(base, &path, scope, parse, out, seen, depth + 1);
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             if let Some(name) = command_name(base, &path) {
                 // First-wins: roots are scanned highest-precedence first, so an
@@ -285,6 +306,26 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_closing_fence_at_eof_without_newline() {
+        // No trailing newline after the closing `---` (LF and CRLF).
+        let (fm, body) = split_frontmatter("---\ndescription: Hi\n---");
+        assert_eq!(fm, Some("description: Hi\n"));
+        assert_eq!(body, "");
+        let (fm, body) = split_frontmatter("---\r\ndescription: Hi\r\n---");
+        assert_eq!(fm, Some("description: Hi\r\n"));
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn parses_command_with_eof_closing_fence() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("eof.md");
+        std::fs::write(&file, "---\ndescription: No newline\n---").unwrap();
+        let cmd = claude_parse_command(&file, "eof", CommandScope::User).unwrap();
+        assert_eq!(cmd.description, "No newline");
+    }
+
+    #[test]
     fn parses_crlf_authored_command() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("win.md");
@@ -357,6 +398,7 @@ mod tests {
             CommandScope::Project,
             claude_parse_command,
             &mut out,
+            &mut HashSet::new(),
             0,
         );
 
@@ -383,10 +425,39 @@ mod tests {
             CommandScope::Project,
             claude_parse_command,
             &mut out,
+            &mut HashSet::new(),
             0,
         );
 
         assert!(out.contains_key("team:deploy"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_stops_symlink_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = dir.path().join("commands");
+        std::fs::create_dir_all(&commands).unwrap();
+        std::fs::write(commands.join("build.md"), "real command").unwrap();
+        // A cycle: `commands/loop` points back at its own parent, so a naive
+        // follow would re-scan `commands` forever, minting `loop:loop:build` …
+        std::os::unix::fs::symlink(&commands, commands.join("loop")).unwrap();
+
+        let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        walk(
+            &commands,
+            &commands,
+            CommandScope::Project,
+            claude_parse_command,
+            &mut out,
+            &mut HashSet::new(),
+            0,
+        );
+
+        // The cycle is cut after the first entry, so only the real command
+        // survives — no `loop:build` aliases.
+        let names: Vec<&str> = out.keys().map(String::as_str).collect();
+        assert_eq!(names, vec!["build"]);
     }
 
     #[test]
@@ -419,6 +490,7 @@ mod tests {
             },
         ];
         let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        let mut seen = HashSet::new();
         for root in roots.into_iter().rev() {
             walk(
                 &root.dir,
@@ -426,6 +498,7 @@ mod tests {
                 root.scope,
                 claude_parse_command,
                 &mut out,
+                &mut seen,
                 0,
             );
         }
