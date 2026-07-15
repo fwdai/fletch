@@ -29,6 +29,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   const send = useAppStore((s) => s.sendUserMessage);
   const stop = useAppStore((s) => s.stop);
+  const runLocalCommand = useAppStore((s) => s.runLocalCommand);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
   const usage = useAppStore((s) => s.usage[agent.id]);
   // The custom agent this session was spawned from (if any, and still present),
@@ -334,6 +335,8 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               activeModel={activeModel}
               usage={usage}
               defaultProvider={agent.provider}
+              projectDir={agent.repos[0]?.repo_path}
+              onLocalCommand={(action) => runLocalCommand(action, agent.id)}
               defaultModel={agent.model ?? undefined}
               defaultCustomAgentId={agent.custom_agent_id ?? undefined}
               initialThinking={agent.effort ?? undefined}

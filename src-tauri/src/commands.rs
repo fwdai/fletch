@@ -1213,6 +1213,75 @@ pub async fn list_dir(path: String) -> Result<DirListing> {
     })
 }
 
+/// Discover the user- and project-level slash commands a provider exposes on
+/// disk (e.g. Claude's `~/.claude/commands` + `<project>/.claude/commands`),
+/// for the composer's `/` autocomplete. `project_dir` is the agent's project
+/// root, or None for the new-agent composer before a project is chosen. Empty
+/// (never an error) for providers without command discovery or when the dirs
+/// are absent.
+#[tauri::command]
+pub async fn discover_slash_commands(
+    provider: String,
+    project_dir: Option<String>,
+) -> Result<Vec<crate::slash_commands::DiscoveredCommand>> {
+    let project = project_dir.as_deref().map(expand_tilde);
+    Ok(crate::slash_commands::discover(
+        &provider,
+        project.as_deref(),
+    ))
+}
+
+/// Captured output of a one-shot `claude <args>` invocation, run for a local
+/// slash command the stream-json session can't service (e.g. `/doctor` →
+/// `claude doctor`). Rendered into the chat as a notice; `success` is the exit
+/// status so the UI can flag failures.
+#[derive(Serialize)]
+pub struct ClaudeCommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub success: bool,
+}
+
+/// Run a read-only `claude` subcommand (e.g. `doctor`, `mcp list`) in the
+/// agent's checkout and capture its output. Runs unsandboxed like the
+/// model-list probes (a read-only CLI query), honoring a per-agent binary
+/// override before PATH discovery. `args` is a fixed command vocabulary chosen
+/// by the frontend dispatcher, never free user input.
+#[tauri::command]
+pub async fn run_claude_command(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    args: Vec<String>,
+) -> Result<ClaudeCommandOutput> {
+    let (_, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    let home = dirs::home_dir().ok_or_else(|| Error::Other("no home directory".into()))?;
+    let bin = match crate::bin_resolve::resolve_agent_override(&agent_id, &home) {
+        Some(Ok(path)) => path,
+        _ => crate::bin_resolve::resolve_bin("claude", &home)
+            .ok_or_else(|| Error::Other("claude binary not found".into()))?,
+    };
+
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.args(&args).current_dir(&checkout).kill_on_drop(true);
+    if let Some(env) = crate::bin_resolve::login_shell_env() {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    let out = tokio::time::timeout(TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| Error::Other(format!("claude {} timed out", args.join(" "))))?
+        .map_err(|e| Error::Other(format!("run claude {}: {e}", args.join(" "))))?;
+
+    Ok(ClaudeCommandOutput {
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        success: out.status.success(),
+    })
+}
+
 /// Read a checkout file for the viewer/editor: contents, language hint,
 /// git status, and the changed-line numbers driving the gutter.
 #[tauri::command]

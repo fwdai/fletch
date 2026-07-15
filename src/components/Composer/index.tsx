@@ -6,6 +6,7 @@ import { Chip } from "@/components/ui/Chip";
 import { lookupModel } from "@/data/modelCatalog";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { DEFAULT_PROVIDER_ID, isDockerSupported, providerLabel } from "@/data/providers";
+import type { LocalCommandAction } from "@/data/slashCommands";
 import type { AgentUsage } from "@/store";
 import { useAppStore } from "@/store";
 import { AttachmentList } from "./AttachmentList";
@@ -53,7 +54,11 @@ interface Props {
   /** Fired when the user picks an app-defined slash command. The
    *  `action` identifier comes from the `SlashCommand` entry. The text
    *  is NOT sent to the agent; the parent decides what to do. */
-  onLocalCommand?: (action: string) => void;
+  onLocalCommand?: (action: LocalCommandAction) => void;
+  /** The agent's project root, used to discover project-level slash commands
+   *  (`<projectDir>/.claude/commands`) for the `/` autocomplete. Omit before a
+   *  project is chosen; user-level commands are then still offered. */
+  projectDir?: string;
   /** Fired when a new-agent draft changes its provider/model/custom-agent
    *  selection. `customAgentId` is set when a custom agent is picked. */
   onChangeSelection?: (provider: string, model?: string, customAgentId?: string) => void;
@@ -119,6 +124,7 @@ export function Composer({
   onSend,
   onStop,
   onLocalCommand,
+  projectDir,
   onChangeSelection,
   mentionSource,
   listDir,
@@ -225,6 +231,7 @@ export function Composer({
   const commandSource = useCommandSource({
     query: triggerQueryAt(text, caret, "/", true)?.query ?? null,
     provider,
+    projectDir,
     onLocalCommand,
   });
   const autocomplete = useAutocomplete({

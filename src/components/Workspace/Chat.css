@@ -673,6 +673,41 @@
   font-weight: 500;
 }
 
+/* Output of a user-invoked local slash command (e.g. /doctor, /cost). Unlike
+   .m-reasoning's dim ambient style, this reads as a deliberate result: a
+   full-contrast, monospaced card the user can actually read, headed by the
+   command name. */
+.m-cmdout {
+  margin: 6px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.m-cmdout.is-error {
+  border-color: var(--danger);
+}
+.m-cmdout__head {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.m-cmdout.is-error .m-cmdout__head {
+  color: var(--danger);
+}
+.m-cmdout__body {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-relaxed);
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* A background-task notification, rendered as a single quiet system line
    (status dot · label · summary) rather than a user bubble. Kept dim and
    compact so a run of completed background tasks reads as chrome. */
