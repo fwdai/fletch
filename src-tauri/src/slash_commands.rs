@@ -77,9 +77,12 @@ pub fn discover(provider: &str, project: Option<&Path>) -> Vec<DiscoveredCommand
     // rather than skipping a whole higher-precedence root. The BTreeMap also
     // yields the result already sorted by name.
     let mut by_name: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
-    // Canonical dirs already scanned, shared across roots: cuts symlink cycles
-    // (`commands/team -> ..`) and dedups roots that resolve to the same tree.
-    let mut seen: HashSet<PathBuf> = HashSet::new();
+    // Canonical dirs on the current recursion path, so a symlink cycle
+    // (`commands/team -> ..`) is cut when a dir reappears as its own ancestor —
+    // without suppressing two distinct aliases to the same shared tree
+    // (`frontend -> shared`, `backend -> shared`), which define different names.
+    // Backtracking empties it between roots, so one set is safe to reuse.
+    let mut path: HashSet<PathBuf> = HashSet::new();
     for root in (d.roots)(project).into_iter().rev() {
         walk(
             &root.dir,
@@ -87,7 +90,7 @@ pub fn discover(provider: &str, project: Option<&Path>) -> Vec<DiscoveredCommand
             root.scope,
             d.parse,
             &mut by_name,
-            &mut seen,
+            &mut path,
             0,
         );
     }
@@ -106,54 +109,60 @@ fn walk(
     scope: CommandScope,
     parse: fn(&Path, &str, CommandScope) -> Option<DiscoveredCommand>,
     out: &mut BTreeMap<String, DiscoveredCommand>,
-    seen: &mut HashSet<PathBuf>,
+    ancestors: &mut HashSet<PathBuf>,
     depth: usize,
 ) {
     if depth > MAX_DEPTH || out.len() >= MAX_COMMANDS {
         return;
     }
-    // Skip a directory tree already entered this scan (by canonical identity),
-    // so a symlink cycle like `commands/team -> ..` can't re-derive aliases
-    // (`team:team:…`) and exhaust MAX_COMMANDS. A dir we can't canonicalize is
-    // unreadable anyway, so bail.
+    // Cut a symlink cycle only when a dir reappears as its own ancestor (e.g.
+    // `commands/team -> ..`), so it can't re-derive aliases (`team:team:…`) and
+    // exhaust MAX_COMMANDS. Two distinct aliases to the same shared tree
+    // (`frontend -> shared`, `backend -> shared`) are *not* a cycle — they sit
+    // on different branches and define different names, so both are kept. A dir
+    // we can't canonicalize is unreadable anyway, so bail.
     let Ok(real) = std::fs::canonicalize(dir) else {
         return;
     };
-    if !seen.insert(real) {
+    if !ancestors.insert(real.clone()) {
         return;
     }
     // Missing dir / no permission just yields nothing — a project without a
     // `.claude/commands` directory is the common case, not an error.
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if out.len() >= MAX_COMMANDS {
-            return;
-        }
-        let path = entry.path();
-        // Stat the target, not the link: `entry.file_type()` reports a symlink
-        // as a symlink, so a symlinked command dir (e.g. `commands/team` → a
-        // shared tree) would never be traversed. `metadata` follows the link;
-        // `seen` above bounds any loop. A broken link stats Err and is skipped.
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue;
-        };
-        if meta.is_dir() {
-            walk(base, &path, scope, parse, out, seen, depth + 1);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            if let Some(name) = command_name(base, &path) {
-                // First-wins: roots are scanned highest-precedence first, so an
-                // occupied name means a higher-precedence root claimed it — skip
-                // it (and its file read) rather than let a lower root shadow it.
-                if let Entry::Vacant(slot) = out.entry(name) {
-                    if let Some(cmd) = parse(&path, slot.key(), scope) {
-                        slot.insert(cmd);
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if out.len() >= MAX_COMMANDS {
+                break;
+            }
+            let path = entry.path();
+            // Stat the target, not the link: `entry.file_type()` reports a
+            // symlink as a symlink, so a symlinked command dir (e.g.
+            // `commands/team` → a shared tree) would never be traversed.
+            // `metadata` follows the link; `ancestors` bounds any loop. A broken
+            // link stats Err and is skipped.
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                walk(base, &path, scope, parse, out, ancestors, depth + 1);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                if let Some(name) = command_name(base, &path) {
+                    // First-wins: roots are scanned highest-precedence first, so
+                    // an occupied name means a higher-precedence root claimed it
+                    // — skip it (and its file read) rather than let a lower root
+                    // shadow it.
+                    if let Entry::Vacant(slot) = out.entry(name) {
+                        if let Some(cmd) = parse(&path, slot.key(), scope) {
+                            slot.insert(cmd);
+                        }
                     }
                 }
             }
         }
     }
+    // Leave the path as we found it so a sibling branch that legitimately
+    // reaches `real` again isn't mistaken for a cycle.
+    ancestors.remove(&real);
 }
 
 /// Derive a command name from a file: its path relative to the scan root, minus
@@ -458,6 +467,35 @@ mod tests {
         // survives — no `loop:build` aliases.
         let names: Vec<&str> = out.keys().map(String::as_str).collect();
         assert_eq!(names, vec!["build"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_keeps_distinct_aliases_to_shared_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = dir.path().join("commands");
+        std::fs::create_dir_all(&commands).unwrap();
+        // One shared tree mounted under two names — not a cycle: each alias
+        // yields a distinct namespaced command.
+        let shared = dir.path().join("shared");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("deploy.md"), "shared deploy").unwrap();
+        std::os::unix::fs::symlink(&shared, commands.join("frontend")).unwrap();
+        std::os::unix::fs::symlink(&shared, commands.join("backend")).unwrap();
+
+        let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        walk(
+            &commands,
+            &commands,
+            CommandScope::Project,
+            claude_parse_command,
+            &mut out,
+            &mut HashSet::new(),
+            0,
+        );
+
+        let names: Vec<&str> = out.keys().map(String::as_str).collect();
+        assert_eq!(names, vec!["backend:deploy", "frontend:deploy"]);
     }
 
     #[test]
