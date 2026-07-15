@@ -36,6 +36,15 @@ function readCache(): CacheEnvelope | null {
   return null;
 }
 
+/** Drop the cached catalog so the next refresh rebuilds from live discovery. */
+export function clearCachedCatalog(): void {
+  try {
+    localStorage.removeItem(CACHE_KEY);
+  } catch {
+    // Storage unavailable — the next rebuild still updates in-memory state.
+  }
+}
+
 /** Best catalog available without rebuilding: the cached copy, or empty. Used to
  *  seed the store synchronously so lookups work on the first render. */
 export function loadCachedCatalog(): UnifiedCatalog {
