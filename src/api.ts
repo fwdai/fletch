@@ -221,6 +221,17 @@ export interface DirListing {
   entries: DirEntry[];
 }
 
+/** A user- or project-level slash command found on disk by
+ *  `discover_slash_commands` (e.g. a `~/.claude/commands/*.md`). Mirrors the
+ *  Rust `DiscoveredCommand`; always maps to a `passthrough` command in the
+ *  composer. `scope` is "user" or "project" ("project" shadows "user"). */
+export interface DiscoveredCommand {
+  name: string;
+  description: string;
+  hint?: string;
+  scope: "user" | "project";
+}
+
 /** A checkout file's contents plus the metadata the File-panel editor
  *  needs. `chg_add` / `chg_mod` are 1-indexed line numbers the agent
  *  added / modified (drives the change gutter). */
@@ -661,6 +672,11 @@ export const api = {
     invoke<ProjectRunConfig>("project_run_config", { repoPath }),
   listCheckoutTree: (agentId: string) => invoke<CheckoutFile[]>("list_checkout_tree", { agentId }),
   listDir: (path: string) => invoke<DirListing>("list_dir", { path }),
+  discoverSlashCommands: (provider: string, projectDir?: string) =>
+    invoke<DiscoveredCommand[]>("discover_slash_commands", {
+      provider,
+      projectDir: projectDir ?? null,
+    }),
   listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),
   readCheckoutFile: (agentId: string, path: string) =>
     invoke<CheckoutFileContents>("read_checkout_file", { agentId, path }),

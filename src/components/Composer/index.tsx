@@ -54,6 +54,10 @@ interface Props {
    *  `action` identifier comes from the `SlashCommand` entry. The text
    *  is NOT sent to the agent; the parent decides what to do. */
   onLocalCommand?: (action: string) => void;
+  /** The agent's project root, used to discover project-level slash commands
+   *  (`<projectDir>/.claude/commands`) for the `/` autocomplete. Omit before a
+   *  project is chosen; user-level commands are then still offered. */
+  projectDir?: string;
   /** Fired when a new-agent draft changes its provider/model/custom-agent
    *  selection. `customAgentId` is set when a custom agent is picked. */
   onChangeSelection?: (provider: string, model?: string, customAgentId?: string) => void;
@@ -119,6 +123,7 @@ export function Composer({
   onSend,
   onStop,
   onLocalCommand,
+  projectDir,
   onChangeSelection,
   mentionSource,
   listDir,
@@ -225,6 +230,7 @@ export function Composer({
   const commandSource = useCommandSource({
     query: triggerQueryAt(text, caret, "/", true)?.query ?? null,
     provider,
+    projectDir,
     onLocalCommand,
   });
   const autocomplete = useAutocomplete({

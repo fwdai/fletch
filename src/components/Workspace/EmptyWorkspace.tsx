@@ -129,6 +129,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 autoFocus
                 draftKey={draft.id}
                 defaultProvider={draft.provider}
+                projectDir={draft.repoPath}
                 defaultModel={draft.model}
                 defaultCustomAgentId={draft.customAgentId}
                 onChangeSelection={(provider, model, customAgentId) => {

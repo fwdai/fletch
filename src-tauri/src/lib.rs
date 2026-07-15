@@ -28,6 +28,7 @@ mod run_session;
 mod sandbox;
 mod secrets;
 mod sentry_scrub;
+mod slash_commands;
 mod supervisor;
 mod telemetry;
 mod transcripts;
@@ -1208,6 +1209,7 @@ pub fn run() {
             commands::project_run_config,
             commands::list_checkout_tree,
             commands::list_dir,
+            commands::discover_slash_commands,
             commands::list_prs,
             commands::read_checkout_file,
             commands::get_file_diff,

@@ -7,6 +7,7 @@ import {
   passthroughSlashName,
   providerFor,
   reduceRecords,
+  repoPathFor,
   sendWhenAgentReady,
 } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
@@ -174,7 +175,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     const wasBusy = get().managedBusy[id] === true;
     try {
       set((state) => {
-        const slashName = wasBusy ? null : passthroughSlashName(providerFor(state, id), text);
+        const slashName = wasBusy
+          ? null
+          : passthroughSlashName(providerFor(state, id), text, repoPathFor(state, id));
         // Optimistic mid-turn follow-up: default to no badge (the common case is
         // immediate live injection). If the backend reports it was enqueued, we
         // flip `queued` on below — carried by `turnId` so we can find it again.

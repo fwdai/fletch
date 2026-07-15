@@ -1213,6 +1213,24 @@ pub async fn list_dir(path: String) -> Result<DirListing> {
     })
 }
 
+/// Discover the user- and project-level slash commands a provider exposes on
+/// disk (e.g. Claude's `~/.claude/commands` + `<project>/.claude/commands`),
+/// for the composer's `/` autocomplete. `project_dir` is the agent's project
+/// root, or None for the new-agent composer before a project is chosen. Empty
+/// (never an error) for providers without command discovery or when the dirs
+/// are absent.
+#[tauri::command]
+pub async fn discover_slash_commands(
+    provider: String,
+    project_dir: Option<String>,
+) -> Result<Vec<crate::slash_commands::DiscoveredCommand>> {
+    let project = project_dir.as_deref().map(expand_tilde);
+    Ok(crate::slash_commands::discover(
+        &provider,
+        project.as_deref(),
+    ))
+}
+
 /// Read a checkout file for the viewer/editor: contents, language hint,
 /// git status, and the changed-line numbers driving the gutter.
 #[tauri::command]

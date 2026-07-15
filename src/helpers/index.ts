@@ -19,14 +19,27 @@ export function providerFor(state: AppState, agentId: string): string | undefine
   return state.workspace?.agents.find((a) => a.id === agentId)?.provider;
 }
 
+/** The primary repo path for an agent (`repos[0]`), used to scope
+ *  project-level slash-command discovery. Undefined for an unknown agent. */
+export function repoPathFor(state: AppState, agentId: string): string | undefined {
+  return state.workspace?.agents.find((a) => a.id === agentId)?.repos[0]?.repo_path;
+}
+
 /** If `text` is a `/<name>` matching a known passthrough command for the
- *  given provider, return its bare name; otherwise null. The result is
- *  used both to swap the optimistic user_message for a slash_command
- *  notice and to set a busy label. */
-export function passthroughSlashName(providerId: string | undefined, text: string): string | null {
+ *  given provider, return its bare name; otherwise null. `projectDir` scopes
+ *  discovered project-level commands (see commandsFor). The result is used
+ *  both to swap the optimistic user_message for a slash_command notice and to
+ *  set a busy label. */
+export function passthroughSlashName(
+  providerId: string | undefined,
+  text: string,
+  projectDir?: string,
+): string | null {
   if (!providerId || !text.startsWith("/")) return null;
   const first = text.split(/\s/)[0].slice(1);
-  const match = commandsFor(providerId).find((c) => c.kind === "passthrough" && c.name === first);
+  const match = commandsFor(providerId, projectDir).find(
+    (c) => c.kind === "passthrough" && c.name === first,
+  );
   return match ? match.name : null;
 }
 

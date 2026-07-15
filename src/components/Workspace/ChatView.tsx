@@ -334,6 +334,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               activeModel={activeModel}
               usage={usage}
               defaultProvider={agent.provider}
+              projectDir={agent.repos[0]?.repo_path}
               defaultModel={agent.model ?? undefined}
               defaultCustomAgentId={agent.custom_agent_id ?? undefined}
               initialThinking={agent.effort ?? undefined}
