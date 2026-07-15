@@ -1,4 +1,4 @@
-/** Segmented control used in the settings popover (theme, density). */
+/** Segmented control used in the settings popover (e.g. theme). */
 interface Props<T extends string> {
   value: T;
   options: { value: T; label: string }[];

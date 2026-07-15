@@ -3,7 +3,7 @@ import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { ACCENTS } from "@/data/providers";
-import type { Density, SandboxEngine, ThemeMode } from "@/storage/preferences";
+import type { SandboxEngine, ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { ContainerAuth } from "./ContainerAuth";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
@@ -46,8 +46,6 @@ export function GeneralPane() {
   const setTheme = useAppStore((s) => s.setTheme);
   const accent = useAppStore((s) => s.accent);
   const setAccent = useAppStore((s) => s.setAccent);
-  const density = useAppStore((s) => s.density);
-  const setDensity = useAppStore((s) => s.setDensity);
   const features = useAppStore((s) => s.features);
   const setFeature = useAppStore((s) => s.setFeature);
   const soundEnabled = useAppStore((s) => s.soundEnabled);
@@ -134,16 +132,6 @@ export function GeneralPane() {
               </button>
             ))}
           </div>
-        </SetRow>
-        <SetRow title="Density" sub="Compact tightens row heights across panels.">
-          <SetSeg<Density>
-            value={density}
-            options={[
-              { value: "comfortable", label: "Comfortable" },
-              { value: "compact", label: "Compact" },
-            ]}
-            onChange={setDensity}
-          />
         </SetRow>
       </SetGroup>
 

@@ -3,7 +3,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { Scrim } from "@/components/ui/Scrim";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { ACCENTS, PROVIDERS } from "@/data/providers";
-import type { Density, FeatureFlags, ThemeMode } from "@/storage/preferences";
+import type { FeatureFlags, ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { Segmented } from "./Segmented";
 import { SettingsRow, SettingsSection } from "./SettingsRow";
@@ -55,8 +55,6 @@ function Popover({ onClose }: { onClose: () => void }) {
   const setTheme = useAppStore((s) => s.setTheme);
   const accent = useAppStore((s) => s.accent);
   const setAccent = useAppStore((s) => s.setAccent);
-  const density = useAppStore((s) => s.density);
-  const setDensity = useAppStore((s) => s.setDensity);
   const providerVersions = useAppStore((s) => s.providerVersions);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
 
@@ -94,16 +92,6 @@ function Popover({ onClose }: { onClose: () => void }) {
               />
             ))}
           </div>
-        </SettingsRow>
-        <SettingsRow label="Density">
-          <Segmented<Density>
-            value={density}
-            options={[
-              { value: "comfortable", label: "Comfortable" },
-              { value: "compact", label: "Compact" },
-            ]}
-            onChange={setDensity}
-          />
         </SettingsRow>
       </SettingsSection>
 

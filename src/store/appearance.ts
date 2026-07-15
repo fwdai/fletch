@@ -1,9 +1,4 @@
-import {
-  DEFAULT_FEATURES,
-  type Density,
-  type ThemeMode,
-  type WorkspaceView,
-} from "@/storage/preferences";
+import { DEFAULT_FEATURES, type ThemeMode, type WorkspaceView } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
 import type { AppearanceSlice, SliceCreator } from "./types";
 
@@ -11,7 +6,6 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   theme: "dark" as ThemeMode,
   codeTheme: "quorum",
   accent: "copper",
-  density: "comfortable" as Density,
   features: DEFAULT_FEATURES,
   soundEnabled: true,
   notifyEnabled: true,
@@ -29,10 +23,6 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   setAccent: (a) => {
     set({ accent: a });
     setSetting("accent", a);
-  },
-  setDensity: (d) => {
-    set({ density: d });
-    setSetting("density", d);
   },
   setFeature: (k, v) =>
     set((s) => {
