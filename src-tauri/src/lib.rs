@@ -24,6 +24,7 @@ mod oauth;
 mod pty_session;
 mod rpc;
 mod run_detect;
+mod run_env;
 mod run_session;
 mod sandbox;
 mod secrets;
@@ -1206,6 +1207,10 @@ pub fn run() {
             commands::run_state,
             commands::detect_run_config,
             commands::project_run_config,
+            commands::read_env_file_keys,
+            commands::get_env_override,
+            commands::set_env_override,
+            commands::clear_env_override,
             commands::list_checkout_tree,
             commands::list_dir,
             commands::list_prs,

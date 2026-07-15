@@ -379,8 +379,21 @@ fn spawn_run_phase(
     // unsandboxed with full user privilege the moment the user clicks ▶. Reads
     // and network stay open (dev servers need them); only writes are fenced.
     let (program, args, mut env, profile_file) = sandboxed_run_command(&cwd, &cmd)?;
+    // Layer the project's opt-in Run environment: the `.env` variables the user
+    // chose to share into the sandbox (mirrored live from the source repo's
+    // `.env` or overridden per project, with `{{agent_id}}`/`{{worktree}}`
+    // interpolated). Nothing is shared unless explicitly enabled in Project
+    // Settings. Best-effort — a missing record/repo just injects nothing.
+    if let Ok(record) = sup.workspace.agent(&agent_id) {
+        if let Some(primary) = record.repos.first() {
+            let project_env =
+                sup.workspace
+                    .run_env(&record.project_id, &primary.repo_path, &agent_id, &cwd);
+            env.extend(project_env);
+        }
+    }
     // Pin the resolved (port-safe) PORT last so it wins over anything the
-    // sandbox layer set.
+    // sandbox layer — or the project env above — set.
     env.extend(extra_env);
 
     let session_out = session.clone();

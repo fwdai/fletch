@@ -48,6 +48,19 @@ select {
 }
 button {
   cursor: default;
+  /* Complete the reset: without this, the UA's default button padding shrinks
+   * the content box below a small button's set size, which (with the flex rule
+   * below) is what squashes icons. Styled buttons set their own padding. */
+  padding: 0;
+}
+/* Icons must never shrink to fit a too-tight flex parent — the classic "10px
+ * icon rendered at 4px inside a small button" bug. Keep them at their intrinsic
+ * size everywhere; a button/box that's genuinely too small should overflow (and
+ * get noticed), not silently squash the glyph. */
+button svg,
+.iflex-center > svg,
+.flex-center > svg {
+  flex-shrink: 0;
 }
 ::selection {
   background: var(--accent-soft);

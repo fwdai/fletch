@@ -802,6 +802,50 @@ pub fn project_run_config(
     supervisor.project_run_config(&repo_path)
 }
 
+/// Discover the `KEY=value` pairs in a project's `.env` (in the *source* repo,
+/// where gitignored env files live), for the Run & Environment settings list.
+/// Missing/unreadable `.env` → empty. Values are returned so the UI can show
+/// them masked and flag overrides that differ; it never writes them anywhere.
+#[tauri::command]
+pub fn read_env_file_keys(repo_path: String) -> Result<Vec<crate::run_env::EnvEntry>> {
+    Ok(crate::run_env::read_env_file(&expand_tilde(&repo_path)))
+}
+
+/// Read a project variable's override value (keychain-backed) so the settings
+/// UI can pre-fill the edit field. `None` when no override is set.
+#[tauri::command]
+pub fn get_env_override(
+    db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>,
+    project_id: String,
+    key: String,
+) -> Result<Option<String>> {
+    crate::secrets::get(&db.lock(), &crate::run_env::override_secret_key(&project_id, &key))
+}
+
+/// Store a project variable's override value in the keychain — never in the
+/// database — so a user-chosen value (e.g. a disposable per-agent DB URL) can
+/// diverge from `.env` without persisting a secret at rest.
+#[tauri::command]
+pub fn set_env_override(
+    db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>,
+    project_id: String,
+    key: String,
+    value: String,
+) -> Result<()> {
+    crate::secrets::set(&db.lock(), &crate::run_env::override_secret_key(&project_id, &key), &value)
+}
+
+/// Remove a project variable's override; resolution falls back to the `.env`
+/// value (mirror).
+#[tauri::command]
+pub fn clear_env_override(
+    db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>,
+    project_id: String,
+    key: String,
+) -> Result<()> {
+    crate::secrets::delete(&db.lock(), &crate::run_env::override_secret_key(&project_id, &key))
+}
+
 /// Returns git state for the agent's primary repo.
 /// For multi-repo agents only the first repo's state is returned.
 #[tauri::command]

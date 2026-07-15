@@ -895,6 +895,28 @@ impl WorkspaceManager {
         .ok()
     }
 
+    /// Resolve the project's shared `.env` variables into `(NAME, VALUE)`
+    /// pairs to inject into a sandboxed Run process — the opt-in env membrane
+    /// (see [`crate::run_env`]). Reads the `.env` from the *source* `repo_path`
+    /// (gitignored files are absent from the worktree). Never errors: an
+    /// unreadable `.env`, absent config, or an unavailable keychain simply
+    /// yields fewer (or no) injected vars.
+    pub fn run_env(
+        &self,
+        project_id: &str,
+        repo_path: &std::path::Path,
+        agent_id: &str,
+        worktree: &std::path::Path,
+    ) -> Vec<(String, String)> {
+        let conn = self.db.lock();
+        crate::run_env::resolve(
+            &conn,
+            project_id,
+            repo_path,
+            &crate::run_env::InterpCtx { agent_id, worktree },
+        )
+    }
+
     /// Resolve the project_id for a repo path (creating the project/repo
     /// record if it doesn't exist yet — idempotent). The sidebar keys its
     /// project groups by repo path, so the Project Settings surface uses

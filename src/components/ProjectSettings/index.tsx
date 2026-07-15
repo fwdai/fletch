@@ -5,6 +5,7 @@ import { loadRunOverrides, type SetupRow, toSetupRows } from "@/components/RunCo
 import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
+import { EnvVarsSection } from "./EnvVarsSection";
 import { GeneralSection } from "./GeneralSection";
 import { ProjectPulse } from "./ProjectPulse";
 import { RunEnvSection } from "./RunEnvSection";
@@ -104,6 +105,7 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
                 ecosystem={loaded.ecosystem}
                 initialOverrides={loaded.overrides}
               />
+              <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
             </div>
           )}
         </div>
