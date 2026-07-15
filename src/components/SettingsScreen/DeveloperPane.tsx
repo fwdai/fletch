@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
@@ -8,7 +9,19 @@ import { SetGroup, SetHead, SetRow } from "./primitives";
 export function DeveloperPane() {
   const openOnboarding = useAppStore((s) => s.openOnboarding);
   const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
+  const refreshModelCatalog = useAppStore((s) => s.refreshModelCatalog);
   const setUpdateReady = useAppStore((s) => s.setUpdateReady);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+
+  const handleRefreshModels = async () => {
+    if (refreshingModels) return;
+    setRefreshingModels(true);
+    try {
+      await refreshModelCatalog(true);
+    } finally {
+      setRefreshingModels(false);
+    }
+  };
 
   return (
     <div className="set-pane">
@@ -32,6 +45,22 @@ export function DeveloperPane() {
           >
             <Icon name="sparkle" size={12} />
             Replay tour
+          </Button>
+        </SetRow>
+      </SetGroup>
+
+      <SetGroup label="Models">
+        <SetRow
+          title="Refresh models"
+          sub="Clear the cached catalog and re-run Codex discovery plus models.dev enrichment right now."
+        >
+          <Button
+            variant="outline"
+            onClick={() => void handleRefreshModels()}
+            disabled={refreshingModels}
+          >
+            <Icon name="refresh" size={12} />
+            {refreshingModels ? "Refreshing..." : "Refresh models"}
           </Button>
         </SetRow>
       </SetGroup>

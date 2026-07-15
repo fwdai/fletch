@@ -24,6 +24,8 @@ interface CacheEnvelope {
   catalog: UnifiedCatalog;
 }
 
+let refreshInFlight: Promise<UnifiedCatalog | null> | null = null;
+
 function readCache(): CacheEnvelope | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
@@ -49,14 +51,14 @@ export function isCatalogStale(): boolean {
 }
 
 /** Rebuild the catalog from agent discovery + models.dev, and cache it. Returns
- *  null on failure (no agents and no models.dev) so the caller keeps the cache.
- *  A models.dev outage still yields a usable catalog from CLI-reported ids. */
+ *  null on any failure so the caller keeps the last good cache intact. */
 export async function rebuildCatalog(): Promise<UnifiedCatalog | null> {
   const [agents, index] = await Promise.all([
     api.discoverSupportedModels().catch(() => []),
     fetchModelsDevIndex(),
   ]);
-  const catalog = buildCatalog(agents, index ?? { byId: {}, byProvider: {} });
+  if (index === null) return null;
+  const catalog = buildCatalog(agents, index);
   if (Object.keys(catalog.byId).length === 0) return null;
   try {
     const env: CacheEnvelope = { builtAt: Date.now(), catalog };
@@ -65,4 +67,16 @@ export async function rebuildCatalog(): Promise<UnifiedCatalog | null> {
     // Storage unavailable — the in-memory result is still usable this session.
   }
   return catalog;
+}
+
+/** Refresh the catalog, deduping concurrent requests so only one rebuild runs.
+ *  `force=true` skips the TTL check and is used by the manual developer action. */
+export function refreshCatalog(force = false): Promise<UnifiedCatalog | null> {
+  if (refreshInFlight) return refreshInFlight;
+  if (!force && !isCatalogStale()) return Promise.resolve(loadCachedCatalog());
+
+  refreshInFlight = rebuildCatalog().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
 }

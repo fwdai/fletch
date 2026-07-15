@@ -515,8 +515,8 @@ export interface ProvidersSlice {
    *  override, updates local state, and re-probes so the version/path refresh. */
   setProviderPathOverride: (id: string, path: string | null) => Promise<void>;
   /** Rebuild the model catalog (agent discovery + models.dev) when the cache is
-   *  stale (24h). Runs once on init; non-fatal on failure (keeps cached data). */
-  refreshModelCatalog: () => Promise<void>;
+   *  stale (1h), or immediately when forced by the manual developer action. */
+  refreshModelCatalog: (force?: boolean) => Promise<void>;
 }
 
 export interface DraftsSlice {

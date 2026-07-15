@@ -1,5 +1,5 @@
 import { api } from "@/api";
-import { isCatalogStale, loadCachedCatalog, rebuildCatalog } from "@/data/modelCatalog";
+import { loadCachedCatalog, refreshCatalog } from "@/data/modelCatalog";
 import { setSetting } from "@/storage/settings";
 import type { ProvidersSlice, SliceCreator } from "./types";
 
@@ -54,10 +54,8 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
     });
     await get().refreshProviderVersions();
   },
-  refreshModelCatalog: async () => {
-    // Cache holds for 1h; the init seed already reflects it when fresh.
-    if (!isCatalogStale()) return;
-    const catalog = await rebuildCatalog();
+  refreshModelCatalog: async (force = false) => {
+    const catalog = await refreshCatalog(force);
     if (catalog) set({ modelCatalog: catalog.byId, modelsByAgent: catalog.byAgent });
   },
 });
