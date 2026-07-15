@@ -36,11 +36,34 @@ pub struct DiscoveredCommand {
     pub scope: CommandScope,
 }
 
-/// A directory to scan for a provider's command files, tagged with the scope
-/// its entries carry.
+/// How a root's on-disk layout is enumerated. Providers expose two shapes: a
+/// `.claude/commands`-style tree of `*.md` files, and a `.claude/skills`-style
+/// tree of `<name>/SKILL.md` directories. They derive names differently (file
+/// path vs directory), so `discover` dispatches on this rather than forcing one
+/// traversal to serve both.
+#[derive(Clone, Copy)]
+pub enum RootKind {
+    /// A `commands` tree: recurse for `*.md`, name = path relative to the root
+    /// (`frontend/x.md` -> `frontend:x`). Parsed with `CommandDiscovery::parse`.
+    Commands,
+    /// A `skills` tree: each immediate subdirectory holding a `SKILL.md` is one
+    /// skill, named by its directory (or the skill's frontmatter `name`). Parsed
+    /// with `CommandDiscovery::parse_skill`.
+    Skills,
+}
+
+/// A directory to scan for a provider's command files, tagged with the scope its
+/// entries carry, how to enumerate it, and an optional namespace.
 pub struct CommandRoot {
     pub dir: PathBuf,
     pub scope: CommandScope,
+    /// How to enumerate `dir` (a commands tree vs a skills tree).
+    pub kind: RootKind,
+    /// A namespace prepended to every derived name as `<prefix>:<name>`. Used
+    /// for plugin commands, which share a flat `<plugin>:` namespace so they
+    /// never collide with the user's own bare commands. `None` for the ordinary
+    /// user/project command and skill roots.
+    pub prefix: Option<String>,
 }
 
 /// How to discover one provider's user-defined slash commands.
@@ -52,6 +75,11 @@ pub struct CommandDiscovery {
     /// name (path relative to its root, minus `.md`, segments joined by `:`).
     /// Returns None to skip an unreadable/ignored file.
     pub parse: fn(path: &Path, name: &str, scope: CommandScope) -> Option<DiscoveredCommand>,
+    /// Parse one `SKILL.md` into a command. `dir_name` is the containing
+    /// directory (the name fallback when the frontmatter omits its own `name`).
+    /// The returned command's `name` is the final, deduped name.
+    pub parse_skill:
+        fn(path: &Path, dir_name: &str, scope: CommandScope) -> Option<DiscoveredCommand>,
 }
 
 /// Select a provider's discovery, or None when it has no on-disk commands.
@@ -84,15 +112,20 @@ pub fn discover(provider: &str, project: Option<&Path>) -> Vec<DiscoveredCommand
     // Backtracking empties it between roots, so one set is safe to reuse.
     let mut path: HashSet<PathBuf> = HashSet::new();
     for root in (d.roots)(project).into_iter().rev() {
-        walk(
-            &root.dir,
-            &root.dir,
-            root.scope,
-            d.parse,
-            &mut by_name,
-            &mut path,
-            0,
-        );
+        match root.kind {
+            RootKind::Commands => {
+                let ctx = WalkCtx {
+                    base: &root.dir,
+                    scope: root.scope,
+                    prefix: root.prefix.as_deref(),
+                    parse: d.parse,
+                };
+                walk(&ctx, &root.dir, &mut by_name, &mut path, 0);
+            }
+            // Skills are one level deep (a subdir per skill), so they need no
+            // recursion and no cycle guard — a distinct, simpler routine.
+            RootKind::Skills => scan_skills(&root.dir, root.scope, d.parse_skill, &mut by_name),
+        }
     }
     by_name.into_values().collect()
 }
@@ -103,11 +136,20 @@ const MAX_COMMANDS: usize = 500;
 /// How deep to recurse into command subdirectories (used for `:` namespacing).
 const MAX_DEPTH: usize = 8;
 
-fn walk(
-    base: &Path,
-    dir: &Path,
+/// The invariants of one `walk` recursion: the scan root that names are derived
+/// relative to, the scope and optional namespace its entries carry, and how to
+/// parse a file. Only `dir`/`depth` change as the walk descends, so bundling
+/// these keeps the recursive signature small.
+struct WalkCtx<'a> {
+    base: &'a Path,
     scope: CommandScope,
+    prefix: Option<&'a str>,
     parse: fn(&Path, &str, CommandScope) -> Option<DiscoveredCommand>,
+}
+
+fn walk(
+    ctx: &WalkCtx,
+    dir: &Path,
     out: &mut BTreeMap<String, DiscoveredCommand>,
     ancestors: &mut HashSet<PathBuf>,
     depth: usize,
@@ -144,15 +186,26 @@ fn walk(
                 continue;
             };
             if meta.is_dir() {
-                walk(base, &path, scope, parse, out, ancestors, depth + 1);
+                walk(ctx, &path, out, ancestors, depth + 1);
             } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                if let Some(name) = command_name(base, &path) {
+                if let Some(name) = command_name(ctx.base, &path) {
+                    // Plugin roots carry a namespace so their commands read as
+                    // `<plugin>:<cmd>` and can't shadow the user's bare commands.
+                    let name = match ctx.prefix {
+                        Some(p) => format!("{p}:{name}"),
+                        None => name,
+                    };
+                    // A name with whitespace can't resolve as a slash command
+                    // (the matcher splits on whitespace), so don't surface it.
+                    if !is_invokable_name(&name) {
+                        continue;
+                    }
                     // First-wins: roots are scanned highest-precedence first, so
                     // an occupied name means a higher-precedence root claimed it
                     // — skip it (and its file read) rather than let a lower root
                     // shadow it.
                     if let Entry::Vacant(slot) = out.entry(name) {
-                        if let Some(cmd) = parse(&path, slot.key(), scope) {
+                        if let Some(cmd) = (ctx.parse)(&path, slot.key(), ctx.scope) {
                             slot.insert(cmd);
                         }
                     }
@@ -163,6 +216,55 @@ fn walk(
     // Leave the path as we found it so a sibling branch that legitimately
     // reaches `real` again isn't mistaken for a cycle.
     ancestors.remove(&real);
+}
+
+/// Scan a `skills` directory: each immediate subdirectory that holds a
+/// `SKILL.md` is one skill, invoked as `/<skill-name>`. Unlike command files the
+/// name comes from the *directory* (or the skill's frontmatter `name`), and the
+/// tree is only one level deep, so this can't reuse `walk` — and needs no
+/// recursion or cycle guard.
+fn scan_skills(
+    dir: &Path,
+    scope: CommandScope,
+    parse: fn(&Path, &str, CommandScope) -> Option<DiscoveredCommand>,
+    out: &mut BTreeMap<String, DiscoveredCommand>,
+) {
+    // Missing dir is the common case (no user/project skills), not an error.
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= MAX_COMMANDS {
+            break;
+        }
+        let file_name = entry.file_name();
+        let dir_name = file_name.to_string_lossy();
+        // Skip dot-entries (`.git`, `.claude`, `.DS_Store`, …): none are skills,
+        // and descending `.git` would be pure waste.
+        if dir_name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        // `metadata`/`is_file` follow symlinks, so a skill linked in from
+        // elsewhere (e.g. `browse -> gstack/browse`) is still discovered. A
+        // broken link stats Err and is skipped.
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        let skill_md = path.join("SKILL.md");
+        if !skill_md.is_file() {
+            continue;
+        }
+        // Must parse before dedup: the key is the *resolved* name (frontmatter
+        // `name` may differ from the directory), so unlike `walk` we can't skip
+        // the read for an already-claimed name. First-wins across roots.
+        if let Some(cmd) = parse(&skill_md, &dir_name, scope) {
+            out.entry(cmd.name.clone()).or_insert(cmd);
+        }
+    }
 }
 
 /// Derive a command name from a file: its path relative to the scan root, minus
@@ -183,6 +285,16 @@ fn command_name(base: &Path, file: &Path) -> Option<String> {
     Some(parts.join(":"))
 }
 
+/// Whether `name` is a usable single-token slash command. The composer's matcher
+/// splits input on whitespace and dispatches the first token, so a name that
+/// contains whitespace (e.g. a skill's frontmatter `name: my tool`, or a
+/// `my cmd.md` file) could never resolve — it would be forwarded as ordinary
+/// input. Reject such names at discovery rather than surface an uninvokable
+/// entry.
+fn is_invokable_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(char::is_whitespace)
+}
+
 // ---------------------------------------------------------------------------
 // Claude adapter
 // ---------------------------------------------------------------------------
@@ -190,23 +302,122 @@ fn command_name(base: &Path, file: &Path) -> Option<String> {
 static CLAUDE_COMMANDS: CommandDiscovery = CommandDiscovery {
     roots: claude_command_roots,
     parse: claude_parse_command,
+    parse_skill: claude_parse_skill,
 };
 
-/// Claude reads custom commands from `~/.claude/commands` (user) and
-/// `<project>/.claude/commands` (project); project shadows user.
+/// Claude surfaces three kinds of `/` entries, discovered from disk:
+///   - custom commands: `~/.claude/commands` (user) + `<project>/.claude/commands`
+///   - skills: `~/.claude/skills` (user) + `<project>/.claude/skills`
+///   - plugin commands: `<installPath>/commands` for each *installed* plugin
+///     (namespaced `<plugin>:<cmd>`), read from `installed_plugins.json`
+///
+/// Precedence on a bare-name clash (highest wins): project command > project
+/// skill > user command > user skill > plugin command. Skills and commands both
+/// use bare `/name` so they *can* collide; a user's explicit command is the more
+/// intentional entry, so it wins over a same-named skill, and project beats user
+/// for locality. Plugin commands are namespaced (`plugin:cmd`) and so in
+/// practice never collide — they sit lowest only to define a total order.
+///
+/// Roots are returned lowest-precedence first; `discover` scans them reversed
+/// (highest first) with first-wins dedup.
 fn claude_command_roots(project: Option<&Path>) -> Vec<CommandRoot> {
     let mut roots = Vec::new();
     if let Some(home) = dirs::home_dir() {
+        // Lowest precedence: installed plugins' commands.
+        roots.extend(claude_plugin_command_roots(&home));
+        roots.push(CommandRoot {
+            dir: home.join(".claude").join("skills"),
+            scope: CommandScope::User,
+            kind: RootKind::Skills,
+            prefix: None,
+        });
         roots.push(CommandRoot {
             dir: home.join(".claude").join("commands"),
             scope: CommandScope::User,
+            kind: RootKind::Commands,
+            prefix: None,
         });
     }
     if let Some(project) = project {
         roots.push(CommandRoot {
+            dir: project.join(".claude").join("skills"),
+            scope: CommandScope::Project,
+            kind: RootKind::Skills,
+            prefix: None,
+        });
+        roots.push(CommandRoot {
             dir: project.join(".claude").join("commands"),
             scope: CommandScope::Project,
+            kind: RootKind::Commands,
+            prefix: None,
         });
+    }
+    roots
+}
+
+/// The subset of `~/.claude/plugins/installed_plugins.json` we read: a map of
+/// `<plugin>@<marketplace>` to its install records, each carrying an
+/// `installPath`. Only *installed* plugins live here — the marketplace catalog
+/// under `plugins/marketplaces/…` lists all *available* plugins and is
+/// deliberately ignored.
+#[derive(serde::Deserialize)]
+struct InstalledPlugins {
+    #[serde(default)]
+    plugins: BTreeMap<String, Vec<InstalledPlugin>>,
+}
+
+#[derive(serde::Deserialize)]
+struct InstalledPlugin {
+    #[serde(rename = "installPath")]
+    install_path: String,
+    /// Install scope: `"user"` (global) or `"project"` (tied to one workspace).
+    /// Absent in older manifests. Only user-scope installs are surfaced (see
+    /// `claude_plugin_command_roots`).
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// Command roots contributed by installed Claude plugins. A plugin's commands
+/// live at `<installPath>/commands`; we namespace them `<plugin>:<command>`,
+/// stripping the `@<marketplace>` suffix from the plugin key. Plugins with no
+/// `commands/` dir (e.g. LSP-only plugins) contribute nothing — `walk` just
+/// finds an absent dir. Only user-scope (global) installs are surfaced;
+/// project-scope installs are skipped (see the loop below).
+fn claude_plugin_command_roots(home: &Path) -> Vec<CommandRoot> {
+    let manifest = home
+        .join(".claude")
+        .join("plugins")
+        .join("installed_plugins.json");
+    // No manifest / unreadable / malformed JSON all mean "no plugin commands",
+    // never an error — plugins are optional.
+    let Ok(raw) = std::fs::read_to_string(&manifest) else {
+        return Vec::new();
+    };
+    let Ok(parsed) = serde_json::from_str::<InstalledPlugins>(&raw) else {
+        return Vec::new();
+    };
+    let mut roots = Vec::new();
+    for (key, installs) in parsed.plugins {
+        // `<plugin>@<marketplace>` -> `<plugin>` for the command namespace.
+        let plugin = key.split('@').next().unwrap_or(&key).to_string();
+        for install in installs {
+            // Only surface user-scope (global) plugins. A `project`-scope install
+            // is tied to a specific workspace, and the manifest doesn't record
+            // which one in a form we can match against the active project — so
+            // including it would leak another workspace's commands here and
+            // forward a command Claude never loaded in this project. Skip
+            // anything not explicitly global (absent scope = legacy global).
+            match install.scope.as_deref() {
+                Some("user") | None => {}
+                _ => continue,
+            }
+            roots.push(CommandRoot {
+                dir: PathBuf::from(install.install_path).join("commands"),
+                scope: CommandScope::User,
+                kind: RootKind::Commands,
+                prefix: Some(plugin.clone()),
+            });
+        }
     }
     roots
 }
@@ -240,6 +451,58 @@ fn claude_parse_command(path: &Path, name: &str, scope: CommandScope) -> Option<
         name: name.to_string(),
         description,
         hint,
+        scope,
+    })
+}
+
+/// A Claude skill's frontmatter. `name` overrides the directory name; the
+/// `description` may be a plain string or a `|` block scalar — serde_yaml
+/// collapses both to a `String`, and we take its first meaningful line. Other
+/// keys (`version`, `allowed-tools`, …) are ignored.
+#[derive(Default, serde::Deserialize)]
+struct ClaudeSkillFrontmatter {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+/// Parse a `SKILL.md` into a passthrough command. `dir_name` is the containing
+/// directory, used as the command name unless the frontmatter declares its own
+/// `name`. A skill takes no argument-hint, so `hint` is always None.
+fn claude_parse_skill(
+    path: &Path,
+    dir_name: &str,
+    scope: CommandScope,
+) -> Option<DiscoveredCommand> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let (frontmatter, body) = split_frontmatter(&raw);
+    let fm: ClaudeSkillFrontmatter = frontmatter
+        .and_then(|y| serde_yaml::from_str(y).ok())
+        .unwrap_or_default();
+    // Prefer the frontmatter `name`, but only if it's an invokable single token
+    // — a `name: my tool` with whitespace can't resolve, so fall back to the
+    // directory. If even that isn't invokable, skip the skill rather than
+    // surface an entry the user could never dispatch.
+    let name = fm
+        .name
+        .map(|s| s.trim().to_string())
+        .filter(|s| is_invokable_name(s))
+        .unwrap_or_else(|| dir_name.to_string());
+    if !is_invokable_name(&name) {
+        return None;
+    }
+    // A block-scalar `description: |` becomes a multi-line string; take its
+    // first meaningful line (trimmed, capped) so the autocomplete row stays a
+    // single line, mirroring the command-body fallback.
+    let description = fm
+        .description
+        .as_deref()
+        .and_then(first_meaningful_line)
+        .or_else(|| first_meaningful_line(body))
+        .unwrap_or_else(|| "Skill".to_string());
+    Some(DiscoveredCommand {
+        name,
+        description,
+        hint: None,
         scope,
     })
 }
@@ -401,15 +664,13 @@ mod tests {
         std::fs::write(commands.join("notes.txt"), "ignored, not markdown").unwrap();
 
         let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
-        walk(
-            &commands,
-            &commands,
-            CommandScope::Project,
-            claude_parse_command,
-            &mut out,
-            &mut HashSet::new(),
-            0,
-        );
+        let ctx = WalkCtx {
+            base: &commands,
+            scope: CommandScope::Project,
+            prefix: None,
+            parse: claude_parse_command,
+        };
+        walk(&ctx, &commands, &mut out, &mut HashSet::new(), 0);
 
         let names: Vec<&str> = out.keys().map(String::as_str).collect();
         assert_eq!(names, vec!["build", "frontend:x"]);
@@ -428,15 +689,13 @@ mod tests {
         std::os::unix::fs::symlink(&shared, commands.join("team")).unwrap();
 
         let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
-        walk(
-            &commands,
-            &commands,
-            CommandScope::Project,
-            claude_parse_command,
-            &mut out,
-            &mut HashSet::new(),
-            0,
-        );
+        let ctx = WalkCtx {
+            base: &commands,
+            scope: CommandScope::Project,
+            prefix: None,
+            parse: claude_parse_command,
+        };
+        walk(&ctx, &commands, &mut out, &mut HashSet::new(), 0);
 
         assert!(out.contains_key("team:deploy"));
     }
@@ -453,15 +712,13 @@ mod tests {
         std::os::unix::fs::symlink(&commands, commands.join("loop")).unwrap();
 
         let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
-        walk(
-            &commands,
-            &commands,
-            CommandScope::Project,
-            claude_parse_command,
-            &mut out,
-            &mut HashSet::new(),
-            0,
-        );
+        let ctx = WalkCtx {
+            base: &commands,
+            scope: CommandScope::Project,
+            prefix: None,
+            parse: claude_parse_command,
+        };
+        walk(&ctx, &commands, &mut out, &mut HashSet::new(), 0);
 
         // The cycle is cut after the first entry, so only the real command
         // survives — no `loop:build` aliases.
@@ -484,15 +741,13 @@ mod tests {
         std::os::unix::fs::symlink(&shared, commands.join("backend")).unwrap();
 
         let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
-        walk(
-            &commands,
-            &commands,
-            CommandScope::Project,
-            claude_parse_command,
-            &mut out,
-            &mut HashSet::new(),
-            0,
-        );
+        let ctx = WalkCtx {
+            base: &commands,
+            scope: CommandScope::Project,
+            prefix: None,
+            parse: claude_parse_command,
+        };
+        walk(&ctx, &commands, &mut out, &mut HashSet::new(), 0);
 
         let names: Vec<&str> = out.keys().map(String::as_str).collect();
         assert_eq!(names, vec!["backend:deploy", "frontend:deploy"]);
@@ -521,28 +776,273 @@ mod tests {
             CommandRoot {
                 dir: user.path().to_path_buf(),
                 scope: CommandScope::User,
+                kind: RootKind::Commands,
+                prefix: None,
             },
             CommandRoot {
                 dir: project.path().to_path_buf(),
                 scope: CommandScope::Project,
+                kind: RootKind::Commands,
+                prefix: None,
             },
         ];
         let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
         let mut seen = HashSet::new();
         for root in roots.into_iter().rev() {
-            walk(
-                &root.dir,
-                &root.dir,
-                root.scope,
-                claude_parse_command,
-                &mut out,
-                &mut seen,
-                0,
-            );
+            let ctx = WalkCtx {
+                base: &root.dir,
+                scope: root.scope,
+                prefix: root.prefix.as_deref(),
+                parse: claude_parse_command,
+            };
+            walk(&ctx, &root.dir, &mut out, &mut seen, 0);
         }
 
         assert_eq!(out["shared"].description, "from project");
         assert_eq!(out["shared"].scope, CommandScope::Project);
         assert!(out.contains_key("useronly"));
+    }
+
+    // -- skills ------------------------------------------------------------
+
+    #[test]
+    fn parses_skill_name_and_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join("foo");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: foo\ndescription: Does the foo thing\n---\nbody\n",
+        )
+        .unwrap();
+
+        let cmd = claude_parse_skill(&skill.join("SKILL.md"), "foo", CommandScope::User).unwrap();
+        assert_eq!(cmd.name, "foo");
+        assert_eq!(cmd.description, "Does the foo thing");
+        assert_eq!(cmd.hint, None);
+        assert_eq!(cmd.scope, CommandScope::User);
+    }
+
+    #[test]
+    fn skill_name_falls_back_to_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("SKILL.md");
+        // Frontmatter without a `name` — the directory name is used instead.
+        std::fs::write(&file, "---\ndescription: No explicit name\n---\n").unwrap();
+        let cmd = claude_parse_skill(&file, "dirname", CommandScope::User).unwrap();
+        assert_eq!(cmd.name, "dirname");
+        assert_eq!(cmd.description, "No explicit name");
+    }
+
+    #[test]
+    fn skill_description_takes_first_line_of_block_scalar() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("SKILL.md");
+        // A `|` block scalar spanning several lines: only the first meaningful
+        // line becomes the one-line autocomplete detail.
+        std::fs::write(
+            &file,
+            "---\nname: multi\ndescription: |\n  First line here.\n  Second line ignored.\n---\n",
+        )
+        .unwrap();
+        let cmd = claude_parse_skill(&file, "multi", CommandScope::User).unwrap();
+        assert_eq!(cmd.description, "First line here.");
+    }
+
+    #[test]
+    fn scan_skills_discovers_dirs_and_skips_dot_dirs_and_bare_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join("skills");
+        // A real skill.
+        std::fs::create_dir_all(skills.join("foo")).unwrap();
+        std::fs::write(
+            skills.join("foo/SKILL.md"),
+            "---\nname: foo\ndescription: The foo skill\n---\n",
+        )
+        .unwrap();
+        // A dot-dir (e.g. `.git`) — skipped even with a SKILL.md inside.
+        std::fs::create_dir_all(skills.join(".git")).unwrap();
+        std::fs::write(skills.join(".git/SKILL.md"), "---\nname: git\n---\n").unwrap();
+        // A directory without a SKILL.md — contributes nothing.
+        std::fs::create_dir_all(skills.join("empty")).unwrap();
+
+        let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        scan_skills(&skills, CommandScope::User, claude_parse_skill, &mut out);
+
+        let names: Vec<&str> = out.keys().map(String::as_str).collect();
+        assert_eq!(names, vec!["foo"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_skills_follows_symlinked_skill_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        // A skill living elsewhere, linked into the skills dir (like
+        // `browse -> gstack/browse` in a real `~/.claude/skills`).
+        let external = dir.path().join("external");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(
+            external.join("SKILL.md"),
+            "---\nname: linked\ndescription: Linked skill\n---\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&external, skills.join("linked")).unwrap();
+
+        let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        scan_skills(&skills, CommandScope::User, claude_parse_skill, &mut out);
+
+        assert!(out.contains_key("linked"));
+    }
+
+    // -- plugin commands ---------------------------------------------------
+
+    #[test]
+    fn plugin_command_roots_namespace_installed_plugins_only() {
+        // A fake `~/.claude` whose installed_plugins.json points at a plugin
+        // with one command; `<plugin>@<marketplace>` becomes the `<plugin>:`
+        // namespace.
+        let home = tempfile::tempdir().unwrap();
+        let plugins = home.path().join(".claude").join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        let install = home.path().join("cache").join("acme").join("1.0.0");
+        std::fs::create_dir_all(install.join("commands")).unwrap();
+        std::fs::write(
+            install.join("commands/x.md"),
+            "---\ndescription: Plugin command x\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plugins.join("installed_plugins.json"),
+            format!(
+                "{{\"version\":2,\"plugins\":{{\"acme@official\":[{{\"scope\":\"user\",\"installPath\":{}}}]}}}}",
+                serde_json::to_string(&install.to_string_lossy()).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let roots = claude_plugin_command_roots(home.path());
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].prefix.as_deref(), Some("acme"));
+        assert_eq!(roots[0].scope, CommandScope::User);
+
+        // Walking the root prefixes the derived name with `<plugin>:`.
+        let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        let ctx = WalkCtx {
+            base: &roots[0].dir,
+            scope: roots[0].scope,
+            prefix: roots[0].prefix.as_deref(),
+            parse: claude_parse_command,
+        };
+        walk(&ctx, &roots[0].dir, &mut out, &mut HashSet::new(), 0);
+        assert!(out.contains_key("acme:x"));
+        assert_eq!(out["acme:x"].description, "Plugin command x");
+    }
+
+    #[test]
+    fn plugin_roots_skip_project_scope_installs() {
+        // A user-scope and a project-scope install of two plugins. Only the
+        // user-scope one becomes a root — project-scope installs belong to a
+        // specific workspace and would otherwise leak across projects.
+        let home = tempfile::tempdir().unwrap();
+        let plugins = home.path().join(".claude").join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(
+            plugins.join("installed_plugins.json"),
+            r#"{"version":2,"plugins":{
+                "glob@official":[{"scope":"user","installPath":"/tmp/glob/1.0.0"}],
+                "proj@official":[{"scope":"project","installPath":"/tmp/proj/1.0.0"}]
+            }}"#,
+        )
+        .unwrap();
+
+        let roots = claude_plugin_command_roots(home.path());
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].prefix.as_deref(), Some("glob"));
+    }
+
+    #[test]
+    fn skill_with_whitespace_name_falls_back_to_dir_then_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        // Frontmatter name has a space → not invokable → falls back to the
+        // (valid) directory name.
+        let good = dir.path().join("good.md");
+        std::fs::write(&good, "---\nname: my tool\ndescription: Hi\n---\n").unwrap();
+        let cmd = claude_parse_skill(&good, "packer", CommandScope::User).unwrap();
+        assert_eq!(cmd.name, "packer");
+
+        // Neither frontmatter name nor the directory is a single token → skip.
+        let bad = dir.path().join("bad.md");
+        std::fs::write(&bad, "---\ndescription: Hi\n---\n").unwrap();
+        assert!(claude_parse_skill(&bad, "my tool", CommandScope::User).is_none());
+    }
+
+    #[test]
+    fn command_with_whitespace_name_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("my cmd.md"), "does a thing").unwrap();
+        std::fs::write(dir.path().join("build.md"), "builds").unwrap();
+
+        let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        let ctx = WalkCtx {
+            base: dir.path(),
+            scope: CommandScope::User,
+            prefix: None,
+            parse: claude_parse_command,
+        };
+        walk(&ctx, dir.path(), &mut out, &mut HashSet::new(), 0);
+
+        let names: Vec<&str> = out.keys().map(String::as_str).collect();
+        assert_eq!(names, vec!["build"]);
+    }
+
+    #[test]
+    fn plugin_roots_empty_without_manifest() {
+        // No installed_plugins.json (the common case) yields no roots, not an
+        // error.
+        let home = tempfile::tempdir().unwrap();
+        assert!(claude_plugin_command_roots(home.path()).is_empty());
+    }
+
+    // -- cross-kind precedence --------------------------------------------
+
+    #[test]
+    fn command_shadows_skill_of_same_name() {
+        // A user command and a user skill both named `foo`. Per precedence the
+        // command (scanned first) wins the bare `/foo` slot; the skill's
+        // `or_insert` is a no-op.
+        let cmd_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            cmd_dir.path().join("foo.md"),
+            "---\ndescription: from command\n---\n",
+        )
+        .unwrap();
+        let skill_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(skill_dir.path().join("foo")).unwrap();
+        std::fs::write(
+            skill_dir.path().join("foo/SKILL.md"),
+            "---\nname: foo\ndescription: from skill\n---\n",
+        )
+        .unwrap();
+
+        let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        let mut seen = HashSet::new();
+        // Command scanned first (higher precedence), skill second.
+        let ctx = WalkCtx {
+            base: cmd_dir.path(),
+            scope: CommandScope::User,
+            prefix: None,
+            parse: claude_parse_command,
+        };
+        walk(&ctx, cmd_dir.path(), &mut out, &mut seen, 0);
+        scan_skills(
+            skill_dir.path(),
+            CommandScope::User,
+            claude_parse_skill,
+            &mut out,
+        );
+
+        assert_eq!(out["foo"].description, "from command");
     }
 }
