@@ -56,7 +56,11 @@ export function DeveloperPane() {
           title="Refresh models"
           sub="Clear the cached catalog and re-run Codex discovery plus models.dev enrichment right now."
         >
-          <Button variant="outline" onClick={() => void handleRefreshModels()} disabled={refreshingModels}>
+          <Button
+            variant="outline"
+            onClick={() => void handleRefreshModels()}
+            disabled={refreshingModels}
+          >
             <Icon name="refresh" size={12} />
             {refreshingModels ? "Refreshing..." : "Refresh models"}
           </Button>
