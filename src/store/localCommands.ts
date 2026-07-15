@@ -20,7 +20,6 @@ function formatUsage(u: AgentUsage | undefined): string {
   if (!u) return "No usage recorded for this session yet.";
   const n = (v: number) => v.toLocaleString();
   const lines = [
-    "Session usage",
     `Input ${n(u.inputTokens)} · Output ${n(u.outputTokens)}`,
     `Cache read ${n(u.cacheReadTokens)} · write ${n(u.cacheWriteTokens)}`,
     `Context ${n(u.contextTokens)}${u.contextWindow ? ` / ${n(u.contextWindow)}` : ""}`,
@@ -33,35 +32,43 @@ export const createLocalCommandsSlice: SliceCreator<LocalCommandsSlice> = (set, 
   // Push a transient notice into a session's log. These are store-inserted (not
   // persisted to session records), so they read as ephemeral command output and
   // disappear on transcript reload — fine for /doctor output or a /cost readout.
-  const notice = (agentId: string, text: string, isError = false) =>
-    set((s) => {
-      const entry: ChatItem = {
-        kind: "notice",
-        subtype: isError ? "error" : "info",
-        text,
-        ...(isError ? { is_error: true } : {}),
-      };
-      return {
-        managedLogs: {
-          ...s.managedLogs,
-          [agentId]: [...(s.managedLogs[agentId] ?? []), entry],
-        },
-      };
+  const append = (agentId: string, entry: ChatItem) =>
+    set((s) => ({
+      managedLogs: {
+        ...s.managedLogs,
+        [agentId]: [...(s.managedLogs[agentId] ?? []), entry],
+      },
+    }));
+
+  // A dim, ambient status line (the user didn't ask to read it — it just says
+  // "something is happening"). Right for the transient "Running…" hint.
+  const status = (agentId: string, text: string) =>
+    append(agentId, { kind: "notice", subtype: "info", text });
+
+  // Prominent, readable output the user explicitly asked for by invoking a
+  // command. `label` heads the block with the command name.
+  const output = (agentId: string, label: string, text: string, isError = false) =>
+    append(agentId, {
+      kind: "notice",
+      subtype: "command_output",
+      label,
+      text,
+      ...(isError ? { is_error: true } : {}),
     });
 
   const runClaude = async (agentId: string, args: string[], label: string) => {
     // Picking a local command inserts no composer text, so without this the UI
     // shows nothing for the few seconds the subprocess runs.
-    notice(agentId, `Running ${label}…`);
+    status(agentId, `Running ${label}…`);
     try {
       const out = await api.runClaudeCommand(agentId, args);
       const text = [out.stdout, out.stderr]
         .map((s) => s.trim())
         .filter(Boolean)
         .join("\n\n");
-      notice(agentId, text || `${label} produced no output.`, !out.success);
+      output(agentId, label, text || `${label} produced no output.`, !out.success);
     } catch (err) {
-      notice(agentId, `${label} failed: ${String(err)}`, true);
+      output(agentId, label, `${label} failed: ${String(err)}`, true);
     }
   };
 
@@ -83,7 +90,7 @@ export const createLocalCommandsSlice: SliceCreator<LocalCommandsSlice> = (set, 
           return;
         }
         case "app:cost":
-          if (agentId) notice(agentId, formatUsage(get().usage[agentId]));
+          if (agentId) output(agentId, "/cost", formatUsage(get().usage[agentId]));
           return;
         case "cli:doctor":
           if (agentId) await runClaude(agentId, ["doctor"], "/doctor");

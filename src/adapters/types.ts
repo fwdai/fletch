@@ -71,6 +71,9 @@ export type ChatItem =
       subtype: NoticeSubtype;
       text: string;
       is_error?: boolean;
+      /** For `command_output`: the invoked command, shown as the block header
+       *  (e.g. "/doctor"). Ignored by other subtypes. */
+      label?: string;
     };
 
 export type NoticeSubtype =
@@ -81,7 +84,11 @@ export type NoticeSubtype =
   | "slash_command"
   | "compact_summary"
   | "hook_output"
-  | "background_task";
+  | "background_task"
+  /** Output of a user-invoked local slash command (e.g. `/doctor`). Rendered
+   *  as a prominent, readable block — not the dim ambient-notice style — since
+   *  the user asked for it and expects to read it. */
+  | "command_output";
 
 export type RawEvent = Record<string, unknown> & { type?: string };
 

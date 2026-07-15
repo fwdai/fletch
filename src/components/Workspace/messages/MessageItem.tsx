@@ -259,6 +259,17 @@ function NoticeView({ item }: { item: Extract<ChatItem, { kind: "notice" }> }) {
       </div>
     );
   }
+  if (item.subtype === "command_output") {
+    // Output the user explicitly asked for by invoking a slash command —
+    // rendered as a readable, full-contrast block (not the dim ambient style),
+    // headed by the command name.
+    return (
+      <div className={item.is_error ? "m-cmdout is-error" : "m-cmdout"}>
+        {item.label ? <div className="m-cmdout__head">{item.label}</div> : null}
+        <pre className="m-cmdout__body">{item.text}</pre>
+      </div>
+    );
+  }
   if (item.subtype === "compact_summary") {
     return (
       <div className="m-reasoning" style={{ fontStyle: "italic" }}>
