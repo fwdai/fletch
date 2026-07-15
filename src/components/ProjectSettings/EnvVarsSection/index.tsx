@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type EnvEntry } from "@/api";
 import { loadRunEnvDoc, type RunEnvDoc, saveRunEnvDoc, varConfig, withVar } from "@/storage/runEnv";
 import { basename } from "@/util/format";
@@ -21,6 +21,14 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
   // chip can show and edit them. Keyed by var name.
   const [overrides, setOverrides] = useState<Record<string, string>>({});
 
+  // The authoritative latest document. Handlers read this instead of the `doc`
+  // state so that a mutation resuming after an `await` (keychain IPC) sees any
+  // edit that landed meanwhile, rather than clobbering it with a stale closure.
+  const docRef = useRef(doc);
+  // Serializes saves so an earlier save can't finish after a later one and
+  // leave stale bytes on disk; each save writes the current `docRef`.
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -30,6 +38,7 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
       ]);
       if (cancelled) return;
       setEntries(envEntries);
+      docRef.current = loadedDoc;
       setDoc(loadedDoc);
       // Pull the current override values for any overridden vars.
       const overridden = loadedDoc.vars.filter((v) => v.source === "override");
@@ -55,26 +64,39 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
     return keys.map((key) => ({ key, envValue: envMap.get(key) }));
   }, [envMap, doc]);
 
-  const persist = (next: RunEnvDoc) => {
+  // Apply a pure mutation to the latest document: update ref + state
+  // synchronously (no `await` across the mutation, so concurrent edits can't
+  // interleave), then enqueue a save of the current `docRef` on the serialized
+  // queue. Returns the save promise so callers can react to a failed persist.
+  const commitDoc = (mutate: (d: RunEnvDoc) => RunEnvDoc): Promise<void> => {
+    const next = mutate(docRef.current);
+    docRef.current = next;
     setDoc(next);
-    void saveRunEnvDoc(projectId, next);
+    const save = saveQueue.current.then(() => saveRunEnvDoc(projectId, docRef.current));
+    saveQueue.current = save.catch(() => {}); // keep the chain alive after a failure
+    return save;
   };
 
-  const onToggleShare = (key: string, shared: boolean) =>
-    persist(withVar(doc, { ...varConfig(doc, key), shared }));
+  const setVar = (key: string, patch: Partial<ReturnType<typeof varConfig>>) =>
+    commitDoc((d) => withVar(d, { ...varConfig(d, key), ...patch }));
+
+  const onToggleShare = (key: string, shared: boolean) => {
+    void setVar(key, { shared }).catch((e) => console.error("run_env: save failed", e));
+  };
 
   // Drop an override and go back to mirroring `.env` (the revert button, and
-  // the empty/equal-to-`.env` commit cases). No-op if not overridden.
+  // the empty/equal-to-`.env` commit cases). No-op if not overridden. Clears
+  // the keychain first so a failed doc save can't leave an orphaned value the
+  // document no longer references.
   const revertToMirror = async (key: string) => {
-    const cfg = varConfig(doc, key);
-    if (cfg.source !== "override") return;
+    if (varConfig(docRef.current, key).source !== "override") return;
     await api.clearEnvOverride(projectId, key);
     setOverrides((prev) => {
       const next = { ...prev };
       delete next[key];
       return next;
     });
-    persist(withVar(doc, { ...cfg, source: "mirror" }));
+    await setVar(key, { source: "mirror" }).catch((e) => console.error("run_env: save failed", e));
   };
 
   // A committed chip value. Empty — or exactly the `.env` value — is *not* an
@@ -86,10 +108,22 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
       await revertToMirror(key);
       return;
     }
-    const cfg = varConfig(doc, key);
     await api.setEnvOverride(projectId, key, value);
     setOverrides((prev) => ({ ...prev, [key]: value }));
-    persist(withVar(doc, { ...cfg, source: "override" }));
+    try {
+      // Keep the two stores consistent: if the document save fails, undo the
+      // keychain write so we don't leave an override the document ignores.
+      await setVar(key, { source: "override" });
+    } catch (e) {
+      console.error("run_env: override save failed; rolling back keychain", e);
+      await api.clearEnvOverride(projectId, key).catch(() => {});
+      setOverrides((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      await setVar(key, { source: "mirror" }).catch(() => {});
+    }
   };
 
   return (

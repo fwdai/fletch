@@ -12,9 +12,13 @@
 //! ## Values never live in the document
 //! - **Mirror** vars read their value *live* from the source repo's `.env` at
 //!   spawn — so there is one source of truth and nothing to drift.
-//! - **Override** vars read their value from the OS keychain (see
-//!   [`crate::secrets`]), under [`override_secret_key`], so a user-chosen value
-//!   (e.g. a disposable database URL) never sits in the database or its backups.
+//! - **Override** vars read their value from the app secret store (see
+//!   [`crate::secrets`]), under [`override_secret_key`], keeping the user-chosen
+//!   value out of the `run_env` document. That store is the OS keychain on
+//!   release macOS; on dev and non-macOS builds it falls back to the plaintext
+//!   `settings` table (the same posture as every other app secret), so an
+//!   override is only as protected as the store the build uses — it is not a
+//!   keychain-only guarantee on every target.
 //!
 //! The `.env` lives in the **source repo** (it is gitignored, so it is absent
 //! from the agent's worktree checkout); resolution reads it host-side from the
@@ -104,10 +108,8 @@ pub fn override_secret_key(project_id: &str, key: &str) -> String {
 
 /// Parse `.env` text into ordered `KEY=value` entries. Skips blank lines and
 /// `#` comments, tolerates a leading `export`, ignores lines without `=` or
-/// with a non-identifier key, and strips one layer of matching surrounding
-/// quotes. Last assignment wins, matching dotenv semantics. Intentionally does
-/// not strip unquoted trailing `# comments` (a value may legitimately contain
-/// `#`); document that if it surprises anyone later.
+/// with a non-identifier key. Last assignment wins, matching dotenv semantics.
+/// See [`parse_value`] for quoting and inline-comment handling.
 pub fn parse_env(text: &str) -> Vec<EnvEntry> {
     let mut out: Vec<EnvEntry> = Vec::new();
     for raw in text.lines() {
@@ -123,7 +125,7 @@ pub fn parse_env(text: &str) -> Vec<EnvEntry> {
         if !is_env_key(key) {
             continue;
         }
-        let value = unquote(v.trim());
+        let value = parse_value(v.trim());
         match out.iter_mut().find(|e| e.key == key) {
             Some(existing) => existing.value = value,
             None => out.push(EnvEntry {
@@ -141,17 +143,35 @@ fn is_env_key(key: &str) -> bool {
         && !key.as_bytes()[0].is_ascii_digit()
 }
 
-/// Strip one layer of matching surrounding single or double quotes.
-fn unquote(v: &str) -> String {
-    let bytes = v.as_bytes();
+/// Interpret the raw text after `=` (already trimmed) as a dotenv value:
+/// - **Quoted** (matching single/double quotes): the inner text verbatim — a
+///   `#` inside quotes is data, not a comment.
+/// - **Unquoted**: an inline comment (a `#` preceded by whitespace, per the
+///   dotenv convention) is stripped, then trailing whitespace trimmed. So
+///   `secret # staging` → `secret`, while `a#b` and `url#frag` (no space
+///   before `#`) keep the `#`.
+fn parse_value(v: &str) -> String {
     if v.len() >= 2 {
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
+        let bytes = v.as_bytes();
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
         if (first == b'"' || first == b'\'') && first == last {
             return v[1..v.len() - 1].to_string();
         }
     }
-    v.to_string()
+    strip_inline_comment(v).to_string()
+}
+
+/// Cut an unquoted value at its inline comment: the first `#` that is at the
+/// start or preceded by whitespace. Returns the value with trailing whitespace
+/// trimmed. A `#` with a non-space char before it (e.g. a URL fragment) is kept.
+fn strip_inline_comment(v: &str) -> &str {
+    let bytes = v.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] == b'#' && (i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t') {
+            return v[..i].trim_end();
+        }
+    }
+    v
 }
 
 /// Read and parse the source repo's `.env`. Missing or unreadable → empty
@@ -265,6 +285,30 @@ EMPTY=
         assert!(got.contains(&("FOO".into(), "override_wins".into())));
         // invalid keys dropped
         assert!(!got.iter().any(|(k, _)| k == "2BAD" || k == "BADKEY-DASH"));
+    }
+
+    #[test]
+    fn parse_env_strips_unquoted_inline_comments_but_keeps_hashes_in_data() {
+        let text = "\
+API_KEY=secret # staging
+TABBED=val\t# note
+FRAG=http://x/y#frag
+HASH=a#b
+QUOTED_HASH=\"a # b\"
+LEADING= # only a comment
+";
+        let got: std::collections::HashMap<String, String> =
+            parse_env(text).into_iter().map(|e| (e.key, e.value)).collect();
+        // inline comment (space/tab before #) is stripped
+        assert_eq!(got["API_KEY"], "secret");
+        assert_eq!(got["TABBED"], "val");
+        // no whitespace before # → part of the value (URL fragment, etc.)
+        assert_eq!(got["FRAG"], "http://x/y#frag");
+        assert_eq!(got["HASH"], "a#b");
+        // inside quotes, # is data
+        assert_eq!(got["QUOTED_HASH"], "a # b");
+        // a value that is only a comment collapses to empty
+        assert_eq!(got["LEADING"], "");
     }
 
     #[test]

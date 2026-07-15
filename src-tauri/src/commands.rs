@@ -825,9 +825,11 @@ pub fn get_env_override(
     )
 }
 
-/// Store a project variable's override value in the keychain — never in the
-/// database — so a user-chosen value (e.g. a disposable per-agent DB URL) can
-/// diverge from `.env` without persisting a secret at rest.
+/// Store a project variable's override value in the app secret store (see
+/// `crate::secrets`) so a user-chosen value (e.g. a disposable per-agent DB
+/// URL) can diverge from `.env` without living in the `run_env` document. The
+/// store is the OS keychain on release macOS; on dev / non-macOS it falls back
+/// to the plaintext `settings` table, same as every other app secret.
 #[tauri::command]
 pub fn set_env_override(
     db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>,
