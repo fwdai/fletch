@@ -85,18 +85,29 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
   };
 
   // Drop an override and go back to mirroring `.env` (the revert button, and
-  // the empty/equal-to-`.env` commit cases). No-op if not overridden. Clears
-  // the keychain first so a failed doc save can't leave an orphaned value the
-  // document no longer references.
+  // the empty/equal-to-`.env` commit cases). No-op if not overridden. Capture
+  // the value and clear the store first (so a failed doc save can't orphan it);
+  // if the doc save then fails, restore the value so the two stores don't split
+  // — leaving the variable overridden, exactly as it was.
   const revertToMirror = async (key: string) => {
     if (varConfig(docRef.current, key).source !== "override") return;
+    const prevValue = await api.getEnvOverride(projectId, key);
     await api.clearEnvOverride(projectId, key);
     setOverrides((prev) => {
       const next = { ...prev };
       delete next[key];
       return next;
     });
-    await setVar(key, { source: "mirror" }).catch((e) => console.error("run_env: save failed", e));
+    try {
+      await setVar(key, { source: "mirror" });
+    } catch (e) {
+      console.error("run_env: revert save failed; restoring override", e);
+      if (prevValue != null) {
+        await api.setEnvOverride(projectId, key, prevValue).catch(() => {});
+        setOverrides((prev) => ({ ...prev, [key]: prevValue }));
+      }
+      await setVar(key, { source: "override" }).catch(() => {});
+    }
   };
 
   // A committed chip value. Empty — or exactly the `.env` value — is *not* an

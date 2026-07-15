@@ -9,16 +9,16 @@
 //! run and where its value comes from ([`Source`]). Nothing is shared by
 //! default.
 //!
-//! ## Values never live in the document
+//! ## Values never live in the database
 //! - **Mirror** vars read their value *live* from the source repo's `.env` at
 //!   spawn — so there is one source of truth and nothing to drift.
-//! - **Override** vars read their value from the app secret store (see
-//!   [`crate::secrets`]), under [`override_secret_key`], keeping the user-chosen
-//!   value out of the `run_env` document. That store is the OS keychain on
-//!   release macOS; on dev and non-macOS builds it falls back to the plaintext
-//!   `settings` table (the same posture as every other app secret), so an
-//!   override is only as protected as the store the build uses — it is not a
-//!   keychain-only guarantee on every target.
+//! - **Override** vars read their value from a dedicated store ([`override_get`]
+//!   / [`override_set`]) that **never writes to the database**: the OS keychain
+//!   on release macOS, an in-memory session store on dev and non-macOS builds
+//!   (where an ad-hoc-signed binary can't use the keychain silently). So a
+//!   user-chosen override value stays out of both the `run_env` document and
+//!   SQLite (and its backups). The trade-off is that on those non-keychain
+//!   builds an override does not survive an app restart.
 //!
 //! The `.env` lives in the **source repo** (it is gitignored, so it is absent
 //! from the agent's worktree checkout); resolution reads it host-side from the
@@ -29,6 +29,8 @@ use std::path::Path;
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+
+use crate::error::Result;
 
 /// `project_settings` key holding the [`RunEnvDoc`] JSON for a project.
 pub const RUN_ENV_SETTING: &str = "run_env";
@@ -100,8 +102,9 @@ pub struct InterpCtx<'a> {
     pub worktree: &'a Path,
 }
 
-/// Keychain account name for a project variable's override value. Namespaced by
-/// project so two projects that both override `DATABASE_URL` stay independent.
+/// Store key (keychain account / in-memory map key) for a project variable's
+/// override value. Namespaced by project so two projects that both override
+/// `DATABASE_URL` stay independent.
 pub fn override_secret_key(project_id: &str, key: &str) -> String {
     format!("env-override:{project_id}:{key}")
 }
@@ -203,10 +206,11 @@ fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<Str
 
 /// Resolve the `(NAME, VALUE)` pairs to inject into a sandboxed run for
 /// `project_id`. Only `shared` vars are returned. `override` values come from
-/// the keychain (falling back to the `.env` value if the keychain entry is
-/// missing, so a half-applied override never drops the variable); `mirror`
-/// values come from `.env`. Values are interpolated with `ctx`. A var with no
-/// resolvable value is skipped rather than injected empty.
+/// the override store (falling back to the `.env` value if the entry is
+/// missing — e.g. a session store emptied by an app restart — so an override
+/// never drops the variable); `mirror` values come from `.env`. Values are
+/// interpolated with `ctx`. A var with no resolvable value is skipped rather
+/// than injected empty.
 pub fn resolve(
     conn: &Connection,
     project_id: &str,
@@ -226,12 +230,8 @@ pub fn resolve(
     let mut out = Vec::with_capacity(shared.len());
     for var in shared {
         let value = match var.source {
-            Source::Override => {
-                crate::secrets::get(conn, &override_secret_key(project_id, &var.key))
-                    .ok()
-                    .flatten()
-                    .or_else(|| env_map.get(&var.key).cloned())
-            }
+            Source::Override => override_get(&override_secret_key(project_id, &var.key))
+                .or_else(|| env_map.get(&var.key).cloned()),
             Source::Mirror => env_map.get(&var.key).cloned(),
         };
         if let Some(value) = value {
@@ -239,6 +239,97 @@ pub fn resolve(
         }
     }
     out
+}
+
+/// Override-value store. Deliberately **not** the database: the OS keychain on
+/// release macOS, an in-memory process map otherwise (dev / non-macOS), so a
+/// user's override secret never lands in SQLite or a backup. `get` is
+/// best-effort (a keychain read failure reads as "no value", so resolution
+/// falls back to `.env`); `set`/`delete` surface errors so the command can
+/// report a failed write and the caller can keep the two stores consistent.
+pub fn override_get(key: &str) -> Option<String> {
+    override_store::get(key)
+}
+
+pub fn override_set(key: &str, value: &str) -> Result<()> {
+    override_store::set(key, value)
+}
+
+pub fn override_delete(key: &str) -> Result<()> {
+    override_store::delete(key)
+}
+
+/// Keychain-backed on release macOS: the item is created and read by the same
+/// signed binary, so the app reads it silently while any other process hits a
+/// consent prompt (matching [`crate::secrets`]).
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
+mod override_store {
+    use security_framework::passwords::{
+        delete_generic_password, get_generic_password, set_generic_password,
+    };
+
+    use crate::error::{Error, Result};
+
+    const SERVICE: &str = crate::BUNDLE_ID;
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+    pub fn get(key: &str) -> Option<String> {
+        get_generic_password(SERVICE, key)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .filter(|v| !v.trim().is_empty())
+    }
+
+    pub fn set(key: &str, value: &str) -> Result<()> {
+        set_generic_password(SERVICE, key, value.as_bytes())
+            .map_err(|e| Error::Other(format!("keychain write ({key}): {e}")))
+    }
+
+    pub fn delete(key: &str) -> Result<()> {
+        match delete_generic_password(SERVICE, key) {
+            Ok(()) => Ok(()),
+            Err(e) if e.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
+            Err(e) => Err(Error::Other(format!("keychain delete ({key}): {e}"))),
+        }
+    }
+}
+
+/// In-memory session store for builds without a usable keychain (dev, and
+/// non-macOS). Process-global so the settings commands and the spawn-time
+/// resolver share it; cleared on app exit — overrides don't persist a restart.
+#[cfg(not(all(target_os = "macos", not(debug_assertions))))]
+mod override_store {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    use crate::error::Result;
+
+    fn mem() -> &'static Mutex<HashMap<String, String>> {
+        static MEM: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+        MEM.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub fn get(key: &str) -> Option<String> {
+        mem()
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .filter(|v| !v.trim().is_empty())
+    }
+
+    pub fn set(key: &str, value: &str) -> Result<()> {
+        mem()
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
+    pub fn delete(key: &str) -> Result<()> {
+        mem().lock().unwrap().remove(key);
+        Ok(())
+    }
 }
 
 /// Substitute `{{agent_id}}` and `{{worktree}}` tokens in a shared value.
@@ -297,8 +388,10 @@ HASH=a#b
 QUOTED_HASH=\"a # b\"
 LEADING= # only a comment
 ";
-        let got: std::collections::HashMap<String, String> =
-            parse_env(text).into_iter().map(|e| (e.key, e.value)).collect();
+        let got: std::collections::HashMap<String, String> = parse_env(text)
+            .into_iter()
+            .map(|e| (e.key, e.value))
+            .collect();
         // inline comment (space/tab before #) is stripped
         assert_eq!(got["API_KEY"], "secret");
         assert_eq!(got["TABBED"], "val");
@@ -419,7 +512,11 @@ LEADING= # only a comment
                 }],
             },
         );
-        // No override stored yet → falls back to the .env value.
+        // No override stored yet → falls back to the .env value. (The dev
+        // override store is process-global; clear first so a parallel test
+        // can't leave a value under this key.)
+        let store_key = override_secret_key(&project_id, "DATABASE_URL");
+        override_delete(&store_key).unwrap();
         let wt = PathBuf::from("/tmp/wt");
         let got = resolve(&conn, &project_id, dir.path(), &ctx("a", &wt));
         assert_eq!(
@@ -428,12 +525,7 @@ LEADING= # only a comment
         );
 
         // With an override (interpolated), the override wins.
-        crate::secrets::set(
-            &conn,
-            &override_secret_key(&project_id, "DATABASE_URL"),
-            "postgres://disposable/{{agent_id}}",
-        )
-        .unwrap();
+        override_set(&store_key, "postgres://disposable/{{agent_id}}").unwrap();
         let got = resolve(&conn, &project_id, dir.path(), &ctx("halifax", &wt));
         assert_eq!(
             got,

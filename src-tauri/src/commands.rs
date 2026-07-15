@@ -814,31 +814,17 @@ pub fn read_env_file_keys(repo_path: String) -> Result<Vec<crate::run_env::EnvEn
 /// Read a project variable's override value (keychain-backed) so the settings
 /// UI can pre-fill the edit field. `None` when no override is set.
 #[tauri::command]
-pub fn get_env_override(
-    db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>,
-    project_id: String,
-    key: String,
-) -> Result<Option<String>> {
-    crate::secrets::get(
-        &db.lock(),
-        &crate::run_env::override_secret_key(&project_id, &key),
-    )
+pub fn get_env_override(project_id: String, key: String) -> Option<String> {
+    crate::run_env::override_get(&crate::run_env::override_secret_key(&project_id, &key))
 }
 
-/// Store a project variable's override value in the app secret store (see
-/// `crate::secrets`) so a user-chosen value (e.g. a disposable per-agent DB
-/// URL) can diverge from `.env` without living in the `run_env` document. The
-/// store is the OS keychain on release macOS; on dev / non-macOS it falls back
-/// to the plaintext `settings` table, same as every other app secret.
+/// Store a project variable's override value in the override store (OS keychain
+/// on release macOS; in-memory session store on dev / non-macOS) so a
+/// user-chosen value (e.g. a disposable per-agent DB URL) can diverge from
+/// `.env` without ever being written to the database.
 #[tauri::command]
-pub fn set_env_override(
-    db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>,
-    project_id: String,
-    key: String,
-    value: String,
-) -> Result<()> {
-    crate::secrets::set(
-        &db.lock(),
+pub fn set_env_override(project_id: String, key: String, value: String) -> Result<()> {
+    crate::run_env::override_set(
         &crate::run_env::override_secret_key(&project_id, &key),
         &value,
     )
@@ -847,15 +833,8 @@ pub fn set_env_override(
 /// Remove a project variable's override; resolution falls back to the `.env`
 /// value (mirror).
 #[tauri::command]
-pub fn clear_env_override(
-    db: State<'_, Arc<parking_lot::Mutex<rusqlite::Connection>>>,
-    project_id: String,
-    key: String,
-) -> Result<()> {
-    crate::secrets::delete(
-        &db.lock(),
-        &crate::run_env::override_secret_key(&project_id, &key),
-    )
+pub fn clear_env_override(project_id: String, key: String) -> Result<()> {
+    crate::run_env::override_delete(&crate::run_env::override_secret_key(&project_id, &key))
 }
 
 /// Returns git state for the agent's primary repo.
