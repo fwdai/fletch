@@ -195,6 +195,11 @@ fn walk(
                         Some(p) => format!("{p}:{name}"),
                         None => name,
                     };
+                    // A name with whitespace can't resolve as a slash command
+                    // (the matcher splits on whitespace), so don't surface it.
+                    if !is_invokable_name(&name) {
+                        continue;
+                    }
                     // First-wins: roots are scanned highest-precedence first, so
                     // an occupied name means a higher-precedence root claimed it
                     // — skip it (and its file read) rather than let a lower root
@@ -280,6 +285,16 @@ fn command_name(base: &Path, file: &Path) -> Option<String> {
     Some(parts.join(":"))
 }
 
+/// Whether `name` is a usable single-token slash command. The composer's matcher
+/// splits input on whitespace and dispatches the first token, so a name that
+/// contains whitespace (e.g. a skill's frontmatter `name: my tool`, or a
+/// `my cmd.md` file) could never resolve — it would be forwarded as ordinary
+/// input. Reject such names at discovery rather than surface an uninvokable
+/// entry.
+fn is_invokable_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(char::is_whitespace)
+}
+
 // ---------------------------------------------------------------------------
 // Claude adapter
 // ---------------------------------------------------------------------------
@@ -355,13 +370,19 @@ struct InstalledPlugins {
 struct InstalledPlugin {
     #[serde(rename = "installPath")]
     install_path: String,
+    /// Install scope: `"user"` (global) or `"project"` (tied to one workspace).
+    /// Absent in older manifests. Only user-scope installs are surfaced (see
+    /// `claude_plugin_command_roots`).
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 /// Command roots contributed by installed Claude plugins. A plugin's commands
 /// live at `<installPath>/commands`; we namespace them `<plugin>:<command>`,
 /// stripping the `@<marketplace>` suffix from the plugin key. Plugins with no
 /// `commands/` dir (e.g. LSP-only plugins) contribute nothing — `walk` just
-/// finds an absent dir. All plugin commands are User scope.
+/// finds an absent dir. Only user-scope (global) installs are surfaced;
+/// project-scope installs are skipped (see the loop below).
 fn claude_plugin_command_roots(home: &Path) -> Vec<CommandRoot> {
     let manifest = home
         .join(".claude")
@@ -380,6 +401,16 @@ fn claude_plugin_command_roots(home: &Path) -> Vec<CommandRoot> {
         // `<plugin>@<marketplace>` -> `<plugin>` for the command namespace.
         let plugin = key.split('@').next().unwrap_or(&key).to_string();
         for install in installs {
+            // Only surface user-scope (global) plugins. A `project`-scope install
+            // is tied to a specific workspace, and the manifest doesn't record
+            // which one in a form we can match against the active project — so
+            // including it would leak another workspace's commands here and
+            // forward a command Claude never loaded in this project. Skip
+            // anything not explicitly global (absent scope = legacy global).
+            match install.scope.as_deref() {
+                Some("user") | None => {}
+                _ => continue,
+            }
             roots.push(CommandRoot {
                 dir: PathBuf::from(install.install_path).join("commands"),
                 scope: CommandScope::User,
@@ -447,11 +478,18 @@ fn claude_parse_skill(
     let fm: ClaudeSkillFrontmatter = frontmatter
         .and_then(|y| serde_yaml::from_str(y).ok())
         .unwrap_or_default();
+    // Prefer the frontmatter `name`, but only if it's an invokable single token
+    // — a `name: my tool` with whitespace can't resolve, so fall back to the
+    // directory. If even that isn't invokable, skip the skill rather than
+    // surface an entry the user could never dispatch.
     let name = fm
         .name
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter(|s| is_invokable_name(s))
         .unwrap_or_else(|| dir_name.to_string());
+    if !is_invokable_name(&name) {
+        return None;
+    }
     // A block-scalar `description: |` becomes a multi-line string; take its
     // first meaningful line (trimmed, capped) so the autocomplete row stays a
     // single line, mirroring the command-body fallback.
@@ -900,6 +938,63 @@ mod tests {
         walk(&ctx, &roots[0].dir, &mut out, &mut HashSet::new(), 0);
         assert!(out.contains_key("acme:x"));
         assert_eq!(out["acme:x"].description, "Plugin command x");
+    }
+
+    #[test]
+    fn plugin_roots_skip_project_scope_installs() {
+        // A user-scope and a project-scope install of two plugins. Only the
+        // user-scope one becomes a root — project-scope installs belong to a
+        // specific workspace and would otherwise leak across projects.
+        let home = tempfile::tempdir().unwrap();
+        let plugins = home.path().join(".claude").join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(
+            plugins.join("installed_plugins.json"),
+            r#"{"version":2,"plugins":{
+                "glob@official":[{"scope":"user","installPath":"/tmp/glob/1.0.0"}],
+                "proj@official":[{"scope":"project","installPath":"/tmp/proj/1.0.0"}]
+            }}"#,
+        )
+        .unwrap();
+
+        let roots = claude_plugin_command_roots(home.path());
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].prefix.as_deref(), Some("glob"));
+    }
+
+    #[test]
+    fn skill_with_whitespace_name_falls_back_to_dir_then_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        // Frontmatter name has a space → not invokable → falls back to the
+        // (valid) directory name.
+        let good = dir.path().join("good.md");
+        std::fs::write(&good, "---\nname: my tool\ndescription: Hi\n---\n").unwrap();
+        let cmd = claude_parse_skill(&good, "packer", CommandScope::User).unwrap();
+        assert_eq!(cmd.name, "packer");
+
+        // Neither frontmatter name nor the directory is a single token → skip.
+        let bad = dir.path().join("bad.md");
+        std::fs::write(&bad, "---\ndescription: Hi\n---\n").unwrap();
+        assert!(claude_parse_skill(&bad, "my tool", CommandScope::User).is_none());
+    }
+
+    #[test]
+    fn command_with_whitespace_name_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("my cmd.md"), "does a thing").unwrap();
+        std::fs::write(dir.path().join("build.md"), "builds").unwrap();
+
+        let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        let ctx = WalkCtx {
+            base: dir.path(),
+            scope: CommandScope::User,
+            prefix: None,
+            parse: claude_parse_command,
+        };
+        walk(&ctx, dir.path(), &mut out, &mut HashSet::new(), 0);
+
+        let names: Vec<&str> = out.keys().map(String::as_str).collect();
+        assert_eq!(names, vec!["build"]);
     }
 
     #[test]
