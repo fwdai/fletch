@@ -25,7 +25,7 @@ import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import {
   applyEvent,
   applyUserTurns,
-  carryForwardQueued,
+  carryForwardStoreOnly,
   needsSessionIdRefresh,
   persistLiveUsage,
   providerFor,
@@ -254,9 +254,11 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
         if (records.length === 0) return;
         const provider = providerFor(get(), id);
         const rebuilt = applyUserTurns(reduceRecords(provider, records), turns);
-        // Keep optimistic mid-turn follow-ups visible until the transcript
-        // catches up (then they reconcile away). See carryForwardQueued.
-        const items = carryForwardQueued(rebuilt, get().managedLogs[id] ?? []);
+        // Re-attach store-only items the rebuild would drop: optimistic
+        // follow-ups (until the transcript catches up) and command output
+        // (/doctor, /cost, blocked-command notices — which persist). See
+        // carryForwardStoreOnly.
+        const items = carryForwardStoreOnly(rebuilt, get().managedLogs[id] ?? []);
         const usage = usageFromRecords(provider, records);
         set((state) => ({
           managedLogs: { ...state.managedLogs, [id]: items },
