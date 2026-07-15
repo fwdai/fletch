@@ -24,6 +24,8 @@ interface CacheEnvelope {
   catalog: UnifiedCatalog;
 }
 
+let refreshInFlight: Promise<UnifiedCatalog | null> | null = null;
+
 function readCache(): CacheEnvelope | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
@@ -34,15 +36,6 @@ function readCache(): CacheEnvelope | null {
     // Corrupt cache — treat as absent.
   }
   return null;
-}
-
-/** Drop the cached catalog so the next refresh rebuilds from live discovery. */
-export function clearCachedCatalog(): void {
-  try {
-    localStorage.removeItem(CACHE_KEY);
-  } catch {
-    // Storage unavailable — the next rebuild still updates in-memory state.
-  }
 }
 
 /** Best catalog available without rebuilding: the cached copy, or empty. Used to
@@ -74,4 +67,16 @@ export async function rebuildCatalog(): Promise<UnifiedCatalog | null> {
     // Storage unavailable — the in-memory result is still usable this session.
   }
   return catalog;
+}
+
+/** Refresh the catalog, deduping concurrent requests so only one rebuild runs.
+ *  `force=true` skips the TTL check and is used by the manual developer action. */
+export function refreshCatalog(force = false): Promise<UnifiedCatalog | null> {
+  if (refreshInFlight) return refreshInFlight;
+  if (!force && !isCatalogStale()) return Promise.resolve(loadCachedCatalog());
+
+  refreshInFlight = rebuildCatalog().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
 }

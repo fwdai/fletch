@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
-import { clearCachedCatalog } from "@/data/modelCatalog";
 import { useAppStore } from "@/store";
 import { SetGroup, SetHead, SetRow } from "./primitives";
 
@@ -17,9 +16,8 @@ export function DeveloperPane() {
   const handleRefreshModels = async () => {
     if (refreshingModels) return;
     setRefreshingModels(true);
-    clearCachedCatalog();
     try {
-      await refreshModelCatalog();
+      await refreshModelCatalog(true);
     } finally {
       setRefreshingModels(false);
     }
