@@ -37,7 +37,6 @@ import { getOrCreateAccount, toProfile } from "@/storage/accounts";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
-  type Density,
   parseFeatures,
   parseNewDraftSelection,
   parsePaneWidth,
@@ -107,7 +106,6 @@ const hydrateSettings = async (set: AppSet) => {
       theme: (s.theme as ThemeMode) || "dark",
       codeTheme: s.codeTheme || "quorum",
       accent: s.accent || "copper",
-      density: (s.density as Density) || "comfortable",
       features: parseFeatures(s.features),
       // Opt-out chime: only an explicit "false" mutes it.
       soundEnabled: s.soundEnabled !== "false",

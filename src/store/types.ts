@@ -24,7 +24,6 @@ import type { AccountProfile } from "@/storage/accounts";
 import type { CustomAgent, NewCustomAgent } from "@/storage/customAgents";
 import type { McpServer, NewMcpServer } from "@/storage/mcpServers";
 import type {
-  Density,
   FeatureFlags,
   SandboxEngine,
   SettingsIntent,
@@ -461,7 +460,6 @@ export interface AppearanceSlice {
    *  follows the app's light/dark mode. See data/codeThemes.ts. */
   codeTheme: string;
   accent: string;
-  density: Density;
   features: FeatureFlags;
   /** Play the chime when an agent turn finishes or needs input while you're
    *  not watching that chat. Opt-out. */
@@ -478,7 +476,6 @@ export interface AppearanceSlice {
   setTheme: (t: ThemeMode) => void;
   setCodeTheme: (id: string) => void;
   setAccent: (a: string) => void;
-  setDensity: (d: Density) => void;
   setFeature: <K extends keyof FeatureFlags>(k: K, v: FeatureFlags[K]) => void;
   setSoundEnabled: (on: boolean) => void;
   setNotifyEnabled: (on: boolean) => void;

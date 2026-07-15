@@ -8,7 +8,6 @@ import { DEFAULT_PROVIDER_ID } from "@/data/providers";
 // ---- Appearance & feature-flag types -----------------------------------------
 
 export type ThemeMode = "dark" | "light";
-export type Density = "comfortable" | "compact";
 export type WorkspaceView = "custom" | "native";
 export type SettingsSection =
   | "general"

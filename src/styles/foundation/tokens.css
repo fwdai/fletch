@@ -1,7 +1,6 @@
 /* Fletch — quiet & editorial. Ported from the Fletch v2 prototype.
  * Color tokens are OKLCH; theme via `.theme-dark` / `.theme-light` on <html>;
- * density via `.density-comfortable` / `.density-compact`; accent vars are
- * overridden at runtime by App.tsx based on the selected palette.
+ * accent vars are overridden at runtime by App.tsx based on the selected palette.
  */
 
 :root {
@@ -44,10 +43,6 @@
   --ease: cubic-bezier(0.3, 0.7, 0.4, 1);
   --transition-ui: background 0.12s, color 0.12s;
   --transition-ui-ease: background 0.12s var(--ease), color 0.12s var(--ease);
-
-  --dens-sm: 6px;
-  --dens-md: 10px;
-  --dens-lg: 16px;
 
   /* z-index scale */
   --z-titlebar: 20; /* title bar + chat-search overlay */
@@ -125,15 +120,4 @@
   --btn-fg-dark-alt: oklch(0.18 0.02 60);
   --btn-fg-light: oklch(0.98 0.005 60);
   color-scheme: light;
-}
-
-.density-comfortable {
-  --dens-sm: 6px;
-  --dens-md: 10px;
-  --dens-lg: 18px;
-}
-.density-compact {
-  --dens-sm: 4px;
-  --dens-md: 7px;
-  --dens-lg: 12px;
 }

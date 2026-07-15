@@ -37,7 +37,6 @@ export function App() {
 
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
-  const density = useAppStore((s) => s.density);
 
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
@@ -104,10 +103,10 @@ export function App() {
     [refreshAllPrChecks, githubConnected, anyChecksPending, anyOpenPr],
   );
 
-  // Apply theme + density via html classes; accent via CSS vars.
+  // Apply theme via html class; accent via CSS vars.
   useEffect(() => {
-    document.documentElement.className = `theme-${theme} density-${density}`;
-  }, [theme, density]);
+    document.documentElement.className = `theme-${theme}`;
+  }, [theme]);
   useEffect(() => {
     const v = ACCENT_VALUES[accent] || ACCENT_VALUES.copper;
     const root = document.documentElement;
