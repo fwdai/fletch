@@ -69,11 +69,14 @@ pub fn discover(provider: &str, project: Option<&Path>) -> Vec<DiscoveredCommand
     let Some(d) = discovery_for(provider) else {
         return Vec::new();
     };
-    // name -> command. Roots come lowest-precedence first, so scanning them in
-    // order lets a later (project) entry overwrite an earlier (user) one. The
-    // BTreeMap also yields the result already sorted by name.
+    // name -> command. Roots are declared lowest-precedence first, so scan them
+    // highest-first and keep the first entry seen for a name (see `walk`). A
+    // higher-precedence (project) command then wins over a lower one (user), and
+    // if the total-count cap is hit it drops the *lowest*-precedence overflow
+    // rather than skipping a whole higher-precedence root. The BTreeMap also
+    // yields the result already sorted by name.
     let mut by_name: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
-    for root in (d.roots)(project) {
+    for root in (d.roots)(project).into_iter().rev() {
         walk(&root.dir, &root.dir, root.scope, d.parse, &mut by_name, 0);
     }
     by_name.into_values().collect()
@@ -111,8 +114,12 @@ fn walk(
             walk(base, &path, scope, parse, out, depth + 1);
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             if let Some(name) = command_name(base, &path) {
-                if let Some(cmd) = parse(&path, &name, scope) {
-                    out.insert(name, cmd);
+                // First-wins: roots are scanned highest-precedence first, so an
+                // already-present name means a higher-precedence root claimed it.
+                if !out.contains_key(&name) {
+                    if let Some(cmd) = parse(&path, &name, scope) {
+                        out.insert(name, cmd);
+                    }
                 }
             }
         }
@@ -198,25 +205,31 @@ fn claude_parse_command(path: &Path, name: &str, scope: CommandScope) -> Option<
     })
 }
 
-/// Split a leading YAML frontmatter block (`---\n…\n---`) from the markdown
-/// body. Returns (Some(yaml), body) when present, else (None, whole input).
+/// Split a leading YAML frontmatter block (a `---` line, the YAML, then a
+/// closing `---` line) from the markdown body. Line-ending agnostic (LF or
+/// CRLF), so Windows-authored command files keep their metadata. Returns
+/// (Some(yaml), body) when a complete block is present, else (None, whole
+/// input).
 fn split_frontmatter(raw: &str) -> (Option<&str>, &str) {
-    let Some(rest) = raw.strip_prefix("---\n") else {
+    // Opening fence: the first line must be exactly `---` (tolerating a CR).
+    let Some(nl) = raw.find('\n') else {
         return (None, raw);
     };
-    // First closing fence at a line start terminates the block.
-    match rest.find("\n---") {
-        Some(end) => {
-            let yaml = &rest[..end];
-            let after = &rest[end + 4..];
-            let body = after
-                .strip_prefix('\n')
-                .or_else(|| after.strip_prefix("\r\n"))
-                .unwrap_or(after);
-            (Some(yaml), body)
-        }
-        None => (None, raw),
+    if raw[..nl].trim_end_matches('\r') != "---" {
+        return (None, raw);
     }
+    let rest = &raw[nl + 1..];
+    // Closing fence: the next line that is exactly `---`. serde_yaml tolerates
+    // the trailing CR on CRLF yaml lines, so the block is passed through as-is.
+    let mut offset = 0;
+    for line in rest.split_inclusive('\n') {
+        if line.trim_end_matches('\n').trim_end_matches('\r') == "---" {
+            return (Some(&rest[..offset]), &rest[offset + line.len()..]);
+        }
+        offset += line.len();
+    }
+    // No closing fence — not a real frontmatter block.
+    (None, raw)
 }
 
 /// The first non-empty, non-heading line of a command body, used as a fallback
@@ -244,7 +257,7 @@ mod tests {
     #[test]
     fn splits_frontmatter_and_body() {
         let (fm, body) = split_frontmatter("---\ndescription: Hi\n---\nBody here\n");
-        assert_eq!(fm, Some("description: Hi"));
+        assert_eq!(fm, Some("description: Hi\n"));
         assert_eq!(body, "Body here\n");
     }
 
@@ -253,6 +266,27 @@ mod tests {
         let (fm, body) = split_frontmatter("Just a body\nmore");
         assert_eq!(fm, None);
         assert_eq!(body, "Just a body\nmore");
+    }
+
+    #[test]
+    fn splits_crlf_frontmatter() {
+        let (fm, body) = split_frontmatter("---\r\ndescription: Hi\r\n---\r\nBody\r\n");
+        assert_eq!(fm, Some("description: Hi\r\n"));
+        assert_eq!(body, "Body\r\n");
+    }
+
+    #[test]
+    fn parses_crlf_authored_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("win.md");
+        std::fs::write(
+            &file,
+            "---\r\ndescription: Windows cmd\r\nargument-hint: <x>\r\n---\r\nbody\r\n",
+        )
+        .unwrap();
+        let cmd = claude_parse_command(&file, "win", CommandScope::User).unwrap();
+        assert_eq!(cmd.description, "Windows cmd");
+        assert_eq!(cmd.hint.as_deref(), Some("<x>"));
     }
 
     #[test]
@@ -319,5 +353,51 @@ mod tests {
 
         let names: Vec<&str> = out.keys().map(String::as_str).collect();
         assert_eq!(names, vec!["build", "frontend:x"]);
+    }
+
+    #[test]
+    fn project_shadows_user_via_highest_first_scan() {
+        // Mirror discover's ordering: roots declared lowest-first ([user,
+        // project]) are scanned reversed (project first) with first-wins, so a
+        // shared name keeps the project entry and a user-only name survives.
+        let user = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            user.path().join("shared.md"),
+            "---\ndescription: from user\n---\n",
+        )
+        .unwrap();
+        std::fs::write(user.path().join("useronly.md"), "user only").unwrap();
+        std::fs::write(
+            project.path().join("shared.md"),
+            "---\ndescription: from project\n---\n",
+        )
+        .unwrap();
+
+        let roots = [
+            CommandRoot {
+                dir: user.path().to_path_buf(),
+                scope: CommandScope::User,
+            },
+            CommandRoot {
+                dir: project.path().to_path_buf(),
+                scope: CommandScope::Project,
+            },
+        ];
+        let mut out: BTreeMap<String, DiscoveredCommand> = BTreeMap::new();
+        for root in roots.into_iter().rev() {
+            walk(
+                &root.dir,
+                &root.dir,
+                root.scope,
+                claude_parse_command,
+                &mut out,
+                0,
+            );
+        }
+
+        assert_eq!(out["shared"].description, "from project");
+        assert_eq!(out["shared"].scope, CommandScope::Project);
+        assert!(out.contains_key("useronly"));
     }
 }
