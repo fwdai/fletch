@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatItem } from "@/adapters";
-import { carryForwardQueued } from "@/helpers";
+import { carryForwardStoreOnly } from "@/helpers";
 
 const userMsg = (text: string, attachments?: string[]): ChatItem =>
   attachments ? { kind: "user_message", text, attachments } : { kind: "user_message", text };
@@ -8,12 +8,18 @@ const agentMsg = (text: string): ChatItem => ({ kind: "agent_message", text });
 const toolCall = (id: string): ChatItem => ({ kind: "tool_call", id, name: "Bash", input: "" });
 const queued = (text: string, attachments?: string[]): ChatItem =>
   attachments ? { kind: "queued_message", text, attachments } : { kind: "queued_message", text };
+const cmdOut = (label: string, text: string): ChatItem => ({
+  kind: "notice",
+  subtype: "command_output",
+  label,
+  text,
+});
 
-describe("carryForwardQueued", () => {
+describe("carryForwardStoreOnly", () => {
   it("keeps an undelivered follow-up the transcript hasn't caught up to", () => {
     const rebuilt = [userMsg("first"), agentMsg("done")];
     const prev = [...rebuilt, queued("a follow-up")];
-    const out = carryForwardQueued(rebuilt, prev);
+    const out = carryForwardStoreOnly(rebuilt, prev);
     expect(out).toEqual([...rebuilt, queued("a follow-up")]);
   });
 
@@ -21,7 +27,7 @@ describe("carryForwardQueued", () => {
     // Per-turn coalescing: queued "a" and "b" arrive as one "a\n\nb" user turn.
     const rebuilt = [userMsg("first"), agentMsg("done"), userMsg("a\n\nb")];
     const prev = [userMsg("first"), agentMsg("done"), queued("a"), queued("b")];
-    const out = carryForwardQueued(rebuilt, prev);
+    const out = carryForwardStoreOnly(rebuilt, prev);
     expect(out).toEqual(rebuilt); // both reconciled away
   });
 
@@ -29,19 +35,19 @@ describe("carryForwardQueued", () => {
     // Claude live: the injected message becomes its own user record.
     const rebuilt = [userMsg("first"), agentMsg("..."), userMsg("inject me")];
     const prev = [userMsg("first"), agentMsg("..."), queued("inject me")];
-    expect(carryForwardQueued(rebuilt, prev)).toEqual(rebuilt);
+    expect(carryForwardStoreOnly(rebuilt, prev)).toEqual(rebuilt);
   });
 
   it("matches an attachment-only follow-up by its attachment path", () => {
     const rebuilt = [userMsg("look", ["/tmp/a.png"])];
     const prev = [queued("", ["/tmp/a.png"])];
-    expect(carryForwardQueued(rebuilt, prev)).toEqual(rebuilt);
+    expect(carryForwardStoreOnly(rebuilt, prev)).toEqual(rebuilt);
   });
 
   it("keeps an attachment-only follow-up with no needle until it can match", () => {
     const rebuilt = [userMsg("first")];
     const prev = [queued("")];
-    const out = carryForwardQueued(rebuilt, prev);
+    const out = carryForwardStoreOnly(rebuilt, prev);
     expect(out).toEqual([userMsg("first"), queued("")]);
   });
 
@@ -49,13 +55,29 @@ describe("carryForwardQueued", () => {
     // Only user messages reconcile a follow-up; an agent echo must not.
     const rebuilt = [userMsg("hi"), agentMsg("you said follow-up")];
     const prev = [...rebuilt, queued("follow-up")];
-    const out = carryForwardQueued(rebuilt, prev);
+    const out = carryForwardStoreOnly(rebuilt, prev);
     expect(out).toEqual([...rebuilt, queued("follow-up")]);
   });
 
   it("is a no-op when there are no queued items", () => {
     const rebuilt = [userMsg("hi"), agentMsg("ok")];
-    expect(carryForwardQueued(rebuilt, rebuilt)).toEqual(rebuilt);
+    expect(carryForwardStoreOnly(rebuilt, rebuilt)).toEqual(rebuilt);
+  });
+
+  it("persists command output across a reconcile that rebuilds from records", () => {
+    // /doctor output (or a blocked-command notice) is store-only — a rebuild
+    // from records would drop it, so it must carry forward and stay visible.
+    const rebuilt = [userMsg("hi"), agentMsg("ok")];
+    const prev = [...rebuilt, cmdOut("/doctor", "all good")];
+    const out = carryForwardStoreOnly(rebuilt, prev);
+    expect(out).toEqual([...rebuilt, cmdOut("/doctor", "all good")]);
+  });
+
+  it("keeps command output at its injection point, not the end", () => {
+    const rebuilt = [userMsg("start"), agentMsg("after")];
+    const prev = [userMsg("start"), cmdOut("/cost", "42 tokens"), agentMsg("after")];
+    const out = carryForwardStoreOnly(rebuilt, prev);
+    expect(out).toEqual([userMsg("start"), cmdOut("/cost", "42 tokens"), agentMsg("after")]);
   });
 
   it("keeps an unreconciled mid-turn follow-up at its injection point, not the end", () => {
@@ -65,14 +87,14 @@ describe("carryForwardQueued", () => {
     // jump below the answer.
     const rebuilt = [userMsg("start"), toolCall("t1"), agentMsg("after")];
     const prev = [userMsg("start"), toolCall("t1"), queued("mid"), agentMsg("after")];
-    const out = carryForwardQueued(rebuilt, prev);
+    const out = carryForwardStoreOnly(rebuilt, prev);
     expect(out).toEqual([userMsg("start"), toolCall("t1"), queued("mid"), agentMsg("after")]);
   });
 
   it("anchors a follow-up to the preceding agent message when there's no tool call", () => {
     const rebuilt = [userMsg("start"), agentMsg("thinking"), agentMsg("done")];
     const prev = [userMsg("start"), agentMsg("thinking"), queued("mid"), agentMsg("done")];
-    const out = carryForwardQueued(rebuilt, prev);
+    const out = carryForwardStoreOnly(rebuilt, prev);
     expect(out).toEqual([userMsg("start"), agentMsg("thinking"), queued("mid"), agentMsg("done")]);
   });
 
@@ -95,7 +117,7 @@ describe("carryForwardQueued", () => {
       agentMsg("ok"),
       agentMsg("done"),
     ];
-    const out = carryForwardQueued(rebuilt, prev);
+    const out = carryForwardStoreOnly(rebuilt, prev);
     expect(out).toEqual([
       userMsg("start"),
       agentMsg("ok"),

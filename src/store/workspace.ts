@@ -171,11 +171,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     // view's stream-json transport. Dispatched as a plain message they'd
     // produce a transient reply that never persists, so the turn reconciles
     // away and flashes out (see onSessionRecordsAppended). Intercept them here
-    // and leave a notice pointing to the Native view instead of sending a
-    // doomed turn. Because we never call the backend, no records-append
-    // reconcile runs, so the notice stays put (until a full transcript reload,
-    // like any store-inserted command output).
-    const unsupported = unsupportedManagedCommand(
+    // and leave a command_output notice pointing to the Native view instead of
+    // sending a doomed turn. The notice is store-only but survives reconciles
+    // (carryForwardStoreOnly), so the explanation persists for the session.
+    const unsupported = await unsupportedManagedCommand(
       providerFor(get(), id),
       text,
       repoPathFor(get(), id),

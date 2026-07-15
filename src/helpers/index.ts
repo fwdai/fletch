@@ -8,7 +8,7 @@ import { type ChatItem, getAdapter, type RawEvent } from "../adapters";
 import { hasUsage, usageFromRecords } from "../adapters/usage";
 import { api, type SessionRecord, type UserTurn, type Workspace } from "../api";
 import { MCP_SUPPORT, mcpAttachable } from "../data/providers";
-import { commandsFor } from "../data/slashCommands";
+import { commandsFor, discoverCommands } from "../data/slashCommands";
 import type { CustomAgent } from "../storage/customAgents";
 import { type McpServerSnapshot, snapshotMcpServer } from "../storage/mcpServers";
 import type { SkillSnapshot } from "../storage/skills";
@@ -72,17 +72,22 @@ const CLAUDE_TUI_ONLY_COMMANDS = new Set([
  *  name; otherwise null. Scoped to claude; other providers never match. The
  *  store uses this to block the send and surface a "use the Native view" notice
  *  instead of dispatching a doomed turn that flashes and disappears. */
-export function unsupportedManagedCommand(
+export async function unsupportedManagedCommand(
   providerId: string | undefined,
   text: string,
   projectDir?: string,
-): string | null {
+): Promise<string | null> {
   if (providerId !== "claude" || !text.startsWith("/")) return null;
   const first = text.split(/\s/)[0].slice(1);
   if (!CLAUDE_TUI_ONLY_COMMANDS.has(first)) return null;
-  // A command we actually handle (e.g. a discovered custom command that happens
-  // to share a name) always wins — never block something that works here.
-  if (commandsFor(providerId, projectDir).some((c) => c.name === first)) return null;
+  // A command we actually handle (e.g. a project `.claude/commands/usage.md`
+  // that happens to share a curated name) always wins — never block something
+  // that works here. Await discovery rather than reading the possibly-cold
+  // cache: otherwise a `/usage` sent before the composer has run discovery
+  // would be wrongly blocked. Only reached for the rare curated-name case, so
+  // the extra round-trip is cheap.
+  const commands = await discoverCommands(providerId, projectDir);
+  if (commands.some((c) => c.name === first)) return null;
   return first;
 }
 
@@ -199,9 +204,15 @@ function locateAnchor(rebuilt: ChatItem[], item: ChatItem, from: number): number
   return -1;
 }
 
-/** Carry forward optimistic mid-turn follow-ups (`queued_message`) onto a log
- *  just rebuilt from canonical records, so they don't blink out before the
- *  transcript catches up. Drops any the rebuilt conversation already accounts
+/** Carry forward store-only items — optimistic mid-turn follow-ups
+ *  (`queued_message`) and user-invoked command output (`command_output`
+ *  notices: `/doctor`, `/cost`, a blocked-command explanation) — onto a log
+ *  just rebuilt from canonical records. Neither ever lands in the transcript,
+ *  so a plain rebuild would drop them; re-inserting keeps them visible for the
+ *  session (until a full transcript reload). Command output always carries;
+ *  queued follow-ups drop once a real turn accounts for them.
+ *
+ *  Drops any follow-up the rebuilt conversation already accounts
  *  for — its text (or first attachment path) now appears in a user message,
  *  whether the follow-up was delivered live (claude) or coalesced (per-turn) —
  *  mirroring the backend matcher's substring association.
@@ -213,7 +224,7 @@ function locateAnchor(rebuilt: ChatItem[], item: ChatItem, from: number): number
  *  jumping to the bottom below the answer it prompted. Follow-ups with no
  *  locatable anchor (e.g. an attachment-only one with no needle) fall to the
  *  end, held there until they can be matched. */
-export function carryForwardQueued(rebuilt: ChatItem[], prev: ChatItem[]): ChatItem[] {
+export function carryForwardStoreOnly(rebuilt: ChatItem[], prev: ChatItem[]): ChatItem[] {
   const matched = (q: Extract<ChatItem, { kind: "queued_message" }>): boolean => {
     const needle = q.text || q.attachments?.[0];
     if (!needle) return false;
@@ -225,18 +236,24 @@ export function carryForwardQueued(rebuilt: ChatItem[], prev: ChatItem[]): ChatI
   };
 
   // Walk prev, tracking the rebuilt-index of the most recent locatable item.
-  // Each unmatched follow-up is bucketed to insert after that anchor; -1 means
-  // no anchor was found yet, so it falls to the end. Searching forward from
+  // Each store-only item is bucketed to insert after that anchor; -1 means no
+  // anchor was found yet, so it falls to the end. Searching forward from
   // `anchor + 1` keeps the anchor advancing in lockstep with the walk, so
   // repeated text resolves to the right occurrence.
   const insertAfter = new Map<number, ChatItem[]>();
   let anchor = -1;
+  const carry = (it: ChatItem) => {
+    const bucket = insertAfter.get(anchor) ?? [];
+    bucket.push(it);
+    insertAfter.set(anchor, bucket);
+  };
   for (const it of prev) {
     if (it.kind === "queued_message") {
-      if (matched(it)) continue;
-      const bucket = insertAfter.get(anchor) ?? [];
-      bucket.push(it);
-      insertAfter.set(anchor, bucket);
+      // Drop once a real turn echoes it; otherwise hold it in place.
+      if (!matched(it)) carry(it);
+    } else if (it.kind === "notice" && it.subtype === "command_output") {
+      // Command output lives only in the store — always re-insert it.
+      carry(it);
     } else {
       const idx = locateAnchor(rebuilt, it, anchor + 1);
       if (idx >= 0) anchor = idx;
