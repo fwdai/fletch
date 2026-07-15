@@ -31,7 +31,7 @@ export function PeaksMark() {
 // ── Google "G" (multi-color, standard OAuth mark) ───────────────────
 function GoogleG() {
   return (
-    <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true">
+    <svg viewBox="0 0 18 18" width="20" height="20" aria-hidden="true">
       <path
         fill="#4285F4"
         d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.71-1.57 2.68-3.89 2.68-6.62z"
@@ -83,7 +83,7 @@ export function WelcomeStep({
             onClick={() => onAuth("github")}
           >
             <span className="gl">
-              <Icon name="github" size={18} />
+              <Icon name="github" size={20} />
             </span>
             <span className="lbl">Continue with GitHub</span>
             <span className="ent">↵</span>
