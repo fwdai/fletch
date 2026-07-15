@@ -43,6 +43,49 @@ export function passthroughSlashName(
   return match ? match.name : null;
 }
 
+/** Claude built-in control commands that only work in its interactive TUI and
+ *  do NOT resolve over the managed (custom) view's stream-json transport. Sent
+ *  as a plain user message they never execute: Claude emits a transient reply
+ *  that isn't persisted to the on-disk transcript, so the turn reconciles away
+ *  and the message flashes then vanishes (see onSessionRecordsAppended). Bare
+ *  names, no leading slash.
+ *
+ *  Deliberately EXCLUDES commands Fletch already handles in-app (clear, cost,
+ *  config, resume, mcp, doctor — see data/slashCommands/claude.ts) and the
+ *  working passthrough skills (help, compact, init): those must keep flowing.
+ *  Kept small and curated on purpose — we only intercept commands we know are
+ *  unsupported, never arbitrary unknown `/x` (which could be a not-yet-discovered
+ *  custom command or a literal message). */
+const CLAUDE_TUI_ONLY_COMMANDS = new Set([
+  "usage",
+  "agents",
+  "login",
+  "logout",
+  "vim",
+  "terminal-setup",
+  "status",
+]);
+
+/** If `text` is a `/<name>` that is a known Claude TUI-only control command
+ *  unsupported over stream-json — and NOT a command we actually handle for this
+ *  provider (local or passthrough, built-in or discovered) — return its bare
+ *  name; otherwise null. Scoped to claude; other providers never match. The
+ *  store uses this to block the send and surface a "use the Native view" notice
+ *  instead of dispatching a doomed turn that flashes and disappears. */
+export function unsupportedManagedCommand(
+  providerId: string | undefined,
+  text: string,
+  projectDir?: string,
+): string | null {
+  if (providerId !== "claude" || !text.startsWith("/")) return null;
+  const first = text.split(/\s/)[0].slice(1);
+  if (!CLAUDE_TUI_ONLY_COMMANDS.has(first)) return null;
+  // A command we actually handle (e.g. a discovered custom command that happens
+  // to share a name) always wins — never block something that works here.
+  if (commandsFor(providerId, projectDir).some((c) => c.name === first)) return null;
+  return first;
+}
+
 /** Render canonical `session_records` (verbatim per-provider transcript
  *  bodies) into chat items via the same pipeline as on-disk replay:
  *  `normalizeTranscript` → `reduce`. Defensive: a malformed body or an adapter

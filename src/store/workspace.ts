@@ -9,6 +9,7 @@ import {
   reduceRecords,
   repoPathFor,
   sendWhenAgentReady,
+  unsupportedManagedCommand,
 } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { setSetting } from "@/storage/settings";
@@ -165,6 +166,38 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   },
 
   sendUserMessage: async (id, text, attachments = [], thinking) => {
+    // Guard: some Claude built-in control commands (e.g. /usage, /agents,
+    // /login) only work in its interactive TUI and don't resolve over this
+    // view's stream-json transport. Dispatched as a plain message they'd
+    // produce a transient reply that never persists, so the turn reconciles
+    // away and flashes out (see onSessionRecordsAppended). Intercept them here
+    // and leave a notice pointing to the Native view instead of sending a
+    // doomed turn. Because we never call the backend, no records-append
+    // reconcile runs, so the notice stays put (until a full transcript reload,
+    // like any store-inserted command output).
+    const unsupported = unsupportedManagedCommand(
+      providerFor(get(), id),
+      text,
+      repoPathFor(get(), id),
+    );
+    if (unsupported) {
+      set((state) => ({
+        managedLogs: {
+          ...state.managedLogs,
+          [id]: [
+            ...(state.managedLogs[id] ?? []),
+            {
+              kind: "notice",
+              subtype: "command_output",
+              label: `/${unsupported}`,
+              text: `/${unsupported} isn't available in this chat view — it only works in Claude's interactive TUI. Switch to the Native view to use it.`,
+              is_error: true,
+            },
+          ],
+        },
+      }));
+      return;
+    }
     // Stable per-turn id, reused across the agent-not-ready retry below so the
     // backend's session_user_turns write is idempotent (one row per turn).
     const turnId = crypto.randomUUID();
