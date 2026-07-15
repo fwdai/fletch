@@ -7,6 +7,7 @@ import { createComposerSlice } from "./composer";
 import { createCustomAgentsSlice } from "./customAgents";
 import { createDraftsSlice } from "./drafts";
 import { createGitSlice } from "./git";
+import { createLocalCommandsSlice } from "./localCommands";
 import { createMcpServersSlice } from "./mcpServers";
 import { createProvidersSlice } from "./providers";
 import { createReposSlice } from "./repos";
@@ -33,6 +34,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createSkillsSlice(...a),
   ...createMcpServersSlice(...a),
   ...createSandboxSlice(...a),
+  ...createLocalCommandsSlice(...a),
 }));
 
 export type { ChatItem } from "@/adapters";

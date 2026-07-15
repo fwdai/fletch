@@ -232,6 +232,14 @@ export interface DiscoveredCommand {
   scope: "user" | "project";
 }
 
+/** Captured output of a one-shot `claude <args>` invocation run for a local
+ *  slash command (e.g. `/doctor`). Mirrors the Rust `ClaudeCommandOutput`. */
+export interface ClaudeCommandOutput {
+  stdout: string;
+  stderr: string;
+  success: boolean;
+}
+
 /** A checkout file's contents plus the metadata the File-panel editor
  *  needs. `chg_add` / `chg_mod` are 1-indexed line numbers the agent
  *  added / modified (drives the change gutter). */
@@ -677,6 +685,8 @@ export const api = {
       provider,
       projectDir: projectDir ?? null,
     }),
+  runClaudeCommand: (agentId: string, args: string[]) =>
+    invoke<ClaudeCommandOutput>("run_claude_command", { agentId, args }),
   listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),
   readCheckoutFile: (agentId: string, path: string) =>
     invoke<CheckoutFileContents>("read_checkout_file", { agentId, path }),

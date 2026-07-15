@@ -22,6 +22,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const repos = useAppStore((s) => s.workspace?.repos ?? []);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
+  const runLocalCommand = useAppStore((s) => s.runLocalCommand);
 
   // Kickoff mode: a single agent, or a workflow. The toggle sits at the top of
   // the page and swaps the whole block — it is not part of the prompt box. The
@@ -130,6 +131,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 draftKey={draft.id}
                 defaultProvider={draft.provider}
                 projectDir={draft.repoPath}
+                onLocalCommand={(action) => runLocalCommand(action)}
                 defaultModel={draft.model}
                 defaultCustomAgentId={draft.customAgentId}
                 onChangeSelection={(provider, model, customAgentId) => {

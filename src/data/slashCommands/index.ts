@@ -4,7 +4,7 @@ import { claudeCommandAdapter } from "./claude";
 import type { CommandAdapter, SlashCommand } from "./types";
 
 export type { DiscoveredCommand } from "../../api";
-export type { CommandAdapter, SlashCommand } from "./types";
+export type { CommandAdapter, LocalCommandAction, SlashCommand } from "./types";
 
 /** Per-provider command adapters. A full Record keyed by ProviderId (like
  *  ADAPTERS) so adding a provider without an adapter is a compile error. A

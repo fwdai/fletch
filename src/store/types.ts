@@ -20,6 +20,7 @@ import type {
 import type { GitDelegation, GitDelegationKind } from "@/components/RightPanel/delegation";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import type { ModelMeta, SlimCatalog } from "@/data/modelCatalog";
+import type { LocalCommandAction } from "@/data/slashCommands";
 import type { AccountProfile } from "@/storage/accounts";
 import type { CustomAgent, NewCustomAgent } from "@/storage/customAgents";
 import type { McpServer, NewMcpServer } from "@/storage/mcpServers";
@@ -597,6 +598,15 @@ export interface McpServersSlice {
   deleteMcpServer: (id: string) => Promise<void>;
 }
 
+/** Dispatcher for app-handled ("local") slash commands — Claude built-ins that
+ *  don't resolve over stream-json. Implemented in store/localCommands.ts. */
+export interface LocalCommandsSlice {
+  /** Execute an app-handled slash command picked in the composer. Never sends
+   *  text to the agent. `agentId` is absent in the new-agent (draft) composer,
+   *  where session-scoped commands no-op. */
+  runLocalCommand: (action: LocalCommandAction, agentId?: string) => Promise<void>;
+}
+
 export type AppState = AppSlice &
   WorkspaceSlice &
   ReposSlice &
@@ -610,6 +620,7 @@ export type AppState = AppSlice &
   CustomAgentsSlice &
   SkillsSlice &
   McpServersSlice &
-  SandboxSlice;
+  SandboxSlice &
+  LocalCommandsSlice;
 
 export type SliceCreator<T> = StateCreator<AppState, [], [], T>;

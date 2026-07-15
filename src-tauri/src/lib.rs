@@ -1210,6 +1210,7 @@ pub fn run() {
             commands::list_checkout_tree,
             commands::list_dir,
             commands::discover_slash_commands,
+            commands::run_claude_command,
             commands::list_prs,
             commands::read_checkout_file,
             commands::get_file_diff,

@@ -14,6 +14,18 @@ import type { ProviderId } from "../providers";
 //    yet, but the slot is here so adding (e.g.) a `/clear` that wipes the
 //    transcript view is a one-liner later.
 
+/** The app-side action a `local` command fires when picked. `cli:*` shell out
+ *  to `claude <subcommand>` and render the output; `app:*` drive existing
+ *  store/UI capabilities. The dispatcher (store/localCommands.ts) switches on
+ *  this exhaustively, so a new command means a new arm here and there. */
+export type LocalCommandAction =
+  | "cli:doctor"
+  | "cli:mcp"
+  | "app:cost"
+  | "app:config"
+  | "app:clear"
+  | "app:resume";
+
 export type SlashCommand =
   | {
       kind: "passthrough";
@@ -26,7 +38,7 @@ export type SlashCommand =
       name: string;
       description: string;
       hint?: string;
-      action: string;
+      action: LocalCommandAction;
     };
 
 /** Per-provider slash-command behavior — the command analogue of a

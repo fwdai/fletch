@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AcPick, AcSource } from "@/components/Composer/autocomplete/types";
-import { commandsFor, discoverCommands, type SlashCommand } from "@/data/slashCommands";
+import {
+  commandsFor,
+  discoverCommands,
+  type LocalCommandAction,
+  type SlashCommand,
+} from "@/data/slashCommands";
 
 interface Args {
   query: string | null;
@@ -11,7 +16,7 @@ interface Args {
   projectDir?: string;
   /** Fired when an app-handled (local) command is picked; its text is not
    *  sent to the agent. */
-  onLocalCommand?: (action: string) => void;
+  onLocalCommand?: (action: LocalCommandAction) => void;
 }
 
 /** The "/" source: provider-specific slash commands (built-ins + commands

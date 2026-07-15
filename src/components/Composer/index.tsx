@@ -6,6 +6,7 @@ import { Chip } from "@/components/ui/Chip";
 import { lookupModel } from "@/data/modelCatalog";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { DEFAULT_PROVIDER_ID, isDockerSupported, providerLabel } from "@/data/providers";
+import type { LocalCommandAction } from "@/data/slashCommands";
 import type { AgentUsage } from "@/store";
 import { useAppStore } from "@/store";
 import { AttachmentList } from "./AttachmentList";
@@ -53,7 +54,7 @@ interface Props {
   /** Fired when the user picks an app-defined slash command. The
    *  `action` identifier comes from the `SlashCommand` entry. The text
    *  is NOT sent to the agent; the parent decides what to do. */
-  onLocalCommand?: (action: string) => void;
+  onLocalCommand?: (action: LocalCommandAction) => void;
   /** The agent's project root, used to discover project-level slash commands
    *  (`<projectDir>/.claude/commands`) for the `/` autocomplete. Omit before a
    *  project is chosen; user-level commands are then still offered. */
