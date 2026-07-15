@@ -860,14 +860,21 @@ fn detailed_rest_error(body: &Value) -> String {
 }
 
 /// Merge the current branch's open PR: enable auto-merge (merge commit) so it
-/// lands when checks pass — or merge immediately when GitHub says the PR is
-/// already clean (the "clean status" refusal), matching `gh pr merge --auto`.
+/// lands when checks pass — or merge immediately when GitHub refuses auto-merge
+/// because there's nothing to wait for ("clean status") or because the repo has
+/// auto-merge disabled ("auto merge is not allowed"), matching `gh pr merge --auto`.
+///
+/// The direct-merge fallback is only taken when the base branch has no merge
+/// queue (`isMergeQueueEnabled`). On a merge-queue branch we must never fall
+/// back to `mergePullRequest`: for a caller allowed to merge directly that would
+/// land the PR outside the queue and skip its integration checks, so we surface
+/// GitHub's refusal instead.
 pub async fn pr_merge(checkout: &Path) -> Result<()> {
     let (owner, repo) = require_repo_ref(checkout).await?;
     let branch = require_current_branch(checkout, "pr merge").await?;
 
     let client = client::Client::new()?;
-    let query = branch_prs_query("id");
+    let query = branch_prs_query("id isMergeQueueEnabled");
     let data = client
         .graphql(
             &query,
@@ -875,11 +882,14 @@ pub async fn pr_merge(checkout: &Path) -> Result<()> {
         )
         .await?;
     let nodes = branch_pr_nodes(&data);
-    let id = pick_branch_pr(&nodes)
+    let pr = pick_branch_pr(&nodes)
         .filter(|n| n["state"].as_str() == Some("OPEN"))
-        .and_then(|n| n["id"].as_str())
+        .ok_or_else(|| Error::Gh("no open PR for this branch".into()))?;
+    let id = pr["id"]
+        .as_str()
         .ok_or_else(|| Error::Gh("no open PR for this branch".into()))?
         .to_string();
+    let merge_queue = pr["isMergeQueueEnabled"].as_bool().unwrap_or(false);
 
     let auto = client
         .graphql(
@@ -891,8 +901,19 @@ pub async fn pr_merge(checkout: &Path) -> Result<()> {
         .await;
     match auto {
         Ok(_) => Ok(()),
-        // "Pull request is in clean status" = nothing to wait for; merge now.
-        Err(Error::Gh(msg)) if msg.to_lowercase().contains("clean status") => {
+        // GitHub refused to *queue* an auto-merge, but on a branch with no merge
+        // queue the PR can still be merged directly. Two refusals mean "just
+        // merge now":
+        //  - "clean status": nothing to wait for, the PR is already mergeable.
+        //  - "auto merge is not allowed": the repo has auto-merge disabled entirely.
+        // On a merge-queue branch we skip this and let the refusal surface, so a
+        // direct merge never bypasses the queue's required integration checks.
+        Err(Error::Gh(msg))
+            if !merge_queue && {
+                let m = msg.to_lowercase();
+                m.contains("clean status") || m.contains("auto merge is not allowed")
+            } =>
+        {
             client
                 .graphql(
                     r#"mutation($id:ID!){
