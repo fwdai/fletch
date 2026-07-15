@@ -39,7 +39,7 @@ beforeEach(() => {
 });
 
 describe("refreshCatalog", () => {
-  it("keeps the last good cache when a refresh fails", async () => {
+  it("keeps the last good cache when models.dev fails after discovery succeeds", async () => {
     storage.set(
       CACHE_KEY,
       JSON.stringify({
@@ -57,7 +57,7 @@ describe("refreshCatalog", () => {
         },
       }),
     );
-    mocks.discoverSupportedModels.mockResolvedValue([]);
+    mocks.discoverSupportedModels.mockResolvedValue([{ agent: "codex", models: [] }]);
     mocks.fetchModelsDevIndex.mockResolvedValue(null);
 
     const { loadCachedCatalog, refreshCatalog } = await import("@/data/modelCatalog");

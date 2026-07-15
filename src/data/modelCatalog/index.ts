@@ -51,14 +51,14 @@ export function isCatalogStale(): boolean {
 }
 
 /** Rebuild the catalog from agent discovery + models.dev, and cache it. Returns
- *  null on failure (no agents and no models.dev) so the caller keeps the cache.
- *  A models.dev outage still yields a usable catalog from CLI-reported ids. */
+ *  null on any failure so the caller keeps the last good cache intact. */
 export async function rebuildCatalog(): Promise<UnifiedCatalog | null> {
   const [agents, index] = await Promise.all([
     api.discoverSupportedModels().catch(() => []),
     fetchModelsDevIndex(),
   ]);
-  const catalog = buildCatalog(agents, index ?? { byId: {}, byProvider: {} });
+  if (index === null) return null;
+  const catalog = buildCatalog(agents, index);
   if (Object.keys(catalog.byId).length === 0) return null;
   try {
     const env: CacheEnvelope = { builtAt: Date.now(), catalog };
