@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { ProjectPicker } from "@/components/Composer/ProjectPicker";
@@ -127,11 +128,19 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
               />
             ) : (
               <Composer
+                // Remount when the target repo changes so the @/# mention
+                // sources drop the previous repo's cached files/PRs (they only
+                // refetch on menu-open, not on a repoPath change under a live
+                // composer) — otherwise a wrong-repo file/PR could be inserted.
+                key={draft.repoPath}
                 autoFocus
                 draftKey={draft.id}
                 defaultProvider={draft.provider}
                 projectDir={draft.repoPath}
                 onLocalCommand={(action) => runLocalCommand(action)}
+                mentionSource={() => api.listRepoTree(draft.repoPath)}
+                listDir={api.listDir}
+                listPrs={() => api.listRepoPrs(draft.repoPath)}
                 defaultModel={draft.model}
                 defaultCustomAgentId={draft.customAgentId}
                 onChangeSelection={(provider, model, customAgentId) => {

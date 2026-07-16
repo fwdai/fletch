@@ -674,6 +674,15 @@ pub async fn list_prs(
     gh::pr_list(&checkout, 50).await
 }
 
+/// List the open PRs for a repo by path, for the draft (new-workspace)
+/// composer's "#" mention autocomplete. Unlike `list_prs`, this needs no agent
+/// — a draft has no checkout yet — so it queries the base repo directly.
+/// Capped at 50 to match `list_prs`.
+#[tauri::command]
+pub async fn list_repo_prs(repo_path: String) -> Result<Vec<gh::PrSummary>> {
+    gh::pr_list(&expand_tilde(&repo_path), 50).await
+}
+
 /// Fetch the PR merge gate + per-check detail (spec §6). Best-effort: any
 /// failure (no PR, gh missing, API error) returns `None` and the panel falls
 /// back to `mergeable`-only behavior.
@@ -1203,6 +1212,16 @@ pub async fn list_checkout_tree(
             }
         })
         .collect())
+}
+
+/// List a repo's files by path (tracked + non-ignored untracked), for the
+/// draft (new-workspace) composer's "@" mention autocomplete. Unlike
+/// `list_checkout_tree`, this needs no agent — a draft has no checkout yet — so
+/// it reads the base repo directly and returns plain paths (no diff status,
+/// since there's no fork point to diff against).
+#[tauri::command]
+pub async fn list_repo_tree(repo_path: String) -> Result<Vec<String>> {
+    git::list_files(&expand_tilde(&repo_path)).await
 }
 
 /// Expand a leading `~` (or `~/…`) to the user's home directory. Any other
