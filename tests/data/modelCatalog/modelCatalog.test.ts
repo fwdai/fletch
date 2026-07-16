@@ -297,6 +297,41 @@ describe("buildCatalog", () => {
     expect(cat.byAgent.codex).toHaveLength(1);
   });
 
+  it("passes through a model's reasoning levels and default (CLI-only metadata)", () => {
+    const agents: AgentModels[] = [
+      {
+        agent: "codex",
+        models: [
+          {
+            id: "gpt-5.5",
+            reasoning: true,
+            reasoningLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+            defaultReasoning: "low",
+          },
+        ],
+      },
+    ];
+    const cat = buildCatalog(agents, idx);
+    expect(cat.byId["gpt-5.5"].reasoningLevels).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]);
+    expect(cat.byId["gpt-5.5"].defaultReasoning).toBe("low");
+  });
+
+  it("omits reasoning levels when the CLI reports none", () => {
+    const agents: AgentModels[] = [
+      { agent: "codex", models: [{ id: "gpt-5.5", reasoning: true }] },
+    ];
+    const cat = buildCatalog(agents, idx);
+    expect(cat.byId["gpt-5.5"].reasoningLevels).toBeUndefined();
+    expect(cat.byId["gpt-5.5"].defaultReasoning).toBeUndefined();
+  });
+
   it("offers no selectable models for Antigravity (agy ignores model selection)", () => {
     // Discovery contributes no hint and no models for antigravity, so the
     // picker shows it as a fixed-model agent rather than offering Gemini ids

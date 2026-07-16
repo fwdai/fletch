@@ -1,9 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DirListing, PrSummary } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Chip } from "@/components/ui/Chip";
 import { lookupModel } from "@/data/modelCatalog";
-import { PROVIDER_DETAIL } from "@/data/providerDetail";
+import {
+  PROVIDER_DETAIL,
+  type ThinkingLevel,
+  thinkingLevelsFromModel,
+} from "@/data/providerDetail";
 import { DEFAULT_PROVIDER_ID, isDockerSupported, providerLabel } from "@/data/providers";
 import type { LocalCommandAction } from "@/data/slashCommands";
 import type { AgentUsage } from "@/store";
@@ -97,12 +101,24 @@ interface Props {
   usage?: AgentUsage;
 }
 
-function resolveThinking(providerId: string): string | undefined {
-  const d = PROVIDER_DETAIL[providerId as keyof typeof PROVIDER_DETAIL];
-  const levels = d?.thinkingLevels ?? [];
+/** The effective thinking level for a provider/model. A stored per-provider
+ *  preference wins, but only when the current model still supports it — so
+ *  switching to a model that lacks that level (e.g. a stale "low" carried onto a
+ *  richer model) falls through to the model's own default rather than sending an
+ *  unsupported value. Order: stored (if supported) → model default → provider
+ *  default → highest available. */
+function resolveThinking(
+  providerId: string,
+  levels: ThinkingLevel[],
+  modelDefault?: string,
+): string | undefined {
+  const supports = (v: string | undefined) => !!v && levels.some((l) => l.value === v);
   const stored = localStorage.getItem(`thinkingBudget.${providerId}`);
-  if (stored && levels.some((l) => l.value === stored)) return stored;
-  return d?.defaultLevel ?? levels.at(-1)?.value;
+  if (supports(stored ?? undefined)) return stored ?? undefined;
+  const d = PROVIDER_DETAIL[providerId as keyof typeof PROVIDER_DETAIL];
+  if (supports(modelDefault)) return modelDefault;
+  if (supports(d?.defaultLevel)) return d?.defaultLevel;
+  return levels.at(-1)?.value;
 }
 
 export function Composer({
@@ -146,7 +162,19 @@ export function Composer({
   const modelSupportsThinking = activeMeta ? activeMeta.reasoning : true;
 
   const detail = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
-  const thinkingLevels = detail?.thinkingLevels ?? [];
+  // Prefer the levels the model itself reports (per-model, e.g. codex exposing
+  // low→ultra for a given model), falling back to the provider's static list for
+  // CLIs that don't report a per-model set. `modelReasoning` is the model's own
+  // default level, used to seed the picker. Both inputs are stable references
+  // (catalog entry / module const), so the memo — and the effect that depends on
+  // it — recompute only on genuine model/provider changes, not every render.
+  const modelReasoning = activeMeta?.defaultReasoning;
+  const modelReasoningLevels = activeMeta?.reasoningLevels;
+  const providerLevels = detail?.thinkingLevels;
+  const thinkingLevels = useMemo<ThinkingLevel[]>(() => {
+    const modelLevels = thinkingLevelsFromModel(modelReasoningLevels);
+    return modelLevels.length > 0 ? modelLevels : (providerLevels ?? []);
+  }, [modelReasoningLevels, providerLevels]);
 
   // A new-agent draft can still hold a docker-unsupported provider chosen
   // before the sandbox engine was switched to Docker. Block the send here —
@@ -158,7 +186,7 @@ export function Composer({
     !existingSession && sandboxEngine === "docker" && !isDockerSupported(provider);
 
   const [thinkingValue, setThinkingValue] = useState<string | undefined>(() =>
-    resolveThinking(defaultProvider),
+    resolveThinking(defaultProvider, thinkingLevels, modelReasoning),
   );
 
   // Latest custom agents, read via a ref inside the effect below so that
@@ -167,17 +195,18 @@ export function Composer({
   const customAgentsRef = useRef(customAgents);
   customAgentsRef.current = customAgents;
 
-  // When switching providers, restore the last-used level for that provider —
-  // unless a custom agent is selected with its own reasoning budget, which
-  // takes precedence (runs after the provider change a custom pick triggers,
-  // so it wins). Fires only on genuine provider/custom-agent *selection*
-  // changes, not when the agent list mutates.
+  // When switching providers or models, restore the last-used level (validated
+  // against the new model's supported levels) — unless a custom agent is
+  // selected with its own reasoning budget, which takes precedence (runs after
+  // the provider change a custom pick triggers, so it wins). `thinkingLevels` is
+  // memoized, so this fires on genuine provider/model/custom-agent changes, not
+  // when the agent list mutates.
   useEffect(() => {
     const custom = customAgentId
       ? customAgentsRef.current.find((a) => a.id === customAgentId)
       : undefined;
-    setThinkingValue(custom?.effort || resolveThinking(provider));
-  }, [provider, customAgentId]);
+    setThinkingValue(custom?.effort || resolveThinking(provider, thinkingLevels, modelReasoning));
+  }, [provider, customAgentId, thinkingLevels, modelReasoning]);
 
   // Shared input core (textarea + `/`·`@`·`#` autocomplete + attachments +
   // draft/seed). `onEnter` sends via a ref so the callback can reference the

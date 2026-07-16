@@ -328,6 +328,10 @@ function metaFor(d: DiscoveredModel, index: ModelsDevIndex): ModelMeta {
     name: dev?.name ?? d.name ?? d.id,
     contextWindow: dev?.contextWindow || d.contextWindow || 0,
     reasoning: dev?.reasoning ?? d.reasoning ?? false,
+    // Reasoning levels/default come only from the CLI — models.dev doesn't carry
+    // them — so pass the discovered values straight through when present.
+    ...(d.reasoningLevels?.length ? { reasoningLevels: d.reasoningLevels } : {}),
+    ...(d.defaultReasoning ? { defaultReasoning: d.defaultReasoning } : {}),
     ...(dev?.family ? { family: dev.family } : {}),
     ...(dev?.releaseDate ? { releaseDate: dev.releaseDate } : {}),
   };

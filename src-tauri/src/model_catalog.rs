@@ -34,6 +34,15 @@ pub struct DiscoveredModel {
     pub context_window: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
+    /// The reasoning-effort levels this model supports, in the CLI's own order
+    /// (e.g. codex `["low","medium","high","xhigh","max","ultra"]`). Present only
+    /// when the CLI reports them; the frontend uses it to build a per-model
+    /// thinking picker instead of a hardcoded provider list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_levels: Option<Vec<String>>,
+    /// The model's own default reasoning level, when the CLI reports one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_reasoning: Option<String>,
 }
 
 impl DiscoveredModel {
@@ -43,6 +52,8 @@ impl DiscoveredModel {
             name: None,
             context_window: None,
             reasoning: None,
+            reasoning_levels: None,
+            default_reasoning: None,
         }
     }
 }
@@ -194,15 +205,27 @@ fn parse_codex_cache(root: &Value) -> Vec<DiscoveredModel> {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             let context_window = m.get("context_window").and_then(|v| v.as_u64());
-            let reasoning = m
+            let reasoning_levels = m
                 .get("supported_reasoning_levels")
                 .and_then(|v| v.as_array())
-                .map(|a| !a.is_empty());
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.get("effort").and_then(|v| v.as_str()))
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                });
+            let reasoning = reasoning_levels.as_ref().map(|l| !l.is_empty());
+            let default_reasoning = m
+                .get("default_reasoning_level")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             Some(DiscoveredModel {
                 id,
                 name,
                 context_window,
                 reasoning,
+                reasoning_levels,
+                default_reasoning,
             })
         })
         .collect()
@@ -222,6 +245,8 @@ fn parse_pi_table(text: &str) -> Vec<DiscoveredModel> {
                 name: None,
                 context_window: parse_size(f[2]),
                 reasoning: Some(f[4].eq_ignore_ascii_case("yes")),
+                reasoning_levels: None,
+                default_reasoning: None,
             })
         })
         .collect()
@@ -242,6 +267,8 @@ fn parse_cursor_models(text: &str) -> Vec<DiscoveredModel> {
                 name: Some(name.trim().to_string()),
                 context_window: None,
                 reasoning: None,
+                reasoning_levels: None,
+                default_reasoning: None,
             })
         })
         .collect()
@@ -280,7 +307,7 @@ mod tests {
     fn parses_codex_cache_and_skips_hidden() {
         let v = json!({"models": [
             {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list",
-             "context_window": 372000,
+             "context_window": 372000, "default_reasoning_level": "high",
              "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]},
             {"slug": "codex-auto-review", "display_name": "Review", "visibility": "hide",
              "supported_reasoning_levels": [{"effort": "low"}]},
@@ -291,6 +318,11 @@ mod tests {
         assert_eq!(got[0].name.as_deref(), Some("GPT-5.5"));
         assert_eq!(got[0].context_window, Some(372_000));
         assert_eq!(got[0].reasoning, Some(true));
+        assert_eq!(
+            got[0].reasoning_levels.as_deref(),
+            Some(["low".to_string(), "high".to_string()].as_slice())
+        );
+        assert_eq!(got[0].default_reasoning.as_deref(), Some("high"));
     }
 
     #[test]
