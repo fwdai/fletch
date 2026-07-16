@@ -16,6 +16,13 @@ export interface ModelMeta {
   contextWindow: number;
   /** Whether the model supports reasoning / extended thinking. */
   reasoning: boolean;
+  /** Reasoning-effort levels the model supports, in the CLI's own order (e.g.
+   *  codex ["low","medium","high","xhigh","max","ultra"]). Present only when the
+   *  CLI reports them; drives a per-model thinking picker instead of a hardcoded
+   *  provider list. */
+  reasoningLevels?: string[];
+  /** The model's own default reasoning level, when the CLI reports one. */
+  defaultReasoning?: string;
   /** Model family from models.dev (e.g. "claude-opus", "claude-fable"), when
    *  known. Used to group/curate a provider's lineage without hardcoding names. */
   family?: string;
@@ -30,6 +37,8 @@ export interface DiscoveredModel {
   name?: string;
   contextWindow?: number;
   reasoning?: boolean;
+  reasoningLevels?: string[];
+  defaultReasoning?: string;
 }
 
 /** An agent and the models it supports. `providerHint` is set for agents with

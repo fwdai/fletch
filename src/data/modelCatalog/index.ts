@@ -11,10 +11,10 @@ import { buildCatalog } from "./build";
 import { fetchModelsDevIndex } from "./modelsDev";
 import type { UnifiedCatalog } from "./types";
 
-export { lookupModel } from "./normalize";
+export { lookupModel, lookupModelInList } from "./normalize";
 export type { ModelMeta, SlimCatalog } from "./types";
 
-const CACHE_KEY = "modelCatalog.cache.v13";
+const CACHE_KEY = "modelCatalog.cache.v14";
 const TTL_MS = 60 * 60 * 1000; // 1h
 
 const EMPTY: UnifiedCatalog = { byId: {}, byAgent: {} };

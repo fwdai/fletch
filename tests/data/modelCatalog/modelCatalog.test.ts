@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildCatalog, capPerGroup, dedupeBest } from "@/data/modelCatalog/build";
 import { indexModelsDev } from "@/data/modelCatalog/modelsDev";
-import { lookupModel, modelIdCandidates } from "@/data/modelCatalog/normalize";
+import { lookupModel, lookupModelInList, modelIdCandidates } from "@/data/modelCatalog/normalize";
 import type { AgentModels, ModelMeta, SlimCatalog } from "@/data/modelCatalog/types";
 
 const API = {
@@ -297,6 +297,41 @@ describe("buildCatalog", () => {
     expect(cat.byAgent.codex).toHaveLength(1);
   });
 
+  it("passes through a model's reasoning levels and default (CLI-only metadata)", () => {
+    const agents: AgentModels[] = [
+      {
+        agent: "codex",
+        models: [
+          {
+            id: "gpt-5.5",
+            reasoning: true,
+            reasoningLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+            defaultReasoning: "low",
+          },
+        ],
+      },
+    ];
+    const cat = buildCatalog(agents, idx);
+    expect(cat.byId["gpt-5.5"].reasoningLevels).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]);
+    expect(cat.byId["gpt-5.5"].defaultReasoning).toBe("low");
+  });
+
+  it("omits reasoning levels when the CLI reports none", () => {
+    const agents: AgentModels[] = [
+      { agent: "codex", models: [{ id: "gpt-5.5", reasoning: true }] },
+    ];
+    const cat = buildCatalog(agents, idx);
+    expect(cat.byId["gpt-5.5"].reasoningLevels).toBeUndefined();
+    expect(cat.byId["gpt-5.5"].defaultReasoning).toBeUndefined();
+  });
+
   it("offers no selectable models for Antigravity (agy ignores model selection)", () => {
     // Discovery contributes no hint and no models for antigravity, so the
     // picker shows it as a fixed-model agent rather than offering Gemini ids
@@ -583,6 +618,48 @@ describe("lookupModel", () => {
   it("returns undefined for unknown or empty ids", () => {
     expect(lookupModel(catalog, "made-up")).toBeUndefined();
     expect(lookupModel(catalog, undefined)).toBeUndefined();
+  });
+});
+
+describe("lookupModelInList", () => {
+  // Two providers report the same id; only codex carries reasoning levels. The
+  // global byId view keeps whichever was discovered first, so a provider-scoped
+  // lookup must find codex's richer entry when codex is the selected provider.
+  const codexEntry: ModelMeta = {
+    id: "gpt-5.6-sol",
+    name: "GPT-5.6-Sol",
+    contextWindow: 272_000,
+    reasoning: true,
+    reasoningLevels: ["low", "high", "max"],
+    defaultReasoning: "low",
+  };
+  const opencodeEntry: ModelMeta = {
+    id: "gpt-5.6-sol",
+    name: "GPT-5.6-Sol",
+    contextWindow: 272_000,
+    reasoning: true,
+  };
+
+  it("finds the provider's own entry, including per-model reasoning metadata", () => {
+    const hit = lookupModelInList([codexEntry], "gpt-5.6-sol");
+    expect(hit?.reasoningLevels).toEqual(["low", "high", "max"]);
+    expect(hit?.defaultReasoning).toBe("low");
+  });
+
+  it("matches id candidates (provider prefix / date suffix)", () => {
+    expect(lookupModelInList([codexEntry], "openai/gpt-5.6-sol")?.name).toBe("GPT-5.6-Sol");
+  });
+
+  it("does not return another provider's leaner entry", () => {
+    // opencode's entry lacks reasoning levels; scoping to it must not surface
+    // codex's, so callers can fall back to their default.
+    expect(lookupModelInList([opencodeEntry], "gpt-5.6-sol")?.reasoningLevels).toBeUndefined();
+  });
+
+  it("returns undefined for empty/unknown input", () => {
+    expect(lookupModelInList(undefined, "gpt-5.6-sol")).toBeUndefined();
+    expect(lookupModelInList([codexEntry], undefined)).toBeUndefined();
+    expect(lookupModelInList([codexEntry], "made-up")).toBeUndefined();
   });
 });
 

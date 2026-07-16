@@ -142,3 +142,28 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     ],
   },
 };
+
+/** Display labels for known effort values, so model-reported levels (which come
+ *  as raw strings like "xhigh"/"ultra") render consistently with the static
+ *  provider lists. Unknown values fall back to a capitalized form. */
+const EFFORT_LABELS: Record<string, string> = {
+  off: "Off",
+  minimal: "Low",
+  low: "Low",
+  medium: "Med",
+  high: "High",
+  xhigh: "xHigh",
+  max: "Max",
+  ultra: "Ultra",
+};
+
+/** Label for a raw effort value (e.g. "xhigh" → "xHigh"). */
+export function effortLabel(value: string): string {
+  return EFFORT_LABELS[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/** Turn a model's raw reasoning-effort values into labeled thinking levels,
+ *  preserving the CLI's order. Empty input yields an empty list. */
+export function thinkingLevelsFromModel(values: string[] | undefined): ThinkingLevel[] {
+  return (values ?? []).map((value) => ({ label: effortLabel(value), value }));
+}
