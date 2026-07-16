@@ -133,31 +133,40 @@ pub async fn provision_forking_run_repo(spec: &CheckoutSpec<'_>, run_repo: &Path
     .await
 }
 
-/// Create the workspace checked out on a new local branch `branch` pointing at
-/// `spec.base_ref`. Restore path — the counterpart of [`provision`] for agents
-/// that had already materialized a branch.
+/// Create the workspace for a restored agent that had already materialized a
+/// branch, checked out at `spec.base_ref` (its archived tip). Returns `true`
+/// when it landed on the branch, `false` when it degraded to a detached
+/// checkout (see [`recover_and_checkout`]) — the caller then records no branch,
+/// exactly as for a never-pushed agent.
 ///
 /// Worktree: the branch is created in the source repo (worktree branches are
-/// refs of the origin repo) and the worktree attached to it. Clone: the branch
-/// is created inside the clone; when `base_ref` isn't present in the source
-/// repo (the agent's commits lived only in the torn-down clone), it is fetched
-/// from `origin` via `origin_branch` first — which is why restore of a clone
-/// workspace requires the branch to have been pushed.
+/// refs of the origin repo) and the worktree attached to it — always on-branch.
+/// Clone: the branch is created inside the clone; when `base_ref` isn't present
+/// in the source repo (the agent's commits lived only in the torn-down clone),
+/// it is recovered from `origin`. Recovery no longer requires the branch to
+/// still exist on the remote: a branch auto-deleted after its PR merged is
+/// restored by fetching the tip commit directly (still reachable from the base
+/// branch), and a truly-lost tip falls back to `fallback_ref`.
 ///
 /// `origin_branch` is the branch name as the remote knows it. It differs from
 /// `branch` when restore renamed to dodge a local collision (`feat` →
 /// `feat-restored`): the remote only has the original name, so fetching the
 /// renamed one would fail and make a pushed branch unrestorable.
+///
+/// `fallback_ref` is a last-resort commit-ish (the archived parent-branch tip)
+/// to open detached at when the agent's own tip is gone for good.
 pub async fn provision_on_branch(
     mode: WorkspaceMode,
     spec: &CheckoutSpec<'_>,
     branch: &str,
     origin_branch: &str,
-) -> Result<()> {
+    fallback_ref: Option<&str>,
+) -> Result<bool> {
     match mode {
         WorkspaceMode::Worktree => {
             git::branch_create_at(spec.source_repo, branch, spec.base_ref).await?;
-            git::worktree_add_branch(spec.source_repo, spec.dest, branch).await
+            git::worktree_add_branch(spec.source_repo, spec.dest, branch).await?;
+            Ok(true)
         }
         WorkspaceMode::Clone => {
             // Restore always relaunches the container, so the RO mount for a
@@ -165,21 +174,90 @@ pub async fn provision_on_branch(
             clone_base(spec, true).await?;
             let branch = branch.to_string();
             let origin_branch = origin_branch.to_string();
+            let fallback = fallback_ref.map(str::to_string);
             finish_clone(spec, |dest| async move {
-                if !commit_present(&dest, spec.base_ref).await {
-                    fetch_branch(&dest, &origin_branch).await?;
-                }
-                git::run_git(
+                recover_and_checkout(
                     &dest,
-                    &["checkout", "-b", &branch, spec.base_ref],
-                    &format!("checkout -b {branch}"),
+                    spec.base_ref,
+                    &branch,
+                    &origin_branch,
+                    fallback.as_deref(),
                 )
-                .await?;
-                Ok(())
+                .await
             })
             .await
         }
     }
+}
+
+/// Recover a restored agent's branch tip inside the fresh clone `dest` and check
+/// the workspace out on it, degrading gracefully as availability shrinks so a
+/// merged-and-deleted branch — or even a lost tip — never blocks a restore:
+///
+///   1. tip already present (borrowed via alternates) → local `branch` at tip
+///   2. `origin/<origin_branch>` still exists → fetch it → local `branch` at tip
+///   3. branch gone but the tip is still reachable on origin (the usual
+///      auto-delete-after-merge case: the commit survives on the base branch)
+///      → fetch the tip by SHA → **detached** at the tip
+///   4. tip unrecoverable, but `fallback_ref` (the parent-branch tip) is
+///      reachable → **detached** there, so the workspace still opens with its
+///      history and PR link even though the agent's own commits are gone
+///
+/// Returns `true` when it landed on `branch`, `false` when it detached.
+async fn recover_and_checkout(
+    dest: &Path,
+    tip: &str,
+    branch: &str,
+    origin_branch: &str,
+    fallback_ref: Option<&str>,
+) -> Result<bool> {
+    // 1 + 2: the tip is local, or its branch still exists on origin → the
+    // agent's branch is meaningfully still there, so recreate it at the tip.
+    if commit_present(dest, tip).await || fetch_branch(dest, origin_branch).await.is_ok() {
+        git::run_git(
+            dest,
+            &["checkout", "-b", branch, tip],
+            &format!("checkout -b {branch}"),
+        )
+        .await?;
+        return Ok(true);
+    }
+    // 3: branch is gone but the merged commit lingers on the base branch —
+    // fetch it by SHA. The branch name no longer means anything on the remote,
+    // so open detached rather than fabricating a local branch for it.
+    if fetch_commit(dest, tip).await.is_ok() {
+        checkout_detached(dest, tip).await?;
+        return Ok(false);
+    }
+    // 4: the tip is gone for good. Open at the parent base (if we can reach it)
+    // so the workspace, its session history, and its PR link still come back —
+    // only the agent's own commits are unrecoverable.
+    if let Some(base) = fallback_ref {
+        if commit_present(dest, base).await || fetch_commit(dest, base).await.is_ok() {
+            tracing::warn!(
+                tip,
+                fallback = base,
+                "restore: branch tip unrecoverable from origin; opening detached \
+                 at parent base (agent commits not restored)"
+            );
+            checkout_detached(dest, base).await?;
+            return Ok(false);
+        }
+    }
+    Err(Error::Git(format!(
+        "restore: branch tip {tip} is unreachable — origin has neither branch \
+         {origin_branch} nor the commit, and no fallback base was recoverable"
+    )))
+}
+
+async fn checkout_detached(dest: &Path, at: &str) -> Result<()> {
+    git::run_git(
+        dest,
+        &["checkout", "--detach", at],
+        &format!("checkout --detach {at}"),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Remove the workspace at `spec.dest`.
@@ -287,10 +365,10 @@ async fn clone_base(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
 /// to `fetch origin`, which has to hit the real remote, not the source path.
 /// Any failure tears the half-built clone down so nothing orphaned blocks a
 /// retry (a clone is self-contained, so `rm -rf` is always safe here).
-async fn finish_clone<F, Fut>(spec: &CheckoutSpec<'_>, checkout: F) -> Result<()>
+async fn finish_clone<F, Fut, T>(spec: &CheckoutSpec<'_>, checkout: F) -> Result<T>
 where
     F: FnOnce(std::path::PathBuf) -> Fut,
-    Fut: std::future::Future<Output = Result<()>>,
+    Fut: std::future::Future<Output = Result<T>>,
 {
     let result = async {
         rewrite_origin(spec).await?;
@@ -478,6 +556,28 @@ async fn fetch_branch(repo: &Path, branch: &str) -> Result<()> {
     if !out.status.success() {
         return Err(Error::Git(format!(
             "fetch origin {branch} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// `git fetch origin <sha>` — recover a specific commit when the branch that
+/// carried it is gone from the remote (auto-deleted after a PR merge). GitHub
+/// serves any commit still reachable from an advertised ref — the base branch
+/// it merged into, plus `refs/pull/*/head` — so a merged tip stays fetchable by
+/// SHA even once its branch is deleted. Same bounded, authed shape as
+/// [`fetch_branch`].
+async fn fetch_commit(repo: &Path, sha: &str) -> Result<()> {
+    let mut cmd = crate::git_dist::command(repo);
+    cmd.args(["fetch", "origin", sha]);
+    for (k, v) in crate::github::git_auth_env() {
+        cmd.env(k, v);
+    }
+    let out = git::output_timed(&mut cmd, "git fetch").await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "fetch origin {sha} failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
@@ -923,6 +1023,7 @@ mod tests {
             &spec,
             "feat/restore",
             "feat/restore",
+            None,
         )
         .await
         .unwrap();
@@ -944,7 +1045,7 @@ mod tests {
             dest: &dest,
         };
 
-        provision_on_branch(WorkspaceMode::Clone, &spec, "feat/restore", "feat/restore")
+        provision_on_branch(WorkspaceMode::Clone, &spec, "feat/restore", "feat/restore", None)
             .await
             .unwrap();
         assert_eq!(
@@ -998,7 +1099,7 @@ mod tests {
             base_ref: &tip,
             dest: &dest,
         };
-        provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat")
+        provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat", None)
             .await
             .unwrap();
         assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat");
@@ -1013,7 +1114,7 @@ mod tests {
             base_ref: &tip,
             dest: &dest2,
         };
-        provision_on_branch(WorkspaceMode::Clone, &spec2, "feat-restored", "feat")
+        provision_on_branch(WorkspaceMode::Clone, &spec2, "feat-restored", "feat", None)
             .await
             .unwrap();
         assert_eq!(
@@ -1094,13 +1195,113 @@ mod tests {
             base_ref: &tip,
             dest: &dest,
         };
-        provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat")
+        provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat", None)
             .await
             .unwrap();
         assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat");
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), tip);
         // The recovered tip's tree is intact (borrowed via alternates).
         assert!(dest.join("feat.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn clone_provision_on_branch_recovers_merged_deleted_branch_detached() {
+        // The reported case: a branch auto-deleted after its PR merged. The
+        // branch ref is gone from origin, so `fetch origin <branch>` fails — but
+        // the tip commit still lives on the base branch it merged into, so it is
+        // fetchable by SHA and the workspace opens detached at it.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, _head) = fixture_repo(td.path());
+        let origin = td.path().join("origin.git");
+        run(td.path(), &["init", "-q", "--bare", origin.to_str().unwrap()]);
+        // GitHub serves any commit reachable from an advertised ref even with no
+        // branch pointing at it; model that so a merged-then-deleted tip is
+        // fetchable by SHA (the default local `upload-pack` refuses otherwise).
+        run(&origin, &["config", "uploadpack.allowReachableSHA1InWant", "true"]);
+        run(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        run(&repo, &["push", "-q", "origin", "main"]);
+
+        // A worker branches `feat`, commits, merges it back into `main` on the
+        // remote, then deletes the branch (PR auto-delete after merge).
+        let worker = td.path().join("worker");
+        run(
+            td.path(),
+            &["clone", "-q", origin.to_str().unwrap(), worker.to_str().unwrap()],
+        );
+        run(&worker, &["config", "user.email", "w@example.com"]);
+        run(&worker, &["config", "user.name", "Worker"]);
+        run(&worker, &["checkout", "-q", "-b", "feat"]);
+        std::fs::write(worker.join("feat.txt"), b"feature").unwrap();
+        run(&worker, &["add", "-A"]);
+        run(&worker, &["commit", "-q", "-m", "feat work"]);
+        let tip = run(&worker, &["rev-parse", "HEAD"]);
+        run(&worker, &["push", "-q", "origin", "feat"]);
+        run(&worker, &["checkout", "-q", "main"]);
+        run(&worker, &["merge", "-q", "--no-ff", "-m", "merge feat", "feat"]);
+        run(&worker, &["push", "-q", "origin", "main"]);
+        run(&worker, &["push", "-q", "origin", "--delete", "feat"]);
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &tip,
+            dest: &dest,
+        };
+        let on_branch = provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat", None)
+            .await
+            .unwrap();
+        assert!(!on_branch, "a deleted branch must restore detached");
+        assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), tip);
+        assert!(dest.join("feat.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn clone_provision_on_branch_falls_back_to_parent_base_when_tip_lost() {
+        // Worst case: the tip is gone for good (branch deleted without merging,
+        // so it is unreachable on origin and unfetchable by SHA). Restore must
+        // still open — detached at the parent base — so the session history and
+        // PR link survive even though the agent's own commits cannot.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let origin = td.path().join("origin.git");
+        run(td.path(), &["init", "-q", "--bare", origin.to_str().unwrap()]);
+        run(&origin, &["config", "uploadpack.allowReachableSHA1InWant", "true"]);
+        run(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        run(&repo, &["push", "-q", "origin", "main"]);
+
+        let worker = td.path().join("worker");
+        run(
+            td.path(),
+            &["clone", "-q", origin.to_str().unwrap(), worker.to_str().unwrap()],
+        );
+        run(&worker, &["config", "user.email", "w@example.com"]);
+        run(&worker, &["config", "user.name", "Worker"]);
+        run(&worker, &["checkout", "-q", "-b", "feat"]);
+        std::fs::write(worker.join("feat.txt"), b"feature").unwrap();
+        run(&worker, &["add", "-A"]);
+        run(&worker, &["commit", "-q", "-m", "feat work"]);
+        let tip = run(&worker, &["rev-parse", "HEAD"]);
+        run(&worker, &["push", "-q", "origin", "feat"]);
+        // Deleted without ever merging, then pruned → the tip is gone from
+        // origin entirely and cannot be fetched by branch or by SHA.
+        run(&worker, &["push", "-q", "origin", "--delete", "feat"]);
+        run(&origin, &["gc", "--prune=now", "-q"]);
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &tip,
+            dest: &dest,
+        };
+        // `head` (the parent base) is present in the source store → reachable.
+        let on_branch =
+            provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat", Some(&head))
+                .await
+                .unwrap();
+        assert!(!on_branch);
+        assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
     }
 
     #[tokio::test]

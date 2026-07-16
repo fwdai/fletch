@@ -122,8 +122,11 @@ impl Supervisor {
         // be recoverable. We do this before any mutation so we don't leave a
         // half-restored agent on failure. A clone's commits live only in the
         // (torn-down) clone and on the real remote once pushed, so under
-        // clone mode a tip that isn't in the source repo is still fine when
-        // a branch name exists — provisioning refetches it from origin.
+        // clone mode a tip that isn't in the source repo is still fine when a
+        // branch name exists: provisioning recovers it from origin — by branch,
+        // or (branch auto-deleted after merge) by the commit SHA, or failing
+        // that by opening detached at the parent base. Any deep failure there
+        // tears the half-built clone down and aborts before we mutate state.
         for snap in &archive.repos {
             let sha = snap.branch_tip_sha.as_deref().ok_or_else(|| {
                 Error::Other(format!(
@@ -174,15 +177,25 @@ impl Supervisor {
             };
             let branch = match &snap.branch_name {
                 // The agent had pushed a branch → recreate it at the tip,
-                // resolving name collisions with a -restored suffix.
+                // resolving name collisions with a -restored suffix. If the
+                // branch was auto-deleted after merge (or the tip is otherwise
+                // gone), provisioning degrades to a detached checkout and
+                // returns `false`, and we record no branch.
                 Some(desired_name) => {
                     let chosen = choose_restore_branch_name(&snap.repo_path, desired_name).await;
                     // `desired_name` rides along as the fetch source: when the
                     // tip must be refetched (clone mode), the remote only
                     // knows the original name, not the -restored rename.
-                    provision::provision_on_branch(workspace_mode, &spec, &chosen, desired_name)
-                        .await?;
-                    Some(chosen)
+                    // `parent_branch_sha` is the last-resort detached base.
+                    let landed_on_branch = provision::provision_on_branch(
+                        workspace_mode,
+                        &spec,
+                        &chosen,
+                        desired_name,
+                        snap.parent_branch_sha.as_deref(),
+                    )
+                    .await?;
+                    landed_on_branch.then_some(chosen)
                 }
                 // Branchless agent (never pushed) → restore detached at the
                 // tip, ready to name its branch at the next push.
