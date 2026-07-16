@@ -128,6 +128,11 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
               />
             ) : (
               <Composer
+                // Remount when the target repo changes so the @/# mention
+                // sources drop the previous repo's cached files/PRs (they only
+                // refetch on menu-open, not on a repoPath change under a live
+                // composer) — otherwise a wrong-repo file/PR could be inserted.
+                key={draft.repoPath}
                 autoFocus
                 draftKey={draft.id}
                 defaultProvider={draft.provider}
