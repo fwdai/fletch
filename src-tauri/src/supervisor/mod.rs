@@ -417,6 +417,34 @@ impl Supervisor {
         self.workspace.rename_project(project_id, name)
     }
 
+    /// Delete a project and all of its agents. Busy agents are rejected before
+    /// any teardown begins; idle/stopped/archived agents are safe to discard.
+    pub fn project_has_running_agents(&self, project_id: &str) -> bool {
+        self.workspace
+            .agents_for_project(project_id)
+            .iter()
+            .any(|agent| {
+                matches!(
+                    self.effective_status(&agent.id, agent),
+                    AgentStatus::Spawning | AgentStatus::Running
+                )
+            })
+    }
+
+    pub async fn delete_project(self: Arc<Self>, project_id: &str) -> Result<Workspace> {
+        let agents = self.workspace.agents_for_project(project_id);
+        if self.project_has_running_agents(project_id) {
+            return Err(Error::Other(
+                "cannot delete a project while one of its agents is running".into(),
+            ));
+        }
+
+        for agent in agents {
+            self.clone().discard_agent(&agent.id).await?;
+        }
+        self.workspace.delete_project(project_id)
+    }
+
     pub fn relocate_repo(&self, old_path: PathBuf, new_path: PathBuf) -> Result<Workspace> {
         self.workspace.relocate_repo(&old_path, &new_path)
     }
@@ -659,5 +687,47 @@ mod tests {
             .lock()
             .insert("yosemite".to_string(), AgentStatus::Running);
         assert_eq!(sup.live_status("yosemite"), Some(AgentStatus::Running));
+    }
+
+    #[tokio::test]
+    async fn delete_project_rejects_running_agent() {
+        let sup = Arc::new(test_supervisor());
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        sup.workspace.add_workspace_repo(repo.clone()).unwrap();
+        let project_id = sup.current_workspace().unwrap().projects[0]
+            .project_id
+            .clone();
+        let tracked = TrackedRepo {
+            repo_path: repo,
+            subdir: "repo".into(),
+            branch: None,
+            parent_branch: None,
+            base_sha: None,
+            pr_number: None,
+            pr_url: None,
+            pr_title: None,
+            pr_state: None,
+        };
+        let mut record = new_agent_record(
+            "yosemite".into(),
+            "agent".into(),
+            "claude".into(),
+            tracked,
+            "task".into(),
+            AgentView::Custom,
+        );
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.statuses
+            .lock()
+            .insert(record.id.clone(), AgentStatus::Running);
+
+        let err = sup.clone().delete_project(&project_id).await.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("while one of its agents is running"));
+        assert_eq!(sup.current_workspace().unwrap().projects.len(), 1);
+        assert_eq!(sup.current_workspace().unwrap().agents.len(), 1);
     }
 }

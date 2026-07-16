@@ -189,6 +189,8 @@ export interface ReposSlice {
   // Settings modal can show the error inline rather than in the global banner.
   /** Set a project's custom display name (independent of its folder). */
   renameProject: (projectId: string, name: string) => Promise<void>;
+  /** Delete a project and all agents/workspaces belonging to it. */
+  deleteProject: (projectId: string) => Promise<void>;
   /** Repoint a pinned repo at a moved folder, migrating its sidebar order and
    *  the open settings modal to the new path. */
   relocateProject: (oldPath: string, newPath: string) => Promise<void>;

@@ -429,6 +429,13 @@ impl WorkspaceManager {
         Self::query_agents_for_run(&conn, run_id)
     }
 
+    /// Every agent owned by a project, including workflow-owned and archived
+    /// agents that are omitted from the normal sidebar snapshot.
+    pub fn agents_for_project(&self, project_id: &str) -> Vec<AgentRecord> {
+        let conn = self.db.lock();
+        Self::query_agents_for_project(&conn, project_id)
+    }
+
     /// Append a repo to the sidebar's pinned list. Idempotent — adding
     /// a path that's already pinned is a no-op (returns Ok).
     pub fn add_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
@@ -501,6 +508,23 @@ impl WorkspaceManager {
         if changed == 0 {
             return Err(Error::Other(format!("project not found: {project_id}")));
         }
+        drop(conn);
+        Ok(self.current().expect("workspace initialized"))
+    }
+
+    /// Delete the project row after its agent runtimes/checkouts have been
+    /// torn down by the supervisor. Foreign keys cascade through repos,
+    /// workspaces, sessions, transcripts, and project settings. Workflow runs
+    /// reference projects by id without an FK, so remove those explicitly.
+    pub fn delete_project(&self, project_id: &str) -> Result<Workspace> {
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM wf_run WHERE project_id = ?1", [project_id])?;
+        let changed = tx.execute("DELETE FROM projects WHERE id = ?1", [project_id])?;
+        if changed == 0 {
+            return Err(Error::Other(format!("project not found: {project_id}")));
+        }
+        tx.commit()?;
         drop(conn);
         Ok(self.current().expect("workspace initialized"))
     }
@@ -1640,6 +1664,23 @@ impl WorkspaceManager {
             .collect()
     }
 
+    fn query_agents_for_project(conn: &Connection, project_id: &str) -> Vec<AgentRecord> {
+        let mut stmt = match conn.prepare(&format!(
+            "{AGENT_SELECT} WHERE w.project_id = ?1 ORDER BY w.created_at"
+        )) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map([project_id], Self::map_agent_row)
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| Self::build_agent_record(conn, row))
+            .collect()
+    }
+
     fn query_tracked_repos(conn: &Connection, agent_id: &str) -> Vec<TrackedRepo> {
         let mut stmt = match conn.prepare(
             "SELECT r.path, w.subdir, w.branch, w.parent_branch, w.base_sha, w.pr_number,
@@ -2559,6 +2600,46 @@ mod tests {
 
         let err = wm.rename_project(&pid, "   ").unwrap_err();
         assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn delete_project_cascades_non_archived_agents_and_settings() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let repo = init_repo(td.path());
+        let wm = WorkspaceManager::new(db.clone());
+        wm.add_workspace_repo(repo.clone()).unwrap();
+        let pid = wm.current().unwrap().projects[0].project_id.clone();
+
+        let mut rec = new_agent_record(
+            "yosemite".into(),
+            "agent".into(),
+            "claude".into(),
+            mk_repo(repo.to_str().unwrap()),
+            "task".into(),
+            AgentView::Custom,
+        );
+        wm.add_agent(&mut rec).unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO project_settings (project_id, key, value) VALUES (?1, 'run.dev', 'npm run dev')",
+                [&pid],
+            )
+            .unwrap();
+
+        let ws = wm.delete_project(&pid).unwrap();
+        assert!(ws.projects.is_empty());
+        assert!(ws.repos.is_empty());
+        assert!(ws.agents.is_empty());
+        let setting_count: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM project_settings WHERE project_id = ?1",
+                [&pid],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(setting_count, 0);
     }
 
     #[test]

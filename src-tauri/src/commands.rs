@@ -182,6 +182,24 @@ pub fn rename_project(
     supervisor.rename_project(&project_id, &name)
 }
 
+/// Delete a project and all of its workspaces, including non-archived ones.
+/// The supervisor refuses while any project agent is actively running.
+#[tauri::command]
+pub async fn delete_project(
+    supervisor: State<'_, Arc<Supervisor>>,
+    project_id: String,
+) -> Result<Workspace> {
+    supervisor.inner().clone().delete_project(&project_id).await
+}
+
+#[tauri::command]
+pub fn project_has_running_agents(
+    supervisor: State<'_, Arc<Supervisor>>,
+    project_id: String,
+) -> bool {
+    supervisor.project_has_running_agents(&project_id)
+}
+
 /// Repoint a pinned repo at a folder the user has moved on disk. Validates the
 /// destination is a git repo; existing agents' worktrees are not relinked.
 #[tauri::command]

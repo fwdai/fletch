@@ -5,6 +5,7 @@ import { loadRunOverrides, type SetupRow, toSetupRows } from "@/components/RunCo
 import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
+import { DeleteSection } from "./DeleteSection";
 import { EnvVarsSection } from "./EnvVarsSection";
 import { GeneralSection } from "./GeneralSection";
 import { ProjectPulse } from "./ProjectPulse";
@@ -106,6 +107,7 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
                 initialOverrides={loaded.overrides}
               />
               <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
+              <DeleteSection projectId={loaded.projectId} projectName={name} />
             </div>
           )}
         </div>

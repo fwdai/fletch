@@ -1,4 +1,6 @@
 import { api } from "@/api";
+import { dropAgentEntries } from "@/helpers";
+import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
 import type { ReposSlice, SliceCreator } from "./types";
 
@@ -28,6 +30,28 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     // Errors propagate to the modal for inline display.
     const ws = await api.renameProject(projectId, name);
     set({ workspace: ws });
+  },
+
+  deleteProject: async (projectId) => {
+    const deletedIds =
+      get()
+        .workspace?.agents.filter((agent) => agent.project_id === projectId)
+        .map((agent) => agent.id) ?? [];
+    const ws = await api.deleteProject(projectId);
+    for (const id of deletedIds) clearOutputBuffer(id);
+    set((state) => {
+      let patch = {};
+      for (const id of deletedIds)
+        patch = { ...patch, ...dropAgentEntries({ ...state, ...patch }, id) };
+      return {
+        ...patch,
+        workspace: ws,
+        selectedAgentId: deletedIds.includes(state.selectedAgentId ?? "")
+          ? null
+          : state.selectedAgentId,
+        projectSettingsRepoPath: null,
+      };
+    });
   },
 
   relocateProject: async (oldPath, newPath) => {

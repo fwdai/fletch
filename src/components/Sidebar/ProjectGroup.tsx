@@ -1,4 +1,3 @@
-import { ask } from "@tauri-apps/plugin-dialog";
 import { useRef } from "react";
 import type { AgentRecord, WfRun } from "@/api";
 import { Icon } from "@/components/Icon";
@@ -18,8 +17,6 @@ interface Props {
   runs: WfRun[];
   /** Whether the user has expanded this group. */
   open: boolean;
-  /** Show the remove (×) button — only true when this is a pinned-but-empty group. */
-  removable: boolean;
   onToggle: () => void;
   /** Whether this group can be dragged to reorder (disabled while searching). */
   reorderable: boolean;
@@ -40,7 +37,6 @@ export function ProjectGroup({
   drafts,
   runs,
   open,
-  removable,
   onToggle,
   reorderable,
   dragging,
@@ -54,19 +50,9 @@ export function ProjectGroup({
   const selectDraft = useAppStore((s) => s.selectDraft);
   const selectRun = useAppStore((s) => s.selectRun);
   const createDraft = useAppStore((s) => s.createDraft);
-  const removeWorkspaceRepo = useAppStore((s) => s.removeWorkspaceRepo);
   const openProjectSettings = useAppStore((s) => s.openProjectSettings);
 
   const count = agents.length + drafts.length + runs.length;
-
-  async function onRemove(e: React.MouseEvent) {
-    e.stopPropagation();
-    const ok = await ask(`Remove "${label}" from the sidebar?`, {
-      title: "Remove repo",
-      kind: "info",
-    });
-    if (ok) await removeWorkspaceRepo(repoPath);
-  }
 
   function onAddAgent(e: React.MouseEvent) {
     e.stopPropagation();
@@ -90,7 +76,7 @@ export function ProjectGroup({
       <div
         className={`proj-h flex-center ${open ? "open" : ""} ${reorderable ? "reorderable" : ""}`}
         onPointerDown={(e) => {
-          // Left button only, and never from an action button (add/remove).
+          // Left button only, and never from an action button.
           if (!onReorderPointerDown || e.button !== 0) return;
           if ((e.target as HTMLElement).closest("button")) return;
           draggedRef.current = false;
@@ -128,17 +114,6 @@ export function ProjectGroup({
         >
           <Icon name="plus" size={11} />
         </button>
-        {removable && (
-          <button
-            className="padd padd-remove tip"
-            data-tip="Remove repo"
-            data-tip-down=""
-            onClick={onRemove}
-            aria-label="Remove repo"
-          >
-            <Icon name="close" />
-          </button>
-        )}
       </div>
 
       <div className={`agents ${open ? "" : "closed"}`}>

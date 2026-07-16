@@ -244,12 +244,6 @@ export function Sidebar() {
                   drafts={g.drafts}
                   runs={g.runs}
                   open={openMap[g.repoPath] ?? false}
-                  removable={
-                    g.pinned &&
-                    g.agents.length === 0 &&
-                    g.drafts.length === 0 &&
-                    g.runs.length === 0
-                  }
                   onToggle={() => setOpenMap((m) => ({ ...m, [g.repoPath]: !m[g.repoPath] }))}
                   reorderable={reorderable}
                   dragging={dragPath === g.repoPath}
