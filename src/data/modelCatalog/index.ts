@@ -11,7 +11,7 @@ import { buildCatalog } from "./build";
 import { fetchModelsDevIndex } from "./modelsDev";
 import type { UnifiedCatalog } from "./types";
 
-export { lookupModel } from "./normalize";
+export { lookupModel, lookupModelInList } from "./normalize";
 export type { ModelMeta, SlimCatalog } from "./types";
 
 const CACHE_KEY = "modelCatalog.cache.v14";

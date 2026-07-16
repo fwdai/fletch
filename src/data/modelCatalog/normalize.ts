@@ -53,3 +53,20 @@ export function lookupModel(
   }
   return undefined;
 }
+
+/** Look up a model within one provider's list, using the same id-candidate
+ *  matching as `lookupModel`. Prefer this over the global `byId` view when the
+ *  caller knows the provider: a model id shared across agents keeps only the
+ *  first-discovered entry in `byId`, which may belong to another provider and
+ *  lack this provider's metadata (e.g. codex's per-model reasoning levels). */
+export function lookupModelInList(
+  models: ModelMeta[] | undefined,
+  rawId: string | undefined,
+): ModelMeta | undefined {
+  if (!models || !rawId) return undefined;
+  for (const key of modelIdCandidates(rawId)) {
+    const hit = models.find((m) => m.id === key);
+    if (hit) return hit;
+  }
+  return undefined;
+}
