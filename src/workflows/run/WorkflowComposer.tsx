@@ -1,16 +1,22 @@
 // run/WorkflowComposer.tsx — the "Workflow" composer block. It renders ONLY the
 // prompt box (the host's new-agent page provides the identity, headings, and
 // project/branch pickers around it, identical to the agent screen). It reuses
-// the agent composer's shell classes (.composer / .composer-input /
-// .composer-foot / .model-chip / .send) so the two look the same.
+// the agent composer's shared input core (ComposerFrame + useComposerInput), so
+// slash commands, @-file mentions, and #-PR mentions behave identically here;
+// only the footer (a workflow picker instead of a model picker) and the submit
+// (wf_launch instead of a chat send) differ.
 //
 // Launch goes through the v1 scheduler: `wf_launch` takes the definition's spec
-// snapshot and returns the run id, which the monitor (RunView) then observes.
+// snapshot (plus any @-staged attachments) and returns the run id, which the
+// monitor (RunView) then observes.
 
 import { type CSSProperties, Fragment, useRef, useState } from "react";
 import { api } from "../../api";
+import { ComposerFrame } from "../../components/Composer/ComposerFrame";
+import { useComposerInput } from "../../components/Composer/useComposerInput";
 import { Icon } from "../../components/Icon";
 import { Chip } from "../../components/ui/Chip";
+import { DEFAULT_PROVIDER_ID } from "../../data/providers";
 import { useAppStore } from "../../store";
 import { AgentAvatar } from "../builder/AgentAvatar";
 import { resolveAlias } from "../shared";
@@ -48,36 +54,50 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
 
   const { definitions, loading } = useDefinitions();
   const [defId, setDefId] = useState("");
-  const [task, setTask] = useState("");
   const [busy, setBusy] = useState(false);
-  const ta = useRef<HTMLTextAreaElement>(null);
 
   // Default to the first definition once they load.
   const def = definitions.find((d) => d.id === defId) ?? definitions[0];
   const steps = flattenSteps(def?.spec ?? null);
-  const canLaunch = !!def && !!task.trim() && !busy;
-
-  const grow = (el: HTMLTextAreaElement) => {
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
-  };
 
   const resolve = (alias: string) =>
     resolveAlias(def?.spec.agents, alias, customAgents, modelsByAgent);
 
+  // Slash commands are provider-specific; a workflow has many agents, so drive
+  // the `/` source off the first step's resolved provider (fallback: claude).
+  const slashProvider =
+    (steps[0] && resolve(steps[0].agentAlias)?.providerId) || DEFAULT_PROVIDER_ID;
+
+  // Fire the launch via a ref so `onEnter` can reference `launch` (defined below,
+  // since it reads the input's text/attachments).
+  const submitRef = useRef<() => void>(() => {});
+  const input = useComposerInput({
+    provider: slashProvider,
+    // Repo-path-keyed mention sources (no agent/checkout exists pre-launch).
+    projectDir: repoPath,
+    mentionSource: () => api.listRepoTree(repoPath),
+    listDir: api.listDir,
+    listPrs: () => api.listRepoPrs(repoPath),
+    autoFocus: true,
+    onEnter: () => submitRef.current(),
+  });
+
+  const canLaunch = !!def && !!input.text.trim() && !busy;
+
   const launch = async () => {
-    if (!def || !task.trim() || busy) return;
+    if (!def || !input.text.trim() || busy) return;
     setBusy(true);
     try {
       // project_id is resolved authoritatively from repo_path by the backend
       // (wf_launch), so the launcher doesn't guess it from the workspace snapshot.
       const runId = await api.wfLaunch(
         def.spec,
-        task.trim(),
+        input.text.trim(),
         "",
         repoPath,
         def.id,
         baseBranch || undefined,
+        input.attachments,
       );
       selectRun(runId);
     } catch (e) {
@@ -85,6 +105,7 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
       setBusy(false);
     }
   };
+  submitRef.current = () => void launch();
 
   if (loading) {
     return (
@@ -103,68 +124,56 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
   }
 
   return (
-    <div className="composer">
-      {/* The selected flow's step chain, built into the top of the prompt box so
-          it reads as "this task launches this flow" — not a detached strip. */}
-      {def && (
-        <div className="cmp-flow-strip">
-          <span className="cf-tag">
-            <Icon name="combine" size={11} /> {def.name}
-          </span>
-          {steps.map((s, i) => {
-            const a = resolve(s.agentAlias);
-            return (
-              <Fragment key={s.id}>
-                {i > 0 && <Icon name="arrowR" size={11} className="cf-arr" />}
-                {a ? (
-                  <AgentAvatar
-                    custom={a.custom}
-                    slug={a.providerId}
-                    short={a.short}
-                    hue={a.hue}
-                    size={20}
-                  />
-                ) : (
-                  <span className="cf-q">?</span>
-                )}
-              </Fragment>
-            );
-          })}
-          <span className="cf-note">each step runs its own agent</span>
-        </div>
-      )}
-      <textarea
-        ref={ta}
-        className="composer-input"
-        rows={1}
-        autoFocus
-        placeholder="Describe the task for the workflow. ↵ to launch."
-        value={task}
-        onChange={(e) => {
-          setTask(e.target.value);
-          grow(e.target);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            void launch();
-          }
-        }}
-      />
-      <div className="composer-foot">
-        <WorkflowSelect definitions={definitions} selected={def} onPick={setDefId} />
-        <span style={{ flex: 1 }} />
-        <button
-          type="button"
-          className="send"
-          disabled={!canLaunch}
-          onClick={() => void launch()}
-          aria-label="Launch run"
-        >
-          <Icon name={busy ? "refresh" : "arrowUp"} size={13} />
-        </button>
-      </div>
-    </div>
+    <ComposerFrame
+      input={input}
+      placeholder="Describe the task for the workflow. · /commands · @ to attach · # for PRs"
+      top={
+        // The selected flow's step chain, built into the top of the prompt box so
+        // it reads as "this task launches this flow" — not a detached strip.
+        def && (
+          <div className="cmp-flow-strip">
+            <span className="cf-tag">
+              <Icon name="combine" size={11} /> {def.name}
+            </span>
+            {steps.map((s, i) => {
+              const a = resolve(s.agentAlias);
+              return (
+                <Fragment key={s.id}>
+                  {i > 0 && <Icon name="arrowR" size={11} className="cf-arr" />}
+                  {a ? (
+                    <AgentAvatar
+                      custom={a.custom}
+                      slug={a.providerId}
+                      short={a.short}
+                      hue={a.hue}
+                      size={20}
+                    />
+                  ) : (
+                    <span className="cf-q">?</span>
+                  )}
+                </Fragment>
+              );
+            })}
+            <span className="cf-note">each step runs its own agent</span>
+          </div>
+        )
+      }
+      foot={
+        <>
+          <WorkflowSelect definitions={definitions} selected={def} onPick={setDefId} />
+          <span style={{ flex: 1 }} />
+          <button
+            type="button"
+            className="send"
+            disabled={!canLaunch}
+            onClick={() => void launch()}
+            aria-label="Launch run"
+          >
+            <Icon name={busy ? "refresh" : "arrowUp"} size={13} />
+          </button>
+        </>
+      }
+    />
   );
 }
 
