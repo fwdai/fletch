@@ -482,19 +482,21 @@ impl Supervisor {
         }
 
         let deleted_agent_ids = agents.iter().map(|agent| agent.id.clone()).collect();
-        let deleted_run_ids = workflows
-            .delete_project_runs_locked(&self, project_id)
-            .await?;
+        let run_cleanup = workflows.prepare_project_runs_locked(project_id)?;
+        let deleted_run_ids = run_cleanup.run_ids().to_vec();
 
-        // Workflow deletion removes its owned agents through the normal path.
-        // Snapshot the remaining project agents, detach their idle runtimes,
-        // then commit every remaining row deletion in one FK-cascaded project
-        // transaction. If the DB commit fails, records and checkouts remain;
-        // detached idle agents can resume lazily.
-        let remaining = self.workspace.agents_for_project(project_id);
-        self.detach_project_agents(&remaining);
-        self.workspace.delete_project(project_id)?;
-        self.teardown_project_checkouts(&remaining).await;
+        // Detach every idle runtime, but keep all durable rows and checkouts
+        // until the single project + workflow-run transaction commits. A DB
+        // failure restores every staged run directory; detached agents can
+        // resume lazily, leaving the project fully intact rather than partly
+        // deleted. Physical checkout removal is best-effort after commit.
+        self.detach_project_agents(&agents);
+        if let Err(error) = self.workspace.delete_project(project_id, &deleted_run_ids) {
+            run_cleanup.restore();
+            return Err(error);
+        }
+        workflows.finish_project_runs(run_cleanup);
+        self.teardown_project_checkouts(&agents).await;
 
         Ok(ProjectDeleteResult {
             workspace: self.current_workspace().expect("workspace initialized"),

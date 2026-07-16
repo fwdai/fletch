@@ -519,12 +519,29 @@ impl WorkspaceManager {
         Ok(self.current().expect("workspace initialized"))
     }
 
-    /// Atomically delete a project after workflow and runtime lifecycle cleanup
-    /// has been coordinated by the supervisor. Foreign keys cascade through
-    /// repos, workspaces, sessions, transcripts, and project settings.
-    pub fn delete_project(&self, project_id: &str) -> Result<()> {
+    /// Atomically delete a project and its workflow runs after filesystem and
+    /// runtime cleanup has been staged by the supervisor. Workflow runs do not
+    /// have a project FK, so they share this transaction explicitly; every
+    /// other project-owned row is removed by foreign-key cascade.
+    pub fn delete_project(&self, project_id: &str, expected_run_ids: &[String]) -> Result<()> {
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
+        let actual_run_ids = {
+            let mut stmt =
+                tx.prepare("SELECT id FROM wf_run WHERE project_id = ?1 ORDER BY created_at, id")?;
+            let ids = stmt
+                .query_map([project_id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids
+        };
+        if actual_run_ids != expected_run_ids {
+            return Err(Error::Other(format!(
+                "project workflow set changed during deletion: expected {}, found {}",
+                expected_run_ids.len(),
+                actual_run_ids.len()
+            )));
+        }
+        tx.execute("DELETE FROM wf_run WHERE project_id = ?1", [project_id])?;
         let changed = tx.execute("DELETE FROM projects WHERE id = ?1", [project_id])?;
         if changed == 0 {
             return Err(Error::Other(format!("project not found: {project_id}")));
@@ -2630,8 +2647,16 @@ mod tests {
                 [&pid],
             )
             .unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES ('r1','n','{}','t',?1,'/r','/d','wf/x','sha','done','{}','{}',0,0)",
+                [&pid],
+            )
+            .unwrap();
 
-        wm.delete_project(&pid).unwrap();
+        wm.delete_project(&pid, &["r1".to_string()]).unwrap();
         let ws = wm.current().unwrap();
         assert!(ws.projects.is_empty());
         assert!(ws.repos.is_empty());
@@ -2645,6 +2670,56 @@ mod tests {
             )
             .unwrap();
         assert_eq!(setting_count, 0);
+        let run_count: i64 = db
+            .lock()
+            .query_row("SELECT COUNT(*) FROM wf_run WHERE id = 'r1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(run_count, 0, "workflow rows share the project commit");
+    }
+
+    #[test]
+    fn delete_project_rolls_back_when_the_workflow_set_changed() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let repo = init_repo(td.path());
+        let wm = WorkspaceManager::new(db.clone());
+        wm.add_workspace_repo(repo.clone()).unwrap();
+        let pid = wm.current().unwrap().projects[0].project_id.clone();
+
+        let mut rec = new_agent_record(
+            "yosemite".into(),
+            "agent".into(),
+            "claude".into(),
+            mk_repo(repo.to_str().unwrap()),
+            "task".into(),
+            AgentView::Custom,
+        );
+        wm.add_agent(&mut rec).unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES ('r1','n','{}','t',?1,'/r','/d','wf/x','sha','done','{}','{}',0,0)",
+                [&pid],
+            )
+            .unwrap();
+
+        let error = wm.delete_project(&pid, &[]).unwrap_err();
+        assert!(error.to_string().contains("workflow set changed"));
+        let ws = wm.current().unwrap();
+        assert_eq!(ws.projects.len(), 1, "project row is rolled back");
+        assert_eq!(ws.agents.len(), 1, "agent cascade is rolled back");
+        let run_count: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_run WHERE project_id = ?1",
+                [&pid],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(run_count, 1, "workflow row is rolled back");
     }
 
     #[test]

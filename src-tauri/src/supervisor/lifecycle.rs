@@ -1010,6 +1010,11 @@ impl Supervisor {
     /// (see `transition_active`). This is what keeps the "swap binary → keep
     /// going" flow working for an agent that's busy at swap time.
     pub(super) async fn respawn_agent_for_bin(self: &Arc<Self>, app: &AppHandle, agent_id: &str) {
+        // Keep the complete idle -> teardown -> Spawning -> restarted
+        // transition mutually exclusive with project deletion. The deletion
+        // marker is installed before that path waits for this lifecycle lock,
+        // so a respawn that won the lock but lost the marker race also stops.
+        let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = match self.workspace.agent(agent_id) {
             Ok(r) => r,
             Err(_) => {
@@ -1017,6 +1022,10 @@ impl Supervisor {
                 return;
             }
         };
+        if self.deleting_projects.lock().contains(&record.project_id) {
+            self.respawn_pending.lock().remove(agent_id);
+            return;
+        }
         // Atomic idle-check + remove. `busy` distinguishes "left running" from
         // "already gone" when no agent is taken.
         let mut busy = false;
