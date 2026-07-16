@@ -1,4 +1,3 @@
-import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
 import type { DirListing, PrSummary } from "@/api";
 import { Icon } from "@/components/Icon";
@@ -9,16 +8,10 @@ import { DEFAULT_PROVIDER_ID, isDockerSupported, providerLabel } from "@/data/pr
 import type { LocalCommandAction } from "@/data/slashCommands";
 import type { AgentUsage } from "@/store";
 import { useAppStore } from "@/store";
-import { AttachmentList } from "./AttachmentList";
-import { AutocompleteMenu } from "./autocomplete/AutocompleteMenu";
-import { useCommandSource } from "./autocomplete/sources/commands";
-import { useFileSource } from "./autocomplete/sources/files";
-import { usePrSource } from "./autocomplete/sources/prs";
-import { triggerQueryAt } from "./autocomplete/triggers";
-import { useAutocomplete } from "./autocomplete/useAutocomplete";
+import { ComposerFrame } from "./ComposerFrame";
 import { ModelPicker } from "./ModelPicker";
 import { UsageMeter } from "./UsageMeter";
-import { useFileDrop } from "./useFileDrop";
+import { useComposerInput } from "./useComposerInput";
 
 interface Props {
   /** Initial provider id — defaults to claude. */
@@ -139,7 +132,6 @@ export function Composer({
 }: Props) {
   const features = useAppStore((s) => s.features);
   const modelCatalog = useAppStore((s) => s.modelCatalog);
-  const setComposerDraft = useAppStore((s) => s.setComposerDraft);
   const customAgents = useAppStore((s) => s.customAgents);
   const sandboxEngine = useAppStore((s) => s.sandboxEngine);
 
@@ -147,19 +139,11 @@ export function Composer({
   // When the model is unknown (a new session before the first turn, or one the
   // catalog doesn't list) we keep the picker — better to show a no-op control
   // than to wrongly hide a real one.
-  // Restore any unsent text for this target. Read once at mount via getState
-  // (not a subscription) so persisting on each keystroke doesn't re-render us;
-  // switching targets remounts the Composer, which re-runs this initializer.
-  const [text, setText] = useState(() =>
-    draftKey ? (useAppStore.getState().composerDrafts[draftKey] ?? "") : "",
-  );
   const [provider, setProvider] = useState(defaultProvider);
   const [model, setModel] = useState<string | undefined>(defaultModel);
   const [customAgentId, setCustomAgentId] = useState<string | undefined>(defaultCustomAgentId);
   const activeMeta = lookupModel(modelCatalog, existingSession ? (activeModel ?? model) : model);
   const modelSupportsThinking = activeMeta ? activeMeta.reasoning : true;
-
-  const [attachments, setAttachments] = useState<string[]>([]);
 
   const detail = PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL];
   const thinkingLevels = detail?.thinkingLevels ?? [];
@@ -194,101 +178,32 @@ export function Composer({
       : undefined;
     setThinkingValue(custom?.effort || resolveThinking(provider));
   }, [provider, customAgentId]);
-  // Caret offset, tracked so triggers can be detected at the cursor (not just
-  // at the start of the text).
-  const [caret, setCaret] = useState(0);
-  const ta = useRef<HTMLTextAreaElement>(null);
 
-  function addPaths(paths: string[]) {
-    setAttachments((cur) => {
-      const next = [...cur];
-      for (const p of paths) if (!next.includes(p)) next.push(p);
-      return next;
-    });
-  }
-
-  const isDropTarget = useFileDrop(addPaths);
-
-  async function browse() {
-    const sel = await open({ multiple: true });
-    if (!sel) return;
-    addPaths(Array.isArray(sel) ? sel : [sel]);
-  }
-
-  // Autocompletions share one menu + keyboard mechanics (useAutocomplete);
-  // each source owns its data and what picking a row does. Triggers are
-  // mutually exclusive at a given caret, so only one menu is ever open.
-  const fileSource = useFileSource({
-    query: triggerQueryAt(text, caret, "@")?.query ?? null,
-    mentionSource,
-    listDir,
-    addPaths,
-  });
-  const prSource = usePrSource({
-    query: triggerQueryAt(text, caret, "#")?.query ?? null,
-    listPrs,
-  });
-  const commandSource = useCommandSource({
-    query: triggerQueryAt(text, caret, "/", true)?.query ?? null,
+  // Shared input core (textarea + `/`·`@`·`#` autocomplete + attachments +
+  // draft/seed). `onEnter` sends via a ref so the callback can reference the
+  // `input` and `send` defined just below (they depend on `input` in turn).
+  const submitRef = useRef<() => void>(() => {});
+  const input = useComposerInput({
     provider,
     projectDir,
     onLocalCommand,
+    mentionSource,
+    listDir,
+    listPrs,
+    draftKey,
+    autoFocus,
+    seed,
+    onSeedConsumed,
+    onEnter: () => submitRef.current(),
   });
-  const autocomplete = useAutocomplete({
-    sources: [commandSource, fileSource, prSource],
-    text,
-    caret,
-    setText,
-    setCaret,
-    focusAt: placeCaret,
-  });
 
-  useEffect(() => {
-    if (autoFocus) ta.current?.focus();
-  }, [autoFocus]);
-
-  // On mount (including the remount a view switch causes) the restored draft
-  // text is in place but the textarea still renders at its single-row height,
-  // since `grow` only runs on edits. Resize once so a multi-line draft is
-  // expanded to fit its content (up to the max height).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount
-  useEffect(() => {
-    if (ta.current) grow(ta.current);
-  }, []);
-
-  // Mirror the draft into the store on every edit so it survives the remount
-  // that view switches cause. Sending clears `text`, which clears the entry.
-  useEffect(() => {
-    if (draftKey) setComposerDraft(draftKey, text);
-  }, [draftKey, text, setComposerDraft]);
-
-  // Apply an externally-supplied seed: append to the current draft (with a
-  // blank-line separator), focus, resize, and notify the parent to clear it.
-  useEffect(() => {
-    if (!seed) return;
-    setText((cur) => {
-      const next = cur.trim() ? `${cur}\n\n${seed}` : seed;
-      requestAnimationFrame(() => {
-        const el = ta.current;
-        if (!el) return;
-        el.focus();
-        grow(el);
-        const end = next.length;
-        el.setSelectionRange(end, end);
-        setCaret(end);
-      });
-      return next;
-    });
-    onSeedConsumed?.();
-  }, [seed, onSeedConsumed]);
-
-  function grow(el: HTMLTextAreaElement) {
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
-  }
+  const hasContent = input.text.trim().length > 0 || input.attachments.length > 0;
+  // Busy + empty → Stop; busy + typed (or idle) → Send. So a mid-turn
+  // follow-up sends with Enter, and an empty composer still stops the turn.
+  const showStop = stopping && !hasContent;
+  const sendDisabled = showStop ? !onStop : disabled || !hasContent || dockerBlocked;
 
   function send() {
-    const trimmed = text.trim();
     // While the agent works, an empty composer's primary action is Stop; once
     // the user types, it becomes Send so the message can be queued/injected
     // mid-turn (the agent keeps running — see store.sendUserMessage).
@@ -296,142 +211,97 @@ export function Composer({
       onStop?.();
       return;
     }
-    if ((!trimmed && attachments.length === 0) || disabled || dockerBlocked) return;
-    onSend({ text: trimmed, provider, model, thinking: thinkingValue, customAgentId, attachments });
-    setText("");
-    setAttachments([]);
-    if (ta.current) ta.current.style.height = "auto";
-  }
-
-  function stop() {
-    if (!showStop) return;
-    onStop?.();
-  }
-
-  function placeCaret(pos: number) {
-    requestAnimationFrame(() => {
-      const el = ta.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(pos, pos);
-      grow(el);
+    const trimmed = input.text.trim();
+    if ((!trimmed && input.attachments.length === 0) || disabled || dockerBlocked) return;
+    onSend({
+      text: trimmed,
+      provider,
+      model,
+      thinking: thinkingValue,
+      customAgentId,
+      attachments: input.attachments,
     });
+    input.clear();
   }
-
-  const hasContent = text.trim().length > 0 || attachments.length > 0;
-  // Busy + empty → Stop; busy + typed (or idle) → Send. So a mid-turn
-  // follow-up sends with Enter, and an empty composer still stops the turn.
-  const showStop = stopping && !hasContent;
-  const sendDisabled = showStop ? !onStop : disabled || !hasContent || dockerBlocked;
+  submitRef.current = send;
 
   return (
-    <div className={`composer${isDropTarget ? " is-drop-target" : ""}`}>
-      {isDropTarget && (
-        <div className="composer-drop-overlay flex-center text-sm">
-          <Icon name="upload" size={20} />
-          <span>Drop files to attach</span>
-        </div>
-      )}
-      {autocomplete.menu && <AutocompleteMenu {...autocomplete.menu} />}
-      {attachments.length > 0 && (
-        <AttachmentList
-          paths={attachments}
-          onRemove={(p) => setAttachments((cur) => cur.filter((x) => x !== p))}
-        />
-      )}
-      <textarea
-        ref={ta}
-        className="composer-input text-base"
-        placeholder={placeholder || "Message agent · /commands · @ to attach · # for PRs"}
-        value={text}
-        rows={minRows}
-        // Floor at `minRows` lines; mirrors .composer-input's line-height (1.55)
-        // and vertical padding (12+8px), so grow() can't shrink it below this.
-        style={minRows > 1 ? { minHeight: `calc(${minRows} * 1.55em + 20px)` } : undefined}
-        disabled={disabled}
-        onChange={(e) => {
-          setText(e.target.value);
-          setCaret(e.target.selectionStart ?? e.target.value.length);
-          grow(e.target);
-        }}
-        onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
-        onKeyDown={(e) => {
-          if (autocomplete.onKeyDown(e)) return;
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            send();
-          }
-        }}
-      />
-      <div className="composer-foot flex-center">
-        <ModelPicker
-          provider={provider}
-          model={model}
-          customAgentId={customAgentId}
-          locked={existingSession}
-          onChange={(nextProvider, nextModel, nextCustomAgentId) => {
-            // Effort follows from the selection via the effect above (a custom
-            // agent's reasoning budget, else the per-provider default).
-            setProvider(nextProvider);
-            setModel(nextModel);
-            setCustomAgentId(nextCustomAgentId);
-            onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
-          }}
-        />
-        {features.thinkingBudget &&
-          thinkingLevels.length > 0 &&
-          modelSupportsThinking &&
-          (existingSession && detail?.effortAtSpawn ? (
-            initialThinking && (
-              <Chip tip="Thinking effort — fixed at spawn" disabled>
+    <ComposerFrame
+      input={input}
+      placeholder={placeholder || "Message agent · /commands · @ to attach · # for PRs"}
+      disabled={disabled}
+      minRows={minRows}
+      foot={
+        <>
+          <ModelPicker
+            provider={provider}
+            model={model}
+            customAgentId={customAgentId}
+            locked={existingSession}
+            onChange={(nextProvider, nextModel, nextCustomAgentId) => {
+              // Effort follows from the selection via the effect above (a custom
+              // agent's reasoning budget, else the per-provider default).
+              setProvider(nextProvider);
+              setModel(nextModel);
+              setCustomAgentId(nextCustomAgentId);
+              onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
+            }}
+          />
+          {features.thinkingBudget &&
+            thinkingLevels.length > 0 &&
+            modelSupportsThinking &&
+            (existingSession && detail?.effortAtSpawn ? (
+              initialThinking && (
+                <Chip tip="Thinking effort — fixed at spawn" disabled>
+                  <Icon name="sparkle" size={11} />
+                  <span>
+                    {thinkingLevels.find((l) => l.value === initialThinking)?.label ??
+                      initialThinking}
+                  </span>
+                </Chip>
+              )
+            ) : (
+              <Chip
+                tip="Thinking budget"
+                onClick={() => {
+                  const idx = thinkingLevels.findIndex((l) => l.value === thinkingValue);
+                  const next = thinkingLevels[(idx + 1) % thinkingLevels.length];
+                  setThinkingValue(next.value);
+                  localStorage.setItem(`thinkingBudget.${provider}`, next.value);
+                }}
+              >
                 <Icon name="sparkle" size={11} />
-                <span>
-                  {thinkingLevels.find((l) => l.value === initialThinking)?.label ??
-                    initialThinking}
-                </span>
+                <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
               </Chip>
-            )
-          ) : (
-            <Chip
-              tip="Thinking budget"
-              onClick={() => {
-                const idx = thinkingLevels.findIndex((l) => l.value === thinkingValue);
-                const next = thinkingLevels[(idx + 1) % thinkingLevels.length];
-                setThinkingValue(next.value);
-                localStorage.setItem(`thinkingBudget.${provider}`, next.value);
-              }}
-            >
-              <Icon name="sparkle" size={11} />
-              <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
-            </Chip>
-          ))}
-        <Chip tip="Attach" onClick={browse}>
-          <Icon name="attach" size={11} />
-        </Chip>
-        <span style={{ flex: 1 }} />
-        {features.tokenUsage && usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
-        {/* A disabled <button> swallows hover in the WebView, so the reason
-         *  rides a wrapper span that stays hover-capable (same pattern as the
-         *  ModelPicker's disabled rows). */}
-        <span
-          className={dockerBlocked ? "tip" : undefined}
-          data-tip={
-            dockerBlocked
-              ? `${providerLabel(provider)} isn't available in Docker sandboxes yet — switch to Claude to send`
-              : undefined
-          }
-        >
-          <button
-            type="button"
-            className={`send flex-center ${showStop ? "is-stop" : ""}`}
-            disabled={sendDisabled}
-            onClick={showStop ? stop : send}
-            aria-label={showStop ? "Stop" : "Send"}
+            ))}
+          <Chip tip="Attach" onClick={input.browse}>
+            <Icon name="attach" size={11} />
+          </Chip>
+          <span style={{ flex: 1 }} />
+          {features.tokenUsage && usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
+          {/* A disabled <button> swallows hover in the WebView, so the reason
+           *  rides a wrapper span that stays hover-capable (same pattern as the
+           *  ModelPicker's disabled rows). */}
+          <span
+            className={dockerBlocked ? "tip" : undefined}
+            data-tip={
+              dockerBlocked
+                ? `${providerLabel(provider)} isn't available in Docker sandboxes yet — switch to Claude to send`
+                : undefined
+            }
           >
-            <Icon name={showStop ? "stop" : "arrowUp"} size={13} />
-          </button>
-        </span>
-      </div>
-    </div>
+            <button
+              type="button"
+              className={`send flex-center ${showStop ? "is-stop" : ""}`}
+              disabled={sendDisabled}
+              onClick={showStop ? () => onStop?.() : send}
+              aria-label={showStop ? "Stop" : "Send"}
+            >
+              <Icon name={showStop ? "stop" : "arrowUp"} size={13} />
+            </button>
+          </span>
+        </>
+      }
+    />
   );
 }
