@@ -33,11 +33,8 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
   },
 
   deleteProject: async (projectId) => {
-    const deletedIds =
-      get()
-        .workspace?.agents.filter((agent) => agent.project_id === projectId)
-        .map((agent) => agent.id) ?? [];
-    const ws = await api.deleteProject(projectId);
+    const result = await api.deleteProject(projectId);
+    const deletedIds = result.deleted_agent_ids;
     for (const id of deletedIds) clearOutputBuffer(id);
     set((state) => {
       let patch = {};
@@ -45,10 +42,13 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
         patch = { ...patch, ...dropAgentEntries({ ...state, ...patch }, id) };
       return {
         ...patch,
-        workspace: ws,
+        workspace: result.workspace,
         selectedAgentId: deletedIds.includes(state.selectedAgentId ?? "")
           ? null
           : state.selectedAgentId,
+        selectedRunId: result.deleted_run_ids.includes(state.selectedRunId ?? "")
+          ? null
+          : state.selectedRunId,
         projectSettingsRepoPath: null,
       };
     });

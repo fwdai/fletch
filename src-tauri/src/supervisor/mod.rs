@@ -29,7 +29,9 @@ use crate::message_queue::MessageQueue;
 use crate::native_input::NativeInputTracker;
 use crate::pty_session::PtySession;
 use crate::run_session::RunSession;
-use crate::workspace::{AgentRecord, AgentStatus, ClosedTurn, Workspace, WorkspaceManager};
+use crate::workspace::{
+    AgentRecord, AgentStatus, ClosedTurn, ProjectDeleteResult, Workspace, WorkspaceManager,
+};
 
 use events::emit_status;
 use messaging::{drain_message_queue, drain_pending_bin_respawn};
@@ -73,6 +75,12 @@ pub struct Supervisor {
     /// Per-agent run-panel processes (dev server + setup). Reused
     /// across start/stop cycles so the log buffer survives.
     pub runs: Mutex<HashMap<String, Arc<RunSession>>>,
+    /// Serializes agent creation/resume/view-switch/restore against project
+    /// deletion. A status snapshot alone cannot close the startup race.
+    pub(super) agent_lifecycle: tokio::sync::Mutex<()>,
+    /// Project ids currently being deleted. Fresh turns check and transition
+    /// to Running while holding this lock, closing the idle-to-running race.
+    pub(super) deleting_projects: Mutex<HashSet<String>>,
     /// Agent ids whose binary-path change couldn't be applied immediately
     /// because the agent was mid-turn. Drained at the next turn-end Idle
     /// transition (see `transition_active`), which respawns them onto the
@@ -116,6 +124,8 @@ impl Supervisor {
             native_inputs: Mutex::new(HashMap::new()),
             shells: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
+            agent_lifecycle: tokio::sync::Mutex::new(()),
+            deleting_projects: Mutex::new(HashSet::new()),
             respawn_pending: Mutex::new(HashSet::new()),
             message_queue: Mutex::new(MessageQueue::new()),
             interrupted: Mutex::new(HashSet::new()),
@@ -431,18 +441,66 @@ impl Supervisor {
             })
     }
 
-    pub async fn delete_project(self: Arc<Self>, project_id: &str) -> Result<Workspace> {
+    pub async fn delete_project(
+        self: Arc<Self>,
+        workflows: &crate::workflow::scheduler::WorkflowService,
+        project_id: &str,
+    ) -> Result<ProjectDeleteResult> {
+        if !self.deleting_projects.lock().insert(project_id.to_string()) {
+            return Err(Error::Other(
+                "project deletion is already in progress".into(),
+            ));
+        }
+        let result = self
+            .clone()
+            .delete_project_inner(workflows, project_id)
+            .await;
+        self.deleting_projects.lock().remove(project_id);
+        result
+    }
+
+    async fn delete_project_inner(
+        self: Arc<Self>,
+        workflows: &crate::workflow::scheduler::WorkflowService,
+        project_id: &str,
+    ) -> Result<ProjectDeleteResult> {
+        // Lock workflow creation/deletion first, then agent startup. Workflow
+        // launch releases its lock before its background driver can spawn, and
+        // the persisted pending run makes this preflight reject the deletion.
+        let _workflow_guard = workflows.lifecycle.lock().await;
+        let _agent_guard = self.agent_lifecycle.lock().await;
         let agents = self.workspace.agents_for_project(project_id);
-        if self.project_has_running_agents(project_id) {
+        if agents.iter().any(|agent| {
+            matches!(
+                self.effective_status(&agent.id, agent),
+                AgentStatus::Spawning | AgentStatus::Running
+            )
+        }) {
             return Err(Error::Other(
                 "cannot delete a project while one of its agents is running".into(),
             ));
         }
 
-        for agent in agents {
-            self.clone().discard_agent(&agent.id).await?;
-        }
-        self.workspace.delete_project(project_id)
+        let deleted_agent_ids = agents.iter().map(|agent| agent.id.clone()).collect();
+        let deleted_run_ids = workflows
+            .delete_project_runs_locked(&self, project_id)
+            .await?;
+
+        // Workflow deletion removes its owned agents through the normal path.
+        // Snapshot the remaining project agents, detach their idle runtimes,
+        // then commit every remaining row deletion in one FK-cascaded project
+        // transaction. If the DB commit fails, records and checkouts remain;
+        // detached idle agents can resume lazily.
+        let remaining = self.workspace.agents_for_project(project_id);
+        self.detach_project_agents(&remaining);
+        self.workspace.delete_project(project_id)?;
+        self.teardown_project_checkouts(&remaining).await;
+
+        Ok(ProjectDeleteResult {
+            workspace: self.current_workspace().expect("workspace initialized"),
+            deleted_agent_ids,
+            deleted_run_ids,
+        })
     }
 
     pub fn relocate_repo(&self, old_path: PathBuf, new_path: PathBuf) -> Result<Workspace> {
@@ -689,8 +747,8 @@ mod tests {
         assert_eq!(sup.live_status("yosemite"), Some(AgentStatus::Running));
     }
 
-    #[tokio::test]
-    async fn delete_project_rejects_running_agent() {
+    #[test]
+    fn project_running_check_detects_running_agent() {
         let sup = Arc::new(test_supervisor());
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
@@ -723,10 +781,7 @@ mod tests {
             .lock()
             .insert(record.id.clone(), AgentStatus::Running);
 
-        let err = sup.clone().delete_project(&project_id).await.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("while one of its agents is running"));
+        assert!(sup.project_has_running_agents(&project_id));
         assert_eq!(sup.current_workspace().unwrap().projects.len(), 1);
         assert_eq!(sup.current_workspace().unwrap().agents.len(), 1);
     }

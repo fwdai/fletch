@@ -227,6 +227,13 @@ pub struct Workspace {
     pub agents: Vec<AgentRecord>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectDeleteResult {
+    pub workspace: Workspace,
+    pub deleted_agent_ids: Vec<String>,
+    pub deleted_run_ids: Vec<String>,
+}
+
 /// A pinned repo joined with its owning project, so the frontend can show a
 /// custom name (independent of the folder basename) and address the project
 /// for rename / relocate without a second round-trip.
@@ -512,21 +519,18 @@ impl WorkspaceManager {
         Ok(self.current().expect("workspace initialized"))
     }
 
-    /// Delete the project row after its agent runtimes/checkouts have been
-    /// torn down by the supervisor. Foreign keys cascade through repos,
-    /// workspaces, sessions, transcripts, and project settings. Workflow runs
-    /// reference projects by id without an FK, so remove those explicitly.
-    pub fn delete_project(&self, project_id: &str) -> Result<Workspace> {
+    /// Atomically delete a project after workflow and runtime lifecycle cleanup
+    /// has been coordinated by the supervisor. Foreign keys cascade through
+    /// repos, workspaces, sessions, transcripts, and project settings.
+    pub fn delete_project(&self, project_id: &str) -> Result<()> {
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM wf_run WHERE project_id = ?1", [project_id])?;
         let changed = tx.execute("DELETE FROM projects WHERE id = ?1", [project_id])?;
         if changed == 0 {
             return Err(Error::Other(format!("project not found: {project_id}")));
         }
         tx.commit()?;
-        drop(conn);
-        Ok(self.current().expect("workspace initialized"))
+        Ok(())
     }
 
     /// Repoint a pinned repo at a new location on disk. The user has already
@@ -2627,7 +2631,8 @@ mod tests {
             )
             .unwrap();
 
-        let ws = wm.delete_project(&pid).unwrap();
+        wm.delete_project(&pid).unwrap();
+        let ws = wm.current().unwrap();
         assert!(ws.projects.is_empty());
         assert!(ws.repos.is_empty());
         assert!(ws.agents.is_empty());

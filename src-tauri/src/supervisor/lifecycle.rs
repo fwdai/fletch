@@ -204,6 +204,7 @@ impl Supervisor {
         app: AppHandle,
         req: SpawnRequest,
     ) -> Result<AgentRecord> {
+        let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let SpawnRequest {
             view,
             repo_path,
@@ -867,6 +868,7 @@ impl Supervisor {
     }
 
     pub async fn resume_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+        let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = self.workspace.agent(agent_id)?;
         if self.agents.lock().contains_key(agent_id) {
             return Ok(());
@@ -892,6 +894,11 @@ impl Supervisor {
         agent_id: &str,
         bytes: &[u8],
     ) -> Result<()> {
+        let project_id = self.workspace.agent(agent_id)?.project_id;
+        let deletion_guard = self.deleting_projects.lock();
+        if deletion_guard.contains(&project_id) {
+            return Err(Error::Other("project deletion is in progress".into()));
+        }
         self.live_agent(agent_id)?.write_pty(bytes)?;
         let submitted = self
             .native_inputs
@@ -903,6 +910,7 @@ impl Supervisor {
             mark_user_turn_started(&self, app, agent_id, None);
             on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), submitted);
         }
+        drop(deletion_guard);
         Ok(())
     }
 
@@ -916,6 +924,7 @@ impl Supervisor {
         agent_id: &str,
         new_view: AgentView,
     ) -> Result<()> {
+        let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = self.workspace.agent(agent_id)?;
         if record.view == new_view {
             return Ok(());

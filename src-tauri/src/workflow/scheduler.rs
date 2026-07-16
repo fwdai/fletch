@@ -49,6 +49,10 @@ pub struct WorkflowService {
     /// Active-run registry. Behind an `Arc` so a drive task can remove its own
     /// entry on exit without borrowing the service.
     pub(super) runs: Arc<Mutex<HashMap<String, RunHandle>>>,
+    /// Serializes workflow creation/deletion. Project deletion holds this from
+    /// its run preflight through the project commit, so no new run can appear
+    /// between cleanup and deletion.
+    pub(crate) lifecycle: tokio::sync::Mutex<()>,
 }
 
 pub(super) struct RunHandle {
@@ -73,6 +77,7 @@ impl WorkflowService {
             driver,
             app,
             runs: Arc::new(Mutex::new(HashMap::new())),
+            lifecycle: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -94,6 +99,7 @@ impl WorkflowService {
         // same form a chat message delivers them, scoped to the first agent.
         attachments: Vec<String>,
     ) -> Result<String> {
+        let _lifecycle_guard = self.lifecycle.lock().await;
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         let repo = PathBuf::from(&repo_path);
 
@@ -229,6 +235,11 @@ impl WorkflowService {
     /// surviving child), sibling subtrees still get cleaned, and every failure
     /// is aggregated into one error that says deleting again finishes the job.
     pub async fn delete_run(&self, supervisor: &Arc<Supervisor>, run_id: &str) -> Result<()> {
+        let _lifecycle_guard = self.lifecycle.lock().await;
+        self.delete_run_locked(supervisor, run_id).await
+    }
+
+    async fn delete_run_locked(&self, supervisor: &Arc<Supervisor>, run_id: &str) -> Result<()> {
         let order = {
             let conn = self.db.lock();
             let mut order = Vec::new();
@@ -258,6 +269,52 @@ impl WorkflowService {
              parents) is untouched — delete again to finish.",
             errors.join("; ")
         )))
+    }
+
+    /// Delete every workflow tree owned by a project through the same guarded
+    /// lifecycle path as `wf_delete_run`. The caller holds `lifecycle` across
+    /// this cleanup and the eventual project-row commit.
+    pub(crate) async fn delete_project_runs_locked(
+        &self,
+        supervisor: &Arc<Supervisor>,
+        project_id: &str,
+    ) -> Result<Vec<String>> {
+        let (roots, all_ids) = {
+            let conn = self.db.lock();
+            let roots = conn
+                .prepare("SELECT id FROM wf_run WHERE project_id = ?1 AND parent_run_id IS NULL")?
+                .query_map([project_id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut all_ids = Vec::new();
+            for root in &roots {
+                run_tree_post_order(&conn, root, &mut all_ids);
+            }
+            check_deletable(&conn, &all_ids)?;
+            (roots, all_ids)
+        };
+
+        // Match delete_run's winding-down guard, but check the whole project
+        // before touching any tree so rejection is side-effect free.
+        {
+            let runs = self.runs.lock();
+            if let Some(id) = all_ids.iter().find(|id| runs.contains_key(id.as_str())) {
+                return Err(Error::Other(format!(
+                    "run {id} is still winding down — try again in a moment"
+                )));
+            }
+        }
+
+        let mut errors = Vec::new();
+        for root in roots {
+            self.delete_tree(supervisor, &root, &mut errors).await;
+        }
+        if !errors.is_empty() {
+            return Err(Error::Other(format!(
+                "project workflow deletion incomplete: {}. Delete the project again to finish.",
+                errors.join("; ")
+            )));
+        }
+        Ok(all_ids)
     }
 
     /// Delete `run_id`'s subtree, children first. Returns whether the whole

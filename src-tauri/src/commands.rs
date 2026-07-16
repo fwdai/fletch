@@ -17,7 +17,8 @@ use crate::new_project;
 use crate::run_session::RunStateSnapshot;
 use crate::supervisor::{SpawnRequest, Supervisor};
 use crate::workspace::{
-    repo_checkout_path, AgentRecord, AgentView, DiffStats, TrackedRepo, Workspace,
+    repo_checkout_path, AgentRecord, AgentView, DiffStats, ProjectDeleteResult, TrackedRepo,
+    Workspace,
 };
 
 #[tauri::command]
@@ -187,9 +188,14 @@ pub fn rename_project(
 #[tauri::command]
 pub async fn delete_project(
     supervisor: State<'_, Arc<Supervisor>>,
+    workflows: State<'_, Arc<crate::workflow::scheduler::WorkflowService>>,
     project_id: String,
-) -> Result<Workspace> {
-    supervisor.inner().clone().delete_project(&project_id).await
+) -> Result<ProjectDeleteResult> {
+    supervisor
+        .inner()
+        .clone()
+        .delete_project(workflows.inner(), &project_id)
+        .await
 }
 
 #[tauri::command]
