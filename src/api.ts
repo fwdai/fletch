@@ -702,6 +702,10 @@ export const api = {
   runClaudeCommand: (agentId: string, args: string[]) =>
     invoke<ClaudeCommandOutput>("run_claude_command", { agentId, args }),
   listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),
+  // Draft (new-workspace) composer variants, keyed by repo path since a draft
+  // has no agent/checkout yet.
+  listRepoTree: (repoPath: string) => invoke<string[]>("list_repo_tree", { repoPath }),
+  listRepoPrs: (repoPath: string) => invoke<PrSummary[]>("list_repo_prs", { repoPath }),
   readCheckoutFile: (agentId: string, path: string) =>
     invoke<CheckoutFileContents>("read_checkout_file", { agentId, path }),
   getFileDiff: (agentId: string, path: string) =>

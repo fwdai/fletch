@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { ProjectPicker } from "@/components/Composer/ProjectPicker";
@@ -132,6 +133,9 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 defaultProvider={draft.provider}
                 projectDir={draft.repoPath}
                 onLocalCommand={(action) => runLocalCommand(action)}
+                mentionSource={() => api.listRepoTree(draft.repoPath)}
+                listDir={api.listDir}
+                listPrs={() => api.listRepoPrs(draft.repoPath)}
                 defaultModel={draft.model}
                 defaultCustomAgentId={draft.customAgentId}
                 onChangeSelection={(provider, model, customAgentId) => {
