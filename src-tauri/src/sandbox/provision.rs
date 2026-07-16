@@ -211,9 +211,15 @@ async fn recover_and_checkout(
     origin_branch: &str,
     fallback_ref: Option<&str>,
 ) -> Result<bool> {
-    // 1 + 2: the tip is local, or its branch still exists on origin → the
-    // agent's branch is meaningfully still there, so recreate it at the tip.
-    if commit_present(dest, tip).await || fetch_branch(dest, origin_branch).await.is_ok() {
+    // 1 + 2: the tip is local, or fetching its branch brings it in → the
+    // agent's branch still carries its work, so recreate it at the tip. A
+    // branch that was rebased or force-pushed past the tip still fetches, but
+    // does NOT bring the tip: re-check presence after the fetch so that case
+    // falls through to the by-SHA / parent-base fallbacks below instead of
+    // aborting the whole restore on a doomed checkout.
+    if commit_present(dest, tip).await
+        || (fetch_branch(dest, origin_branch).await.is_ok() && commit_present(dest, tip).await)
+    {
         git::run_git(
             dest,
             &["checkout", "-b", branch, tip],
@@ -222,9 +228,10 @@ async fn recover_and_checkout(
         .await?;
         return Ok(true);
     }
-    // 3: branch is gone but the merged commit lingers on the base branch —
-    // fetch it by SHA. The branch name no longer means anything on the remote,
-    // so open detached rather than fabricating a local branch for it.
+    // 3: the branch is gone, or no longer points at the tip, but the commit may
+    // still linger on origin (merged into the base branch, or reachable from
+    // another ref) — fetch it by SHA. The branch name no longer reflects this
+    // work, so open detached rather than fabricating a local branch for it.
     if fetch_commit(dest, tip).await.is_ok() {
         checkout_detached(dest, tip).await?;
         return Ok(false);
@@ -1045,9 +1052,15 @@ mod tests {
             dest: &dest,
         };
 
-        provision_on_branch(WorkspaceMode::Clone, &spec, "feat/restore", "feat/restore", None)
-            .await
-            .unwrap();
+        provision_on_branch(
+            WorkspaceMode::Clone,
+            &spec,
+            "feat/restore",
+            "feat/restore",
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]),
             "feat/restore"
@@ -1213,12 +1226,21 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let (repo, _first, _head) = fixture_repo(td.path());
         let origin = td.path().join("origin.git");
-        run(td.path(), &["init", "-q", "--bare", origin.to_str().unwrap()]);
+        run(
+            td.path(),
+            &["init", "-q", "--bare", origin.to_str().unwrap()],
+        );
         // GitHub serves any commit reachable from an advertised ref even with no
         // branch pointing at it; model that so a merged-then-deleted tip is
         // fetchable by SHA (the default local `upload-pack` refuses otherwise).
-        run(&origin, &["config", "uploadpack.allowReachableSHA1InWant", "true"]);
-        run(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        run(
+            &origin,
+            &["config", "uploadpack.allowReachableSHA1InWant", "true"],
+        );
+        run(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
         run(&repo, &["push", "-q", "origin", "main"]);
 
         // A worker branches `feat`, commits, merges it back into `main` on the
@@ -1226,7 +1248,12 @@ mod tests {
         let worker = td.path().join("worker");
         run(
             td.path(),
-            &["clone", "-q", origin.to_str().unwrap(), worker.to_str().unwrap()],
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                worker.to_str().unwrap(),
+            ],
         );
         run(&worker, &["config", "user.email", "w@example.com"]);
         run(&worker, &["config", "user.name", "Worker"]);
@@ -1237,7 +1264,10 @@ mod tests {
         let tip = run(&worker, &["rev-parse", "HEAD"]);
         run(&worker, &["push", "-q", "origin", "feat"]);
         run(&worker, &["checkout", "-q", "main"]);
-        run(&worker, &["merge", "-q", "--no-ff", "-m", "merge feat", "feat"]);
+        run(
+            &worker,
+            &["merge", "-q", "--no-ff", "-m", "merge feat", "feat"],
+        );
         run(&worker, &["push", "-q", "origin", "main"]);
         run(&worker, &["push", "-q", "origin", "--delete", "feat"]);
 
@@ -1257,6 +1287,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clone_provision_on_branch_detaches_when_branch_moved_past_tip() {
+        // The branch still exists on origin but was rebased / force-pushed to a
+        // history that no longer contains the archived tip. Fetching the branch
+        // succeeds yet does NOT bring the tip, so the on-branch checkout would
+        // fail — recovery must fall through to the by-SHA fetch (the tip is
+        // still reachable, here via the base branch it merged into) and open
+        // detached at it rather than aborting the restore.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let origin = td.path().join("origin.git");
+        run(
+            td.path(),
+            &["init", "-q", "--bare", origin.to_str().unwrap()],
+        );
+        run(
+            &origin,
+            &["config", "uploadpack.allowReachableSHA1InWant", "true"],
+        );
+        run(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        run(&repo, &["push", "-q", "origin", "main"]);
+
+        let worker = td.path().join("worker");
+        run(
+            td.path(),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                worker.to_str().unwrap(),
+            ],
+        );
+        run(&worker, &["config", "user.email", "w@example.com"]);
+        run(&worker, &["config", "user.name", "Worker"]);
+        // The agent's tip on `feat`, pushed then merged into `main` (so it stays
+        // reachable on origin by SHA after the branch moves).
+        run(&worker, &["checkout", "-q", "-b", "feat"]);
+        std::fs::write(worker.join("feat.txt"), b"agent work").unwrap();
+        run(&worker, &["add", "-A"]);
+        run(&worker, &["commit", "-q", "-m", "agent work"]);
+        let tip = run(&worker, &["rev-parse", "HEAD"]);
+        run(&worker, &["push", "-q", "origin", "feat"]);
+        run(&worker, &["checkout", "-q", "main"]);
+        run(
+            &worker,
+            &["merge", "-q", "--no-ff", "-m", "merge feat", "feat"],
+        );
+        run(&worker, &["push", "-q", "origin", "main"]);
+        // Force-push `feat` onto a fresh history off `main` that excludes the tip.
+        run(&worker, &["checkout", "-q", "-B", "feat", &head]);
+        std::fs::write(worker.join("other.txt"), b"rebased work").unwrap();
+        run(&worker, &["add", "-A"]);
+        run(&worker, &["commit", "-q", "-m", "rebased work"]);
+        run(&worker, &["push", "-q", "-f", "origin", "feat"]);
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &tip,
+            dest: &dest,
+        };
+        let on_branch = provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat", None)
+            .await
+            .unwrap();
+        assert!(
+            !on_branch,
+            "a branch moved past the tip must restore detached"
+        );
+        assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), tip);
+        assert!(dest.join("feat.txt").exists());
+    }
+
+    #[tokio::test]
     async fn clone_provision_on_branch_falls_back_to_parent_base_when_tip_lost() {
         // Worst case: the tip is gone for good (branch deleted without merging,
         // so it is unreachable on origin and unfetchable by SHA). Restore must
@@ -1265,15 +1371,29 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let (repo, _first, head) = fixture_repo(td.path());
         let origin = td.path().join("origin.git");
-        run(td.path(), &["init", "-q", "--bare", origin.to_str().unwrap()]);
-        run(&origin, &["config", "uploadpack.allowReachableSHA1InWant", "true"]);
-        run(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        run(
+            td.path(),
+            &["init", "-q", "--bare", origin.to_str().unwrap()],
+        );
+        run(
+            &origin,
+            &["config", "uploadpack.allowReachableSHA1InWant", "true"],
+        );
+        run(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
         run(&repo, &["push", "-q", "origin", "main"]);
 
         let worker = td.path().join("worker");
         run(
             td.path(),
-            &["clone", "-q", origin.to_str().unwrap(), worker.to_str().unwrap()],
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                worker.to_str().unwrap(),
+            ],
         );
         run(&worker, &["config", "user.email", "w@example.com"]);
         run(&worker, &["config", "user.name", "Worker"]);
