@@ -124,6 +124,36 @@ pub fn provision(run_dir: &Path, task_md: &str) -> Result<PathBuf> {
     Ok(blackboard)
 }
 
+/// `<run-dir>/attachments.json` — the run's launch-time file attachments. Kept
+/// at the run-dir root (host only), NOT under `blackboard/`, so the raw path
+/// list isn't exposed into step sandboxes. Write-once at launch, read-only
+/// thereafter: the engine renders them into the entry step's prompt, re-reading
+/// on every drive so a resume needs no delivery state.
+fn attachments_path(run_dir: &Path) -> PathBuf {
+    run_dir.join("attachments.json")
+}
+
+/// Persist a run's launch-time attachment paths. No-op for an empty list, so a
+/// normal (attachment-free) launch writes nothing and [`read_attachments`]
+/// returns empty.
+pub fn write_attachments(run_dir: &Path, attachments: &[String]) -> Result<()> {
+    if attachments.is_empty() {
+        return Ok(());
+    }
+    let json = serde_json::to_string(attachments).map_err(|e| Error::Other(e.to_string()))?;
+    std::fs::write(attachments_path(run_dir), json)?;
+    Ok(())
+}
+
+/// Read a run's launch-time attachment paths. Missing or unreadable file → no
+/// attachments (an attachment-free run).
+pub fn read_attachments(run_dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(attachments_path(run_dir))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
 /// The structured completion signal an agent writes to
 /// `<step-id>/verdict.json` (spec §8.3). `deny_unknown_fields` keeps the shape
 /// narrow: an unexpected key (a typo'd field name, a prompt-injected extra)
@@ -230,6 +260,22 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn attachments_roundtrip_and_absent_is_empty() {
+        let dir = tmp();
+        // Absent → empty (an attachment-free run).
+        assert!(read_attachments(dir.path()).is_empty());
+        // Empty write stays absent.
+        write_attachments(dir.path(), &[]).unwrap();
+        assert!(read_attachments(dir.path()).is_empty());
+        // Non-empty write is read back verbatim.
+        write_attachments(dir.path(), &["/tmp/a".into(), "/tmp/b".into()]).unwrap();
+        assert_eq!(
+            read_attachments(dir.path()),
+            vec!["/tmp/a".to_string(), "/tmp/b".to_string()]
+        );
     }
 
     #[test]
