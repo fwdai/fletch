@@ -766,7 +766,19 @@ export const api = {
     repoPath: string,
     definitionId?: string,
     baseBranch?: string,
-  ) => invoke<string>("wf_launch", { spec, task, projectId, repoPath, definitionId, baseBranch }),
+    /** Absolute paths of files to attach to the run's first prompt, like a chat
+     *  message's attachments. Empty by default. */
+    attachments: string[] = [],
+  ) =>
+    invoke<string>("wf_launch", {
+      spec,
+      task,
+      projectId,
+      repoPath,
+      definitionId,
+      baseBranch,
+      attachments,
+    }),
   /** Cancel a run: stops the live attempt's agent and marks the run canceled. */
   wfCancel: (runId: string) => invoke<void>("wf_cancel", { runId }),
   /** Approve a run paused on an approval gate: boundary-commit + advance. */

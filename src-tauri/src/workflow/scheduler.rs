@@ -79,6 +79,7 @@ impl WorkflowService {
     /// Launch a run from a snapshot `spec` against `repo_path`. Provisions the
     /// run directory (blackboard + run repo), inserts the `wf_run` row, and
     /// spawns its drive task. Returns the new run id.
+    #[allow(clippy::too_many_arguments)]
     pub async fn launch(
         &self,
         spec: Spec,
@@ -87,6 +88,11 @@ impl WorkflowService {
         repo_path: String,
         definition_id: Option<String>,
         base_branch: Option<String>,
+        // Launch-time file attachments (absolute paths). Persisted durably in a
+        // host-only sidecar and rendered as `Attached file: {path}` lines into the
+        // entry step's prompt only (see `drive_run_inner` / `execute_step`) — the
+        // same form a chat message delivers them, scoped to the first agent.
+        attachments: Vec<String>,
     ) -> Result<String> {
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         let repo = PathBuf::from(&repo_path);
@@ -108,6 +114,10 @@ impl WorkflowService {
         let run_dir = blackboard::run_dir(&run_id)?;
         let task_md = format!("# {}\n\n{}\n", spec.name, task);
         blackboard::provision(&run_dir, &task_md)?;
+        // Durable, read-only: persisted once here, re-read on every drive, and
+        // rendered only into the entry step's prompt — so recovery is trivial
+        // (no ephemeral delivery state) and non-entry steps never see them.
+        blackboard::write_attachments(&run_dir, &attachments)?;
         gitops::provision_run_repo(&repo, &run_dir).await?;
 
         let branch = format!("wf/{}-{}", slugify(&spec.name), &run_id[run_id.len() - 8..]);
@@ -656,6 +666,11 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     let (mut last_ref, mut last_exec_id) =
         resume_line_state(&ctx.db.lock(), run_id, blocks, index, &run.base_sha);
 
+    // Launch attachments (durable, read-only): delivered to the entry step's
+    // prompt only. Re-read every drive, so a resume redelivers with no state to
+    // reconcile.
+    let launch_attachments = blackboard::read_attachments(&run_dir);
+
     // Run-wide invariants every step attempt reads, bundled so the walker and the
     // loop executor share a single `execute_step` (spec §6.6).
     let env = StepEnv {
@@ -667,6 +682,7 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
         setup_override: &setup_override,
         run_task: &run.task,
         spec_name: &spec.name,
+        launch_attachments: &launch_attachments,
     };
 
     while index < blocks.len() {
@@ -1869,6 +1885,8 @@ async fn resume_merge_stage(
                 setup_override,
                 run_task: &run.task,
                 spec_name: &spec.name,
+                // A parallel/orchestrate merge step is never the run entry.
+                launch_attachments: &[],
             };
             let position = Position {
                 step_index: block_index,
@@ -1990,6 +2008,8 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
         let prompt = {
             let ctx_prompt = StepPromptCtx {
                 run_task: &c.run_task,
+                // Parallel/orchestrate children are never the run entry step.
+                attachments: &[],
                 step_id: &c.step.id,
                 step_goal: &c.step.goal,
                 position: Position {
@@ -3743,6 +3763,8 @@ async fn resume_subrun_merge(
                 setup_override,
                 run_task: &run.task,
                 spec_name: &spec.name,
+                // A parallel/orchestrate merge step is never the run entry.
+                launch_attachments: &[],
             };
             let position = Position {
                 step_index: block_index,
@@ -3965,6 +3987,8 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
         let prompt = {
             let ctx_prompt = StepPromptCtx {
                 run_task: &c.run_task,
+                // Parallel/orchestrate children are never the run entry step.
+                attachments: &[],
                 step_id: &c.step.id,
                 step_goal: &c.step.goal,
                 position: Position {
@@ -4531,6 +4555,10 @@ struct StepEnv<'a> {
     setup_override: &'a Option<String>,
     run_task: &'a str,
     spec_name: &'a str,
+    /// The run's launch-time file attachments (durable, read-only). Rendered into
+    /// the entry step's prompt only (see `execute_step`); empty for stages that
+    /// can't be the run entry.
+    launch_attachments: &'a [String],
 }
 
 /// What executing one step (through its attempt/retry lifecycle) resolved to.
@@ -4791,9 +4819,19 @@ async fn execute_step(
             );
         }
 
+        // Launch attachments belong to the run's initial task, so they render on
+        // the entry step only — the first top-level block's step (index 0, not
+        // inside a loop). Every other step, retry iteration aside, sees none.
+        let entry_attachments: &[String] =
+            if position.step_index == 0 && position.iteration.is_none() {
+                env.launch_attachments
+            } else {
+                &[]
+            };
         let prompt = {
             let ctx_prompt = StepPromptCtx {
                 run_task: env.run_task,
+                attachments: entry_attachments,
                 step_id: &step.id,
                 step_goal: &step.goal,
                 position: position.clone(),
@@ -5858,6 +5896,7 @@ pub async fn wf_launch(
     repo_path: String,
     definition_id: Option<String>,
     base_branch: Option<String>,
+    attachments: Vec<String>,
     service: Svc<'_>,
     supervisor: tauri::State<'_, Arc<Supervisor>>,
 ) -> std::result::Result<String, String> {
@@ -5878,6 +5917,7 @@ pub async fn wf_launch(
             repo_path,
             definition_id,
             base_branch,
+            attachments,
         )
         .await
         .map_err(|e| e.to_string())

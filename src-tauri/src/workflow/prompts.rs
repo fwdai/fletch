@@ -33,6 +33,11 @@ pub struct IterationPos {
 pub struct StepPromptCtx<'a> {
     /// The run's overall task (§8.5 item 1).
     pub run_task: &'a str,
+    /// Launch-time file attachments (absolute paths), rendered as
+    /// `Attached file: {path}` lines. Non-empty only for the run's entry step —
+    /// they belong to the initial task, like a chat message's attachments, not
+    /// to every step — so most prompts pass an empty slice.
+    pub attachments: &'a [String],
     /// The step's id — names its blackboard directory.
     pub step_id: &'a str,
     /// The step goal (§8.5 item 2).
@@ -60,6 +65,19 @@ pub fn step_prompt(ctx: &StepPromptCtx) -> String {
     s.push_str("## The overall task\n\n");
     s.push_str(ctx.run_task.trim());
     s.push_str("\n\n");
+
+    // Launch attachments (entry step only): the same `Attached file: {path}`
+    // reference lines a chat message delivers, so the first agent can read them.
+    if !ctx.attachments.is_empty() {
+        s.push_str("## Attached files\n\n");
+        s.push_str("Files attached to the task — read them as needed:\n\n");
+        for path in ctx.attachments {
+            s.push_str("Attached file: ");
+            s.push_str(path);
+            s.push('\n');
+        }
+        s.push('\n');
+    }
 
     s.push_str("## Your step\n\n");
     s.push_str(&position_line(&ctx.position));
@@ -399,6 +417,7 @@ mod tests {
     fn ctx<'a>(gate: &'a Gate, run_task: &'a str, goal: &'a str) -> StepPromptCtx<'a> {
         StepPromptCtx {
             run_task,
+            attachments: &[],
             step_id: "plan",
             step_goal: goal,
             position: Position {
@@ -423,6 +442,21 @@ mod tests {
         assert!(p.contains("plan/verdict.json"));
         assert!(p.contains("\"result\""));
         assert!(p.contains("at most 3 turns"));
+    }
+
+    #[test]
+    fn attachments_render_only_when_present() {
+        let gate = Gate::Verdict;
+        // Default (entry has none / non-entry step) → no attachment section.
+        assert!(!step_prompt(&ctx(&gate, "task", "goal")).contains("Attached file:"));
+        // Entry step with launch attachments → each renders as a reference line.
+        let atts = vec!["/tmp/a.txt".to_string(), "/tmp/b.png".to_string()];
+        let mut c = ctx(&gate, "task", "goal");
+        c.attachments = &atts;
+        let p = step_prompt(&c);
+        assert!(p.contains("## Attached files"), "{p}");
+        assert!(p.contains("Attached file: /tmp/a.txt"));
+        assert!(p.contains("Attached file: /tmp/b.png"));
     }
 
     #[test]
