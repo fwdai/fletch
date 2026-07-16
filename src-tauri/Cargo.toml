@@ -1,6 +1,6 @@
 [package]
 name = "fletch"
-version = "0.7.9"
+version = "0.7.10"
 description = "Spawn coding agents in isolated sandboxes"
 authors = ["Alex Chaplinsky", "fwdai.org"]
 license = "AGPL-3.0-only"
