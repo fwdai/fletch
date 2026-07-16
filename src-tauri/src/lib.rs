@@ -1156,6 +1156,8 @@ pub fn run() {
             commands::add_workspace_repo,
             commands::remove_workspace_repo,
             commands::rename_project,
+            commands::delete_project,
+            commands::project_has_running_agents,
             commands::relocate_repo,
             commands::gh_status,
             commands::gh_repo_list,

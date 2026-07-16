@@ -9,8 +9,8 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::sandbox::provision::{self, CheckoutSpec, WorkspaceMode};
 use crate::workspace::{
-    agent_parent_dir, repo_checkout_path, AgentStatus, ArchiveMetadata, ArchivedRepoSnapshot,
-    DiffStats, TrackedRepo,
+    agent_parent_dir, repo_checkout_path, AgentRecord, AgentStatus, ArchiveMetadata,
+    ArchivedRepoSnapshot, DiffStats, TrackedRepo,
 };
 
 use super::events::emit_workspace_changed;
@@ -95,6 +95,7 @@ impl Supervisor {
     /// metadata, transition to Spawning so the supervisor's start path
     /// attaches to the existing claude session.
     pub async fn restore_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+        let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = self.workspace.agent(agent_id)?;
         let archive = record
             .archive
@@ -239,6 +240,24 @@ impl Supervisor {
 
         self.workspace.remove_agent(agent_id)?;
         Ok(())
+    }
+
+    /// Detach every idle project agent without deleting its durable row. The
+    /// project FK cascade is the single DB commit point; separating runtime
+    /// detachment from row deletion prevents per-agent partial commits.
+    pub(super) fn detach_project_agents(&self, agents: &[AgentRecord]) {
+        for agent in agents {
+            self.detach_runtime(&agent.id);
+        }
+    }
+
+    /// Best-effort physical cleanup after the project row has committed. At
+    /// this point no user-visible project can be left half-deleted; failures
+    /// are logged by the shared checkout teardown helper as orphan cleanup.
+    pub(super) async fn teardown_project_checkouts(&self, agents: &[AgentRecord]) {
+        for agent in agents {
+            teardown_agent_checkouts(&agent.id, &agent.repos, "project delete").await;
+        }
     }
 
     /// Detach an agent's live runtime: shut down its process and drop its

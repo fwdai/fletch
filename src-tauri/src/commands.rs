@@ -17,7 +17,8 @@ use crate::new_project;
 use crate::run_session::RunStateSnapshot;
 use crate::supervisor::{SpawnRequest, Supervisor};
 use crate::workspace::{
-    repo_checkout_path, AgentRecord, AgentView, DiffStats, TrackedRepo, Workspace,
+    repo_checkout_path, AgentRecord, AgentView, DiffStats, ProjectDeleteResult, TrackedRepo,
+    Workspace,
 };
 
 #[tauri::command]
@@ -180,6 +181,29 @@ pub fn rename_project(
     name: String,
 ) -> Result<Workspace> {
     supervisor.rename_project(&project_id, &name)
+}
+
+/// Delete a project and all of its workspaces, including non-archived ones.
+/// The supervisor refuses while any project agent is actively running.
+#[tauri::command]
+pub async fn delete_project(
+    supervisor: State<'_, Arc<Supervisor>>,
+    workflows: State<'_, Arc<crate::workflow::scheduler::WorkflowService>>,
+    project_id: String,
+) -> Result<ProjectDeleteResult> {
+    supervisor
+        .inner()
+        .clone()
+        .delete_project(workflows.inner(), &project_id)
+        .await
+}
+
+#[tauri::command]
+pub fn project_has_running_agents(
+    supervisor: State<'_, Arc<Supervisor>>,
+    project_id: String,
+) -> bool {
+    supervisor.project_has_running_agents(&project_id)
 }
 
 /// Repoint a pinned repo at a folder the user has moved on disk. Validates the

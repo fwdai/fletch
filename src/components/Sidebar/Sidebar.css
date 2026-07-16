@@ -194,29 +194,19 @@
   background: var(--accent-soft);
   color: var(--accent);
 }
-/* Settings gear and Remove are revealed only when the row is engaged, so they
- * don't compete with the label or shift the always-visible "add agent" button.
- * They sit at the trailing edge, so revealing them adds no layout shift. */
-.proj-h .padd-remove,
+/* The settings gear is revealed only when the row is engaged, so it doesn't
+ * compete with the label or shift the always-visible "add agent" button. */
 .proj-h .padd-settings {
   opacity: 0;
   pointer-events: none;
 }
-/* Gear is a normal action like "add", so it reveals at full strength to match
- * the + button. Remove stays subdued — it's destructive and rare. */
 .proj-h:hover .padd-settings {
   opacity: 1;
   pointer-events: auto;
 }
-.proj-h:hover .padd-remove {
-  opacity: 0.6;
-  pointer-events: auto;
-}
-/* Keyboard focus reveals them too — a focused button at opacity:0 would make
+/* Keyboard focus reveals it too — a focused button at opacity:0 would make
  * the focus ring vanish and hide the action from keyboard users. */
-.proj-h:hover .padd-remove:hover,
 .proj-h:hover .padd-settings:hover,
-.proj-h .padd-remove:focus-visible,
 .proj-h .padd-settings:focus-visible {
   opacity: 1;
   pointer-events: auto;

@@ -109,6 +109,12 @@ export interface Workspace {
   agents: AgentRecord[];
 }
 
+export interface ProjectDeleteResult {
+  workspace: Workspace;
+  deleted_agent_ids: string[];
+  deleted_run_ids: string[];
+}
+
 export interface AgentOutputEvent {
   agent_id: string;
   /** Raw PTY bytes, base64-encoded over IPC. Decode with `decodeBase64`. */
@@ -511,6 +517,11 @@ export const api = {
   /** Set a project's custom display name (independent of its folder). */
   renameProject: (projectId: string, name: string) =>
     invoke<Workspace>("rename_project", { projectId, name }),
+  /** Delete a project and all of its agents/workspaces. Active agents block it. */
+  deleteProject: (projectId: string) =>
+    invoke<ProjectDeleteResult>("delete_project", { projectId }),
+  projectHasRunningAgents: (projectId: string) =>
+    invoke<boolean>("project_has_running_agents", { projectId }),
   /** Repoint a pinned repo at a moved folder. Rejects a non-git or
    *  already-pinned destination. */
   relocateRepo: (oldPath: string, newPath: string) =>

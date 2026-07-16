@@ -49,6 +49,10 @@ pub struct WorkflowService {
     /// Active-run registry. Behind an `Arc` so a drive task can remove its own
     /// entry on exit without borrowing the service.
     pub(super) runs: Arc<Mutex<HashMap<String, RunHandle>>>,
+    /// Serializes workflow creation/deletion. Project deletion holds this from
+    /// its run preflight through the project commit, so no new run can appear
+    /// between cleanup and deletion.
+    pub(crate) lifecycle: tokio::sync::Mutex<()>,
 }
 
 pub(super) struct RunHandle {
@@ -66,6 +70,47 @@ pub(super) struct RunHandle {
     pub(super) pending_ask: Arc<AtomicBool>,
 }
 
+/// Filesystem half of an atomic project deletion. Run directories are renamed
+/// aside before the database transaction; they can therefore be restored if
+/// the transaction fails, or swept after it commits. Startup recovery handles
+/// the same two states if the app exits between either boundary.
+pub(crate) struct ProjectRunCleanup {
+    run_ids: Vec<String>,
+    staged_dirs: Vec<StagedRunDir>,
+    finalized: bool,
+}
+
+impl ProjectRunCleanup {
+    pub(crate) fn run_ids(&self) -> &[String] {
+        &self.run_ids
+    }
+
+    pub(crate) fn restore(mut self) {
+        restore_staged_run_dirs(&self.staged_dirs);
+        self.finalized = true;
+    }
+
+    fn finish(mut self, app: &AppHandle) {
+        // The DB commit has happened; never let Drop restore directories for
+        // rows that no longer exist. Failed removals are startup-recoverable.
+        self.finalized = true;
+        for dir in &self.staged_dirs {
+            dir.remove_staged();
+        }
+        for run_id in &self.run_ids {
+            journal::emit_run_deleted(app, run_id);
+        }
+    }
+}
+
+impl Drop for ProjectRunCleanup {
+    fn drop(&mut self) {
+        if !self.finalized {
+            restore_staged_run_dirs(&self.staged_dirs);
+        }
+    }
+}
+
 impl WorkflowService {
     pub fn new(db: Db, driver: Arc<dyn AgentDriver>, app: AppHandle) -> Self {
         Self {
@@ -73,6 +118,7 @@ impl WorkflowService {
             driver,
             app,
             runs: Arc::new(Mutex::new(HashMap::new())),
+            lifecycle: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -94,6 +140,7 @@ impl WorkflowService {
         // same form a chat message delivers them, scoped to the first agent.
         attachments: Vec<String>,
     ) -> Result<String> {
+        let _lifecycle_guard = self.lifecycle.lock().await;
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         let repo = PathBuf::from(&repo_path);
 
@@ -229,6 +276,11 @@ impl WorkflowService {
     /// surviving child), sibling subtrees still get cleaned, and every failure
     /// is aggregated into one error that says deleting again finishes the job.
     pub async fn delete_run(&self, supervisor: &Arc<Supervisor>, run_id: &str) -> Result<()> {
+        let _lifecycle_guard = self.lifecycle.lock().await;
+        self.delete_run_locked(supervisor, run_id).await
+    }
+
+    async fn delete_run_locked(&self, supervisor: &Arc<Supervisor>, run_id: &str) -> Result<()> {
         let order = {
             let conn = self.db.lock();
             let mut order = Vec::new();
@@ -258,6 +310,46 @@ impl WorkflowService {
              parents) is untouched — delete again to finish.",
             errors.join("; ")
         )))
+    }
+
+    /// Preflight and stage every workflow run owned by a project. The caller
+    /// holds `lifecycle` through the subsequent project/run DB transaction, so
+    /// the checked set cannot change before that single commit point.
+    pub(crate) fn prepare_project_runs_locked(
+        &self,
+        project_id: &str,
+    ) -> Result<ProjectRunCleanup> {
+        let all_ids = {
+            let conn = self.db.lock();
+            let all_ids = conn
+                .prepare("SELECT id FROM wf_run WHERE project_id = ?1 ORDER BY created_at, id")?
+                .query_map([project_id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            check_deletable(&conn, &all_ids)?;
+            all_ids
+        };
+
+        // Match delete_run's winding-down guard, but check the whole project
+        // before touching any tree so rejection is side-effect free.
+        {
+            let runs = self.runs.lock();
+            if let Some(id) = all_ids.iter().find(|id| runs.contains_key(id.as_str())) {
+                return Err(Error::Other(format!(
+                    "run {id} is still winding down — try again in a moment"
+                )));
+            }
+        }
+
+        let staged_dirs = stage_run_dirs(&all_ids)?;
+        Ok(ProjectRunCleanup {
+            run_ids: all_ids,
+            staged_dirs,
+            finalized: false,
+        })
+    }
+
+    pub(crate) fn finish_project_runs(&self, cleanup: ProjectRunCleanup) {
+        cleanup.finish(&self.app);
     }
 
     /// Delete `run_id`'s subtree, children first. Returns whether the whole
@@ -5738,6 +5830,96 @@ fn delete_run_data(conn: &Connection, run_id: &str) -> Result<()> {
     delete_run_data_at(conn, run_id, &blackboard::run_dir(run_id)?)
 }
 
+#[derive(Debug)]
+struct StagedRunDir {
+    live: PathBuf,
+    staged: PathBuf,
+    exists: bool,
+}
+
+impl StagedRunDir {
+    fn stage(run_id: &str, live: PathBuf) -> Result<Self> {
+        let staged = live.with_file_name(format!(
+            "{}.deleting",
+            live.file_name().and_then(|n| n.to_str()).unwrap_or(run_id)
+        ));
+        let exists = match std::fs::rename(&live, &staged) {
+            Ok(()) => true,
+            // No live dir: never provisioned, already cleaned, or a prior
+            // crash left the staged form for startup/retry recovery.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => staged.exists(),
+            Err(e) => {
+                return Err(Error::Other(format!(
+                    "cannot stage run dir for {run_id}: {e}"
+                )))
+            }
+        };
+        Ok(Self {
+            live,
+            staged,
+            exists,
+        })
+    }
+
+    fn restore(&self) {
+        if self.exists {
+            if let Err(error) = std::fs::rename(&self.staged, &self.live) {
+                tracing::warn!(
+                    error = %error,
+                    staged = %self.staged.display(),
+                    "restore staged run directory failed; startup recovery will retry"
+                );
+            }
+        }
+    }
+
+    fn remove_staged(&self) {
+        if self.exists {
+            if let Err(error) = std::fs::remove_dir_all(&self.staged) {
+                tracing::warn!(
+                    error = %error,
+                    staged = %self.staged.display(),
+                    "remove committed staged run directory failed; startup recovery will retry"
+                );
+            }
+        }
+    }
+}
+
+fn restore_staged_run_dirs(staged: &[StagedRunDir]) {
+    for dir in staged.iter().rev() {
+        dir.restore();
+    }
+}
+
+fn stage_run_dirs(run_ids: &[String]) -> Result<Vec<StagedRunDir>> {
+    stage_run_dirs_at(run_ids, blackboard::run_dir)
+}
+
+fn stage_run_dirs_at<F>(run_ids: &[String], resolve: F) -> Result<Vec<StagedRunDir>>
+where
+    F: Fn(&str) -> Result<PathBuf>,
+{
+    let mut staged = Vec::with_capacity(run_ids.len());
+    for run_id in run_ids {
+        let live = match resolve(run_id) {
+            Ok(path) => path,
+            Err(error) => {
+                restore_staged_run_dirs(&staged);
+                return Err(error);
+            }
+        };
+        match StagedRunDir::stage(run_id, live) {
+            Ok(dir) => staged.push(dir),
+            Err(error) => {
+                restore_staged_run_dirs(&staged);
+                return Err(error);
+            }
+        }
+    }
+    Ok(staged)
+}
+
 /// Discard every id, pressing on past a failure instead of bailing on the first
 /// (the review blocker): one wedged agent must not strand the run's other
 /// workspaces. Returns whether *all* discards succeeded — the caller keeps the
@@ -5779,31 +5961,12 @@ where
 /// startup would also sweep). A missing dir is fine — a retried partial delete
 /// or a cleaned disk.
 fn delete_run_data_at(conn: &Connection, run_id: &str, dir: &Path) -> Result<()> {
-    let staged = dir.with_file_name(format!(
-        "{}.deleting",
-        dir.file_name().and_then(|n| n.to_str()).unwrap_or(run_id)
-    ));
-    let dir_staged = match std::fs::rename(dir, &staged) {
-        Ok(()) => true,
-        // No live dir: never provisioned, a cleaned disk, or a previous
-        // attempt that crashed between this rename and the row delete — in
-        // that last case the staged dir survives and is swept below.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => staged.exists(),
-        Err(e) => {
-            return Err(Error::Other(format!(
-                "cannot stage run dir for {run_id}: {e}"
-            )))
-        }
-    };
+    let staged = StagedRunDir::stage(run_id, dir.to_path_buf())?;
     if let Err(e) = conn.execute("DELETE FROM wf_run WHERE id = ?1", [run_id]) {
-        if dir_staged {
-            let _ = std::fs::rename(&staged, dir);
-        }
+        staged.restore();
         return Err(Error::Other(e.to_string()));
     }
-    if dir_staged {
-        let _ = std::fs::remove_dir_all(&staged);
-    }
+    staged.remove_staged();
     Ok(())
 }
 
@@ -7331,6 +7494,33 @@ mod tests {
         let all = discard_all(&ids, "r", &mut errors, |_| async { Ok(()) }).await;
         assert!(all);
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn staging_multiple_run_dirs_restores_earlier_dirs_on_later_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join("runs");
+        let first = runs.join("r-first");
+        let second = runs.join("r-second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::write(first.join("marker"), "first").unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join("marker"), "second").unwrap();
+
+        // Make the second staging rename fail after the first has succeeded.
+        let second_staged = runs.join("r-second.deleting");
+        std::fs::create_dir_all(&second_staged).unwrap();
+        std::fs::write(second_staged.join("collision"), "occupied").unwrap();
+
+        let ids = vec!["r-first".to_string(), "r-second".to_string()];
+        let error = stage_run_dirs_at(&ids, |id| Ok(runs.join(id))).unwrap_err();
+        assert!(error.to_string().contains("cannot stage run dir"));
+        assert!(first.join("marker").exists(), "first dir restored intact");
+        assert!(second.join("marker").exists(), "failed dir remains intact");
+        assert!(
+            !runs.join("r-first.deleting").exists(),
+            "earlier staged dir is not stranded"
+        );
     }
 
     #[test]

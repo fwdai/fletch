@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 use crate::agent::injection_mode;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::managed_session::ToolUseBehavior;
 use crate::message_queue::{decide_delivery, Delivery, PendingMsg};
 use crate::workspace::AgentStatus;
@@ -284,6 +284,11 @@ fn deliver_as_turn(
     agent_id: &str,
     msg: &PendingMsg,
 ) -> Result<()> {
+    let project_id = sup.workspace.agent(agent_id)?.project_id;
+    let deletion_guard = sup.deleting_projects.lock();
+    if deletion_guard.contains(&project_id) {
+        return Err(Error::Other("project deletion is in progress".into()));
+    }
     sup.deliver_user_message(
         agent_id,
         &msg.turn_id,
@@ -298,6 +303,7 @@ fn deliver_as_turn(
         agent_id.to_string(),
         msg.text.clone(),
     );
+    drop(deletion_guard);
     Ok(())
 }
 

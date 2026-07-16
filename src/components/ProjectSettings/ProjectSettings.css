@@ -115,6 +115,60 @@
   padding: 24px 2px;
 }
 
+.ps-delete-section {
+  border-top: 1px solid var(--bd-soft);
+  padding-top: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.ps-delete-copy {
+  min-width: 0;
+}
+.ps-delete-copy.ps-section-h {
+  margin-bottom: 0;
+}
+.ps-delete-note,
+.ps-delete-error {
+  margin-top: 8px;
+  color: var(--danger);
+}
+.ps-delete-section .btn-t {
+  flex-shrink: 0;
+}
+.ps-delete-confirm {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 8px 16px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+}
+.ps-delete-confirm-copy {
+  min-width: 0;
+}
+.ps-delete-confirm-title {
+  margin-top: 0;
+  color: var(--fg-0);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.ps-delete-confirm-text {
+  margin-top: 6px;
+  color: var(--fg-2);
+  line-height: 1.5;
+}
+.ps-delete-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* sections */
 .ps-section-h {
   margin-bottom: 16px;
