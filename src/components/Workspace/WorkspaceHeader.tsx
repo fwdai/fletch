@@ -14,7 +14,7 @@ import { ViewToggle } from "./ViewToggle";
 const HEADER_FORK_OPTIONS: ForkOption[] = [
   {
     key: "full-clean",
-    label: "Full history · clean worktree",
+    label: "Full history · clean workspace",
     code: "clean",
     context: { kind: "full" },
   },

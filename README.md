@@ -84,7 +84,7 @@ Fletch ships two isolation engines. The guarantee is the same under both: an age
 
 Under both engines, workspaces are full shared-object clones, so an agent's writable `.git` lives entirely inside its sandbox; your repo's `.git` is never writable by an agent. Pushes and PR creation run host-side through a brokered RPC: credentials never enter the sandbox, but these ops currently run without a confirmation prompt, so an agent can publish code under your identity. Choose tasks and repos accordingly.
 
-The code is canonical: [`sandbox/seatbelt.rs`](src-tauri/src/sandbox/seatbelt.rs), [`sandbox/docker/`](src-tauri/src/sandbox/docker), and [`sandbox/provision.rs`](src-tauri/src/sandbox/provision.rs), with the full write-up in the [docs](https://fletch.sh/docs).
+The full write-up is [`docs/isolation.md`](docs/isolation.md) — the canonical, code-accurate account of both engines, the clone model, and the honest threat model. The code is canonical too: [`sandbox/seatbelt.rs`](src-tauri/src/sandbox/seatbelt.rs), [`sandbox/docker/`](src-tauri/src/sandbox/docker), and [`sandbox/provision.rs`](src-tauri/src/sandbox/provision.rs).
 
 ## Documentation
 

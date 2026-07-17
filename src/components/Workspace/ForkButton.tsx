@@ -8,7 +8,7 @@ export function ForkButton({ agentId, upToPrompt }: { agentId: string; upToPromp
   const options: ForkOption[] = [
     {
       key: "clean",
-      label: "Fork here · clean worktree",
+      label: "Fork here · clean workspace",
       code: "clean",
       context,
     },
