@@ -7,7 +7,7 @@
 //! Everything here is deterministic and side-effect free so the exact text is
 //! unit-testable and stable across runs.
 
-use super::spec::{CommsCap, Gate};
+use super::spec::{CommsCap, Gate, Require};
 
 /// Where a step sits in the run, for the "step N of M, iteration i of max"
 /// context line (spec §8.5 item 3).
@@ -388,8 +388,15 @@ fn gate_statement(gate: &Gate) -> String {
         Gate::Artifact { path } => {
             format!("You are done when the file `{path}` exists in the repository.")
         }
-        Gate::Approval => "When you believe the work is complete, write your handoff notes and \
-             `verdict.json`. A human will review and approve before the workflow \
+        Gate::Approval { require } if require.contains(&Require::Tests) => {
+            "When you believe the work is complete, write your handoff notes and \
+             `verdict.json`. The project's test suite must pass first — the workflow \
+             runs it after your turn; make it green. A human then reviews and approves \
+             before the workflow continues."
+                .to_string()
+        }
+        Gate::Approval { .. } => "When you believe the work is complete, write your handoff notes \
+             and `verdict.json`. A human will review and approve before the workflow \
              continues."
             .to_string(),
         Gate::Tests => "You are done when the project's test suite passes. The workflow runs \
@@ -476,9 +483,15 @@ mod tests {
             path: "X.md".into()
         })
         .contains("X.md"));
-        assert!(gate_statement(&Gate::Approval).contains("human"));
+        assert!(gate_statement(&Gate::Approval { require: vec![] }).contains("human"));
         let tests = gate_statement(&Gate::Tests);
         assert!(tests.contains("test suite passes"), "{tests}");
+        // An approval gate that requires tests reminds the agent about them too.
+        let approval_tests = gate_statement(&Gate::Approval {
+            require: vec![Require::Tests],
+        });
+        assert!(approval_tests.contains("test suite"), "{approval_tests}");
+        assert!(approval_tests.contains("human"), "{approval_tests}");
     }
 
     #[test]

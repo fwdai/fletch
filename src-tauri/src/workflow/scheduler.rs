@@ -517,6 +517,47 @@ impl WorkflowService {
         Ok(())
     }
 
+    /// Reject an `awaiting_approval` step (`wf_reject`, spec §9): journal the
+    /// human decision, then give the step one more attempt within budget — the
+    /// mirror of [`Self::approve`]. The rejected attempt is abandoned (its ferried
+    /// work discarded) and the reviewer's `note` is queued as a delivery so the
+    /// fresh attempt re-prompts with it (the same fold `wf_answer` uses, §10.4);
+    /// the cursor is left in place so the walker re-runs the step. When the run
+    /// budget is already spent there is no attempt to give — pause `blocked_gate`
+    /// carrying the note as detail, exactly like an exhausted blocked-gate retry
+    /// (§6.5).
+    pub fn reject(&self, run_id: &str, note: &str) -> Result<()> {
+        let re_drive = {
+            let conn = self.db.lock();
+            reject_apply(&conn, Some(&self.app), run_id, note)?
+        };
+        if re_drive {
+            self.spawn_drive(run_id.to_string());
+        }
+        Ok(())
+    }
+
+    /// Diff `from_sha..to_sha` in the run's own repository (`wf_run_diff`, spec
+    /// §9). Both refs are objects in `~/.fletch/runs/<id>/repo` — the ferried step
+    /// ref and the run base — so no working checkout is involved.
+    pub async fn run_diff(
+        &self,
+        run_id: &str,
+        from_sha: &str,
+        to_sha: &str,
+        path: Option<&str>,
+    ) -> Result<String> {
+        let run_dir: String = {
+            let conn = self.db.lock();
+            conn.query_row("SELECT run_dir FROM wf_run WHERE id = ?1", [run_id], |r| {
+                r.get(0)
+            })
+            .map_err(|e| Error::Other(format!("run {run_id} not found: {e}")))?
+        };
+        let run_repo = gitops::run_repo_path(Path::new(&run_dir));
+        crate::git::diff_refs(&run_repo, from_sha, to_sha, path).await
+    }
+
     /// Resolve a `paused(conflict)` run (`wf_resolve_conflict`, §12.3). `mode` is
     /// `"agent"` (spawn a conflict-resolution step forked from the snapshot) or
     /// `"human"` (the user resolved in the run repo's integration worktree). The
@@ -813,6 +854,7 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
         setup_override: &setup_override,
         run_task: &run.task,
         spec_name: &spec.name,
+        base_sha: &run.base_sha,
         launch_attachments: &launch_attachments,
     };
 
@@ -2016,6 +2058,7 @@ async fn resume_merge_stage(
                 setup_override,
                 run_task: &run.task,
                 spec_name: &spec.name,
+                base_sha: &run.base_sha,
                 // A parallel/orchestrate merge step is never the run entry.
                 launch_attachments: &[],
             };
@@ -3955,6 +3998,7 @@ async fn resume_subrun_merge(
                 setup_override,
                 run_task: &run.task,
                 spec_name: &spec.name,
+                base_sha: &run.base_sha,
                 // A parallel/orchestrate merge step is never the run entry.
                 launch_attachments: &[],
             };
@@ -4747,6 +4791,9 @@ struct StepEnv<'a> {
     setup_override: &'a Option<String>,
     run_task: &'a str,
     spec_name: &'a str,
+    /// The run's base commit — the fork point the ferried diff in an approval
+    /// gate's review evidence is taken against (spec §9).
+    base_sha: &'a str,
     /// The run's launch-time file attachments (durable, read-only). Rendered into
     /// the entry step's prompt only (see `execute_step`); empty for stages that
     /// can't be the run entry.
@@ -5187,15 +5234,22 @@ async fn execute_step(
                 // (§6.3 step 8, §9). The agent is archived; the run pauses until
                 // `wf_approve` promotes the attempt and resumes.
                 let msg = format!("wf({}): {} attempt {}", env.spec_name, step.id, attempt_no);
-                let head = ferry_step(
-                    ctx,
-                    run_id,
-                    &exec_id,
-                    &msg,
-                    result.worktree.as_ref().unwrap(),
-                    env.run_repo,
+                let worktree = result.worktree.as_ref().unwrap();
+                let head = ferry_step(ctx, run_id, &exec_id, &msg, worktree, env.run_repo).await?;
+                // Assemble the review evidence while the worktree is intact (spec
+                // §9): verification, the ferried diff vs the run base, budget
+                // spend, and the step's verdict — journaled so ReviewSurface can
+                // render it without re-deriving anything. No lock is held across
+                // the (async) verification + git work.
+                let evidence = assemble_gate_evidence(
+                    env,
+                    &step.id,
+                    worktree,
+                    &head,
+                    step_eff.tests_timeout_secs.max(1) as u64,
+                    ledger,
                 )
-                .await?;
+                .await;
                 {
                     let conn = ctx.db.lock();
                     finish_step_exec(&conn, &exec_id, "awaiting_approval", Some(&head));
@@ -5204,6 +5258,14 @@ async fn execute_step(
                     let _ = ctx.driver.archive(agent_id).await;
                 }
                 let conn = ctx.db.lock();
+                journal_event(
+                    &conn,
+                    ctx.app.as_ref(),
+                    run_id,
+                    event_type::GATE_EVIDENCE,
+                    Some(&exec_id),
+                    &evidence,
+                );
                 journal_event(
                     &conn,
                     ctx.app.as_ref(),
@@ -5347,13 +5409,75 @@ async fn execute_step(
     }
 }
 
+/// Assemble an `approval` gate's review evidence (spec §9), as the `gate_evidence`
+/// payload (snake_case, like every IPC payload): the verification report (the
+/// shared `Verifier` primitive run install→test→lint in the step worktree —
+/// all-`Skipped` when the project configures nothing or the host can't sandbox),
+/// the ferried diff versus the run base (shortstat + per-file numstat, both taken
+/// in the run repo where the ferried ref and the base commit live), budget spend
+/// versus cap, and the step's `verdict.json`. Best-effort: any piece that can't be
+/// gathered is omitted / `null` so evidence collection never blocks the pause.
+/// Holds no DB lock across its async verification + git work.
+async fn assemble_gate_evidence(
+    env: &StepEnv<'_>,
+    step_id: &str,
+    worktree: &Path,
+    head_sha: &str,
+    tests_timeout_secs: u64,
+    ledger: &Ledger,
+) -> Value {
+    // Reuse the engine-owned verifier. Lint resolves by detection (no project
+    // lint override is plumbed to the linear path); a HOME-less host yields no
+    // verifier, reported as `null` rather than a fake empty report.
+    let verification = match crate::verify::Verifier::new(
+        env.test_override.clone(),
+        env.setup_override.clone(),
+        None,
+        tests_timeout_secs,
+    ) {
+        Ok(v) => serde_json::to_value(v.verify(worktree).await).ok(),
+        Err(_) => None,
+    };
+
+    let (additions, deletions) = crate::git::diff_shortstat(env.run_repo, env.base_sha, head_sha)
+        .await
+        .unwrap_or((0, 0));
+    let files: Vec<Value> = crate::git::diff_numstat(env.run_repo, env.base_sha, head_sha)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(path, a, d)| json!({ "path": path, "additions": a, "deletions": d }))
+        .collect();
+
+    let verdict = blackboard::step_dir(env.blackboard, step_id)
+        .ok()
+        .and_then(|dir| blackboard::read_verdict(&dir).ok())
+        .and_then(|v| serde_json::to_value(v).ok());
+
+    json!({
+        "base_sha": env.base_sha,
+        "head_sha": head_sha,
+        "verification": verification,
+        "diff": { "additions": additions, "deletions": deletions, "files": files },
+        "budget": {
+            "turns_spent": ledger.turns,
+            "turns_cap": env.eff.turns,
+            "tokens_spent": ledger.tokens,
+            "tokens_cap": env.eff.tokens,
+            "wall_ms_spent": ledger.wall_ms,
+            "wall_clock_cap_mins": env.eff.wall_clock_mins,
+        },
+        "verdict": verdict,
+    })
+}
+
 fn gate_mode(gate: &Gate) -> &'static str {
     match gate {
         Gate::Verdict => "verdict",
         Gate::Commit => "commit",
         Gate::Artifact { .. } => "artifact",
         Gate::Tests => "tests",
-        Gate::Approval => "approval",
+        Gate::Approval { .. } => "approval",
     }
 }
 
@@ -5406,6 +5530,80 @@ fn check_resumable(conn: &Connection, run_id: &str, action: &str) -> Result<()> 
         ));
     }
     Ok(())
+}
+
+/// The DB half of `wf_reject` (spec §9), factored out so it is unit-testable
+/// without the async re-drive. Validates the pause, journals the human decision,
+/// abandons the rejected attempt, and either (budget left) queues the reviewer's
+/// note as a delivery and returns `true` — telling the caller to re-drive — or
+/// (budget spent) pauses `blocked_gate` with the note as detail and returns
+/// `false`. Runs entirely under the caller's connection lock.
+fn reject_apply(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    run_id: &str,
+    note: &str,
+) -> Result<bool> {
+    let note = note.trim();
+    if note.is_empty() {
+        return Err(Error::Other("a rejection note is required".into()));
+    }
+    let (status, reason) = run_status(conn, run_id)?;
+    if status != "paused" || reason.as_deref() != Some("approval") {
+        return Err(Error::Other(format!(
+            "run is not awaiting approval (status: {status})"
+        )));
+    }
+    let exec_id: String = conn
+        .query_row(
+            "SELECT id FROM wf_step_exec WHERE run_id = ?1 AND status = 'awaiting_approval'
+             ORDER BY rowid DESC LIMIT 1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| Error::Other(format!("no awaiting_approval attempt: {e}")))?;
+
+    // Record the human decision on the timeline (spec §7.1).
+    journal_event(
+        conn,
+        app,
+        run_id,
+        event_type::DECISION,
+        Some(&exec_id),
+        &json!({ "decision": "rejected", "note": note }),
+    );
+
+    // Would a fresh attempt immediately hit the run budget? Mirror the drive
+    // loop's pre-spawn enforcement point (§11.2) against the frozen caps and the
+    // persisted ledger.
+    let run = load_run(conn, run_id)?;
+    let eff: EffectiveBudgets = serde_json::from_str(&run.budgets_json).unwrap_or_default();
+    let spent: Value = serde_json::from_str(&run.spent_json).unwrap_or_else(|_| json!({}));
+    let exhausted = Ledger::from_json(&spent)
+        .exceeded(&eff, super::now_ms())
+        .is_some();
+
+    // Either way the rejected attempt is done with: abandon it so it stops
+    // counting as awaiting_approval and its ferried (now discarded) ref is never
+    // mistaken for the line's fork source (`resume_line_state` only follows `done`
+    // execs).
+    abandon_exec(conn, app, run_id, &exec_id, "rejected");
+
+    if exhausted {
+        journal_event(
+            conn,
+            app,
+            run_id,
+            event_type::RUN_PAUSED,
+            Some(&exec_id),
+            &json!({ "reason": "blocked_gate", "detail": note }),
+        );
+        set_status(conn, app, run_id, "paused", Some("blocked_gate"), None);
+        Ok(false)
+    } else {
+        super::comms::queue_rejection(conn, run_id, &exec_id, note);
+        Ok(true)
+    }
 }
 
 pub(super) fn run_status(conn: &Connection, run_id: &str) -> Result<(String, Option<String>)> {
@@ -6214,6 +6412,35 @@ pub async fn wf_approve(run_id: String, service: Svc<'_>) -> std::result::Result
     service.approve(&run_id).map_err(|e| e.to_string())
 }
 
+/// Reject a run paused on an approval gate (spec §9): re-prompt the step with the
+/// `note` for one more attempt within budget, else pause `blocked_gate`.
+#[tauri::command]
+pub async fn wf_reject(
+    run_id: String,
+    note: String,
+    service: Svc<'_>,
+) -> std::result::Result<(), String> {
+    service.reject(&run_id, &note).map_err(|e| e.to_string())
+}
+
+/// The unified diff of `from_sha..to_sha` in a run's own repository (spec §9) —
+/// the review surface diffs a ferried step ref against the run base, both objects
+/// in `~/.fletch/runs/<id>/repo`. `path` scopes it to one file; omit for the whole
+/// diff. Read-only.
+#[tauri::command]
+pub async fn wf_run_diff(
+    run_id: String,
+    from_sha: String,
+    to_sha: String,
+    path: Option<String>,
+    service: Svc<'_>,
+) -> std::result::Result<String, String> {
+    service
+        .run_diff(&run_id, &from_sha, &to_sha, path.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Delete a terminal run and everything it owns (spec §13): run-owned step
 /// agents (and their chats), the run directory, and the run's rows.
 #[tauri::command]
@@ -6796,6 +7023,152 @@ mod tests {
             .unwrap();
         assert_eq!(status, "paused");
         assert_eq!(reason.as_deref(), Some("blocked_gate"));
+    }
+
+    /// Drive a single approval-gated step to its pause and return the db + run id.
+    /// commit=true so the step ferries real work; the gate then awaits a human.
+    async fn drive_to_approval(tmp: &Path, run_id: &str, branch: &str) -> Db {
+        let (db, ws) = scaffold_one_step(tmp, run_id, branch, Gate::Approval { require: vec![] });
+        let ctx = RunCtx {
+            db: db.clone(),
+            driver: StubDriver::new(ws, true),
+            app: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pending_ask: Arc::new(AtomicBool::new(false)),
+            deadlines: Deadlines::default(),
+            runs: None,
+        };
+        drive_run(&ctx, run_id).await;
+        db
+    }
+
+    #[tokio::test]
+    async fn approval_pause_journals_review_evidence() {
+        // §9: an approval pause must carry review evidence (verification + diff +
+        // budget + verdict) on its own `gate_evidence` event, keyed to the awaiting
+        // exec, and leave the step `awaiting_approval`.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = drive_to_approval(tmp.path(), "run-appr", "wf/a-1").await;
+        assert_eq!(run_status_str(&db, "run-appr"), "paused");
+        let (reason, awaiting): (Option<String>, i64) = db
+            .lock()
+            .query_row(
+                "SELECT paused_reason,
+                    (SELECT COUNT(*) FROM wf_step_exec
+                     WHERE run_id='run-appr' AND status='awaiting_approval')
+                 FROM wf_run WHERE id='run-appr'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(reason.as_deref(), Some("approval"));
+        assert_eq!(awaiting, 1, "the step waits for approval");
+        assert_eq!(
+            count_events(&db, "run-appr", event_type::GATE_EVIDENCE),
+            1,
+            "one gate_evidence event journaled at the pause"
+        );
+        // The evidence payload carries the diff/budget/verification keys.
+        let payload: String = db
+            .lock()
+            .query_row(
+                "SELECT payload_json FROM wf_event
+                 WHERE run_id='run-appr' AND type=?1 LIMIT 1",
+                [event_type::GATE_EVIDENCE],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let v: Value = serde_json::from_str(&payload).unwrap();
+        assert!(v.get("diff").is_some(), "evidence has a diff: {v}");
+        assert!(v.get("budget").is_some(), "evidence has a budget: {v}");
+        assert!(v.get("verification").is_some(), "evidence has verification");
+    }
+
+    #[tokio::test]
+    async fn reject_with_budget_re_prompts_the_step() {
+        // §9: rejecting with budget left journals the decision, abandons the
+        // rejected attempt, and queues the note as a delivery for the fresh attempt.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = drive_to_approval(tmp.path(), "run-rej", "wf/r-1").await;
+
+        let re_drive = {
+            let conn = db.lock();
+            reject_apply(&conn, None, "run-rej", "  please add a regression test  ").unwrap()
+        };
+        assert!(re_drive, "budget available → re-drive");
+
+        // Decision journaled with the trimmed note.
+        let note: String = db
+            .lock()
+            .query_row(
+                "SELECT json_extract(payload_json,'$.note') FROM wf_event
+                 WHERE run_id='run-rej' AND type='decision' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(note, "please add a regression test");
+        // The rejected attempt is abandoned (no awaiting_approval lingers).
+        let awaiting: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_step_exec
+                 WHERE run_id='run-rej' AND status='awaiting_approval'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(awaiting, 0, "rejected attempt abandoned");
+        // A notify delivery carrying the note is queued for the step's next attempt.
+        let queued: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_message
+                 WHERE run_id='run-rej' AND kind='notify' AND status='queued'
+                   AND body_json LIKE '%regression test%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued, 1, "the note is queued as a delivery");
+    }
+
+    #[tokio::test]
+    async fn reject_without_budget_pauses_blocked_gate_with_the_note() {
+        // §9 / §6.5: with the run budget spent there is no attempt to give — the
+        // reject pauses `blocked_gate` carrying the note as detail, no re-drive.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = drive_to_approval(tmp.path(), "run-rej2", "wf/r-2").await;
+        // Spend the whole default turn budget (100) so a fresh attempt can't run.
+        db.lock()
+            .execute(
+                "UPDATE wf_run SET spent_json='{\"turns\":100}' WHERE id='run-rej2'",
+                [],
+            )
+            .unwrap();
+
+        let re_drive = {
+            let conn = db.lock();
+            reject_apply(&conn, None, "run-rej2", "out of scope").unwrap()
+        };
+        assert!(!re_drive, "budget spent → no re-drive");
+
+        let (status, reason, detail): (String, Option<String>, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT r.status, r.paused_reason,
+                    (SELECT json_extract(payload_json,'$.detail') FROM wf_event
+                     WHERE run_id='run-rej2' AND type='run_paused'
+                       AND json_extract(payload_json,'$.reason')='blocked_gate'
+                     ORDER BY seq DESC LIMIT 1)
+                 FROM wf_run r WHERE r.id='run-rej2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "paused");
+        assert_eq!(reason.as_deref(), Some("blocked_gate"));
+        assert_eq!(detail.as_deref(), Some("out of scope"));
     }
 
     #[tokio::test]

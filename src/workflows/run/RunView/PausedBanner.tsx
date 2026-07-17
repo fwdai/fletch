@@ -3,10 +3,12 @@
 // approve (S4), retry/resume (S4), answer a question (S10), and conflict
 // resolution (S9). No dead buttons — each paused reason wires to its command.
 
-import { useState } from "react";
-import { api, type WfMessage, type WfRun } from "../../../api";
+import { useCallback, useEffect, useState } from "react";
+import { api, type GateEvidence, type WfMessage, type WfRun } from "../../../api";
 import type { IconName } from "../../../components/Icon";
 import { Icon } from "../../../components/Icon";
+import { ReviewSurface } from "../../../components/ReviewSurface";
+import { IconButton, Scrim } from "../../../components/ui";
 import { useAppStore } from "../../../store";
 import type { Budgets } from "../../spec";
 import { pausedLabel } from "../status";
@@ -25,7 +27,6 @@ interface BannerSpec {
   actions: Action[];
 }
 
-const APPROVE: Action = { label: "Approve", icon: "check", run: api.wfApprove, primary: true };
 const RETRY: Action = { label: "Retry", icon: "refresh", run: api.wfRetry, primary: true };
 const RESUME: Action = { label: "Resume", icon: "play", run: api.wfResume, primary: true };
 // Conflict resolution (§12.3): let an agent resolve the pinned conflict snapshot,
@@ -57,11 +58,13 @@ function specFor(run: WfRun, detail?: string): BannerSpec | null {
   const title = `Paused — ${pausedLabel(run.paused_reason)}`;
   switch (run.paused_reason) {
     case "approval":
+      // The action is the review surface (rendered inline below), not a bare
+      // Approve button — a merge decision deserves the evidence first.
       return {
         tone: "amber",
         title,
-        body: detail || "A step is waiting for your approval to hand off to the next.",
-        actions: [APPROVE],
+        body: detail || "A step is waiting for your review before handing off to the next.",
+        actions: [],
       };
     case "blocked_gate":
       return {
@@ -110,14 +113,32 @@ export function PausedBanner({
   run,
   detail,
   question,
+  evidence,
+  evidencePending,
 }: {
   run: WfRun;
   detail?: string;
   /** The pending human `ask` message when `paused_reason === "question"`. */
   question?: WfMessage;
+  /** The review evidence for a `paused(approval)` run (its `gate_evidence`
+   *  event), or `null` when none has arrived. */
+  evidence?: GateEvidence | null;
+  /** The journal is still loading — absent evidence may yet arrive. */
+  evidencePending?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const setLastError = useAppStore((s) => s.setLastError);
+
+  const isApproval = run.status === "paused" && run.paused_reason === "approval";
+
+  // The review is only meaningful while the run is paused on approval; when the
+  // state flips underneath it (approved elsewhere, reject exhausted the budget),
+  // an open modal would review a run that no longer awaits one — close it.
+  useEffect(() => {
+    if (!isApproval) setReviewing(false);
+  }, [isApproval]);
+
   const spec = specFor(run, detail);
   if (!spec) return null;
 
@@ -151,6 +172,11 @@ export function PausedBanner({
         {isBudget && <ResumeBudgetForm run={run} onError={setLastError} />}
       </div>
       <div className="wf-banner-actions">
+        {isApproval && (
+          <button type="button" className="btn-t primary" onClick={() => setReviewing(true)}>
+            <Icon name="diff" size={13} /> Review changes…
+          </button>
+        )}
         {spec.actions.map((a) => (
           <button
             key={a.label}
@@ -163,7 +189,77 @@ export function PausedBanner({
           </button>
         ))}
       </div>
+      {reviewing && (
+        <ReviewModal
+          run={run}
+          evidence={evidence ?? null}
+          pending={evidencePending ?? false}
+          onClose={() => setReviewing(false)}
+          onError={setLastError}
+        />
+      )}
     </div>
+  );
+}
+
+/** The approval review, framed as a modal over the run. Wires the shared
+ *  `ReviewSurface` to this run's diff source and approve/reject commands; the
+ *  surface itself is store-agnostic so a fleet queue can mount it elsewhere. */
+function ReviewModal({
+  run,
+  evidence,
+  pending,
+  onClose,
+  onError,
+}: {
+  run: WfRun;
+  evidence: GateEvidence | null;
+  pending: boolean;
+  onClose: () => void;
+  onError: (message: string) => void;
+}) {
+  const getDiff = useCallback(
+    (path: string | null): Promise<string> => {
+      if (!evidence) return Promise.resolve("");
+      return api.wfRunDiff(run.id, evidence.base_sha, evidence.head_sha, path ?? undefined);
+    },
+    [run.id, evidence],
+  );
+
+  // Close on success; the run-state effect above also catches external flips.
+  const decide = useCallback(
+    async (action: Promise<void>) => {
+      await action;
+      onClose();
+    },
+    [onClose],
+  );
+
+  return (
+    <>
+      <Scrim onClose={onClose} zIndex={399} />
+      <div className="rv-modal">
+        <div className="rv-modal-card">
+          <div className="rv-modal-head">
+            <span className="rv-modal-title">
+              <Icon name="combine" size={14} style={{ color: "var(--accent)" }} /> Review
+              <span className="rv-modal-step">{run.task || run.name}</span>
+            </span>
+            <IconButton className="rv-modal-close" tip="Close" onClick={onClose}>
+              <Icon name="close" size={14} />
+            </IconButton>
+          </div>
+          <ReviewSurface
+            evidence={evidence}
+            pending={pending}
+            getDiff={getDiff}
+            onApprove={() => decide(api.wfApprove(run.id))}
+            onReject={(note) => decide(api.wfReject(run.id, note))}
+            onError={onError}
+          />
+        </div>
+      </div>
+    </>
   );
 }
 

@@ -11,7 +11,7 @@
 //! pure module. When no test command resolves the gate degrades to `verdict`.
 
 use super::blackboard::{Verdict, VerdictResult};
-use super::spec::Gate;
+use super::spec::{Gate, Require};
 
 /// The three terminal shapes a gate evaluation can take. Maps onto the step
 /// attempt's `gating → { done | blocked | awaiting_approval }` transition
@@ -104,7 +104,7 @@ pub fn evaluate(gate: &Gate, inputs: &GateInputs) -> GateResult {
         Gate::Verdict => evaluate_verdict(inputs),
         Gate::Commit => evaluate_commit(inputs),
         Gate::Artifact { path } => evaluate_artifact(path, inputs),
-        Gate::Approval => evaluate_approval(inputs),
+        Gate::Approval { require } => evaluate_approval(require, inputs),
         Gate::Tests => evaluate_tests(inputs),
     }
 }
@@ -151,7 +151,27 @@ fn evaluate_artifact(path: &str, inputs: &GateInputs) -> GateResult {
     }
 }
 
-fn evaluate_approval(inputs: &GateInputs) -> GateResult {
+fn evaluate_approval(require: &[Require], inputs: &GateInputs) -> GateResult {
+    // `require: [tests]` (spec §9): the deterministic gate is evaluated first, so
+    // the approval pause is unreachable while tests are red — a failing/timed-out/
+    // setup-failed run blocks exactly like a `tests` gate, quoting the same reason
+    // (and output tail) so the re-prompt is identical. With no resolvable test
+    // command the tests gate degrades to the verdict (spec §9.4); mirror that when
+    // the step wrote one, so a "revise"/"blocked" verdict never reaches the human.
+    // A step with no verdict at all still falls through to approval — the approval
+    // gate never demands a verdict, and blocking on a missing file would strand
+    // the step in a re-prompt loop tests can't satisfy.
+    if require.contains(&Require::Tests) {
+        if let Some(reason) = tests_block_reason(inputs.tests) {
+            return GateResult::blocked(reason);
+        }
+        if matches!(inputs.tests, Some(TestsOutcome::NoCommand)) && inputs.verdict.is_some() {
+            let degraded = evaluate_verdict(inputs);
+            if degraded.outcome == GateOutcome::Blocked {
+                return degraded;
+            }
+        }
+    }
     if inputs.approved {
         GateResult::done("approved by a human")
     } else {
@@ -163,22 +183,33 @@ fn evaluate_approval(inputs: &GateInputs) -> GateResult {
 }
 
 fn evaluate_tests(inputs: &GateInputs) -> GateResult {
+    if let Some(reason) = tests_block_reason(inputs.tests) {
+        return GateResult::blocked(reason);
+    }
     match inputs.tests {
         Some(TestsOutcome::Passed) => GateResult::done("project tests passed"),
-        Some(TestsOutcome::Failed { tail }) => {
-            GateResult::blocked(with_tail("project tests failed", tail))
-        }
+        // No test command resolvable → degrade to the verdict gate (spec §9.4).
+        // `attempt.rs` journals the degrade warning; here we just read the verdict
+        // facts the caller always gathers. (Failing outcomes are handled above.)
+        _ => evaluate_verdict(inputs),
+    }
+}
+
+/// The `Blocked` reason for a *failing* tests outcome (red / timed out / setup
+/// failed), or `None` when tests passed, weren't run, or resolved to no command.
+/// Shared by the `tests` gate and an `approval` gate's `require: [tests]` so both
+/// speak the identical failure reason and output tail (spec §9.4).
+fn tests_block_reason(tests: Option<&TestsOutcome>) -> Option<String> {
+    match tests {
+        Some(TestsOutcome::Failed { tail }) => Some(with_tail("project tests failed", tail)),
         Some(TestsOutcome::TimedOut { tail }) => {
-            GateResult::blocked(with_tail("project tests timed out before finishing", tail))
+            Some(with_tail("project tests timed out before finishing", tail))
         }
-        Some(TestsOutcome::SetupFailed { tail }) => GateResult::blocked(with_tail(
+        Some(TestsOutcome::SetupFailed { tail }) => Some(with_tail(
             "project setup command failed (tests not run)",
             tail,
         )),
-        // No test command resolvable → degrade to the verdict gate (spec §9.4).
-        // `attempt.rs` journals the degrade warning; here we just read the
-        // verdict facts the caller always gathers.
-        Some(TestsOutcome::NoCommand) | None => evaluate_verdict(inputs),
+        _ => None,
     }
 }
 
@@ -332,17 +363,95 @@ mod tests {
 
     #[test]
     fn approval_gate_awaits_then_passes() {
-        let waiting = evaluate(&Gate::Approval, &GateInputs::default());
+        let bare = Gate::Approval { require: vec![] };
+        let waiting = evaluate(&bare, &GateInputs::default());
         assert_eq!(waiting.outcome, GateOutcome::AwaitingApproval);
 
         let approved = evaluate(
-            &Gate::Approval,
+            &bare,
             &GateInputs {
                 approved: true,
                 ..Default::default()
             },
         );
         assert_eq!(approved.outcome, GateOutcome::Done);
+    }
+
+    #[test]
+    fn approval_require_tests_blocks_before_asking_a_human() {
+        // With `require: [tests]`, a red test run must block (and quote the tail)
+        // rather than reach the human-approval pause — the deterministic gate is
+        // evaluated first (spec §9).
+        let gate = Gate::Approval {
+            require: vec![Require::Tests],
+        };
+        let failed = TestsOutcome::Failed {
+            tail: "FAIL src/x.test.ts\n  ✕ adds".into(),
+        };
+        let r = evaluate(
+            &gate,
+            &GateInputs {
+                tests: Some(&failed),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::Blocked);
+        assert!(r.reason.contains("adds"), "reason: {}", r.reason);
+    }
+
+    #[test]
+    fn approval_require_tests_awaits_human_once_green() {
+        // Passing tests (or no resolvable command) must fall through to the human
+        // pause — the engine never blocks on tests it can't or didn't fail to run.
+        let gate = Gate::Approval {
+            require: vec![Require::Tests],
+        };
+        for outcome in [TestsOutcome::Passed, TestsOutcome::NoCommand] {
+            let r = evaluate(
+                &gate,
+                &GateInputs {
+                    tests: Some(&outcome),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                r.outcome,
+                GateOutcome::AwaitingApproval,
+                "outcome {outcome:?} should await the human"
+            );
+        }
+    }
+
+    #[test]
+    fn approval_require_tests_degrades_to_verdict_on_no_command() {
+        // With no resolvable test command, `require: [tests]` mirrors the tests
+        // gate's degrade (spec §9.4): a blocking verdict never reaches the human.
+        let gate = Gate::Approval {
+            require: vec![Require::Tests],
+        };
+        let v = verdict(VerdictResult::Revise, "flaky assertion");
+        let r = evaluate(
+            &gate,
+            &GateInputs {
+                tests: Some(&TestsOutcome::NoCommand),
+                verdict: Some(&v),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::Blocked);
+        assert!(r.reason.contains("flaky assertion"), "reason: {}", r.reason);
+
+        // A "done" verdict falls through to the human as usual.
+        let v = verdict(VerdictResult::Done, "shipped");
+        let r = evaluate(
+            &gate,
+            &GateInputs {
+                tests: Some(&TestsOutcome::NoCommand),
+                verdict: Some(&v),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::AwaitingApproval);
     }
 
     #[test]

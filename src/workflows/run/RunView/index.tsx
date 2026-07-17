@@ -8,7 +8,7 @@
 // attempt's preserved chat (the existing ChatView), and the event timeline.
 
 import { useEffect, useMemo, useState } from "react";
-import type { AgentRecord, WfStepExec } from "../../../api";
+import type { AgentRecord, GateEvidence, WfStepExec } from "../../../api";
 import { Icon } from "../../../components/Icon";
 import { IconButton } from "../../../components/ui/IconButton";
 import { ChatView } from "../../../components/Workspace/ChatView";
@@ -99,6 +99,17 @@ export function RunView({ id }: { id: string }) {
     return undefined;
   }, [pausedEvent]);
 
+  // The review evidence for an approval pause: the most recent `gate_evidence`
+  // event (keyed to the awaiting step exec). Only meaningful while the run is
+  // paused on approval; the ReviewSurface renders a "preparing" state if absent.
+  const gateEvidence = useMemo<GateEvidence | null>(() => {
+    if (run?.status !== "paused" || run.paused_reason !== "approval") return null;
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].type === "gate_evidence") return events[i].payload as GateEvidence;
+    }
+    return null;
+  }, [events, run?.status, run?.paused_reason]);
+
   if (loading && !run) {
     return (
       <div className="pane center">
@@ -161,7 +172,13 @@ export function RunView({ id }: { id: string }) {
 
       <BudgetMeter budgets={run.budgets} spent={run.spent} createdAt={run.created_at} />
 
-      <PausedBanner run={run} detail={pausedDetail} question={pendingQuestion} />
+      <PausedBanner
+        run={run}
+        detail={pausedDetail}
+        question={pendingQuestion}
+        evidence={gateEvidence}
+        evidencePending={loading}
+      />
 
       <div className="wf-run-main">
         <AttemptRail

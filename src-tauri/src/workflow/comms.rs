@@ -1709,6 +1709,32 @@ pub(super) fn queue_engine_ask(conn: &Connection, run_id: &str, orch_exec: &str,
     );
 }
 
+/// Queue a human's approval-gate rejection as a delivery to the gated step, so
+/// its next attempt re-prompts with the reviewer's note folded into the prompt —
+/// the same coalesced-delivery path a `wf_answer` uses (spec §10.4). Addressed to
+/// the (now abandoned) approval exec by id; `take_pending_deliveries` joins on the
+/// step id, so it reaches the step's fresh attempt. Modeled as a `notify` so no
+/// new message kind is needed.
+pub(super) fn queue_rejection(conn: &Connection, run_id: &str, step_exec_id: &str, note: &str) {
+    let body = json!({
+        "message": format!(
+            "A human reviewed your work and requested changes before approving it:\n\n{note}\n\n\
+             Address this feedback, update the code, and complete the step again."
+        )
+    });
+    let _ = insert_message(
+        conn,
+        &new_msg_id(),
+        run_id,
+        None,
+        Some(step_exec_id),
+        "notify",
+        &body,
+        "queued",
+        false,
+    );
+}
+
 /// Queue an `answer` to the asking child, mark the originating `ask` `answered`,
 /// and journal the route (§10.4). Shared by the orchestrator (§10.2) and human
 /// (§14) answer paths, which differ only in their preconditions and in `from`

@@ -1,0 +1,394 @@
+/* ReviewSurface — the approval-gate review surface (spec §9). Tokens only: no
+ * hardcoded colors or font-sizes. Mirrors GitPanel's pass/fail vocabulary and the
+ * app's card/section conventions so it reads as one system in both themes. */
+
+/* ── modal chrome (used by PausedBanner's "Review changes…") ─────────────── */
+.rv-modal {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: color-mix(in oklch, var(--bg-0) 55%, transparent);
+}
+.rv-modal-card {
+  display: flex;
+  flex-direction: column;
+  width: min(920px, 100%);
+  max-height: min(84vh, 900px);
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+.rv-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+  flex-shrink: 0;
+}
+.rv-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.rv-modal-title .rv-modal-step {
+  color: var(--fg-2);
+  font-weight: 400;
+}
+.rv-modal-close {
+  margin-left: auto;
+}
+
+/* ── surface shell ───────────────────────────────────────────────────────── */
+.review-surface {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.rv-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+}
+.rv-foot {
+  flex-shrink: 0;
+  padding: 10px 14px;
+  border-top: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+}
+
+/* ── summary tiles (diff + budget at a glance) ───────────────────────────── */
+.rv-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+  gap: 10px;
+}
+.rv-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+}
+.rv-tile-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: var(--fs-xs);
+}
+.rv-tile-value {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.rv-tile-sub {
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--fg-2);
+}
+
+/* Additions / deletions colouring, shared across tiles, the file list, etc. */
+.review-surface .add {
+  color: var(--success);
+}
+.review-surface .rem {
+  color: var(--danger);
+}
+
+/* ── budget ──────────────────────────────────────────────────────────────── */
+.rv-budget {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.rv-budget-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rv-budget-label {
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+.rv-budget-value {
+  font-size: var(--fs-base);
+  color: var(--fg-1);
+}
+.rv-budget-value.muted {
+  color: var(--fg-3);
+  font-style: italic;
+}
+
+/* ── sections ────────────────────────────────────────────────────────────── */
+.rv-sect {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rv-sect-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-1);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+.rv-sect-diff {
+  flex: 1;
+  min-height: 240px;
+}
+
+/* ── checks ──────────────────────────────────────────────────────────────── */
+.rv-checks {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.rv-checks-note {
+  color: var(--fg-3);
+  font-size: var(--fs-sm);
+  padding: 8px 2px;
+}
+.rv-check + .rv-check {
+  border-top: 1px solid var(--bd-soft);
+}
+.rv-check-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg-1);
+  text-align: left;
+}
+.rv-check-head:not(:disabled):hover {
+  background: var(--hover);
+}
+.rv-check.fail .rv-check-head {
+  background: color-mix(in oklch, var(--danger) 8%, transparent);
+}
+.rv-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.rv-dot.ok {
+  background: var(--success);
+}
+.rv-dot.fail {
+  background: var(--danger);
+}
+.rv-dot.skip {
+  background: var(--fg-3);
+}
+.rv-check-name {
+  font-weight: 500;
+  color: var(--fg-0);
+  min-width: 48px;
+}
+.rv-check-cmd {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+}
+.rv-check-status {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.rv-check-status.ok {
+  color: var(--success);
+}
+.rv-check-status.fail {
+  color: var(--danger);
+}
+.rv-check-status.skip {
+  color: var(--fg-3);
+}
+.rv-check-chev {
+  color: var(--fg-3);
+}
+.rv-check-tail {
+  margin: 0;
+  padding: 8px 10px 10px 26px;
+  background: var(--bg-2);
+  border-top: 1px solid var(--bd-soft);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+}
+
+/* ── verdict ─────────────────────────────────────────────────────────────── */
+.rv-verdict-badge {
+  padding: 1px 7px;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.rv-verdict-badge.v-done {
+  background: color-mix(in oklch, var(--success) 16%, transparent);
+  color: var(--success);
+}
+.rv-verdict-badge.v-revise {
+  background: color-mix(in oklch, var(--att) 16%, transparent);
+  color: var(--att);
+}
+.rv-verdict-badge.v-blocked {
+  background: color-mix(in oklch, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+.rv-verdict-summary {
+  color: var(--fg-1);
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+}
+.rv-verdict-detail {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--fg-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
+
+/* ── diff (file list + body) ─────────────────────────────────────────────── */
+.rv-diff {
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  min-height: 240px;
+}
+.rv-files {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--bd-soft);
+  background: var(--bg-2);
+  overflow-y: auto;
+}
+.rv-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  text-align: left;
+  color: var(--fg-1);
+  border-bottom: 1px solid var(--bd-soft);
+}
+.rv-file:hover {
+  background: var(--hover);
+}
+.rv-file.active {
+  background: var(--selected);
+  color: var(--fg-0);
+}
+.rv-file-icon {
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.rv-file-path {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+}
+.rv-file-stat {
+  display: inline-flex;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  flex-shrink: 0;
+}
+.rv-diff-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: auto;
+  background: var(--bg-1);
+}
+
+/* ── actions / reject form ───────────────────────────────────────────────── */
+.rv-actions-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.rv-reject {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rv-reject-label {
+  font-weight: 600;
+  color: var(--fg-0);
+  font-size: var(--fs-sm);
+}
+.rv-reject-input {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  color: var(--fg-0);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+}
+.rv-reject-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.rv-reject-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.rv-reject-hint {
+  flex: 1;
+  color: var(--fg-3);
+  font-size: var(--fs-sm);
+}
+.rv-reject-btns {
+  display: flex;
+  gap: 8px;
+}
