@@ -423,6 +423,34 @@ impl Supervisor {
         self.workspace.remove_workspace_repo(&repo_path)
     }
 
+    /// DB phase of an attach (validates + commits, no filesystem access).
+    /// The command layer mutates the folder only after this succeeds and
+    /// calls [`Self::undo_attach`] if that later step fails.
+    pub fn attach_repo_to_project(
+        &self,
+        project_id: &str,
+        repo_path: &std::path::Path,
+    ) -> Result<crate::workspace::AttachOutcome> {
+        self.workspace.attach_repo_to_project(project_id, repo_path)
+    }
+
+    pub fn undo_attach(&self, outcome: &crate::workspace::AttachOutcome) -> Result<()> {
+        self.workspace.undo_attach(outcome)
+    }
+
+    pub fn detach_repo_from_project(
+        &self,
+        project_id: &str,
+        repo_path: PathBuf,
+    ) -> Result<Workspace> {
+        self.workspace
+            .detach_repo_from_project(project_id, &repo_path)
+    }
+
+    pub fn set_repo_label(&self, repo_path: PathBuf, label: &str) -> Result<Workspace> {
+        self.workspace.set_repo_label(&repo_path, label)
+    }
+
     pub fn rename_project(&self, project_id: &str, name: &str) -> Result<Workspace> {
         self.workspace.rename_project(project_id, name)
     }

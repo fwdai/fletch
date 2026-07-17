@@ -1,26 +1,21 @@
-import { open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
-import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
+import { RepositoriesField } from "./RepositoriesField";
 
 interface Props {
   projectId: string;
   /** Current display name (from the store), used as the edit baseline. */
   currentName: string;
-  /** The repo's location on disk — the group's stable id. */
-  repoPath: string;
 }
 
-/** Project identity: a custom display name (independent of the folder) and the
- *  on-disk location. Renaming only relabels the project; changing the location
- *  repoints Fletch at a folder the user has already moved. */
-export function GeneralSection({ projectId, currentName, repoPath }: Props) {
+/** Project identity: a custom display name (independent of any folder name)
+ *  and the repositories the project is made of. The project has no location
+ *  of its own — each repo row carries its own path. */
+export function GeneralSection({ projectId, currentName }: Props) {
   const renameProject = useAppStore((s) => s.renameProject);
-  const relocateProject = useAppStore((s) => s.relocateProject);
 
   const [name, setName] = useState(currentName);
   const [saving, setSaving] = useState(false);
-  const [relocating, setRelocating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const trimmed = name.trim();
@@ -42,31 +37,12 @@ export function GeneralSection({ projectId, currentName, repoPath }: Props) {
     }
   }
 
-  async function changeLocation() {
-    if (relocating) return;
-    const picked = await open({
-      directory: true,
-      multiple: false,
-      title: "Select the project's new location",
-    });
-    if (typeof picked !== "string" || picked === repoPath) return;
-    setRelocating(true);
-    setError(null);
-    try {
-      await relocateProject(repoPath, picked);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setRelocating(false);
-    }
-  }
-
   return (
     <section className="ps-section">
       <header className="ps-section-h">
         <h2 className="ps-section-t text-lg">General</h2>
         <p className="ps-section-lead text-sm">
-          The project&rsquo;s display name and where Fletch looks for it on disk.
+          The project&rsquo;s display name and the repositories it&rsquo;s made of.
         </p>
       </header>
 
@@ -107,23 +83,7 @@ export function GeneralSection({ projectId, currentName, repoPath }: Props) {
         <p className="ps-hint text-xs">Shown in the sidebar. Independent of the folder name.</p>
       </div>
 
-      <div className="ps-field">
-        <label className="ps-label text-sm">Location</label>
-        <button
-          type="button"
-          className="ps-path-row flex-center"
-          disabled={relocating}
-          onClick={() => void changeLocation()}
-        >
-          <Icon name="folder" size={14} />
-          <span className="ps-path-val mono text-base truncate">{repoPath}</span>
-          <span className="ps-path-change text-sm">{relocating ? "Moving…" : "Change…"}</span>
-        </button>
-        <p className="ps-hint text-xs">
-          Moved the folder? Point Fletch at its new location. Running agents keep their existing
-          worktrees — only new agents use the new path.
-        </p>
-      </div>
+      <RepositoriesField projectId={projectId} />
 
       {error && <div className="ps-error text-sm">{error}</div>}
     </section>

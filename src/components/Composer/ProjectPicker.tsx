@@ -4,25 +4,36 @@ import { DropdownItem, DropdownMenu, DropdownSection } from "@/components/ui/Dro
 import { Scrim } from "@/components/ui/Scrim";
 import { basename } from "@/util/format";
 
+export interface ProjectOption {
+  /** The project's primary repo path — what a draft/spawn targets. */
+  path: string;
+  /** Project display name. */
+  label: string;
+}
+
 interface Props {
-  /** Currently selected repo path. */
+  /** Currently selected repo path (a project's primary repo). */
   value: string;
-  /** Available repo paths (sidebar projects). */
-  repos: string[];
+  /** One option per project. */
+  projects: ProjectOption[];
   onChange: (repoPath: string) => void;
 }
 
 /** Project picker for the new-agent draft screen. Mirrors BranchPicker's
  *  dropdown, but rendered as an `empty-meta` pill so it sits inline with the
  *  branch/reroll pills below the composer. */
-export function ProjectPicker({ value, repos, onChange }: Props) {
+export function ProjectPicker({ value, projects, onChange }: Props) {
   const [open, setOpen] = useState(false);
+
+  // A stale draft can point at a repo that's no longer a project's primary
+  // (e.g. it was attached into another project); fall back to its basename.
+  const selectedLabel = projects.find((p) => p.path === value)?.label ?? basename(value);
 
   return (
     <span style={{ position: "relative" }}>
       <span className="pill is-action" onClick={() => setOpen((v) => !v)}>
         <Icon name="folder" />
-        <span className="v">{basename(value)}</span>
+        <span className="v">{selectedLabel}</span>
         <Icon name="chevD" size={9} />
       </span>
 
@@ -34,19 +45,19 @@ export function ProjectPicker({ value, repos, onChange }: Props) {
           >
             <DropdownSection>Projects</DropdownSection>
             <div style={{ maxHeight: 272, overflowY: "auto" }}>
-              {repos.map((r) => (
+              {projects.map((p) => (
                 <DropdownItem
-                  key={r}
-                  active={r === value}
+                  key={p.path}
+                  active={p.path === value}
                   style={{ padding: "7px 9px" }}
-                  title={r}
+                  title={p.path}
                   onClick={() => {
-                    onChange(r);
+                    onChange(p.path);
                     setOpen(false);
                   }}
                 >
                   <Icon name="folder" size={14} />
-                  <span className="di-l">{basename(r)}</span>
+                  <span className="di-l">{p.label}</span>
                 </DropdownItem>
               ))}
             </div>

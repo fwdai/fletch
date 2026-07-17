@@ -242,6 +242,36 @@ pub struct ProjectRef {
     pub path: PathBuf,
     pub name: String,
     pub project_id: String,
+    /// Per-repo display label ("Frontend", "Gateway"); `None` falls back to
+    /// the folder basename. Distinct from `name`, which labels the project.
+    pub label: Option<String>,
+}
+
+/// What the DB phase of an attach changed, so the command layer can undo it
+/// precisely if the follow-up filesystem step (`ensure_git_repo`) fails. The
+/// filesystem is only mutated after the DB phase commits — see
+/// `commands::attach_repo_to_project`.
+#[derive(Debug, Clone)]
+pub enum AttachOutcome {
+    /// The path already belonged to the target project — nothing changed.
+    AlreadyAttached,
+    /// A fresh repos row was inserted.
+    Inserted { repo_id: String },
+    /// An existing pinned repo was moved out of an empty source project.
+    Moved {
+        repo_id: String,
+        source_project_id: String,
+        /// Set when the emptied source project row was dropped; kept so undo
+        /// can re-create it verbatim.
+        dropped_source: Option<DroppedProject>,
+    },
+}
+
+/// Fields of a project row dropped during an attach-move, for undo.
+#[derive(Debug, Clone)]
+pub struct DroppedProject {
+    pub name: String,
+    pub created_at: i64,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -487,6 +517,223 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         let path_str = repo_path.to_string_lossy().to_string();
         conn.execute("DELETE FROM repos WHERE path = ?1", [&path_str])?;
+        drop(conn);
+        Ok(self.current().expect("workspace initialized"))
+    }
+
+    /// Attach a repo to an existing project, making it a multi-repo project.
+    /// An unpinned path is inserted under the target project; a path already
+    /// attached to the target is a no-op. A path pinned as its own project is
+    /// *moved* here only when that project is empty (no agents, no workflow
+    /// runs) — its emptied project row is then removed. A path belonging to a
+    /// project with history is rejected: moving it would strand that project's
+    /// agents under a project the repo no longer belongs to.
+    ///
+    /// This is the DB phase only, one atomic transaction, and it runs *before*
+    /// any filesystem mutation: the command layer initializes a non-git folder
+    /// only after this commits, and calls [`Self::undo_attach`] with the
+    /// returned outcome if that on-disk step fails. Ordering is the point — a
+    /// doomed attach (stale modal, deleted project) must never touch the
+    /// picked folder.
+    pub fn attach_repo_to_project(
+        &self,
+        project_id: &str,
+        repo_path: &Path,
+    ) -> Result<AttachOutcome> {
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+        let path_str = repo_path.to_string_lossy().to_string();
+
+        let target_exists: bool = tx
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = ?1",
+                [project_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)?;
+        if !target_exists {
+            return Err(Error::Other(format!("project not found: {project_id}")));
+        }
+
+        let existing: Option<(String, String)> = tx
+            .query_row(
+                "SELECT id, project_id FROM repos WHERE path = ?1",
+                [&path_str],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
+        let outcome = match existing {
+            None => {
+                let repo_id = uuid::Uuid::new_v4().to_string();
+                tx.execute(
+                    "INSERT INTO repos (id, project_id, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![repo_id, project_id, path_str, now_millis()],
+                )?;
+                AttachOutcome::Inserted { repo_id }
+            }
+            Some((_, ref pid)) if pid == project_id => AttachOutcome::AlreadyAttached,
+            Some((repo_id, source_pid)) => {
+                let in_use: i64 = tx.query_row(
+                    "SELECT (SELECT COUNT(*) FROM workspaces WHERE project_id = ?1)
+                          + (SELECT COUNT(*) FROM wf_run WHERE project_id = ?1)",
+                    [&source_pid],
+                    |row| row.get(0),
+                )?;
+                if in_use > 0 {
+                    let source_name: String = tx
+                        .query_row(
+                            "SELECT name FROM projects WHERE id = ?1",
+                            [&source_pid],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or_else(|_| "another project".into());
+                    return Err(Error::Other(format!(
+                        "{path_str} belongs to project \"{source_name}\", which has agents or \
+                         workflow runs. Delete those first, or attach a different repo."
+                    )));
+                }
+                tx.execute(
+                    "UPDATE repos SET project_id = ?1 WHERE id = ?2",
+                    rusqlite::params![project_id, repo_id],
+                )?;
+                // The source project is empty and now repo-less — drop the row
+                // so it doesn't linger as an invisible orphan. Keep its fields
+                // so undo can restore it verbatim.
+                let repos_left: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM repos WHERE project_id = ?1",
+                    [&source_pid],
+                    |row| row.get(0),
+                )?;
+                let dropped_source = if repos_left == 0 {
+                    let (name, created_at): (String, i64) = tx.query_row(
+                        "SELECT name, created_at FROM projects WHERE id = ?1",
+                        [&source_pid],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    tx.execute("DELETE FROM projects WHERE id = ?1", [&source_pid])?;
+                    Some(DroppedProject { name, created_at })
+                } else {
+                    None
+                };
+                AttachOutcome::Moved {
+                    repo_id,
+                    source_project_id: source_pid,
+                    dropped_source,
+                }
+            }
+        };
+
+        tx.commit()?;
+        Ok(outcome)
+    }
+
+    /// Undo the DB phase of an attach after the follow-up filesystem step
+    /// failed. Restores exactly what [`Self::attach_repo_to_project`] changed
+    /// moments earlier: a fresh row is deleted, a moved row is pointed back at
+    /// its source project, and a dropped source project row is re-created.
+    pub fn undo_attach(&self, outcome: &AttachOutcome) -> Result<()> {
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+        match outcome {
+            AttachOutcome::AlreadyAttached => {}
+            AttachOutcome::Inserted { repo_id } => {
+                tx.execute("DELETE FROM repos WHERE id = ?1", [repo_id])?;
+            }
+            AttachOutcome::Moved {
+                repo_id,
+                source_project_id,
+                dropped_source,
+            } => {
+                if let Some(p) = dropped_source {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![source_project_id, p.name, p.created_at],
+                    )?;
+                }
+                tx.execute(
+                    "UPDATE repos SET project_id = ?1 WHERE id = ?2",
+                    rusqlite::params![source_project_id, repo_id],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Detach a repo from a project. Guarded twice: the last repo can't be
+    /// detached (delete the project instead), and a repo referenced by any
+    /// agent checkout — live or archived — can't be detached, because the
+    /// `worktrees.repo_id` FK cascade would silently destroy that agent's
+    /// tracked branches, PRs, and archive snapshots.
+    pub fn detach_repo_from_project(
+        &self,
+        project_id: &str,
+        repo_path: &Path,
+    ) -> Result<Workspace> {
+        let conn = self.db.lock();
+        let path_str = repo_path.to_string_lossy().to_string();
+
+        let (repo_id, actual_pid): (String, String) = conn
+            .query_row(
+                "SELECT id, project_id FROM repos WHERE path = ?1",
+                [&path_str],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| Error::Other(format!("repo not found: {path_str}")))?;
+        if actual_pid != project_id {
+            return Err(Error::Other(format!(
+                "{path_str} does not belong to project {project_id}"
+            )));
+        }
+
+        let repo_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM repos WHERE project_id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )?;
+        if repo_count <= 1 {
+            return Err(Error::Other(
+                "a project needs at least one repository — delete the project instead".into(),
+            ));
+        }
+
+        let checkouts: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM worktrees WHERE repo_id = ?1",
+            [&repo_id],
+            |row| row.get(0),
+        )?;
+        if checkouts > 0 {
+            return Err(Error::Other(format!(
+                "{path_str} is used by existing agents (including archived ones). \
+                 Delete those agents before detaching it."
+            )));
+        }
+
+        conn.execute("DELETE FROM repos WHERE id = ?1", [&repo_id])?;
+        drop(conn);
+        Ok(self.current().expect("workspace initialized"))
+    }
+
+    /// Set a repo's display label ("Frontend", "Gateway"), independent of its
+    /// folder name. A blank label clears back to the basename fallback.
+    pub fn set_repo_label(&self, repo_path: &Path, label: &str) -> Result<Workspace> {
+        let trimmed = label.trim();
+        let value: Option<&str> = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        };
+
+        let conn = self.db.lock();
+        let path_str = repo_path.to_string_lossy().to_string();
+        let changed = conn.execute(
+            "UPDATE repos SET label = ?1 WHERE path = ?2",
+            rusqlite::params![value, path_str],
+        )?;
+        if changed == 0 {
+            return Err(Error::Other(format!("repo not found: {path_str}")));
+        }
         drop(conn);
         Ok(self.current().expect("workspace initialized"))
     }
@@ -1594,7 +1841,7 @@ impl WorkspaceManager {
     /// than the repo silently vanishing from the sidebar.
     fn query_project_refs(conn: &Connection) -> Vec<ProjectRef> {
         let mut stmt = match conn.prepare(
-            "SELECT r.path, p.name, p.id
+            "SELECT r.path, p.name, p.id, r.label
              FROM repos r LEFT JOIN projects p ON p.id = r.project_id
              ORDER BY r.created_at",
         ) {
@@ -1605,6 +1852,7 @@ impl WorkspaceManager {
             let path: String = row.get(0)?;
             let name: Option<String> = row.get(1)?;
             let project_id: Option<String> = row.get(2)?;
+            let label: Option<String> = row.get(3)?;
             let name = name.unwrap_or_else(|| {
                 Path::new(&path)
                     .file_name()
@@ -1616,6 +1864,7 @@ impl WorkspaceManager {
                 path: PathBuf::from(path),
                 name,
                 project_id: project_id.unwrap_or_default(),
+                label,
             })
         })
         .ok()
@@ -2787,6 +3036,214 @@ mod tests {
         // may reference a now-deleted repo — that's fine, the sidebar
         // union logic handles it).
         assert_eq!(cur.agents.len(), 1);
+    }
+
+    #[test]
+    fn attach_repo_creates_multi_repo_project() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let a = init_repo(td.path());
+        let b = td.path().join("b");
+        std::fs::create_dir_all(b.join(".git")).unwrap();
+
+        let wm = WorkspaceManager::new(db);
+        wm.add_workspace_repo(a.clone()).unwrap();
+        let cur = wm.current().unwrap();
+        let project_id = cur.projects[0].project_id.clone();
+
+        let outcome = wm.attach_repo_to_project(&project_id, &b).unwrap();
+        assert!(matches!(outcome, AttachOutcome::Inserted { .. }));
+        let cur = wm.current().unwrap();
+        assert_eq!(cur.repos.len(), 2);
+        assert!(
+            cur.projects.iter().all(|p| p.project_id == project_id),
+            "both repos share the project"
+        );
+
+        // Re-attaching the same path is a no-op, not an error.
+        let outcome = wm.attach_repo_to_project(&project_id, &b).unwrap();
+        assert!(matches!(outcome, AttachOutcome::AlreadyAttached));
+        assert_eq!(wm.current().unwrap().repos.len(), 2);
+
+        // Undoing an insert removes exactly the inserted row.
+        let outcome = wm
+            .attach_repo_to_project(&project_id, &td.path().join("c"))
+            .unwrap();
+        wm.undo_attach(&outcome).unwrap();
+        assert_eq!(wm.current().unwrap().repos.len(), 2);
+    }
+
+    #[test]
+    fn attach_repo_moves_empty_project_and_drops_it() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let a = init_repo(td.path());
+        let b = td.path().join("b");
+        std::fs::create_dir_all(b.join(".git")).unwrap();
+
+        let wm = WorkspaceManager::new(db.clone());
+        wm.add_workspace_repo(a.clone()).unwrap();
+        wm.add_workspace_repo(b.clone()).unwrap();
+        let cur = wm.current().unwrap();
+        let pid_a = cur
+            .projects
+            .iter()
+            .find(|p| p.path == a)
+            .unwrap()
+            .project_id
+            .clone();
+        let pid_b = cur
+            .projects
+            .iter()
+            .find(|p| p.path == b)
+            .unwrap()
+            .project_id
+            .clone();
+        assert_ne!(pid_a, pid_b);
+
+        // `b` has no agents/runs, so it folds into `a`'s project and its own
+        // now-empty project row is removed.
+        let outcome = wm.attach_repo_to_project(&pid_a, &b).unwrap();
+        let cur = wm.current().unwrap();
+        assert!(cur.projects.iter().all(|p| p.project_id == pid_a));
+        let count: i64 = db
+            .lock()
+            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "emptied source project row dropped");
+
+        // Undoing the move restores the repo's source project — including the
+        // dropped project row, verbatim.
+        assert!(matches!(
+            outcome,
+            AttachOutcome::Moved {
+                dropped_source: Some(_),
+                ..
+            }
+        ));
+        wm.undo_attach(&outcome).unwrap();
+        let cur = wm.current().unwrap();
+        assert_eq!(
+            cur.projects
+                .iter()
+                .find(|p| p.path == b)
+                .unwrap()
+                .project_id,
+            pid_b
+        );
+        let count: i64 = db
+            .lock()
+            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "dropped source project row restored");
+    }
+
+    #[test]
+    fn attach_repo_refuses_project_with_agents() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let a = init_repo(td.path());
+        let b = td.path().join("b");
+        std::fs::create_dir_all(b.join(".git")).unwrap();
+
+        let wm = WorkspaceManager::new(db);
+        wm.add_workspace_repo(a.clone()).unwrap();
+        wm.add_workspace_repo(b.clone()).unwrap();
+        let cur = wm.current().unwrap();
+        let pid_a = cur
+            .projects
+            .iter()
+            .find(|p| p.path == a)
+            .unwrap()
+            .project_id
+            .clone();
+
+        let mut rec = new_agent_record(
+            "yosemite".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo(b.to_str().unwrap()),
+            "".into(),
+            AgentView::Custom,
+        );
+        wm.add_agent(&mut rec).unwrap();
+
+        let err = wm.attach_repo_to_project(&pid_a, &b).unwrap_err();
+        assert!(err.to_string().contains("agents or workflow runs"));
+
+        // A rejected attach must not have changed anything (transaction
+        // rolled back): `b` still belongs to its own project.
+        let cur = wm.current().unwrap();
+        assert_ne!(
+            cur.projects
+                .iter()
+                .find(|p| p.path == b)
+                .unwrap()
+                .project_id,
+            pid_a
+        );
+
+        // Attaching to a project that no longer exists fails without a row.
+        let err = wm
+            .attach_repo_to_project("gone", &td.path().join("c"))
+            .unwrap_err();
+        assert!(err.to_string().contains("project not found"));
+        assert_eq!(wm.current().unwrap().repos.len(), 2);
+    }
+
+    #[test]
+    fn detach_repo_guards() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let a = init_repo(td.path());
+        let b = td.path().join("b");
+        std::fs::create_dir_all(b.join(".git")).unwrap();
+
+        let wm = WorkspaceManager::new(db);
+        wm.add_workspace_repo(a.clone()).unwrap();
+        let project_id = wm.current().unwrap().projects[0].project_id.clone();
+
+        // Last repo can't be detached.
+        let err = wm.detach_repo_from_project(&project_id, &a).unwrap_err();
+        assert!(err.to_string().contains("at least one repository"));
+
+        // A freshly attached, unused repo detaches cleanly.
+        wm.attach_repo_to_project(&project_id, &b).unwrap();
+        let cur = wm.detach_repo_from_project(&project_id, &b).unwrap();
+        assert_eq!(cur.repos.len(), 1);
+
+        // A repo with an agent checkout is protected from the FK cascade.
+        wm.attach_repo_to_project(&project_id, &b).unwrap();
+        let mut rec = new_agent_record(
+            "dolomites".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo(b.to_str().unwrap()),
+            "".into(),
+            AgentView::Custom,
+        );
+        wm.add_agent(&mut rec).unwrap();
+        let err = wm.detach_repo_from_project(&project_id, &b).unwrap_err();
+        assert!(err.to_string().contains("used by existing agents"));
+    }
+
+    #[test]
+    fn repo_label_round_trip_and_clear() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let repo = init_repo(td.path());
+        let wm = WorkspaceManager::new(db);
+        wm.add_workspace_repo(repo.clone()).unwrap();
+
+        let cur = wm.set_repo_label(&repo, "  Frontend  ").unwrap();
+        assert_eq!(cur.projects[0].label.as_deref(), Some("Frontend"));
+
+        // Blank clears back to the basename fallback (label = None).
+        let cur = wm.set_repo_label(&repo, "   ").unwrap();
+        assert_eq!(cur.projects[0].label, None);
+
+        let err = wm.set_repo_label(&td.path().join("nope"), "x").unwrap_err();
+        assert!(err.to_string().contains("repo not found"));
     }
 
     #[test]

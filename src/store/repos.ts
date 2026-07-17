@@ -26,6 +26,22 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     }
   },
 
+  attachRepoToProject: async (projectId, path) => {
+    // Errors propagate to the Repositories section for inline display.
+    const ws = await api.attachRepoToProject(projectId, path);
+    set({ workspace: ws });
+  },
+
+  detachRepoFromProject: async (projectId, path) => {
+    const ws = await api.detachRepoFromProject(projectId, path);
+    set({ workspace: ws });
+  },
+
+  setRepoLabel: async (path, label) => {
+    const ws = await api.setRepoLabel(path, label);
+    set({ workspace: ws });
+  },
+
   renameProject: async (projectId, name) => {
     // Errors propagate to the modal for inline display.
     const ws = await api.renameProject(projectId, name);
