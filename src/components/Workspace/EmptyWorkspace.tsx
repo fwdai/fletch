@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
@@ -56,14 +56,18 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   // Kickoff mode: a quick single agent, or a multi-step pipeline. The toggle
   // sits at the top of the page and swaps the whole block — it never gates the
   // quick path. It defaults to the project's remembered choice (a suggestion),
-  // and remembers a change for next time.
+  // and remembers a change for next time. The remembered mode loads async — a
+  // pick made before it resolves wins (the load must never flip the toggle
+  // back under the user's cursor); a project switch re-arms the default.
   const [mode, setMode] = useState<ComposerMode>("agent");
   const [defaultWorkflowId, setDefaultWorkflowId] = useState<string | null>(null);
+  const modePicked = useRef(false);
   useEffect(() => {
+    modePicked.current = false;
     let cancelled = false;
     void loadPipelinePrefs(projectId).then((prefs) => {
       if (cancelled) return;
-      setMode(prefs.mode);
+      if (!modePicked.current) setMode(prefs.mode);
       setDefaultWorkflowId(prefs.defaultWorkflowId);
     });
     return () => {
@@ -71,6 +75,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
     };
   }, [projectId]);
   const pickMode = (next: ComposerMode) => {
+    modePicked.current = true;
     setMode(next);
     rememberComposerMode(projectId, next);
   };

@@ -132,9 +132,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       baseSha = await api.agentHeadSha(agentId);
     } catch (e) {
-      // A never-committed checkout still promotes — the launch resolves HEAD in
-      // the source repo instead (base_sha left empty).
-      console.error("agentHeadSha failed", e);
+      // The whole point of promoting is forking at the session's working
+      // commit; a checkout whose HEAD can't be resolved must not silently
+      // launch from the source repo's HEAD instead. Surface and abort.
+      get().setLastError(
+        `Promote failed: couldn't resolve the session's HEAD commit (${e}). ` +
+          "The checkout may be broken — you can still create a workflow manually.",
+      );
+      return;
     }
     set({
       promoteSeed: {

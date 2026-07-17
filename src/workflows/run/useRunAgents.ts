@@ -44,7 +44,12 @@ export function useRunAgents(runId: string, enabled: boolean): AgentRecord[] {
 
     return () => {
       cancelled = true;
-      if (pending.current) clearTimeout(pending.current);
+      if (pending.current) {
+        clearTimeout(pending.current);
+        // Disarm, not just cancel — a truthy ref would make the next mount's
+        // schedule() no-op forever, freezing rows on their initial fetch.
+        pending.current = null;
+      }
       void offEvent.then((f) => f());
       void offRun.then((f) => f());
     };
