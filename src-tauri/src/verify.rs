@@ -62,12 +62,9 @@ impl VerificationReport {
     /// by a failed setup. `Skipped` (no command resolved) counts as clean —
     /// there was nothing to run, not a failure.
     pub fn passed(&self) -> bool {
-        self.checks.iter().all(|c| {
-            matches!(
-                c.outcome,
-                CheckOutcome::Passed | CheckOutcome::Skipped
-            )
-        })
+        self.checks
+            .iter()
+            .all(|c| matches!(c.outcome, CheckOutcome::Passed | CheckOutcome::Skipped))
     }
 
     /// The check with the given `name` (`"install"` | `"test"` | `"lint"`).
@@ -201,8 +198,7 @@ impl Verifier {
             if already {
                 checks.push(passed_cached("install", setup));
             } else {
-                let (outcome, duration_ms, tail) =
-                    self.run_check(worktree, "install", setup).await;
+                let (outcome, duration_ms, tail) = self.run_check(worktree, "install", setup).await;
                 if matches!(outcome, CheckOutcome::Passed) {
                     self.setup_done
                         .lock()
@@ -557,7 +553,11 @@ mod tests {
     #[test]
     fn resolve_lint_override_wins() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "package.json", r#"{"scripts":{"lint":"eslint"}}"#);
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"scripts":{"lint":"eslint"}}"#,
+        );
         let r = resolve(dir.path(), &None, &None, &Some("biome check".into()));
         assert_eq!(r.lint.as_deref(), Some("biome check"));
     }
@@ -565,7 +565,11 @@ mod tests {
     #[test]
     fn resolve_no_lint_row_is_none() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "package.json", r#"{"scripts":{"test":"vitest"}}"#);
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"scripts":{"test":"vitest"}}"#,
+        );
         let r = resolve(dir.path(), &None, &None, &None);
         assert!(r.lint.is_none());
     }
@@ -714,6 +718,9 @@ mod tests {
 
     #[test]
     fn tail_lines_shorter_than_n_is_whole() {
-        assert_eq!(tail_lines("a\nb", 100), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            tail_lines("a\nb", 100),
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 }

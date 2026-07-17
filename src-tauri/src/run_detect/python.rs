@@ -115,10 +115,16 @@ impl RunDetector for PythonDetector {
             ));
         }
 
-        // lint: only when a linter is a declared dependency (conservative —
-        // no inventing a command the project may not have). Ruff's canonical
-        // invocation is unambiguous.
-        if has_dep("ruff") {
+        // lint: only when Ruff is a declared *dependency* (conservative — no
+        // inventing a command the project may not have installed). A bare
+        // `[tool.ruff]` config table means the project is configured for Ruff
+        // but doesn't itself install the executable, so a line that is a TOML
+        // section header is not treated as a dependency — otherwise verification
+        // would run `ruff check .` and fail where Ruff isn't on PATH.
+        let ruff_dependency = deps_text
+            .lines()
+            .any(|l| l.contains("ruff") && !l.trim_start().starts_with('['));
+        if ruff_dependency {
             rows.push(DetectedRow::new(
                 "lint",
                 RowGroup::Scripts,
@@ -229,6 +235,28 @@ mod tests {
     fn ruff_dependency_yields_lint_row() {
         let cfg = detect(&[("requirements.txt", "ruff\n")]).unwrap();
         assert_eq!(val(&cfg, "lint"), "ruff check .");
+    }
+
+    #[test]
+    fn ruff_poetry_dependency_yields_lint_row() {
+        let cfg = detect(&[(
+            "pyproject.toml",
+            "[tool.poetry.dependencies]\nruff = \"^0.4\"\n",
+        )])
+        .unwrap();
+        assert_eq!(val(&cfg, "lint"), "ruff check .");
+    }
+
+    #[test]
+    fn ruff_config_section_alone_omits_lint_row() {
+        // `[tool.ruff]` configures Ruff but doesn't install it; verification
+        // must not assume the executable is present.
+        let cfg = detect(&[(
+            "pyproject.toml",
+            "[project]\nname = \"x\"\n\n[tool.ruff]\nline-length = 100\n",
+        )])
+        .unwrap();
+        assert!(cfg.rows.iter().all(|r| r.id != "lint"));
     }
 
     #[test]

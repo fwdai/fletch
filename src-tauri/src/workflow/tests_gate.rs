@@ -95,8 +95,12 @@ fn map_tests_outcome(report: &VerificationReport) -> TestsOutcome {
     match report.check("test") {
         Some(t) => match t.outcome {
             CheckOutcome::Passed => TestsOutcome::Passed,
-            CheckOutcome::Failed => TestsOutcome::Failed { tail: join(&t.tail) },
-            CheckOutcome::TimedOut => TestsOutcome::TimedOut { tail: join(&t.tail) },
+            CheckOutcome::Failed => TestsOutcome::Failed {
+                tail: join(&t.tail),
+            },
+            CheckOutcome::TimedOut => TestsOutcome::TimedOut {
+                tail: join(&t.tail),
+            },
             // Install was clean above, so a `SetupFailed` test here can only mean
             // an unresolved prerequisite; treat conservatively as no command.
             CheckOutcome::SetupFailed | CheckOutcome::Skipped => TestsOutcome::NoCommand,
@@ -166,7 +170,11 @@ mod tests {
     fn install_timeout_maps_to_setup_failed() {
         let report = VerificationReport {
             checks: vec![
-                check("install", CheckOutcome::TimedOut, &["setup command exceeded"]),
+                check(
+                    "install",
+                    CheckOutcome::TimedOut,
+                    &["setup command exceeded"],
+                ),
                 check("test", CheckOutcome::SetupFailed, &[]),
             ],
         };
