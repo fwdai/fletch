@@ -423,6 +423,23 @@ impl Supervisor {
         self.workspace.remove_workspace_repo(&repo_path)
     }
 
+    pub fn attach_repo_to_project(
+        &self,
+        project_id: &str,
+        repo_path: PathBuf,
+    ) -> Result<Workspace> {
+        self.workspace.attach_repo_to_project(project_id, repo_path)
+    }
+
+    pub fn detach_repo_from_project(
+        &self,
+        project_id: &str,
+        repo_path: PathBuf,
+    ) -> Result<Workspace> {
+        self.workspace
+            .detach_repo_from_project(project_id, &repo_path)
+    }
+
     pub fn rename_project(&self, project_id: &str, name: &str) -> Result<Workspace> {
         self.workspace.rename_project(project_id, name)
     }

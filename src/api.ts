@@ -514,6 +514,13 @@ export const api = {
   addWorkspaceRepo: (repoPath: string) => invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>
     invoke<Workspace>("remove_workspace_repo", { repoPath }),
+  /** Attach a repo to an existing project (multi-repo projects). */
+  attachRepoToProject: (projectId: string, repoPath: string) =>
+    invoke<Workspace>("attach_repo_to_project", { projectId, repoPath }),
+  /** Detach a repo from a project. Rejects the last repo and repos still
+   *  referenced by agent checkouts (live or archived). */
+  detachRepoFromProject: (projectId: string, repoPath: string) =>
+    invoke<Workspace>("detach_repo_from_project", { projectId, repoPath }),
   /** Set a project's custom display name (independent of its folder). */
   renameProject: (projectId: string, name: string) =>
     invoke<Workspace>("rename_project", { projectId, name }),

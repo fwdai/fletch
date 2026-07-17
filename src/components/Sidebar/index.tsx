@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentRecord, WfRun } from "@/api";
+import type { AgentRecord, ProjectRef, WfRun } from "@/api";
 import { Icon } from "@/components/Icon";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
 import type { DraftAgent } from "@/store";
@@ -12,48 +12,88 @@ import { SidebarFooter } from "./SidebarFooter";
 import { SidebarHeader } from "./SidebarHeader";
 import { useProjectReorder } from "./useProjectReorder";
 
-interface RepoGroup {
-  repoPath: string;
+interface ProjectGroupData {
+  /** Stable group id: the project_id, or the repo path for repos that aren't
+   *  pinned (an agent whose repo was removed from the sidebar). */
+  key: string;
+  /** Project display name (folder basename fallback for unpinned repos). */
+  label: string;
+  /** All repos attached to the project, in creation order. */
+  repoPaths: string[];
+  /** The project's first repo — the drag/order key, draft target, and
+   *  settings key, so single-repo projects behave exactly as before. */
+  primaryPath: string;
   agents: AgentRecord[];
   drafts: DraftAgent[];
   runs: WfRun[];
   pinned: boolean;
 }
 
-/** Build groups from (a) pinned repos, (b) any repo referenced by an
- *  existing agent, (c) any repo referenced by a draft, (d) any workflow run. */
-function groupByRepo(
-  pinned: string[],
+/** Build one group per project from (a) pinned repos (each carries its
+ *  project via ProjectRef; a multi-repo project folds into one group),
+ *  (b) any repo referenced by an existing agent, draft, or workflow run —
+ *  those resolve to their project's group, or a path-keyed fallback group
+ *  when the repo isn't pinned. */
+function groupByProject(
+  refs: readonly ProjectRef[],
   agents: readonly AgentRecord[],
   drafts: readonly DraftAgent[],
   runs: readonly WfRun[],
-): RepoGroup[] {
-  const map = new Map<string, RepoGroup>();
-  const ensure = (p: string, pinnedFlag = false): RepoGroup => {
-    let g = map.get(p);
+): ProjectGroupData[] {
+  const groups = new Map<string, ProjectGroupData>();
+  const byPath = new Map<string, ProjectGroupData>();
+  for (const ref of refs) {
+    const key = ref.project_id || ref.path;
+    let g = groups.get(key);
     if (!g) {
-      g = { repoPath: p, agents: [], drafts: [], runs: [], pinned: pinnedFlag };
-      map.set(p, g);
+      g = {
+        key,
+        label: ref.name,
+        repoPaths: [],
+        primaryPath: ref.path,
+        agents: [],
+        drafts: [],
+        runs: [],
+        pinned: true,
+      };
+      groups.set(key, g);
+    }
+    g.repoPaths.push(ref.path);
+    byPath.set(ref.path, g);
+  }
+  const ensure = (p: string): ProjectGroupData => {
+    let g = byPath.get(p);
+    if (!g) {
+      g = {
+        key: p,
+        label: basename(p),
+        repoPaths: [p],
+        primaryPath: p,
+        agents: [],
+        drafts: [],
+        runs: [],
+        pinned: false,
+      };
+      groups.set(p, g);
+      byPath.set(p, g);
     }
     return g;
   };
-  for (const p of pinned) ensure(p, true);
   for (const a of agents) {
     const primary = a.repos[0]?.repo_path;
     if (primary) ensure(primary).agents.push(a);
   }
   for (const d of drafts) ensure(d.repoPath).drafts.push(d);
   for (const r of runs) ensure(r.repo_path).runs.push(r);
-  return Array.from(map.values());
+  return Array.from(groups.values());
 }
 
-function applySearch(
-  groups: RepoGroup[],
-  q: string,
-  labelOf: (path: string) => string,
-): RepoGroup[] {
+function applySearch(groups: ProjectGroupData[], q: string): ProjectGroupData[] {
   if (!q.trim()) return groups;
   const needle = q.toLowerCase();
+  const groupMatches = (g: ProjectGroupData) =>
+    g.label.toLowerCase().includes(needle) ||
+    g.repoPaths.some((p) => basename(p).toLowerCase().includes(needle));
   return groups
     .map((g) => ({
       ...g,
@@ -64,15 +104,11 @@ function applySearch(
           a.repos[0]?.branch?.toLowerCase().includes(needle),
       ),
       drafts: g.drafts.filter((d) => d.name.toLowerCase().includes(needle)),
-      // Run rows render their own body; keep them when the repo matches.
-      runs: labelOf(g.repoPath).toLowerCase().includes(needle) ? g.runs : [],
+      // Run rows render their own body; keep them when the project matches.
+      runs: groupMatches(g) ? g.runs : [],
     }))
     .filter(
-      (g) =>
-        g.agents.length > 0 ||
-        g.drafts.length > 0 ||
-        g.runs.length > 0 ||
-        labelOf(g.repoPath).toLowerCase().includes(needle),
+      (g) => g.agents.length > 0 || g.drafts.length > 0 || g.runs.length > 0 || groupMatches(g),
     );
 }
 
@@ -117,22 +153,18 @@ export function Sidebar() {
   );
   const runs = useRuns();
   const groups = useMemo(() => {
-    const built = groupByRepo(workspace?.repos ?? [], liveAgents, drafts, runs);
-    const order = sortPaths(built.map((g) => g.repoPath));
-    const byPath = new Map(built.map((g) => [g.repoPath, g]));
-    return order.map((p) => byPath.get(p)).filter((g): g is RepoGroup => g !== undefined);
-  }, [workspace?.repos, liveAgents, drafts, runs, sortPaths]);
-  // Custom display name per pinned repo. Groups derived only from an agent's
-  // repo (never pinned) have no entry and fall back to the folder basename.
-  const labelOf = useMemo(() => {
-    const byPath = new Map((workspace?.projects ?? []).map((p) => [p.path, p.name]));
-    return (path: string) => byPath.get(path) ?? basename(path);
-  }, [workspace?.projects]);
-  const filtered = useMemo(() => applySearch(groups, query, labelOf), [groups, query, labelOf]);
+    const built = groupByProject(workspace?.projects ?? [], liveAgents, drafts, runs);
+    // Manual ordering is keyed by each project's primary repo path, so orders
+    // saved before multi-repo grouping keep working unchanged.
+    const order = sortPaths(built.map((g) => g.primaryPath));
+    const byPath = new Map(built.map((g) => [g.primaryPath, g]));
+    return order.map((p) => byPath.get(p)).filter((g): g is ProjectGroupData => g !== undefined);
+  }, [workspace?.projects, liveAgents, drafts, runs, sortPaths]);
+  const filtered = useMemo(() => applySearch(groups, query), [groups, query]);
 
   // Reordering is only meaningful over the full, unfiltered list.
   const reorderable = !query.trim();
-  const orderedPaths = useMemo(() => groups.map((g) => g.repoPath), [groups]);
+  const orderedPaths = useMemo(() => groups.map((g) => g.primaryPath), [groups]);
 
   // Begin a pointer-driven reorder. `markDragged` lets the group swallow the
   // trailing click so a real drag doesn't also toggle it open/closed. The order
@@ -198,11 +230,11 @@ export function Sidebar() {
     setOpenMap((prev) => {
       const next = { ...prev };
       for (const g of groups) {
-        if (g.agents.some((a) => a.id === selectedAgentId)) next[g.repoPath] = true;
-        if (g.drafts.some((d) => d.id === activeDraftId)) next[g.repoPath] = true;
-        if (g.runs.some((r) => r.id === selectedRunId)) next[g.repoPath] = true;
-        if (!(g.repoPath in next)) {
-          next[g.repoPath] = g.agents.length > 0 || g.drafts.length > 0 || g.runs.length > 0;
+        if (g.agents.some((a) => a.id === selectedAgentId)) next[g.key] = true;
+        if (g.drafts.some((d) => d.id === activeDraftId)) next[g.key] = true;
+        if (g.runs.some((r) => r.id === selectedRunId)) next[g.key] = true;
+        if (!(g.key in next)) {
+          next[g.key] = g.agents.length > 0 || g.drafts.length > 0 || g.runs.length > 0;
         }
       }
       return next;
@@ -230,27 +262,29 @@ export function Sidebar() {
             </div>
           ) : (
             filtered.map((g) => {
-              const isOver = reorderable && overPath === g.repoPath && dragPath !== g.repoPath;
+              const isOver =
+                reorderable && overPath === g.primaryPath && dragPath !== g.primaryPath;
               const dropAfter =
                 isOver &&
                 dragPath != null &&
-                orderedPaths.indexOf(dragPath) < orderedPaths.indexOf(g.repoPath);
+                orderedPaths.indexOf(dragPath) < orderedPaths.indexOf(g.primaryPath);
               return (
                 <ProjectGroup
-                  key={g.repoPath}
-                  label={labelOf(g.repoPath)}
-                  repoPath={g.repoPath}
+                  key={g.key}
+                  label={g.label}
+                  repoPath={g.primaryPath}
+                  repoPaths={g.repoPaths}
                   agents={g.agents}
                   drafts={g.drafts}
                   runs={g.runs}
-                  open={openMap[g.repoPath] ?? false}
-                  onToggle={() => setOpenMap((m) => ({ ...m, [g.repoPath]: !m[g.repoPath] }))}
+                  open={openMap[g.key] ?? false}
+                  onToggle={() => setOpenMap((m) => ({ ...m, [g.key]: !m[g.key] }))}
                   reorderable={reorderable}
-                  dragging={dragPath === g.repoPath}
+                  dragging={dragPath === g.primaryPath}
                   dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}
                   onReorderPointerDown={
                     reorderable
-                      ? (e, markDragged) => startReorder(g.repoPath, e, markDragged)
+                      ? (e, markDragged) => startReorder(g.primaryPath, e, markDragged)
                       : undefined
                   }
                 />

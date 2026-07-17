@@ -9,6 +9,7 @@ import { DeleteSection } from "./DeleteSection";
 import { EnvVarsSection } from "./EnvVarsSection";
 import { GeneralSection } from "./GeneralSection";
 import { ProjectPulse } from "./ProjectPulse";
+import { RepositoriesSection } from "./RepositoriesSection";
 import { RunEnvSection } from "./RunEnvSection";
 
 interface Loaded {
@@ -100,6 +101,7 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
             <div className="ps-sections">
               <ProjectPulse projectId={loaded.projectId} />
               <GeneralSection projectId={loaded.projectId} currentName={name} repoPath={repoPath} />
+              <RepositoriesSection projectId={loaded.projectId} />
               <RunEnvSection
                 projectId={loaded.projectId}
                 rows={loaded.rows}

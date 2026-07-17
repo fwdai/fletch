@@ -7,10 +7,14 @@ import { RunRow } from "@/workflows/run/RunRow";
 import { AgentRow } from "./AgentRow";
 
 interface Props {
-  /** Display name (basename of repo path). */
+  /** Project display name. */
   label: string;
-  /** Full repo path — used as the group's stable id. */
+  /** The project's primary repo path — the drag handle id and the target for
+   *  new drafts and the settings modal. */
   repoPath: string;
+  /** All repos attached to the project (equals [repoPath] for single-repo
+   *  projects) — shown in the header tooltip. */
+  repoPaths: string[];
   agents: AgentRecord[];
   drafts: DraftAgent[];
   /** Workflow runs grouped under this repo. */
@@ -33,6 +37,7 @@ interface Props {
 export function ProjectGroup({
   label,
   repoPath,
+  repoPaths,
   agents,
   drafts,
   runs,
@@ -91,7 +96,7 @@ export function ProjectGroup({
           }
           onToggle();
         }}
-        title={repoPath}
+        title={repoPaths.join("\n")}
       >
         <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>

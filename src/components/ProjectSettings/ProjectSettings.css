@@ -327,6 +327,58 @@
   border-radius: var(--r-sm);
 }
 
+/* repositories — the repos attached to this project */
+.ps-repo-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+}
+.ps-repo-row {
+  gap: 9px;
+  padding: 8px 11px;
+  border-top: 1px solid var(--bd-soft);
+  color: var(--fg-1);
+}
+.ps-repo-row:first-child {
+  border-top: none;
+}
+.ps-repo-path {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-2);
+}
+.ps-repo-primary {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  color: var(--fg-3);
+  border: 1px solid var(--bd-soft);
+  border-radius: 999px;
+}
+.ps-repo-x {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  background: transparent;
+  border: 0;
+  color: var(--fg-3);
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+.ps-repo-x:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--danger);
+}
+.ps-repo-x:disabled {
+  opacity: 0.45;
+}
+.ps-repo-add {
+  margin-top: 10px;
+}
+
 /* environment variables — the opt-in sandbox env membrane. No `overflow` here:
  * clipping would cut off the value chip's tooltips at the list boundary. */
 .ev-list {

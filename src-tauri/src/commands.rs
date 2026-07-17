@@ -172,6 +172,32 @@ pub fn remove_workspace_repo(
     supervisor.remove_workspace_repo(PathBuf::from(repo_path))
 }
 
+/// Attach a repo to an existing project (multi-repo projects). A non-git
+/// folder is initialized first, mirroring `add_workspace_repo`, so any local
+/// folder can join a project.
+#[tauri::command]
+pub async fn attach_repo_to_project(
+    supervisor: State<'_, Arc<Supervisor>>,
+    project_id: String,
+    repo_path: String,
+) -> Result<Workspace> {
+    let sup = supervisor.inner().clone();
+    let path = PathBuf::from(repo_path);
+    new_project::ensure_git_repo(&path).await?;
+    sup.attach_repo_to_project(&project_id, path)
+}
+
+/// Detach a repo from a project. Rejects the project's last repo and any repo
+/// still referenced by an agent checkout (live or archived).
+#[tauri::command]
+pub fn detach_repo_from_project(
+    supervisor: State<'_, Arc<Supervisor>>,
+    project_id: String,
+    repo_path: String,
+) -> Result<Workspace> {
+    supervisor.detach_repo_from_project(&project_id, PathBuf::from(repo_path))
+}
+
 /// Rename a project — a custom display label independent of its folder name.
 /// The sidebar and Project Settings header show this instead of the basename.
 #[tauri::command]

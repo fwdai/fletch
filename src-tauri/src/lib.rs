@@ -1155,6 +1155,8 @@ pub fn run() {
             commands::get_agent_diff_stats,
             commands::add_workspace_repo,
             commands::remove_workspace_repo,
+            commands::attach_repo_to_project,
+            commands::detach_repo_from_project,
             commands::rename_project,
             commands::delete_project,
             commands::project_has_running_agents,

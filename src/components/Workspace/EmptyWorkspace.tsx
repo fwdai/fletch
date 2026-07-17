@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
-import { ProjectPicker } from "@/components/Composer/ProjectPicker";
+import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import type { DraftAgent } from "@/store";
@@ -20,7 +20,17 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const updateDraft = useAppStore((s) => s.updateDraft);
   const setNewDraftSelection = useAppStore((s) => s.setNewDraftSelection);
   const setLastRepoPath = useAppStore((s) => s.setLastRepoPath);
-  const repos = useAppStore((s) => s.workspace?.repos ?? []);
+  const projectRefs = useAppStore((s) => s.workspace?.projects ?? []);
+  // One picker entry per project: a multi-repo project shows once, valued at
+  // its primary (first) repo, which is where the agent spawns.
+  const projectOptions = useMemo(() => {
+    const seen = new Map<string, ProjectOption>();
+    for (const ref of projectRefs) {
+      const key = ref.project_id || ref.path;
+      if (!seen.has(key)) seen.set(key, { path: ref.path, label: ref.name });
+    }
+    return [...seen.values()];
+  }, [projectRefs]);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const runLocalCommand = useAppStore((s) => s.runLocalCommand);
@@ -164,7 +174,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             <div className="empty-meta flex-center">
               <ProjectPicker
                 value={draft.repoPath}
-                repos={repos}
+                projects={projectOptions}
                 onChange={(repoPath) => {
                   // Switching projects: the previously chosen base branch may not
                   // exist in the new repo, so reset to main.
