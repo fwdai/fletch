@@ -82,6 +82,11 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
       const pr = s.prStates[key] ?? null;
       const checks = s.prChecks[key] ?? null;
       const base = git?.parent_branch || "main";
+      // Trigger builder scoped to this repo: a secondary adds `repo="<subdir>"`
+      // so the agent works in that sibling checkout, not the primary (mirrors
+      // useGitActions' trigger).
+      const trigger = (name: string, params?: Record<string, string>) =>
+        appActionMessage(name, subdir ? { ...params, repo: subdir } : params);
       const state = deriveState(git, pr);
       switch (state) {
         case "changes": {
@@ -91,20 +96,20 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
             pr?.state === "open" && s.gitCommitAction === "agent-commit-pr"
               ? "agent-commit-push"
               : s.gitCommitAction;
-          const { kind, trigger } = commitDelegation(mode);
+          const { kind, trigger: name } = commitDelegation(mode);
           delegateGitAction(
             agentId,
             kind,
-            appActionMessage(trigger, kind === "commit-pr" ? { base } : undefined),
+            trigger(name, kind === "commit-pr" ? { base } : undefined),
             subdir,
           );
           return;
         }
         case "pushed":
-          delegateGitAction(agentId, "open-pr", appActionMessage("open-pr", { base }), subdir);
+          delegateGitAction(agentId, "open-pr", trigger("open-pr", { base }), subdir);
           return;
         case "conflicts":
-          delegateGitAction(agentId, "resolve", appActionMessage("resolve-conflicts"), subdir);
+          delegateGitAction(agentId, "resolve", trigger("resolve-conflicts"), subdir);
           return;
         case "pr-open": {
           const gate = describeMergeGate(checks?.merge_state ?? null, {
@@ -119,20 +124,13 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
             delegateGitAction(
               agentId,
               "fix-checks",
-              appActionMessage("fix-checks", {
-                failing: (checks?.required_failing ?? []).join(", "),
-              }),
+              trigger("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") }),
               subdir,
             );
             return;
           }
           if (gate.needsUpdate) {
-            delegateGitAction(
-              agentId,
-              "update-branch",
-              appActionMessage("update-branch", { base }),
-              subdir,
-            );
+            delegateGitAction(agentId, "update-branch", trigger("update-branch", { base }), subdir);
             return;
           }
           break;
