@@ -137,6 +137,19 @@ pub async fn get_agent_diff_stats(
     Ok(stats)
 }
 
+/// The current HEAD commit SHA of an agent's checkout (primary repo when
+/// `subdir` is omitted). Powers "promote to workflow", where the run forks from
+/// the promoted session's exact working commit rather than a branch tip.
+#[tauri::command]
+pub async fn agent_head_sha(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<String> {
+    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
+    git::rev_parse(&checkout, "HEAD").await
+}
+
 /// Allocate a fresh name from the shared place pool for a draft agent.
 /// Frontend passes the names already taken (real agents + other drafts) so
 /// the picker avoids collisions.

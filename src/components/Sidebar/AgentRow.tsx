@@ -75,6 +75,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const pending = useAppStore((s) => s.pendingToolUse[agent.id]);
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
+  const promoteAgentToWorkflow = useAppStore((s) => s.promoteAgentToWorkflow);
   const now = useMinuteClock();
   const [statsOpen, setStatsOpen] = useState(false);
 
@@ -142,6 +143,10 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
     e.stopPropagation();
     archive(agent.id);
   };
+  const onPromote = (e: MouseEvent) => {
+    e.stopPropagation();
+    void promoteAgentToWorkflow(agent.id);
+  };
 
   return (
     <div
@@ -188,6 +193,14 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             {agent.status === "error" && <Badge variant="err">error</Badge>}
           </span>
           <span className="ag-actions">
+            <button
+              className="ag-act iflex-center tip"
+              data-tip="Promote to workflow"
+              onClick={onPromote}
+              aria-label="Promote to workflow"
+            >
+              <Icon name="combine" size={11} />
+            </button>
             {stoppable && !awaiting && (
               <button
                 className="ag-act iflex-center tip"

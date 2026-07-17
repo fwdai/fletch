@@ -1413,6 +1413,7 @@ pub fn run() {
             commands::get_workspace,
             commands::wf_run_agents,
             commands::get_agent_diff_stats,
+            commands::agent_head_sha,
             commands::add_workspace_repo,
             commands::remove_workspace_repo,
             commands::attach_repo_to_project,
