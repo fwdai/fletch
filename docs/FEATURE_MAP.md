@@ -394,8 +394,8 @@ token in your macOS Keychain and uses it for GitHub REST/GraphQL calls and as th
 push/fetch over HTTPS. Read operations degrade gracefully when you're not connected or the origin isn't
 GitHub; mutating operations tell you to connect. Signing in with GitHub (or Google) is also offered at
 onboarding for account identity and is optional. (Verified against code: `oauth.rs` states the token
-"replac[es] the `gh` CLI dependency"; no `gh` invocation exists in the backend. The app README still
-describes a `gh` requirement and remains stale.)
+"replac[es] the `gh` CLI dependency"; no `gh` invocation exists in the backend. The README's Quick
+start documents the device-code flow and states no GitHub CLI is involved.)
 - **Docs status:** `documented` — `guides/connecting-github.md` rewritten to the native device-flow/Keychain/broker story; `getting-started/installation.md`, `getting-started/first-repository.md`, `reference/faq.md`, and `reference/privacy.md` updated to match.
 - **Source:** `src-tauri/src/github/{mod,client}.rs`, `src-tauri/src/oauth.rs`, `src-tauri/src/secrets.rs`, `src/components/GithubConnect/index.tsx`, `src/util/useGithubConnect.ts`
 
@@ -508,7 +508,7 @@ popover. Usage is aggregated per day in the local database.
 ### Settings screens
 Settings come in two surfaces: a quick popover (⌘,) for appearance, panel/composer toggles, and provider
 enable switches, and a full-screen Settings with sections **Account** (profile, GitHub connection,
-developer-tools readiness), **General** (theme/accent/density, side-panel and composer toggles,
+developer-tools readiness), **General** (theme/accent, side-panel and composer toggles,
 notifications, sandbox engine + container auth, diagnostics/telemetry, reveal logs), **Providers**
 (enable/version/path/override/re-scan), **Custom agents**, **Workflows**, **Skills**, **Tools (MCP)**,
 **Experimental** (native terminal view; advanced Docker image/memory/CPU), and, in development builds
@@ -623,7 +623,7 @@ developer-tools readiness UI.
 3. **GitHub via native OAuth** — verified in code (`oauth.rs`: the token "replac[es] the `gh` CLI
    dependency"; no `gh` invocation anywhere in the backend) and closed: `connecting-github.md`
    rewritten; `installation.md`, `first-repository.md`, `pull-requests-and-ci.md`, `faq.md`, and
-   `privacy.md` updated. **The app README still claims a `gh` requirement — fix separately.**
+   `privacy.md` updated. The app README now documents the device-code flow too (no GitHub CLI).
 
 4. **Fork** — closed with `guides/forking.md`.
 
