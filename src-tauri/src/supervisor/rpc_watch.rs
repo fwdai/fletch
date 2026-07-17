@@ -144,6 +144,13 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                 }
             }
             sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+            // The agent may now hold PRs in two or more repos — cross-link the
+            // set in each PR's body (best-effort, in the background).
+            let workspace = sup.workspace.clone();
+            let id = agent_id.to_string();
+            tauri::async_runtime::spawn(async move {
+                super::sync_pr_set_links(&workspace, &id).await;
+            });
         }
         rpc::RpcEvent::Named { name, payload } if name == rpc::git::EVENT_ACTION_DONE => {
             // Authoritative "the agent performed a git mutation this

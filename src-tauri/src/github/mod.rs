@@ -393,6 +393,66 @@ pub async fn pr_view_number(
     Ok(Some(parse_pr_state(node)))
 }
 
+/// Fetch a PR's current body text by number. `Ok(None)` when the PR can't be
+/// found (or no token / non-GitHub origin). Same slug resolution as
+/// [`pr_view_number`] — the source repo backs up a broken checkout.
+pub(crate) async fn pr_body(
+    checkout: &Path,
+    source_repo: Option<&Path>,
+    number: u32,
+) -> Result<Option<String>> {
+    let Some((owner, repo)) = resolve_slug(checkout, source_repo).await else {
+        return Ok(None);
+    };
+    let query = r#"query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){ pullRequest(number:$number){ body } }
+}"#;
+    let Some(data) = graphql_opt(
+        query,
+        json!({ "owner": owner, "repo": repo, "number": number }),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let node = &data["repository"]["pullRequest"];
+    if node.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(node["body"].as_str().unwrap_or_default().to_string()))
+}
+
+/// Overwrite a PR's body by number (REST PATCH). Used by the multi-repo
+/// PR-set cross-linker; callers are expected to have fetched the current body
+/// via [`pr_body`] and edited it (sentinel replacement, never blind append).
+pub(crate) async fn pr_update_body(
+    checkout: &Path,
+    source_repo: Option<&Path>,
+    number: u32,
+    body: &str,
+) -> Result<()> {
+    let Some((owner, repo)) = resolve_slug(checkout, source_repo).await else {
+        return Err(Error::Gh(
+            "this repository's `origin` remote is not a GitHub repository".into(),
+        ));
+    };
+    let client = client::Client::new()?;
+    let (status, resp) = client
+        .rest(
+            reqwest::Method::PATCH,
+            &format!("/repos/{owner}/{repo}/pulls/{number}"),
+            Some(&json!({ "body": body })),
+        )
+        .await?;
+    if !status.is_success() {
+        return Err(Error::Gh(format!(
+            "pr body update failed: {}",
+            detailed_rest_error(&resp)
+        )));
+    }
+    Ok(())
+}
+
 /// List open PRs for the repo at `checkout` (newest first), for the
 /// composer's "#" mention autocomplete. Empty when not connected.
 pub async fn pr_list(checkout: &Path, limit: u32) -> Result<Vec<PrSummary>> {

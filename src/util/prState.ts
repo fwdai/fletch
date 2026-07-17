@@ -5,8 +5,10 @@
 // already confirmed (especially a merged one) never renders as "no PR".
 
 import { useMemo } from "react";
-import type { PrState, PrStatus, TrackedRepo } from "@/api";
+import { useShallow } from "zustand/react/shallow";
+import type { AgentRecord, PrChecks, PrState, PrStatus, TrackedRepo } from "@/api";
 import { useAppStore } from "@/store";
+import { gitKey } from "@/store/git";
 
 const PR_STATUSES: readonly PrStatus[] = ["open", "merged", "closed"];
 
@@ -39,4 +41,32 @@ export function usePrState(agentId: string, repo?: TrackedRepo): PrState | null 
     (s) => repo ?? s.workspace?.agents.find((a) => a.id === agentId)?.repos[0],
   );
   return useMemo(() => live ?? prSnapshot(found), [live, found]);
+}
+
+/** One repo's PR within an agent's set, with its CI rollup (null until the
+ *  app-wide checks poll lands or when there's no rollup). */
+export interface AgentPr {
+  pr: PrState;
+  checks: PrChecks | null;
+  repo: TrackedRepo;
+}
+
+/** Every PR across an agent's repos, in repo order (primary first). Each repo
+ *  reads its own store entry — plain agent id for the primary, the suffixed
+ *  `gitKey` for secondaries, both fed by the app-wide bulk polls — with the
+ *  same live-else-snapshot fallback as `usePrState`, applied per repo (a
+ *  secondary never inherits the primary's snapshot). Repos without a PR drop
+ *  out, so a single-repo agent yields exactly the `usePrState` result. */
+export function useAgentPrs(agent: AgentRecord): AgentPr[] {
+  const keys = agent.repos.map((r, i) => gitKey(agent.id, i === 0 ? undefined : r.subdir));
+  const live = useAppStore(useShallow((s) => keys.map((k) => s.prStates[k] ?? null)));
+  const checks = useAppStore(useShallow((s) => keys.map((k) => s.prChecks[k] ?? null)));
+  return useMemo(
+    () =>
+      agent.repos.flatMap((repo, i) => {
+        const pr = live[i] ?? prSnapshot(repo);
+        return pr ? [{ pr, checks: checks[i], repo }] : [];
+      }),
+    [agent.repos, live, checks],
+  );
 }

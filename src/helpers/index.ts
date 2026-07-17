@@ -423,6 +423,16 @@ export function usedNames(workspace: Workspace | null, drafts: DraftAgent[]): Se
   return used;
 }
 
+/** Drop an agent's entries from a repo-scoped map: the plain `id` key (the
+ *  primary repo) plus any `id::subdir` composite keys a multi-repo agent's
+ *  per-repo fetches and bulk polls wrote (see `gitKey` in store/git). */
+function dropScopedEntries<T>(map: Record<string, T>, id: string): Record<string, T> {
+  const prefix = `${id}::`;
+  return Object.fromEntries(
+    Object.entries(map).filter(([key]) => key !== id && !key.startsWith(prefix)),
+  );
+}
+
 /** Strip an agent's entries from every ephemeral per-agent map, returning just
  *  the pruned maps as a state patch (the caller layers on workspace /
  *  selectedAgentId). Shared by discard and archive — dropping these is safe
@@ -434,11 +444,13 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   const { [id]: _busy, ...managedBusy } = state.managedBusy;
   const { [id]: _started, ...turnStartedAt } = state.turnStartedAt;
   const { [id]: _usage, ...usage } = state.usage;
-  const { [id]: _git, ...gitStates } = state.gitStates;
+  // The git/PR maps are repo-scoped: a multi-repo agent also holds
+  // `id::subdir` keys, which must not outlive it.
+  const gitStates = dropScopedEntries(state.gitStates, id);
+  const prStates = dropScopedEntries(state.prStates, id);
+  const prChecks = dropScopedEntries(state.prChecks, id);
+  const prComments = dropScopedEntries(state.prComments, id);
   const { [id]: _short, ...gitShortstats } = state.gitShortstats;
-  const { [id]: _pr, ...prStates } = state.prStates;
-  const { [id]: _checks, ...prChecks } = state.prChecks;
-  const { [id]: _comments, ...prComments } = state.prComments;
   const { [id]: _seed, ...composerSeeds } = state.composerSeeds;
   const { [id]: _draft, ...composerDrafts } = state.composerDrafts;
   const { [id]: _delegation, ...gitDelegations } = state.gitDelegations;

@@ -211,7 +211,10 @@ export interface GitState {
 
 /** One file in the checkout, as returned by `list_checkout_tree`.
  *  `status` is the single-letter git status vs the parent branch
- *  ("M" | "A" | "D" | "R"), or null when the file is unchanged. */
+ *  ("M" | "A" | "D" | "R"), or null when the file is unchanged.
+ *  Multi-repo agents get paths prefixed with the owning checkout's subdir
+ *  ("<subdir>/<rel>"); the file read/write commands resolve the same prefix
+ *  back, so the panel can pass these paths through unchanged. */
 export interface CheckoutFile {
   path: string;
   status: string | null;

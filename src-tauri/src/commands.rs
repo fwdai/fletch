@@ -724,6 +724,12 @@ pub async fn create_pr(
     // the next idle/push poll re-binds it via guarded discovery once the PR
     // shows OPEN — but the helper logs it so the gap is observable, not silent.
     crate::supervisor::persist_pr_snapshot(&supervisor.workspace, &agent_id, &repo.subdir, &pr);
+    // If the agent now has PRs in two or more repos, cross-link the whole set
+    // in each PR's body (best-effort, off the command's critical path).
+    let workspace = supervisor.workspace.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::supervisor::sync_pr_set_links(&workspace, &agent_id).await;
+    });
     Ok(pr)
 }
 
@@ -1016,10 +1022,14 @@ pub async fn get_all_shortstats(
     Ok(out)
 }
 
-/// App-wide background poll that refreshes PR state for every agent with a
-/// recorded PR, so the sidebar badge (and any open Git panel) reflects merges /
-/// closes / mergeability changes that happen on GitHub — without the user
-/// having to open the panel. Returns an `agent_id -> PrState | null` map.
+/// App-wide background poll that refreshes PR state for every repo with a
+/// recorded PR across every agent, so the sidebar badge (and any open Git
+/// panel) reflects merges / closes / mergeability changes that happen on
+/// GitHub — without the user having to open the panel. Returns a map keyed by
+/// the frontend's `gitKey` convention: the agent's primary repo under the
+/// plain agent id (what every existing consumer reads) and each secondary
+/// repo under `"{agent_id}::{subdir}"` — so a multi-repo agent's PR on a
+/// secondary repo reaches the sidebar too.
 ///
 /// Unlike the per-trigger `fetch_and_emit_pr_state` path (which emits an event),
 /// this returns the states directly so the caller folds them into the store
@@ -1027,21 +1037,17 @@ pub async fn get_all_shortstats(
 /// routing through `pr:state_changed` would drop results emitted before the
 /// store's listener finishes attaching during `init()`.
 ///
-/// Only agents with a known PR *number* are polled: discovery of a brand-new PR
+/// Only repos with a known PR *number* are polled: discovery of a brand-new PR
 /// still rides the existing turn-end / push / git-action triggers, so this poll
-/// never fans a `gh` call out to an agent that has no PR. Resolution goes
+/// never fans a `gh` call out to a repo that has no PR. Resolution goes
 /// through `resolve_all_pr_states`, which collapses every live lookup into a
-/// single batched GraphQL query rather than a per-agent fan-out: by number
+/// single batched GraphQL query rather than a per-repo fan-out: by number
 /// (never branch), served straight from the persisted snapshot for merged PRs
 /// (and closed ones except on the slow re-verify tick), and degrading to that
-/// snapshot when GitHub is unreachable or a rate-limit backoff is active. An
-/// agent that resolves to nothing is *omitted* from the map — not written as
+/// snapshot when GitHub is unreachable or a rate-limit backoff is active. A
+/// repo that resolves to nothing is *omitted* from the map — not written as
 /// null — so the frontend merge keeps its last-known badge instead of wiping it
 /// (same contract as `refresh_all_pr_checks`).
-///
-/// Each agent's *first* repo is used, matching the rest of the PR subsystem
-/// (`get_pr_state`, `fetch_and_emit_pr_state`) and the one-PR-per-agent shape of
-/// the store's `prStates` map; multi-repo PR tracking is out of scope here.
 #[tauri::command]
 pub async fn refresh_all_pr_states(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -1065,15 +1071,16 @@ static PR_STATE_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// Re-verify closed PRs live on every Nth `refresh_all_pr_states` tick.
 const CLOSED_REVERIFY_EVERY: u64 = 6;
 
-/// Refresh CI checks for every agent with an open PR, so the sidebar can tint
-/// each PR pill pass/fail without opening the Git panel. Mirror of
-/// `refresh_all_pr_states`: skips archived agents and any without a PR, and
-/// collapses the lookups into a single batched GraphQL query rather than a
-/// per-agent fan-out. Best-effort: only a resolved rollup lands in the map
-/// (including "no checks configured"); a not-found/partial-error alias, a
-/// whole-batch failure, or an active rate-limit backoff omits the agent, so the
-/// frontend's merge keeps its last-known tint instead of wiping it — matching
-/// `fetchPrAux`'s contract.
+/// Refresh CI checks for every repo with an open PR across every agent, so the
+/// sidebar can tint each PR pill pass/fail without opening the Git panel.
+/// Mirror of `refresh_all_pr_states`, including its key shape (`gitKey`: plain
+/// agent id for the primary repo, `"{agent_id}::{subdir}"` for secondaries):
+/// skips archived agents and any repo without a PR, and collapses the lookups
+/// into a single batched GraphQL query rather than a per-repo fan-out.
+/// Best-effort: only a resolved rollup lands in the map (including "no checks
+/// configured"); a not-found/partial-error alias, a whole-batch failure, or an
+/// active rate-limit backoff omits the repo, so the frontend's merge keeps its
+/// last-known tint instead of wiping it — matching `fetchPrAux`'s contract.
 #[tauri::command]
 pub async fn refresh_all_pr_checks(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -1082,49 +1089,48 @@ pub async fn refresh_all_pr_checks(
         return Ok(Default::default());
     };
     // Paused for rate-limit backoff → return nothing so the frontend merge keeps
-    // every agent's last-known tint instead of wiping it.
+    // every repo's last-known tint instead of wiping it.
     if gh::client::is_backing_off() {
         return Ok(Default::default());
     }
 
-    // Gather one (agent, PR ref) per agent with a branch + PR number, resolving
+    // Gather one (key, PR ref) per repo with a branch + PR number, resolving
     // the slug via local git (the network cost is deferred to the single batched
-    // query below, not fanned out per agent).
-    let mut agent_ids: Vec<String> = Vec::new();
+    // query below, not fanned out per repo).
+    let mut keys: Vec<String> = Vec::new();
     let mut refs: Vec<gh::PrRef> = Vec::new();
     for agent in workspace.agents {
         if agent.archive.is_some() {
             continue;
         }
-        let Some(repo) = agent.repos.first() else {
-            continue;
-        };
-        let (Some(_branch), Some(number)) = (repo.branch.as_ref(), repo.pr_number) else {
-            continue;
-        };
-        let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
-            continue;
-        };
-        let Some((owner, repo_name)) = gh::resolve_slug(&checkout, Some(&repo.repo_path)).await
-        else {
-            continue;
-        };
-        agent_ids.push(agent.id.clone());
-        refs.push(gh::PrRef {
-            owner,
-            repo: repo_name,
-            number: number as u32,
-        });
+        for (i, repo) in agent.repos.iter().enumerate() {
+            let (Some(_branch), Some(number)) = (repo.branch.as_ref(), repo.pr_number) else {
+                continue;
+            };
+            let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
+                continue;
+            };
+            let Some((owner, repo_name)) = gh::resolve_slug(&checkout, Some(&repo.repo_path)).await
+            else {
+                continue;
+            };
+            keys.push(crate::supervisor::pr_map_key(&agent.id, &repo.subdir, i == 0));
+            refs.push(gh::PrRef {
+                owner,
+                repo: repo_name,
+                number: number as u32,
+            });
+        }
     }
 
     let mut out = std::collections::HashMap::new();
-    // A whole-batch failure leaves the map empty (all agents keep last-known);
+    // A whole-batch failure leaves the map empty (all repos keep last-known);
     // per-alias `None` (PR not found / partial error) is dropped for the same
     // reason. Only a resolved rollup — including "no checks" — is recorded.
     if let Ok(results) = gh::pr_checks_batch(&refs).await {
-        for (id, checks) in agent_ids.into_iter().zip(results) {
+        for (key, checks) in keys.into_iter().zip(results) {
             if let Some(checks) = checks {
-                out.insert(id, Some(checks));
+                out.insert(key, Some(checks));
             }
         }
     }
@@ -1302,23 +1308,63 @@ fn primary_checkout(supervisor: &Supervisor, agent_id: &str) -> Result<(PathBuf,
     Ok((checkout, parent))
 }
 
-/// List the agent's checkout files (tracked + untracked), each tagged with
-/// its git status vs the parent branch. This mirrors what's actually on disk
-/// — like a regular file explorer — so files the agent deleted are dropped
-/// rather than lingering as struck-through entries.
-#[tauri::command]
-pub async fn list_checkout_tree(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<Vec<CheckoutFile>> {
-    let (checkout, parent) = primary_checkout(&supervisor, &agent_id)?;
+/// Split a repo-prefixed Code-tab path (`"<subdir>/<rel>"`) into its tracked
+/// repo and the checkout-relative remainder. Only ever called for multi-repo
+/// agents — a single-repo agent's paths are never prefixed (all prefix logic
+/// is gated on `repos.len() > 1`), so a real top-level directory that happens
+/// to share a repo's name can't be misrouted here.
+fn split_repo_path<'a>(repos: &'a [TrackedRepo], path: &str) -> Result<(&'a TrackedRepo, String)> {
+    let (first, rest) = path.split_once('/').unwrap_or((path, ""));
+    let repo = repos.iter().find(|r| r.subdir == first).ok_or_else(|| {
+        let known: Vec<&str> = repos.iter().map(|r| r.subdir.as_str()).collect();
+        Error::InvalidPath(format!(
+            "{path:?} must start with one of the agent's repo folders: {}",
+            known.join(", ")
+        ))
+    })?;
+    if rest.is_empty() {
+        return Err(Error::InvalidPath(format!(
+            "{path:?} names a repo folder itself, not a path inside it"
+        )));
+    }
+    Ok((repo, rest.to_string()))
+}
 
-    let state = git_state::query(&checkout, &parent).await.ok();
+/// Resolve a Code-tab path to the checkout it lives in: `(checkout root,
+/// parent ref, checkout-relative path)`. Single-repo agents use the primary
+/// checkout with the path unchanged — the exact legacy behavior. For a
+/// multi-repo agent every tree path is prefixed with the repo's `subdir`
+/// (see `list_checkout_tree`), so the first segment picks the checkout.
+fn checkout_scope_for_path(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    path: &str,
+) -> Result<(PathBuf, String, String)> {
+    let record = supervisor.workspace.agent(agent_id)?;
+    if record.repos.len() <= 1 {
+        let (checkout, parent) = primary_checkout(supervisor, agent_id)?;
+        return Ok((checkout, parent, path.to_string()));
+    }
+    let (repo, rel) = split_repo_path(&record.repos, path)?;
+    let checkout = repo_checkout_path(agent_id, &repo.subdir)?;
+    let parent = diff_base(repo).unwrap_or_else(|| "main".to_string());
+    Ok((checkout, parent, rel))
+}
+
+/// One checkout's file list (tracked + untracked, deleted dropped), each
+/// tagged with its git status vs `parent`. `prefix` (a repo's subdir) is
+/// prepended to every path for multi-repo agents' virtual roots.
+async fn checkout_tree_files(
+    checkout: &Path,
+    parent: &str,
+    prefix: Option<&str>,
+) -> Vec<CheckoutFile> {
+    let state = git_state::query(checkout, parent).await.ok();
     let status_for = |path: &str| -> Option<&FileStatus> {
         state.as_ref()?.files.iter().find(|f| f.path == path)
     };
 
-    let mut paths: BTreeSet<String> = git::list_files(&checkout)
+    let mut paths: BTreeSet<String> = git::list_files(checkout)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -1337,7 +1383,7 @@ pub async fn list_checkout_tree(
         }
     }
 
-    Ok(paths
+    paths
         .into_iter()
         .map(|path| {
             let st = status_for(&path);
@@ -1345,10 +1391,47 @@ pub async fn list_checkout_tree(
                 status: st.map(|f| status_code(&f.kind).to_string()),
                 additions: st.map(|f| f.additions).unwrap_or(0),
                 deletions: st.map(|f| f.deletions).unwrap_or(0),
-                path,
+                path: match prefix {
+                    Some(p) => format!("{p}/{path}"),
+                    None => path,
+                },
             }
         })
-        .collect())
+        .collect()
+}
+
+/// List the agent's checkout files (tracked + untracked), each tagged with
+/// its git status vs the parent branch. This mirrors what's actually on disk
+/// — like a regular file explorer — so files the agent deleted are dropped
+/// rather than lingering as struck-through entries.
+///
+/// Single-repo agents get today's un-prefixed listing of the primary checkout.
+/// A multi-repo agent gets one virtual root per repo: every path is prefixed
+/// with the checkout's `subdir`, each repo's status computed against its own
+/// fork point — the tree component nests on `/`, so the repos render as
+/// top-level folders. The file read/write commands resolve the same prefix
+/// back to the owning checkout (`checkout_scope_for_path`).
+#[tauri::command]
+pub async fn list_checkout_tree(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<Vec<CheckoutFile>> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    if record.repos.len() <= 1 {
+        let (checkout, parent) = primary_checkout(&supervisor, &agent_id)?;
+        return Ok(checkout_tree_files(&checkout, &parent, None).await);
+    }
+    let mut out = Vec::new();
+    for repo in &record.repos {
+        // One broken checkout shouldn't blank the whole tree — skip it and
+        // keep listing the others.
+        let Ok(checkout) = repo_checkout_path(&agent_id, &repo.subdir) else {
+            continue;
+        };
+        let parent = diff_base(repo).unwrap_or_else(|| "main".to_string());
+        out.extend(checkout_tree_files(&checkout, &parent, Some(&repo.subdir)).await);
+    }
+    Ok(out)
 }
 
 /// List a repo's files by path (tracked + non-ignored untracked), for the
@@ -1481,7 +1564,7 @@ pub async fn read_checkout_file(
     agent_id: String,
     path: String,
 ) -> Result<CheckoutFileContents> {
-    let (checkout, parent) = primary_checkout(&supervisor, &agent_id)?;
+    let (checkout, parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
     let abs = safe_join(&checkout, &path)?;
     let lang = lang_for(&path);
 
@@ -1549,7 +1632,7 @@ pub async fn get_file_diff(
     agent_id: String,
     path: String,
 ) -> Result<String> {
-    let (checkout, parent) = primary_checkout(&supervisor, &agent_id)?;
+    let (checkout, parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
     git::file_diff(&checkout, &parent, &path).await
 }
 
@@ -1561,7 +1644,7 @@ pub async fn write_checkout_file(
     path: String,
     contents: String,
 ) -> Result<()> {
-    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
+    let (checkout, _parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
     let abs = safe_join(&checkout, &path)?;
     if let Some(dir) = abs.parent() {
         std::fs::create_dir_all(dir)?;
@@ -1587,6 +1670,9 @@ fn resolve_new_path(checkout: &Path, rel: &str) -> Result<PathBuf> {
 
 /// Rename/move a checkout path (file or directory). Refuses to clobber an
 /// existing destination so a rename can never silently overwrite a sibling.
+/// Source and destination resolve their repo scope independently, so a move
+/// between a multi-repo agent's checkouts (sibling directories on the same
+/// volume) works like any other rename.
 #[tauri::command]
 pub async fn rename_checkout_path(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -1594,9 +1680,10 @@ pub async fn rename_checkout_path(
     from: String,
     to: String,
 ) -> Result<()> {
-    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
-    let src = safe_join(&checkout, &from)?;
-    let dst = resolve_new_path(&checkout, &to)?;
+    let (checkout_from, _parent, from) = checkout_scope_for_path(&supervisor, &agent_id, &from)?;
+    let (checkout_to, _parent, to) = checkout_scope_for_path(&supervisor, &agent_id, &to)?;
+    let src = safe_join(&checkout_from, &from)?;
+    let dst = resolve_new_path(&checkout_to, &to)?;
     std::fs::rename(&src, &dst)?;
     Ok(())
 }
@@ -1610,7 +1697,7 @@ pub async fn delete_checkout_path(
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
+    let (checkout, _parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
     let abs = safe_join(&checkout, &path)?;
     if abs.is_dir() {
         std::fs::remove_dir_all(&abs)?;
@@ -1628,7 +1715,7 @@ pub async fn create_checkout_file(
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
+    let (checkout, _parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
     let abs = resolve_new_path(&checkout, &path)?;
     std::fs::write(&abs, "")?;
     Ok(())
@@ -1641,7 +1728,7 @@ pub async fn create_checkout_dir(
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
+    let (checkout, _parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
     let abs = resolve_new_path(&checkout, &path)?;
     std::fs::create_dir_all(&abs)?;
     Ok(())
@@ -1656,9 +1743,10 @@ pub async fn copy_checkout_file(
     from: String,
     to: String,
 ) -> Result<()> {
-    let (checkout, _parent) = primary_checkout(&supervisor, &agent_id)?;
-    let src = safe_join(&checkout, &from)?;
-    let dst = resolve_new_path(&checkout, &to)?;
+    let (checkout_from, _parent, from) = checkout_scope_for_path(&supervisor, &agent_id, &from)?;
+    let (checkout_to, _parent, to) = checkout_scope_for_path(&supervisor, &agent_id, &to)?;
+    let src = safe_join(&checkout_from, &from)?;
+    let dst = resolve_new_path(&checkout_to, &to)?;
     std::fs::copy(&src, &dst)?;
     Ok(())
 }
@@ -1736,6 +1824,53 @@ pub async fn validate_agent_bin(path: String) -> BinValidation {
 #[tauri::command]
 pub async fn discover_supported_models() -> Vec<crate::model_catalog::AgentModels> {
     crate::model_catalog::discover_supported_models().await
+}
+
+#[cfg(test)]
+mod split_repo_path_tests {
+    use super::split_repo_path;
+    use crate::workspace::TrackedRepo;
+
+    fn repo(subdir: &str) -> TrackedRepo {
+        TrackedRepo {
+            repo_path: std::path::PathBuf::from(format!("/src/{subdir}")),
+            subdir: subdir.into(),
+            branch: None,
+            parent_branch: None,
+            base_sha: None,
+            pr_number: None,
+            pr_url: None,
+            pr_title: None,
+            pr_state: None,
+            label: None,
+        }
+    }
+
+    #[test]
+    fn routes_first_segment_to_the_matching_repo() {
+        let repos = [repo("frontend"), repo("backend")];
+        let (r, rel) = split_repo_path(&repos, "backend/src/main.rs").unwrap();
+        assert_eq!(r.subdir, "backend");
+        assert_eq!(rel, "src/main.rs");
+    }
+
+    #[test]
+    fn rejects_unknown_prefix_listing_tracked_folders() {
+        let repos = [repo("frontend"), repo("backend")];
+        let err = split_repo_path(&repos, "shared/util.ts").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("frontend"), "should list tracked folders: {msg}");
+        assert!(msg.contains("backend"), "should list tracked folders: {msg}");
+    }
+
+    #[test]
+    fn rejects_a_bare_repo_root() {
+        // "frontend" alone names the checkout itself — never a file operation
+        // target (renaming/deleting a repo root must not be possible).
+        let repos = [repo("frontend"), repo("backend")];
+        assert!(split_repo_path(&repos, "frontend").is_err());
+        assert!(split_repo_path(&repos, "frontend/").is_err());
+    }
 }
 
 #[cfg(test)]

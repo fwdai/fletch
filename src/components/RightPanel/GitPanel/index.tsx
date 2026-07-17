@@ -4,7 +4,9 @@ import { useAppStore } from "@/store";
 import { gitKey } from "@/store/git";
 import { basename } from "@/util/format";
 import { usePoll } from "@/util/hooks";
+import { prSnapshot } from "@/util/prState";
 import { GitRepoSection } from "./GitRepoSection";
+import { type PrSetEntry, PrSetStrip } from "./PrSetStrip";
 
 /** A repo of the agent plus the scope its section reads/writes under:
  *  `subdir` is undefined for the primary repo (index 0 — plain agent-keyed
@@ -49,6 +51,8 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
   const fetchGitState = useAppStore((s) => s.fetchGitState);
   const gitStates = useAppStore((s) => s.gitStates);
+  const prStates = useAppStore((s) => s.prStates);
+  const prChecks = useAppStore((s) => s.prChecks);
   // The repo scope of the agent's in-flight delegation, if any: `null` when
   // there is no delegation (pins nothing), `undefined` when it targets the
   // primary. Distinct sentinel needed because `undefined` is a real scope.
@@ -62,6 +66,17 @@ function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
   // Nothing active yet → the primary repo's section (today's empty state),
   // with no section header.
   const sections = active.length > 0 ? active : [scopes[0]];
+
+  // The task's PR set, one entry per repo with a PR — resolved with the same
+  // per-repo policy as each section (a present store key, even a confirmed
+  // null, is authoritative; only a never-fetched key falls back to the repo's
+  // own persisted snapshot), so the strip and the sections always agree.
+  const prSet: PrSetEntry[] = scopes.flatMap((sc) => {
+    const key = gitKey(agent.id, sc.subdir);
+    const live = prStates[key];
+    const pr = live !== undefined ? live : prSnapshot(sc.repo);
+    return pr ? [{ repo: sc.repo, pr, checks: prChecks[key] ?? null }] : [];
+  });
 
   // On mount / agent change, fetch git state for EVERY repo so "active" can be
   // computed — rendered sections then keep their own 1s poll going.
@@ -84,6 +99,8 @@ function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
 
   return (
     <div className="git-multi">
+      {/* ≥2 PRs → the "one task, N PRs" strip presents the set as a unit. */}
+      {prSet.length >= 2 && <PrSetStrip entries={prSet} />}
       {sections.map((sc) => (
         <section key={sc.repo.subdir} className="git-repo-sect">
           {active.length > 0 && (

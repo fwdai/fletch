@@ -74,7 +74,7 @@ Verification baseline: `cargo test --lib` (src-tauri; ~890 tests),
 
 ---
 
-## 1. Sidebar PR badge fan-out  ·  priority: high  ·  size: M
+## 1. Sidebar PR badge fan-out  ·  ✅ done  ·  size: M
 
 **Problem.** The app-wide PR polls and every badge read only the primary:
 `refresh_all_pr_states` / `refresh_all_pr_checks`
@@ -120,7 +120,7 @@ worktree via `persist_pr_snapshot` — already per-repo, don't duplicate.
 Delegation attribution (`markGitDelegationSawOp` path) keys off
 `agent:git-action` events, not prStates — untouched.
 
-## 2. "One task → N PRs" presented as a unit  ·  priority: high  ·  size: M
+## 2. "One task → N PRs" presented as a unit  ·  ✅ done  ·  size: M
 
 **Problem.** Each panel section shows its own PR, but nothing communicates
 "this task produced 3 related PRs": no cross-links in PR bodies, no suggested
@@ -154,7 +154,7 @@ replacement, never string-append. `pr_create` returns `PrState` without body;
 fetch before edit. Respect the rate-limit backoff guard
 (`gh::client::is_backing_off()`).
 
-## 3. Code tab (file tree + editor) multi-repo  ·  priority: medium  ·  size: M
+## 3. Code tab (file tree + editor) multi-repo  ·  ✅ done  ·  size: M
 
 **Problem.** `list_checkout_tree`, `read/write/create/copy_checkout_file`
 (`src-tauri/src/commands.rs`, helper `primary_checkout`) operate on the
