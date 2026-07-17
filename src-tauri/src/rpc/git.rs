@@ -182,11 +182,15 @@ fn closes_issue(body: &str, number: u32) -> bool {
 }
 
 /// Does the text leading up to a `#N` reference end with a closing keyword
-/// (allowing `fixes #12`, `Fixes: #12`, `fixes#12`)? Strict on the keyword
-/// itself (`prefixes #12` is not a match) — a false negative merely appends a
+/// plus a real separator (`fixes #12`, `Fixes: #12`)? Strict on both the
+/// keyword (`prefixes #12` is not a match) and the separator (GitHub does not
+/// document the glued `fixes#12` form) — a false negative merely appends a
 /// redundant trailer, while a false positive would leave the issue open.
 fn ends_with_closing_keyword(before: &str) -> bool {
     let trimmed = before.trim_end();
+    if trimmed.len() == before.len() {
+        return false;
+    }
     let trimmed = trimmed.strip_suffix(':').unwrap_or(trimmed);
     let word_start = trimmed
         .rfind(|c: char| !c.is_ascii_alphabetic())
@@ -613,19 +617,22 @@ mod tests {
             with_closes_trailer("Follow-up to the report in #42.", Some(42)),
             "Follow-up to the report in #42.\n\nCloses #42"
         );
-        // GitHub's closing spellings all count (case, colon, no-space).
+        // GitHub's documented closing spellings count (case, optional colon).
         for body in [
             "fixes #42",
             "Fixes: #42",
             "RESOLVED #42",
-            "close#42",
             "This should fix #42 for good",
         ] {
             assert!(closes_issue(body, 42), "should close: {body}");
         }
-        // A keyword-suffixed word is not a keyword.
+        // A keyword-suffixed word is not a keyword, and a keyword glued to the
+        // reference (no separator) is not a documented closing form — both must
+        // still receive the trailer.
         assert!(!closes_issue("prefixes #42", 42));
         assert!(!closes_issue("sunfixed #42", 42));
+        assert!(!closes_issue("close#42", 42));
+        assert!(!closes_issue("Fixes:#42", 42));
     }
 
     #[tokio::test]
