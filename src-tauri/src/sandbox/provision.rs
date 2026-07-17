@@ -1078,7 +1078,14 @@ mod tests {
         let origin = td.path().join("origin.git");
         run(
             td.path(),
-            &["init", "-q", "--bare", origin.to_str().unwrap()],
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
         );
         run(
             &repo,
@@ -1228,7 +1235,14 @@ mod tests {
         let origin = td.path().join("origin.git");
         run(
             td.path(),
-            &["init", "-q", "--bare", origin.to_str().unwrap()],
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
         );
         // GitHub serves any commit reachable from an advertised ref even with no
         // branch pointing at it; model that so a merged-then-deleted tip is
@@ -1299,7 +1313,14 @@ mod tests {
         let origin = td.path().join("origin.git");
         run(
             td.path(),
-            &["init", "-q", "--bare", origin.to_str().unwrap()],
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
         );
         run(
             &origin,
@@ -1373,7 +1394,14 @@ mod tests {
         let origin = td.path().join("origin.git");
         run(
             td.path(),
-            &["init", "-q", "--bare", origin.to_str().unwrap()],
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
         );
         run(
             &origin,
