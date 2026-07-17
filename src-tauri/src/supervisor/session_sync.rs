@@ -1050,6 +1050,7 @@ mod tests {
             pr_url: Some("https://github.com/o/r/pull/42".into()),
             pr_title: Some("feat: x".into()),
             pr_state: Some("merged".into()),
+            label: None,
         }
     }
 

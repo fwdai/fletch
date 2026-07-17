@@ -242,6 +242,7 @@ impl Supervisor {
             pr_url: None,
             pr_title: None,
             pr_state: None,
+            label: None,
         };
 
         let mut record = new_agent_record(
@@ -295,6 +296,7 @@ impl Supervisor {
         let sup = self.clone();
         let app_for_task = app.clone();
         let id_for_task = agent_id.clone();
+        let project_id_for_task = record.project_id.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
@@ -384,6 +386,34 @@ impl Supervisor {
                 }
             }
 
+            // Multi-repo project: fork a checkout of every *other* repo of the
+            // project too, so the agent works across all of them from turn one
+            // (untouched repos are just clean clones). Runs before
+            // start_process so the Docker engine's mounts and the git RPC
+            // dispatcher see the full repo set. Workflow step agents stay
+            // single-repo — a run targets one repo (see `wf_launch`).
+            if run_repo_for_task.is_none() {
+                for source in sup.workspace.project_repo_paths(&project_id_for_task) {
+                    if source == repo_path {
+                        continue;
+                    }
+                    if let Err(e) = sup
+                        .attach_repo_checkout(&app_for_task, &id_for_task, source.clone(), false)
+                        .await
+                    {
+                        let _ = provision::teardown(&primary_checkout).await;
+                        let _ = tokio::fs::remove_dir_all(&parent_dir).await;
+                        fail_spawn(
+                            &sup,
+                            &app_for_task,
+                            &id_for_task,
+                            format!("checkout of {} failed: {e}", source.display()),
+                        );
+                        return;
+                    }
+                }
+            }
+
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
@@ -405,6 +435,32 @@ impl Supervisor {
         app: AppHandle,
         agent_id: &str,
         repo_path: PathBuf,
+    ) -> Result<TrackedRepo> {
+        // A repo added to a *live* agent can't get a new bind mount: the Docker
+        // container's mounts are fixed at `docker run`, so a `--shared` clone's
+        // borrowed object store would be unreachable in-container. Provision it
+        // self-contained (full object copy, no alternates) so it needs no mount
+        // and in-container git works immediately. Seatbelt has no container and
+        // uses the normal (`--shared`) clone path. A later restore relaunches
+        // the container and re-provisions via `--shared` + mount.
+        let record = self.workspace.agent(agent_id)?;
+        let self_contained = stamped_engine(&record) == EngineKind::Docker;
+        self.attach_repo_checkout(&app, agent_id, repo_path, self_contained)
+            .await
+    }
+
+    /// Shared core of "give this agent a checkout of another repo": validate,
+    /// allocate a sibling subdir, fork a checkout, and append the TrackedRepo.
+    /// `self_contained` selects a full object copy over a `--shared` clone —
+    /// required only when the checkout appears after a Docker container's
+    /// mounts are fixed (see `add_repo_to_agent`); spawn-time secondaries run
+    /// before the container exists, so they always use shared clones.
+    async fn attach_repo_checkout(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        agent_id: &str,
+        repo_path: PathBuf,
+        self_contained: bool,
     ) -> Result<TrackedRepo> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -432,20 +488,12 @@ impl Supervisor {
             Some(b) => git::fetch_fork_point(&repo_path, b).await,
             None => None,
         };
-        let engine = stamped_engine(&record);
         let spec = CheckoutSpec {
             source_repo: &repo_path,
             base_ref: base.as_deref().unwrap_or("HEAD"),
             dest: &checkout,
         };
-        // A repo added to a *live* agent can't get a new bind mount: the Docker
-        // container's mounts are fixed at `docker run`, so a `--shared` clone's
-        // borrowed object store would be unreachable in-container. Provision it
-        // self-contained (full object copy, no alternates) so it needs no mount
-        // and in-container git works immediately. Seatbelt has no container and
-        // uses the normal (`--shared`) clone path. A later restore relaunches
-        // the container and re-provisions via `--shared` + mount.
-        if engine == EngineKind::Docker {
+        if self_contained {
             provision::provision_self_contained(&spec).await?;
         } else {
             provision::provision(&spec).await?;
@@ -462,9 +510,10 @@ impl Supervisor {
             pr_url: None,
             pr_title: None,
             pr_state: None,
+            label: None,
         };
         self.workspace.append_tracked_repo(agent_id, repo.clone())?;
-        emit_repo_added(&app, agent_id, repo.clone());
+        emit_repo_added(app, agent_id, repo.clone());
 
         // No branch is created here — the new repo's checkout stays detached
         // until its first push, when the agent names its branch (same as the
@@ -517,7 +566,20 @@ impl Supervisor {
             .parent_branch
             .clone()
             .unwrap_or_else(|| "main".to_string());
-        let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch);
+        // Every tracked checkout is addressable by its subdir via `args.repo`;
+        // the primary stays the default when the arg is absent, so single-repo
+        // agents (and old prompts) behave exactly as before.
+        let mut repo_targets = Vec::new();
+        for r in &record.repos {
+            let checkout = repo_checkout_path(agent_id, &r.subdir)?;
+            let base = r
+                .parent_branch
+                .clone()
+                .unwrap_or_else(|| "main".to_string());
+            repo_targets.push((r.subdir.clone(), checkout, base));
+        }
+        let git_dispatcher =
+            rpc::git::GitDispatcher::new(cwd.clone(), base_branch).with_repos(repo_targets);
         // A run-owned step agent also gets the workflow comms ops (wf_report /
         // wf_ask / wf_notify, §10); everything else still falls through to the
         // git dispatcher. Plain agents keep the git dispatcher unchanged.
@@ -664,8 +726,17 @@ impl Supervisor {
         // launch path so the files always exist (e.g. after a checkout is
         // recreated) and always match the snapshot. `None` when the session has
         // neither a brief nor skills — the pre-profile behavior.
+        // Multi-repo workspaces get a layout note composed ahead of the custom
+        // brief, so the agent knows about its sibling checkouts from turn one.
+        // Recomputed every launch, like the rest of the instruction layers.
+        let workspace_note = crate::instructions::multi_repo_workspace_note(&record.repos);
+        let brief = match (workspace_note, record.instructions.as_deref()) {
+            (Some(note), Some(brief)) => Some(format!("{note}\n\n{brief}")),
+            (Some(note), None) => Some(note),
+            (None, brief) => brief.map(str::to_string),
+        };
         let instructions = crate::agent_profile::effective_instructions(
-            record.instructions.as_deref(),
+            brief.as_deref(),
             record.forked_context.as_deref(),
             &record.skills,
             &sandbox_root,

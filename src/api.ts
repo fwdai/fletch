@@ -35,6 +35,9 @@ export interface TrackedRepo {
   pr_url?: string | null;
   pr_title?: string | null;
   pr_state?: string | null;
+  /** The repo's display label within its project ("Frontend"); null falls
+   *  back to the folder basename. Denormalized from the repos table. */
+  label?: string | null;
 }
 
 export interface DiffStats {

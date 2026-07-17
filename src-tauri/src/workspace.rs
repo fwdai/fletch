@@ -79,6 +79,12 @@ pub struct TrackedRepo {
     pub pr_title: Option<String>,
     #[serde(default)]
     pub pr_state: Option<String>,
+    /// The repo's display label within its project ("Frontend", "Gateway"),
+    /// denormalized from `repos.label` when the record is read from the DB
+    /// (constructors set `None`; `query_tracked_repos` fills it). `None` falls
+    /// back to the folder basename in the UI and in agent-facing notes.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1872,6 +1878,25 @@ impl WorkspaceManager {
         .unwrap_or_default()
     }
 
+    /// All repo paths attached to a project, in creation order (the first is
+    /// the primary). Used at spawn to provision one checkout per project repo.
+    pub fn project_repo_paths(&self, project_id: &str) -> Vec<PathBuf> {
+        let conn = self.db.lock();
+        let mut stmt = match conn
+            .prepare("SELECT path FROM repos WHERE project_id = ?1 ORDER BY created_at")
+        {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([project_id], |row| {
+            let p: String = row.get(0)?;
+            Ok(PathBuf::from(p))
+        })
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
     fn query_all_repo_paths(conn: &Connection) -> Vec<PathBuf> {
         let mut stmt = conn
             .prepare("SELECT path FROM repos ORDER BY created_at")
@@ -1947,7 +1972,7 @@ impl WorkspaceManager {
     fn query_tracked_repos(conn: &Connection, agent_id: &str) -> Vec<TrackedRepo> {
         let mut stmt = match conn.prepare(
             "SELECT r.path, w.subdir, w.branch, w.parent_branch, w.base_sha, w.pr_number,
-                    w.pr_url, w.pr_title, w.pr_state
+                    w.pr_url, w.pr_title, w.pr_state, r.label
              FROM worktrees w
              JOIN repos r ON r.id = w.repo_id
              WHERE w.workspace_id = ?1
@@ -1967,6 +1992,7 @@ impl WorkspaceManager {
             let pr_url: Option<String> = row.get(6)?;
             let pr_title: Option<String> = row.get(7)?;
             let pr_state: Option<String> = row.get(8)?;
+            let label: Option<String> = row.get(9)?;
             Ok(TrackedRepo {
                 repo_path: PathBuf::from(path),
                 subdir,
@@ -1977,6 +2003,7 @@ impl WorkspaceManager {
                 pr_url,
                 pr_title,
                 pr_state,
+                label,
             })
         })
         .ok()
@@ -2567,6 +2594,7 @@ mod tests {
             pr_url: None,
             pr_title: None,
             pr_state: None,
+            label: None,
         }
     }
 
@@ -3656,6 +3684,7 @@ mod tests {
             pr_url: None,
             pr_title: None,
             pr_state: None,
+            label: None,
         }];
         wm.restore_agent(&id, restored).unwrap();
         let a = wm.agent(&id).unwrap();
@@ -3724,6 +3753,7 @@ mod tests {
                 pr_url: None,
                 pr_title: None,
                 pr_state: None,
+                label: None,
             },
             "task".into(),
             AgentView::Custom,
