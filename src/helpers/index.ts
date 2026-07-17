@@ -11,7 +11,7 @@ import { MCP_SUPPORT, mcpAttachable } from "../data/providers";
 import { commandsFor, discoverCommands } from "../data/slashCommands";
 import type { CustomAgent } from "../storage/customAgents";
 import { type McpServerSnapshot, snapshotMcpServer } from "../storage/mcpServers";
-import type { SkillSnapshot } from "../storage/skills";
+import { type Skill, type SkillSnapshot, skillSlug } from "../storage/skills";
 import { recordUsageSnapshot } from "../storage/usageDaily";
 import type { AppState, DraftAgent } from "../store";
 
@@ -41,6 +41,52 @@ export function passthroughSlashName(
     (c) => c.kind === "passthrough" && c.name === first,
   );
   return match ? match.name : null;
+}
+
+/** Library skills invocable as composer `/` commands, each under its slugged
+ *  token. A skill whose slug collides with a provider command (built-in or
+ *  discovered) drops out — the provider's command wins, so a skill named "init"
+ *  can't shadow `/init` — as does a later skill sharing an earlier one's slug,
+ *  so the send-time resolver picks exactly what the menu offered. */
+export function invocableSkills(
+  skills: Skill[],
+  providerId: string,
+  projectDir?: string,
+): { command: string; skill: Skill }[] {
+  const taken = new Set(commandsFor(providerId, projectDir).map((c) => c.name));
+  const out: { command: string; skill: Skill }[] = [];
+  for (const skill of skills) {
+    const command = skillSlug(skill.name);
+    if (taken.has(command)) continue;
+    taken.add(command);
+    out.push({ command, skill });
+  }
+  return out;
+}
+
+/** If `text` starts with `/<command>` naming an invocable skill, resolve the
+ *  invocation: `snapshot` is the by-value skill to add to the spawn payload
+ *  (materialized + indexed like an assigned skill) and `prompt` replaces the
+ *  typed text — an explicit follow-it-now instruction, with everything after
+ *  the command carried as arguments. Null when the text isn't a skill
+ *  invocation; provider commands and plain messages flow through untouched. */
+export function resolveSkillInvocation(
+  skills: Skill[],
+  providerId: string,
+  text: string,
+  projectDir?: string,
+): { snapshot: SkillSnapshot; prompt: string } | null {
+  if (!text.startsWith("/")) return null;
+  const command = text.split(/\s/)[0].slice(1);
+  if (!command) return null;
+  const match = invocableSkills(skills, providerId, projectDir).find((s) => s.command === command);
+  if (!match) return null;
+  const args = text.slice(command.length + 1).trim();
+  const { name, description, body } = match.skill;
+  const prompt =
+    `Use the "${name}" skill for this task: read its file (listed in the Skills index in your instructions) and follow its instructions now.` +
+    (args ? `\n\nArguments: ${args}` : "");
+  return { snapshot: { name, description, body }, prompt };
 }
 
 /** Claude built-in control commands that only work in its interactive TUI and

@@ -26,6 +26,26 @@ export type NewSkill = Omit<Skill, "id" | "created_at" | "updated_at">;
  *  session — mirrors `agent_profile::SkillSnapshot`. */
 export type SkillSnapshot = Pick<Skill, "name" | "description" | "body">;
 
+/** A skill's `/` invocation token in the composer. Mirrors the backend's
+ *  file-name slug (agent_profile.rs `slug`) so the command a user types always
+ *  matches the materialized file: lowercased, runs of non-alphanumerics
+ *  collapsed to `-`, `skill` when nothing usable remains. */
+export function skillSlug(name: string): string {
+  let out = "";
+  let dash = false;
+  for (const c of name) {
+    if (/[a-zA-Z0-9]/.test(c)) {
+      out += c.toLowerCase();
+      dash = false;
+    } else if (!dash && out.length > 0) {
+      out += "-";
+      dash = true;
+    }
+  }
+  out = out.replace(/-+$/, "");
+  return out.length > 0 ? out : "skill";
+}
+
 const TABLE = "skills";
 
 /** Generate a stable, collision-resistant id for a new skill. */

@@ -1,6 +1,11 @@
 import { api } from "@/api";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
-import { sendWhenAgentReady, snapshotAgentDeliverables, usedNames } from "@/helpers";
+import {
+  resolveSkillInvocation,
+  sendWhenAgentReady,
+  snapshotAgentDeliverables,
+  usedNames,
+} from "@/helpers";
 import { setSetting } from "@/storage/settings";
 import type { AppState, DraftsSlice, SliceCreator } from "./types";
 
@@ -175,7 +180,22 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // Resolve the agent's skill/MCP assignments to by-value snapshots (see
       // snapshotAgentDeliverables for the dangling-id / undeliverable-server
       // semantics).
-      const { skills, mcpServers } = snapshotAgentDeliverables(get(), custom, provider);
+      const { skills: assigned, mcpServers } = snapshotAgentDeliverables(get(), custom, provider);
+      // A leading `/<skill>` invokes a library skill: its snapshot joins the
+      // spawn payload (materialized + indexed like an assigned skill, deduped
+      // by name against the custom agent's set) and the typed command becomes
+      // an explicit follow-it-now prompt. Provider commands win name clashes
+      // inside the resolver, so `/init` and friends pass through verbatim. The
+      // rewritten prompt is used everywhere — optimistic log and send — so the
+      // visible message matches what the transcript will replay.
+      const invocation = resolveSkillInvocation(get().skills, provider, text, draft.repoPath);
+      const prompt = invocation ? invocation.prompt : text;
+      const skills = invocation
+        ? [
+            ...(assigned ?? []).filter((s) => s.name !== invocation.snapshot.name),
+            invocation.snapshot,
+          ]
+        : assigned;
       // `thinking` carries the composer's effort selection. For claude it's a
       // session-level spawn flag (--effort), applied here; per-turn agents
       // ignore it at spawn and take it per-turn via sendUserMessage below.
@@ -210,8 +230,8 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
             ...state.managedLogs,
             [rec.id]: [
               attachments.length > 0
-                ? { kind: "user_message", text, attachments }
-                : { kind: "user_message", text },
+                ? { kind: "user_message", text: prompt, attachments }
+                : { kind: "user_message", text: prompt },
             ],
           };
           patches.managedBusy = { ...state.managedBusy, [rec.id]: true };
@@ -220,11 +240,11 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       });
       if (view === "native") {
         await sendWhenAgentReady(() =>
-          api.writeToAgent(rec.id, `${text.replace(/\r?\n/g, " ")}\r`),
+          api.writeToAgent(rec.id, `${prompt.replace(/\r?\n/g, " ")}\r`),
         );
       } else {
         await sendWhenAgentReady(() =>
-          api.sendUserMessage(rec.id, turnId, text, attachments, thinking),
+          api.sendUserMessage(rec.id, turnId, prompt, attachments, thinking),
         );
       }
     } catch (e) {
