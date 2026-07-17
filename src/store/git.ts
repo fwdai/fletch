@@ -7,16 +7,26 @@ import type { GitSlice, SliceCreator } from "./types";
 type GitSet = Parameters<SliceCreator<GitSlice>>[0];
 type GitGet = Parameters<SliceCreator<GitSlice>>[1];
 
+/** Composite key for the per-repo git/PR maps (`gitStates`, `prStates`,
+ *  `prChecks`, `prComments`). The primary repo (no `subdir`) keeps the plain
+ *  agent id — the key every existing write path (background bulk polls, tauri
+ *  event reducers, sidebar badges) uses — so only secondary-repo fetches get
+ *  the suffixed form. */
+export function gitKey(agentId: string, subdir?: string): string {
+  return subdir ? `${agentId}::${subdir}` : agentId;
+}
+
 // Shared shape for the simple git mutations: run the backend call, refresh git
 // state on success, otherwise record the error and report failure.
 const runGitMutation = async (
   get: GitGet,
   agentId: string,
   fn: () => Promise<unknown>,
+  subdir?: string,
 ): Promise<boolean> => {
   try {
     await fn();
-    await get().fetchGitState(agentId);
+    await get().fetchGitState(agentId, subdir);
     return true;
   } catch (e) {
     get().setLastError(String(e));
@@ -33,14 +43,16 @@ const fetchPrAux = async <K extends "prChecks" | "prComments">(
   set: GitSet,
   agentId: string,
   key: K,
-  fetch: (agentId: string) => Promise<GitSlice[K][string]>,
+  fetch: (agentId: string, subdir?: string) => Promise<GitSlice[K][string]>,
+  subdir?: string,
 ): Promise<void> => {
+  const mapKey = gitKey(agentId, subdir);
   try {
-    const value = await fetch(agentId);
-    set((s) => ({ [key]: { ...s[key], [agentId]: value } }) as Partial<GitSlice>);
+    const value = await fetch(agentId, subdir);
+    set((s) => ({ [key]: { ...s[key], [mapKey]: value } }) as Partial<GitSlice>);
   } catch {
     set((s) =>
-      agentId in s[key] ? {} : ({ [key]: { ...s[key], [agentId]: null } } as Partial<GitSlice>),
+      mapKey in s[key] ? {} : ({ [key]: { ...s[key], [mapKey]: null } } as Partial<GitSlice>),
     );
   }
 };
@@ -54,11 +66,11 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   gitDelegations: {},
   gitCommitAction: "agent-commit-pr" as GitCommitAction,
 
-  fetchGitState: async (agentId) => {
+  fetchGitState: async (agentId, subdir) => {
     try {
-      const state = await api.getGitState(agentId);
+      const state = await api.getGitState(agentId, subdir);
       if (state) {
-        set((s) => ({ gitStates: { ...s.gitStates, [agentId]: state } }));
+        set((s) => ({ gitStates: { ...s.gitStates, [gitKey(agentId, subdir)]: state } }));
       }
     } catch {
       // non-fatal — next poll tick will retry
@@ -77,13 +89,13 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  fetchPrState: async (agentId) => {
+  fetchPrState: async (agentId, subdir) => {
     try {
-      const state = await api.getPrState(agentId);
+      const state = await api.getPrState(agentId, subdir);
       // Always write (including null) to distinguish "confirmed: no PR" from
       // "not yet fetched" (absent key). Unlike fetchGitState which guards the
       // write, PR state being null is meaningful.
-      set((s) => ({ prStates: { ...s.prStates, [agentId]: state } }));
+      set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: state } }));
     } catch {
       // non-fatal
     }
@@ -116,11 +128,12 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  fetchPrChecks: (agentId) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks),
+  fetchPrChecks: (agentId, subdir) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir),
 
-  fetchPrComments: (agentId) => fetchPrAux(set, agentId, "prComments", api.getPrComments),
+  fetchPrComments: (agentId, subdir) =>
+    fetchPrAux(set, agentId, "prComments", api.getPrComments, subdir),
 
-  delegateGitAction: (agentId, kind, prompt) => {
+  delegateGitAction: (agentId, kind, prompt, subdir) => {
     // If the agent is already running, DON'T inject the trigger mid-turn: Claude
     // coalesces a stdin message into the current turn (it wouldn't run as its
     // own turn), and the turn boundary isn't observable, so we couldn't tell our
@@ -139,6 +152,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
           sawRunning: false,
           sawGitOp: false,
           queued,
+          subdir,
         },
       },
     }));
@@ -204,11 +218,11 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     void setSetting("gitCommitAction", action);
   },
 
-  pushAgent: async (agentId) => {
+  pushAgent: async (agentId, subdir) => {
     try {
       // "up-to-date" | "pushed" — lets the UI confirm the outcome.
-      const summary = await api.pushAgent(agentId);
-      await get().fetchGitState(agentId);
+      const summary = await api.pushAgent(agentId, subdir);
+      await get().fetchGitState(agentId, subdir);
       // pr:state_changed event will update prStates automatically
       return summary;
     } catch (e) {
@@ -217,48 +231,50 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  pullAgent: (agentId) => runGitMutation(get, agentId, () => api.pullAgent(agentId)),
+  pullAgent: (agentId, subdir) =>
+    runGitMutation(get, agentId, () => api.pullAgent(agentId, subdir), subdir),
 
-  rebaseAgent: (agentId) => runGitMutation(get, agentId, () => api.rebaseAgent(agentId)),
+  rebaseAgent: (agentId, subdir) =>
+    runGitMutation(get, agentId, () => api.rebaseAgent(agentId, subdir), subdir),
 
-  commitChanges: (agentId, message) =>
-    runGitMutation(get, agentId, () => api.commitAgent(agentId, message)),
+  commitChanges: (agentId, message, subdir) =>
+    runGitMutation(get, agentId, () => api.commitAgent(agentId, message, subdir), subdir),
 
-  commitAndOpenPr: async (agentId, message) => {
+  commitAndOpenPr: async (agentId, message, subdir) => {
     try {
-      await api.commitAgent(agentId, message);
-      await api.pushAgent(agentId);
-      const pr = await api.createPr(agentId, "", "");
-      set((s) => ({ prStates: { ...s.prStates, [agentId]: pr } }));
-      await get().fetchGitState(agentId);
+      await api.commitAgent(agentId, message, subdir);
+      await api.pushAgent(agentId, subdir);
+      const pr = await api.createPr(agentId, "", "", subdir);
+      set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: pr } }));
+      await get().fetchGitState(agentId, subdir);
       return true;
     } catch (e) {
       set({ lastError: String(e) });
-      await get().fetchGitState(agentId);
+      await get().fetchGitState(agentId, subdir);
       return false;
     }
   },
 
-  stashChanges: async (agentId) => {
-    await runGitMutation(get, agentId, () => api.stashAgent(agentId));
+  stashChanges: async (agentId, subdir) => {
+    await runGitMutation(get, agentId, () => api.stashAgent(agentId, subdir), subdir);
   },
 
-  discardChanges: async (agentId) => {
-    await runGitMutation(get, agentId, () => api.discardAgentChanges(agentId));
+  discardChanges: async (agentId, subdir) => {
+    await runGitMutation(get, agentId, () => api.discardAgentChanges(agentId, subdir), subdir);
   },
 
-  abortMerge: async (agentId) => {
-    await runGitMutation(get, agentId, () => api.abortMergeAgent(agentId));
+  abortMerge: async (agentId, subdir) => {
+    await runGitMutation(get, agentId, () => api.abortMergeAgent(agentId, subdir), subdir);
   },
 
-  deleteBranch: async (agentId) => {
-    await runGitMutation(get, agentId, () => api.deleteBranchAgent(agentId));
+  deleteBranch: async (agentId, subdir) => {
+    await runGitMutation(get, agentId, () => api.deleteBranchAgent(agentId, subdir), subdir);
   },
 
-  createPr: async (agentId, title, body) => {
+  createPr: async (agentId, title, body, subdir) => {
     try {
-      const pr = await api.createPr(agentId, title, body);
-      set((s) => ({ prStates: { ...s.prStates, [agentId]: pr } }));
+      const pr = await api.createPr(agentId, title, body, subdir);
+      set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: pr } }));
       return pr;
     } catch (e) {
       set({ lastError: String(e) });
@@ -266,14 +282,14 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  mergePr: async (agentId) => {
+  mergePr: async (agentId, subdir) => {
     try {
-      await api.mergePr(agentId);
+      await api.mergePr(agentId, subdir);
       // Refresh immediately: no backend event fires on merge, and the panel
       // should transition to the merged state as soon as GitHub reports it
       // (with --auto + pending checks the PR can legitimately stay open).
-      await get().fetchPrState(agentId);
-      await get().fetchPrChecks(agentId);
+      await get().fetchPrState(agentId, subdir);
+      await get().fetchPrChecks(agentId, subdir);
     } catch (e) {
       set({ lastError: String(e) });
     }

@@ -21,6 +21,9 @@ const NEEDS_GITHUB = new Set([
 
 interface GitActionsCtx {
   agentId: string;
+  /** Target repo of a multi-repo agent (a checkout's `TrackedRepo.subdir`).
+   *  Undefined = the primary repo — byte-identical to the old behavior. */
+  subdir?: string;
   base: string;
   hasBranch: boolean;
   customActive: boolean;
@@ -45,6 +48,7 @@ interface GitActionsCtx {
 export function useGitActions(ctx: GitActionsCtx) {
   const {
     agentId,
+    subdir,
     base,
     hasBranch,
     customActive,
@@ -79,12 +83,22 @@ export function useGitActions(ctx: GitActionsCtx) {
 
   // Hand control to the coding agent: it writes the judgment part (message /
   // description / conflict edits) and executes the mutation through the app's
-  // file RPC. The panel tracks the delegation until the matching transition.
+  // file RPC. The panel tracks the delegation until the matching transition —
+  // scoped to this section's repo, so this section's watcher owns it.
   const delegate = useCallback(
     (kind: GitDelegationKind, prompt: string) => {
-      delegateGitAction(agentId, kind, prompt);
+      delegateGitAction(agentId, kind, prompt, subdir);
     },
-    [agentId, delegateGitAction],
+    [agentId, subdir, delegateGitAction],
+  );
+
+  // Trigger builder scoped to this section's repo: a secondary section adds
+  // `repo="<subdir>"` so the agent works in that sibling checkout (and passes
+  // `args.repo` on the host git ops — see git_actions.md).
+  const trigger = useCallback(
+    (name: string, params?: Record<string, string>) =>
+      appActionMessage(name, subdir ? { ...params, repo: subdir } : params),
+    [subdir],
   );
 
   // "→ chat" on a review comment: drop the formatted comment into this agent's
@@ -127,29 +141,29 @@ export function useGitActions(ctx: GitActionsCtx) {
       // lives in the agent's injected instructions (git_actions.md), keeping
       // the chat free of boilerplate. Params carry only dynamic context.
       case "agent-commit-pr":
-        delegate("commit-pr", appActionMessage("commit-pr", { base }));
+        delegate("commit-pr", trigger("commit-pr", { base }));
         break;
       case "agent-commit":
-        delegate("commit", appActionMessage("commit"));
+        delegate("commit", trigger("commit"));
         break;
       case "agent-commit-push":
-        delegate("commit-push", appActionMessage("commit-push"));
+        delegate("commit-push", trigger("commit-push"));
         break;
       case "agent-open-pr":
-        delegate("open-pr", appActionMessage("open-pr", { base }));
+        delegate("open-pr", trigger("open-pr", { base }));
         break;
       case "agent-resolve":
-        delegate("resolve", appActionMessage("resolve-conflicts"));
+        delegate("resolve", trigger("resolve-conflicts"));
         break;
       case "agent-update-branch":
         // PR can't merge cleanly with the base (the base advanced). This is NOT
         // a local in-progress merge — the agent must sync the base in first.
-        delegate("update-branch", appActionMessage("update-branch", { base }));
+        delegate("update-branch", trigger("update-branch", { base }));
         break;
       case "agent-fix":
         delegate(
           "fix-checks",
-          appActionMessage("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") }),
+          trigger("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") }),
         );
         break;
       // ── direct, agent bypassed (user typed their own message) ──
@@ -159,7 +173,7 @@ export function useGitActions(ctx: GitActionsCtx) {
           return;
         }
         void runBusy("Committing…", async () => {
-          const ok = await commitChanges(agentId, msg.trim());
+          const ok = await commitChanges(agentId, msg.trim(), subdir);
           if (ok) revertOverride();
         });
         break;
@@ -172,16 +186,16 @@ export function useGitActions(ctx: GitActionsCtx) {
         // HEAD), then let the agent name the branch and write the PR.
         if (!hasBranch) {
           void runBusy("Committing…", async () => {
-            const ok = await commitChanges(agentId, msg.trim());
+            const ok = await commitChanges(agentId, msg.trim(), subdir);
             if (ok) {
               revertOverride();
-              delegate("open-pr", appActionMessage("open-pr", { base }));
+              delegate("open-pr", trigger("open-pr", { base }));
             }
           });
           break;
         }
         void runBusy("Committing & opening PR…", async () => {
-          const ok = await commitAndOpenPr(agentId, msg.trim());
+          const ok = await commitAndOpenPr(agentId, msg.trim(), subdir);
           if (ok) revertOverride();
         });
         break;
@@ -189,11 +203,11 @@ export function useGitActions(ctx: GitActionsCtx) {
         // Needs a branch — hand to the agent to name + create one if there
         // isn't one yet; otherwise the direct gh --fill PR.
         if (!hasBranch) {
-          delegate("open-pr", appActionMessage("open-pr", { base }));
+          delegate("open-pr", trigger("open-pr", { base }));
           break;
         }
         void runBusy("Opening PR…", async () => {
-          const pr = await createPr(agentId, "", "");
+          const pr = await createPr(agentId, "", "", subdir);
           // If creation failed (e.g. a PR already exists), the local prState
           // was stale — re-fetch so the panel corrects itself.
           if (!pr) await fetchPrState(agentId);
@@ -203,7 +217,7 @@ export function useGitActions(ctx: GitActionsCtx) {
         if (prUrl) void open(prUrl);
         break;
       case "merge":
-        void runBusy("Merging…", () => mergePr(agentId));
+        void runBusy("Merging…", () => mergePr(agentId, subdir));
         break;
       case "archive":
         void runBusy("Archiving…", () => archive(agentId));
@@ -212,36 +226,36 @@ export function useGitActions(ctx: GitActionsCtx) {
         // Direct git push needs a branch; with none yet, the agent names and
         // creates one, then pushes.
         if (!hasBranch) {
-          delegate("push", appActionMessage("push"));
+          delegate("push", trigger("push"));
           break;
         }
         void runBusy("Pushing…", async () => {
-          const r = await pushAgent(agentId);
+          const r = await pushAgent(agentId, subdir);
           if (r)
             showNotice(r === "up-to-date" ? "Already up to date with origin" : "Pushed to origin");
         });
         break;
       case "pull":
         void runBusy("Pulling…", async () => {
-          if (await pullAgent(agentId)) showNotice("Pulled latest changes");
+          if (await pullAgent(agentId, subdir)) showNotice("Pulled latest changes");
         });
         break;
       case "rebase":
         void runBusy("Rebasing…", async () => {
-          if (await rebaseAgent(agentId)) showNotice(`Rebased onto ${base}`);
+          if (await rebaseAgent(agentId, subdir)) showNotice(`Rebased onto ${base}`);
         });
         break;
       case "stash":
-        void runBusy("Stashing…", () => stashChanges(agentId));
+        void runBusy("Stashing…", () => stashChanges(agentId, subdir));
         break;
       case "discard":
-        void runBusy("Discarding…", () => discardChanges(agentId));
+        void runBusy("Discarding…", () => discardChanges(agentId, subdir));
         break;
       case "abort":
-        void runBusy("Aborting…", () => abortMerge(agentId));
+        void runBusy("Aborting…", () => abortMerge(agentId, subdir));
         break;
       case "delete-branch":
-        void runBusy("Deleting branch…", () => deleteBranch(agentId));
+        void runBusy("Deleting branch…", () => deleteBranch(agentId, subdir));
         break;
       // "loading" is a non-actionable placeholder.
       default:

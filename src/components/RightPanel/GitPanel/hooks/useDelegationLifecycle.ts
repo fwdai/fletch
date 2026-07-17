@@ -12,7 +12,13 @@ import { useAppStore } from "@/store";
  *  decision is pure (`delegationStep`) and handles the tricky cases — a trigger
  *  queued behind a pre-existing turn must wait that turn out, and a settled
  *  agent only reads as "gave up" after our own turn ran or the grace window
- *  passed. Returns the active delegation (or undefined) for the render. */
+ *  passed. Returns the active delegation (or undefined) for the render.
+ *
+ *  Delegations are agent-keyed but scoped to one repo (`delegation.subdir`).
+ *  Only the section whose scope matches watches the lifecycle — its git/PR
+ *  state is the one the delegation's target transition happens in — so
+ *  exactly one lifecycle effect runs per delegation. Every section still gets
+ *  the delegation back for display (e.g. to yield the commit composer). */
 export function useDelegationLifecycle({
   agentId,
   agentStatus,
@@ -21,6 +27,7 @@ export function useDelegationLifecycle({
   checks,
   showNotice,
   fetchPrChecks,
+  subdir,
 }: {
   agentId: string;
   agentStatus: AgentRecord["status"];
@@ -29,6 +36,8 @@ export function useDelegationLifecycle({
   checks: PrChecks | null;
   showNotice: (m: string) => void;
   fetchPrChecks: (agentId: string) => unknown;
+  /** This section's repo scope; undefined = the primary repo. */
+  subdir?: string;
 }) {
   const delegation = useAppStore((s) => s.gitDelegations[agentId]);
   const markGitDelegationRunning = useAppStore((s) => s.markGitDelegationRunning);
@@ -36,7 +45,7 @@ export function useDelegationLifecycle({
   const clearGitDelegation = useAppStore((s) => s.clearGitDelegation);
 
   useEffect(() => {
-    if (!delegation) return;
+    if (!delegation || delegation.subdir !== subdir) return;
     const resolved = delegationResolved(delegation.kind, gitState, prState, checks);
     switch (delegationStep(delegation, agentStatus, resolved, Date.now())) {
       case "resolve":
@@ -64,6 +73,7 @@ export function useDelegationLifecycle({
         break;
     }
   }, [
+    subdir,
     delegation,
     agentId,
     agentStatus,

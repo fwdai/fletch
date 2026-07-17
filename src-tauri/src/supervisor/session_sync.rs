@@ -87,7 +87,7 @@ impl Supervisor {
             // Only bound PRs are emitted app-wide: an unbound merged/closed PR
             // discovered on a recycled branch name is focused-panel display
             // (`get_pr_state`), not this agent's state.
-            let state = resolve_pr_state(&workspace, &agent_id)
+            let state = resolve_pr_state(&workspace, &agent_id, None)
                 .await
                 .and_then(|(pr, bound)| bound.then_some(pr));
             emit_pr_state(&app, &agent_id, state);
@@ -149,9 +149,15 @@ pub(crate) fn persist_pr_snapshot(
 pub(crate) async fn resolve_pr_state(
     workspace: &WorkspaceManager,
     agent_id: &str,
+    subdir: Option<&str>,
 ) -> Option<(PrState, bool)> {
     let record = workspace.agent(agent_id).ok()?;
-    let repo = record.repos.first()?;
+    let repo = match subdir {
+        // A specific checkout (the multi-repo panel's per-repo sections).
+        Some(s) => record.repos.iter().find(|r| r.subdir == s)?,
+        // Default: the primary — the app-wide badge/poll shape.
+        None => record.repos.first()?,
+    };
     // No branch yet → nothing pushed, so no PR to find or bind.
     repo.branch.as_ref()?;
     let checkout = repo_checkout_path(agent_id, &repo.subdir).ok()?;

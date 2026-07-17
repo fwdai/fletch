@@ -1,204 +1,99 @@
-import { useEffect, useState } from "react";
-import type { AgentRecord } from "@/api";
-import { delegationLabel } from "@/components/RightPanel/delegation";
+import { useCallback, useEffect, useRef } from "react";
+import type { AgentRecord, GitState, TrackedRepo } from "@/api";
 import { useAppStore } from "@/store";
-import { ActionBar } from "./ActionBar";
-import { ChangesList } from "./ChangesList";
-import { CommitComposer } from "./CommitComposer";
-import { ClosedPRCard, ConflictCard, PRCard } from "./cards";
-import { EmptyState } from "./EmptyState";
-import { useActionBarModel } from "./hooks/useActionBarModel";
-import { useCommitDraft } from "./hooks/useCommitDraft";
-import { useDelegationLifecycle } from "./hooks/useDelegationLifecycle";
-import { useGitActions } from "./hooks/useGitActions";
-import { useGitPanelData } from "./hooks/useGitPanelData";
-import { useTransientFeedback } from "./hooks/useTransientFeedback";
-import { StatusHeader } from "./StatusHeader";
+import { gitKey } from "@/store/git";
+import { basename } from "@/util/format";
+import { usePoll } from "@/util/hooks";
+import { GitRepoSection } from "./GitRepoSection";
+
+/** A repo of the agent plus the scope its section reads/writes under:
+ *  `subdir` is undefined for the primary repo (index 0 — plain agent-keyed
+ *  state, shared with live events and bulk polls) and the checkout's
+ *  directory name for secondaries. */
+interface RepoScope {
+  repo: TrackedRepo;
+  subdir?: string;
+}
+
+const scopesFor = (agent: AgentRecord): RepoScope[] =>
+  agent.repos.map((repo, i) => ({ repo, subdir: i === 0 ? undefined : repo.subdir }));
+
+/** A repo earns its own section once it has anything git-worthy to show:
+ *  uncommitted changes, a named branch, or a bound PR. A repo targeted by the
+ *  agent's in-flight delegation is pinned active regardless — its section owns
+ *  the lifecycle watcher, so it must not unmount mid-delegation (e.g. when a
+ *  commit empties the file list before the branch materializes). */
+const repoActive = (
+  scope: RepoScope,
+  gitStates: Record<string, GitState>,
+  agentId: string,
+  delegatedSubdir: string | null | undefined,
+) =>
+  (delegatedSubdir !== null && scope.subdir === delegatedSubdir) ||
+  (gitStates[gitKey(agentId, scope.subdir)]?.files.length ?? 0) > 0 ||
+  Boolean(scope.repo.branch) ||
+  scope.repo.pr_number != null;
 
 /** State-aware git panel driven by live git state from the Tauri backend.
- *  Layout: a color-coded status header (the at-a-glance state signal), a
- *  scrollable body (the changes / PR card — the focus), and a pinned footer
- *  holding the commit message plus a responsive action bar (status left,
- *  split-button right; stacks full-width on a narrow panel via a container
- *  query). The panel is feature-flagged in settings.
- *
- *  The component is a thin orchestrator: live reads + polling live in
- *  `useGitPanelData`, the commit draft in `useCommitDraft`, busy/notice in
- *  `useTransientFeedback`, the agent-handoff lifecycle in
- *  `useDelegationLifecycle`, the dispatch table in `useGitActions`, and the
- *  split-button model in `useActionBarModel`. */
+ *  Single-repo agents render one `GitRepoSection` — exactly the panel as it
+ *  always was. Multi-repo agents render one section per ACTIVE repo (changes,
+ *  branch, or PR), each under a slim repo-name header; when nothing is active
+ *  yet, just the primary repo's section (its empty state) without a header. */
 export function GitPanel({ agent }: { agent: AgentRecord }) {
-  const {
-    gitState,
-    prState,
-    checks,
-    comments,
-    mergeState,
-    prOpen,
-    panelState,
-    fetchGitState,
-    fetchPrState,
-    fetchPrChecks,
-  } = useGitPanelData(agent.id);
+  if (agent.repos.length <= 1) {
+    return <GitRepoSection agent={agent} repo={agent.repos[0]} />;
+  }
+  return <MultiRepoGitPanel agent={agent} />;
+}
 
-  const { busy, runBusy, notice, showNotice } = useTransientFeedback(agent.id);
-  const { override, msg, setMsg, commitRef, customActive, openOverride, revertOverride } =
-    useCommitDraft(agent.id, panelState);
-
-  const delegation = useDelegationLifecycle({
-    agentId: agent.id,
-    agentStatus: agent.status,
-    gitState,
-    prState,
-    checks,
-    showNotice,
-    fetchPrChecks,
+function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
+  const fetchGitState = useAppStore((s) => s.fetchGitState);
+  const gitStates = useAppStore((s) => s.gitStates);
+  // The repo scope of the agent's in-flight delegation, if any: `null` when
+  // there is no delegation (pins nothing), `undefined` when it targets the
+  // primary. Distinct sentinel needed because `undefined` is a real scope.
+  const delegatedSubdir = useAppStore((s) => {
+    const d = s.gitDelegations[agent.id];
+    return d ? d.subdir : null;
   });
 
-  // Selected file in the changes list — kept valid across polls (fall back to
-  // the first file when the selection disappears).
-  const [selected, setSelected] = useState<string | null>(null);
+  const scopes = scopesFor(agent);
+  const active = scopes.filter((sc) => repoActive(sc, gitStates, agent.id, delegatedSubdir));
+  // Nothing active yet → the primary repo's section (today's empty state),
+  // with no section header.
+  const sections = active.length > 0 ? active : [scopes[0]];
+
+  // On mount / agent change, fetch git state for EVERY repo so "active" can be
+  // computed — rendered sections then keep their own 1s poll going.
+  const repos = agent.repos;
   useEffect(() => {
-    setSelected((prev) => {
-      const paths = gitState?.files.map((f) => f.path) ?? [];
-      if (prev && paths.includes(prev)) return prev;
-      return paths[0] ?? null;
-    });
-  }, [gitState]);
+    repos.forEach((repo, i) => void fetchGitState(agent.id, i === 0 ? undefined : repo.subdir));
+  }, [agent.id, repos, fetchGitState]);
 
-  const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
-  const hasOrigin = gitState?.has_origin ?? true;
-
-  const branch = gitState?.branch || agent.repos[0]?.branch || "(no branch yet)";
-  const base = gitState?.parent_branch || agent.repos[0]?.parent_branch || "main";
-  // The checkout is detached until its first push; a branch is only born from
-  // an agent that names it. So a direct (agent-bypassed) action that needs a
-  // branch — push, open PR — can't run yet: it routes through the agent
-  // instead, which picks a conventional name and creates the branch.
-  const hasBranch = Boolean(gitState?.branch || agent.repos[0]?.branch);
-
-  const { runAction, addCommentToChat } = useGitActions({
-    agentId: agent.id,
-    base,
-    hasBranch,
-    customActive,
-    msg,
-    checks,
-    prUrl: prState?.url,
-    githubConnected,
-    hasOrigin,
-    runBusy,
-    showNotice,
-    openOverride,
-    revertOverride,
-    fetchPrState,
-  });
-
-  const { primary, items, effectiveKey, tone, mainDisabled, onSelectAction } = useActionBarModel({
-    agentId: agent.id,
-    panelState,
-    gitState,
-    prState,
-    checks,
-    mergeState,
-    prOpen,
-    base,
-    customActive,
-    delegationActive: delegation != null,
-    githubConnected,
-  });
-
-  // Pushed state: link the commit count out to GitHub — a single commit when
-  // only one is ahead, otherwise the base..branch compare (commit list + full
-  // diff). Gated on nothing being unpushed, so the tip is on origin and the
-  // link can't 404. Needs the origin web base (github.com remotes only).
-  const webBase = gitState?.remote_url ?? null;
-  const aheadCount = gitState?.ahead ?? 0;
-  const unpushed = gitState?.unpushed ?? 0;
-  const pushedLink: string | null =
-    webBase && unpushed === 0 && aheadCount > 0
-      ? aheadCount === 1 && gitState?.head_sha
-        ? `${webBase}/commit/${gitState.head_sha}`
-        : `${webBase}/compare/${base}...${branch}`
-      : null;
-
-  // Show the changes list only when there are uncommitted files to display.
-  // The commit composer yields while the agent holds a delegation.
-  const showFiles = panelState === "changes" || panelState === "conflicts";
-  const showCommit = panelState === "changes" && !delegation;
+  // Repos without a rendered section have no per-section poll, so sweep them
+  // on a slow cadence — an agent touching a dormant repo promotes it to a
+  // section within a tick. Read through a ref so the poll's identity is
+  // stable (the active set changes with every gitStates write).
+  const dormantRef = useRef<RepoScope[]>([]);
+  dormantRef.current =
+    active.length > 0 ? scopes.filter((sc) => !active.includes(sc)) : scopes.slice(1);
+  const pollDormant = useCallback(async () => {
+    await Promise.all(dormantRef.current.map((sc) => fetchGitState(agent.id, sc.subdir)));
+  }, [agent.id, fetchGitState]);
+  usePoll(pollDormant, 5000, [pollDormant]);
 
   return (
-    <div className="git-wrap">
-      {/* ── color-coded status header: the at-a-glance state signal ── */}
-      <StatusHeader
-        state={panelState}
-        branch={branch}
-        base={base}
-        git={gitState}
-        pr={prState}
-        mergeState={mergeState}
-        checksFailed={checks?.failed ?? 0}
-      />
-
-      {/* ── scrollable body: the changes are the focus ── */}
-      <div className={`git-body ${busy ? "busy" : ""}`}>
-        {panelState === "pr-open" && prState && (
-          <PRCard
-            pr={prState}
-            base={base}
-            checks={checks}
-            comments={comments}
-            onAddToChat={addCommentToChat}
-          />
-        )}
-        {panelState === "pr-closed" && prState && <ClosedPRCard pr={prState} />}
-        {panelState === "conflicts" && gitState && <ConflictCard files={gitState.files} />}
-
-        {showFiles && (
-          <ChangesList
-            files={gitState?.files ?? []}
-            selected={selected}
-            onSelect={setSelected}
-            onRefresh={() => void fetchGitState(agent.id)}
-          />
-        )}
-
-        <EmptyState state={panelState} base={base} />
-      </div>
-
-      {/* ── pinned footer: commit message + status + action ── */}
-      <div className="git-foot">
-        {showCommit && (
-          <CommitComposer
-            writing={override}
-            msg={msg}
-            setMsg={setMsg}
-            textareaRef={commitRef}
-            onOpen={openOverride}
-            onRevert={revertOverride}
-            onSubmit={() => runAction(effectiveKey)}
-          />
-        )}
-
-        <ActionBar
-          statusKind={primary.statusKind}
-          statusLabel={primary.statusLabel}
-          statusExtra={primary.statusExtra}
-          busy={busy}
-          delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
-          notice={notice}
-          panelState={panelState}
-          pushedLink={pushedLink}
-          aheadCount={aheadCount}
-          prUrl={prState?.url}
-          items={items}
-          selectedKey={effectiveKey}
-          tone={tone}
-          mainDisabled={mainDisabled}
-          onSelect={onSelectAction}
-          onRun={() => runAction(effectiveKey)}
-        />
-      </div>
+    <div className="git-multi">
+      {sections.map((sc) => (
+        <section key={sc.repo.subdir} className="git-repo-sect">
+          {active.length > 0 && (
+            <div className="git-repo-name text-xs">
+              {sc.repo.label ?? basename(sc.repo.repo_path)}
+            </div>
+          )}
+          <GitRepoSection agent={agent} repo={sc.repo} subdir={sc.subdir} />
+        </section>
+      ))}
     </div>
   );
 }

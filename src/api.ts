@@ -681,26 +681,39 @@ export const api = {
   addRepoToAgent: (agentId: string, repoPath: string) =>
     invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
   allocateDraftName: (used: string[]) => invoke<string>("allocate_draft_name", { used }),
-  getGitState: (agentId: string) => invoke<GitState | null>("get_git_state", { agentId }),
+  // Git/PR commands below take an optional `subdir` (a checkout's directory
+  // name from `TrackedRepo.subdir`) to target one repo of a multi-repo agent.
+  // Omitted/undefined serializes to None = the agent's primary (first) repo.
+  getGitState: (agentId: string, subdir?: string) =>
+    invoke<GitState | null>("get_git_state", { agentId, subdir }),
   getAllShortstats: () => invoke<Record<string, ShortStats>>("get_all_shortstats"),
-  getPrState: (agentId: string) => invoke<PrState | null>("get_pr_state", { agentId }),
+  getPrState: (agentId: string, subdir?: string) =>
+    invoke<PrState | null>("get_pr_state", { agentId, subdir }),
   refreshAllPrStates: () => invoke<Record<string, PrState | null>>("refresh_all_pr_states"),
   refreshAllPrChecks: () => invoke<Record<string, PrChecks | null>>("refresh_all_pr_checks"),
-  getPrChecks: (agentId: string) => invoke<PrChecks | null>("get_pr_checks", { agentId }),
-  getPrComments: (agentId: string) => invoke<PrComments | null>("get_pr_comments", { agentId }),
-  pushAgent: (agentId: string) => invoke<string>("push_agent", { agentId }),
-  pullAgent: (agentId: string) => invoke<void>("pull_agent", { agentId }),
-  rebaseAgent: (agentId: string) => invoke<void>("rebase_agent", { agentId }),
-  commitAgent: (agentId: string, message: string) =>
-    invoke<void>("commit_agent", { agentId, message }),
-  discardAgentChanges: (agentId: string) => invoke<void>("discard_agent_changes", { agentId }),
-  stashAgent: (agentId: string) => invoke<void>("stash_agent", { agentId }),
-  abortMergeAgent: (agentId: string) => invoke<void>("abort_merge_agent", { agentId }),
-  deleteBranchAgent: (agentId: string) => invoke<void>("delete_branch_agent", { agentId }),
+  getPrChecks: (agentId: string, subdir?: string) =>
+    invoke<PrChecks | null>("get_pr_checks", { agentId, subdir }),
+  getPrComments: (agentId: string, subdir?: string) =>
+    invoke<PrComments | null>("get_pr_comments", { agentId, subdir }),
+  pushAgent: (agentId: string, subdir?: string) =>
+    invoke<string>("push_agent", { agentId, subdir }),
+  pullAgent: (agentId: string, subdir?: string) => invoke<void>("pull_agent", { agentId, subdir }),
+  rebaseAgent: (agentId: string, subdir?: string) =>
+    invoke<void>("rebase_agent", { agentId, subdir }),
+  commitAgent: (agentId: string, message: string, subdir?: string) =>
+    invoke<void>("commit_agent", { agentId, message, subdir }),
+  discardAgentChanges: (agentId: string, subdir?: string) =>
+    invoke<void>("discard_agent_changes", { agentId, subdir }),
+  stashAgent: (agentId: string, subdir?: string) =>
+    invoke<void>("stash_agent", { agentId, subdir }),
+  abortMergeAgent: (agentId: string, subdir?: string) =>
+    invoke<void>("abort_merge_agent", { agentId, subdir }),
+  deleteBranchAgent: (agentId: string, subdir?: string) =>
+    invoke<void>("delete_branch_agent", { agentId, subdir }),
   listRepoBranches: (repoPath: string) => invoke<string[]>("list_repo_branches", { repoPath }),
-  createPr: (agentId: string, title: string, body: string) =>
-    invoke<PrState>("create_pr", { agentId, title, body }),
-  mergePr: (agentId: string) => invoke<void>("merge_pr", { agentId }),
+  createPr: (agentId: string, title: string, body: string, subdir?: string) =>
+    invoke<PrState>("create_pr", { agentId, title, body, subdir }),
+  mergePr: (agentId: string, subdir?: string) => invoke<void>("merge_pr", { agentId, subdir }),
   openAgentShell: (agentId: string) => invoke<void>("open_agent_shell", { agentId }),
   closeAgentShell: (agentId: string) => invoke<void>("close_agent_shell", { agentId }),
   writeToShell: (agentId: string, data: string) =>

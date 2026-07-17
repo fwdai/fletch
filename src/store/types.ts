@@ -219,8 +219,10 @@ export interface ReposSlice {
 }
 
 export interface GitSlice {
-  /** Full git state, keyed by agent_id — branch, ahead/behind, file list,
-   *  totals. Only populated for the focused agent (by GitPanel's 1s poll
+  /** Full git state — branch, ahead/behind, file list, totals. Keyed by
+   *  `gitKey(agentId, subdir?)` (store/git.ts): the plain agent_id addresses
+   *  the primary repo, `agentId::subdir` a secondary repo of a multi-repo
+   *  agent. Only populated for the focused agent (by GitPanel's 1s poll
    *  while it's mounted). For sidebar shortstats / right-rail badges of
    *  other agents, read from `gitShortstats` instead. */
   gitStates: Record<string, GitState>;
@@ -229,13 +231,17 @@ export interface GitSlice {
    *  poll — kept in its own map so the focused agent's richer `gitStates`
    *  entry isn't clobbered by a slower bulk reply. */
   gitShortstats: Record<string, ShortStats>;
-  /** PR state per agent, keyed by agent_id. Updated by the pr:state_changed watcher event. */
+  /** PR state, keyed by `gitKey(agentId, subdir?)` — plain agent_id for the
+   *  primary repo (updated by the pr:state_changed watcher event + bulk
+   *  polls), `agentId::subdir` for a secondary repo. */
   prStates: Record<string, PrState | null>;
-  /** Rich PR merge-gate + checks per agent. Absent key = not yet fetched;
-   *  `null` = confirmed unavailable (no PR / gh failure). */
+  /** Rich PR merge-gate + checks, keyed by `gitKey(agentId, subdir?)`. Absent
+   *  key = not yet fetched; `null` = confirmed unavailable (no PR / gh
+   *  failure). */
   prChecks: Record<string, PrChecks | null>;
-  /** Unresolved PR review comments per agent. Absent = not yet fetched;
-   *  `null` = confirmed unavailable (no PR / gh failure). */
+  /** Unresolved PR review comments, keyed by `gitKey(agentId, subdir?)`.
+   *  Absent = not yet fetched; `null` = confirmed unavailable (no PR / gh
+   *  failure). */
   prComments: Record<string, PrComments | null>;
   /** Active agent-delegated git action per agent (absent = none). Set when a
    *  panel action hands control to the agent; cleared by the panel when the
@@ -245,12 +251,14 @@ export interface GitSlice {
    *  across workspaces, persisted in settings until the user picks another. */
   gitCommitAction: GitCommitAction;
 
-  /** Fetch full git state for one agent (used by the focused panel's poll). */
-  fetchGitState: (agentId: string) => Promise<void>;
+  /** Fetch full git state for one agent (used by the focused panel's poll).
+   *  `subdir` targets a secondary repo of a multi-repo agent (stored under
+   *  `gitKey(agentId, subdir)`); omitted = the primary repo, plain key. */
+  fetchGitState: (agentId: string, subdir?: string) => Promise<void>;
   /** Fetch compact shortstats for every live agent in one round-trip
    *  (used by the app-wide background poll). */
   fetchAllShortstats: () => Promise<void>;
-  fetchPrState: (agentId: string) => Promise<void>;
+  fetchPrState: (agentId: string, subdir?: string) => Promise<void>;
   /** Refresh PR state for every agent with a known PR in one round-trip
    *  (used by the app-wide background poll). Backend emits `pr:state_changed`
    *  per agent, so the sidebar badge updates without opening the Git panel. */
@@ -259,9 +267,15 @@ export interface GitSlice {
    *  (used by the app-wide background poll) so the sidebar PR pill can tint
    *  pass/fail without opening the Git panel. */
   refreshAllPrChecks: () => Promise<void>;
-  fetchPrChecks: (agentId: string) => Promise<void>;
-  fetchPrComments: (agentId: string) => Promise<void>;
-  delegateGitAction: (agentId: string, kind: GitDelegationKind, prompt: string) => void;
+  fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
+  fetchPrComments: (agentId: string, subdir?: string) => Promise<void>;
+  delegateGitAction: (
+    agentId: string,
+    kind: GitDelegationKind,
+    prompt: string,
+    /** Target checkout of a multi-repo agent; undefined = primary. */
+    subdir?: string,
+  ) => void;
   markGitDelegationRunning: (agentId: string) => void;
   /** The agent ran a successful mutating git op `op` (backend
    *  `agent:git-action`). Sets the causal proof only if `op` matches the
@@ -273,22 +287,27 @@ export interface GitSlice {
   clearGitDelegation: (agentId: string) => void;
   setGitCommitAction: (action: GitCommitAction) => void;
   /** Resolves to "up-to-date" | "pushed" on success, null on error. */
-  pushAgent: (agentId: string) => Promise<string | null>;
+  pushAgent: (agentId: string, subdir?: string) => Promise<string | null>;
   /** Resolves true on success, false on error. */
-  pullAgent: (agentId: string) => Promise<boolean>;
+  pullAgent: (agentId: string, subdir?: string) => Promise<boolean>;
   /** Resolves true on success, false on error. */
-  rebaseAgent: (agentId: string) => Promise<boolean>;
-  commitChanges: (agentId: string, message: string) => Promise<boolean>;
+  rebaseAgent: (agentId: string, subdir?: string) => Promise<boolean>;
+  commitChanges: (agentId: string, message: string, subdir?: string) => Promise<boolean>;
   /** Commit all changes, push, and open a PR — the "Commit & open PR"
    *  primary CTA wired from the git panel. Returns false on any step
    *  failure so the UI can leave the textarea content in place. */
-  commitAndOpenPr: (agentId: string, message: string) => Promise<boolean>;
-  stashChanges: (agentId: string) => Promise<void>;
-  discardChanges: (agentId: string) => Promise<void>;
-  abortMerge: (agentId: string) => Promise<void>;
-  deleteBranch: (agentId: string) => Promise<void>;
-  createPr: (agentId: string, title: string, body: string) => Promise<PrState | null>;
-  mergePr: (agentId: string) => Promise<void>;
+  commitAndOpenPr: (agentId: string, message: string, subdir?: string) => Promise<boolean>;
+  stashChanges: (agentId: string, subdir?: string) => Promise<void>;
+  discardChanges: (agentId: string, subdir?: string) => Promise<void>;
+  abortMerge: (agentId: string, subdir?: string) => Promise<void>;
+  deleteBranch: (agentId: string, subdir?: string) => Promise<void>;
+  createPr: (
+    agentId: string,
+    title: string,
+    body: string,
+    subdir?: string,
+  ) => Promise<PrState | null>;
+  mergePr: (agentId: string, subdir?: string) => Promise<void>;
   /** Publish a local-only project (no origin) to GitHub, then refresh git
    *  state so the panel switches out of the no-origin affordances. Resolves
    *  the repo web URL on success, null on error. */
