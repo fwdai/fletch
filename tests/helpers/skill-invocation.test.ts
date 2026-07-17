@@ -33,8 +33,10 @@ describe("invocableSkills", () => {
     expect(out[0].command).toBe("code-review");
   });
 
-  it("drops a skill whose slug collides with a provider command", () => {
-    // "help" is a claude built-in; the provider command wins the name.
+  it("drops a skill whose slug collides with a provider built-in", () => {
+    // "help" is a claude built-in; the built-in wins the name. Only the
+    // static built-in set participates — discovered commands arrive async,
+    // so deferring to them would make precedence depend on cache timing.
     const out = invocableSkills([skill({ name: "Help" }), skill({ name: "Release" })], "claude");
     expect(out.map((s) => s.command)).toEqual(["release"]);
   });
@@ -74,7 +76,7 @@ describe("resolveSkillInvocation", () => {
     expect(resolveSkillInvocation(skills, "codex", "/")).toBeNull();
   });
 
-  it("lets a provider command win a name clash (no skill invocation)", () => {
+  it("lets a provider built-in win a name clash (no skill invocation)", () => {
     // A skill named "compact" slugs onto claude's built-in /compact; the
     // built-in keeps the name, so the text passes through as a command.
     const clashing = [skill({ name: "compact" })];

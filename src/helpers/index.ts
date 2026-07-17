@@ -8,7 +8,7 @@ import { type ChatItem, getAdapter, type RawEvent } from "../adapters";
 import { hasUsage, usageFromRecords } from "../adapters/usage";
 import { api, type SessionRecord, type UserTurn, type Workspace } from "../api";
 import { MCP_SUPPORT, mcpAttachable } from "../data/providers";
-import { commandsFor, discoverCommands } from "../data/slashCommands";
+import { builtinCommandsFor, commandsFor, discoverCommands } from "../data/slashCommands";
 import type { CustomAgent } from "../storage/customAgents";
 import { type McpServerSnapshot, snapshotMcpServer } from "../storage/mcpServers";
 import { type Skill, type SkillSnapshot, skillSlug } from "../storage/skills";
@@ -44,16 +44,18 @@ export function passthroughSlashName(
 }
 
 /** Library skills invocable as composer `/` commands, each under its slugged
- *  token. A skill whose slug collides with a provider command (built-in or
- *  discovered) drops out — the provider's command wins, so a skill named "init"
- *  can't shadow `/init` — as does a later skill sharing an earlier one's slug,
- *  so the send-time resolver picks exactly what the menu offered. */
+ *  token. Precedence is static so the menu and the send path always agree,
+ *  regardless of when async command discovery lands: built-ins win over skills
+ *  (a skill named "init" can't shadow `/init`), and skills win over commands
+ *  discovered from disk — deferring to those would make the winner depend on
+ *  cache timing, and would make the same token run different things on
+ *  different providers. A later skill sharing an earlier one's slug also
+ *  drops, so resolution picks exactly what the menu offered. */
 export function invocableSkills(
   skills: Skill[],
   providerId: string,
-  projectDir?: string,
 ): { command: string; skill: Skill }[] {
-  const taken = new Set(commandsFor(providerId, projectDir).map((c) => c.name));
+  const taken = new Set(builtinCommandsFor(providerId).map((c) => c.name));
   const out: { command: string; skill: Skill }[] = [];
   for (const skill of skills) {
     const command = skillSlug(skill.name);
@@ -74,12 +76,11 @@ export function resolveSkillInvocation(
   skills: Skill[],
   providerId: string,
   text: string,
-  projectDir?: string,
 ): { snapshot: SkillSnapshot; prompt: string } | null {
   if (!text.startsWith("/")) return null;
   const command = text.split(/\s/)[0].slice(1);
   if (!command) return null;
-  const match = invocableSkills(skills, providerId, projectDir).find((s) => s.command === command);
+  const match = invocableSkills(skills, providerId).find((s) => s.command === command);
   if (!match) return null;
   const args = text.slice(command.length + 1).trim();
   const { name, description, body } = match.skill;

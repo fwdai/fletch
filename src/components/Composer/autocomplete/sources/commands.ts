@@ -60,19 +60,25 @@ export function useCommandSource({
   }, [provider, projectDir]);
 
   const skills = useAppStore((s) => s.skills);
-  // Skills whose slug collides with a provider command are dropped inside
-  // invocableSkills — the same rule the send-time resolver applies.
+  // Precedence mirrors the send-time resolver exactly (see invocableSkills):
+  // built-ins beat skills — a colliding skill drops inside invocableSkills —
+  // and skills beat discovered commands, filtered out of the command rows
+  // below. Static on both sides, so what the menu offers is what runs no
+  // matter when discovery's async cache fill lands.
   const skillEntries = useMemo(
-    () => (includeSkills ? invocableSkills(skills, provider, projectDir) : []),
-    [includeSkills, skills, provider, projectDir],
+    () => (includeSkills ? invocableSkills(skills, provider) : []),
+    [includeSkills, skills, provider],
   );
 
   const matched = useMemo<Entry[]>(() => {
     if (query === null) return [];
     const q = query.toLowerCase();
+    // Skill tokens never equal a built-in name (those skills were dropped), so
+    // this filter can only ever hide discovered commands.
+    const claimed = new Set(skillEntries.map((s) => s.command));
     return [
       ...commands
-        .filter((c) => c.name.toLowerCase().startsWith(q))
+        .filter((c) => !claimed.has(c.name) && c.name.toLowerCase().startsWith(q))
         .map((cmd): Entry => ({ kind: "command", cmd })),
       ...skillEntries
         .filter((s) => s.command.startsWith(q))

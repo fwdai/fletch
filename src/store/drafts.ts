@@ -184,11 +184,11 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // A leading `/<skill>` invokes a library skill: its snapshot joins the
       // spawn payload (materialized + indexed like an assigned skill, deduped
       // by name against the custom agent's set) and the typed command becomes
-      // an explicit follow-it-now prompt. Provider commands win name clashes
-      // inside the resolver, so `/init` and friends pass through verbatim. The
-      // rewritten prompt is used everywhere — optimistic log and send — so the
-      // visible message matches what the transcript will replay.
-      const invocation = resolveSkillInvocation(get().skills, provider, text, draft.repoPath);
+      // an explicit follow-it-now prompt. Built-in provider commands win name
+      // clashes inside the resolver, so `/init` and friends pass through
+      // verbatim. The rewritten prompt is used everywhere — optimistic log and
+      // send — so the visible message matches what the transcript will replay.
+      const invocation = resolveSkillInvocation(get().skills, provider, text);
       const prompt = invocation ? invocation.prompt : text;
       const skills = invocation
         ? [
