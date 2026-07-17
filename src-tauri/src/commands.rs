@@ -172,9 +172,11 @@ pub fn remove_workspace_repo(
     supervisor.remove_workspace_repo(PathBuf::from(repo_path))
 }
 
-/// Attach a repo to an existing project (multi-repo projects). A non-git
-/// folder is initialized first, mirroring `add_workspace_repo`, so any local
-/// folder can join a project.
+/// Attach a repo to an existing project (multi-repo projects). Two phases,
+/// deliberately ordered so a doomed attach can never mutate the picked
+/// folder: the DB attach validates the project and commits first, and only
+/// then is a non-git folder initialized (mirroring `add_workspace_repo`).
+/// If that filesystem step fails, the DB attach is rolled back precisely.
 #[tauri::command]
 pub async fn attach_repo_to_project(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -182,15 +184,16 @@ pub async fn attach_repo_to_project(
     repo_path: String,
 ) -> Result<Workspace> {
     let sup = supervisor.inner().clone();
-    // Validate the target project before ensure_git_repo touches the picked
-    // folder: a stale settings modal (project deleted meanwhile) must fail
-    // cleanly, not leave a freshly initialized `.git` behind.
-    if !sup.project_exists(&project_id) {
-        return Err(Error::Other(format!("project not found: {project_id}")));
-    }
     let path = PathBuf::from(repo_path);
-    new_project::ensure_git_repo(&path).await?;
-    sup.attach_repo_to_project(&project_id, path)
+    let outcome = sup.attach_repo_to_project(&project_id, &path)?;
+    if let Err(e) = new_project::ensure_git_repo(&path).await {
+        // Roll back the row(s) the DB phase wrote; best-effort — it re-applies
+        // keys we wrote moments ago on a local connection, so a failure here
+        // means the DB itself is gone, and the init error is the one to show.
+        let _ = sup.undo_attach(&outcome);
+        return Err(e);
+    }
+    Ok(sup.workspace.current().expect("workspace initialized"))
 }
 
 /// Detach a repo from a project. Rejects the project's last repo and any repo
