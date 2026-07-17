@@ -2375,6 +2375,14 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
 /// the step still spawns. Pass `warn_exec_id: None` when the req describes an
 /// already-spawned agent (`pre_spawned`) whose spawn call warned already. The
 /// blackboard write-grant is derived from `owner_run_id` at spawn.
+/// An explicit `AgentSpec` override, treating an empty string as unset so a
+/// blank `model`/`effort`/`instructions` in a hand-authored or imported spec
+/// falls back to the linked custom agent's value instead of spawning with an
+/// empty argument (matches the custom-agent side's empty→None normalization).
+fn nonblank(value: &Option<String>) -> Option<String> {
+    value.clone().filter(|s| !s.is_empty())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_spawn_req(
     conn: &Connection,
@@ -2439,12 +2447,15 @@ fn build_spawn_req(
         // fallback — and so a live custom-agent step spawns identically to the
         // same alias after YAML export+import (which inlines these onto the
         // AgentSpec via `embed_custom_agents`).
-        model: agent_spec.model.clone().or(deliverables.model.clone()),
-        effort: agent_spec.effort.clone().or(deliverables.effort.clone()),
-        instructions: agent_spec
-            .instructions
-            .clone()
-            .or(deliverables.instructions.clone()),
+        //
+        // A *blank* explicit value (`""`, e.g. from a hand-authored/imported
+        // YAML) is treated as unset, so it falls through to the custom agent's
+        // value rather than spawning with an empty argument. This matches the
+        // empty→None normalization the custom-agent side already applies (see
+        // `resolve_step_deliverables` / `embed_custom_agents`).
+        model: nonblank(&agent_spec.model).or(deliverables.model.clone()),
+        effort: nonblank(&agent_spec.effort).or(deliverables.effort.clone()),
+        instructions: nonblank(&agent_spec.instructions).or(deliverables.instructions.clone()),
         custom_agent_id: agent_spec.custom_agent.clone(),
         skills: deliverables.skills,
         mcp_servers: deliverables.mcp_servers,
@@ -6373,6 +6384,23 @@ mod tests {
         assert_eq!(req.model.as_deref(), Some("sonnet"));
         assert_eq!(req.effort.as_deref(), Some("low"));
         assert_eq!(req.instructions.as_deref(), Some("Override brief."));
+    }
+
+    #[test]
+    fn build_spawn_req_blank_explicit_values_fall_back_to_custom_agent() {
+        // A blank explicit override (`""`, e.g. from a hand-authored/imported
+        // YAML) must not block the custom agent's value or reach spawn as an
+        // empty argument — it's treated as unset.
+        let conn = spawn_req_conn();
+        let mut spec = agent_spec(Some("ca1"));
+        spec.model = Some(String::new());
+        spec.effort = Some(String::new());
+        spec.instructions = Some(String::new());
+        let dummy = Path::new("/tmp/repo");
+        let req = build_spawn_req(&conn, None, &spec, "base", dummy, dummy, "r", None);
+        assert_eq!(req.model.as_deref(), Some("opus"));
+        assert_eq!(req.effort.as_deref(), Some("high"));
+        assert_eq!(req.instructions.as_deref(), Some("Be thorough."));
     }
 
     #[test]
