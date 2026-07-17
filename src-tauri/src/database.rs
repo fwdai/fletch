@@ -10,11 +10,13 @@ use crate::error::{Error, Result};
 const ALLOWED_TABLES: &[&str] = &[
     "accounts",
     "custom_agents",
+    "mcp_servers",
     "project_settings",
     "projects",
     "repos",
     "sessions",
     "settings",
+    "skills",
     "usage_daily",
     "workspaces",
     "worktrees",
@@ -851,6 +853,50 @@ mod tests {
 
         let count = db_count(&conn, "workspaces", json!({})).unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn skills_and_mcp_servers_crud_through_generic_layer() {
+        // The Settings panes CRUD these tables via the generic db_* commands
+        // (src/storage/skills.ts, mcpServers.ts). They must be allow-listed, or
+        // every insert/select/update/delete fails with "unknown table". This is
+        // the regression guard for that gate.
+        let db = test_db();
+        let conn = db.lock();
+
+        // `updated_at` is NOT NULL with no default; the storage layer supplies it
+        // (skills.ts / mcpServers.ts), so the test mirrors that.
+        let sk = db_insert(
+            &conn,
+            "skills",
+            json!({ "name": "code-review", "description": "review well", "body": "# Review",
+                    "updated_at": 0 }),
+        )
+        .unwrap();
+        let rows = db_select(&conn, "skills", json!({ "where": { "id": sk } })).unwrap();
+        assert_eq!(rows[0]["name"], "code-review");
+
+        let mcp = db_insert(
+            &conn,
+            "mcp_servers",
+            json!({ "name": "gh", "transport": "stdio", "command": "npx -y gh-mcp",
+                    "updated_at": 0 }),
+        )
+        .unwrap();
+        db_update(
+            &conn,
+            "mcp_servers",
+            json!({ "where": { "id": mcp } }),
+            json!({ "url": "https://mcp.example" }),
+        )
+        .unwrap();
+        let rows = db_select(&conn, "mcp_servers", json!({ "where": { "id": mcp } })).unwrap();
+        assert_eq!(rows[0]["url"], "https://mcp.example");
+
+        db_delete(&conn, "skills", json!({ "where": { "id": sk } })).unwrap();
+        db_delete(&conn, "mcp_servers", json!({ "where": { "id": mcp } })).unwrap();
+        assert_eq!(db_count(&conn, "skills", json!({})).unwrap(), 0);
+        assert_eq!(db_count(&conn, "mcp_servers", json!({})).unwrap(), 0);
     }
 
     #[test]

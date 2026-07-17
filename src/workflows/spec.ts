@@ -33,12 +33,34 @@ export interface Budgets {
   tests_timeout_secs?: number;
 }
 
+/** An MCP server embedded in a shared workflow (spec §5.3): the registry row
+ *  minus its local id/timestamps and minus every secret value — only env/header
+ *  KEY NAMES travel, so a shared file can never carry a token. The importer
+ *  reconciles by `name` against its local library and re-enters the values. */
+export interface McpServerDef {
+  name: string;
+  /** "stdio" | "http". */
+  transport: string;
+  command?: string;
+  url?: string;
+  /** Env var names only (values are secrets, never exported). */
+  env_keys?: string[];
+  /** HTTP header names only (values are secrets, never exported). */
+  header_keys?: string[];
+}
+
 /** A configured agent. `custom_agent` is a local id, never exported (spec §5.3). */
 export interface AgentSpec {
   base: ProviderBase;
   model?: string;
+  /** Reasoning effort (low/medium/high) applied at step spawn; inherits the
+   *  linked custom agent's effort when unset (spec §3.2). */
+  effort?: string;
   instructions?: string;
   skills?: string[];
+  /** MCP servers embedded by definition for portability; resolved by name
+   *  against the local library at spawn (spec §5.3). */
+  mcp_servers?: McpServerDef[];
   custom_agent?: string;
 }
 

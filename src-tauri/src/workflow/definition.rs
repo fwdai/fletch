@@ -164,10 +164,12 @@ pub async fn wf_def_import_yaml(
 
     let conn = db.lock();
     let local_skills = list_skill_names(&conn)?;
+    let local_mcp_servers = list_mcp_server_names(&conn)?;
     let local_agents = list_custom_agents(&conn)?;
     Ok(yaml::build_import_report(
         spec,
         &local_skills,
+        &local_mcp_servers,
         &local_agents,
     ))
 }
@@ -177,6 +179,17 @@ pub async fn wf_def_import_yaml(
 fn list_skill_names(conn: &Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare("SELECT name FROM skills")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+}
+
+fn list_mcp_server_names(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM mcp_servers")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| r.get::<_, String>(0))
@@ -212,29 +225,91 @@ fn embed_custom_agents(conn: &Connection, spec: &mut Spec) -> Result<(), String>
         };
         let resolved = conn
             .query_row(
-                "SELECT base, model, instructions, skill_ids FROM custom_agents WHERE id = ?1",
+                "SELECT base, model, effort, instructions, skill_ids, mcp_server_ids \
+                 FROM custom_agents WHERE id = ?1",
                 [&ca_id],
                 |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, Option<String>>(1)?,
-                        r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(2)?,
                         r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
                     ))
                 },
             )
             .optional()
             .map_err(|e| e.to_string())?;
         agent.custom_agent = None;
-        let Some((base, model, instructions, skill_ids_json)) = resolved else {
+        let Some((base, model, effort, instructions, skill_ids_json, mcp_ids_json)) = resolved
+        else {
             continue; // dangling id: keep whatever the alias already carried
         };
         agent.base = base;
         agent.model = model.filter(|m| !m.is_empty());
+        agent.effort = effort.filter(|e| !e.is_empty());
         agent.instructions = Some(instructions).filter(|i| !i.is_empty());
         agent.skills = resolve_skill_names(conn, &skill_ids_json)?;
+        agent.mcp_servers = resolve_mcp_defs(conn, &mcp_ids_json)?;
     }
     Ok(())
+}
+
+/// Map a JSON array of MCP server ids (a custom agent's `mcp_server_ids`) to the
+/// portable [`McpServerDef`]s embedded in an export — env/header KEY NAMES only,
+/// never their secret values (spec §5.3). Ids that no longer resolve are
+/// dropped silently: this is the *export* side, so the only reader is the file,
+/// and a deleted server simply doesn't travel.
+fn resolve_mcp_defs(
+    conn: &Connection,
+    mcp_ids_json: &str,
+) -> Result<Vec<spec::McpServerDef>, String> {
+    let ids: Vec<String> = serde_json::from_str(mcp_ids_json).unwrap_or_default();
+    let mut defs = Vec::new();
+    for id in ids {
+        let row = conn
+            .query_row(
+                "SELECT name, transport, command, env, url, headers FROM mcp_servers WHERE id = ?1",
+                [&id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some((name, transport, command, env, url, headers)) = row {
+            defs.push(spec::McpServerDef {
+                name,
+                transport,
+                command: command.trim().to_string(),
+                url: url.trim().to_string(),
+                env_keys: pair_keys(&env, '='),
+                header_keys: pair_keys(&headers, ':'),
+            });
+        }
+    }
+    Ok(defs)
+}
+
+/// The KEY names from `KEY=VALUE` / `Name: value` lines, values discarded. The
+/// export carries only the shape of an MCP server's secrets, never the secrets
+/// (spec §5.3).
+fn pair_keys(text: &str, sep: char) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let (k, _) = line.trim().split_once(sep)?;
+            let k = k.trim();
+            (!k.is_empty()).then(|| k.to_string())
+        })
+        .collect()
 }
 
 /// Map a JSON array of skill ids (a custom agent's `skill_ids`) to skill names,
@@ -277,6 +352,11 @@ fn mcp_attachable(support: &str, transport: &str) -> bool {
 pub(super) struct StepDeliverables {
     pub skills: Vec<crate::agent_profile::SkillSnapshot>,
     pub mcp_servers: Vec<crate::agent_profile::McpServerSnapshot>,
+    /// The linked custom agent's reasoning effort, when one resolves. The
+    /// scheduler applies it only as a fallback — an explicit `AgentSpec.effort`
+    /// override wins (§3.2). `None` when there's no custom agent, its row is
+    /// gone, or its effort column is null.
+    pub effort: Option<String>,
     /// Skill names/ids the definition requested that no longer resolve
     /// (deleted since the save) — or a descriptive entry when the custom
     /// agent's `skill_ids` column itself is unreadable.
@@ -304,6 +384,7 @@ pub(super) fn resolve_step_deliverables(
     conn: &Connection,
     custom_agent_id: Option<&str>,
     skill_names: &[String],
+    mcp_server_names: &[String],
     provider: &str,
 ) -> StepDeliverables {
     let mut skills: Vec<crate::agent_profile::SkillSnapshot> = Vec::new();
@@ -311,15 +392,22 @@ pub(super) fn resolve_step_deliverables(
     let mut missing_skills: Vec<String> = Vec::new();
     let mut missing_mcp_servers: Vec<String> = Vec::new();
     let mut missing_custom_agent: Option<String> = None;
+    let mut effort: Option<String> = None;
 
     let assigned: (Vec<String>, Vec<String>) = match custom_agent_id {
         None => Default::default(),
         Some(id) => {
             let row = conn
                 .query_row(
-                    "SELECT skill_ids, mcp_server_ids FROM custom_agents WHERE id = ?1",
+                    "SELECT skill_ids, mcp_server_ids, effort FROM custom_agents WHERE id = ?1",
                     [id],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                        ))
+                    },
                 )
                 .optional()
                 .ok()
@@ -331,7 +419,8 @@ pub(super) fn resolve_step_deliverables(
                 // parse failure lands in the respective missing list as a
                 // descriptive entry, so the usual event fires and the timeline
                 // says exactly what was unreadable.
-                Some((s, m)) => {
+                Some((s, m, e)) => {
+                    effort = e.filter(|v| !v.is_empty());
                     let skill_ids = match serde_json::from_str(&s) {
                         Ok(v) => v,
                         Err(e) => {
@@ -384,9 +473,10 @@ pub(super) fn resolve_step_deliverables(
 
     let support = mcp_support(provider);
     for server_id in &assigned.1 {
-        match mcp_snapshot_row(conn, server_id) {
+        match mcp_snapshot_row(conn, "id", server_id) {
             Ok(Some(snap)) => {
-                if mcp_attachable(support, &snap.transport) {
+                if mcp_attachable(support, &snap.transport) && !mcp.iter().any(|m| m.name == snap.name)
+                {
                     mcp.push(snap);
                 }
             }
@@ -396,12 +486,29 @@ pub(super) fn resolve_step_deliverables(
             _ => missing_mcp_servers.push(server_id.clone()),
         }
     }
+    // Spec-level MCP servers (from an imported workflow's embedded defs) resolve
+    // by *name* against the local library — the same warn-don't-fail path skills
+    // take. A locally-built definition leaves `mcp_server_names` empty and gets
+    // its MCP via the custom-agent ids above; the name dedup keeps the two from
+    // double-attaching the same server.
+    for name in mcp_server_names {
+        match mcp_snapshot_row(conn, "name", name) {
+            Ok(Some(snap)) => {
+                if mcp_attachable(support, &snap.transport) && !mcp.iter().any(|m| m.name == snap.name)
+                {
+                    mcp.push(snap);
+                }
+            }
+            _ => missing_mcp_servers.push(name.clone()),
+        }
+    }
     StepDeliverables {
         skills,
         mcp_servers: mcp,
         missing_skills,
         missing_mcp_servers,
         missing_custom_agent,
+        effort,
     }
 }
 
@@ -428,11 +535,16 @@ fn skill_row(
 /// pairs (KEY=VALUE / "Name: value", blanks and malformed lines skipped).
 fn mcp_snapshot_row(
     conn: &Connection,
-    server_id: &str,
+    column: &str,
+    value: &str,
 ) -> Result<Option<crate::agent_profile::McpServerSnapshot>, rusqlite::Error> {
+    // `column` is a compile-time literal ("id" | "name"), never user input.
+    let sql = format!(
+        "SELECT name, transport, command, env, url, headers FROM mcp_servers WHERE {column} = ?1 LIMIT 1"
+    );
     conn.query_row(
-        "SELECT name, transport, command, env, url, headers FROM mcp_servers WHERE id = ?1",
-        [server_id],
+        &sql,
+        [value],
         |r| {
             let command_line: String = r.get(2)?;
             let env_text: String = r.get(3)?;
@@ -481,6 +593,11 @@ mod tests {
                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
              CREATE TABLE skills (id TEXT PRIMARY KEY, name TEXT NOT NULL,
                description TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '',
+               created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE mcp_servers (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+               transport TEXT NOT NULL DEFAULT 'stdio', command TEXT NOT NULL DEFAULT '',
+               env TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+               headers TEXT NOT NULL DEFAULT '',
                created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE custom_agents (id TEXT PRIMARY KEY, name TEXT NOT NULL,
                description TEXT NOT NULL DEFAULT '', color INTEGER NOT NULL DEFAULT 0,
@@ -588,6 +705,49 @@ mod tests {
     }
 
     #[test]
+    fn export_embeds_mcp_defs_key_only_and_effort() {
+        let db = test_db();
+        {
+            let conn = db.lock();
+            conn.execute(
+                "INSERT INTO mcp_servers (id,name,transport,command,env,url,headers) \
+                 VALUES ('m1','gh','stdio','npx -y gh-mcp', \
+                         'TOKEN=supersecret' || char(10) || 'REGION=us', '', ''), \
+                        ('m2','web','http','','',' https://mcp.example ','X-Key: topsecret')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO custom_agents (id,name,base,effort,mcp_server_ids) \
+                 VALUES ('ca-1','Reviewer','claude','high','[\"m1\",\"m2\"]')",
+                [],
+            )
+            .unwrap();
+        }
+        let mut spec = sample_spec();
+        spec.agents.get_mut("coder").unwrap().custom_agent = Some("ca-1".into());
+        embed_custom_agents(&db.lock(), &mut spec).unwrap();
+
+        let agent = &spec.agents["coder"];
+        assert_eq!(agent.effort.as_deref(), Some("high"));
+        assert_eq!(agent.mcp_servers.len(), 2);
+        let gh = &agent.mcp_servers[0];
+        assert_eq!(gh.name, "gh");
+        assert_eq!(gh.transport, "stdio");
+        assert_eq!(gh.command, "npx -y gh-mcp");
+        // Keys only — the secret values never travel.
+        assert_eq!(gh.env_keys, vec!["TOKEN".to_string(), "REGION".to_string()]);
+        let web = &agent.mcp_servers[1];
+        assert_eq!(web.url, "https://mcp.example");
+        assert_eq!(web.header_keys, vec!["X-Key".to_string()]);
+
+        let out = yaml::to_yaml(&spec).unwrap();
+        assert!(!out.contains("supersecret"), "env value leaked:\n{out}");
+        assert!(!out.contains("topsecret"), "header value leaked:\n{out}");
+        assert!(out.contains("TOKEN"), "env key should be present:\n{out}");
+    }
+
+    #[test]
     fn dangling_custom_agent_id_is_dropped_gracefully() {
         let db = test_db();
         let mut spec = sample_spec();
@@ -617,7 +777,8 @@ mod tests {
              CREATE TABLE custom_agents (
                 id TEXT PRIMARY KEY,
                 skill_ids TEXT NOT NULL DEFAULT '[]',
-                mcp_server_ids TEXT NOT NULL DEFAULT '[]'
+                mcp_server_ids TEXT NOT NULL DEFAULT '[]',
+                effort TEXT
              );
              INSERT INTO skills VALUES
                 ('sk1', 'code-review', 'review well', '# Review'),
@@ -627,8 +788,8 @@ mod tests {
                  'TOKEN=t' || char(10) || 'BAD-LINE', '', ''),
                 ('m2', 'web', 'http', '', '', ' https://mcp.example ', 'X-Key: abc');
              INSERT INTO custom_agents VALUES
-                ('ca1', '[\"sk1\",\"dangling\"]', '[\"m1\",\"m2\",\"gone\"]'),
-                ('ca-corrupt', 'not-json', '{\"nope\"');",
+                ('ca1', '[\"sk1\",\"dangling\"]', '[\"m1\",\"m2\",\"gone\"]', 'high'),
+                ('ca-corrupt', 'not-json', '{\"nope\"', NULL);",
         )
         .unwrap();
         conn
@@ -641,6 +802,7 @@ mod tests {
             &conn,
             Some("ca1"),
             &["tests-first".into(), "code-review".into(), "unknown".into()],
+            &[],
             "claude",
         );
         // ca1's sk1 first (assignment order), then the spec name that isn't a
@@ -648,6 +810,8 @@ mod tests {
         let names: Vec<&str> = d.skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["code-review", "tests-first"]);
         assert_eq!(d.missing_skills, vec!["dangling", "unknown"]);
+        // ca1 carries effort 'high' — inherited by a step that doesn't override.
+        assert_eq!(d.effort.as_deref(), Some("high"));
         // ca1's deleted server id is reported — a saved agent must never lose
         // part of its requested capability snapshot silently.
         assert_eq!(d.missing_mcp_servers, vec!["gone"]);
@@ -669,35 +833,67 @@ mod tests {
     #[test]
     fn deliverables_filter_http_servers_for_stdio_only_providers() {
         let conn = library_db();
-        let d = resolve_step_deliverables(&conn, Some("ca1"), &[], "codex");
+        let d = resolve_step_deliverables(&conn, Some("ca1"), &[], &[], "codex");
         assert_eq!(d.mcp_servers.len(), 1, "codex delivers stdio only");
         assert_eq!(d.mcp_servers[0].name, "gh");
         // The provider-filtered http server ('m2') is by-design gating, never a
         // missing warning; only the genuinely deleted id is reported.
         assert_eq!(d.missing_mcp_servers, vec!["gone"]);
-        let none = resolve_step_deliverables(&conn, Some("ca1"), &[], "cursor").mcp_servers;
+        let none = resolve_step_deliverables(&conn, Some("ca1"), &[], &[], "cursor").mcp_servers;
         assert!(none.is_empty(), "providers without MCP support get none");
     }
 
     #[test]
     fn deliverables_without_custom_agent_resolve_names_only() {
         let conn = library_db();
-        let d = resolve_step_deliverables(&conn, None, &["code-review".into()], "claude");
+        let d = resolve_step_deliverables(&conn, None, &["code-review".into()], &[], "claude");
         assert_eq!(d.skills.len(), 1);
         assert_eq!(d.skills[0].name, "code-review");
         assert!(d.missing_skills.is_empty(), "everything requested resolved");
         assert!(d.missing_mcp_servers.is_empty());
         assert!(d.missing_custom_agent.is_none());
+        assert!(d.effort.is_none(), "no custom agent → no inherited effort");
         assert!(
             d.mcp_servers.is_empty(),
-            "MCP comes only via a custom agent (§5.1)"
+            "no custom agent and no spec-named MCP servers → none"
         );
+    }
+
+    #[test]
+    fn deliverables_resolve_spec_named_mcp_servers_against_library() {
+        // An imported workflow carries MCP by embedded def; at spawn the names
+        // resolve against the local library (the warn-don't-fail path skills
+        // take), with the local secret values — not the file's key-only shape.
+        let conn = library_db();
+        let d = resolve_step_deliverables(
+            &conn,
+            None,
+            &[],
+            &["gh".into(), "nonexistent".into()],
+            "claude",
+        );
+        assert_eq!(d.mcp_servers.len(), 1);
+        assert_eq!(d.mcp_servers[0].name, "gh");
+        assert_eq!(
+            d.mcp_servers[0].env,
+            vec![("TOKEN".to_string(), "t".to_string())]
+        );
+        assert_eq!(d.missing_mcp_servers, vec!["nonexistent"]);
+    }
+
+    #[test]
+    fn deliverables_dedupe_mcp_from_custom_agent_and_spec_name() {
+        // 'gh' comes via ca1's ids and again via the spec name — attach once.
+        let conn = library_db();
+        let d = resolve_step_deliverables(&conn, Some("ca1"), &[], &["gh".into()], "claude");
+        assert_eq!(d.mcp_servers.iter().filter(|m| m.name == "gh").count(), 1);
     }
 
     #[test]
     fn deliverables_report_a_deleted_custom_agent() {
         let conn = library_db();
-        let d = resolve_step_deliverables(&conn, Some("gone"), &["code-review".into()], "claude");
+        let d =
+            resolve_step_deliverables(&conn, Some("gone"), &["code-review".into()], &[], "claude");
         assert_eq!(d.missing_custom_agent.as_deref(), Some("gone"));
         // Spec-named skills still resolve; only the agent's assignments are lost.
         assert_eq!(d.skills.len(), 1);
@@ -713,7 +909,7 @@ mod tests {
         let conn = library_db();
         // The row exists but both assignment columns are malformed JSON: this
         // must warn per class, not collapse to "nothing requested".
-        let d = resolve_step_deliverables(&conn, Some("ca-corrupt"), &[], "claude");
+        let d = resolve_step_deliverables(&conn, Some("ca-corrupt"), &[], &[], "claude");
         assert!(d.missing_custom_agent.is_none(), "the row itself resolves");
         assert_eq!(d.missing_skills.len(), 1);
         assert!(

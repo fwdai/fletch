@@ -53,12 +53,53 @@ pub struct AgentSpec {
     pub base: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Reasoning effort (`low`/`medium`/`high`), applied at step spawn the same
+    /// way a session's `--effort` is. `None` inherits the linked custom agent's
+    /// effort (if any), then the provider CLI default (spec §11 / §3.2). Left
+    /// free-form and unvalidated, exactly like `model`: an unknown value is the
+    /// provider's problem, not a spec violation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
+    /// MCP servers this agent attaches, embedded *by definition* for portability
+    /// (spec §5.3). Skills travel as bare names (resolved against the importer's
+    /// library), but a shared file can't assume the importer already has an MCP
+    /// server, so its transport/command/url and env/header KEY NAMES travel with
+    /// the export. Secret values never leave this machine — the importer
+    /// recreates the server and supplies them. At spawn these resolve by `name`
+    /// against the local `mcp_servers` library (the warn-don't-fail path skills
+    /// use). Empty for a locally-built definition whose MCP comes via a linked
+    /// `custom_agent`; populated by export (`embed_custom_agents`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<McpServerDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_agent: Option<String>,
+}
+
+/// An MCP server embedded in a shared workflow (spec §5.3): the `mcp_servers`
+/// registry row minus its local id/timestamps and minus every secret value —
+/// only env/header KEY NAMES are exported, so a leaked file can never carry a
+/// token. The importer reconciles by `name` against its local library and
+/// re-enters the values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpServerDef {
+    pub name: String,
+    /// `stdio` | `http`. Left free-form for forward-compatibility.
+    pub transport: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub command: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    /// Env var names only (no values — those are secrets). The importer supplies
+    /// values when recreating the server locally.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_keys: Vec<String>,
+    /// HTTP header names only (no values — secrets, same policy as `env_keys`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub header_keys: Vec<String>,
 }
 
 /// A control-flow node (spec §5.1). Serialized externally tagged for JSON
@@ -525,8 +566,10 @@ mod tests {
             AgentSpec {
                 base: "claude".into(),
                 model: None,
+                effort: None,
                 instructions: None,
                 skills: vec![],
+                mcp_servers: vec![],
                 custom_agent: None,
             },
         );

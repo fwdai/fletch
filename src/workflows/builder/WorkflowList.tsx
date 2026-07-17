@@ -95,6 +95,8 @@ export function WorkflowList({
   onDelete,
   onExport,
   onImport,
+  onInstallStarter,
+  installing,
 }: {
   definitions: Definition[];
   loading: boolean;
@@ -106,6 +108,9 @@ export function WorkflowList({
   onDelete: (id: string) => void;
   onExport: (d: Definition) => void;
   onImport: () => void;
+  /** Seed the specialist starter pack; `undefined` once it's already installed. */
+  onInstallStarter?: () => void;
+  installing?: boolean;
 }) {
   return (
     <div className="set-pane">
@@ -120,6 +125,12 @@ export function WorkflowList({
           {definitions.length} workflow{definitions.length === 1 ? "" : "s"}
         </span>
         <div className="wf-list-acts">
+          {onInstallStarter && (
+            <button className="btn-t" onClick={onInstallStarter} disabled={installing}>
+              <Icon name="sparkle" size={13} />{" "}
+              {installing ? "Installing…" : "Install starter pack"}
+            </button>
+          )}
           <button className="btn-t" onClick={onImport}>
             <Icon name="upload" size={13} /> Import
           </button>
@@ -178,12 +189,36 @@ export function WorkflowList({
           </div>
         )}
         {!loading && definitions.length === 0 && (
-          <button className="wb-add" style={{ width: "100%", minHeight: 120 }} onClick={onNew}>
-            <span className="wb-add-ic">
-              <Icon name="plus" />
-            </span>
-            <span className="wb-add-l">Create your first workflow</span>
-          </button>
+          <>
+            {onInstallStarter && (
+              <button
+                className="wf-card wf-starter-card"
+                onClick={onInstallStarter}
+                disabled={installing}
+              >
+                <div className="wf-card-h">
+                  <span className="wf-starter-ic">
+                    <Icon name="sparkle" />
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+                    <div className="wf-name">
+                      {installing ? "Installing starter pack…" : "Install the starter pack"}
+                    </div>
+                    <div className="wf-desc">
+                      Seeds four specialist agents — Architect, Coder, Reviewer, Tester — and a
+                      ready-to-run Feature pipeline that chains them.
+                    </div>
+                  </div>
+                </div>
+              </button>
+            )}
+            <button className="wb-add" style={{ width: "100%", minHeight: 120 }} onClick={onNew}>
+              <span className="wb-add-ic">
+                <Icon name="plus" />
+              </span>
+              <span className="wb-add-l">Create your first workflow</span>
+            </button>
+          </>
         )}
       </div>
     </div>

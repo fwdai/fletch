@@ -33,6 +33,10 @@ pub struct SpawnReq {
     /// Provider id (`claude` | `codex` | …).
     pub provider: String,
     pub model: Option<String>,
+    /// Session-level reasoning effort (claude `--effort`) for this step. Resolved
+    /// by the scheduler from the alias's `effort` override, falling back to the
+    /// linked custom agent's effort (§3.2); `None` uses the provider default.
+    pub effort: Option<String>,
     pub instructions: Option<String>,
     /// Local custom-agent id, when the step's agent alias maps to one.
     pub custom_agent_id: Option<String>,
@@ -119,6 +123,7 @@ impl AgentDriver for SupervisorDriver {
                 repo_path,
                 provider,
                 model,
+                effort,
                 instructions,
                 custom_agent_id,
                 skills,
@@ -139,7 +144,7 @@ impl AgentDriver for SupervisorDriver {
                         repo_path,
                         provider,
                         name: None,
-                        effort: None,
+                        effort,
                         model,
                         instructions,
                         // Workflow steps are not forks; no carried conversation.
@@ -515,6 +520,7 @@ mod tests {
                 repo_path: PathBuf::from("/r"),
                 provider: "claude".into(),
                 model: None,
+                effort: None,
                 instructions: None,
                 custom_agent_id: None,
                 skills: vec![],
@@ -542,6 +548,7 @@ mod tests {
                 repo_path: PathBuf::from("/r"),
                 provider: "claude".into(),
                 model: None,
+                effort: None,
                 instructions: None,
                 custom_agent_id: None,
                 skills: vec![],

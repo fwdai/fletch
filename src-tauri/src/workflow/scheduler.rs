@@ -2386,10 +2386,13 @@ fn build_spawn_req(
     run_id: &str,
     warn_exec_id: Option<&str>,
 ) -> SpawnReq {
+    let mcp_server_names: Vec<String> =
+        agent_spec.mcp_servers.iter().map(|d| d.name.clone()).collect();
     let deliverables = super::definition::resolve_step_deliverables(
         conn,
         agent_spec.custom_agent.as_deref(),
         &agent_spec.skills,
+        &mcp_server_names,
         &agent_spec.base,
     );
     if let Some(exec_id) = warn_exec_id {
@@ -2428,6 +2431,10 @@ fn build_spawn_req(
         repo_path: repo.to_path_buf(),
         provider: agent_spec.base.clone(),
         model: agent_spec.model.clone(),
+        // The alias's explicit effort wins; otherwise inherit the linked custom
+        // agent's effort (§3.2). Resolved here rather than in the driver so the
+        // one place that reads the custom_agents row also owns the fallback.
+        effort: agent_spec.effort.clone().or(deliverables.effort.clone()),
         instructions: agent_spec.instructions.clone(),
         custom_agent_id: agent_spec.custom_agent.clone(),
         skills: deliverables.skills,
@@ -6329,8 +6336,10 @@ mod tests {
             super::super::spec::AgentSpec {
                 base: "codex".to_string(),
                 model: None,
+                effort: None,
                 instructions: None,
                 skills: vec![],
+                mcp_servers: vec![],
                 custom_agent: None,
             },
         );
@@ -6459,8 +6468,10 @@ mod tests {
             super::super::spec::AgentSpec {
                 base: "codex".to_string(),
                 model: None,
+                effort: None,
                 instructions: None,
                 skills: vec![],
+                mcp_servers: vec![],
                 custom_agent: None,
             },
         );
@@ -7201,8 +7212,10 @@ mod tests {
             super::super::spec::AgentSpec {
                 base: "codex".to_string(),
                 model: None,
+                effort: None,
                 instructions: None,
                 skills: vec![],
+                mcp_servers: vec![],
                 custom_agent: None,
             },
         );
@@ -7985,8 +7998,10 @@ mod tests {
             super::super::spec::AgentSpec {
                 base: "codex".to_string(),
                 model: None,
+                effort: None,
                 instructions: None,
                 skills: vec![],
+                mcp_servers: vec![],
                 custom_agent: None,
             },
         );
@@ -8825,8 +8840,10 @@ mod tests {
             super::super::spec::AgentSpec {
                 base: "codex".to_string(),
                 model: None,
+                effort: None,
                 instructions: None,
                 skills: vec![],
+                mcp_servers: vec![],
                 custom_agent: None,
             },
         );
@@ -9377,8 +9394,10 @@ mod tests {
                 super::super::spec::AgentSpec {
                     base: "codex".to_string(),
                     model: None,
+                    effort: None,
                     instructions: None,
                     skills: vec![],
+                    mcp_servers: vec![],
                     custom_agent: None,
                 },
             );
@@ -10009,8 +10028,10 @@ mod tests {
                 super::super::spec::AgentSpec {
                     base: "codex".to_string(),
                     model: None,
+                    effort: None,
                     instructions: None,
                     skills: vec![],
+                    mcp_servers: vec![],
                     custom_agent: None,
                 },
             );
