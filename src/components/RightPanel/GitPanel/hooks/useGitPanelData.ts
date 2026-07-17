@@ -23,8 +23,9 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
   const gitState = useAppStore((s) => s.gitStates[key] ?? null);
   // PR state with the database-snapshot fallback (same policy as usePrState,
   // scoped to this section's repo): live store value wins; the last persisted
-  // snapshot fills in when live state is absent or null.
-  const livePr = useAppStore((s) => s.prStates[key] ?? null);
+  // snapshot fills in only when live state was never fetched (absent key).
+  // Keep `undefined` distinct from `null` here — see the fallback below.
+  const livePr = useAppStore((s) => s.prStates[key]);
   // A scoped (secondary) section must NEVER fall back to the primary repo for
   // its snapshot — that would leak the primary's persisted PR number/title
   // into this repo's card until the scoped fetch lands. Its snapshot comes
@@ -34,7 +35,14 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
       ? (repo ?? s.workspace?.agents.find((a) => a.id === agentId)?.repos[0])
       : repo,
   );
-  const prState = useMemo(() => livePr ?? prSnapshot(snapshotRepo), [livePr, snapshotRepo]);
+  // A present key — including a confirmed `null` (fetch returned no PR) — is
+  // authoritative and wins. Only an absent key (undefined = never fetched)
+  // falls back to the persisted snapshot, so a scoped fetch that confirmed no
+  // PR clears the card instead of rendering this repo's stale snapshot.
+  const prState = useMemo(
+    () => (livePr !== undefined ? livePr : prSnapshot(snapshotRepo)),
+    [livePr, snapshotRepo],
+  );
 
   const fetchGitStateStore = useAppStore((s) => s.fetchGitState);
   const fetchPrStateStore = useAppStore((s) => s.fetchPrState);
