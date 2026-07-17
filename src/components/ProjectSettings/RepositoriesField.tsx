@@ -5,12 +5,13 @@ import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
 
-/** Where the project lives on disk. Each repo row carries its own path,
- *  relocate action, and an optional label ("Frontend", "Gateway") that names
- *  it inside the project. One repo is the common case; attaching more turns
- *  the project multi-repo, grouped under a single sidebar entry. The project
- *  itself has no location — repos can live anywhere. */
-export function RepositoriesSection({ projectId }: { projectId: string }) {
+/** The repositories field of the General section: where the project lives on
+ *  disk. Each repo row carries its own path, relocate action, and an optional
+ *  label ("Frontend", "Gateway") that names it inside the project. One repo is
+ *  the common case; attaching more turns the project multi-repo, grouped under
+ *  a single sidebar entry. The project itself has no location — repos can live
+ *  anywhere. */
+export function RepositoriesField({ projectId }: { projectId: string }) {
   const projects = useAppStore((s) => s.workspace?.projects);
   const attachRepoToProject = useAppStore((s) => s.attachRepoToProject);
   const detachRepoFromProject = useAppStore((s) => s.detachRepoFromProject);
@@ -55,14 +56,8 @@ export function RepositoriesSection({ projectId }: { projectId: string }) {
   }
 
   return (
-    <section className="ps-section">
-      <header className="ps-section-h">
-        <h2 className="ps-section-t text-lg">Repositories</h2>
-        <p className="ps-section-lead text-sm">
-          Where this project lives on disk. Attach more repositories to group a frontend, a backend,
-          and more under one project — they can live anywhere on your machine.
-        </p>
-      </header>
+    <div className="ps-field">
+      <span className="ps-label text-sm">Repositories</span>
 
       <div className="ps-repo-list">
         {repos.map((r, i) => (
@@ -82,12 +77,13 @@ export function RepositoriesSection({ projectId }: { projectId: string }) {
         Attach repository…
       </button>
       <p className="ps-hint text-xs">
-        Labels name each repository inside the project. New agents currently start in the primary
-        repository. Detaching and relocating never touch the folder on disk.
+        Attach more repositories to group a frontend, a backend, and more under one project — they
+        can live anywhere on disk. Labels name each repository inside the project; new agents
+        currently start in the primary one. Detaching and relocating never touch the folder on disk.
       </p>
 
       {error && <div className="ps-error text-sm">{error}</div>}
-    </section>
+    </div>
   );
 }
 

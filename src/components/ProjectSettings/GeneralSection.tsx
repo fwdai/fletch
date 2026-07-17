@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAppStore } from "@/store";
+import { RepositoriesField } from "./RepositoriesField";
 
 interface Props {
   projectId: string;
@@ -7,8 +8,9 @@ interface Props {
   currentName: string;
 }
 
-/** Project identity: a custom display name, independent of any folder name.
- *  Where the project lives on disk is per-repo — see RepositoriesSection. */
+/** Project identity: a custom display name (independent of any folder name)
+ *  and the repositories the project is made of. The project has no location
+ *  of its own — each repo row carries its own path. */
 export function GeneralSection({ projectId, currentName }: Props) {
   const renameProject = useAppStore((s) => s.renameProject);
 
@@ -39,7 +41,9 @@ export function GeneralSection({ projectId, currentName }: Props) {
     <section className="ps-section">
       <header className="ps-section-h">
         <h2 className="ps-section-t text-lg">General</h2>
-        <p className="ps-section-lead text-sm">The project&rsquo;s display name.</p>
+        <p className="ps-section-lead text-sm">
+          The project&rsquo;s display name and the repositories it&rsquo;s made of.
+        </p>
       </header>
 
       <div className="ps-field">
@@ -78,6 +82,8 @@ export function GeneralSection({ projectId, currentName }: Props) {
         </div>
         <p className="ps-hint text-xs">Shown in the sidebar. Independent of the folder name.</p>
       </div>
+
+      <RepositoriesField projectId={projectId} />
 
       {error && <div className="ps-error text-sm">{error}</div>}
     </section>
