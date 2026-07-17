@@ -21,6 +21,7 @@ mod names;
 mod native_input;
 mod new_project;
 mod oauth;
+mod power;
 mod pty_session;
 mod rpc;
 mod run_detect;
@@ -808,6 +809,222 @@ fn seed_secret_mirror(db: &DbState, key: &'static str, apply: fn(Option<String>)
     }
 }
 
+/// Set once the user has confirmed a quit (via the active-work dialog) or a
+/// termination signal has already killed the children — both mean the next
+/// `ExitRequested` must proceed straight to shutdown without re-prompting.
+static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Reveal and focus the main window — the tray "Open Fletch" action and a
+/// left-click on the tray icon. Closing the window only hides it, so this is
+/// how a menu-bar-resident app comes back to the foreground.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// Live count of agents whose runtime status is `Running` (the in-memory
+/// source of truth; a resting DB record derives to `Idle`).
+fn running_agent_count(app: &tauri::AppHandle) -> usize {
+    app.try_state::<Arc<Supervisor>>()
+        .map(|s| {
+            s.statuses
+                .lock()
+                .values()
+                .filter(|st| **st == crate::workspace::AgentStatus::Running)
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Count workflow runs in an active (`pending`/`running`) state, read straight
+/// from the DB so a run whose driver is mid-restart still counts.
+fn active_run_count(app: &tauri::AppHandle) -> usize {
+    app.try_state::<DbState>()
+        .and_then(|db| {
+            db.lock()
+                .query_row(
+                    "SELECT COUNT(*) FROM wf_run WHERE status IN ('pending','running')",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .ok()
+        })
+        .map(|n| n as usize)
+        .unwrap_or(0)
+}
+
+/// Body of the "quit while work is active" confirm dialog.
+fn quit_warning(agents: usize, runs: usize) -> String {
+    let mut parts = Vec::new();
+    if agents > 0 {
+        parts.push(format!(
+            "{agents} agent{} working",
+            if agents == 1 { "" } else { "s" }
+        ));
+    }
+    if runs > 0 {
+        parts.push(format!(
+            "{runs} workflow{} running",
+            if runs == 1 { "" } else { "s" }
+        ));
+    }
+    format!(
+        "{}. Quitting stops them now.\n\nWorkflows resume when you reopen Fletch; \
+         ad-hoc agents will need a manual resume.",
+        parts.join(", ")
+    )
+}
+
+/// The tray's status-line menu item, published here once (and if) the tray is
+/// successfully built. The activity monitor's callback writes through it when
+/// present and no-ops when absent — so the tray and the sleep assertion are
+/// fully decoupled: a tray that never appears leaves this `None` forever without
+/// affecting activity tracking.
+type TrayStatusSlot = Arc<Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>>;
+
+/// Arm the activity monitor and start the status-event subscription. This is the
+/// sleep-assertion + activity-tracking half of the menu-bar feature and MUST NOT
+/// depend on the tray: it is called unconditionally and cannot fail, so a
+/// later tray-build error can never leave the monitor unarmed (which would
+/// silently disable idle-sleep prevention mid-fleet). The returned slot is where
+/// the tray, if it builds, publishes its status item for the callback to update.
+fn arm_activity_monitor(supervisor: &Arc<Supervisor>) -> TrayStatusSlot {
+    let status_slot: TrayStatusSlot = Arc::new(Mutex::new(None));
+
+    // The status-line callback updates the tray item *only if one has been
+    // published*; with no tray it is a no-op, while activity is still tracked
+    // and the assertion still toggles.
+    {
+        let status_slot = status_slot.clone();
+        power::ActivityMonitor::global().arm(std::sync::Arc::new(move |agents, runs| {
+            if let Some(item) = status_slot.lock().as_ref() {
+                let _ = item.set_text(power::status_line(agents, runs));
+            }
+        }));
+    }
+
+    // Feed agent activity off the existing status broadcast — no polling.
+    // Subscribe first, then seed the running set, then follow transitions: the
+    // subscribe-before-read discipline (see `Supervisor::subscribe_status`)
+    // makes a fast Running→Idle flap unlosable. A lagged receiver resyncs from
+    // the live status map.
+    let running_of = |sup: &Arc<Supervisor>| -> std::collections::HashSet<String> {
+        sup.statuses
+            .lock()
+            .iter()
+            .filter(|(_, s)| **s == crate::workspace::AgentStatus::Running)
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    let mut rx = supervisor.subscribe_status();
+    power::ActivityMonitor::global().resync_agents(running_of(supervisor));
+    let supervisor = supervisor.clone();
+    tauri::async_runtime::spawn(async move {
+        use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+        loop {
+            match rx.recv().await {
+                Ok(ev) => power::ActivityMonitor::global().set_agent_running(
+                    &ev.agent_id,
+                    ev.status == crate::workspace::AgentStatus::Running,
+                ),
+                Err(RecvError::Lagged(_)) => {
+                    // Skipped events. The live status map is the source of
+                    // truth — `set_status` updates it *before* it broadcasts —
+                    // so it is never staler than a dropped event. Drain the
+                    // still-buffered backlog first (all of it predates "now"),
+                    // *then* snapshot: resyncing after the drain means a stale
+                    // buffered event can't be re-applied on top of the fresh
+                    // snapshot (the bug: a lag across Running→Idle could
+                    // otherwise leave the assertion stuck active), while an
+                    // event landing mid-drain is captured by the later snapshot.
+                    while let Ok(_) | Err(TryRecvError::Lagged(_)) = rx.try_recv() {}
+                    power::ActivityMonitor::global().resync_agents(running_of(&supervisor));
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+
+    status_slot
+}
+
+/// Build the menu-bar tray (best-effort UI). On success, publish its status item
+/// into `status_slot` so the already-armed monitor starts updating the menu
+/// line. A failure here is non-fatal — the monitor stays armed regardless (see
+/// `arm_activity_monitor`); the caller logs and continues.
+fn setup_tray(app: &tauri::AppHandle, status_slot: &TrayStatusSlot) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let status_item = MenuItemBuilder::with_id("fletch:status", power::status_line(0, 0))
+        .enabled(false)
+        .build(app)?;
+    let open_item = MenuItemBuilder::with_id("fletch:open", "Open Fletch").build(app)?;
+    let quit_item = MenuItemBuilder::with_id("fletch:quit", "Quit Fletch").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .item(&open_item)
+        .separator()
+        .item(&status_item)
+        .separator()
+        .item(&quit_item)
+        .build()?;
+
+    let mut tray = TrayIconBuilder::with_id("fletch:tray")
+        .tooltip("Fletch")
+        .menu(&menu)
+        // macOS: keep left-click for revealing the window; the menu opens on
+        // right-click (the platform convention for a status item).
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "fletch:open" => show_main_window(app),
+            // Goes through `ExitRequested`, so the active-work confirm still
+            // applies to a tray-initiated quit.
+            "fletch:quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    // macOS: a monochrome template mark (black pixels + alpha, generated by
+    // `scripts/gen_tray_icon.py`). `icon_as_template(true)` lets the system tint
+    // it for light/dark menu bars and click-highlight. Shipped as raw 44x44
+    // RGBA and compiled in via `include_bytes!` — so no PNG-decode crate is
+    // pulled in and a missing/wrong-size asset is a build error, not a silent
+    // runtime fallback.
+    #[cfg(target_os = "macos")]
+    {
+        const TRAY_RGBA: &[u8] = include_bytes!("../icons/tray-macos-template.rgba");
+        const TRAY_DIM: u32 = 44;
+        const _: () = assert!(TRAY_RGBA.len() == (TRAY_DIM * TRAY_DIM * 4) as usize);
+        let icon = tauri::image::Image::new(TRAY_RGBA, TRAY_DIM, TRAY_DIM);
+        tray = tray.icon(icon).icon_as_template(true);
+    }
+    // Other platforms have no template-image semantics; use the color app icon
+    // so the tray entry is visible.
+    #[cfg(not(target_os = "macos"))]
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+    let _tray = tray.build(app)?;
+
+    // Publish the status item and render the current line at once (the monitor
+    // is already armed and may have counted activity before the tray appeared).
+    *status_slot.lock() = Some(status_item);
+    power::ActivityMonitor::global().refresh();
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Error/crash reporting. The DSN is baked in at build time via
@@ -1047,6 +1264,16 @@ pub fn run() {
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
 
+            // Arm the activity monitor (idle-sleep assertion + activity
+            // tracking) *before* any work is resumed below, so the run-level
+            // signal is tight from the first instant: runs re-driven by
+            // `resume_active_runs` register into an already-armed monitor (and
+            // subscribing before resume means no resumed agent's status event
+            // is missed). Infallible and independent of the tray — a tray
+            // failure can never leave sleep-prevention disabled. The tray is
+            // built later and late-publishes its status item into this slot.
+            let tray_status_slot = arm_activity_monitor(&supervisor);
+
             // Workflow engine (S4): the run scheduler + active-run registry. Its
             // driver wraps the supervisor; runs left `pending`/`running` by a
             // prior session are re-driven now (paused runs wait for a user
@@ -1070,6 +1297,18 @@ pub fn run() {
             // At most one `claude setup-token` capture runs at a time; the
             // code-submit / cancel commands reach it through this slot.
             app.manage(ClaudeSetupState::default());
+
+            // Menu-bar tray (close-to-tray + status line) — the second half of
+            // the laptop-GUI hardening feature; the first half (the activity
+            // monitor) was already armed above, before any work resumed.
+            // Best-effort: a failure logs and continues — the app still starts
+            // and the monitor stays armed. The tray publishes its status item
+            // into `tray_status_slot` for the monitor's status-line callback,
+            // then `setup_tray` refreshes the line to reflect activity that may
+            // already have been counted before the tray appeared.
+            if let Err(e) = setup_tray(app.handle(), &tray_status_slot) {
+                tracing::error!(error = %e, "menu-bar tray setup failed; continuing without it");
+            }
 
             // Reclaim nested-Fletch RPC mailbox and checkout roots left in the
             // temp dir by dead instances (dogfooding runs). Live instances'
@@ -1103,6 +1342,11 @@ pub fn run() {
                         _ = sigterm.recv() => {}
                     }
                     tracing::info!("termination signal received; killing child processes");
+                    // A signal (logout/shutdown/Ctrl-C) is not a user choice we
+                    // can prompt on — flag the quit as confirmed so the
+                    // `ExitRequested` handler skips the active-work dialog and
+                    // goes straight through the shutdown path.
+                    QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
                     supervisor.shutdown();
                     handle.exit(0);
                 });
@@ -1112,6 +1356,19 @@ pub fn run() {
             // supervisor brings one up lazily on the user's next interaction
             // (the frontend resumes on send), so nothing auto-spawns here.
             Ok(())
+        })
+        // Close ≠ quit: closing the main window hides it and the app keeps
+        // running in the menu bar (reopen via the tray). Cmd-Q still quits —
+        // that path fires `ExitRequested`, handled in `run` below. Following
+        // the macOS convention keeps a long fleet alive across an accidental
+        // window close.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             db_insert,
@@ -1248,11 +1505,43 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building fletch")
         .run(|app, event| {
-            // On quit, explicitly kill every live agent/shell/run child.
-            // tauri-managed state isn't reliably dropped on macOS app
-            // termination, so the per-session Drop impls can't be trusted to
-            // fire — without this, quitting mid-run orphans the processes.
-            if let tauri::RunEvent::ExitRequested { .. } = event {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                use std::sync::atomic::Ordering;
+                // Quit confirmation: a quit kills every live agent/run child
+                // (below), so when work is active we prompt first — unless the
+                // user already confirmed, or a termination signal set the flag
+                // (see the SIGINT/SIGTERM handler). Cancel keeps the app
+                // running; Quit re-triggers the exit with the flag set, so the
+                // second `ExitRequested` falls straight through to shutdown.
+                if !QUIT_CONFIRMED.load(Ordering::SeqCst) {
+                    let agents = running_agent_count(app);
+                    let runs = active_run_count(app);
+                    if agents > 0 || runs > 0 {
+                        api.prevent_exit();
+                        let handle = app.clone();
+                        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+                        app.dialog()
+                            .message(quit_warning(agents, runs))
+                            .title("Quit Fletch?")
+                            .buttons(MessageDialogButtons::OkCancelCustom(
+                                "Quit".into(),
+                                "Cancel".into(),
+                            ))
+                            .show(move |confirmed| {
+                                if confirmed {
+                                    QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+                                    handle.exit(0);
+                                }
+                            });
+                        return;
+                    }
+                }
+
+                // No active work, or the user confirmed: proceed. Explicitly
+                // kill every live agent/shell/run child — tauri-managed state
+                // isn't reliably dropped on macOS app termination, so the
+                // per-session Drop impls can't be trusted to fire; without this,
+                // quitting mid-run orphans the processes.
                 if let Some(supervisor) = app.try_state::<Arc<Supervisor>>() {
                     supervisor.shutdown();
                 }

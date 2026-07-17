@@ -568,6 +568,33 @@ impl WorkflowService {
     }
 }
 
+/// The single place a driver handle enters the run registry: insert it and mark
+/// the run active in one step, under the caller's lock. Every registration site
+/// (main runs via [`spawn_drive_task`], orchestrate sub-runs via [`spawn_subrun`],
+/// and the respawn path) goes through here, so a site can't insert a driver yet
+/// forget to tell the [`ActivityMonitor`] — the invariant "a run with a live
+/// driver counts as active" is enforced by construction, not convention.
+///
+/// Caller must hold the registry lock and must have checked the run has no live
+/// handle (a run has at most one live driver, §6.1). Marking active *under* the
+/// lock is what upholds the ordering guarantee against [`deregister_driver`]: a
+/// clear done under the lock strictly precedes any later re-insert.
+fn register_driver(m: &mut HashMap<String, RunHandle>, run_id: &str, handle: RunHandle) {
+    m.insert(run_id.to_string(), handle);
+    crate::power::ActivityMonitor::global().set_run_active(run_id, true);
+}
+
+/// The single place a driver handle leaves the registry: remove it and clear the
+/// run's activity in one step, under the caller's lock. Clearing under the lock
+/// is what lets a concurrent re-registration's `true` win — the clear strictly
+/// precedes any subsequent insert, so the newest driver's state is the final
+/// one. Activity is a per-run-id boolean, so deregistering a finished sub-run
+/// never clears the parent run's own activity (distinct ids).
+fn deregister_driver(m: &mut HashMap<String, RunHandle>, run_id: &str) {
+    m.remove(run_id);
+    crate::power::ActivityMonitor::global().set_run_active(run_id, false);
+}
+
 /// Register `run_id` in the active-run map and spawn its drive task. A free
 /// function (not a method) so the watchdog can re-invoke it after removing the
 /// registry entry.
@@ -593,8 +620,15 @@ fn spawn_drive_task(
             existing.respawn.store(true, Ordering::SeqCst);
             return;
         }
-        m.insert(
-            run_id.clone(),
+        // A registered drive task is exactly a run in `pending`/`running` (a
+        // `paused`/terminal run has no live driver), so registry membership is
+        // the faithful, no-poll signal for "workflow work is active" that the
+        // sleep assertion + menu-bar status line consume. `register_driver`
+        // marks it active under this lock; inert until the app arms the monitor
+        // at setup, so tests that spin drive tasks touch no power state.
+        register_driver(
+            &mut m,
+            &run_id,
             RunHandle {
                 cancel: cancel.clone(),
                 respawn: respawn.clone(),
@@ -624,14 +658,19 @@ fn spawn_drive_task(
             let conn = db.lock();
             fail_run(&conn, Some(&app), &run_id, "internal scheduler error");
         }
-        // Read the respawn flag under the same lock as the removal so a
-        // request can't slip between the two.
+        // Deregister under the same lock as the respawn-flag read so a request
+        // can't slip between the two. The clear always happens here; if a
+        // respawn is due, `spawn_drive_task` below re-registers (re-marking the
+        // run active) — the monitor's release debounce absorbs the microsecond
+        // gap, so the sleep assertion never flaps across a respawn. Routing
+        // through `deregister_driver` keeps the clear strictly ordered before
+        // any concurrent re-insert (round-1 invariant).
         let respawn_requested = {
             let mut m = runs.lock();
-            m.remove(&run_id);
-            respawn.load(Ordering::SeqCst)
+            deregister_driver(&mut m, &run_id);
+            respawn.load(Ordering::SeqCst) && !panicked
         };
-        if respawn_requested && !panicked {
+        if respawn_requested {
             spawn_drive_task(db, driver, app, runs, run_id);
         }
     });
@@ -3470,8 +3509,14 @@ fn spawn_subrun(ctx: &RunCtx, sub_run_id: String) {
         if m.contains_key(&sub_run_id) {
             return;
         }
-        m.insert(
-            sub_run_id.clone(),
+        // Sub-runs create live drivers in the same registry as top-level runs,
+        // so they must register through the same helper — otherwise a parent
+        // that is only driving children would report zero active runs and let
+        // the sleep assertion release mid-work. Keyed by the sub-run's own id,
+        // distinct from the parent, so each counts independently.
+        register_driver(
+            &mut m,
+            &sub_run_id,
             RunHandle {
                 cancel: cancel.clone(),
                 respawn: Arc::new(AtomicBool::new(false)),
@@ -3493,9 +3538,11 @@ fn spawn_subrun(ctx: &RunCtx, sub_run_id: String) {
     tokio::spawn(async move {
         drive_run(&child, &id).await;
         // Drop the registry entry on exit so the cancel-cascade and any list see
-        // the sub-run's driver as gone.
+        // the sub-run's driver as gone, and clear its activity via the shared
+        // helper (a finished sub-run clears only its own id, never the parent's).
         if let Some(runs) = &runs {
-            runs.lock().remove(&id);
+            let mut m = runs.lock();
+            deregister_driver(&mut m, &id);
         }
     });
 }
