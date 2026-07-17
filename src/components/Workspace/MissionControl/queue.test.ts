@@ -171,6 +171,41 @@ describe("buildReviewQueue", () => {
     expect(q[0].unresolvedComments).toBe(3);
   });
 
+  it("surfaces PR signals from a secondary repo key (agentId::subdir)", () => {
+    const q = buildReviewQueue(
+      input({
+        agents: [agent({ id: "a" })],
+        // Primary repo: open PR, all green. Secondary repo: failing checks.
+        prStates: { a: openPr(1), "a::pkg/api": openPr(2) },
+        prChecks: {
+          a: checks({ rollup: "passing", failed: 0, required_failing: [] }),
+          "a::pkg/api": checks({ rollup: "failing", failed: 1 }),
+        },
+        prComments: { "a::pkg/api": comments(2) },
+      }),
+    );
+    expect(q).toHaveLength(1);
+    expect(q[0].reasons).toEqual(["checks-failing", "unresolved-comments"]);
+    // The chips show the PR carrying the issue — the failing secondary.
+    expect(q[0].pr).toEqual({ number: 2, url: "https://gh/pr/2" });
+    expect(q[0].checks?.rollup).toBe("failing");
+    expect(q[0].unresolvedComments).toBe(2);
+    // A fix on the secondary changes the signature, so a dismissal expires.
+    const fixed = buildReviewQueue(
+      input({
+        agents: [agent({ id: "a" })],
+        prStates: { a: openPr(1), "a::pkg/api": openPr(2) },
+        prChecks: {
+          a: checks({ rollup: "passing", failed: 0, required_failing: [] }),
+          "a::pkg/api": checks({ rollup: "failing", failed: 1 }),
+        },
+        prComments: { "a::pkg/api": comments(2) },
+        dismissed: { "agent:a": q[0].signature },
+      }),
+    );
+    expect(fixed).toEqual([]);
+  });
+
   it("orders approval < conflict < pr < unseen", () => {
     const q = buildReviewQueue(
       input({

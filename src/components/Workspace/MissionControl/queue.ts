@@ -114,17 +114,59 @@ function parseCreated(iso: string): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
-/** The agent item's signature: only the volatile review signals, so dismissing
- *  it holds until one of them changes. */
+/** One repo's open-PR signals for an agent. The PR maps are keyed `agentId`
+ *  for the primary repo and `agentId::subdir` for secondaries (store/git.ts
+ *  `gitKey`) — a multi-repo agent's failing check must surface no matter which
+ *  repo it's on. */
+interface PrSignal {
+  /** "" for the primary repo, the subdir for a secondary. */
+  repo: string;
+  pr: PrState;
+  checks: PrChecks | null;
+  unresolved: number;
+}
+
+/** Collect the agent's open-PR signals across every repo key, primary first
+ *  then secondaries in stable (sorted) order. */
+function collectPrSignals(agentId: string, input: QueueInput): PrSignal[] {
+  const prefix = `${agentId}::`;
+  const keys = [
+    agentId,
+    ...Object.keys(input.prStates)
+      .filter((k) => k.startsWith(prefix))
+      .sort(),
+  ];
+  const out: PrSignal[] = [];
+  for (const key of keys) {
+    const pr = input.prStates[key] ?? null;
+    // Signals only count against an open PR — a merged/closed PR's stale
+    // rollup must never nag.
+    if (pr?.state !== "open") continue;
+    out.push({
+      repo: key === agentId ? "" : key.slice(prefix.length),
+      pr,
+      checks: input.prChecks[key] ?? null,
+      unresolved: (input.prComments[key] ?? null)?.unresolved.length ?? 0,
+    });
+  }
+  return out;
+}
+
+/** The agent item's signature: only the volatile review signals (across every
+ *  repo's PR), so dismissing it holds until one of them changes. */
 function agentSignature(p: {
   unseen: boolean;
   stats: ShortStats | undefined;
-  checks: PrChecks | null;
-  unresolved: number;
+  signals: PrSignal[];
 }): string {
   const d = p.stats ? `${p.stats.additions}/${p.stats.deletions}/${p.stats.file_count}` : "-";
-  const c = p.checks ? `${p.checks.rollup}:${p.checks.failed}` : "-";
-  return `u${p.unseen ? 1 : 0}|d${d}|c${c}|r${p.unresolved}`;
+  const c = p.signals
+    .map((s) => {
+      const checks = s.checks ? `${s.checks.rollup}:${s.checks.failed}` : "-";
+      return `${s.repo}=${checks}:${s.unresolved}`;
+    })
+    .join(",");
+  return `u${p.unseen ? 1 : 0}|d${d}|c${c || "-"}`;
 }
 
 /** Compose the fleet review queue from current app state. Pure and synchronous:
@@ -158,36 +200,35 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
     const stats = input.gitShortstats[agent.id];
     const hasDiff = !!stats && (stats.additions > 0 || stats.deletions > 0);
     const unseen = input.unseenResults[agent.id] ?? false;
-    const pr = input.prStates[agent.id] ?? null;
-    const checks = input.prChecks[agent.id] ?? null;
-    const comments = input.prComments[agent.id] ?? null;
-    const prOpen = pr?.state === "open";
-    const unresolved = comments?.unresolved.length ?? 0;
+    const signals = collectPrSignals(agent.id, input);
+    const failing = signals.filter((s) => s.checks?.rollup === "failing");
+    const unresolved = signals.reduce((n, s) => n + s.unresolved, 0);
 
     const reasons: ReviewReason[] = [];
     // Ad-hoc: a turn landed while you weren't looking and left changes behind.
     if (agent.status === "idle" && unseen && hasDiff) reasons.push("unseen-results");
-    // PR signals only count against an open PR — a merged/closed PR's stale
-    // rollup must never nag.
-    if (prOpen && checks?.rollup === "failing") reasons.push("checks-failing");
-    if (prOpen && unresolved > 0) reasons.push("unresolved-comments");
+    if (failing.length > 0) reasons.push("checks-failing");
+    if (unresolved > 0) reasons.push("unresolved-comments");
     if (reasons.length === 0) continue;
 
+    // The evidence chips show one PR: the one carrying the issue (a failing
+    // repo first, then one with unresolved threads, then the primary).
+    const shown = failing[0] ?? signals.find((s) => s.unresolved > 0) ?? signals[0];
     const isPr = reasons.includes("checks-failing") || reasons.includes("unresolved-comments");
     items.push({
       id: `agent:${agent.id}`,
       kind: "agent",
       bucket: isPr ? BUCKET.pr : BUCKET.unseen,
-      signature: agentSignature({ unseen, stats, checks, unresolved }),
+      signature: agentSignature({ unseen, stats, signals }),
       activityAt: parseCreated(agent.created_at),
       title: agent.name,
       goal: firstLine(agent.task) || "—",
       reasons,
       agent,
       diff: hasDiff ? stats : undefined,
-      pr: prOpen && pr ? { number: pr.number, url: pr.url } : undefined,
-      checks: prOpen && checks ? checks : undefined,
-      unresolvedComments: reasons.includes("unresolved-comments") ? unresolved : undefined,
+      pr: shown ? { number: shown.pr.number, url: shown.pr.url } : undefined,
+      checks: shown?.checks ?? undefined,
+      unresolvedComments: unresolved > 0 ? unresolved : undefined,
       // Future-PR slot — no signal feeds it yet, so it's always absent today.
       staleness: null,
     });

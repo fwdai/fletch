@@ -81,7 +81,13 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
       const state = deriveState(git, pr);
       switch (state) {
         case "changes": {
-          const { kind, trigger } = commitDelegation(s.gitCommitAction);
+          // With a PR already open, "open PR" degrades to "push" — that's what
+          // updates the existing PR (mirrors primaryActions' changes state).
+          const mode: GitCommitAction =
+            pr?.state === "open" && s.gitCommitAction === "agent-commit-pr"
+              ? "agent-commit-push"
+              : s.gitCommitAction;
+          const { kind, trigger } = commitDelegation(mode);
           delegateGitAction(
             agentId,
             kind,

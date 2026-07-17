@@ -14,8 +14,9 @@ interface Args {
 /** Keyboard triage for the queue: j/k (and ↓/↑) move the focused card, ↵ opens
  *  its review, `a` approves, `r` requests changes. Mirrors the app's global-
  *  shortcut guard (ignore while typing in an input/textarea) and additionally
- *  bows out for contenteditable, any modifier chord, and while a modal is open —
- *  so it never steals a keystroke meant for a field or a shortcut. */
+ *  bows out for contenteditable, any modifier chord, a focused control (button,
+ *  link, card), and while a modal is open — so it never steals or doubles a
+ *  keystroke meant for the focused element. */
 export function useQueueKeyboard({ items, active, onEnter, onApprove, onRequestChanges }: Args) {
   const [index, setIndex] = useState(0);
 
@@ -30,7 +31,11 @@ export function useQueueKeyboard({ items, active, onEnter, onApprove, onRequestC
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const el = document.activeElement as HTMLElement | null;
       const tag = el?.tagName ?? "";
-      if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable)
+        return;
+      // A focused control (a card's Approve button, the card itself) owns its
+      // keys — Enter must not both click it and fire the triage action.
+      if (tag === "BUTTON" || tag === "A" || el?.getAttribute("role") === "button") return;
       if (items.length === 0) return;
       const cur = items[Math.min(index, items.length - 1)];
       switch (e.key) {
