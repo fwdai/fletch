@@ -116,12 +116,14 @@ impl RunDetector for PythonDetector {
         }
 
         // lint: only when Ruff is a declared *dependency* (conservative — no
-        // inventing a command the project may not have installed). We match the
-        // declared package *name*, not a raw substring, so a comment (`# ruff`),
-        // a config table (`[tool.ruff]`), or an unrelated package (`ruffus`,
-        // `ruff-lsp`) never triggers it — otherwise verification would run
-        // `ruff check .` and fail where the executable isn't on PATH.
-        if declares_package(&deps_text, "ruff") {
+        // inventing a command the project may not have installed). Detection is
+        // section-aware (see `declares_package`), so a comment (`# ruff`), a
+        // config table (`[tool.ruff]`), a script/task table
+        // (`[tool.poe.tasks]`), a `[project]` `description`, or an unrelated
+        // package (`ruffus`, `ruff-lsp`) never triggers it — otherwise
+        // verification would run `ruff check .` and fail where Ruff isn't
+        // installed.
+        if declares_package(checkout, "ruff") {
             rows.push(DetectedRow::new(
                 "lint",
                 RowGroup::Scripts,
@@ -139,31 +141,170 @@ impl RunDetector for PythonDetector {
     }
 }
 
-/// Whether `deps_text` (the combined, lowercased dependency manifests) declares
-/// a dependency on package `name` (lowercase). Matches the leading PEP 508
-/// package *token* of a requirement rather than a raw substring, across the
-/// shapes Python manifests use:
+/// Whether the project declares a runtime/dev dependency on package `name`
+/// (lowercase), reading each manifest with awareness of its format.
 ///
-/// * requirements.txt lines — `ruff`, `ruff==0.4`, `ruff[extra]`, `ruff>=0.1; …`;
-/// * quoted specs in a PEP 621 / Poetry `dependencies` array — `"ruff>=0.1"`;
-/// * the `ruff = "…"` key form of a Poetry / Pipfile dependency table.
+/// A raw substring or even a bare per-line token isn't enough: a `[tool.ruff]`
+/// config table, a `[tool.poe.tasks]` / `[tool.pdm.scripts]` entry like
+/// `lint = "ruff check ."`, or a `[project]` `description = "ruff helpers"` all
+/// mention Ruff without installing it, and running `ruff check .` would then
+/// fail where the executable isn't on PATH. So detection is *contextual*:
 ///
-/// Blank lines, comments (`# …`), and TOML section headers (`[tool.ruff]`) never
-/// count, and an unrelated package whose name merely contains `name`
-/// (`ruffus`, `sruff`, `ruff-lsp`) is rejected because the whole token must
-/// match.
-fn declares_package(deps_text: &str, name: &str) -> bool {
-    deps_text.lines().any(|line| {
+/// * `requirements.txt` — the whole file is dependency context; the leading
+///   PEP 508 package token of each non-comment, non-option line is the package.
+/// * TOML (`pyproject.toml`, `Pipfile`) — a conservative line scanner tracks the
+///   current `[section]` and only evaluates candidates inside known dependency
+///   contexts (see [`toml_declares`]); everywhere else there are no candidates.
+///
+/// Package names match by whole token, so an unrelated package containing `name`
+/// (`ruffus`, `sruff`, `ruff-lsp`) never counts.
+fn declares_package(checkout: &Path, name: &str) -> bool {
+    let in_requirements = read_trimmed(checkout, "requirements.txt")
+        .is_some_and(|t| requirements_declare(&t.to_lowercase(), name));
+    in_requirements
+        || ["pyproject.toml", "Pipfile"].iter().any(|f| {
+            read_trimmed(checkout, f).is_some_and(|t| toml_declares(&t.to_lowercase(), name))
+        })
+}
+
+/// requirements.txt: the whole file is dependency context. Each non-blank line
+/// that isn't a comment or an option flag (`-r other.txt`, `-e .`, `--hash …`)
+/// begins with the package name.
+fn requirements_declare(text: &str, name: &str) -> bool {
+    text.lines().any(|line| {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+        if line.is_empty() || line.starts_with('#') || line.starts_with('-') {
             return false;
         }
-        // Candidates: the bare line (requirements.txt / TOML key form) plus every
-        // quoted string on it (array elements / table values).
-        std::iter::once(line)
-            .chain(quoted_substrings(line))
-            .any(|cand| leading_package_token(cand) == name)
+        leading_package_token(line) == name
     })
+}
+
+/// A TOML section's relevance to dependency detection.
+enum SectionKind {
+    /// Every `key = "…"` line names a package (the key is the package):
+    /// Poetry dependency tables, Pipfile `[packages]` / `[dev-packages]`.
+    KeyDeps,
+    /// Every key's *value* is an array of PEP 508 specs (the key is a group
+    /// name): `[project.optional-dependencies]`, `[dependency-groups]`, pdm/uv
+    /// dependency-group tables.
+    ArrayTable,
+    /// Mixed section where only specific keys open a dependency array
+    /// (`[project]` → `dependencies`, `[tool.uv]` → `*-dependencies`).
+    Mixed,
+    /// No dependency candidates (config, scripts, metadata, …).
+    None,
+}
+
+/// TOML dependency detection: a conservative line scanner (no TOML parser) that
+/// tracks the current `[section]` and an open multi-line dependency array, and
+/// only treats a line as a dependency candidate inside a known dependency
+/// context. See [`SectionKind`].
+fn toml_declares(text: &str, name: &str) -> bool {
+    let mut section = String::new();
+    // Inside an open `dependencies = [ … ]` array spanning multiple lines.
+    let mut in_dep_array = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[') {
+            // `[section]` / `[[array.of.tables]]`, tolerant of a trailing comment.
+            let end = header.find(']').unwrap_or(header.len());
+            section = header[..end].trim_start_matches('[').trim().to_string();
+            in_dep_array = false;
+            continue;
+        }
+        // Continuation lines of an open multi-line dependency array.
+        if in_dep_array {
+            if quoted_has_package(line, name) {
+                return true;
+            }
+            if line.contains(']') {
+                in_dep_array = false;
+            }
+            continue;
+        }
+        match section_kind(&section) {
+            SectionKind::KeyDeps => {
+                if leading_package_token(line) == name {
+                    return true;
+                }
+            }
+            SectionKind::ArrayTable => {
+                let value = line.split_once('=').map_or(line, |(_, rhs)| rhs);
+                if eval_array_value(value, name, &mut in_dep_array) {
+                    return true;
+                }
+            }
+            SectionKind::Mixed => {
+                if let Some((key, rhs)) = line.split_once('=') {
+                    if is_dep_key(&section, key.trim())
+                        && eval_array_value(rhs, name, &mut in_dep_array)
+                    {
+                        return true;
+                    }
+                }
+            }
+            SectionKind::None => {}
+        }
+    }
+    false
+}
+
+/// Classify a (lowercased) TOML section header for dependency detection.
+fn section_kind(section: &str) -> SectionKind {
+    match section {
+        "project" | "tool.uv" => SectionKind::Mixed,
+        "project.optional-dependencies"
+        | "dependency-groups"
+        | "tool.uv.dependency-groups"
+        | "tool.pdm.dev-dependencies" => SectionKind::ArrayTable,
+        "packages"
+        | "dev-packages"
+        | "tool.poetry.dependencies"
+        | "tool.poetry.dev-dependencies" => SectionKind::KeyDeps,
+        // `[tool.poetry.group.<name>.dependencies]` (incl. dev groups).
+        s if s.starts_with("tool.poetry.group.") && s.ends_with(".dependencies") => {
+            SectionKind::KeyDeps
+        }
+        _ => SectionKind::None,
+    }
+}
+
+/// Whether a key opens a dependency array inside a [`SectionKind::Mixed`]
+/// section — the only keys there whose value is a list of specs.
+fn is_dep_key(section: &str, key: &str) -> bool {
+    match section {
+        "project" => key == "dependencies",
+        "tool.uv" => matches!(
+            key,
+            "dev-dependencies" | "constraint-dependencies" | "override-dependencies"
+        ),
+        _ => false,
+    }
+}
+
+/// Evaluate a dependency-array `value` (the RHS of `key = …`), which may be a
+/// single-line array or the start of a multi-line one. Returns whether a quoted
+/// spec's package token matches `name`; sets `in_dep_array` when the `[` is left
+/// open past this line so continuation lines are scanned.
+fn eval_array_value(value: &str, name: &str, in_dep_array: &mut bool) -> bool {
+    if quoted_has_package(value, name) {
+        return true;
+    }
+    if value.contains('[') && !value.contains(']') {
+        *in_dep_array = true;
+    }
+    false
+}
+
+/// Whether any `"…"`-quoted spec in `s` has `name` as its leading package token.
+fn quoted_has_package(s: &str, name: &str) -> bool {
+    quoted_substrings(s)
+        .iter()
+        .any(|q| leading_package_token(q) == name)
 }
 
 /// The leading PEP 508 package name of `spec`: the run of name characters
@@ -312,6 +453,65 @@ mod tests {
         )])
         .unwrap();
         assert_eq!(val(&cfg, "lint"), "ruff check .");
+    }
+
+    #[test]
+    fn ruff_pep621_multiline_array_yields_lint_row() {
+        let cfg = detect(&[(
+            "pyproject.toml",
+            "[project]\nname = \"x\"\ndependencies = [\n    \"requests\",\n    \"ruff>=0.4\",\n]\n",
+        )])
+        .unwrap();
+        assert_eq!(val(&cfg, "lint"), "ruff check .");
+    }
+
+    #[test]
+    fn ruff_poetry_group_dependency_yields_lint_row() {
+        let cfg = detect(&[(
+            "pyproject.toml",
+            "[tool.poetry.group.dev.dependencies]\nruff = \"^0.4\"\n",
+        )])
+        .unwrap();
+        assert_eq!(val(&cfg, "lint"), "ruff check .");
+    }
+
+    #[test]
+    fn ruff_pipfile_dev_packages_yields_lint_row() {
+        let cfg = detect(&[("Pipfile", "[dev-packages]\nruff = \"*\"\n")]).unwrap();
+        assert_eq!(val(&cfg, "lint"), "ruff check .");
+    }
+
+    #[test]
+    fn ruff_project_description_omits_lint_row() {
+        // A `[project]` metadata key that merely mentions Ruff is not a dep.
+        let cfg = detect(&[(
+            "pyproject.toml",
+            "[project]\nname = \"x\"\ndescription = \"ruff helpers for X\"\n",
+        )])
+        .unwrap();
+        assert!(cfg.rows.iter().all(|r| r.id != "lint"));
+    }
+
+    #[test]
+    fn ruff_task_table_omits_lint_row() {
+        // A task/script table invoking Ruff doesn't install it.
+        let cfg = detect(&[(
+            "pyproject.toml",
+            "[project]\nname = \"x\"\n\n[tool.poe.tasks]\nlint = \"ruff check .\"\n",
+        )])
+        .unwrap();
+        assert!(cfg.rows.iter().all(|r| r.id != "lint"));
+    }
+
+    #[test]
+    fn ruff_key_in_non_dependency_section_omits_lint_row() {
+        // A bare `ruff = "..."` outside a dependency table is not a dependency.
+        let cfg = detect(&[(
+            "pyproject.toml",
+            "[project]\nname = \"x\"\n\n[tool.something]\nruff = \"*\"\n",
+        )])
+        .unwrap();
+        assert!(cfg.rows.iter().all(|r| r.id != "lint"));
     }
 
     #[test]
