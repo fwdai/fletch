@@ -12,7 +12,7 @@ use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnS
 use crate::error::{Error, Result};
 use crate::git;
 use crate::rpc;
-use crate::sandbox::provision::{self, CheckoutSpec, WorkspaceMode};
+use crate::sandbox::provision::{self, CheckoutSpec};
 use crate::sandbox::{self, EngineKind};
 use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir, is_per_turn_provider, new_agent_record,
@@ -38,51 +38,6 @@ pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
         .as_deref()
         .and_then(EngineKind::from_setting)
         .unwrap_or(EngineKind::SandboxExec)
-}
-
-/// The provisioning mode an agent stamped with `engine` actually gets.
-///
-/// Docker forces `Clone` regardless of the `workspace_mode` dev flag: a linked
-/// worktree's `.git` file points into the user's real repo, and a container
-/// must never be able to reach that (invariant 2).
-///
-/// Seatbelt also defaults to `Clone` — both engines converge on one
-/// self-contained-checkout model, made cheap by `git clone --shared` (objects
-/// borrowed via alternates, not copied). An explicit `workspace_mode=worktree`
-/// still opts back into the linked-worktree model.
-///
-/// Restore re-provisions each repo at its archived tip. Provisioning refetches
-/// from `origin` only when that tip isn't already reachable in the source
-/// repo's object store (see `provision_on_branch`); when it is, restore borrows
-/// it back via alternates and checks out offline, no remote branch needed (see
-/// the `provision.rs` restore tests).
-///
-/// A clone-native agent writes new commits into its *own* `.git/objects`, and
-/// archive teardown `rm -rf`s the clone — so commits that never reached
-/// `origin` or the source store are gone, and restore can only recover what
-/// did. This is the accepted cost of Clone mode, and the reason the
-/// `workspace_mode=worktree` opt-out remains.
-///
-/// One further worktree-mode tradeoff: the commit / update-branch delegation
-/// signal is driven by git hooks installed only into a clone's `.git/hooks`
-/// (`provision::install_delegation_hooks` — a linked worktree's hooks live in
-/// the user's real repo and must never be touched), so under the worktree
-/// opt-out the panel's delegation attribution for native in-container commits
-/// silently doesn't fire. Acceptable for a hidden dev flag.
-pub(super) fn effective_workspace_mode(engine: EngineKind, setting: Option<&str>) -> WorkspaceMode {
-    match engine {
-        EngineKind::Docker => WorkspaceMode::Clone,
-        // Explicit opt-out to the linked-worktree model; everything else —
-        // unset or "clone" — resolves to Clone.
-        EngineKind::SandboxExec => match setting {
-            Some("worktree") => WorkspaceMode::Worktree,
-            Some("clone") | None => WorkspaceMode::Clone,
-            Some(other) => {
-                tracing::warn!(value = %other, "unrecognized workspace_mode setting; using clone");
-                WorkspaceMode::Clone
-            }
-        },
-    }
 }
 
 /// Which providers run in Docker sandboxes: those with a wired-up container
@@ -337,16 +292,6 @@ impl Supervisor {
         self.set_status(&app, &agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.clone());
 
-        // Workspace provisioning mode — the `workspace_mode` dev flag under
-        // seatbelt, forced to `Clone` under docker. Read once, outside the
-        // spawn task, so the whole spawn uses one consistent mode.
-        let workspace_mode = effective_workspace_mode(
-            engine_kind,
-            self.workspace
-                .setting(provision::WORKSPACE_MODE_SETTING)
-                .as_deref(),
-        );
-
         let sup = self.clone();
         let app_for_task = app.clone();
         let id_for_task = agent_id.clone();
@@ -397,7 +342,7 @@ impl Supervisor {
                         base_ref: base.as_deref().unwrap_or("HEAD"),
                         dest: &primary_checkout,
                     };
-                    provision::provision(workspace_mode, &spec).await
+                    provision::provision(&spec).await
                 }
             };
             if let Err(e) = provision_result {
@@ -432,12 +377,7 @@ impl Supervisor {
                     )),
                 };
                 if let Err(e) = carried {
-                    let teardown_spec = CheckoutSpec {
-                        source_repo: &repo_path,
-                        base_ref: "HEAD",
-                        dest: &primary_checkout,
-                    };
-                    let _ = provision::teardown(workspace_mode, &teardown_spec).await;
+                    let _ = provision::teardown(&primary_checkout).await;
                     let _ = tokio::fs::remove_dir_all(&parent_dir).await;
                     fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                     return;
@@ -447,20 +387,7 @@ impl Supervisor {
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
-                // A workflow step was always provisioned as a clone (forking from
-                // the run repo), so tear it down as one regardless of the mode
-                // setting; `teardown` only needs the dest for the clone arm.
-                let teardown_mode = if run_repo_for_task.is_some() {
-                    provision::WorkspaceMode::Clone
-                } else {
-                    workspace_mode
-                };
-                let teardown_spec = CheckoutSpec {
-                    source_repo: &repo_path,
-                    base_ref: "HEAD",
-                    dest: &primary_checkout,
-                };
-                let _ = provision::teardown(teardown_mode, &teardown_spec).await;
+                let _ = provision::teardown(&primary_checkout).await;
                 let _ = tokio::fs::remove_dir_all(&parent_dir).await;
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
             }
@@ -505,16 +432,7 @@ impl Supervisor {
             Some(b) => git::fetch_fork_point(&repo_path, b).await,
             None => None,
         };
-        // Same clone-forcing rule as the primary repo: a docker-stamped agent
-        // mounts its parent dir, so every workspace under it must be
-        // self-contained.
         let engine = stamped_engine(&record);
-        let workspace_mode = effective_workspace_mode(
-            engine,
-            self.workspace
-                .setting(provision::WORKSPACE_MODE_SETTING)
-                .as_deref(),
-        );
         let spec = CheckoutSpec {
             source_repo: &repo_path,
             base_ref: base.as_deref().unwrap_or("HEAD"),
@@ -530,7 +448,7 @@ impl Supervisor {
         if engine == EngineKind::Docker {
             provision::provision_self_contained(&spec).await?;
         } else {
-            provision::provision(workspace_mode, &spec).await?;
+            provision::provision(&spec).await?;
         }
         let base_sha = git::rev_parse(&checkout, "HEAD").await.ok();
 
@@ -1407,37 +1325,6 @@ fn apply_exit_if_current(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Invariant 2: a docker agent's workspace is always a self-contained
-    /// clone, whatever the `workspace_mode` dev flag says.
-    #[test]
-    fn docker_forces_clone_workspaces() {
-        for setting in [None, Some("worktree"), Some("clone"), Some("bogus")] {
-            assert_eq!(
-                effective_workspace_mode(EngineKind::Docker, setting),
-                WorkspaceMode::Clone,
-                "docker must force clone for setting {setting:?}",
-            );
-        }
-    }
-
-    /// Seatbelt now defaults to `Clone` (cheap via `--shared`); an explicit
-    /// `workspace_mode=worktree` is the only way back to the historical linked
-    /// worktree, which trades away offline restore of never-pushed branches.
-    #[test]
-    fn seatbelt_defaults_to_clone_with_worktree_opt_out() {
-        for setting in [None, Some("clone"), Some("bogus")] {
-            assert_eq!(
-                effective_workspace_mode(EngineKind::SandboxExec, setting),
-                WorkspaceMode::Clone,
-                "seatbelt must default to clone for setting {setting:?}",
-            );
-        }
-        assert_eq!(
-            effective_workspace_mode(EngineKind::SandboxExec, Some("worktree")),
-            WorkspaceMode::Worktree,
-        );
-    }
 
     #[test]
     fn docker_supports_wired_providers_but_refuses_the_rest() {

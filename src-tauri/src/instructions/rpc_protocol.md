@@ -1,6 +1,6 @@
 ## Fletch app RPC
 
-Your writes are confined to your worktree. When an agent needs the app to do
+Your writes are confined to your workspace. When an agent needs the app to do
 something it cannot do itself, send a JSON request through the mailbox at
 `$FLETCH_RPC_DIR` and wait for the reply.
 

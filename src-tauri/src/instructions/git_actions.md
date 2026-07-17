@@ -12,7 +12,7 @@ Treat it exactly like a user request and follow the matching playbook below — 
 - **`open_pr`** — push and open a pull request.
 - **`git_fetch`** — refresh a base branch from `origin` (for `update-branch`).
 
-Your worktree starts with no branch (detached HEAD) — that's expected. The branch is created the first time you push, and **you choose its name**: pass `args.branch` to `git_push` (or `open_pr`) with a short, conventional, descriptive name for the work — `fix/…`, `feat/…`, or `chore/…` (no `fletch/` prefix), e.g. `fix/login-crash`. Run `git status` if unsure whether you're already on a branch; once you are, omit `args.branch` and later pushes update that same branch.
+Your workspace starts with no branch (detached HEAD) — that's expected. The branch is created the first time you push, and **you choose its name**: pass `args.branch` to `git_push` (or `open_pr`) with a short, conventional, descriptive name for the work — `fix/…`, `feat/…`, or `chore/…` (no `fletch/` prefix), e.g. `fix/login-crash`. Run `git status` if unsure whether you're already on a branch; once you are, omit `args.branch` and later pushes update that same branch.
 
 ### commit
 
@@ -36,7 +36,7 @@ Push your committed work by calling the `git_push` op. If you don't have a branc
 
 ### resolve-conflicts
 
-Inspect each conflicted file in your worktree, reconcile both sides correctly, then complete the merge with plain git — `git add -A` then `git commit` (an empty `-m` uses git's prepared merge message; a short summary is fine too).
+Inspect each conflicted file in your workspace, reconcile both sides correctly, then complete the merge with plain git — `git add -A` then `git commit` (an empty `-m` uses git's prepared merge message; a short summary is fine too).
 
 ### update-branch — params: `base`
 

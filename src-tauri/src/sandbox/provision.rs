@@ -1,12 +1,11 @@
 //! Workspace provisioning: how an agent's checkout comes into existence.
 //!
-//! Two modes. `Worktree` is a linked `git worktree` whose `.git` file points
-//! back into the origin repo. `Clone` is a self-contained checkout with its own
-//! real, writable `.git`, required by the Docker engine: a linked worktree's
-//! `.git` file references the origin repo's
-//! `.git/worktrees/<name>` by absolute path, so containerizing it would mean
-//! mounting the user's real `.git` — a sandbox escape (a writable `.git/hooks`
-//! executes on the host the next time the user runs git).
+//! Every workspace is a self-contained clone with its own real, writable
+//! `.git`. This is required by the Docker engine — a linked worktree's `.git`
+//! file references the origin repo's `.git/worktrees/<name>` by absolute path,
+//! so containerizing it would mean mounting the user's real `.git`, a sandbox
+//! escape (a writable `.git/hooks` executes on the host the next time the user
+//! runs git) — and seatbelt uses the same model so both engines converge.
 //!
 //! The clone is made with `git clone --shared`: it borrows the source's object
 //! store via `.git/objects/info/alternates` (an absolute path to the source's
@@ -21,31 +20,11 @@
 //! filesystem, reads open, writes blocked outside the workspace by policy).
 //! The source object store must therefore remain present for the clone's
 //! lifetime — Fletch owns the source repo lifecycle, so this holds.
-//!
-//! The effective mode is chosen per agent at spawn time (see
-//! `supervisor::lifecycle::effective_workspace_mode`): Docker always uses
-//! `Clone`; seatbelt uses `Clone` too unless the `workspace_mode` dev flag
-//! (set via sqlite, not exposed in UI) opts back into linked worktrees.
 
 use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::git;
-
-/// Settings-table key overriding the provisioning mode under seatbelt:
-/// `"worktree"` or `"clone"`. Docker always uses `Clone` regardless of this
-/// key; see `supervisor::lifecycle::effective_workspace_mode`.
-pub const WORKSPACE_MODE_SETTING: &str = "workspace_mode";
-
-/// How an agent workspace is materialized from its source repo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkspaceMode {
-    /// Linked `git worktree` sharing the source repo's object store.
-    Worktree,
-    /// Self-contained `git clone --shared` — its own writable `.git`, objects
-    /// borrowed from the source via alternates (Docker-safe).
-    Clone,
-}
 
 /// What to check out where. `base_ref` is any commit-ish; pass `"HEAD"` for
 /// "the source repo's current HEAD" (the no-base behavior).
@@ -59,16 +38,12 @@ pub struct CheckoutSpec<'a> {
 }
 
 /// Create the workspace at `spec.dest`, detached at `spec.base_ref`.
-pub async fn provision(mode: WorkspaceMode, spec: &CheckoutSpec<'_>) -> Result<()> {
-    match mode {
-        WorkspaceMode::Worktree => {
-            git::worktree_add_detached(spec.source_repo, spec.dest, Some(spec.base_ref)).await
-        }
-        // `--shared`: objects borrowed from the source. For Docker the borrowed
-        // store is mounted RO at launch — safe for the primary workspace and
-        // any repo present when the container starts.
-        WorkspaceMode::Clone => clone_detached(spec, true).await,
-    }
+///
+/// `--shared`: objects borrowed from the source. For Docker the borrowed store
+/// is mounted RO at launch — safe for the primary workspace and any repo
+/// present when the container starts.
+pub async fn provision(spec: &CheckoutSpec<'_>) -> Result<()> {
+    clone_detached(spec, true).await
 }
 
 /// Provision a **self-contained** clone (full object copy, no alternates),
@@ -139,14 +114,12 @@ pub async fn provision_forking_run_repo(spec: &CheckoutSpec<'_>, run_repo: &Path
 /// checkout (see [`recover_and_checkout`]) — the caller then records no branch,
 /// exactly as for a never-pushed agent.
 ///
-/// Worktree: the branch is created in the source repo (worktree branches are
-/// refs of the origin repo) and the worktree attached to it — always on-branch.
-/// Clone: the branch is created inside the clone; when `base_ref` isn't present
-/// in the source repo (the agent's commits lived only in the torn-down clone),
-/// it is recovered from `origin`. Recovery no longer requires the branch to
-/// still exist on the remote: a branch auto-deleted after its PR merged is
-/// restored by fetching the tip commit directly (still reachable from the base
-/// branch), and a truly-lost tip falls back to `fallback_ref`.
+/// The branch is created inside the clone; when `base_ref` isn't present in the
+/// source repo (the agent's commits lived only in the torn-down clone), it is
+/// recovered from `origin`. Recovery no longer requires the branch to still
+/// exist on the remote: a branch auto-deleted after its PR merged is restored
+/// by fetching the tip commit directly (still reachable from the base branch),
+/// and a truly-lost tip falls back to `fallback_ref`.
 ///
 /// `origin_branch` is the branch name as the remote knows it. It differs from
 /// `branch` when restore renamed to dodge a local collision (`feat` →
@@ -156,38 +129,28 @@ pub async fn provision_forking_run_repo(spec: &CheckoutSpec<'_>, run_repo: &Path
 /// `fallback_ref` is a last-resort commit-ish (the archived parent-branch tip)
 /// to open detached at when the agent's own tip is gone for good.
 pub async fn provision_on_branch(
-    mode: WorkspaceMode,
     spec: &CheckoutSpec<'_>,
     branch: &str,
     origin_branch: &str,
     fallback_ref: Option<&str>,
 ) -> Result<bool> {
-    match mode {
-        WorkspaceMode::Worktree => {
-            git::branch_create_at(spec.source_repo, branch, spec.base_ref).await?;
-            git::worktree_add_branch(spec.source_repo, spec.dest, branch).await?;
-            Ok(true)
-        }
-        WorkspaceMode::Clone => {
-            // Restore always relaunches the container, so the RO mount for a
-            // `--shared` clone's borrowed store is re-established at launch.
-            clone_base(spec, true).await?;
-            let branch = branch.to_string();
-            let origin_branch = origin_branch.to_string();
-            let fallback = fallback_ref.map(str::to_string);
-            finish_clone(spec, |dest| async move {
-                recover_and_checkout(
-                    &dest,
-                    spec.base_ref,
-                    &branch,
-                    &origin_branch,
-                    fallback.as_deref(),
-                )
-                .await
-            })
-            .await
-        }
-    }
+    // Restore always relaunches the container, so the RO mount for a `--shared`
+    // clone's borrowed store is re-established at launch.
+    clone_base(spec, true).await?;
+    let branch = branch.to_string();
+    let origin_branch = origin_branch.to_string();
+    let fallback = fallback_ref.map(str::to_string);
+    finish_clone(spec, |dest| async move {
+        recover_and_checkout(
+            &dest,
+            spec.base_ref,
+            &branch,
+            &origin_branch,
+            fallback.as_deref(),
+        )
+        .await
+    })
+    .await
 }
 
 /// Recover a restored agent's branch tip inside the fresh clone `dest` and check
@@ -267,39 +230,17 @@ async fn checkout_detached(dest: &Path, at: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove the workspace at `spec.dest`.
-pub async fn teardown(mode: WorkspaceMode, spec: &CheckoutSpec<'_>) -> Result<()> {
-    match mode {
-        WorkspaceMode::Worktree => {
-            // Prune first so a stale registration never blocks the remove;
-            // best-effort, like the pre-existing disposition sweep.
-            let _ = git::worktree_prune(spec.source_repo).await;
-            git::worktree_remove(spec.source_repo, spec.dest, true).await
-        }
-        // A clone is self-contained: nothing to unregister in the source repo.
-        WorkspaceMode::Clone => match tokio::fs::remove_dir_all(spec.dest).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(Error::Other(format!(
-                "remove clone workspace {}: {e}",
-                spec.dest.display()
-            ))),
-        },
-    }
-}
-
-/// Which mode produced the workspace on disk — a linked worktree has a `.git`
-/// *file* (pointer into the origin repo), a clone has a `.git` *directory*.
-/// `None` when the path holds neither (already gone, or never provisioned).
-/// Teardown callers use this instead of re-reading the settings key, so a
-/// dev-flag flip between spawn and archive can't tear down with the wrong arm.
-pub fn detect_mode(dest: &Path) -> Option<WorkspaceMode> {
-    let git_path = dest.join(".git");
-    let meta = std::fs::symlink_metadata(&git_path).ok()?;
-    if meta.is_dir() {
-        Some(WorkspaceMode::Clone)
-    } else {
-        Some(WorkspaceMode::Worktree)
+/// Remove the workspace at `dest`. A clone is self-contained — nothing to
+/// unregister in the source repo — so this is just a recursive delete, and
+/// converges when the path is already gone.
+pub async fn teardown(dest: &Path) -> Result<()> {
+    match tokio::fs::remove_dir_all(dest).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Other(format!(
+            "remove clone workspace {}: {e}",
+            dest.display()
+        ))),
     }
 }
 
@@ -635,27 +576,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn worktree_provision_detaches_at_base_and_teardown_removes() {
-        let td = tempfile::tempdir().unwrap();
-        let (repo, first, _head) = fixture_repo(td.path());
-        let dest = td.path().join("wt");
-        let spec = CheckoutSpec {
-            source_repo: &repo,
-            base_ref: &first,
-            dest: &dest,
-        };
-
-        provision(WorkspaceMode::Worktree, &spec).await.unwrap();
-        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), first);
-        assert_eq!(detect_mode(&dest), Some(WorkspaceMode::Worktree));
-
-        teardown(WorkspaceMode::Worktree, &spec).await.unwrap();
-        assert!(!dest.exists());
-        // The registration is gone too — the same path is reusable.
-        assert!(!run(&repo, &["worktree", "list", "--porcelain"]).contains("wt"));
-    }
-
-    #[tokio::test]
     async fn clone_provision_detaches_at_base_ref() {
         let td = tempfile::tempdir().unwrap();
         let (repo, first, _head) = fixture_repo(td.path());
@@ -666,7 +586,7 @@ mod tests {
             dest: &dest,
         };
 
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), first);
         // Detached HEAD: symbolic-ref exits non-zero.
         let out = std::process::Command::new("git")
@@ -675,7 +595,6 @@ mod tests {
             .output()
             .unwrap();
         assert!(!out.status.success(), "clone HEAD should be detached");
-        assert_eq!(detect_mode(&dest), Some(WorkspaceMode::Clone));
     }
 
     #[tokio::test]
@@ -700,7 +619,7 @@ mod tests {
             base_ref: &main_tip,
             dest: &dest,
         };
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), main_tip);
         // Detached, not on a DWIM-created local branch.
         let out = std::process::Command::new("git")
@@ -731,7 +650,7 @@ mod tests {
             dest: &dest,
         };
 
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
         assert_eq!(
             run(&dest, &["remote", "get-url", "origin"]),
             "https://github.com/acme/widget.git"
@@ -749,7 +668,7 @@ mod tests {
             dest: &dest,
         };
 
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
         // The implicit local-path origin must be gone: a push from the clone
         // must never be able to write into the user's source repo.
         assert_eq!(run(&dest, &["remote"]), "");
@@ -767,7 +686,7 @@ mod tests {
             dest: &dest,
         };
 
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
 
         for hook in ["post-commit", "post-merge"] {
             let path = dest.join(".git/hooks").join(hook);
@@ -809,7 +728,7 @@ mod tests {
             base_ref: &head,
             dest: &dest,
         };
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
 
         // Two branches that diverge on different files → a clean but non-ff
         // merge. `--no-commit` stops before committing (so post-merge does not
@@ -865,7 +784,7 @@ mod tests {
             base_ref: &head,
             dest: &dest,
         };
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
         // Land on a branch so a commit is straightforward.
         run(&dest, &["checkout", "-q", "-b", "work"]);
 
@@ -909,7 +828,7 @@ mod tests {
             dest: &dest,
         };
 
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
         assert_eq!(run(&dest, &["config", "--local", "user.name"]), "Tester");
         assert_eq!(
             run(&dest, &["config", "--local", "user.email"]),
@@ -934,7 +853,7 @@ mod tests {
             dest: &dest,
         };
 
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
 
         // Whatever the host's ambient config, the clone must resolve a non-empty
         // identity in its OWN config so a native in-container `git commit` never
@@ -954,7 +873,7 @@ mod tests {
             dest: &dest,
         };
 
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
 
         // `--shared` writes an alternates file pointing at the source's object
         // store and copies no objects.
@@ -1007,38 +926,11 @@ mod tests {
             dest: &dest,
         };
 
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
-        teardown(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
+        teardown(&dest).await.unwrap();
         assert!(!dest.exists());
         // Already gone — teardown converges rather than erroring.
-        teardown(WorkspaceMode::Clone, &spec).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn worktree_provision_on_branch_creates_branch_at_tip() {
-        let td = tempfile::tempdir().unwrap();
-        let (repo, first, _head) = fixture_repo(td.path());
-        let dest = td.path().join("wt");
-        let spec = CheckoutSpec {
-            source_repo: &repo,
-            base_ref: &first,
-            dest: &dest,
-        };
-
-        provision_on_branch(
-            WorkspaceMode::Worktree,
-            &spec,
-            "feat/restore",
-            "feat/restore",
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]),
-            "feat/restore"
-        );
-        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), first);
+        teardown(&dest).await.unwrap();
     }
 
     #[tokio::test]
@@ -1052,15 +944,9 @@ mod tests {
             dest: &dest,
         };
 
-        provision_on_branch(
-            WorkspaceMode::Clone,
-            &spec,
-            "feat/restore",
-            "feat/restore",
-            None,
-        )
-        .await
-        .unwrap();
+        provision_on_branch(&spec, "feat/restore", "feat/restore", None)
+            .await
+            .unwrap();
         assert_eq!(
             run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]),
             "feat/restore"
@@ -1119,7 +1005,7 @@ mod tests {
             base_ref: &tip,
             dest: &dest,
         };
-        provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat", None)
+        provision_on_branch(&spec, "feat", "feat", None)
             .await
             .unwrap();
         assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat");
@@ -1134,7 +1020,7 @@ mod tests {
             base_ref: &tip,
             dest: &dest2,
         };
-        provision_on_branch(WorkspaceMode::Clone, &spec2, "feat-restored", "feat", None)
+        provision_on_branch(&spec2, "feat-restored", "feat", None)
             .await
             .unwrap();
         assert_eq!(
@@ -1181,7 +1067,6 @@ mod tests {
         }
         assert!(loose > 0, "self-contained clone must copy objects in");
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
-        assert_eq!(detect_mode(&dest), Some(WorkspaceMode::Clone));
     }
 
     #[tokio::test]
@@ -1215,7 +1100,7 @@ mod tests {
             base_ref: &tip,
             dest: &dest,
         };
-        provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat", None)
+        provision_on_branch(&spec, "feat", "feat", None)
             .await
             .unwrap();
         assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat");
@@ -1291,7 +1176,7 @@ mod tests {
             base_ref: &tip,
             dest: &dest,
         };
-        let on_branch = provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat", None)
+        let on_branch = provision_on_branch(&spec, "feat", "feat", None)
             .await
             .unwrap();
         assert!(!on_branch, "a deleted branch must restore detached");
@@ -1371,7 +1256,7 @@ mod tests {
             base_ref: &tip,
             dest: &dest,
         };
-        let on_branch = provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat", None)
+        let on_branch = provision_on_branch(&spec, "feat", "feat", None)
             .await
             .unwrap();
         assert!(
@@ -1443,10 +1328,9 @@ mod tests {
             dest: &dest,
         };
         // `head` (the parent base) is present in the source store → reachable.
-        let on_branch =
-            provision_on_branch(WorkspaceMode::Clone, &spec, "feat", "feat", Some(&head))
-                .await
-                .unwrap();
+        let on_branch = provision_on_branch(&spec, "feat", "feat", Some(&head))
+            .await
+            .unwrap();
         assert!(!on_branch);
         assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
@@ -1465,13 +1349,8 @@ mod tests {
             dest: &dest,
         };
 
-        provision(WorkspaceMode::Clone, &spec).await.unwrap();
+        provision(&spec).await.unwrap();
         assert!(!dest.join("leftover.txt").exists());
         assert!(dest.join("a.txt").exists());
-    }
-
-    #[test]
-    fn detect_mode_on_missing_path_is_none() {
-        assert_eq!(detect_mode(Path::new("/nonexistent/nope")), None);
     }
 }
