@@ -144,8 +144,38 @@ pub enum Gate {
     Artifact { path: String },
     /// The project test command exits 0.
     Tests,
-    /// A human approves.
-    Approval,
+    /// A human approves — optionally only after the listed deterministic gates
+    /// pass first (`require: [tests]`, spec §9). The approval pause is
+    /// unreachable while a required gate is unmet: a red `require: [tests]`
+    /// behaves exactly like a failing `tests` gate (blocked + re-prompt).
+    Approval {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        require: Vec<Require>,
+    },
+}
+
+/// A deterministic prerequisite an `approval` gate can demand before it will
+/// pause for a human (spec §9). Only `tests` today; modeled as an enum so an
+/// unknown value fails deserialization loudly rather than being silently
+/// dropped, and so adding future prerequisites stays a typed change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Require {
+    Tests,
+}
+
+impl Gate {
+    /// Whether satisfying this gate requires running the project's tests: a
+    /// `tests` gate always, or an `approval` gate listing `require: [tests]`.
+    /// The attempt lifecycle consults this to decide whether to run the test
+    /// runner before evaluating the gate (spec §9.4).
+    pub fn requires_tests(&self) -> bool {
+        match self {
+            Gate::Tests => true,
+            Gate::Approval { require } => require.contains(&Require::Tests),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -881,6 +911,42 @@ mod tests {
             step.gate = Gate::Tests;
         }
         assert!(validate(&s).is_ok(), "{:?}", errors(&s));
+    }
+
+    #[test]
+    fn approval_gate_with_and_without_require_is_accepted() {
+        // A bare `approval` gate and one that gates on tests first both validate.
+        for require in [vec![], vec![Require::Tests]] {
+            let mut s = minimal();
+            if let Block::Step(step) = &mut s.workflow[0] {
+                step.gate = Gate::Approval { require };
+            }
+            assert!(validate(&s).is_ok(), "{:?}", errors(&s));
+        }
+    }
+
+    #[test]
+    fn bare_approval_gate_json_round_trips_and_is_backward_compatible() {
+        // The pre-`require` on-disk shape is `{"type":"approval"}`; it must still
+        // deserialize (empty `require`), and an empty `require` must serialize
+        // back to that exact shape so old definitions round-trip byte-for-byte.
+        let bare: Gate = serde_json::from_str(r#"{"type":"approval"}"#).unwrap();
+        assert_eq!(bare, Gate::Approval { require: vec![] });
+        assert_eq!(
+            serde_json::to_string(&bare).unwrap(),
+            r#"{"type":"approval"}"#
+        );
+        let with: Gate =
+            serde_json::from_str(r#"{"type":"approval","require":["tests"]}"#).unwrap();
+        assert_eq!(
+            with,
+            Gate::Approval {
+                require: vec![Require::Tests]
+            }
+        );
+        assert!(with.requires_tests());
+        assert!(!bare.requires_tests());
+        assert!(Gate::Tests.requires_tests());
     }
 
     #[test]

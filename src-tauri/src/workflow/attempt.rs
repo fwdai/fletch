@@ -378,7 +378,9 @@ pub async fn run_attempt(
         };
         // Tests gate (spec §9.4): resolve + run the project's tests in the step
         // worktree now, then let the pure gate turn the outcome into done/blocked.
-        let tests = if matches!(gate, Gate::Tests) {
+        // An `approval` gate with `require: [tests]` runs them too, so the human
+        // pause is unreachable while tests are red (spec §9).
+        let tests = if gate.requires_tests() {
             Some(test_runner.run_tests(&spawned.worktree).await)
         } else {
             None
@@ -751,7 +753,7 @@ fn gate_mode(gate: &Gate) -> &'static str {
         Gate::Commit => "commit",
         Gate::Artifact { .. } => "artifact",
         Gate::Tests => "tests",
-        Gate::Approval => "approval",
+        Gate::Approval { .. } => "approval",
     }
 }
 
@@ -1087,7 +1089,11 @@ mod tests {
         let run = run(
             d.as_ref(),
             &NeverTests,
-            params(Gate::Approval, bb.path().to_path_buf(), fast()),
+            params(
+                Gate::Approval { require: vec![] },
+                bb.path().to_path_buf(),
+                fast(),
+            ),
         )
         .await;
         assert!(

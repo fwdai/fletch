@@ -64,13 +64,18 @@ export interface AgentSpec {
   custom_agent?: string;
 }
 
-/** The deterministic predicate that marks a step attempt done (spec §9). */
+/** A deterministic prerequisite an `approval` gate can require first (spec §9). */
+export type Require = "tests";
+
+/** The deterministic predicate that marks a step attempt done (spec §9). An
+ *  `approval` gate may list `require: [tests]` — the human pause is unreachable
+ *  until the project's tests pass (optional, defaults to none). */
 export type Gate =
   | { type: "verdict" }
   | { type: "commit" }
   | { type: "artifact"; path: string }
   | { type: "tests" }
-  | { type: "approval" };
+  | { type: "approval"; require?: Require[] };
 
 export interface Step {
   id: string;

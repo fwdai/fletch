@@ -565,9 +565,72 @@ pub async fn checkout_diff_shortstat(checkout: &Path, base_ref: &str) -> Result<
     Ok(parse_shortstat(&line))
 }
 
+/// Per-file additions/deletions for `git diff --numstat <from>..<to>` in `repo`.
+/// Binary files (numstat prints `-`/`-`) report zero counts. Lists the files a
+/// ferried ref changed versus the run base for the review surface's file list.
+pub async fn diff_numstat(
+    repo: &Path,
+    from_sha: &str,
+    to_sha: &str,
+) -> Result<Vec<(String, u32, u32)>> {
+    let range = format!("{from_sha}..{to_sha}");
+    let out = run_git(repo, &["diff", "--numstat", &range], "diff --numstat").await?;
+    Ok(parse_numstat_lines(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Parse `git diff --numstat` output into `(path, additions, deletions)` rows.
+/// Binary files print `-` for both counts; those become 0.
+fn parse_numstat_lines(text: &str) -> Vec<(String, u32, u32)> {
+    let mut files = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.splitn(3, '\t');
+        if let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next()) {
+            files.push((
+                path.to_string(),
+                a.parse::<u32>().unwrap_or(0),
+                d.parse::<u32>().unwrap_or(0),
+            ));
+        }
+    }
+    files
+}
+
+/// The unified diff of `from_sha..to_sha` in `repo`, optionally scoped to one
+/// `path` (`-U3`, matching the file-diff view's context). Both refs are objects
+/// in the same repo — for the review surface, the run repo where the ferried step
+/// ref and the run base both live — so no checkout is needed.
+pub async fn diff_refs(
+    repo: &Path,
+    from_sha: &str,
+    to_sha: &str,
+    path: Option<&str>,
+) -> Result<String> {
+    let range = format!("{from_sha}..{to_sha}");
+    let mut args = vec!["diff", "--no-color", "-U3", &range];
+    if let Some(p) = path {
+        args.push("--");
+        args.push(p);
+    }
+    let out = run_git(repo, &args, "diff -U3 range").await?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_numstat_lines_counts_and_binaries() {
+        let text = "12\t3\tsrc/a.rs\n-\t-\tassets/logo.png\n0\t5\tsrc/b.rs\n";
+        assert_eq!(
+            parse_numstat_lines(text),
+            vec![
+                ("src/a.rs".to_string(), 12, 3),
+                ("assets/logo.png".to_string(), 0, 0),
+                ("src/b.rs".to_string(), 0, 5),
+            ]
+        );
+    }
 
     #[test]
     fn parse_shortstat_typical() {

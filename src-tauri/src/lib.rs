@@ -1399,6 +1399,8 @@ pub fn run() {
             workflow::scheduler::wf_resume,
             workflow::scheduler::wf_retry,
             workflow::scheduler::wf_approve,
+            workflow::scheduler::wf_reject,
+            workflow::scheduler::wf_run_diff,
             workflow::scheduler::wf_resolve_conflict,
             workflow::scheduler::wf_delete_run,
             workflow::comms::wf_answer,

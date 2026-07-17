@@ -396,6 +396,54 @@ export interface VerificationReport {
   checks: CheckResult[];
 }
 
+/** One changed file in an approval gate's ferried diff. */
+export interface GateDiffFile {
+  path: string;
+  additions: number;
+  deletions: number;
+}
+
+/** The ferried diff (vs the run base) summarized for review. */
+export interface GateDiff {
+  additions: number;
+  deletions: number;
+  files: GateDiffFile[];
+}
+
+/** Budget spent vs cap at an approval pause. `tokens_cap === null` means the run
+ *  has no token cap; a `tokens_spent` of 0 with no cap should render as "unknown"
+ *  (some providers don't report token usage — driver.rs). */
+export interface GateBudget {
+  turns_spent: number;
+  turns_cap: number;
+  tokens_spent: number;
+  tokens_cap: number | null;
+  wall_ms_spent: number;
+  wall_clock_cap_mins: number;
+}
+
+/** A reviewer step's `verdict.json` summary carried in the evidence. */
+export interface GateVerdict {
+  result: string;
+  summary: string;
+  detail: string | null;
+  target: string | null;
+}
+
+/** The review evidence assembled when an approval gate pauses a run (the Rust
+ *  `gate_evidence` event payload, spec §9): verification, the ferried diff vs the
+ *  run base, budget spend, and the step's verdict. `verification` is null when the
+ *  host couldn't build a verifier; its checks are all `skipped` when the project
+ *  configures no commands. `base_sha`/`head_sha` feed `api.wfRunDiff`. */
+export interface GateEvidence {
+  base_sha: string;
+  head_sha: string;
+  verification: VerificationReport | null;
+  diff: GateDiff;
+  budget: GateBudget;
+  verdict: GateVerdict | null;
+}
+
 /** Project-scoped run config resolved from a repo path: the detected configs
  *  plus the project_id they belong to (see Rust `supervisor::ProjectRunConfig`). */
 export interface ProjectRunConfig {
@@ -856,6 +904,14 @@ export const api = {
   wfCancel: (runId: string) => invoke<void>("wf_cancel", { runId }),
   /** Approve a run paused on an approval gate: boundary-commit + advance. */
   wfApprove: (runId: string) => invoke<void>("wf_approve", { runId }),
+  /** Reject a run paused on an approval gate (spec §9): re-prompt the gated step
+   *  with `note` for one more attempt within budget, else pause `blocked_gate`. */
+  wfReject: (runId: string, note: string) => invoke<void>("wf_reject", { runId, note }),
+  /** The unified diff of `fromSha..toSha` in a run's own repo — used by the review
+   *  surface to diff a ferried step ref against the run base. `path` scopes to one
+   *  file; omit for the whole diff. */
+  wfRunDiff: (runId: string, fromSha: string, toSha: string, path?: string) =>
+    invoke<string>("wf_run_diff", { runId, fromSha, toSha, path: path ?? null }),
   /** Retry a run paused on `blocked_gate` / `stalled` with a fresh attempt. */
   wfRetry: (runId: string) => invoke<void>("wf_retry", { runId }),
   /** Resume a paused run (§13). An optional `budgetPatch` additively raises the

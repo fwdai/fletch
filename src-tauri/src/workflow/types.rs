@@ -152,6 +152,12 @@ pub mod event_type {
     pub const PROMPT_SENT: &str = "prompt_sent";
     pub const TURN_ENDED: &str = "turn_ended";
     pub const GATE_EVALUATED: &str = "gate_evaluated";
+    /// The review evidence assembled when an `approval` gate pauses the run
+    /// (spec §9): the verification report, the ferried diff vs the run base,
+    /// budget spend vs cap, and the step's verdict summary. Carried on its own
+    /// event (keyed to the awaiting step exec) so ReviewSurface can query the
+    /// latest one from `wf_events` without parsing `run_paused`.
+    pub const GATE_EVIDENCE: &str = "gate_evidence";
     pub const BOUNDARY_COMMIT: &str = "boundary_commit";
     pub const ATTEMPT_ABANDONED: &str = "attempt_abandoned";
     pub const ATTEMPT_ERROR: &str = "attempt_error";
