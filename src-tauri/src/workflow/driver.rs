@@ -156,6 +156,8 @@ impl AgentDriver for SupervisorDriver {
                         run_repo,
                         owner_run_id: Some(owner_run_id),
                         carry_from: None,
+                        // Workflow-step spawns aren't issue-intake spawns.
+                        issue_ref: None,
                     },
                 )
                 .await?;

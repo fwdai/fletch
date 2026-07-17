@@ -229,6 +229,23 @@ impl Client {
         Ok((status, body))
     }
 
+    /// REST GET for a read/poll path: like [`rest`](Self::rest) but it also
+    /// feeds the response into the rate-limit gate (as the GraphQL path does),
+    /// so a `403`/`429` or an exhausted budget pauses subsequent polling instead
+    /// of hammering. Endpoints still map statuses themselves.
+    pub async fn rest_get_observed(&self, path: &str) -> Result<(reqwest::StatusCode, Value)> {
+        let resp = self
+            .request(reqwest::Method::GET, format!("{API_BASE}{path}"))
+            .send()
+            .await
+            .map_err(request_error)?;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+        observe_rate_limit(status, &headers, &body);
+        Ok((status, body))
+    }
+
     /// GraphQL call returning the `data` object. GraphQL reports failures as
     /// 200 + `errors[]`, so those are surfaced as `Error::Gh` with the
     /// server's messages — callers match on the text for expected cases

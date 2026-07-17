@@ -619,6 +619,11 @@ export interface DraftsSlice {
 
   // drafts
   createDraft: (repoPath: string) => Promise<void>;
+  /** Start a draft from a Home-inbox GitHub issue: opens a new draft on the
+   *  issue's repo, seeds the composer with the issue brief (title + body + url
+   *  + a suggested branch), and tags it with the issue number so the agent's
+   *  PR closes it. Lands the user in the composer, ready to launch. */
+  startWorkFromIssue: (repoPath: string, issue: import("@/api").IssueSummary) => Promise<void>;
   /** Remember the last project an agent was started in and persist it. */
   setLastRepoPath: (repoPath: string) => void;
   updateDraft: (id: string, patch: Partial<DraftAgent>) => void;

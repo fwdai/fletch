@@ -299,3 +299,127 @@
   color: var(--fg-3);
   line-height: var(--lh-snug);
 }
+
+/* ── issue inbox (secondary section) ──────────────────────────────────────── */
+/* Deliberately quieter than the review queue: a small header, compact rows,
+ * no rail/tint — it should never compete with "what needs me?". */
+.mc-inbox-wrap {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 8px 20px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mc-inbox-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 2px;
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.mc-inbox-count {
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+}
+.mc-inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mc-inbox-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  transition: border-color 0.12s var(--ease);
+}
+.mc-inbox-row:hover {
+  border-color: var(--bd);
+}
+.mc-inbox-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mc-inbox-titleline {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.mc-inbox-num {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+.mc-inbox-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--fg-0);
+}
+.mc-inbox-ext {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-3);
+  opacity: 0;
+  transition: var(--transition-ui-ease);
+}
+.mc-inbox-row:hover .mc-inbox-ext {
+  opacity: 1;
+}
+.mc-inbox-ext:hover {
+  color: var(--fg-1);
+}
+.mc-inbox-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.mc-inbox-repo {
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+}
+.mc-issue-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+  background: var(--bg-3);
+  border: 1px solid var(--bd-soft);
+  white-space: nowrap;
+}
+.mc-issue-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.mc-inbox-hint {
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+.mc-inbox-start {
+  flex-shrink: 0;
+  height: 26px;
+}

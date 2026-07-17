@@ -375,6 +375,7 @@ pub async fn spawn_agent(
     skills: Option<Vec<crate::agent_profile::SkillSnapshot>>,
     mcp_servers: Option<Vec<crate::agent_profile::McpServerSnapshot>>,
     fork_base: Option<String>,
+    issue_ref: Option<String>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
     sup.spawn_agent(
@@ -399,6 +400,8 @@ pub async fn spawn_agent(
             owner_run_id: None,
             // Carrying another workspace's working tree is a fork-only path.
             carry_from: None,
+            // Set when the spawn originates from a Home-inbox issue.
+            issue_ref,
         },
     )
     .await
@@ -793,6 +796,16 @@ pub async fn list_prs(
 #[tauri::command]
 pub async fn list_repo_prs(repo_path: String) -> Result<Vec<gh::PrSummary>> {
     gh::pr_list(&expand_tilde(&repo_path), 50).await
+}
+
+/// List open GitHub issues for a repo by path, for the Home inbox. Like
+/// `list_repo_prs`, this needs no agent — Home works over the workspace's
+/// tracked repo paths. `Ok(None)` (not an error) when the repo has no token /
+/// non-GitHub origin / a rate-limit pause is active, so the inbox degrades
+/// quietly. Capped at 30 — the inbox shows a handful, newest-updated first.
+#[tauri::command]
+pub async fn list_repo_issues(repo_path: String) -> Result<Option<Vec<gh::IssueSummary>>> {
+    gh::issue_list(&expand_tilde(&repo_path), 30).await
 }
 
 /// Fetch the PR merge gate + per-check detail (spec §6). Best-effort: any

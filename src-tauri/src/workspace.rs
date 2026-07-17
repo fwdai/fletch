@@ -207,6 +207,12 @@ pub struct AgentRecord {
     /// user-spawned agent.
     #[serde(default)]
     pub owner_run_id: Option<String>,
+    /// The GitHub issue this workspace was started from (bare issue number as
+    /// text), captured when the user hits "Start work" on a Home-inbox issue.
+    /// `None` for a normal spawn. Drives the `Closes #<n>` trailer the agent's
+    /// PR carries so merging it closes the originating issue.
+    #[serde(default)]
+    pub issue_ref: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -400,7 +406,7 @@ const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created
             s.provider, s.view, s.provider_session_id, s.last_error,
             s.effort, s.model, s.instructions, s.forked_context, s.custom_agent_id,
             s.skills, s.mcp_servers,
-            w.sandbox_engine, w.owner_run_id
+            w.sandbox_engine, w.owner_run_id, w.issue_ref
      FROM workspaces w
      LEFT JOIN sessions s ON s.workspace_id = w.id";
 
@@ -426,6 +432,7 @@ type AgentRow = (
     Option<String>, // s.mcp_servers (JSON array of McpServerSnapshot)
     Option<String>, // w.sandbox_engine
     Option<String>, // w.owner_run_id
+    Option<String>, // w.issue_ref
 );
 
 impl WorkspaceManager {
@@ -907,8 +914,8 @@ impl WorkspaceManager {
 
         // The workspace is the durable work-area (identity + task metadata).
         tx.execute(
-            "INSERT INTO workspaces (id, project_id, name, task, created_at, sandbox_engine, owner_run_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO workspaces (id, project_id, name, task, created_at, sandbox_engine, owner_run_id, issue_ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 record.id,
                 project_id,
@@ -917,6 +924,7 @@ impl WorkspaceManager {
                 created_millis,
                 record.sandbox_engine,
                 record.owner_run_id,
+                record.issue_ref,
             ],
         )?;
 
@@ -2183,7 +2191,7 @@ impl WorkspaceManager {
     }
 
     /// Map a row from an [`AGENT_SELECT`] query into the raw column tuple.
-    /// Shared by `query_all_agents` and `load_agent` so the 20-column layout
+    /// Shared by `query_all_agents` and `load_agent` so the 21-column layout
     /// is decoded in exactly one place.
     fn map_agent_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRow> {
         Ok((
@@ -2207,6 +2215,7 @@ impl WorkspaceManager {
             row.get(17)?,
             row.get(18)?,
             row.get(19)?,
+            row.get(20)?,
         ))
     }
 
@@ -2235,6 +2244,7 @@ impl WorkspaceManager {
             mcp_servers_json,
             sandbox_engine,
             owner_run_id,
+            issue_ref,
         ) = row;
 
         let is_archived = archived_millis.is_some();
@@ -2275,6 +2285,7 @@ impl WorkspaceManager {
             mcp_servers: decode_json_vec(mcp_servers_json.as_deref()),
             sandbox_engine,
             owner_run_id,
+            issue_ref,
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,
@@ -2352,6 +2363,8 @@ pub fn new_agent_record(
         // Set by the workflow scheduler at step spawn; a plain spawn leaves it
         // unowned so the agent shows in the normal sidebar.
         owner_run_id: None,
+        // Set by the issue-intake spawn path; a plain spawn has no origin issue.
+        issue_ref: None,
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         archive: None,

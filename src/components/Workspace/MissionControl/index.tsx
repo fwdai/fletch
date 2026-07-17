@@ -10,6 +10,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { AllClear } from "./AllClear";
 import { FanoutCard } from "./FanoutCard";
+import { IssueInbox } from "./IssueInbox";
 import { QueueCard } from "./QueueCard";
 import { useQueueActions } from "./useQueueActions";
 import { useQueueKeyboard } from "./useQueueKeyboard";
@@ -103,6 +104,10 @@ export function MissionControl() {
             </div>
           </div>
         )}
+
+        {/* Secondary section: open GitHub issues for the tracked repos. Below
+            the review queue, quieter, and self-hiding when there's nothing. */}
+        <IssueInbox />
       </div>
 
       {reviewRunId && (

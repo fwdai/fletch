@@ -151,6 +151,10 @@ pub struct SpawnRequest {
     /// checkout after provisioning, so the fork starts from that workspace's
     /// state. `None` for a normal spawn or a clean fork.
     pub carry_from: Option<PathBuf>,
+    /// The GitHub issue this spawn originates from (bare issue number as text),
+    /// set by the Home inbox's "Start work". Persisted on the workspace so the
+    /// agent's PR closes it. `None` for a spawn not tied to an issue.
+    pub issue_ref: Option<String>,
 }
 
 impl Supervisor {
@@ -176,6 +180,7 @@ impl Supervisor {
             run_repo,
             owner_run_id,
             carry_from,
+            issue_ref,
         } = req;
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -278,6 +283,9 @@ impl Supervisor {
         // Tag the agent with its owning run (workflow step spawn) so it's
         // hidden from the normal sidebar and cascaded on run delete.
         record.owner_run_id = owner_run_id;
+        // Carry the originating issue (Home inbox "Start work") onto the record
+        // so the git dispatcher can close it from the agent's PR.
+        record.issue_ref = issue_ref;
         let parent_dir = agent_parent_dir(&agent_id)?;
         let primary_checkout = repo_checkout_path(&agent_id, &subdir)?;
 
@@ -578,8 +586,15 @@ impl Supervisor {
                 .unwrap_or_else(|| "main".to_string());
             repo_targets.push((r.subdir.clone(), checkout, base));
         }
-        let git_dispatcher =
-            rpc::git::GitDispatcher::new(cwd.clone(), base_branch).with_repos(repo_targets);
+        // A workspace started from a Home-inbox issue carries its number here;
+        // the dispatcher appends `Closes #<n>` to the primary repo's PR body.
+        let close_issue = record
+            .issue_ref
+            .as_deref()
+            .and_then(|s| s.trim().parse().ok());
+        let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch)
+            .with_repos(repo_targets)
+            .with_close_issue(close_issue);
         // A run-owned step agent also gets the workflow comms ops (wf_report /
         // wf_ask / wf_notify, §10); everything else still falls through to the
         // git dispatcher. Plain agents keep the git dispatcher unchanged.

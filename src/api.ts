@@ -93,6 +93,9 @@ export interface AgentRecord {
    *  for the agent's life — a settings change never re-engines it. Null for
    *  agents created before engine selection existed (they run sandbox-exec). */
   sandbox_engine?: string | null;
+  /** The GitHub issue this workspace was started from (bare issue number as
+   *  text), set by the Home inbox's "Start work". Null for a normal spawn. */
+  issue_ref?: string | null;
 }
 
 /** A pinned repo joined with its owning project. `name` is the project's
@@ -299,6 +302,26 @@ export interface PrSummary {
   number: number;
   title: string;
   state: PrStatus;
+}
+
+/** One label on an issue, for the Home inbox's quiet chips. `color` is
+ *  GitHub's 6-hex assignment (no leading `#`), used subtly when present. */
+export interface IssueLabel {
+  name: string;
+  color?: string;
+}
+
+/** An open GitHub issue for the Home inbox. Carries the body so "Start work"
+ *  composes the brief without a second round-trip. */
+export interface IssueSummary {
+  number: number;
+  title: string;
+  url: string;
+  labels: IssueLabel[];
+  assignee?: string;
+  /** `updatedAt` as ms-epoch, for the "updated N ago" hint. */
+  updated_at?: number;
+  body?: string;
 }
 
 /** GitHub's combined merge gate (`mergeStateStatus`), normalized (spec §6). */
@@ -672,6 +695,10 @@ export const api = {
     skills?: SkillSnapshot[],
     /** A custom agent's MCP servers, resolved by value at spawn. */
     mcpServers?: McpServerSnapshot[],
+    /** The GitHub issue this spawn originates from (bare issue number as text),
+     *  set by the Home inbox's "Start work". Persisted so the agent's PR closes
+     *  it. `undefined` for a spawn not tied to an issue. */
+    issueRef?: string,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
       view,
@@ -685,6 +712,7 @@ export const api = {
       skills: skills ?? null,
       mcpServers: mcpServers ?? null,
       forkBase: forkBase ?? null,
+      issueRef: issueRef ?? null,
     }),
   /** Fork an existing workspace into a new one, seeding its worktree (`code`)
    *  and conversation (`context`) independently. For `context.kind ===
@@ -843,6 +871,11 @@ export const api = {
   // has no agent/checkout yet.
   listRepoTree: (repoPath: string) => invoke<string[]>("list_repo_tree", { repoPath }),
   listRepoPrs: (repoPath: string) => invoke<PrSummary[]>("list_repo_prs", { repoPath }),
+  /** Open GitHub issues for the Home inbox, by repo path. `null` when the repo
+   *  has no token / non-GitHub origin / a rate-limit pause is active — the
+   *  section degrades quietly. `[]` means connected but no open issues. */
+  listRepoIssues: (repoPath: string) =>
+    invoke<IssueSummary[] | null>("list_repo_issues", { repoPath }),
   readCheckoutFile: (agentId: string, path: string) =>
     invoke<CheckoutFileContents>("read_checkout_file", { agentId, path }),
   getFileDiff: (agentId: string, path: string) =>
