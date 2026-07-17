@@ -81,6 +81,19 @@ impl RunDetector for RubyDetector {
             "convention",
         ));
 
+        // lint: only when RuboCop is a declared gem (conservative — no inventing
+        // a command the project may not have). Its canonical invocation is
+        // unambiguous.
+        if has_gem("rubocop") {
+            rows.push(DetectedRow::new(
+                "lint",
+                RowGroup::Scripts,
+                "Lint",
+                "bundle exec rubocop",
+                "rubocop gem",
+            ));
+        }
+
         // port (optional): Rails conventional dev port.
         if is_rails {
             rows.push(DetectedRow::new(
@@ -151,6 +164,18 @@ mod tests {
     fn default_test_is_rake() {
         let cfg = detect(&[("Gemfile", "gem 'rails'\n")]).unwrap();
         assert_eq!(val(&cfg, "test"), "bundle exec rake test");
+    }
+
+    #[test]
+    fn rubocop_gem_yields_lint_row() {
+        let cfg = detect(&[("Gemfile", "gem 'rubocop'\n")]).unwrap();
+        assert_eq!(val(&cfg, "lint"), "bundle exec rubocop");
+    }
+
+    #[test]
+    fn no_rubocop_omits_lint_row() {
+        let cfg = detect(&[("Gemfile", "gem 'rails'\n")]).unwrap();
+        assert!(cfg.rows.iter().all(|r| r.id != "lint"));
     }
 
     #[test]

@@ -354,7 +354,7 @@ export interface RunStateSnapshot {
 
 /** A single detected run-config row (see Rust `run_detect::DetectedRow`). */
 export interface DetectedRow {
-  /** "version" | "install" | "dev" | "test" | "build" | "port" | "env" */
+  /** "version" | "install" | "dev" | "test" | "build" | "lint" | "port" | "env" */
   id: string;
   group: "environment" | "scripts" | "server";
   key: string;
@@ -367,6 +367,30 @@ export interface DetectedConfig {
   ecosystem: string;
   confidence: number;
   rows: DetectedRow[];
+}
+
+/** One check's terminal outcome in a verification run (Rust
+ *  `verify::CheckOutcome`). `skipped` = no command resolved (nothing to run);
+ *  `setup_failed` = a prerequisite install failed so the check never ran. */
+export type CheckOutcome = "passed" | "failed" | "timed_out" | "setup_failed" | "skipped";
+
+/** One check's result inside a verification run (Rust `verify::CheckResult`). */
+export interface CheckResult {
+  /** "install" | "test" | "lint" */
+  name: string;
+  /** The command that ran (or would have); "" when skipped. */
+  command: string;
+  outcome: CheckOutcome;
+  /** Wall-clock duration in ms; 0 when the check didn't run. */
+  duration_ms: number;
+  /** Last ~100 lines of combined stdout+stderr; empty on success/skip. */
+  tail: string[];
+}
+
+/** The result of running a project's deterministic checks in a checkout
+ *  (Rust `verify::VerificationReport`). */
+export interface VerificationReport {
+  checks: CheckResult[];
 }
 
 /** Project-scoped run config resolved from a repo path: the detected configs
@@ -724,6 +748,11 @@ export const api = {
   runStop: (agentId: string) => invoke<void>("run_stop", { agentId }),
   runState: (agentId: string) => invoke<RunStateSnapshot>("run_state", { agentId }),
   detectRunConfig: (agentId: string) => invoke<DetectedConfig[]>("detect_run_config", { agentId }),
+  /** Run the project's deterministic checks (install → test → lint) in an
+   *  agent's checkout. `subdir` targets a specific tracked repo (primary when
+   *  omitted). */
+  runVerification: (agentId: string, subdir?: string) =>
+    invoke<VerificationReport>("run_verification", { agentId, subdir: subdir ?? null }),
   projectRunConfig: (repoPath: string) =>
     invoke<ProjectRunConfig>("project_run_config", { repoPath }),
   readEnvFileKeys: (repoPath: string) => invoke<EnvEntry[]>("read_env_file_keys", { repoPath }),

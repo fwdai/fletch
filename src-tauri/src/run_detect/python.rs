@@ -115,6 +115,19 @@ impl RunDetector for PythonDetector {
             ));
         }
 
+        // lint: only when a linter is a declared dependency (conservative —
+        // no inventing a command the project may not have). Ruff's canonical
+        // invocation is unambiguous.
+        if has_dep("ruff") {
+            rows.push(DetectedRow::new(
+                "lint",
+                RowGroup::Scripts,
+                "Lint",
+                "ruff check .",
+                "ruff dependency",
+            ));
+        }
+
         Some(DetectedConfig {
             ecosystem: "python".to_string(),
             confidence,
@@ -210,6 +223,18 @@ mod tests {
     fn pytest_test_row() {
         let cfg = detect(&[("requirements.txt", "pytest\n")]).unwrap();
         assert_eq!(val(&cfg, "test"), "pytest");
+    }
+
+    #[test]
+    fn ruff_dependency_yields_lint_row() {
+        let cfg = detect(&[("requirements.txt", "ruff\n")]).unwrap();
+        assert_eq!(val(&cfg, "lint"), "ruff check .");
+    }
+
+    #[test]
+    fn no_linter_dependency_omits_lint_row() {
+        let cfg = detect(&[("requirements.txt", "requests\n")]).unwrap();
+        assert!(cfg.rows.iter().all(|r| r.id != "lint"));
     }
 
     #[test]

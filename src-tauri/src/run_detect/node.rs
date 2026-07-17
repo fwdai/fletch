@@ -113,6 +113,18 @@ impl RunDetector for NodeDetector {
                 "package.json · scripts.test",
             ));
         }
+        // lint: a conventional `lint` script. `run` is used (not the bare
+        // `{pm} lint`) so the command is valid for npm too, which reserves only
+        // a handful of script shortcuts.
+        if script("lint").is_some() {
+            rows.push(DetectedRow::new(
+                "lint",
+                RowGroup::Scripts,
+                "Lint",
+                format!("{pm} run lint"),
+                "package.json · scripts.lint",
+            ));
+        }
 
         // port (optional): scan the resolved dev command + framework deps.
         let deps = dependency_names(&pkg);
@@ -233,6 +245,29 @@ mod tests {
         assert_eq!(val(&cfg, "dev"), "pnpm dev");
         assert_eq!(val(&cfg, "build"), "pnpm build");
         assert_eq!(val(&cfg, "test"), "pnpm test");
+    }
+
+    #[test]
+    fn lint_script_becomes_run_lint() {
+        // `run` keeps the command valid for npm, which has no `npm lint` alias.
+        let cfg = detect(&[("package.json", r#"{"scripts":{"lint":"eslint ."}}"#)]).unwrap();
+        assert_eq!(val(&cfg, "lint"), "npm run lint");
+    }
+
+    #[test]
+    fn lint_script_uses_package_manager() {
+        let cfg = detect(&[(
+            "package.json",
+            r#"{"packageManager":"pnpm@9","scripts":{"lint":"biome check"}}"#,
+        )])
+        .unwrap();
+        assert_eq!(val(&cfg, "lint"), "pnpm run lint");
+    }
+
+    #[test]
+    fn missing_lint_script_omits_lint_row() {
+        let cfg = detect(&[("package.json", r#"{"scripts":{"test":"vitest"}}"#)]).unwrap();
+        assert!(cfg.rows.iter().all(|r| r.id != "lint"));
     }
 
     #[test]

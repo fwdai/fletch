@@ -10,8 +10,10 @@
 //!
 //! The rows map onto the panel's hybrid schema: the core rows
 //! (`version`, `install`, `dev`, `test`, `build`) are attempted for every
-//! ecosystem; the optional rows (`port`, `env`) are emitted only when
-//! detected. Rows a detector can't fill are simply omitted.
+//! ecosystem; the optional rows (`lint`, `port`, `env`) are emitted only when
+//! detected — `lint` when a conventional linter hook exists (a `lint` npm
+//! script, or a declared linter dependency). Rows a detector can't fill are
+//! simply omitted.
 
 use serde::Serialize;
 use std::path::Path;
@@ -35,7 +37,8 @@ pub enum RowGroup {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DetectedRow {
     /// Stable id matching the panel's override-key scheme
-    /// (`version` | `install` | `dev` | `test` | `build` | `port` | `env`).
+    /// (`version` | `install` | `dev` | `test` | `build` | `lint` | `port` |
+    /// `env`).
     pub id: String,
     pub group: RowGroup,
     /// Human label, e.g. "Node version", "Toolchain".

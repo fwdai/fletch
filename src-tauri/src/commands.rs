@@ -888,6 +888,53 @@ pub fn run_state(
     Ok(supervisor.run_state(&agent_id))
 }
 
+/// Default wall-clock budget for an ad-hoc verification run's checks, matching
+/// the workflow tests gate's `DEFAULT_TESTS_TIMEOUT_SECS` (15 min). Ad-hoc
+/// checkouts have no step budget to draw from.
+const VERIFY_TIMEOUT_SECS: u64 = 900;
+
+/// Run the project's deterministic checks — install → test → lint — in an
+/// agent's checkout and return a [`crate::verify::VerificationReport`]. Resolves
+/// the target repo via `subdir` (primary when `None`) and layers the project's
+/// `run.test` / `run.install` / `run.lint` overrides over detection, the same
+/// layering the workflow tests gate uses.
+#[tauri::command]
+pub async fn run_verification(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<crate::verify::VerificationReport> {
+    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
+    // Project-scoped command overrides (mirrors the tests gate's `run.test` /
+    // `run.install`, plus `run.lint`). Empty project_id → detection only.
+    let project_id = supervisor
+        .workspace
+        .agent(&agent_id)
+        .map(|r| r.project_id)
+        .unwrap_or_default();
+    let setting = |key: &str| -> Option<String> {
+        if project_id.is_empty() {
+            None
+        } else {
+            supervisor.workspace.project_setting(&project_id, key)
+        }
+    };
+    let verifier = crate::verify::Verifier::new(
+        setting("run.test"),
+        setting("run.install"),
+        setting("run.lint"),
+        VERIFY_TIMEOUT_SECS,
+    )?;
+    let report = verifier.verify(&checkout).await;
+    tracing::info!(
+        agent_id = %agent_id,
+        passed = report.passed(),
+        checks = report.checks.len(),
+        "ran ad-hoc verification"
+    );
+    Ok(report)
+}
+
 /// Detect the run configuration for an agent's primary repo, ranked by
 /// confidence. The panel renders the first entry and layers persisted
 /// overrides on top.
