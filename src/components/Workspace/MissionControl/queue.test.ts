@@ -186,8 +186,10 @@ describe("buildReviewQueue", () => {
     );
     expect(q).toHaveLength(1);
     expect(q[0].reasons).toEqual(["checks-failing", "unresolved-comments"]);
-    // The chips show the PR carrying the issue — the failing secondary.
+    // The chips show the PR carrying the issue — the failing secondary — and
+    // the item carries its repo so actions act on the same scoped state.
     expect(q[0].pr).toEqual({ number: 2, url: "https://gh/pr/2" });
+    expect(q[0].prSubdir).toBe("pkg/api");
     expect(q[0].checks?.rollup).toBe("failing");
     expect(q[0].unresolvedComments).toBe(2);
     // A fix on the secondary changes the signature, so a dismissal expires.

@@ -65,6 +65,9 @@ export interface ReviewItem {
   // ── evidence (all optional — omit when unknown; never fake a zero) ──
   diff?: ShortStats;
   pr?: { number: number; url: string };
+  /** The repo the shown PR lives in — `undefined` for the primary, the subdir
+   *  for a secondary. Actions must act on THIS repo's state, not the primary's. */
+  prSubdir?: string;
   checks?: PrChecks;
   unresolvedComments?: number;
   staleness?: Staleness | null;
@@ -227,6 +230,7 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
       agent,
       diff: hasDiff ? stats : undefined,
       pr: shown ? { number: shown.pr.number, url: shown.pr.url } : undefined,
+      prSubdir: shown?.repo ? shown.repo : undefined,
       checks: shown?.checks ?? undefined,
       unresolvedComments: unresolved > 0 ? unresolved : undefined,
       // Future-PR slot — no signal feeds it yet, so it's always absent today.

@@ -12,6 +12,7 @@ import { appActionMessage, type GitDelegationKind } from "@/components/RightPane
 import { describeMergeGate } from "@/components/RightPanel/mergeGate";
 import { deriveState, type GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { useAppStore } from "@/store";
+import { gitKey } from "@/store/git";
 import type { ReviewItem } from "./queue";
 
 /** Composer scaffold seeded for "request changes" on an ad-hoc agent item — an
@@ -70,13 +71,16 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
   // The ad-hoc "approve" ladder: pull authoritative git/PR state (the queue only
   // holds compact shortstats), classify it exactly as the Git panel does, and
   // delegate the matching action — or open the tab when there's no clean move.
+  // `subdir` scopes everything to the repo whose signal the card shows — a
+  // secondary repo's failing PR must never dispatch an action on the primary.
   const approveAgent = useCallback(
-    async (agentId: string) => {
-      await fetchGitState(agentId);
+    async (agentId: string, subdir: string | undefined) => {
+      await fetchGitState(agentId, subdir);
       const s = useAppStore.getState();
-      const git = s.gitStates[agentId] ?? null;
-      const pr = s.prStates[agentId] ?? null;
-      const checks = s.prChecks[agentId] ?? null;
+      const key = gitKey(agentId, subdir);
+      const git = s.gitStates[key] ?? null;
+      const pr = s.prStates[key] ?? null;
+      const checks = s.prChecks[key] ?? null;
       const base = git?.parent_branch || "main";
       const state = deriveState(git, pr);
       switch (state) {
@@ -92,14 +96,15 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
             agentId,
             kind,
             appActionMessage(trigger, kind === "commit-pr" ? { base } : undefined),
+            subdir,
           );
           return;
         }
         case "pushed":
-          delegateGitAction(agentId, "open-pr", appActionMessage("open-pr", { base }));
+          delegateGitAction(agentId, "open-pr", appActionMessage("open-pr", { base }), subdir);
           return;
         case "conflicts":
-          delegateGitAction(agentId, "resolve", appActionMessage("resolve-conflicts"));
+          delegateGitAction(agentId, "resolve", appActionMessage("resolve-conflicts"), subdir);
           return;
         case "pr-open": {
           const gate = describeMergeGate(checks?.merge_state ?? null, {
@@ -107,7 +112,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
             mergeable: pr?.mergeable ?? false,
           });
           if (gate.mergeAllowed) {
-            await mergePr(agentId);
+            await mergePr(agentId, subdir);
             return;
           }
           if (gate.situation === "checks-failing") {
@@ -117,6 +122,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
               appActionMessage("fix-checks", {
                 failing: (checks?.required_failing ?? []).join(", "),
               }),
+              subdir,
             );
             return;
           }
@@ -125,6 +131,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
               agentId,
               "update-branch",
               appActionMessage("update-branch", { base }),
+              subdir,
             );
             return;
           }
@@ -152,7 +159,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
         void api.wfApprove(item.runId).catch((e) => setLastError(`Approve failed: ${e}`));
         return;
       }
-      if (item.agent) void approveAgent(item.agent.id);
+      if (item.agent) void approveAgent(item.agent.id, item.prSubdir);
     },
     [approveAgent, setLastError],
   );
