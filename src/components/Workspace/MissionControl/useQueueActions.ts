@@ -17,8 +17,13 @@ import type { ReviewItem } from "./queue";
 
 /** Composer scaffold seeded for "request changes" on an ad-hoc agent item — an
  *  editable starting point (like the PR-comment "→ chat" seed), not a sent
- *  message. The user refines it in the agent's chat before sending. */
-const REQUEST_CHANGES_SEED = "Please make the following changes before this is ready:\n\n- ";
+ *  message. The user refines it in the agent's chat before sending. When the
+ *  card's signal lives in a secondary repo, the seed names it — the composer is
+ *  agent-level, so the repo scope must ride in the prompt itself. */
+function requestChangesSeed(subdir: string | undefined): string {
+  const scope = subdir ? ` in the \`${subdir}\` repo` : "";
+  return `Please make the following changes${scope} before this is ready:\n\n- `;
+}
 
 /** Map the user's sticky commit mode to the delegation it drives — the same
  *  triple the Git panel's `changes` state uses. */
@@ -171,7 +176,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
         return;
       }
       if (item.agent) {
-        seedComposer(item.agent.id, REQUEST_CHANGES_SEED);
+        seedComposer(item.agent.id, requestChangesSeed(item.prSubdir));
         selectAgent(item.agent.id);
       }
     },
