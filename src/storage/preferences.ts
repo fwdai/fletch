@@ -138,6 +138,29 @@ export function parseNewDraftSelection(raw: string | undefined): NewDraftSelecti
   }
 }
 
+// ---- Mission Control dismissals ----------------------------------------------
+
+/** Mission Control's "dismissed" marks: a review-queue item id → the signature
+ *  of the signal state it was dismissed at (see MissionControl/queue.ts). A mark
+ *  is honored only while the item's live signature still matches, so a dismissed
+ *  item resurfaces the moment its underlying signal changes (a new turn, a new
+ *  diff, a CI flip). Stored as one JSON object under `reviewDismissed`; a corrupt
+ *  or missing blob reads as "nothing dismissed". */
+export function parseReviewDismissed(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const saved = JSON.parse(raw) as unknown;
+    if (!saved || typeof saved !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(saved as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 // ---- Pane widths --------------------------------------------------------------
 
 /** Default pane widths (px); also the fallback when a stored value is missing

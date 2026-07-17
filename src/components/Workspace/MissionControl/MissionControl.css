@@ -1,0 +1,287 @@
+/* Mission Control — the fleet review queue (Home). Tokens only: no hardcoded
+ * colors or font-sizes, so it reads as one system with the sidebar, ReviewSurface,
+ * and empty states in both themes. Quiet until something needs attention; the
+ * focused card gets a subtle accent rail + tint for keyboard triage. */
+
+.mc-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.mc-wrap {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 20px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── card ─────────────────────────────────────────────────────────────────── */
+.mc-card {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  padding: 14px 16px 14px 15px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+  cursor: default;
+  transition:
+    border-color 0.12s var(--ease),
+    background 0.12s var(--ease);
+}
+.mc-card:hover {
+  border-color: var(--bd);
+}
+.mc-card.focused {
+  border-color: var(--accent-line);
+  background: color-mix(in oklch, var(--accent-soft) 60%, var(--bg-2));
+}
+.mc-card-rail {
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: transparent;
+  transition: background 0.12s var(--ease);
+}
+.mc-card.focused .mc-card-rail {
+  background: var(--accent);
+}
+
+.mc-card-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mc-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.mc-card-title {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--fg-0);
+  min-width: 0;
+}
+.mc-card-reason {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mc-card-goal {
+  font-size: var(--fs-sm);
+  color: var(--fg-1);
+  min-width: 0;
+}
+
+/* workflow identity glyph — mirrors the .ag-prov-chip footprint */
+.mc-wf-chip {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-xs);
+  flex-shrink: 0;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+
+/* ── evidence chips ───────────────────────────────────────────────────────── */
+.mc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.mc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--fg-1);
+  background: var(--bg-3);
+  border: 1px solid var(--bd-soft);
+  white-space: nowrap;
+}
+.mc-chip .add {
+  color: var(--success);
+}
+.mc-chip .rem {
+  color: var(--danger);
+}
+.mc-chip-sub {
+  color: var(--fg-2);
+}
+.mc-chip-link {
+  cursor: pointer;
+}
+.mc-chip-link:hover {
+  border-color: var(--bd-strong);
+  color: var(--fg-0);
+}
+.mc-chip-ok {
+  color: var(--success);
+  background: color-mix(in oklch, var(--success) 12%, transparent);
+  border-color: color-mix(in oklch, var(--success) 30%, transparent);
+}
+.mc-chip-fail {
+  color: var(--danger);
+  background: color-mix(in oklch, var(--danger) 12%, transparent);
+  border-color: color-mix(in oklch, var(--danger) 30%, transparent);
+}
+.mc-chip-pending {
+  color: var(--warn);
+  background: color-mix(in oklch, var(--warn) 12%, transparent);
+  border-color: color-mix(in oklch, var(--warn) 30%, transparent);
+}
+.mc-chip-warn {
+  color: var(--att);
+  background: color-mix(in oklch, var(--att) 12%, transparent);
+  border-color: color-mix(in oklch, var(--att) 30%, transparent);
+}
+
+/* ── actions ──────────────────────────────────────────────────────────────── */
+.mc-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  flex-shrink: 0;
+  justify-content: center;
+}
+.mc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--fg-1);
+  border: 1px solid var(--bd);
+  background: var(--bg-1);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-ui-ease);
+}
+.mc-btn:hover {
+  color: var(--fg-0);
+  border-color: var(--bd-strong);
+}
+.mc-btn.primary {
+  color: var(--btn-fg-dark);
+  background: var(--accent);
+  border-color: transparent;
+}
+.mc-btn.primary:hover {
+  color: var(--btn-fg-dark);
+  filter: brightness(1.05);
+}
+.mc-dismiss {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  color: var(--fg-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: var(--transition-ui-ease);
+}
+.mc-card:hover .mc-dismiss,
+.mc-card.focused .mc-dismiss {
+  opacity: 1;
+}
+.mc-dismiss:hover {
+  color: var(--fg-1);
+  background: var(--hover);
+}
+
+/* ── keyboard hint row ────────────────────────────────────────────────────── */
+.mc-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 2px 4px;
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+.mc-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.mc-hints kbd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-2);
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-xs);
+}
+
+/* ── all-clear ────────────────────────────────────────────────────────────── */
+.mc-allclear {
+  margin: auto;
+  padding: 40px 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+  max-width: 360px;
+}
+.mc-allclear-mark {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 12px;
+  border-radius: 50%;
+  color: var(--success);
+  background: color-mix(in oklch, var(--success) 12%, transparent);
+}
+.mc-allclear-title {
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  color: var(--fg-1);
+}
+.mc-allclear-sub {
+  font-size: var(--fs-sm);
+  color: var(--fg-3);
+  line-height: var(--lh-snug);
+}

@@ -1,9 +1,9 @@
 import type { KeyboardEvent, MouseEvent } from "react";
 import { useState } from "react";
 import type { AgentRecord, AgentStatus, PrChecks, PrState, ShortStats } from "@/api";
+import { AgentIdentityChip } from "@/components/AgentIdentityChip";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { lookupModel } from "@/data/modelCatalog";
 import { providerChip, providerLabel } from "@/data/providers";
@@ -75,12 +75,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const pending = useAppStore((s) => s.pendingToolUse[agent.id]);
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
-  // The custom agent this session was spawned from, if any (and still present).
-  // Drives the row's identity chip; falls back to the base provider when the
-  // custom agent has since been deleted.
-  const customAgent = useAppStore((s) =>
-    agent.custom_agent_id ? s.customAgents.find((a) => a.id === agent.custom_agent_id) : undefined,
-  );
   const now = useMinuteClock();
   const [statsOpen, setStatsOpen] = useState(false);
 
@@ -161,21 +155,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
       <span className={`ag-rail ${railClass}`} />
       <div className="agent-row flex-center">
         <span className={`ag-name ${working && !awaiting ? "shimmer" : ""}`}>{agent.name}</span>
-        <span
-          className="ag-prov-chip tip"
-          data-tip={
-            customAgent
-              ? `${customAgent.name} · ${providerLabel(agent.provider)}`
-              : providerLabel(agent.provider)
-          }
-          data-tip-down=""
-        >
-          {customAgent ? (
-            <Mono name={customAgent.name} hue={customAgent.color} size={14} />
-          ) : (
-            <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={14} />
-          )}
-        </span>
+        <AgentIdentityChip agent={agent} size={14} />
         {runLive && (
           <span
             className="ag-run tip"

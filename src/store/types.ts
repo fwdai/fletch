@@ -376,6 +376,11 @@ export interface UiSlice {
    *  restore the tab the user was on (e.g. Git) when they switch back to an
    *  agent, instead of always resetting to the first tab. In-memory only. */
   rightPanelTabs: Record<string, RightPanelTab>;
+  /** Mission Control dismissals: review-queue item id → the signal signature it
+   *  was dismissed at. The queue hides an item only while its live signature
+   *  still matches, so a dismissed item resurfaces when its signal changes.
+   *  Persisted in settings (`reviewDismissed`); hydrated on init. */
+  reviewDismissed: Record<string, string>;
 
   toggleSettings: (open?: boolean) => void;
   openSettingsScreen: (section?: SettingsSection, intent?: SettingsIntent) => void;
@@ -405,6 +410,10 @@ export interface UiSlice {
   commitRightWidth: (w: number) => void;
   /** Remember the right-rail tab an agent was last viewing. */
   setRightPanelTab: (agentId: string, tab: RightPanelTab) => void;
+  /** Dismiss a Mission Control review-queue item at its current signal
+   *  signature; persists the mark so it survives reloads (until the signal
+   *  changes and the signature no longer matches). */
+  dismissReviewItem: (id: string, signature: string) => void;
 }
 
 export interface AccountSlice {
