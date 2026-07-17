@@ -42,7 +42,7 @@ export const GATE_MODES: GateModeDef[] = [
     label: "Tests pass",
     short: "tests",
     icon: "flask",
-    note: "Runs the project's test command in the step worktree; done only when it exits 0.",
+    note: "Runs the project's test command in the step's checkout; done only when it exits 0.",
   },
   {
     id: "approval",
