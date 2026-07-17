@@ -45,6 +45,27 @@ export interface SyncHealthInfo {
   version: string | null;
 }
 
+/** A seed for "promote to workflow": everything the builder needs to open
+ *  pre-filled from an ad-hoc session and launch a run that forks at the
+ *  session's working commit. */
+export interface PromoteSeed {
+  agentId: string;
+  /** The session's display name — titles the seeded workflow. */
+  agentName: string;
+  /** Custom-agent id (when the session had one and it still exists), else the
+   *  base-provider id — the argument `ensureAlias` turns into a spec alias. */
+  agentPick: string;
+  /** The session brief — becomes the run's task text. */
+  task: string;
+  /** The session's HEAD commit — the run's fork point. Empty when the checkout
+   *  has no commit yet (the launch then resolves HEAD in the source repo). */
+  baseSha: string;
+  /** Short, human-facing label for the fork point (short SHA or branch). */
+  baseLabel: string;
+  repoPath: string;
+  projectId: string;
+}
+
 export interface AppSlice {
   busy: boolean;
   lastError: string | null;
@@ -80,6 +101,11 @@ export interface WorkspaceSlice {
   /** A workflow run selected for the main pane, by run id. Mutually exclusive
    *  with selectedAgentId / activeDraftId. */
   selectedRunId: string | null;
+  /** A run's step agent whose chat the monitor should focus (set when a sidebar
+   *  step child is clicked). Consumed and cleared by RunView. */
+  focusedStepAgentId: string | null;
+  /** Pending "promote to workflow" seed: the builder opens pre-filled from it. */
+  promoteSeed: PromoteSeed | null;
   managedLogs: Record<string, ChatItem[]>;
   /** Question tools the agent is paused on, awaiting a human answer.
    *  Keyed by agent id, then by the tool_use id of the held `AskUserQuestion`
@@ -138,6 +164,14 @@ export interface WorkspaceSlice {
   selectAgent: (id: string | null) => void;
   /** Select a workflow run for the main pane (clears agent/draft/settings selection). */
   selectRun: (id: string) => void;
+  /** Select a run and focus one of its step agents' chats in the monitor. */
+  selectRunStep: (runId: string, agentId: string) => void;
+  /** Clear the pending step-agent focus once the monitor has applied it. */
+  clearFocusedStepAgent: () => void;
+  /** Seed the workflow builder from an ad-hoc session and open it. */
+  promoteAgentToWorkflow: (agentId: string) => Promise<void>;
+  /** Discard a consumed promote seed so it fires only once. */
+  clearPromoteSeed: () => void;
   spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
   /** Fork an existing workspace into a new one, seeding its worktree (`code`)
    *  and conversation (`context`) independently. Refreshes the workspace and

@@ -603,6 +603,9 @@ export const api = {
    *  rejects elsewhere. */
   startDockerDesktop: () => invoke<void>("start_docker_desktop"),
   getAgentDiffStats: (agentId: string) => invoke<DiffStats>("get_agent_diff_stats", { agentId }),
+  /** The current HEAD commit SHA of an agent's checkout (primary repo). The
+   *  fork point for "promote to workflow". */
+  agentHeadSha: (agentId: string) => invoke<string>("agent_head_sha", { agentId }),
   addWorkspaceRepo: (repoPath: string) => invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>
     invoke<Workspace>("remove_workspace_repo", { repoPath }),
@@ -903,6 +906,9 @@ export const api = {
     /** Absolute paths of files to attach to the run's first prompt, like a chat
      *  message's attachments. Empty by default. */
     attachments: string[] = [],
+    /** Explicit fork-point commit (promote-to-workflow). Wins over `baseBranch`
+     *  for the fork point; leave undefined for a normal branch-based launch. */
+    baseSha?: string,
   ) =>
     invoke<string>("wf_launch", {
       spec,
@@ -911,6 +917,7 @@ export const api = {
       repoPath,
       definitionId,
       baseBranch,
+      baseSha,
       attachments,
     }),
   /** Cancel a run: stops the live attempt's agent and marks the run canceled. */

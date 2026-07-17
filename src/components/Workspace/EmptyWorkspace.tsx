@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
@@ -7,7 +7,11 @@ import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { useDefinitions } from "@/workflows/run/useDefinitions";
+import {
+  type ComposerMode,
+  loadPipelinePrefs,
+  rememberComposerMode,
+} from "@/workflows/run/projectPipeline";
 import { WorkflowComposer, WorkflowHeading } from "@/workflows/run/WorkflowComposer";
 
 /** Empty-state pane shown when the user has started a draft agent.
@@ -42,13 +46,40 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const runLocalCommand = useAppStore((s) => s.runLocalCommand);
 
-  // Kickoff mode: a single agent, or a workflow. The toggle sits at the top of
-  // the page and swaps the whole block — it is not part of the prompt box. The
-  // Workflow option only appears once at least one workflow has been defined.
-  const [mode, setMode] = useState<"agent" | "workflow">("agent");
-  const { definitions } = useDefinitions();
-  const hasWorkflows = definitions.length > 0;
-  const workflowMode = mode === "workflow" && hasWorkflows;
+  // The project this draft targets — keys the remembered composer mode + default
+  // workflow (per-project `project_settings`).
+  const projectId = useMemo(
+    () => projectRefs.find((r) => r.path === draft.repoPath)?.project_id ?? "",
+    [projectRefs, draft.repoPath],
+  );
+
+  // Kickoff mode: a quick single agent, or a multi-step pipeline. The toggle
+  // sits at the top of the page and swaps the whole block — it never gates the
+  // quick path. It defaults to the project's remembered choice (a suggestion),
+  // and remembers a change for next time. The remembered mode loads async — a
+  // pick made before it resolves wins (the load must never flip the toggle
+  // back under the user's cursor); a project switch re-arms the default.
+  const [mode, setMode] = useState<ComposerMode>("agent");
+  const [defaultWorkflowId, setDefaultWorkflowId] = useState<string | null>(null);
+  const modePicked = useRef(false);
+  useEffect(() => {
+    modePicked.current = false;
+    let cancelled = false;
+    void loadPipelinePrefs(projectId).then((prefs) => {
+      if (cancelled) return;
+      if (!modePicked.current) setMode(prefs.mode);
+      setDefaultWorkflowId(prefs.defaultWorkflowId);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+  const pickMode = (next: ComposerMode) => {
+    modePicked.current = true;
+    setMode(next);
+    rememberComposerMode(projectId, next);
+  };
+  const workflowMode = mode === "workflow";
 
   return (
     <div className="pane center">
@@ -81,21 +112,19 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
       </div>
 
       <div className="empty-wrap flex-center fade-in">
-        {hasWorkflows && (
-          <div className="empty-modeswitch">
-            <div className="set-seg">
-              <button className={mode === "agent" ? "active" : ""} onClick={() => setMode("agent")}>
-                <Icon name="bot" size={13} /> Agent
-              </button>
-              <button
-                className={mode === "workflow" ? "active" : ""}
-                onClick={() => setMode("workflow")}
-              >
-                <Icon name="combine" size={13} /> Workflow
-              </button>
-            </div>
+        <div className="empty-modeswitch">
+          <div className="set-seg">
+            <button className={mode === "agent" ? "active" : ""} onClick={() => pickMode("agent")}>
+              <Icon name="bot" size={13} /> Quick agent
+            </button>
+            <button
+              className={mode === "workflow" ? "active" : ""}
+              onClick={() => pickMode("workflow")}
+            >
+              <Icon name="combine" size={13} /> Pipeline
+            </button>
           </div>
-        )}
+        </div>
 
         {/* Everything but the switcher — identity, the mode-variable heading +
             composer, and the pickers — centered as one unit and keyed by mode so
@@ -144,6 +173,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 repoPath={draft.repoPath}
                 baseBranch={draft.base}
                 name={draft.name}
+                projectId={projectId}
+                defaultWorkflowId={defaultWorkflowId}
               />
             ) : (
               <Composer

@@ -6,9 +6,11 @@ import { useEffect, useState } from "react";
 import { api } from "../../api";
 import { installStarterPack, STARTER_WORKFLOW_NAME } from "../../starterPack";
 import { useAppStore } from "../../store";
+import type { PromoteSeed } from "../../store/types";
 import type { Definition, ImportReport, Spec } from "../spec";
 import { ImportDialog } from "./ImportDialog";
 import { blankEditor, type EditorState, fromDefinition, toSpec } from "./model";
+import { seedEditorFromPromotion } from "./promote";
 import { WorkflowBuilder } from "./WorkflowBuilder";
 import { WorkflowList } from "./WorkflowList";
 import { exportDefinitionYaml, pickYamlText } from "./yamlFile";
@@ -20,11 +22,20 @@ export function WorkflowsPane() {
   const createCustomAgent = useAppStore((s) => s.createCustomAgent);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const setLastError = useAppStore((s) => s.setLastError);
+  const promoteSeed = useAppStore((s) => s.promoteSeed);
+  const clearPromoteSeed = useAppStore((s) => s.clearPromoteSeed);
+  const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
+  const selectRun = useAppStore((s) => s.selectRun);
 
   const [definitions, setDefinitions] = useState<Definition[]>([]);
   const [loading, setLoading] = useState(true);
   const [installing, setInstalling] = useState(false);
   const [editing, setEditing] = useState<Editing | null>(null);
+  // The promote-to-workflow launch context, live while the builder was opened
+  // from a promoted session. Carries the fork point + brief the run launches at.
+  const [promoteCtx, setPromoteCtx] = useState<PromoteSeed | null>(null);
+  const [launching, setLaunching] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
@@ -46,18 +57,66 @@ export function WorkflowsPane() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Consume a pending "promote to workflow" seed: open the builder pre-filled
+  // from the promoted session and hold its launch context. One-shot — the seed
+  // is cleared so a re-open of this pane starts on the list.
+  useEffect(() => {
+    if (!promoteSeed) return;
+    const state = seedEditorFromPromotion(
+      promoteSeed,
+      agents,
+      definitions.length,
+      promoteSeed.agentName,
+    );
+    setPromoteCtx(promoteSeed);
+    setLaunchError(null);
+    setSaveError(null);
+    setEditing({ state, isNew: true });
+    clearPromoteSeed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promoteSeed]);
+
   const save = async (state: EditorState) => {
     setSaving(true);
     setSaveError(null);
     try {
       await api.wfDefSave(toSpec(state), state.id ?? undefined, state.hue);
       setEditing(null);
+      setPromoteCtx(null);
       await reload();
     } catch (e) {
       // Surface backend validation (the joined §5.2 messages) inline in the builder.
       setSaveError(String(e));
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Launch straight from the builder (promote flow): the run forks at the
+  // promoted session's HEAD (`baseSha`), so no branch is passed. Definition-less
+  // — the user can still Save the workflow separately if they want it reusable.
+  const launch = async (spec: Spec, task: string) => {
+    if (!promoteCtx) return;
+    setLaunching(true);
+    setLaunchError(null);
+    try {
+      const runId = await api.wfLaunch(
+        spec,
+        task,
+        promoteCtx.projectId,
+        promoteCtx.repoPath,
+        undefined,
+        undefined,
+        [],
+        promoteCtx.baseSha || undefined,
+      );
+      setEditing(null);
+      setPromoteCtx(null);
+      closeSettingsScreen();
+      selectRun(runId);
+    } catch (e) {
+      setLaunchError(String(e));
+      setLaunching(false);
     }
   };
 
@@ -85,6 +144,8 @@ export function WorkflowsPane() {
 
   const openEditor = (next: Editing) => {
     setSaveError(null);
+    setPromoteCtx(null);
+    setLaunchError(null);
     setEditing(next);
   };
 
@@ -154,8 +215,22 @@ export function WorkflowsPane() {
         modelsByAgent={modelsByAgent}
         saving={saving}
         saveError={saveError}
-        onCancel={() => setEditing(null)}
+        onCancel={() => {
+          setEditing(null);
+          setPromoteCtx(null);
+        }}
         onSave={save}
+        promote={
+          promoteCtx
+            ? {
+                taskSeed: promoteCtx.task,
+                baseLabel: promoteCtx.baseLabel,
+                launching,
+                launchError,
+                onLaunch: launch,
+              }
+            : undefined
+        }
       />
     );
   }

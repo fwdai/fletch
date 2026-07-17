@@ -31,6 +31,8 @@ export function RunView({ id }: { id: string }) {
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const selectRun = useAppStore((s) => s.selectRun);
+  const focusedStepAgentId = useAppStore((s) => s.focusedStepAgentId);
+  const clearFocusedStepAgent = useAppStore((s) => s.clearFocusedStepAgent);
 
   // Composed sub-runs (§10.3) nest under this run in the monitor; each links to
   // its own RunView. Sourced from the live run list, filtered to our children.
@@ -89,6 +91,26 @@ export function RunView({ id }: { id: string }) {
       setPickedAttemptId(null);
     }
   }, [attempts, pickedAttemptId]);
+
+  // A sidebar step child was clicked: focus that step's chat by driving the
+  // attempt selection to the (latest) attempt owned by the requested agent,
+  // then clear the one-shot request so a later manual pick isn't overridden.
+  // While the run detail is still loading, hold the request (the effect
+  // re-fires when attempts land); once loaded, apply it or drop it — an
+  // unmatched request must not stay armed to hijack a selection later.
+  useEffect(() => {
+    if (!focusedStepAgentId) return;
+    if (loading && attempts.length === 0) return;
+    const owned = attempts.filter((a) => a.agent_id === focusedStepAgentId);
+    if (owned.length > 0) {
+      const latest = owned.reduce((best, cur) => {
+        if (cur.iteration !== best.iteration) return cur.iteration > best.iteration ? cur : best;
+        return cur.attempt > best.attempt ? cur : best;
+      });
+      setPickedAttemptId(latest.id);
+    }
+    clearFocusedStepAgent();
+  }, [focusedStepAgentId, attempts, loading, clearFocusedStepAgent]);
 
   const pausedDetail = useMemo(() => {
     const p = pausedEvent?.payload;

@@ -134,6 +134,11 @@ impl WorkflowService {
         repo_path: String,
         definition_id: Option<String>,
         base_branch: Option<String>,
+        // An explicit fork-point commit (promote-to-workflow): the run forks from
+        // this SHA instead of a branch tip. Wins over `base_branch` for the fork
+        // point, and leaves `base_branch` empty so finalization falls back to
+        // `finalize.pr_base`/`main` rather than treating a raw SHA as a PR base.
+        base_sha_override: Option<String>,
         // Launch-time file attachments (absolute paths). Persisted durably in a
         // host-only sidecar and rendered as `Attached file: {path}` lines into the
         // entry step's prompt only (see `drive_run_inner` / `execute_step`) — the
@@ -144,19 +149,26 @@ impl WorkflowService {
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         let repo = PathBuf::from(&repo_path);
 
-        // Resolve the base branch to a SHA in the source repo now, so the fork
-        // point is fixed and journaled (§12.2).
-        let base_ref = base_branch
+        // Resolve the fork point to a SHA in the source repo now, so it is fixed
+        // and journaled (§12.2). An explicit override (promotion) resolves
+        // directly; otherwise the caller's branch, the spec's pr_base, then HEAD.
+        let base_ref = base_sha_override
             .clone()
+            .or_else(|| base_branch.clone())
             .or_else(|| spec.finalize.as_ref().and_then(|f| f.pr_base.clone()))
             .unwrap_or_else(|| "HEAD".to_string());
         let base_sha = crate::git::rev_parse(&repo, &base_ref)
             .await
             .map_err(|e| Error::Other(format!("cannot resolve base '{base_ref}': {e}")))?;
-        // Persist the caller-selected branch name (not the "HEAD"/pr_base
+        // Persist the caller-selected branch name (not the "HEAD"/pr_base/SHA
         // fallback), so finalization can open the PR against the branch the run
-        // forked from when the spec doesn't pin `finalize.pr_base` (§12.2).
-        let base_branch = base_branch.unwrap_or_default();
+        // forked from when the spec doesn't pin `finalize.pr_base` (§12.2). A
+        // SHA-forked promotion carries no branch name.
+        let base_branch = if base_sha_override.is_some() {
+            String::new()
+        } else {
+            base_branch.unwrap_or_default()
+        };
 
         let run_dir = blackboard::run_dir(&run_id)?;
         let task_md = format!("# {}\n\n{}\n", spec.name, task);
@@ -6357,6 +6369,7 @@ pub async fn wf_launch(
     repo_path: String,
     definition_id: Option<String>,
     base_branch: Option<String>,
+    base_sha: Option<String>,
     attachments: Vec<String>,
     service: Svc<'_>,
     supervisor: tauri::State<'_, Arc<Supervisor>>,
@@ -6378,6 +6391,7 @@ pub async fn wf_launch(
             repo_path,
             definition_id,
             base_branch,
+            base_sha,
             attachments,
         )
         .await

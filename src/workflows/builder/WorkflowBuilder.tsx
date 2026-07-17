@@ -8,7 +8,7 @@ import { Icon } from "../../components/Icon";
 import type { ModelMeta } from "../../data/modelCatalog/types";
 import type { CustomAgent } from "../../storage/customAgents";
 import { resolveAlias } from "../shared";
-import type { Budgets, Gate } from "../spec";
+import type { Budgets, Gate, Spec } from "../spec";
 import { BlockSequence } from "./blocks/BlockSequence";
 import type { BuilderCtx, Pop, PopRect } from "./ctx";
 import {
@@ -24,8 +24,21 @@ import {
 } from "./edits";
 import { useDismissOnViewportChange } from "./hooks";
 import type { EditorState, NodeId } from "./model";
-import { validateEditor } from "./model";
+import { toSpec, validateEditor } from "./model";
 import { AgentPick, BudgetsPopover, GatePick } from "./pickers";
+
+/** Launch context threaded in when the builder was opened by "promote to
+ *  workflow": the run's fork point + brief ride alongside the definition so the
+ *  user can launch straight from the builder, no re-typing. */
+export interface PromoteLaunch {
+  /** Prefilled run task (the promoted session's brief). */
+  taskSeed: string;
+  /** Human label for the fork point (short SHA or branch). */
+  baseLabel: string;
+  launching: boolean;
+  launchError: string | null;
+  onLaunch: (spec: Spec, task: string) => void;
+}
 
 function rectFrom(e: React.MouseEvent): PopRect {
   const r = e.currentTarget.getBoundingClientRect();
@@ -41,6 +54,7 @@ export function WorkflowBuilder({
   saveError,
   onCancel,
   onSave,
+  promote,
 }: {
   initial: EditorState;
   isNew: boolean;
@@ -50,8 +64,10 @@ export function WorkflowBuilder({
   saveError: string | null;
   onCancel: () => void;
   onSave: (state: EditorState) => void;
+  promote?: PromoteLaunch;
 }) {
   const [state, setState] = useState<EditorState>(initial);
+  const [launchTask, setLaunchTask] = useState(promote?.taskSeed ?? "");
   const [pop, setPop] = useState<Pop | null>(null);
   const closePop = () => setPop(null);
   useDismissOnViewportChange(!!pop, closePop);
@@ -184,6 +200,50 @@ export function WorkflowBuilder({
             />
           )}
         </div>
+
+        {promote && (
+          <div className="wb-promote">
+            <div className="wb-promote-head">
+              <Icon name="combine" size={13} style={{ color: "var(--accent)" }} />
+              <span>Launch this workflow now</span>
+              <span
+                className="wb-promote-base tip"
+                data-tip="Forks from the promoted session's commit"
+              >
+                base <span className="mono">{promote.baseLabel}</span>
+              </span>
+            </div>
+            <textarea
+              className="wb-desc"
+              rows={2}
+              placeholder="Task for the run…"
+              value={launchTask}
+              onChange={(e) => setLaunchTask(e.target.value)}
+            />
+            {promote.launchError && <div className="wb-summary-err">{promote.launchError}</div>}
+            <div className="wb-promote-foot">
+              <span className="wb-promote-note">Or just save it as a reusable workflow below.</span>
+              <span className="grow" />
+              <button
+                className="btn-t primary"
+                disabled={!validation.ok || !launchTask.trim() || promote.launching}
+                style={
+                  !validation.ok || !launchTask.trim() || promote.launching
+                    ? { opacity: 0.5 }
+                    : undefined
+                }
+                onClick={() =>
+                  validation.ok &&
+                  launchTask.trim() &&
+                  promote.onLaunch(toSpec(state), launchTask.trim())
+                }
+              >
+                <Icon name={promote.launching ? "refresh" : "arrowUp"} size={13} />{" "}
+                {promote.launching ? "Launching…" : "Launch run"}
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="wb-foot">
           <div className="wb-summary">

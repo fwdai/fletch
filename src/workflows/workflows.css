@@ -599,6 +599,48 @@
   padding-left: 6px;
 }
 
+/* Expand/collapse toggle that replaces the workflow glyph on a run with live
+   step agents — same footprint as the glyph; the chevron rotates when open. */
+.ag-wf-expander {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.ag-wf-expander svg {
+  transition: transform 0.15s var(--ease);
+}
+.ag-wf-expander.open svg {
+  transform: rotate(90deg);
+}
+.ag-wf-expander:hover {
+  color: var(--fg-0);
+}
+
+/* A run's step agents nest under it — indented past the run's rail with a faint
+   guide rail, quieter than a top-level agent so the run stays the anchor. */
+.run-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 3px 14px;
+  padding-left: 6px;
+  border-left: 1px solid var(--bd-soft);
+}
+.agent.run-step {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.agent.run-step .ag-name {
+  font-weight: 500;
+  color: var(--fg-1);
+}
+
 /* Run monitor: the sub-runs section above the timeline (§10.3, §14.2). */
 .wf-subruns {
   display: flex;
@@ -1367,6 +1409,43 @@
   align-items: center;
   gap: 4px;
   color: var(--danger);
+}
+
+/* Promote-to-workflow launch card: sits above the save footer, accent-tinted so
+   the "launch now" path reads as the primary intent of a promoted session. */
+.wb-promote {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in oklch, var(--accent) 40%, var(--bd-soft));
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--accent) 6%, var(--bg-1));
+}
+.wb-promote-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--fg-0);
+  margin-bottom: 8px;
+}
+.wb-promote-base {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-2);
+}
+.wb-promote-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.wb-promote-foot .grow {
+  flex: 1;
+}
+.wb-promote-note {
+  font-size: 12px;
+  color: var(--fg-3);
 }
 
 /* ── YAML import/export (spec §14.3) ────────────────────────────────────── */

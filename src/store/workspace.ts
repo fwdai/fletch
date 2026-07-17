@@ -52,6 +52,8 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   workspace: null,
   selectedAgentId: null,
   selectedRunId: null,
+  focusedStepAgentId: null,
+  promoteSeed: null,
   managedLogs: {},
   pendingToolUse: {},
   transcriptLoading: {},
@@ -97,6 +99,63 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       selectedHistoryAgentId: null,
       settingsScreenOpen: false,
     }),
+
+  // Select a run and focus one of its step agents' chats in the monitor. The
+  // RunView reads `focusedStepAgentId` and drives its attempt selection to the
+  // attempt owned by that agent, then clears it — so the sidebar step child and
+  // the monitor's attempt rail stay one selection.
+  selectRunStep: (runId, agentId) =>
+    set({
+      selectedRunId: runId,
+      focusedStepAgentId: agentId,
+      selectedAgentId: null,
+      activeDraftId: null,
+      historyOpen: false,
+      selectedHistoryAgentId: null,
+      settingsScreenOpen: false,
+    }),
+  clearFocusedStepAgent: () => set({ focusedStepAgentId: null }),
+
+  // Promote an ad-hoc session into a workflow: seed the builder with the
+  // session's agent (as an alias), its brief (as the run task), and its current
+  // HEAD commit (as the run's fork point), then open the builder. Launching from
+  // there forks the run at exactly the promoted session's working commit.
+  promoteAgentToWorkflow: async (agentId) => {
+    const agent = get().workspace?.agents.find((a) => a.id === agentId);
+    if (!agent) return;
+    const customAgents = get().customAgents;
+    const hasCustom =
+      agent.custom_agent_id && customAgents.some((c) => c.id === agent.custom_agent_id);
+    const agentPick = hasCustom ? (agent.custom_agent_id as string) : agent.provider;
+    const repoPath = agent.repos[0]?.repo_path ?? "";
+    let baseSha = "";
+    try {
+      baseSha = await api.agentHeadSha(agentId);
+    } catch (e) {
+      // The whole point of promoting is forking at the session's working
+      // commit; a checkout whose HEAD can't be resolved must not silently
+      // launch from the source repo's HEAD instead. Surface and abort.
+      get().setLastError(
+        `Promote failed: couldn't resolve the session's HEAD commit (${e}). ` +
+          "The checkout may be broken — you can still create a workflow manually.",
+      );
+      return;
+    }
+    set({
+      promoteSeed: {
+        agentId,
+        agentName: agent.name,
+        agentPick,
+        task: agent.task ?? "",
+        baseSha,
+        baseLabel: baseSha ? baseSha.slice(0, 8) : (agent.repos[0]?.branch ?? "HEAD"),
+        repoPath,
+        projectId: agent.project_id,
+      },
+    });
+    get().openSettingsScreen("workflows");
+  },
+  clearPromoteSeed: () => set({ promoteSeed: null }),
 
   spawn: async (view, repoPath) => {
     set({ busy: true, lastError: null });

@@ -21,6 +21,7 @@ import { useAppStore } from "../../store";
 import { AgentAvatar } from "../builder/AgentAvatar";
 import { resolveAlias } from "../shared";
 import type { Definition, Spec } from "../spec";
+import { rememberDefaultWorkflow } from "./projectPipeline";
 import { flattenSteps } from "./RunView/flatten";
 import { useDefinitions } from "./useDefinitions";
 
@@ -31,6 +32,11 @@ export interface ComposerContext {
   repoPath: string;
   baseBranch: string;
   name: string;
+  /** Project id for per-project prefs (remembering the picked default flow). */
+  projectId?: string;
+  /** The project's remembered default workflow — preselected when the user
+   *  hasn't picked another this session. */
+  defaultWorkflowId?: string | null;
 }
 
 /** Heading slot for the workflow mode — replaces the agent's title/subtitle on
@@ -46,18 +52,31 @@ export function WorkflowHeading() {
   );
 }
 
-export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
+export function WorkflowComposer({
+  repoPath,
+  baseBranch,
+  projectId,
+  defaultWorkflowId,
+}: ComposerContext) {
   const selectRun = useAppStore((s) => s.selectRun);
   const setLastError = useAppStore((s) => s.setLastError);
+  const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
 
   const { definitions, loading } = useDefinitions();
+  // "" until the user picks this session — then the project's remembered default
+  // (which may load async) leads, falling back to the first definition.
   const [defId, setDefId] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Default to the first definition once they load.
-  const def = definitions.find((d) => d.id === defId) ?? definitions[0];
+  const preferredId = defId || defaultWorkflowId || "";
+  const def = definitions.find((d) => d.id === preferredId) ?? definitions[0];
+
+  const pickDef = (id: string) => {
+    setDefId(id);
+    if (projectId) rememberDefaultWorkflow(projectId, id);
+  };
   const steps = flattenSteps(def?.spec ?? null);
 
   const resolve = (alias: string) =>
@@ -118,7 +137,16 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
   if (definitions.length === 0) {
     return (
       <div className="wf-field-empty" style={{ textAlign: "center" }}>
-        No workflows yet — create one in <b>Settings → Workflows</b>.
+        <p style={{ margin: "0 0 10px" }}>
+          No pipelines yet — build one to chain agents on a task.
+        </p>
+        <button
+          type="button"
+          className="btn-t primary"
+          onClick={() => openSettingsScreen("workflows")}
+        >
+          <Icon name="combine" size={13} /> Create a workflow
+        </button>
       </div>
     );
   }
@@ -160,7 +188,7 @@ export function WorkflowComposer({ repoPath, baseBranch }: ComposerContext) {
       }
       foot={
         <>
-          <WorkflowSelect definitions={definitions} selected={def} onPick={setDefId} />
+          <WorkflowSelect definitions={definitions} selected={def} onPick={pickDef} />
           <span style={{ flex: 1 }} />
           <button
             type="button"
