@@ -1114,7 +1114,11 @@ pub async fn refresh_all_pr_checks(
             else {
                 continue;
             };
-            keys.push(crate::supervisor::pr_map_key(&agent.id, &repo.subdir, i == 0));
+            keys.push(crate::supervisor::pr_map_key(
+                &agent.id,
+                &repo.subdir,
+                i == 0,
+            ));
             refs.push(gh::PrRef {
                 owner,
                 repo: repo_name,
@@ -1859,8 +1863,14 @@ mod split_repo_path_tests {
         let repos = [repo("frontend"), repo("backend")];
         let err = split_repo_path(&repos, "shared/util.ts").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("frontend"), "should list tracked folders: {msg}");
-        assert!(msg.contains("backend"), "should list tracked folders: {msg}");
+        assert!(
+            msg.contains("frontend"),
+            "should list tracked folders: {msg}"
+        );
+        assert!(
+            msg.contains("backend"),
+            "should list tracked folders: {msg}"
+        );
     }
 
     #[test]

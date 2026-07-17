@@ -116,7 +116,8 @@ pub(crate) async fn sync_pr_set_links(workspace: &WorkspaceManager, agent_id: &s
         if updated == body {
             continue;
         }
-        if let Err(e) = crate::github::pr_update_body(checkout, Some(source), *number, &updated).await
+        if let Err(e) =
+            crate::github::pr_update_body(checkout, Some(source), *number, &updated).await
         {
             tracing::warn!(error = %e, pr = %pr_ref, "pr-set: body update failed");
         }
@@ -148,7 +149,10 @@ mod tests {
         assert_eq!(second.matches(PR_SET_END).count(), 1);
         assert!(second.starts_with("Adds the login flow."));
         assert!(second.contains("o/c#3"));
-        assert!(!second.contains("set: o/a#1, o/b#2\n"), "old block must be gone");
+        assert!(
+            !second.contains("set: o/a#1, o/b#2\n"),
+            "old block must be gone"
+        );
         // Same trailer again → byte-identical (the sync skips the PATCH).
         let third = apply_pr_set_trailer(&second, "---\nset: o/a#1, o/b#2, o/c#3");
         assert_eq!(second, third);
@@ -169,7 +173,10 @@ mod tests {
     #[test]
     fn trailer_is_the_whole_body_when_body_is_empty() {
         let out = apply_pr_set_trailer("", "content");
-        assert_eq!(out, "<!-- fletch:pr-set -->\ncontent\n<!-- /fletch:pr-set -->");
+        assert_eq!(
+            out,
+            "<!-- fletch:pr-set -->\ncontent\n<!-- /fletch:pr-set -->"
+        );
         // Whitespace-only bodies count as empty (no leading blank lines).
         let out = apply_pr_set_trailer("  \n", "content");
         assert!(out.starts_with(PR_SET_START));

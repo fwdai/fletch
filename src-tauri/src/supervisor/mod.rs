@@ -5,16 +5,16 @@ mod events;
 mod fork;
 mod lifecycle;
 mod messaging;
+mod pr_set;
 mod rpc_watch;
 pub(crate) mod run;
-mod pr_set;
 mod session_sync;
 mod shell;
 
 pub use fork::{ForkCode, ForkContext};
 pub use lifecycle::SpawnRequest;
-pub use run::ProjectRunConfig;
 pub(crate) use pr_set::sync_pr_set_links;
+pub use run::ProjectRunConfig;
 pub(crate) use session_sync::{
     persist_pr_snapshot, pr_map_key, resolve_all_pr_states, resolve_pr_state,
 };
