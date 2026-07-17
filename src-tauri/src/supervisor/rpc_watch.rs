@@ -66,6 +66,34 @@ pub(super) async fn process_agent_rpc_once(
 }
 
 fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rpc::RpcEvent) {
+    // The subdir of the checkout a branch/PR event belongs to: the dispatcher
+    // stamps the targeted repo into the payload (`args.repo` routing), so a PR
+    // opened in a sibling checkout lands on that repo's worktree row. Events
+    // without the field (legacy dispatchers, tests) keep the old primary-repo
+    // behavior — correct for single-repo agents, where primary is all there is.
+    fn event_subdir<'a>(
+        record: &'a crate::workspace::AgentRecord,
+        payload: &serde_json::Value,
+    ) -> Option<&'a str> {
+        match payload.get("repo").and_then(|v| v.as_str()) {
+            Some(requested) => {
+                let known = record
+                    .repos
+                    .iter()
+                    .find(|r| r.subdir == requested)
+                    .map(|r| r.subdir.as_str());
+                if known.is_none() {
+                    tracing::warn!(
+                        repo = %requested,
+                        "git event names an untracked repo; dropping instead of misattributing"
+                    );
+                }
+                known
+            }
+            None => record.repos.first().map(|r| r.subdir.as_str()),
+        }
+    }
+
     match event {
         rpc::RpcEvent::Named { name, payload } if name == rpc::git::EVENT_BRANCH_CREATED => {
             let Some(branch) = payload.get("branch").and_then(|v| v.as_str()) else {
@@ -77,11 +105,8 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                 return;
             };
             if let Ok(record) = sup.workspace.agent(agent_id) {
-                if let Some(repo) = record.repos.first() {
-                    if let Err(e) = sup
-                        .workspace
-                        .set_repo_branch(agent_id, &repo.subdir, branch)
-                    {
+                if let Some(subdir) = event_subdir(&record, &payload) {
+                    if let Err(e) = sup.workspace.set_repo_branch(agent_id, subdir, branch) {
                         tracing::warn!(
                             error = %e,
                             agent_id = %agent_id,
@@ -89,7 +114,7 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                             "git_push/open_pr: failed to persist branch name"
                         );
                     } else {
-                        emit_branch(app, agent_id, &repo.subdir, branch);
+                        emit_branch(app, agent_id, subdir, branch);
                     }
                 }
             }
@@ -104,10 +129,10 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                 return;
             };
             if let Ok(record) = sup.workspace.agent(agent_id) {
-                if let Some(repo) = record.repos.first() {
+                if let Some(subdir) = event_subdir(&record, &payload) {
                     if let Err(e) =
                         sup.workspace
-                            .set_repo_pr_number(agent_id, &repo.subdir, number as i64)
+                            .set_repo_pr_number(agent_id, subdir, number as i64)
                     {
                         tracing::warn!(
                             error = %e,
