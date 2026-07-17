@@ -36,6 +36,7 @@ const FALLBACK_ROWS: readonly SetupRow[] = [
   row("install", "environment", "Install", "Command to install dependencies"),
   row("dev", "scripts", "Dev", "Command to start the dev server"),
   row("test", "scripts", "Test", "Command to run the tests"),
+  row("lint", "scripts", "Lint", "Command to lint the project"),
   row("build", "scripts", "Build", "Command to build the project"),
   row("port", "server", "Port", "e.g. 3000"),
 ];

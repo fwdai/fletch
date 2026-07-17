@@ -33,6 +33,7 @@ mod slash_commands;
 mod supervisor;
 mod telemetry;
 mod transcripts;
+mod verify;
 mod workflow;
 mod workspace;
 
@@ -1212,6 +1213,7 @@ pub fn run() {
             commands::run_stop,
             commands::run_state,
             commands::detect_run_config,
+            commands::run_verification,
             commands::project_run_config,
             commands::read_env_file_keys,
             commands::get_env_override,
