@@ -67,6 +67,11 @@ pub struct GitDispatcher {
     /// dispatchers built without `with_repos` (tests, old call sites) — then
     /// `args.repo` is rejected as unknown.
     repos: std::collections::HashMap<String, (PathBuf, String)>,
+    /// The GitHub issue this workspace was started from (Home inbox "Start
+    /// work"). When set, `open_pr` appends a `Closes #<n>` trailer to the PR
+    /// body for the *primary* checkout, so merging the PR closes the issue.
+    /// `None` for a workspace not tied to an issue.
+    close_issue: Option<u32>,
 }
 
 impl GitDispatcher {
@@ -76,7 +81,15 @@ impl GitDispatcher {
             base_branch,
             default_subdir: None,
             repos: std::collections::HashMap::new(),
+            close_issue: None,
         }
+    }
+
+    /// Record the originating issue number so `open_pr` closes it from the PR
+    /// body. A no-op when `None` (the normal, non-issue spawn).
+    pub fn with_close_issue(mut self, number: Option<u32>) -> Self {
+        self.close_issue = number;
+        self
     }
 
     /// Register the agent's tracked checkouts as `(subdir, cwd, base_branch)`
@@ -139,6 +152,42 @@ fn with_repo(mut payload: Value, subdir: &Option<String>) -> Value {
         payload["repo"] = json!(s);
     }
     payload
+}
+
+/// True when `body` already references issue `#number` — bounded so `#12`
+/// doesn't match `#123` (a trailing digit means a different issue). Used to
+/// keep the `Closes` trailer idempotent when the agent already wrote one.
+fn mentions_issue(body: &str, number: u32) -> bool {
+    let needle = format!("#{number}");
+    let mut rest = body;
+    while let Some(pos) = rest.find(&needle) {
+        let after = &rest[pos + needle.len()..];
+        if after.chars().next().map_or(true, |c| !c.is_ascii_digit()) {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+/// Append a `Closes #<n>` trailer to a PR body for an issue-originated
+/// workspace, unless the body already references the issue. `None` leaves the
+/// body untouched (the normal, non-issue spawn). A blank body becomes just the
+/// trailer.
+fn with_closes_trailer(body: &str, close_issue: Option<u32>) -> String {
+    let Some(number) = close_issue else {
+        return body.to_string();
+    };
+    if mentions_issue(body, number) {
+        return body.to_string();
+    }
+    let trailer = format!("Closes #{number}");
+    let trimmed = body.trim_end();
+    if trimmed.is_empty() {
+        trailer
+    } else {
+        format!("{trimmed}\n\n{trailer}")
+    }
 }
 
 impl RpcDispatcher for GitDispatcher {
@@ -229,7 +278,16 @@ impl GitDispatcher {
             Err(resp) => return (resp, Vec::new()),
         };
         let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        let body_arg = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        // Compose the final body: when this workspace originated from an issue
+        // and the PR targets the issue's (primary) repo, ensure a `Closes #<n>`
+        // trailer so merging the PR closes the issue — reliably, without relying
+        // on the agent to remember. Idempotent (skips if already referenced).
+        let closes = (t.subdir == self.default_subdir)
+            .then_some(self.close_issue)
+            .flatten();
+        let body_owned = with_closes_trailer(body_arg, closes);
+        let body = body_owned.as_str();
         let requested = arg_branch(args);
 
         let current = match crate::git::current_branch(&t.cwd).await {
@@ -486,6 +544,39 @@ mod tests {
 
     fn dispatcher(cwd: &Path) -> GitDispatcher {
         GitDispatcher::new(cwd.to_path_buf(), "main".to_string())
+    }
+
+    #[test]
+    fn closes_trailer_appends_only_when_issue_set() {
+        // No issue → body untouched.
+        assert_eq!(
+            with_closes_trailer("Fixes the thing", None),
+            "Fixes the thing"
+        );
+        // Issue set → trailer appended after a blank line.
+        assert_eq!(
+            with_closes_trailer("Fixes the thing", Some(42)),
+            "Fixes the thing\n\nCloses #42"
+        );
+        // Blank body → just the trailer.
+        assert_eq!(with_closes_trailer("   ", Some(7)), "Closes #7");
+    }
+
+    #[test]
+    fn closes_trailer_is_idempotent_and_number_bounded() {
+        // Already referenced → left as-is (no duplicate).
+        assert_eq!(
+            with_closes_trailer("Work.\n\nCloses #42", Some(42)),
+            "Work.\n\nCloses #42"
+        );
+        // A superstring number must NOT count as a mention (#12 vs #123).
+        assert!(!mentions_issue("Closes #123", 12));
+        assert!(mentions_issue("Closes #123", 123));
+        assert!(mentions_issue("see #42, thanks", 42));
+        assert_eq!(
+            with_closes_trailer("Refs #120 and #121", Some(12)),
+            "Refs #120 and #121\n\nCloses #12"
+        );
     }
 
     #[tokio::test]

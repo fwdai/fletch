@@ -1,4 +1,5 @@
 import { api } from "@/api";
+import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
 import {
   resolveSkillInvocation,
@@ -30,6 +31,10 @@ export interface DraftAgent {
   customAgentId?: string;
   /** Base branch to fork from. */
   base: string;
+  /** GitHub issue number (as text) this draft was started from, via the Home
+   *  inbox's "Start work". Carried to the backend at spawn so the agent's PR
+   *  closes it. Undefined for a plain draft. */
+  issueRef?: string;
 }
 
 const NEW_DRAFT_SELECTION_SETTING = "newDraftSelection";
@@ -100,6 +105,44 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       drafts: [draft, ...s.drafts],
       activeDraftId: draft.id,
       selectedAgentId: null,
+    }));
+    get().setLastRepoPath(repoPath);
+  },
+
+  startWorkFromIssue: async (repoPath, issue) => {
+    const {
+      workspace,
+      drafts,
+      newDraftProvider,
+      newDraftModel,
+      newDraftCustomAgentId,
+      modelsByAgent,
+    } = get();
+    const used = [...usedNames(workspace, drafts)];
+    const name = await api.allocateDraftName(used);
+    const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
+    const customAgentId = get().customAgents.some((a) => a.id === newDraftCustomAgentId)
+      ? newDraftCustomAgentId
+      : undefined;
+    const draft: DraftAgent = {
+      id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      repoPath,
+      name,
+      provider: selection.provider,
+      model: selection.model,
+      customAgentId,
+      base: "main",
+      issueRef: String(issue.number),
+    };
+    // Seed the composer for this draft (read as its initial text on mount) with
+    // the issue brief, so "Start work" lands fully prefilled — the user reviews
+    // and hits ↵ to launch (two clicks from issue to working agent).
+    get().setComposerDraft(draft.id, composeIssueBrief(issue));
+    set((s) => ({
+      drafts: [draft, ...s.drafts],
+      activeDraftId: draft.id,
+      selectedAgentId: null,
+      selectedRunId: null,
     }));
     get().setLastRepoPath(repoPath);
   },
@@ -214,6 +257,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         draft.base,
         skills,
         mcpServers,
+        // Tags the workspace with its originating issue so the agent's PR
+        // closes it (backend appends `Closes #N` to the primary repo's PR).
+        draft.issueRef,
       );
       const fresh = await api.getWorkspace();
       set((state) => {

@@ -167,6 +167,9 @@ impl Supervisor {
             run_repo: None,
             owner_run_id: None,
             carry_from,
+            // A fork is a fresh line of work; it doesn't inherit the parent's
+            // originating issue (only one workspace should close it).
+            issue_ref: None,
         };
         let child = self.clone().spawn_agent(app, req).await?;
 
