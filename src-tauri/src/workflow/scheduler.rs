@@ -2386,8 +2386,11 @@ fn build_spawn_req(
     run_id: &str,
     warn_exec_id: Option<&str>,
 ) -> SpawnReq {
-    let mcp_server_names: Vec<String> =
-        agent_spec.mcp_servers.iter().map(|d| d.name.clone()).collect();
+    let mcp_server_names: Vec<String> = agent_spec
+        .mcp_servers
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
     let deliverables = super::definition::resolve_step_deliverables(
         conn,
         agent_spec.custom_agent.as_deref(),
@@ -2430,12 +2433,18 @@ fn build_spawn_req(
     SpawnReq {
         repo_path: repo.to_path_buf(),
         provider: agent_spec.base.clone(),
-        model: agent_spec.model.clone(),
-        // The alias's explicit effort wins; otherwise inherit the linked custom
-        // agent's effort (§3.2). Resolved here rather than in the driver so the
-        // one place that reads the custom_agents row also owns the fallback.
+        // The alias's explicit model/effort/instructions win; otherwise inherit
+        // the linked custom agent's values (§3.2). Resolved here rather than in
+        // the driver so the one place that reads the custom_agents row owns the
+        // fallback — and so a live custom-agent step spawns identically to the
+        // same alias after YAML export+import (which inlines these onto the
+        // AgentSpec via `embed_custom_agents`).
+        model: agent_spec.model.clone().or(deliverables.model.clone()),
         effort: agent_spec.effort.clone().or(deliverables.effort.clone()),
-        instructions: agent_spec.instructions.clone(),
+        instructions: agent_spec
+            .instructions
+            .clone()
+            .or(deliverables.instructions.clone()),
         custom_agent_id: agent_spec.custom_agent.clone(),
         skills: deliverables.skills,
         mcp_servers: deliverables.mcp_servers,
@@ -6295,6 +6304,96 @@ mod tests {
             budgets: None,
             comms: vec![],
         }
+    }
+
+    /// A library DB with one custom agent carrying a model/effort/instructions,
+    /// for the `build_spawn_req` precedence checks below.
+    fn spawn_req_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE skills (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '');
+             CREATE TABLE mcp_servers (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                transport TEXT NOT NULL DEFAULT 'stdio', command TEXT NOT NULL DEFAULT '',
+                env TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+                headers TEXT NOT NULL DEFAULT '');
+             CREATE TABLE custom_agents (id TEXT PRIMARY KEY,
+                skill_ids TEXT NOT NULL DEFAULT '[]', mcp_server_ids TEXT NOT NULL DEFAULT '[]',
+                effort TEXT, model TEXT, instructions TEXT NOT NULL DEFAULT '');
+             INSERT INTO custom_agents (id, effort, model, instructions)
+                VALUES ('ca1', 'high', 'opus', 'Be thorough.');",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn agent_spec(custom_agent: Option<&str>) -> super::super::spec::AgentSpec {
+        super::super::spec::AgentSpec {
+            base: "claude".into(),
+            model: None,
+            effort: None,
+            instructions: None,
+            skills: vec![],
+            mcp_servers: vec![],
+            custom_agent: custom_agent.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn build_spawn_req_inherits_custom_agent_model_effort_instructions() {
+        // The coherency bar: a live custom-agent-backed alias must spawn with the
+        // same model/effort/instructions the export+import path inlines onto the
+        // AgentSpec — sourced here from the custom_agents row as a fallback.
+        let conn = spawn_req_conn();
+        let dummy = Path::new("/tmp/repo");
+        let req = build_spawn_req(
+            &conn,
+            None,
+            &agent_spec(Some("ca1")),
+            "base",
+            dummy,
+            dummy,
+            "r",
+            None,
+        );
+        assert_eq!(req.model.as_deref(), Some("opus"));
+        assert_eq!(req.effort.as_deref(), Some("high"));
+        assert_eq!(req.instructions.as_deref(), Some("Be thorough."));
+    }
+
+    #[test]
+    fn build_spawn_req_explicit_alias_values_win_over_custom_agent() {
+        let conn = spawn_req_conn();
+        let mut spec = agent_spec(Some("ca1"));
+        spec.model = Some("sonnet".into());
+        spec.effort = Some("low".into());
+        spec.instructions = Some("Override brief.".into());
+        let dummy = Path::new("/tmp/repo");
+        let req = build_spawn_req(&conn, None, &spec, "base", dummy, dummy, "r", None);
+        assert_eq!(req.model.as_deref(), Some("sonnet"));
+        assert_eq!(req.effort.as_deref(), Some("low"));
+        assert_eq!(req.instructions.as_deref(), Some("Override brief."));
+    }
+
+    #[test]
+    fn build_spawn_req_dangling_custom_agent_inherits_nothing() {
+        // A deleted custom agent leaves the alias's own (here unset) values —
+        // unchanged behavior, never a resolution error.
+        let conn = spawn_req_conn();
+        let dummy = Path::new("/tmp/repo");
+        let req = build_spawn_req(
+            &conn,
+            None,
+            &agent_spec(Some("gone")),
+            "base",
+            dummy,
+            dummy,
+            "r",
+            None,
+        );
+        assert!(req.model.is_none());
+        assert!(req.effort.is_none());
+        assert!(req.instructions.is_none());
     }
 
     #[tokio::test]

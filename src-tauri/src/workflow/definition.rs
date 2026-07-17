@@ -357,6 +357,17 @@ pub(super) struct StepDeliverables {
     /// override wins (§3.2). `None` when there's no custom agent, its row is
     /// gone, or its effort column is null.
     pub effort: Option<String>,
+    /// The linked custom agent's model, applied as a fallback the same way as
+    /// `effort` — an explicit `AgentSpec.model` wins. This is what makes a live
+    /// custom-agent step spawn identically to the same alias after YAML
+    /// export+import (where `embed_custom_agents` inlines the model). `None`
+    /// when there's no custom agent, its row is gone, or its model is empty.
+    pub model: Option<String>,
+    /// The linked custom agent's standing instructions, applied as a fallback
+    /// like `model`/`effort`. Flows into the same `SpawnReq.instructions` slot
+    /// an inlined `AgentSpec.instructions` uses, so the composition into the
+    /// step prompt is identical either way (§3.2). `None` when absent/empty.
+    pub instructions: Option<String>,
     /// Skill names/ids the definition requested that no longer resolve
     /// (deleted since the save) — or a descriptive entry when the custom
     /// agent's `skill_ids` column itself is unreadable.
@@ -393,19 +404,24 @@ pub(super) fn resolve_step_deliverables(
     let mut missing_mcp_servers: Vec<String> = Vec::new();
     let mut missing_custom_agent: Option<String> = None;
     let mut effort: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut instructions: Option<String> = None;
 
     let assigned: (Vec<String>, Vec<String>) = match custom_agent_id {
         None => Default::default(),
         Some(id) => {
             let row = conn
                 .query_row(
-                    "SELECT skill_ids, mcp_server_ids, effort FROM custom_agents WHERE id = ?1",
+                    "SELECT skill_ids, mcp_server_ids, effort, model, instructions \
+                     FROM custom_agents WHERE id = ?1",
                     [id],
                     |r| {
                         Ok((
                             r.get::<_, String>(0)?,
                             r.get::<_, String>(1)?,
                             r.get::<_, Option<String>>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, String>(4)?,
                         ))
                     },
                 )
@@ -419,8 +435,13 @@ pub(super) fn resolve_step_deliverables(
                 // parse failure lands in the respective missing list as a
                 // descriptive entry, so the usual event fires and the timeline
                 // says exactly what was unreadable.
-                Some((s, m, e)) => {
+                Some((s, m, e, mdl, instr)) => {
+                    // Match `embed_custom_agents`' export semantics exactly so a
+                    // live step and an export+imported one resolve the same:
+                    // empty model/instructions collapse to `None` (CLI default).
                     effort = e.filter(|v| !v.is_empty());
+                    model = mdl.filter(|v| !v.is_empty());
+                    instructions = Some(instr).filter(|v| !v.is_empty());
                     let skill_ids = match serde_json::from_str(&s) {
                         Ok(v) => v,
                         Err(e) => {
@@ -475,7 +496,8 @@ pub(super) fn resolve_step_deliverables(
     for server_id in &assigned.1 {
         match mcp_snapshot_row(conn, "id", server_id) {
             Ok(Some(snap)) => {
-                if mcp_attachable(support, &snap.transport) && !mcp.iter().any(|m| m.name == snap.name)
+                if mcp_attachable(support, &snap.transport)
+                    && !mcp.iter().any(|m| m.name == snap.name)
                 {
                     mcp.push(snap);
                 }
@@ -494,7 +516,8 @@ pub(super) fn resolve_step_deliverables(
     for name in mcp_server_names {
         match mcp_snapshot_row(conn, "name", name) {
             Ok(Some(snap)) => {
-                if mcp_attachable(support, &snap.transport) && !mcp.iter().any(|m| m.name == snap.name)
+                if mcp_attachable(support, &snap.transport)
+                    && !mcp.iter().any(|m| m.name == snap.name)
                 {
                     mcp.push(snap);
                 }
@@ -509,6 +532,8 @@ pub(super) fn resolve_step_deliverables(
         missing_mcp_servers,
         missing_custom_agent,
         effort,
+        model,
+        instructions,
     }
 }
 
@@ -542,25 +567,21 @@ fn mcp_snapshot_row(
     let sql = format!(
         "SELECT name, transport, command, env, url, headers FROM mcp_servers WHERE {column} = ?1 LIMIT 1"
     );
-    conn.query_row(
-        &sql,
-        [value],
-        |r| {
-            let command_line: String = r.get(2)?;
-            let env_text: String = r.get(3)?;
-            let headers_text: String = r.get(5)?;
-            let mut tokens = command_line.split_whitespace().map(str::to_string);
-            Ok(crate::agent_profile::McpServerSnapshot {
-                name: r.get(0)?,
-                transport: r.get(1)?,
-                command: tokens.next().unwrap_or_default(),
-                args: tokens.collect(),
-                env: parse_pair_lines(&env_text, '='),
-                url: r.get::<_, String>(4)?.trim().to_string(),
-                headers: parse_pair_lines(&headers_text, ':'),
-            })
-        },
-    )
+    conn.query_row(&sql, [value], |r| {
+        let command_line: String = r.get(2)?;
+        let env_text: String = r.get(3)?;
+        let headers_text: String = r.get(5)?;
+        let mut tokens = command_line.split_whitespace().map(str::to_string);
+        Ok(crate::agent_profile::McpServerSnapshot {
+            name: r.get(0)?,
+            transport: r.get(1)?,
+            command: tokens.next().unwrap_or_default(),
+            args: tokens.collect(),
+            env: parse_pair_lines(&env_text, '='),
+            url: r.get::<_, String>(4)?.trim().to_string(),
+            headers: parse_pair_lines(&headers_text, ':'),
+        })
+    })
     .optional()
 }
 
@@ -778,7 +799,9 @@ mod tests {
                 id TEXT PRIMARY KEY,
                 skill_ids TEXT NOT NULL DEFAULT '[]',
                 mcp_server_ids TEXT NOT NULL DEFAULT '[]',
-                effort TEXT
+                effort TEXT,
+                model TEXT,
+                instructions TEXT NOT NULL DEFAULT ''
              );
              INSERT INTO skills VALUES
                 ('sk1', 'code-review', 'review well', '# Review'),
@@ -788,8 +811,8 @@ mod tests {
                  'TOKEN=t' || char(10) || 'BAD-LINE', '', ''),
                 ('m2', 'web', 'http', '', '', ' https://mcp.example ', 'X-Key: abc');
              INSERT INTO custom_agents VALUES
-                ('ca1', '[\"sk1\",\"dangling\"]', '[\"m1\",\"m2\",\"gone\"]', 'high'),
-                ('ca-corrupt', 'not-json', '{\"nope\"', NULL);",
+                ('ca1', '[\"sk1\",\"dangling\"]', '[\"m1\",\"m2\",\"gone\"]', 'high', 'opus', 'Be thorough.'),
+                ('ca-corrupt', 'not-json', '{\"nope\"', NULL, NULL, '');",
         )
         .unwrap();
         conn
@@ -810,8 +833,12 @@ mod tests {
         let names: Vec<&str> = d.skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["code-review", "tests-first"]);
         assert_eq!(d.missing_skills, vec!["dangling", "unknown"]);
-        // ca1 carries effort 'high' — inherited by a step that doesn't override.
+        // ca1 carries effort 'high', model 'opus', and instructions — all
+        // inherited by a step that doesn't override them (the same fallback the
+        // export+import path bakes in by inlining them onto the AgentSpec).
         assert_eq!(d.effort.as_deref(), Some("high"));
+        assert_eq!(d.model.as_deref(), Some("opus"));
+        assert_eq!(d.instructions.as_deref(), Some("Be thorough."));
         // ca1's deleted server id is reported — a saved agent must never lose
         // part of its requested capability snapshot silently.
         assert_eq!(d.missing_mcp_servers, vec!["gone"]);
@@ -853,6 +880,11 @@ mod tests {
         assert!(d.missing_mcp_servers.is_empty());
         assert!(d.missing_custom_agent.is_none());
         assert!(d.effort.is_none(), "no custom agent → no inherited effort");
+        assert!(d.model.is_none(), "no custom agent → no inherited model");
+        assert!(
+            d.instructions.is_none(),
+            "no custom agent → no inherited instructions"
+        );
         assert!(
             d.mcp_servers.is_empty(),
             "no custom agent and no spec-named MCP servers → none"
@@ -902,6 +934,11 @@ mod tests {
         // The agent row itself is the missing thing — its unknowable server
         // assignments are not double-reported.
         assert!(d.missing_mcp_servers.is_empty());
+        // A dangling id inherits nothing: model/effort/instructions stay None so
+        // the step falls back to the AgentSpec's own (here, unset) values.
+        assert!(d.effort.is_none());
+        assert!(d.model.is_none());
+        assert!(d.instructions.is_none());
     }
 
     #[test]
