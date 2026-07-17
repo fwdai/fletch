@@ -602,6 +602,12 @@ fn spawn_drive_task(
             },
         );
     }
+    // A registered drive task is exactly a run in `pending`/`running` (a
+    // `paused`/terminal run has no live driver), so registry membership is the
+    // faithful, no-poll signal for "workflow work is active" that the sleep
+    // assertion + menu-bar status line consume. Inert until the app arms the
+    // monitor at setup, so tests that spin drive tasks touch no power state.
+    crate::power::ActivityMonitor::global().set_run_active(&run_id, true);
 
     let ctx = RunCtx {
         db: db.clone(),
@@ -633,6 +639,11 @@ fn spawn_drive_task(
         };
         if respawn_requested && !panicked {
             spawn_drive_task(db, driver, app, runs, run_id);
+        } else {
+            // Driver gone and not respawning (paused, terminal, or done): the
+            // run is no longer active work. A respawn re-registers immediately
+            // above, so we only clear when the run truly stops being driven.
+            crate::power::ActivityMonitor::global().set_run_active(&run_id, false);
         }
     });
 }
