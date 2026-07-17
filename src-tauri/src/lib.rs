@@ -1448,6 +1448,8 @@ pub fn run() {
             commands::allocate_draft_name,
             commands::get_git_state,
             commands::get_all_shortstats,
+            commands::get_all_git_meta,
+            commands::refresh_base_freshness,
             commands::push_agent,
             commands::pull_agent,
             commands::rebase_agent,

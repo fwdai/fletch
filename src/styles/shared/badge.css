@@ -95,6 +95,17 @@
 .agent-sub .a-diff .del {
   color: var(--danger);
 }
+/* "base moved" cue — quiet information, not an alarm (a moved base is normal in
+ * a parallel fleet), so it's muted like a-time, never a warning color. */
+.agent-sub .a-stale {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
 .agent-sub .a-time {
   color: var(--fg-3);
   font-size: var(--fs-xs);

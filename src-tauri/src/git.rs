@@ -1167,6 +1167,55 @@ pub async fn pull(checkout: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Fetch a single base branch on a project's SOURCE repo from its `origin`
+/// (GitHub), authenticating the https transport with the app token. Updates the
+/// source's `refs/remotes/origin/<base>` and lands the new base commits in the
+/// object store every `--shared` agent clone borrows — so one fetch here makes
+/// a moved base measurable from every checkout without each clone fetching.
+///
+/// Background, best-effort: hook-disabling env is applied (the source repo may
+/// carry its own hooks), the token is never logged, and any failure is returned
+/// for the caller to log-and-skip rather than surface. No-op-ish when the source
+/// has no `origin` — git simply fails, which the caller swallows.
+pub async fn fetch_base(source_repo: &Path, base: &str) -> Result<()> {
+    let mut cmd = crate::git_dist::command(source_repo);
+    cmd.args(["fetch", "--quiet", "origin", base]);
+    for (k, v) in merge_git_env(&[&crate::github::git_auth_env(), &no_hooks_env()]) {
+        cmd.env(k, v);
+    }
+    let out = output_timed(&mut cmd, "git fetch base").await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "fetch base failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Resolve a source repo's remote-tracking base tip
+/// (`refs/remotes/origin/<base>`) — the freshest base a `--shared` clone can
+/// measure staleness against, since the clone shares this repo's objects but
+/// not its refs. `None` when the ref is absent (no origin, or never fetched).
+pub async fn remote_base_sha(source_repo: &Path, base: &str) -> Option<String> {
+    let out = git_output(
+        source_repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{base}"),
+        ],
+    )
+    .await
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
 /// Rebase the current branch onto `base` (e.g. "main"). Used by the clean-state
 /// panel action to bring the checkout up to date with its base branch when the
 /// base has moved ahead. Aborts the rebase on conflict so the checkout is never

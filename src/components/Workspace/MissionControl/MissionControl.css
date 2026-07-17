@@ -166,6 +166,18 @@
   background: color-mix(in oklch, var(--att) 12%, transparent);
   border-color: color-mix(in oklch, var(--att) 30%, transparent);
 }
+/* Quiet advisory chips — staleness ("base moved") and overlap hints. A moved
+ * base is normal in a parallel fleet, so these read as muted information, never
+ * an alarm: no color tint, softer than a plain evidence chip. */
+.mc-chip-muted {
+  color: var(--fg-2);
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--bd-soft);
+}
+.mc-chip-muted svg {
+  color: var(--fg-3);
+}
 
 /* ── actions ──────────────────────────────────────────────────────────────── */
 .mc-card-actions {

@@ -6,6 +6,7 @@
 // action: any state the ladder can't map cleanly falls back to opening the
 // agent's Git tab.
 
+import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
 import { api } from "@/api";
 import { appActionMessage, type GitDelegationKind } from "@/components/RightPanel/delegation";
@@ -148,8 +149,32 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
     [fetchGitState, delegateGitAction, mergePr, openAgentGit],
   );
 
+  // Fan-out "Update all": dispatch the existing `update-branch` delegation to
+  // every affected agent, each scoped to its own checkout. Running agents queue
+  // the trigger and idle ones start immediately — either way each flips into its
+  // delegated/running state through the same machinery the Git panel uses, so no
+  // new progress UI is needed.
+  const updateAll = useCallback(
+    (item: ReviewItem) => {
+      const fanout = item.fanout;
+      if (!fanout) return;
+      for (const a of fanout.agents) {
+        const trigger = appActionMessage(
+          "update-branch",
+          a.subdir ? { base: fanout.base, repo: a.subdir } : { base: fanout.base },
+        );
+        delegateGitAction(a.agentId, "update-branch", trigger, a.subdir);
+      }
+    },
+    [delegateGitAction],
+  );
+
   const enter = useCallback(
     (item: ReviewItem) => {
+      if (item.kind === "fanout") {
+        if (item.fanout) void open(item.fanout.merged.url);
+        return;
+      }
       if (item.kind === "workflow" && item.runId) openReview(item.runId);
       else if (item.agent) openAgentGit(item.agent.id);
     },
@@ -158,17 +183,24 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
 
   const approve = useCallback(
     (item: ReviewItem) => {
+      if (item.kind === "fanout") {
+        updateAll(item);
+        return;
+      }
       if (item.kind === "workflow" && item.runId) {
         void api.wfApprove(item.runId).catch((e) => setLastError(`Approve failed: ${e}`));
         return;
       }
       if (item.agent) void approveAgent(item.agent.id, item.prSubdir);
     },
-    [approveAgent, setLastError],
+    [approveAgent, updateAll, setLastError],
   );
 
   const requestChanges = useCallback(
     (item: ReviewItem) => {
+      // A fan-out card has no "request changes" gesture — its only action is
+      // Update all (bound to `a`). `r` is a no-op here.
+      if (item.kind === "fanout") return;
       // Workflow reject needs a note — that lives in the ReviewSurface's reject
       // form, so open the same modal rather than rejecting blind.
       if (item.kind === "workflow" && item.runId) {

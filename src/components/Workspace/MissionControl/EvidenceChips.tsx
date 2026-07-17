@@ -40,14 +40,35 @@ export function EvidenceChips({ item }: { item: ReviewItem }) {
         <Icon name="pr" size={11} />#{item.pr.number}
       </button>
     ) : null,
-    // Future-PR slot (§1): a staleness chip, wired here so it lands with no
-    // layout change when a later PR feeds `item.staleness`. Null today.
+    // Staleness (§2): quiet information, not an alarm — a moved base is normal
+    // in a parallel fleet, so it's muted, never danger-toned. Absent when the
+    // base hasn't moved (or is unknown), so it renders nothing rather than 0.
     item.staleness ? (
-      <span key="stale" className="mc-chip mc-chip-warn">
+      <span
+        key="stale"
+        className="mc-chip mc-chip-muted"
+        title={`Base ${item.staleness.base} has moved ${item.staleness.behind} commit(s) ahead${
+          item.staleness.repo ? ` (in ${item.staleness.repo})` : ""
+        }`}
+      >
         <Icon name="branch" size={11} />
-        behind {item.staleness.base} by {item.staleness.behind}
+        base moved · {item.staleness.behind} behind
+        {item.staleness.repo && <span className="mc-chip-sub"> · {item.staleness.repo}</span>}
       </span>
     ) : null,
+    // Overlap hints (§4): the quietest chip of all — advisory heads-up that
+    // another agent on this repo touches some of the same files. Never a
+    // warning color; no gating.
+    ...(item.overlaps ?? []).map((o) => (
+      <span
+        key={`overlap:${o.agentName}`}
+        className="mc-chip mc-chip-muted"
+        title={`Overlaps with ${o.agentName} on ${o.count} file(s)`}
+      >
+        <Icon name="layers" size={11} />
+        overlaps {o.agentName} ({o.count})
+      </span>
+    )),
   ].filter(Boolean);
 
   if (chips.length === 0) return null;

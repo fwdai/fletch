@@ -187,6 +187,17 @@ export interface ShortStats {
   file_count: number;
 }
 
+/** Advisory fleet-wide git metadata for one checkout, keyed by `gitKey` in the
+ *  bulk `getAllGitMeta` reply. `behind` (base moved ahead of this checkout) and
+ *  `files` (working-tree paths) drive the always-visible staleness chip and the
+ *  cross-agent overlap hints. `behind` is null when the base tip can't be
+ *  resolved (no GitHub / no fetch yet) — render nothing, never a zero. */
+export interface GitMeta {
+  base: string;
+  behind: number | null;
+  files: string[];
+}
+
 export interface GitState {
   branch: string;
   parent_branch: string;
@@ -762,6 +773,8 @@ export const api = {
   getGitState: (agentId: string, subdir?: string) =>
     invoke<GitState | null>("get_git_state", { agentId, subdir }),
   getAllShortstats: () => invoke<Record<string, ShortStats>>("get_all_shortstats"),
+  getAllGitMeta: () => invoke<Record<string, GitMeta>>("get_all_git_meta"),
+  refreshBaseFreshness: () => invoke<void>("refresh_base_freshness"),
   getPrState: (agentId: string, subdir?: string) =>
     invoke<PrState | null>("get_pr_state", { agentId, subdir }),
   refreshAllPrStates: () => invoke<Record<string, PrState | null>>("refresh_all_pr_states"),

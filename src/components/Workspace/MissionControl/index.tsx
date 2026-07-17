@@ -9,6 +9,7 @@ import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { AllClear } from "./AllClear";
+import { FanoutCard } from "./FanoutCard";
 import { QueueCard } from "./QueueCard";
 import { useQueueActions } from "./useQueueActions";
 import { useQueueKeyboard } from "./useQueueKeyboard";
@@ -60,18 +61,30 @@ export function MissionControl() {
         ) : (
           <div className="mc-wrap">
             <div className="mc-list">
-              {items.map((item, i) => (
-                <QueueCard
-                  key={item.id}
-                  item={item}
-                  focused={i === index}
-                  onFocus={() => setIndex(i)}
-                  onEnter={() => actions.enter(item)}
-                  onApprove={() => actions.approve(item)}
-                  onRequestChanges={() => actions.requestChanges(item)}
-                  onDismiss={() => actions.dismiss(item)}
-                />
-              ))}
+              {items.map((item, i) =>
+                item.kind === "fanout" ? (
+                  <FanoutCard
+                    key={item.id}
+                    item={item}
+                    focused={i === index}
+                    onFocus={() => setIndex(i)}
+                    onEnter={() => actions.enter(item)}
+                    onUpdateAll={() => actions.approve(item)}
+                    onDismiss={() => actions.dismiss(item)}
+                  />
+                ) : (
+                  <QueueCard
+                    key={item.id}
+                    item={item}
+                    focused={i === index}
+                    onFocus={() => setIndex(i)}
+                    onEnter={() => actions.enter(item)}
+                    onApprove={() => actions.approve(item)}
+                    onRequestChanges={() => actions.requestChanges(item)}
+                    onDismiss={() => actions.dismiss(item)}
+                  />
+                ),
+              )}
             </div>
             <div className="mc-hints" aria-hidden="true">
               <span className="mc-hint">
