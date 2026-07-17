@@ -119,11 +119,23 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
   // ── file operations ───────────────────────────────────────────────────
   const allPaths = useMemo(() => new Set(files.map((f) => f.path)), [files]);
 
+  // Multi-repo agents get one virtual top-level folder per repo (the backend
+  // prefixes every path with the checkout's subdir). Those folders are
+  // structural — you can create inside them, but never rename/delete/duplicate
+  // the checkout itself. Null for single-repo agents: no path is a repo root.
+  const repoRoots = useMemo(
+    () => (agent.repos.length > 1 ? new Set(agent.repos.map((r) => r.subdir)) : null),
+    [agent.repos],
+  );
+
   // Begin a create: open the target dir so the inline input is visible.
+  // Multi-repo: nothing can live at the virtual root (every path belongs to a
+  // repo), so a root-level create lands in the primary repo instead.
   const beginCreate = (mode: "newFile" | "newFolder", dir: string) => {
+    const target = dir === "" && repoRoots ? agent.repos[0].subdir : dir;
     setOpError(null);
-    if (dir) expand(dir);
-    setEdit({ mode, parentDir: dir });
+    if (target) expand(target);
+    setEdit({ mode, parentDir: target });
   };
 
   const cancelEdit = () => setEdit(null);
@@ -221,6 +233,20 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
       { icon: "file", label: "New File…", onClick: () => beginCreate("newFile", target) },
       { icon: "folder", label: "New Folder…", onClick: () => beginCreate("newFolder", target) },
     ];
+    // A repo's virtual root folder: create into it and copy its path, but no
+    // rename/delete — the checkout itself isn't a file-tree operation target.
+    if (node.type === "dir" && repoRoots?.has(node.path)) {
+      return [
+        ...newItems,
+        "sep",
+        {
+          icon: "copy",
+          label: "Copy Path",
+          feedbackLabel: "Copied",
+          onClick: () => copyPath(node),
+        },
+      ];
+    }
     const common: ContextMenuEntry[] = [
       {
         icon: "edit",

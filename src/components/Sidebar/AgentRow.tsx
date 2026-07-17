@@ -11,7 +11,7 @@ import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
-import { usePrState } from "@/util/prState";
+import { type AgentPr, useAgentPrs } from "@/util/prState";
 import { type AgentStats, AgentStatsPopover } from "./AgentStatsPopover";
 
 /** The agent rows carry nested buttons (stop/archive/discard), so they can't be
@@ -52,13 +52,13 @@ export function AgentRow(props: Props) {
 
 function RealRow({ agent, active, onClick }: RealRowProps) {
   const usage = useAppStore((s) => s.usage[agent.id]);
-  // Live PR state with the persisted database snapshot as fallback, so a
-  // merged badge survives restarts, offline stretches, and broken checkouts.
-  const prState = usePrState(agent.id, agent.repos[0]);
-  // CI rollup for this agent's PR, fed by the app-wide refreshAllPrChecks poll
-  // (see App.tsx) — lets the PR pill tint pass/fail across every row, not just
-  // the focused one. Null until the first poll lands or when there's no PR.
-  const prChecks = useAppStore((s) => s.prChecks[agent.id] ?? null);
+  // Every PR across the agent's repos (live state with the persisted database
+  // snapshot as fallback, so a merged badge survives restarts, offline
+  // stretches, and broken checkouts), each with the CI rollup the app-wide
+  // refreshAllPrChecks poll recorded for it. Single-repo agents yield at most
+  // one entry — exactly the old primary-only read; a multi-repo agent whose
+  // only PR lives on a secondary repo still gets its badge.
+  const agentPrs = useAgentPrs(agent);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
   // Dev-server state for this checkout — orthogonal to the agent's turn status,
@@ -124,15 +124,17 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
     agent.status === "idle" || agent.status === "stopped" || agent.status === "error";
 
   // The status rail doubles as the left spine: colored for live/terminal
-  // states, a merged PR claims purple, everything else is a faint grey.
-  // A pending question outranks the plain running green — amber says "you".
+  // states, a merged PR claims purple (every PR of the set, for multi-repo),
+  // everything else is a faint grey. A pending question outranks the plain
+  // running green — amber says "you".
+  const allMerged = agentPrs.length > 0 && agentPrs.every((e) => e.pr.state === "merged");
   const railClass = awaiting
     ? "wait"
     : working
       ? "run"
       : agent.status === "error"
         ? "err"
-        : prState?.state === "merged"
+        : allMerged
           ? "merged"
           : "idle";
 
@@ -231,8 +233,10 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
       </div>
       <div className="agent-sub flex-center">
         <span className="a-task">{taskOrBranch}</span>
-        {prState ? (
-          <PrBadge pr={prState} checks={prChecks} />
+        {agentPrs.length === 1 ? (
+          <PrBadge pr={agentPrs[0].pr} checks={agentPrs[0].checks} />
+        ) : agentPrs.length > 1 ? (
+          <MultiPrBadge prs={agentPrs} />
         ) : hasChanges ? (
           <DiffStat stats={shortstats} />
         ) : null}
@@ -329,6 +333,53 @@ function PrBadge({ pr, checks }: { pr: PrState; checks: PrChecks | null }) {
       PR
     </Badge>
   );
+}
+
+/** Aggregate pill for a multi-repo agent with PRs on several repos: `N PRs`,
+ *  tinted by the worst status across the set — any open PR with failing checks
+ *  → red; any open PR still pending/unchecked → the neutral open blue; all
+ *  open PRs passing → green; no open PRs → closed grey over merged purple.
+ *  The tooltip itemizes each PR so the pill stays glanceable. */
+function MultiPrBadge({ prs }: { prs: AgentPr[] }) {
+  const open = prs.filter((e) => e.pr.state === "open");
+  let variant: BadgeVariant;
+  let icon: "pr" | "merge" = "pr";
+  if (open.length > 0) {
+    const tints = open.map((e) => ciTint(e.checks).variant);
+    variant = tints.includes("pr-fail")
+      ? "pr-fail"
+      : tints.includes("pr-open")
+        ? "pr-open"
+        : "pr-pass";
+  } else if (prs.some((e) => e.pr.state === "closed")) {
+    variant = "pr-closed";
+  } else {
+    variant = "pr-merged";
+    icon = "merge";
+  }
+  const tip = prs.map((e) => `#${e.pr.number} ${prStatusWord(e)}`).join(" · ");
+  return (
+    <Badge variant={variant} tip={tip}>
+      <Icon name={icon} size={10} />
+      {prs.length} PRs
+    </Badge>
+  );
+}
+
+/** One PR's status for the aggregate tooltip: its state, refined by the CI
+ *  rollup while open. */
+function prStatusWord({ pr, checks }: AgentPr): string {
+  if (pr.state !== "open") return pr.state;
+  switch (checks?.rollup) {
+    case "passing":
+      return "open, checks passing";
+    case "failing":
+      return "open, checks failing";
+    case "pending":
+      return "open, checks running";
+    default:
+      return "open";
+  }
 }
 
 /** Map an open PR's CI rollup to a pill variant + tooltip suffix. Pending and

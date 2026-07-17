@@ -259,13 +259,15 @@ export interface GitSlice {
    *  (used by the app-wide background poll). */
   fetchAllShortstats: () => Promise<void>;
   fetchPrState: (agentId: string, subdir?: string) => Promise<void>;
-  /** Refresh PR state for every agent with a known PR in one round-trip
-   *  (used by the app-wide background poll). Backend emits `pr:state_changed`
-   *  per agent, so the sidebar badge updates without opening the Git panel. */
+  /** Refresh PR state for every repo with a known PR across every agent in
+   *  one round-trip (used by the app-wide background poll). The reply is
+   *  keyed by `gitKey`, so a multi-repo agent's secondary-repo PRs land in
+   *  the store too and the sidebar badge updates without opening the panel. */
   refreshAllPrStates: () => Promise<void>;
-  /** Refresh CI checks for every agent with an open PR in one round-trip
-   *  (used by the app-wide background poll) so the sidebar PR pill can tint
-   *  pass/fail without opening the Git panel. */
+  /** Refresh CI checks for every repo with an open PR in one round-trip
+   *  (used by the app-wide background poll, keyed by `gitKey` like
+   *  `refreshAllPrStates`) so the sidebar PR pill can tint pass/fail without
+   *  opening the Git panel. */
   refreshAllPrChecks: () => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
   fetchPrComments: (agentId: string, subdir?: string) => Promise<void>;

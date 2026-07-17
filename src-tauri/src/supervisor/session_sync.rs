@@ -191,10 +191,24 @@ pub(crate) async fn resolve_pr_state(
     }
 }
 
-/// Resolve PR state for *every* bound agent in one batched round-trip — the
-/// app-wide poll behind `refresh_all_pr_states`. Same per-agent policy as
-/// [`resolve_pr_state`], but the live lookups are collapsed into a single
-/// aliased GraphQL query instead of a per-agent fan-out:
+/// Store key for one repo's PR state in the app-wide maps, mirroring the
+/// frontend's `gitKey` (`src/store/git.ts`): the primary repo keeps the plain
+/// agent id — the key every existing consumer (sidebar badge, title bar,
+/// `pr:state_changed` reducer) reads — and secondaries get
+/// `"{agent_id}::{subdir}"`, the same suffixed form the Git panel's per-repo
+/// fetches use.
+pub(crate) fn pr_map_key(agent_id: &str, subdir: &str, primary: bool) -> String {
+    if primary {
+        agent_id.to_string()
+    } else {
+        format!("{agent_id}::{subdir}")
+    }
+}
+
+/// Resolve PR state for *every* bound repo of every agent in one batched
+/// round-trip — the app-wide poll behind `refresh_all_pr_states`. Same
+/// per-repo policy as [`resolve_pr_state`], but the live lookups are collapsed
+/// into a single aliased GraphQL query instead of a per-agent fan-out:
 ///
 /// - **Merged** PRs are served from the persisted snapshot (terminal — never
 ///   re-fetched).
@@ -205,8 +219,11 @@ pub(crate) async fn resolve_pr_state(
 ///
 /// A paused backoff, an unresolvable slug, a not-found alias, or a whole-batch
 /// failure all degrade to the last persisted snapshot rather than wiping the
-/// badge. Agents that resolve to nothing are omitted from the map (never
-/// written as absent state), matching the command's contract.
+/// badge. Repos that resolve to nothing are omitted from the map (never
+/// written as absent state), matching the command's contract. Keys follow
+/// [`pr_map_key`]: plain agent id for the primary, `"{agent_id}::{subdir}"`
+/// for secondaries — so single-repo agents produce exactly one plain-keyed
+/// entry, byte-identical to before.
 pub(crate) async fn resolve_all_pr_states(
     workspace: &WorkspaceManager,
     reverify_closed: bool,
@@ -221,10 +238,11 @@ pub(crate) async fn resolve_all_pr_states(
     // Paused → touch no network; every bound PR renders from its snapshot.
     let paused = client::is_backing_off();
 
-    // A network-bound agent: what to fetch, plus the snapshot to fall back to.
+    // A network-bound repo: what to fetch, plus the snapshot to fall back to.
     struct Pending {
         agent_id: String,
         subdir: String,
+        key: String,
         snapshot: Option<PrState>,
         pr_ref: PrRef,
     }
@@ -234,50 +252,51 @@ pub(crate) async fn resolve_all_pr_states(
         if agent.archive.is_some() {
             continue;
         }
-        let Some(repo) = agent.repos.first() else {
-            continue;
-        };
-        // No branch → nothing pushed; no number → discovery isn't this poll's job.
-        if repo.branch.is_none() {
-            continue;
-        }
-        let Some(number) = repo.pr_number else {
-            continue;
-        };
-        let snapshot = pr_snapshot(repo);
-
-        let terminal = repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str());
-        let closed = repo.pr_state.as_deref() == Some(PrStatus::Closed.as_str());
-        // Merged never re-fetches; closed only on the slow re-verify tick.
-        let fetch = !paused && !terminal && (!closed || reverify_closed);
-        if !fetch {
-            if let Some(snap) = snapshot {
-                out.insert(agent.id.clone(), snap);
+        for (i, repo) in agent.repos.iter().enumerate() {
+            let key = pr_map_key(&agent.id, &repo.subdir, i == 0);
+            // No branch → nothing pushed; no number → discovery isn't this poll's job.
+            if repo.branch.is_none() {
+                continue;
             }
-            continue;
-        }
+            let Some(number) = repo.pr_number else {
+                continue;
+            };
+            let snapshot = pr_snapshot(repo);
 
-        // Resolve the slug now (local git); the network cost is deferred to the
-        // one batched query below. A broken checkout / non-GitHub origin can't
-        // be fetched — hold the snapshot instead.
-        let slug = match repo_checkout_path(&agent.id, &repo.subdir) {
-            Ok(checkout) => crate::github::resolve_slug(&checkout, Some(&repo.repo_path)).await,
-            Err(_) => None,
-        };
-        match slug {
-            Some((owner, repo_name)) => pending.push(Pending {
-                agent_id: agent.id.clone(),
-                subdir: repo.subdir.clone(),
-                snapshot,
-                pr_ref: PrRef {
-                    owner,
-                    repo: repo_name,
-                    number: number as u32,
-                },
-            }),
-            None => {
+            let terminal = repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str());
+            let closed = repo.pr_state.as_deref() == Some(PrStatus::Closed.as_str());
+            // Merged never re-fetches; closed only on the slow re-verify tick.
+            let fetch = !paused && !terminal && (!closed || reverify_closed);
+            if !fetch {
                 if let Some(snap) = snapshot {
-                    out.insert(agent.id.clone(), snap);
+                    out.insert(key, snap);
+                }
+                continue;
+            }
+
+            // Resolve the slug now (local git); the network cost is deferred to the
+            // one batched query below. A broken checkout / non-GitHub origin can't
+            // be fetched — hold the snapshot instead.
+            let slug = match repo_checkout_path(&agent.id, &repo.subdir) {
+                Ok(checkout) => crate::github::resolve_slug(&checkout, Some(&repo.repo_path)).await,
+                Err(_) => None,
+            };
+            match slug {
+                Some((owner, repo_name)) => pending.push(Pending {
+                    agent_id: agent.id.clone(),
+                    subdir: repo.subdir.clone(),
+                    key,
+                    snapshot,
+                    pr_ref: PrRef {
+                        owner,
+                        repo: repo_name,
+                        number: number as u32,
+                    },
+                }),
+                None => {
+                    if let Some(snap) = snapshot {
+                        out.insert(key, snap);
+                    }
                 }
             }
         }
@@ -294,22 +313,22 @@ pub(crate) async fn resolve_all_pr_states(
                 match res {
                     Some(pr) => {
                         persist_pr_snapshot(workspace, &p.agent_id, &p.subdir, &pr);
-                        out.insert(p.agent_id, pr);
+                        out.insert(p.key, pr);
                     }
                     // Not found this round / partial error — keep last-known.
                     None => {
                         if let Some(snap) = p.snapshot {
-                            out.insert(p.agent_id, snap);
+                            out.insert(p.key, snap);
                         }
                     }
                 }
             }
         }
-        // Whole-batch failure — degrade every bound agent to its snapshot.
+        // Whole-batch failure — degrade every bound repo to its snapshot.
         Err(_) => {
             for p in pending {
                 if let Some(snap) = p.snapshot {
-                    out.insert(p.agent_id, snap);
+                    out.insert(p.key, snap);
                 }
             }
         }
@@ -1058,6 +1077,15 @@ mod tests {
             pr_state: Some("merged".into()),
             label: None,
         }
+    }
+
+    /// The app-wide poll keys mirror the frontend's `gitKey`: the primary repo
+    /// keeps the plain agent id (so every existing consumer is untouched) and
+    /// secondaries get the `::`-suffixed form the Git panel already reads.
+    #[test]
+    fn pr_map_key_mirrors_frontend_git_key() {
+        assert_eq!(pr_map_key("ag-1", "frontend", true), "ag-1");
+        assert_eq!(pr_map_key("ag-1", "backend", false), "ag-1::backend");
     }
 
     /// The persisted columns rebuild into a renderable PrState.
