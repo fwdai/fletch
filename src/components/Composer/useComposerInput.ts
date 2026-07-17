@@ -19,6 +19,9 @@ export interface ComposerInputConfig {
   provider: string;
   /** Project root for discovering project-level slash commands. */
   projectDir?: string;
+  /** Offer library skills in the `/` menu (new-agent composers only — an
+   *  invoked skill is attached at spawn, which an existing session can't be). */
+  skillCommands?: boolean;
   onLocalCommand?: (action: LocalCommandAction) => void;
   /** Candidate file paths for the `@` mention search. Omit to disable `@`. */
   mentionSource?: () => Promise<string[]>;
@@ -108,6 +111,7 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     query: triggerQueryAt(text, caret, "/", true)?.query ?? null,
     provider: cfg.provider,
     projectDir: cfg.projectDir,
+    includeSkills: cfg.skillCommands,
     onLocalCommand: cfg.onLocalCommand,
   });
   const autocomplete = useAutocomplete({

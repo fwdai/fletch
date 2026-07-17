@@ -70,6 +70,14 @@ export async function discoverCommands(
   }
 }
 
+/** A provider's built-in commands: the static, synchronously known set, with
+ *  no discovery involved. This is the only command set skills defer to (see
+ *  helpers/invocableSkills) — discovered commands arrive async via the cache,
+ *  so a precedence rule against them would flip with cache timing. */
+export function builtinCommandsFor(providerId: string): SlashCommand[] {
+  return adapterFor(providerId)?.builtins ?? [];
+}
+
 /** All commands for a provider: builtins plus any discovered commands cached
  *  for `projectDir`. Synchronous — reads the cache populated by
  *  `discoverCommands`, so before discovery has run (or for an unknown project)

@@ -230,6 +230,9 @@ export function Composer({
   const input = useComposerInput({
     provider,
     projectDir,
+    // Skills are invocable only where they can still be attached: at spawn.
+    // ChatView composers (existing sessions) keep the plain command menu.
+    skillCommands: !existingSession,
     onLocalCommand,
     mentionSource,
     listDir,

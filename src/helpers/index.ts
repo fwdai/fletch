@@ -8,10 +8,10 @@ import { type ChatItem, getAdapter, type RawEvent } from "../adapters";
 import { hasUsage, usageFromRecords } from "../adapters/usage";
 import { api, type SessionRecord, type UserTurn, type Workspace } from "../api";
 import { MCP_SUPPORT, mcpAttachable } from "../data/providers";
-import { commandsFor, discoverCommands } from "../data/slashCommands";
+import { builtinCommandsFor, commandsFor, discoverCommands } from "../data/slashCommands";
 import type { CustomAgent } from "../storage/customAgents";
 import { type McpServerSnapshot, snapshotMcpServer } from "../storage/mcpServers";
-import type { SkillSnapshot } from "../storage/skills";
+import { type Skill, type SkillSnapshot, skillSlug } from "../storage/skills";
 import { recordUsageSnapshot } from "../storage/usageDaily";
 import type { AppState, DraftAgent } from "../store";
 
@@ -41,6 +41,53 @@ export function passthroughSlashName(
     (c) => c.kind === "passthrough" && c.name === first,
   );
   return match ? match.name : null;
+}
+
+/** Library skills invocable as composer `/` commands, each under its slugged
+ *  token. Precedence is static so the menu and the send path always agree,
+ *  regardless of when async command discovery lands: built-ins win over skills
+ *  (a skill named "init" can't shadow `/init`), and skills win over commands
+ *  discovered from disk — deferring to those would make the winner depend on
+ *  cache timing, and would make the same token run different things on
+ *  different providers. A later skill sharing an earlier one's slug also
+ *  drops, so resolution picks exactly what the menu offered. */
+export function invocableSkills(
+  skills: Skill[],
+  providerId: string,
+): { command: string; skill: Skill }[] {
+  const taken = new Set(builtinCommandsFor(providerId).map((c) => c.name));
+  const out: { command: string; skill: Skill }[] = [];
+  for (const skill of skills) {
+    const command = skillSlug(skill.name);
+    if (taken.has(command)) continue;
+    taken.add(command);
+    out.push({ command, skill });
+  }
+  return out;
+}
+
+/** If `text` starts with `/<command>` naming an invocable skill, resolve the
+ *  invocation: `snapshot` is the by-value skill to add to the spawn payload
+ *  (materialized + indexed like an assigned skill) and `prompt` replaces the
+ *  typed text — an explicit follow-it-now instruction, with everything after
+ *  the command carried as arguments. Null when the text isn't a skill
+ *  invocation; provider commands and plain messages flow through untouched. */
+export function resolveSkillInvocation(
+  skills: Skill[],
+  providerId: string,
+  text: string,
+): { snapshot: SkillSnapshot; prompt: string } | null {
+  if (!text.startsWith("/")) return null;
+  const command = text.split(/\s/)[0].slice(1);
+  if (!command) return null;
+  const match = invocableSkills(skills, providerId).find((s) => s.command === command);
+  if (!match) return null;
+  const args = text.slice(command.length + 1).trim();
+  const { name, description, body } = match.skill;
+  const prompt =
+    `Use the "${name}" skill for this task: read its file (listed in the Skills index in your instructions) and follow its instructions now.` +
+    (args ? `\n\nArguments: ${args}` : "");
+  return { snapshot: { name, description, body }, prompt };
 }
 
 /** Claude built-in control commands that only work in its interactive TUI and
