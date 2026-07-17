@@ -42,8 +42,10 @@ use parking_lot::Mutex;
 /// idle→busy→idle flaps between turns don't thrash it.
 const RELEASE_DEBOUNCE: Duration = Duration::from_secs(30);
 
-/// User-visible assertion name (shows in `pmset -g assertions`).
-#[cfg(target_os = "macos")]
+/// User-visible assertion name (shows in `pmset -g assertions`). Only the real
+/// IOKit path (`not(test)`) references it; gated to match so a macOS test build
+/// doesn't flag it unused.
+#[cfg(all(target_os = "macos", not(test)))]
 const ASSERTION_NAME: &str = "Fletch: agents working";
 
 type ChangeCb = Arc<dyn Fn(usize, usize) + Send + Sync>;
@@ -77,9 +79,11 @@ struct Inner {
 }
 
 impl ActivityMonitor {
-    pub fn global() -> &'static ActivityMonitor {
-        static MONITOR: OnceLock<ActivityMonitor> = OnceLock::new();
-        MONITOR.get_or_init(|| ActivityMonitor {
+    /// A fresh, unarmed monitor. Used for the process-wide `global()` singleton;
+    /// also lets tests build a standalone instance so they never arm or mutate
+    /// the shared global (which other tests assert stays unarmed).
+    fn fresh() -> Self {
+        ActivityMonitor {
             inner: Mutex::new(Inner {
                 agents: HashSet::new(),
                 runs: HashSet::new(),
@@ -89,7 +93,24 @@ impl ActivityMonitor {
                 on_change: None,
             }),
             armed: AtomicBool::new(false),
-        })
+        }
+    }
+
+    pub fn global() -> &'static ActivityMonitor {
+        static MONITOR: OnceLock<ActivityMonitor> = OnceLock::new();
+        MONITOR.get_or_init(ActivityMonitor::fresh)
+    }
+
+    /// Number of workflow runs currently marked active (test observability).
+    #[cfg(test)]
+    pub(crate) fn active_run_count(&self) -> usize {
+        self.inner.lock().runs.len()
+    }
+
+    /// Whether a specific run id is currently marked active (test observability).
+    #[cfg(test)]
+    pub(crate) fn is_run_active(&self, run_id: &str) -> bool {
+        self.inner.lock().runs.contains(run_id)
     }
 
     /// Enable real side effects and register the status-line callback. Called
@@ -202,16 +223,25 @@ fn ensure_assertion(inner: &mut Inner) {
     if inner.assertion.is_some() {
         return;
     }
-    inner.assertion = macos::create_assertion();
-    if inner.assertion.is_none() {
-        tracing::warn!("failed to create IOKit sleep assertion; system may idle-sleep mid-run");
+    // Bypass the real IOKit FFI under test — a `cargo test` run must not create
+    // system power assertions. The state field is still touched so it isn't
+    // flagged unused on a macOS test build.
+    #[cfg(not(test))]
+    {
+        inner.assertion = macos::create_assertion();
+        if inner.assertion.is_none() {
+            tracing::warn!("failed to create IOKit sleep assertion; system may idle-sleep mid-run");
+        }
     }
+    #[cfg(test)]
+    let _ = &mut inner.assertion;
 }
 
 #[cfg(target_os = "macos")]
 fn release_assertion(inner: &mut Inner) {
-    if let Some(id) = inner.assertion.take() {
-        macos::release_assertion(id);
+    if let Some(_id) = inner.assertion.take() {
+        #[cfg(not(test))]
+        macos::release_assertion(_id);
     }
 }
 
@@ -221,7 +251,7 @@ fn ensure_assertion(_inner: &mut Inner) {}
 #[cfg(not(target_os = "macos"))]
 fn release_assertion(_inner: &mut Inner) {}
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 mod macos {
     use std::ffi::{c_void, CString};
     use std::os::raw::c_char;
@@ -333,5 +363,36 @@ mod tests {
         let inner = m.inner.lock();
         assert!(inner.agents.is_empty());
         assert!(inner.runs.is_empty());
+    }
+
+    // Mirrors the scheduler wiring: an orchestrate parent whose only live
+    // drivers are its sub-runs (each `register_driver`'d under a distinct run
+    // id) must stay active until the *last* driver deregisters, and a sub-run
+    // finishing must never clear the parent's own activity. Exercised on a
+    // standalone armed monitor so the shared global stays unarmed for other
+    // tests; the IOKit FFI is bypassed under `cfg(test)`.
+    #[test]
+    fn active_run_count_tracks_parent_and_subruns_independently() {
+        let m = ActivityMonitor::fresh();
+        m.arm(std::sync::Arc::new(|_, _| {}));
+
+        // Parent begins driving; then it spawns two sub-runs. All three are
+        // distinct run ids, so all three count.
+        m.set_run_active("parent", true);
+        m.set_run_active("parent::child-1", true);
+        m.set_run_active("parent::child-2", true);
+        assert_eq!(m.active_run_count(), 3);
+
+        // Both sub-runs finish. The parent's activity is untouched — the exact
+        // "sub-runs skip activity / parent drops mid-work" regression this
+        // guards against.
+        m.set_run_active("parent::child-1", false);
+        m.set_run_active("parent::child-2", false);
+        assert_eq!(m.active_run_count(), 1);
+        assert!(m.is_run_active("parent"));
+
+        // Only when the last driver (the parent) is gone does activity reach 0.
+        m.set_run_active("parent", false);
+        assert_eq!(m.active_run_count(), 0);
     }
 }
