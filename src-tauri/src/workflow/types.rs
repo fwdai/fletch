@@ -137,6 +137,17 @@ pub mod event_type {
     /// the step spawned without that agent's skills and MCP servers. Carries
     /// the unresolved id; the step still runs.
     pub const CUSTOM_AGENT_MISSING: &str = "custom_agent_missing";
+    /// A by-name skill reference matched more than one library row (names are
+    /// not unique). The step still runs against a deterministic pick (lowest
+    /// id); the event carries the ambiguous names so the timeline is honest
+    /// about which of several same-named skills was chosen.
+    pub const SKILLS_AMBIGUOUS: &str = "skills_ambiguous";
+    /// A by-name MCP server reference matched more than one library row (names
+    /// are not unique). The step still runs against a deterministic pick
+    /// (lowest id); the event carries the ambiguous names. Only the by-name
+    /// path (imported/spec-level servers) can be ambiguous — custom-agent
+    /// assignments resolve by unique id.
+    pub const MCP_SERVERS_AMBIGUOUS: &str = "mcp_servers_ambiguous";
     pub const ATTEMPT_READY: &str = "attempt_ready";
     pub const PROMPT_SENT: &str = "prompt_sent";
     pub const TURN_ENDED: &str = "turn_ended";

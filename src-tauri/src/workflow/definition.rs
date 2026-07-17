@@ -381,6 +381,16 @@ pub(super) struct StepDeliverables {
     /// The step's `custom_agent` id when its row no longer resolves — the step
     /// spawns without that agent's skills and MCP servers.
     pub missing_custom_agent: Option<String>,
+    /// By-name skill references (from the spec) that matched more than one
+    /// library row. The step still ran against a deterministic pick (lowest
+    /// id); the caller journals these so the timeline names which same-named
+    /// skill was chosen. Ambiguity is only possible on the by-name path —
+    /// custom-agent skills resolve by unique id.
+    pub ambiguous_skills: Vec<String>,
+    /// By-name MCP server references (spec-level / imported) that matched more
+    /// than one library row — same warn-don't-fail treatment as
+    /// `ambiguous_skills`.
+    pub ambiguous_mcp_servers: Vec<String>,
 }
 
 /// Resolve a step's skill/MCP deliverables at spawn (§3.2) — the Rust twin of
@@ -402,6 +412,8 @@ pub(super) fn resolve_step_deliverables(
     let mut mcp: Vec<crate::agent_profile::McpServerSnapshot> = Vec::new();
     let mut missing_skills: Vec<String> = Vec::new();
     let mut missing_mcp_servers: Vec<String> = Vec::new();
+    let mut ambiguous_skills: Vec<String> = Vec::new();
+    let mut ambiguous_mcp_servers: Vec<String> = Vec::new();
     let mut missing_custom_agent: Option<String> = None;
     let mut effort: Option<String> = None;
     let mut model: Option<String> = None;
@@ -436,12 +448,13 @@ pub(super) fn resolve_step_deliverables(
                 // descriptive entry, so the usual event fires and the timeline
                 // says exactly what was unreadable.
                 Some((s, m, e, mdl, instr)) => {
-                    // Match `embed_custom_agents`' export semantics exactly so a
-                    // live step and an export+imported one resolve the same:
-                    // empty model/instructions collapse to `None` (CLI default).
-                    effort = e.filter(|v| !v.is_empty());
-                    model = mdl.filter(|v| !v.is_empty());
-                    instructions = Some(instr).filter(|v| !v.is_empty());
+                    // Collapse blank (incl. whitespace-only) values to `None` so
+                    // a live step and an export+imported one resolve the same and
+                    // neither spawns with an empty argument — the trim-based twin
+                    // of `scheduler::nonblank` on the AgentSpec-override side.
+                    effort = e.filter(|v| !v.trim().is_empty());
+                    model = mdl.filter(|v| !v.trim().is_empty());
+                    instructions = Some(instr).filter(|v| !v.trim().is_empty());
                     let skill_ids = match serde_json::from_str(&s) {
                         Ok(v) => v,
                         Err(e) => {
@@ -487,6 +500,9 @@ pub(super) fn resolve_step_deliverables(
                 if !skills.iter().any(|k| k.name == s.name) {
                     skills.push(s);
                 }
+                if count_by_name(conn, "skills", name) > 1 {
+                    ambiguous_skills.push(name.clone());
+                }
             }
             _ => missing_skills.push(name.clone()),
         }
@@ -521,6 +537,9 @@ pub(super) fn resolve_step_deliverables(
                 {
                     mcp.push(snap);
                 }
+                if count_by_name(conn, "mcp_servers", name) > 1 {
+                    ambiguous_mcp_servers.push(name.clone());
+                }
             }
             _ => missing_mcp_servers.push(name.clone()),
         }
@@ -531,6 +550,8 @@ pub(super) fn resolve_step_deliverables(
         missing_skills,
         missing_mcp_servers,
         missing_custom_agent,
+        ambiguous_skills,
+        ambiguous_mcp_servers,
         effort,
         model,
         instructions,
@@ -543,7 +564,12 @@ fn skill_row(
     value: &str,
 ) -> Result<Option<crate::agent_profile::SkillSnapshot>, rusqlite::Error> {
     // `column` is a compile-time literal ("id" | "name"), never user input.
-    let sql = format!("SELECT name, description, body FROM skills WHERE {column} = ?1 LIMIT 1");
+    // Names are not unique; `ORDER BY id` makes the pick deterministic (lowest
+    // id wins) so a duplicate-named lookup is stable rather than arbitrary. The
+    // caller flags the ambiguity via `count_by_name`.
+    let sql = format!(
+        "SELECT name, description, body FROM skills WHERE {column} = ?1 ORDER BY id LIMIT 1"
+    );
     conn.query_row(&sql, [value], |r| {
         Ok(crate::agent_profile::SkillSnapshot {
             name: r.get(0)?,
@@ -564,8 +590,11 @@ fn mcp_snapshot_row(
     value: &str,
 ) -> Result<Option<crate::agent_profile::McpServerSnapshot>, rusqlite::Error> {
     // `column` is a compile-time literal ("id" | "name"), never user input.
+    // `ORDER BY id` makes a duplicate-named pick deterministic (lowest id wins)
+    // rather than arbitrary; the caller flags the ambiguity via `count_by_name`.
     let sql = format!(
-        "SELECT name, transport, command, env, url, headers FROM mcp_servers WHERE {column} = ?1 LIMIT 1"
+        "SELECT name, transport, command, env, url, headers FROM mcp_servers \
+         WHERE {column} = ?1 ORDER BY id LIMIT 1"
     );
     conn.query_row(&sql, [value], |r| {
         let command_line: String = r.get(2)?;
@@ -583,6 +612,16 @@ fn mcp_snapshot_row(
         })
     })
     .optional()
+}
+
+/// How many library rows carry `name`. Used to flag a by-name resolution as
+/// ambiguous (>1 match) so the deterministic pick above is surfaced as a
+/// warning rather than a silent bind. `table` is a compile-time literal
+/// (`"skills"` | `"mcp_servers"`), never user input; a query error counts as 0
+/// (no false ambiguity warning).
+fn count_by_name(conn: &Connection, table: &str, name: &str) -> i64 {
+    let sql = format!("SELECT COUNT(*) FROM {table} WHERE name = ?1");
+    conn.query_row(&sql, [name], |r| r.get(0)).unwrap_or(0)
 }
 
 fn parse_pair_lines(text: &str, sep: char) -> Vec<(String, String)> {
@@ -919,6 +958,77 @@ mod tests {
         let conn = library_db();
         let d = resolve_step_deliverables(&conn, Some("ca1"), &[], &["gh".into()], "claude");
         assert_eq!(d.mcp_servers.iter().filter(|m| m.name == "gh").count(), 1);
+    }
+
+    /// An empty three-table library the ambiguity tests seed with duplicates.
+    fn blank_library() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE skills (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '');
+             CREATE TABLE mcp_servers (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                transport TEXT NOT NULL DEFAULT 'stdio', command TEXT NOT NULL DEFAULT '',
+                env TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+                headers TEXT NOT NULL DEFAULT '');
+             CREATE TABLE custom_agents (id TEXT PRIMARY KEY,
+                skill_ids TEXT NOT NULL DEFAULT '[]', mcp_server_ids TEXT NOT NULL DEFAULT '[]',
+                effort TEXT, model TEXT, instructions TEXT NOT NULL DEFAULT '');",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn deliverables_flag_ambiguous_mcp_name_and_pick_lowest_id() {
+        // Two servers named 'gh': the by-name lookup must pick deterministically
+        // (lowest id 'm-a') and flag the ambiguity, never bind silently.
+        let conn = blank_library();
+        conn.execute_batch(
+            "INSERT INTO mcp_servers (id, name, command) VALUES
+                ('m-b', 'gh', 'cmd-b'), ('m-a', 'gh', 'cmd-a');",
+        )
+        .unwrap();
+        let d = resolve_step_deliverables(&conn, None, &[], &["gh".into()], "claude");
+        assert_eq!(d.mcp_servers.len(), 1);
+        assert_eq!(d.mcp_servers[0].command, "cmd-a", "lowest id wins");
+        assert_eq!(d.ambiguous_mcp_servers, vec!["gh"]);
+        assert!(d.missing_mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn deliverables_flag_ambiguous_skill_name_but_not_unique_one() {
+        // 'review' is duplicated (ambiguous); 'lint' is unique (not flagged).
+        let conn = blank_library();
+        conn.execute_batch(
+            "INSERT INTO skills (id, name, body) VALUES
+                ('sk-b', 'review', '# B'), ('sk-a', 'review', '# A'),
+                ('sk-solo', 'lint', '# lint');",
+        )
+        .unwrap();
+        let d = resolve_step_deliverables(
+            &conn,
+            None,
+            &["review".into(), "lint".into()],
+            &[],
+            "claude",
+        );
+        let review = d.skills.iter().find(|s| s.name == "review").unwrap();
+        assert_eq!(review.body, "# A", "lowest id wins");
+        assert_eq!(d.ambiguous_skills, vec!["review"]);
+    }
+
+    #[test]
+    fn deliverables_unique_names_are_not_flagged_ambiguous() {
+        let conn = library_db(); // sk1/sk2 and m1/m2 all have unique names
+        let d = resolve_step_deliverables(
+            &conn,
+            None,
+            &["code-review".into()],
+            &["gh".into()],
+            "claude",
+        );
+        assert!(d.ambiguous_skills.is_empty());
+        assert!(d.ambiguous_mcp_servers.is_empty());
     }
 
     #[test]

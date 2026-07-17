@@ -294,6 +294,12 @@ pub fn build_import_report(
     let mut warnings = Vec::new();
     let mut agents = Vec::new();
 
+    // Library names aren't unique; a reference that matches more than one row is
+    // ambiguous — the spawn path binds a deterministic pick (lowest id), but the
+    // user may have meant a different one, so flag it here too (spec §5.3,
+    // warn-don't-fail — mirrors the `*_ambiguous` journal events at spawn).
+    let count = |list: &[String], name: &str| list.iter().filter(|s| s.as_str() == name).count();
+
     for (alias, agent) in spec.agents.iter_mut() {
         if !KNOWN_PROVIDERS.contains(&agent.base.as_str()) {
             warnings.push(format!(
@@ -304,6 +310,12 @@ pub fn build_import_report(
         let mut kept = Vec::new();
         for skill in std::mem::take(&mut agent.skills) {
             if local_skills.iter().any(|s| s == &skill) {
+                if count(local_skills, &skill) > 1 {
+                    warnings.push(format!(
+                        "agent '{alias}' references skill '{skill}', which matches multiple \
+                         skills in your library; the first (lowest id) will be used"
+                    ));
+                }
                 kept.push(skill);
             } else {
                 warnings.push(format!(
@@ -325,6 +337,12 @@ pub fn build_import_report(
                     "agent '{alias}' references MCP server '{}' (transport: {}), which isn't \
                      in your library; recreate it with its secret values to attach it",
                     server.name, server.transport
+                ));
+            } else if count(local_mcp_servers, &server.name) > 1 {
+                warnings.push(format!(
+                    "agent '{alias}' references MCP server '{}', which matches multiple servers \
+                     in your library; the first (lowest id) will be used",
+                    server.name
                 ));
             }
         }
@@ -543,6 +561,55 @@ finalize: { push: true, open_pr: true, pr_base: main }
         // With the server present locally, no warning.
         let quiet = build_import_report(spec, &["code-review".into()], &["gh".into()], &[]);
         assert!(!quiet.warnings.iter().any(|w| w.contains("MCP server 'gh'")));
+    }
+
+    #[test]
+    fn import_warns_on_ambiguous_duplicate_names() {
+        use super::super::spec::McpServerDef;
+        let mut spec = from_yaml(CANONICAL).unwrap();
+        // `reviewer` already references skill `code-review`; give `coder` an MCP
+        // server named `gh`.
+        spec.agents.get_mut("coder").unwrap().mcp_servers = vec![McpServerDef {
+            name: "gh".into(),
+            transport: "stdio".into(),
+            command: "npx -y gh-mcp".into(),
+            url: String::new(),
+            env_keys: vec![],
+            header_keys: vec![],
+        }];
+        // Two local skills named `code-review` and two servers named `gh`: both
+        // references resolve but are ambiguous → a "matches multiple" warning
+        // each, and nothing is dropped.
+        let report = build_import_report(
+            spec.clone(),
+            &["code-review".into(), "code-review".into()],
+            &["gh".into(), "gh".into()],
+            &[],
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("skill 'code-review'") && w.contains("matches multiple")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("MCP server 'gh'") && w.contains("matches multiple")),
+            "{:?}",
+            report.warnings
+        );
+        assert_eq!(report.spec.agents["reviewer"].skills, vec!["code-review"]);
+
+        // Unique local names → no ambiguity warnings.
+        let quiet = build_import_report(spec, &["code-review".into()], &["gh".into()], &[]);
+        assert!(!quiet
+            .warnings
+            .iter()
+            .any(|w| w.contains("matches multiple")));
     }
 
     #[test]
