@@ -288,10 +288,17 @@ pub struct AgentResolution {
 pub fn build_import_report(
     mut spec: Spec,
     local_skills: &[String],
+    local_mcp_servers: &[String],
     local_agents: &[LocalAgent],
 ) -> ImportReport {
     let mut warnings = Vec::new();
     let mut agents = Vec::new();
+
+    // Library names aren't unique; a reference that matches more than one row is
+    // ambiguous — the spawn path binds a deterministic pick (lowest id), but the
+    // user may have meant a different one, so flag it here too (spec §5.3,
+    // warn-don't-fail — mirrors the `*_ambiguous` journal events at spawn).
+    let count = |list: &[String], name: &str| list.iter().filter(|s| s.as_str() == name).count();
 
     for (alias, agent) in spec.agents.iter_mut() {
         if !KNOWN_PROVIDERS.contains(&agent.base.as_str()) {
@@ -303,6 +310,12 @@ pub fn build_import_report(
         let mut kept = Vec::new();
         for skill in std::mem::take(&mut agent.skills) {
             if local_skills.iter().any(|s| s == &skill) {
+                if count(local_skills, &skill) > 1 {
+                    warnings.push(format!(
+                        "agent '{alias}' references skill '{skill}', which matches multiple \
+                         skills in your library; the first (lowest id) will be used"
+                    ));
+                }
                 kept.push(skill);
             } else {
                 warnings.push(format!(
@@ -312,6 +325,27 @@ pub fn build_import_report(
             }
         }
         agent.skills = kept;
+
+        // MCP servers reconcile by *name*, warn-don't-fail (spec §5.3). Unlike
+        // skills we keep the embedded def rather than drop it: it carries the
+        // transport/command/url and env/header key names the user needs to
+        // recreate the server locally (its secret values never travelled). Once
+        // a same-named server exists, the workflow attaches it at spawn.
+        for server in &agent.mcp_servers {
+            if !local_mcp_servers.iter().any(|s| s == &server.name) {
+                warnings.push(format!(
+                    "agent '{alias}' references MCP server '{}' (transport: {}), which isn't \
+                     in your library; recreate it with its secret values to attach it",
+                    server.name, server.transport
+                ));
+            } else if count(local_mcp_servers, &server.name) > 1 {
+                warnings.push(format!(
+                    "agent '{alias}' references MCP server '{}', which matches multiple servers \
+                     in your library; the first (lowest id) will be used",
+                    server.name
+                ));
+            }
+        }
 
         agents.push(AgentResolution {
             alias: alias.clone(),
@@ -484,6 +518,101 @@ finalize: { push: true, open_pr: true, pr_base: main }
     }
 
     #[test]
+    fn agent_effort_and_mcp_defs_round_trip() {
+        use super::super::spec::McpServerDef;
+        let mut spec = from_yaml(CANONICAL).unwrap();
+        let coder = spec.agents.get_mut("coder").unwrap();
+        coder.effort = Some("high".into());
+        coder.mcp_servers = vec![McpServerDef {
+            name: "gh".into(),
+            transport: "stdio".into(),
+            command: "npx -y gh-mcp".into(),
+            url: String::new(),
+            env_keys: vec!["TOKEN".into()],
+            header_keys: vec![],
+        }];
+        let yaml = to_yaml(&spec).unwrap();
+        assert!(yaml.contains("effort: high"), "{yaml}");
+        assert!(yaml.contains("env_keys"), "{yaml}");
+        let back = from_yaml(&yaml).unwrap();
+        assert_eq!(spec, back, "effort + mcp defs must round-trip");
+    }
+
+    #[test]
+    fn import_warns_on_mcp_server_not_in_library() {
+        use super::super::spec::McpServerDef;
+        let mut spec = from_yaml(CANONICAL).unwrap();
+        spec.agents.get_mut("coder").unwrap().mcp_servers = vec![McpServerDef {
+            name: "gh".into(),
+            transport: "stdio".into(),
+            command: "npx -y gh-mcp".into(),
+            url: String::new(),
+            env_keys: vec![],
+            header_keys: vec![],
+        }];
+        // No local MCP server named 'gh' → a warning, and the def is kept (not
+        // dropped like a missing skill).
+        let report = build_import_report(spec.clone(), &["code-review".into()], &[], &[]);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.contains("MCP server 'gh'") && w.contains("isn't")));
+        assert_eq!(report.spec.agents["coder"].mcp_servers.len(), 1);
+        // With the server present locally, no warning.
+        let quiet = build_import_report(spec, &["code-review".into()], &["gh".into()], &[]);
+        assert!(!quiet.warnings.iter().any(|w| w.contains("MCP server 'gh'")));
+    }
+
+    #[test]
+    fn import_warns_on_ambiguous_duplicate_names() {
+        use super::super::spec::McpServerDef;
+        let mut spec = from_yaml(CANONICAL).unwrap();
+        // `reviewer` already references skill `code-review`; give `coder` an MCP
+        // server named `gh`.
+        spec.agents.get_mut("coder").unwrap().mcp_servers = vec![McpServerDef {
+            name: "gh".into(),
+            transport: "stdio".into(),
+            command: "npx -y gh-mcp".into(),
+            url: String::new(),
+            env_keys: vec![],
+            header_keys: vec![],
+        }];
+        // Two local skills named `code-review` and two servers named `gh`: both
+        // references resolve but are ambiguous → a "matches multiple" warning
+        // each, and nothing is dropped.
+        let report = build_import_report(
+            spec.clone(),
+            &["code-review".into(), "code-review".into()],
+            &["gh".into(), "gh".into()],
+            &[],
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("skill 'code-review'") && w.contains("matches multiple")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("MCP server 'gh'") && w.contains("matches multiple")),
+            "{:?}",
+            report.warnings
+        );
+        assert_eq!(report.spec.agents["reviewer"].skills, vec!["code-review"]);
+
+        // Unique local names → no ambiguity warnings.
+        let quiet = build_import_report(spec, &["code-review".into()], &["gh".into()], &[]);
+        assert!(!quiet
+            .warnings
+            .iter()
+            .any(|w| w.contains("matches multiple")));
+    }
+
+    #[test]
     fn nested_orchestrate_fails_to_parse() {
         // orchestrate.body children must be steps; a nested orchestrate map has
         // no `step:` key, so parsing rejects it (spec §5.2 nesting rule).
@@ -537,7 +666,7 @@ workflow:
     fn import_of_unknown_skill_warns_not_errors() {
         let spec = from_yaml(CANONICAL).unwrap();
         // No skills installed locally → `code-review` (on `reviewer`) is dropped.
-        let report = build_import_report(spec, &[], &[]);
+        let report = build_import_report(spec, &[], &[], &[]);
         assert!(report
             .warnings
             .iter()
@@ -554,7 +683,7 @@ workflow:
             id: "ca-1".into(),
             name: "planner".into(),
         }];
-        let report = build_import_report(spec, &["code-review".to_string()], &locals);
+        let report = build_import_report(spec, &["code-review".to_string()], &[], &locals);
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
         assert_eq!(
             report.spec.agents["reviewer"].skills,
@@ -578,7 +707,7 @@ workflow:
     goal: go
 "#;
         let spec = from_yaml(yaml).unwrap();
-        let report = build_import_report(spec, &[], &[]);
+        let report = build_import_report(spec, &[], &[], &[]);
         assert!(report
             .warnings
             .iter()

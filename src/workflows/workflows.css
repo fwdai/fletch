@@ -74,6 +74,28 @@
   border-color: var(--bd-strong);
   background: var(--hover);
 }
+/* Starter-pack empty-state card: a dashed, accent-tinted call to action. */
+.wf-starter-card {
+  width: 100%;
+  cursor: pointer;
+  border-style: dashed;
+  border-color: var(--bd-strong);
+}
+.wf-starter-card:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.wf-starter-ic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
 .wf-card-h {
   display: flex;
   align-items: flex-start;

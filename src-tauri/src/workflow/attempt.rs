@@ -791,6 +791,7 @@ mod tests {
                 repo_path: PathBuf::from("/r"),
                 provider: "claude".into(),
                 model: None,
+                effort: None,
                 instructions: None,
                 custom_agent_id: None,
                 skills: vec![],

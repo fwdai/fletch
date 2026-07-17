@@ -2178,8 +2178,10 @@ mod tests {
             AgentSpec {
                 base: "claude".into(),
                 model: None,
+                effort: None,
                 instructions: None,
                 skills: vec![],
+                mcp_servers: vec![],
                 custom_agent: None,
             },
         );
@@ -2537,8 +2539,10 @@ mod tests {
                 AgentSpec {
                     base: "claude".into(),
                     model: None,
+                    effort: None,
                     instructions: None,
                     skills: vec![],
+                    mcp_servers: vec![],
                     custom_agent: None,
                 },
             );
@@ -2984,8 +2988,10 @@ mod tests {
                 AgentSpec {
                     base: "claude".into(),
                     model: None,
+                    effort: None,
                     instructions: None,
                     skills: vec![],
+                    mcp_servers: vec![],
                     custom_agent: None,
                 },
             );
