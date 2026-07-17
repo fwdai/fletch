@@ -48,7 +48,7 @@ If you want to fire off a dozen agents and merge whatever comes back, there are 
 
 **Control.** Watch every agent as it works: a normalized chat of reasoning and tool calls (every harness looks the same), the raw terminal when you want it, live diffs as edits land. And sign off on what ships: approval gates in workflows, in-app file editing, and a full git/PR panel. Commit, push, open and merge PRs, and pull unresolved review comments straight into an agent's chat to fix. The reviewer in the loop is you.
 
-**Specialist agents.** Base harnesses are generalists. On top of them you define custom agents (a role, a model, a reasoning budget, standing instructions) and assign the right one to each workflow step: an _Architect_ pinned to your strongest model, a _Reviewer_ that refuses to pass unhandled errors.
+**Specialist agents.** Base harnesses are generalists. On top of them you define custom agents (a role, a model, a reasoning budget, standing instructions, plus skills and MCP tools) and assign the right one to each workflow step: an _Architect_ pinned to your strongest model, a _Reviewer_ that refuses to pass unhandled errors.
 
 **Parallel by default.** Kick off as many agents as you like on one repo; isolation makes collisions structurally impossible. In this category that's the ante, not the pitch.
 
@@ -57,7 +57,7 @@ If you want to fire off a dozen agents and merge whatever comes back, there are 
 ## Quick start
 
 1. **[Download Fletch](https://fletch.sh)**: universal binary, signed, notarized, self-updating.
-2. Onboarding checks the three things you need (`git`, GitHub access, and at least one agent CLI) and can install any of them for you.
+2. Onboarding checks the three things you need — `git`, GitHub access, and at least one agent CLI — and can set each up in place: install git or an agent CLI for you, and connect GitHub with a device code (no GitHub CLI involved).
 3. Point Fletch at a repo and spawn an agent with a task, or define a workflow and launch it.
 
 Requires macOS 13+. No VM, no required containers: Docker is an optional isolation engine, not a prerequisite.
