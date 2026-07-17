@@ -599,14 +599,15 @@ pub async fn add_repo_to_agent(
         .await
 }
 
-/// Push the primary repo's current branch to origin.
+/// Push the targeted repo's current branch to origin (primary by default).
 #[tauri::command]
 pub async fn push_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     app: AppHandle,
     agent_id: String,
+    subdir: Option<String>,
 ) -> Result<String> {
-    let (repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    let (repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     let branch = repo_branch(&repo)?.to_string();
     let summary = git::push(&checkout, &branch, false).await?;
     // After successful push, fetch PR state in background
@@ -620,8 +621,9 @@ pub async fn commit_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     message: String,
+    subdir: Option<String>,
 ) -> Result<()> {
-    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     git::commit(&checkout, &message).await
 }
 
@@ -630,15 +632,20 @@ pub async fn commit_agent(
 pub async fn discard_agent_changes(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
+    subdir: Option<String>,
 ) -> Result<()> {
-    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     git::discard_all(&checkout).await
 }
 
 /// Stash all working-tree changes including untracked files.
 #[tauri::command]
-pub async fn stash_agent(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
-    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+pub async fn stash_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<()> {
+    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     git::stash_push(&checkout).await
 }
 
@@ -647,8 +654,9 @@ pub async fn stash_agent(supervisor: State<'_, Arc<Supervisor>>, agent_id: Strin
 pub async fn abort_merge_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
+    subdir: Option<String>,
 ) -> Result<()> {
-    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     git::merge_abort(&checkout).await
 }
 
@@ -666,24 +674,33 @@ pub async fn list_repo_branches(repo_path: String) -> Result<Vec<String>> {
 pub async fn delete_branch_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
+    subdir: Option<String>,
 ) -> Result<()> {
-    let repo = primary_repo(&supervisor, &agent_id)?;
+    let (repo, _checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     let branch = repo_branch(&repo)?;
     git::branch_delete(&repo.repo_path, branch).await
 }
 
-/// Pull latest into the primary repo's checkout.
+/// Pull latest into the targeted repo's checkout (primary by default).
 #[tauri::command]
-pub async fn pull_agent(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
-    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+pub async fn pull_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<()> {
+    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     git::pull(&checkout).await
 }
 
 /// Rebase the agent's branch onto its parent (base) branch. Used by the
 /// clean-state panel action to catch up when the base has advanced.
 #[tauri::command]
-pub async fn rebase_agent(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
-    let (repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+pub async fn rebase_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<()> {
+    let (repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
     git::rebase_onto(&checkout, base).await
 }
@@ -696,8 +713,9 @@ pub async fn create_pr(
     agent_id: String,
     title: String,
     body: String,
+    subdir: Option<String>,
 ) -> Result<PrState> {
-    let (repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    let (repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
     let pr = gh::pr_create(&checkout, &title, &body, base).await?;
     crate::telemetry::track("pr_opened", serde_json::json!({ "source": "manual" }));
@@ -709,10 +727,14 @@ pub async fn create_pr(
     Ok(pr)
 }
 
-/// Merge the open PR for the agent's current branch.
+/// Merge the open PR for the targeted repo's current branch.
 #[tauri::command]
-pub async fn merge_pr(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
-    let (_repo, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+pub async fn merge_pr(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<()> {
+    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     gh::pr_merge(&checkout).await
 }
 
@@ -725,9 +747,10 @@ pub async fn merge_pr(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) 
 pub async fn get_pr_state(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
+    subdir: Option<String>,
 ) -> Result<Option<PrState>> {
     Ok(
-        crate::supervisor::resolve_pr_state(&supervisor.workspace, &agent_id)
+        crate::supervisor::resolve_pr_state(&supervisor.workspace, &agent_id, subdir.as_deref())
             .await
             .map(|(pr, _bound)| pr),
     )
@@ -760,8 +783,11 @@ pub async fn list_repo_prs(repo_path: String) -> Result<Vec<gh::PrSummary>> {
 pub async fn get_pr_checks(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
+    subdir: Option<String>,
 ) -> Result<Option<gh::PrChecks>> {
-    let Some((repo, checkout)) = primary_repo_checkout_opt(&supervisor, &agent_id)? else {
+    let Some((repo, checkout)) =
+        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
+    else {
         return Ok(None);
     };
     if repo.branch.is_none() {
@@ -777,8 +803,11 @@ pub async fn get_pr_checks(
 pub async fn get_pr_comments(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
+    subdir: Option<String>,
 ) -> Result<Option<gh::PrComments>> {
-    let Some((repo, checkout)) = primary_repo_checkout_opt(&supervisor, &agent_id)? else {
+    let Some((repo, checkout)) =
+        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
+    else {
         return Ok(None);
     };
     if repo.branch.is_none() {
@@ -916,14 +945,17 @@ pub fn clear_env_override(project_id: String, key: String) -> Result<()> {
     crate::run_env::override_delete(&crate::run_env::override_secret_key(&project_id, &key))
 }
 
-/// Returns git state for the agent's primary repo.
-/// For multi-repo agents only the first repo's state is returned.
+/// Returns git state for one of the agent's checkouts — the repo whose
+/// `subdir` matches, or the primary when none is given.
 #[tauri::command]
 pub async fn get_git_state(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
+    subdir: Option<String>,
 ) -> Result<Option<GitState>> {
-    let Some((repo, checkout)) = primary_repo_checkout_opt(&supervisor, &agent_id)? else {
+    let Some((repo, checkout)) =
+        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
+    else {
         return Ok(None);
     };
     let parent = repo.parent_branch.as_deref().unwrap_or("main");
@@ -957,19 +989,28 @@ pub async fn get_all_shortstats(
         if agent.archive.is_some() {
             continue;
         }
-        let Some(repo) = agent.repos.first() else {
-            continue;
-        };
-        let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
-            continue;
-        };
-        let agent_id = agent.id.clone();
-        set.spawn(async move { (agent_id, git_state::shortstats(&checkout).await) });
+        // One shortstat per checkout; a multi-repo agent's badge shows the
+        // sum across all of its repos (matching the archive metadata, which
+        // also aggregates). Single-repo agents behave exactly as before.
+        for repo in &agent.repos {
+            let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
+                continue;
+            };
+            let agent_id = agent.id.clone();
+            set.spawn(async move { (agent_id, git_state::shortstats(&checkout).await) });
+        }
     }
-    let mut out = std::collections::HashMap::new();
+    let mut out: std::collections::HashMap<String, ShortStats> = std::collections::HashMap::new();
     while let Some(res) = set.join_next().await {
         if let Ok((id, stats)) = res {
-            out.insert(id, stats);
+            let entry = out.entry(id).or_insert(ShortStats {
+                additions: 0,
+                deletions: 0,
+                file_count: 0,
+            });
+            entry.additions += stats.additions;
+            entry.deletions += stats.deletions;
+            entry.file_count += stats.file_count;
         }
     }
     Ok(out)
@@ -1202,17 +1243,43 @@ fn primary_repo_checkout(
     Ok((repo, checkout))
 }
 
+/// The tracked repo a panel command targets: the one whose `subdir` matches,
+/// or the primary when no subdir is given — which keeps every single-repo
+/// caller (and old frontends that don't pass the arg) byte-identical.
+fn agent_repo_checkout(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<(TrackedRepo, PathBuf)> {
+    let Some(s) = subdir else {
+        return primary_repo_checkout(supervisor, agent_id);
+    };
+    let record = supervisor.workspace.agent(agent_id)?;
+    let repo = record
+        .repos
+        .into_iter()
+        .find(|r| r.subdir == s)
+        .ok_or_else(|| Error::Other(format!("agent has no tracked repo {s:?}")))?;
+    let checkout = repo_checkout_path(agent_id, &repo.subdir)?;
+    Ok((repo, checkout))
+}
+
 /// Best-effort variant for read-only lookups (git / PR state): returns `None`
 /// instead of an error when the agent or its repo can't be resolved, so callers
 /// can degrade gracefully rather than surfacing a failure.
-fn primary_repo_checkout_opt(
+fn agent_repo_checkout_opt(
     supervisor: &Supervisor,
     agent_id: &str,
+    subdir: Option<&str>,
 ) -> Result<Option<(TrackedRepo, PathBuf)>> {
     let Ok(record) = supervisor.workspace.agent(agent_id) else {
         return Ok(None);
     };
-    let Some(repo) = record.repos.into_iter().next() else {
+    let repo = match subdir {
+        None => record.repos.into_iter().next(),
+        Some(s) => record.repos.into_iter().find(|r| r.subdir == s),
+    };
+    let Some(repo) = repo else {
         return Ok(None);
     };
     let checkout = repo_checkout_path(agent_id, &repo.subdir)?;

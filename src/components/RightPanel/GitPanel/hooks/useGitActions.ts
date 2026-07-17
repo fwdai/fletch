@@ -21,6 +21,9 @@ const NEEDS_GITHUB = new Set([
 
 interface GitActionsCtx {
   agentId: string;
+  /** Target repo of a multi-repo agent (a checkout's `TrackedRepo.subdir`).
+   *  Undefined = the primary repo — byte-identical to the old behavior. */
+  subdir?: string;
   base: string;
   hasBranch: boolean;
   customActive: boolean;
@@ -45,6 +48,7 @@ interface GitActionsCtx {
 export function useGitActions(ctx: GitActionsCtx) {
   const {
     agentId,
+    subdir,
     base,
     hasBranch,
     customActive,
@@ -159,7 +163,7 @@ export function useGitActions(ctx: GitActionsCtx) {
           return;
         }
         void runBusy("Committing…", async () => {
-          const ok = await commitChanges(agentId, msg.trim());
+          const ok = await commitChanges(agentId, msg.trim(), subdir);
           if (ok) revertOverride();
         });
         break;
@@ -172,7 +176,7 @@ export function useGitActions(ctx: GitActionsCtx) {
         // HEAD), then let the agent name the branch and write the PR.
         if (!hasBranch) {
           void runBusy("Committing…", async () => {
-            const ok = await commitChanges(agentId, msg.trim());
+            const ok = await commitChanges(agentId, msg.trim(), subdir);
             if (ok) {
               revertOverride();
               delegate("open-pr", appActionMessage("open-pr", { base }));
@@ -181,7 +185,7 @@ export function useGitActions(ctx: GitActionsCtx) {
           break;
         }
         void runBusy("Committing & opening PR…", async () => {
-          const ok = await commitAndOpenPr(agentId, msg.trim());
+          const ok = await commitAndOpenPr(agentId, msg.trim(), subdir);
           if (ok) revertOverride();
         });
         break;
@@ -193,7 +197,7 @@ export function useGitActions(ctx: GitActionsCtx) {
           break;
         }
         void runBusy("Opening PR…", async () => {
-          const pr = await createPr(agentId, "", "");
+          const pr = await createPr(agentId, "", "", subdir);
           // If creation failed (e.g. a PR already exists), the local prState
           // was stale — re-fetch so the panel corrects itself.
           if (!pr) await fetchPrState(agentId);
@@ -203,7 +207,7 @@ export function useGitActions(ctx: GitActionsCtx) {
         if (prUrl) void open(prUrl);
         break;
       case "merge":
-        void runBusy("Merging…", () => mergePr(agentId));
+        void runBusy("Merging…", () => mergePr(agentId, subdir));
         break;
       case "archive":
         void runBusy("Archiving…", () => archive(agentId));
@@ -216,32 +220,32 @@ export function useGitActions(ctx: GitActionsCtx) {
           break;
         }
         void runBusy("Pushing…", async () => {
-          const r = await pushAgent(agentId);
+          const r = await pushAgent(agentId, subdir);
           if (r)
             showNotice(r === "up-to-date" ? "Already up to date with origin" : "Pushed to origin");
         });
         break;
       case "pull":
         void runBusy("Pulling…", async () => {
-          if (await pullAgent(agentId)) showNotice("Pulled latest changes");
+          if (await pullAgent(agentId, subdir)) showNotice("Pulled latest changes");
         });
         break;
       case "rebase":
         void runBusy("Rebasing…", async () => {
-          if (await rebaseAgent(agentId)) showNotice(`Rebased onto ${base}`);
+          if (await rebaseAgent(agentId, subdir)) showNotice(`Rebased onto ${base}`);
         });
         break;
       case "stash":
-        void runBusy("Stashing…", () => stashChanges(agentId));
+        void runBusy("Stashing…", () => stashChanges(agentId, subdir));
         break;
       case "discard":
-        void runBusy("Discarding…", () => discardChanges(agentId));
+        void runBusy("Discarding…", () => discardChanges(agentId, subdir));
         break;
       case "abort":
-        void runBusy("Aborting…", () => abortMerge(agentId));
+        void runBusy("Aborting…", () => abortMerge(agentId, subdir));
         break;
       case "delete-branch":
-        void runBusy("Deleting branch…", () => deleteBranch(agentId));
+        void runBusy("Deleting branch…", () => deleteBranch(agentId, subdir));
         break;
       // "loading" is a non-actionable placeholder.
       default:

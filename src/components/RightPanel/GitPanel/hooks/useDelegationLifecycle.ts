@@ -12,7 +12,12 @@ import { useAppStore } from "@/store";
  *  decision is pure (`delegationStep`) and handles the tricky cases — a trigger
  *  queued behind a pre-existing turn must wait that turn out, and a settled
  *  agent only reads as "gave up" after our own turn ran or the grace window
- *  passed. Returns the active delegation (or undefined) for the render. */
+ *  passed. Returns the active delegation (or undefined) for the render.
+ *
+ *  Delegations are agent-keyed and watched against the PRIMARY repo's state
+ *  only — secondary sections of a multi-repo panel pass `enabled: false` so
+ *  exactly one lifecycle effect runs per agent (they still get the delegation
+ *  back for display, e.g. to yield the commit composer). */
 export function useDelegationLifecycle({
   agentId,
   agentStatus,
@@ -21,6 +26,7 @@ export function useDelegationLifecycle({
   checks,
   showNotice,
   fetchPrChecks,
+  enabled = true,
 }: {
   agentId: string;
   agentStatus: AgentRecord["status"];
@@ -29,6 +35,7 @@ export function useDelegationLifecycle({
   checks: PrChecks | null;
   showNotice: (m: string) => void;
   fetchPrChecks: (agentId: string) => unknown;
+  enabled?: boolean;
 }) {
   const delegation = useAppStore((s) => s.gitDelegations[agentId]);
   const markGitDelegationRunning = useAppStore((s) => s.markGitDelegationRunning);
@@ -36,7 +43,7 @@ export function useDelegationLifecycle({
   const clearGitDelegation = useAppStore((s) => s.clearGitDelegation);
 
   useEffect(() => {
-    if (!delegation) return;
+    if (!enabled || !delegation) return;
     const resolved = delegationResolved(delegation.kind, gitState, prState, checks);
     switch (delegationStep(delegation, agentStatus, resolved, Date.now())) {
       case "resolve":
@@ -64,6 +71,7 @@ export function useDelegationLifecycle({
         break;
     }
   }, [
+    enabled,
     delegation,
     agentId,
     agentStatus,

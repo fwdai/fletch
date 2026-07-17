@@ -1019,3 +1019,33 @@
   background: transparent;
   color: var(--fg-1);
 }
+
+/* ── multi-repo: one section per active repo, slim repo-name headers ──
+   Single-repo agents never render these — their lone GitRepoSection keeps the
+   classic .git-wrap layout untouched. Sections split the panel height evenly;
+   each keeps its own scrollable body and pinned footer. */
+.git-multi {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.git-repo-sect {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.git-repo-sect + .git-repo-sect {
+  border-top: 2px solid var(--bd);
+}
+.git-repo-name {
+  flex-shrink: 0;
+  padding: 5px 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--bd-soft);
+}
