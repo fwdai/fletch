@@ -31,6 +31,11 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
 
   // Custom display name for this repo, falling back to the folder basename.
   const name = projects?.find((p) => p.path === repoPath)?.name ?? basename(repoPath);
+  // The project's repos (known once the project_id resolves). A single-repo
+  // project reads as "the repo at this path"; multi-repo has no single
+  // location, so the header shows the repo count instead.
+  const projectRepoCount =
+    loaded == null ? 1 : (projects?.filter((p) => p.project_id === loaded.projectId).length ?? 1);
 
   // Resolve project_id + detected run config for the repo, then load the
   // persisted overrides. Both must be ready before the editor mounts so the
@@ -83,7 +88,9 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
         <div className="ps-head">
           <div className="ps-id">
             <div className="ps-title text-lg truncate">{name}</div>
-            <div className="ps-path mono text-xs truncate">{repoPath}</div>
+            <div className="ps-path mono text-xs truncate">
+              {projectRepoCount > 1 ? `${projectRepoCount} repositories` : repoPath}
+            </div>
           </div>
           <button className="ps-x iflex-center" onClick={close} aria-label="Close">
             <Icon name="close" size={13} />
@@ -100,7 +107,7 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
           ) : (
             <div className="ps-sections">
               <ProjectPulse projectId={loaded.projectId} />
-              <GeneralSection projectId={loaded.projectId} currentName={name} repoPath={repoPath} />
+              <GeneralSection projectId={loaded.projectId} currentName={name} />
               <RepositoriesSection projectId={loaded.projectId} />
               <RunEnvSection
                 projectId={loaded.projectId}

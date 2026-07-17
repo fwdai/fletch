@@ -440,6 +440,10 @@ impl Supervisor {
             .detach_repo_from_project(project_id, &repo_path)
     }
 
+    pub fn set_repo_label(&self, repo_path: PathBuf, label: &str) -> Result<Workspace> {
+        self.workspace.set_repo_label(&repo_path, label)
+    }
+
     pub fn rename_project(&self, project_id: &str, name: &str) -> Result<Workspace> {
         self.workspace.rename_project(project_id, name)
     }

@@ -198,6 +198,17 @@ pub fn detach_repo_from_project(
     supervisor.detach_repo_from_project(&project_id, PathBuf::from(repo_path))
 }
 
+/// Set a repo's display label within its project ("Frontend", "Gateway").
+/// Blank clears back to the folder-basename fallback.
+#[tauri::command]
+pub fn set_repo_label(
+    supervisor: State<'_, Arc<Supervisor>>,
+    repo_path: String,
+    label: String,
+) -> Result<Workspace> {
+    supervisor.set_repo_label(PathBuf::from(repo_path), &label)
+}
+
 /// Rename a project — a custom display label independent of its folder name.
 /// The sidebar and Project Settings header show this instead of the basename.
 #[tauri::command]

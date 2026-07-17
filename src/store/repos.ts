@@ -37,6 +37,11 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     set({ workspace: ws });
   },
 
+  setRepoLabel: async (path, label) => {
+    const ws = await api.setRepoLabel(path, label);
+    set({ workspace: ws });
+  },
+
   renameProject: async (projectId, name) => {
     // Errors propagate to the modal for inline display.
     const ws = await api.renameProject(projectId, name);

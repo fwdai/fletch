@@ -191,6 +191,8 @@ export interface ReposSlice {
   attachRepoToProject: (projectId: string, path: string) => Promise<void>;
   /** Detach a repo from a project (guarded backend-side). */
   detachRepoFromProject: (projectId: string, path: string) => Promise<void>;
+  /** Set a repo's display label; blank clears to the basename fallback. */
+  setRepoLabel: (path: string, label: string) => Promise<void>;
   // Rename/relocate resolve on success and throw on failure, so the Project
   // Settings modal can show the error inline rather than in the global banner.
   /** Set a project's custom display name (independent of its folder). */

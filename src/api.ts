@@ -92,13 +92,16 @@ export interface AgentRecord {
   sandbox_engine?: string | null;
 }
 
-/** A pinned repo joined with its owning project. `name` is the user-editable
- *  display label (defaults to the folder basename, survives rename/relocate);
- *  `project_id` addresses the project for rename/relocate + per-project settings. */
+/** A pinned repo joined with its owning project. `name` is the project's
+ *  user-editable display name (defaults to the folder basename, survives
+ *  rename/relocate); `project_id` addresses the project for rename/relocate +
+ *  per-project settings. `label` names this repo within a multi-repo project
+ *  ("Frontend", "Gateway"); null falls back to the folder basename. */
 export interface ProjectRef {
   path: string;
   name: string;
   project_id: string;
+  label: string | null;
 }
 
 export interface Workspace {
@@ -521,6 +524,10 @@ export const api = {
    *  referenced by agent checkouts (live or archived). */
   detachRepoFromProject: (projectId: string, repoPath: string) =>
     invoke<Workspace>("detach_repo_from_project", { projectId, repoPath }),
+  /** Set a repo's display label within its project. Blank clears back to the
+   *  folder-basename fallback. */
+  setRepoLabel: (repoPath: string, label: string) =>
+    invoke<Workspace>("set_repo_label", { repoPath, label }),
   /** Set a project's custom display name (independent of its folder). */
   renameProject: (projectId: string, name: string) =>
     invoke<Workspace>("rename_project", { projectId, name }),

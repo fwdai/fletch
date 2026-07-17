@@ -242,6 +242,9 @@ pub struct ProjectRef {
     pub path: PathBuf,
     pub name: String,
     pub project_id: String,
+    /// Per-repo display label ("Frontend", "Gateway"); `None` falls back to
+    /// the folder basename. Distinct from `name`, which labels the project.
+    pub label: Option<String>,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -632,6 +635,29 @@ impl WorkspaceManager {
         }
 
         conn.execute("DELETE FROM repos WHERE id = ?1", [&repo_id])?;
+        drop(conn);
+        Ok(self.current().expect("workspace initialized"))
+    }
+
+    /// Set a repo's display label ("Frontend", "Gateway"), independent of its
+    /// folder name. A blank label clears back to the basename fallback.
+    pub fn set_repo_label(&self, repo_path: &Path, label: &str) -> Result<Workspace> {
+        let trimmed = label.trim();
+        let value: Option<&str> = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        };
+
+        let conn = self.db.lock();
+        let path_str = repo_path.to_string_lossy().to_string();
+        let changed = conn.execute(
+            "UPDATE repos SET label = ?1 WHERE path = ?2",
+            rusqlite::params![value, path_str],
+        )?;
+        if changed == 0 {
+            return Err(Error::Other(format!("repo not found: {path_str}")));
+        }
         drop(conn);
         Ok(self.current().expect("workspace initialized"))
     }
@@ -1739,7 +1765,7 @@ impl WorkspaceManager {
     /// than the repo silently vanishing from the sidebar.
     fn query_project_refs(conn: &Connection) -> Vec<ProjectRef> {
         let mut stmt = match conn.prepare(
-            "SELECT r.path, p.name, p.id
+            "SELECT r.path, p.name, p.id, r.label
              FROM repos r LEFT JOIN projects p ON p.id = r.project_id
              ORDER BY r.created_at",
         ) {
@@ -1750,6 +1776,7 @@ impl WorkspaceManager {
             let path: String = row.get(0)?;
             let name: Option<String> = row.get(1)?;
             let project_id: Option<String> = row.get(2)?;
+            let label: Option<String> = row.get(3)?;
             let name = name.unwrap_or_else(|| {
                 Path::new(&path)
                     .file_name()
@@ -1761,6 +1788,7 @@ impl WorkspaceManager {
                 path: PathBuf::from(path),
                 name,
                 project_id: project_id.unwrap_or_default(),
+                label,
             })
         })
         .ok()
@@ -3066,6 +3094,25 @@ mod tests {
         wm.add_agent(&mut rec).unwrap();
         let err = wm.detach_repo_from_project(&project_id, &b).unwrap_err();
         assert!(err.to_string().contains("used by existing agents"));
+    }
+
+    #[test]
+    fn repo_label_round_trip_and_clear() {
+        let db = test_db();
+        let td = tempfile::tempdir().unwrap();
+        let repo = init_repo(td.path());
+        let wm = WorkspaceManager::new(db);
+        wm.add_workspace_repo(repo.clone()).unwrap();
+
+        let cur = wm.set_repo_label(&repo, "  Frontend  ").unwrap();
+        assert_eq!(cur.projects[0].label.as_deref(), Some("Frontend"));
+
+        // Blank clears back to the basename fallback (label = None).
+        let cur = wm.set_repo_label(&repo, "   ").unwrap();
+        assert_eq!(cur.projects[0].label, None);
+
+        let err = wm.set_repo_label(&td.path().join("nope"), "x").unwrap_err();
+        assert!(err.to_string().contains("repo not found"));
     }
 
     #[test]
