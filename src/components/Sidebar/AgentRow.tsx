@@ -60,6 +60,10 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // only PR lives on a secondary repo still gets its badge.
   const agentPrs = useAgentPrs(agent);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
+  // Base-staleness for the primary checkout — a quiet "base moved" cue. Shown
+  // whenever the base has genuinely moved ahead (behind > 0); an unknown or
+  // zero count renders nothing (never a fake 0).
+  const behind = useAppStore((s) => s.gitMeta[agent.id]?.behind ?? null);
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
   // Dev-server state for this checkout — orthogonal to the agent's turn status,
   // so it shows as its own play chip beside the identity chip, not among the
@@ -220,6 +224,16 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
         ) : hasChanges ? (
           <DiffStat stats={shortstats} />
         ) : null}
+        {behind != null && behind > 0 && (
+          <span
+            className="a-stale tip"
+            data-tip={`Base has moved ${behind} commit(s) ahead`}
+            aria-label={`Base moved ${behind} commits ahead`}
+          >
+            <Icon name="branch" size={9} />
+            {behind}
+          </span>
+        )}
         <span
           className="a-time"
           onMouseEnter={() => setStatsOpen(true)}

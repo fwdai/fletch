@@ -47,6 +47,26 @@ pub struct ShortStats {
     pub file_count: u32,
 }
 
+/// Advisory fleet-wide git metadata for one checkout: how far its base has
+/// moved ahead of it (staleness) and which files it touches (cross-agent
+/// overlap hints). Distinct from `ShortStats` — which is deliberately just the
+/// three badge numbers — so the always-current 5s shortstats path stays a flat
+/// number-only payload while this slower, advisory signal evolves on its own.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GitMeta {
+    /// The base branch this checkout is measured against (its parent branch).
+    pub base: String,
+    /// Commits the base has moved ahead of this checkout's HEAD, or `None` when
+    /// the base tip can't be resolved (no origin ref / never fetched). `None`
+    /// and `Some(0)` both render no staleness chip — a moved base is only shown
+    /// when it's genuinely ahead.
+    pub behind: Option<u32>,
+    /// Working-tree file paths (same set `git status` reports), for the
+    /// frontend's pairwise overlap selector. Empty when the tree is clean or
+    /// unreadable.
+    pub files: Vec<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FileStatus {
     pub path: String,
@@ -193,6 +213,51 @@ pub async fn shortstats(checkout_path: &Path) -> ShortStats {
         deletions,
         file_count,
     }
+}
+
+/// Base-staleness + changed-file paths for one checkout — the advisory bulk
+/// poll behind the "base moved" chips and cross-agent overlap hints.
+///
+/// `base_sha` is the *fresh* base tip resolved from the SOURCE repo's
+/// `refs/remotes/origin/<base>` (see `commands::get_all_git_meta`). A `--shared`
+/// agent clone borrows the source's object store via alternates, so the new
+/// base commits are reachable by SHA in the clone even though the clone never
+/// fetched — counting `HEAD..<base_sha>` there yields a true "behind" without a
+/// per-clone network round-trip. `None` → the base couldn't be resolved (no
+/// origin / no fetch yet), so staleness degrades to unknown rather than a fake
+/// zero. File paths always come straight from the checkout's `git status`.
+pub async fn git_meta(checkout_path: &Path, base: &str, base_sha: Option<&str>) -> GitMeta {
+    let files = run_status(checkout_path)
+        .await
+        .map(|o| parse_porcelain(&o))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    let behind = match base_sha {
+        Some(sha) => rev_list_count(checkout_path, &format!("HEAD..{sha}")).await,
+        None => None,
+    };
+    GitMeta {
+        base: base.to_string(),
+        behind,
+        files,
+    }
+}
+
+/// `git rev-list --count <range>`, or `None` when the range doesn't resolve
+/// (e.g. an object the shared store doesn't hold). One number — unlike
+/// `rev_list_counts`, which reads both sides of a symmetric range.
+async fn rev_list_count(checkout_path: &Path, range: &str) -> Option<u32> {
+    let out = read_command(checkout_path)
+        .args(["rev-list", "--count", range])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
 /// Additions for an untracked file: the line count of its on-disk contents —
@@ -711,6 +776,87 @@ mod tests {
 
         // Bare `main` fails in the clone; the fallback resolves origin/main.
         assert_eq!(query_ahead_behind(&clone, "main").await, (0, 1));
+    }
+
+    // --- git_meta ---
+
+    #[tokio::test]
+    async fn git_meta_counts_behind_against_shared_base_sha() {
+        // Mirror the live topology: a `--shared` clone borrows the source's
+        // objects, so a base SHA that only exists in the source (a moved
+        // base the clone never fetched) is still countable in the clone.
+        let td = tempfile::tempdir().unwrap();
+        let run = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let capture = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        let source = td.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        run(&source, &["init", "-q", "-b", "main"]);
+        run(&source, &["config", "user.email", "t@example.com"]);
+        run(&source, &["config", "user.name", "Tester"]);
+        std::fs::write(source.join("a.txt"), b"one").unwrap();
+        run(&source, &["add", "-A"]);
+        run(&source, &["commit", "-q", "-m", "first"]);
+
+        // Shared clone, then branch off and commit — one ahead, zero behind.
+        let clone = td.path().join("clone");
+        run(
+            td.path(),
+            &[
+                "clone",
+                "-q",
+                "--shared",
+                source.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        run(&clone, &["config", "user.email", "t@example.com"]);
+        run(&clone, &["config", "user.name", "Tester"]);
+        run(&clone, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(clone.join("f.txt"), b"work").unwrap();
+        run(&clone, &["add", "-A"]);
+        run(&clone, &["commit", "-q", "-m", "feature work"]);
+
+        // The base advances by two commits in the source only (the clone never
+        // fetches) — but the objects are shared via alternates.
+        std::fs::write(source.join("b.txt"), b"two").unwrap();
+        run(&source, &["add", "-A"]);
+        run(&source, &["commit", "-q", "-m", "second"]);
+        std::fs::write(source.join("c.txt"), b"three").unwrap();
+        run(&source, &["add", "-A"]);
+        run(&source, &["commit", "-q", "-m", "third"]);
+        let moved_base = capture(&source, &["rev-parse", "main"]);
+
+        // A staged-but-uncommitted edit in the clone shows up as a changed file.
+        std::fs::write(clone.join("dirty.txt"), b"x").unwrap();
+
+        let meta = git_meta(&clone, "main", Some(&moved_base)).await;
+        assert_eq!(meta.base, "main");
+        assert_eq!(meta.behind, Some(2), "base moved two commits ahead");
+        assert!(meta.files.iter().any(|p| p == "dirty.txt"));
+
+        // No base SHA → unknown behind, files still resolve.
+        let meta_none = git_meta(&clone, "main", None).await;
+        assert_eq!(meta_none.behind, None);
+        assert!(meta_none.files.iter().any(|p| p == "dirty.txt"));
     }
 
     // --- parse_porcelain ---

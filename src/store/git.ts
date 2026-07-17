@@ -60,6 +60,7 @@ const fetchPrAux = async <K extends "prChecks" | "prComments">(
 export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   gitStates: {},
   gitShortstats: {},
+  gitMeta: {},
   prStates: {},
   prChecks: {},
   prComments: {},
@@ -86,6 +87,26 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       set({ gitShortstats: map });
     } catch {
       // non-fatal — next poll tick will retry
+    }
+  },
+
+  fetchAllGitMeta: async () => {
+    try {
+      const map = await api.getAllGitMeta();
+      // Replace wholesale (like gitShortstats) — agents removed between ticks
+      // fall out naturally, and this map is independent of gitStates so the
+      // focused panel's full-state poll is never clobbered.
+      set({ gitMeta: map });
+    } catch {
+      // non-fatal — next poll tick will retry
+    }
+  },
+
+  refreshBaseFreshness: async () => {
+    try {
+      await api.refreshBaseFreshness();
+    } catch {
+      // Background fetch — silent by contract; the next tick retries.
     }
   },
 

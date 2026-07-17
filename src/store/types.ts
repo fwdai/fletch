@@ -9,6 +9,7 @@ import type {
   ForkCode,
   ForkContext,
   GhStatus,
+  GitMeta,
   GitState,
   PrChecks,
   PrComments,
@@ -231,6 +232,11 @@ export interface GitSlice {
    *  poll — kept in its own map so the focused agent's richer `gitStates`
    *  entry isn't clobbered by a slower bulk reply. */
   gitShortstats: Record<string, ShortStats>;
+  /** Advisory per-checkout git metadata (base staleness + changed-file paths),
+   *  keyed by `gitKey(agentId, subdir?)`. Fed by the app-wide `getAllGitMeta`
+   *  poll — separate from `gitShortstats` (badge numbers) so each evolves on its
+   *  own cadence. Drives the "base moved" staleness chips and overlap hints. */
+  gitMeta: Record<string, GitMeta>;
   /** PR state, keyed by `gitKey(agentId, subdir?)` — plain agent_id for the
    *  primary repo (updated by the pr:state_changed watcher event + bulk
    *  polls), `agentId::subdir` for a secondary repo. */
@@ -258,6 +264,13 @@ export interface GitSlice {
   /** Fetch compact shortstats for every live agent in one round-trip
    *  (used by the app-wide background poll). */
   fetchAllShortstats: () => Promise<void>;
+  /** Fetch advisory git metadata (base staleness + file paths) for every live
+   *  checkout in one round-trip (app-wide background poll, local git only). */
+  fetchAllGitMeta: () => Promise<void>;
+  /** Slow-cadence host-side fetch of each project's base branch on its source
+   *  repo, so `fetchAllGitMeta` can measure staleness against a moved base.
+   *  Network + GitHub-gated; silent (never surfaces an error). */
+  refreshBaseFreshness: () => Promise<void>;
   fetchPrState: (agentId: string, subdir?: string) => Promise<void>;
   /** Refresh PR state for every repo with a known PR across every agent in
    *  one round-trip (used by the app-wide background poll). The reply is

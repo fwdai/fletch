@@ -7,6 +7,7 @@
 
 import type {
   AgentRecord,
+  GitMeta,
   PrChecks,
   PrComments,
   PrState,
@@ -25,10 +26,9 @@ export type ReviewReason =
   | "checks-failing"
   | "unresolved-comments";
 
-/** Future-PR slot (§1): a "base moved under this agent" signal. Designed now so
- *  the card can render a staleness chip without a type/layout change when a later
- *  PR feeds it; nothing populates it in this PR (backend deliberately deferred),
- *  so it is always `null` today and the chip never renders. */
+/** A "base moved under this agent" signal — quiet information, not an alarm (a
+ *  moved base is normal in a parallel fleet). Fed from the fleet-wide `gitMeta`
+ *  poll; rendered as a muted chip on every card state, and on the sidebar row. */
 export interface Staleness {
   /** The base branch the agent has fallen behind. */
   base: string;
@@ -36,11 +36,38 @@ export interface Staleness {
   behind: number;
 }
 
+/** One advisory file-overlap hint: another agent on the same repo is touching
+ *  `count` of the same files. Never a warning — just a heads-up that two agents
+ *  may conflict. Advisory only; no gating anywhere (docs/multi-repo-followups.md
+ *  §2 defers cross-repo merge gating). */
+export interface OverlapHint {
+  agentName: string;
+  count: number;
+}
+
+/** The merge fan-out payload (§3): a sibling's PR merged and moved the base, so
+ *  N other agents on the same repo are now behind. Carries the moved base, the
+ *  merged PR (the "what"), and the affected agents for the one-gesture
+ *  "Update all" action. */
+export interface FanoutAgent {
+  agentId: string;
+  name: string;
+  behind: number;
+  /** Secondary-repo checkout to update; undefined = the primary. */
+  subdir?: string;
+}
+export interface FanoutInfo {
+  base: string;
+  merged: { title: string; number: number; url: string };
+  agents: FanoutAgent[];
+}
+
 export interface ReviewItem {
   /** Stable id — `wf:<runId>` for a workflow item, `agent:<agentId>` for an
-   *  agent item. Drives keyboard focus and dismissal. */
+   *  agent item, `fanout:<repo>:<base>` for a merge fan-out. Drives keyboard
+   *  focus and dismissal. */
   id: string;
-  kind: "workflow" | "agent";
+  kind: "workflow" | "agent" | "fanout";
   /** Ordering bucket (see BUCKET). Lower = more decidable = higher in the queue. */
   bucket: number;
   /** Fingerprint of the item's *volatile* signals. Dismissal is keyed on this,
@@ -71,6 +98,12 @@ export interface ReviewItem {
   checks?: PrChecks;
   unresolvedComments?: number;
   staleness?: Staleness | null;
+  /** Advisory overlap hints — other agents on the same repo touching some of
+   *  the same files. Omitted when there are none. */
+  overlaps?: OverlapHint[];
+
+  // ── fan-out items ──
+  fanout?: FanoutInfo;
 }
 
 /** Ordering buckets, most-decidable-first. Rationale: an item is ranked by its
@@ -78,18 +111,22 @@ export interface ReviewItem {
  *  floats above one that just needs a look.
  *   0 workflow approval — a dedicated evidence surface + one-click promote.
  *   1 workflow conflict — a clear decision with a defined action.
- *   2 PR items (failing checks / unresolved threads) — CI evidence is present.
- *   3 plain unseen-diff agent items — a turn landed with changes to look at. */
+ *   2 merge fan-out — one gesture ("Update all") clears a moved base for many.
+ *   3 PR items (failing checks / unresolved threads) — CI evidence is present.
+ *   4 plain unseen-diff agent items — a turn landed with changes to look at. */
 export const BUCKET = {
   workflowApproval: 0,
   workflowConflict: 1,
-  pr: 2,
-  unseen: 3,
+  fanout: 2,
+  pr: 3,
+  unseen: 4,
 } as const;
 
 export interface QueueInput {
   agents: readonly AgentRecord[];
   gitShortstats: Record<string, ShortStats>;
+  /** Per-checkout base staleness + changed-file paths, keyed by `gitKey`. */
+  gitMeta: Record<string, GitMeta>;
   unseenResults: Record<string, boolean>;
   prStates: Record<string, PrState | null>;
   prChecks: Record<string, PrChecks | null>;
@@ -97,6 +134,13 @@ export interface QueueInput {
   runs: readonly WfRun[];
   /** Item id → signal signature it was dismissed at. */
   dismissed: Record<string, string>;
+}
+
+/** Per-repo map key mirroring `store/git.ts::gitKey` — plain agent id for the
+ *  primary repo, `agentId::subdir` for a secondary. Inlined (not imported) to
+ *  keep this selector free of the store, per the module contract above. */
+function repoKey(agentId: string, subdir?: string): string {
+  return subdir ? `${agentId}::${subdir}` : agentId;
 }
 
 /** First non-empty line of a brief, trimmed. Empty string when there's none —
@@ -172,11 +216,156 @@ function agentSignature(p: {
   return `u${p.unseen ? 1 : 0}|d${d}|c${c || "-"}`;
 }
 
+/** The agent's primary-repo base staleness, or null when the base hasn't moved
+ *  ahead (or is unknown). `behind === null` = base tip couldn't be resolved (no
+ *  GitHub / no fetch) → render nothing, never a zero. */
+function stalenessOf(agentId: string, input: QueueInput): Staleness | null {
+  const meta = input.gitMeta[agentId];
+  if (!meta || meta.behind == null || meta.behind <= 0) return null;
+  return { base: meta.base, behind: meta.behind };
+}
+
+/** Pairwise file-set overlaps among agents sharing a repo. Two agents "overlap"
+ *  when their primary checkouts touch ≥1 of the same file paths; the hint names
+ *  the other agent and the shared-file count. Grouped by the primary repo's
+ *  source path so only agents actually working the same repo are compared.
+ *  Advisory only — never gates anything. Returns agentId → hints (each side of a
+ *  pair gets one). */
+function computeOverlaps(input: QueueInput): Record<string, OverlapHint[]> {
+  // Agents with a non-empty primary file set, grouped by source repo path.
+  const byRepo = new Map<string, { agent: AgentRecord; files: Set<string> }[]>();
+  for (const agent of input.agents) {
+    const repoPath = agent.repos[0]?.repo_path;
+    if (!repoPath) continue;
+    const files = input.gitMeta[agent.id]?.files ?? [];
+    if (files.length === 0) continue;
+    const entry = { agent, files: new Set(files) };
+    const group = byRepo.get(repoPath);
+    if (group) group.push(entry);
+    else byRepo.set(repoPath, [entry]);
+  }
+
+  const out: Record<string, OverlapHint[]> = {};
+  const record = (id: string, hint: OverlapHint) => {
+    const list = out[id] ?? [];
+    list.push(hint);
+    out[id] = list;
+  };
+  for (const group of byRepo.values()) {
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const a = group[i];
+        const b = group[j];
+        let count = 0;
+        for (const f of a.files) if (b.files.has(f)) count++;
+        if (count === 0) continue;
+        record(a.agent.id, { agentName: b.agent.name, count });
+        record(b.agent.id, { agentName: a.agent.name, count });
+      }
+    }
+  }
+  return out;
+}
+
+/** Can this agent act on an "Update all" delegation? Idle/running/spawning
+ *  agents can (running ones queue the trigger); stopped/errored ones can't. */
+function canDelegate(agent: AgentRecord): boolean {
+  return agent.status === "idle" || agent.status === "running" || agent.status === "spawning";
+}
+
+/** Build the merge fan-out items (§3): for each repo where a sibling's PR has
+ *  merged AND other agents on that repo are now behind the base, one actionable
+ *  card whose "Update all" delegates `update-branch` to every affected agent.
+ *  Pure over the current snapshot — the item disappears on its own once the
+ *  affected agents catch up (behind → 0). */
+function buildFanoutItems(input: QueueInput): ReviewItem[] {
+  interface RepoEntry {
+    agent: AgentRecord;
+    subdir?: string;
+    base: string;
+    pr: PrState | null;
+    behind: number | null;
+  }
+  // Group every agent-repo by (source repo path, base branch).
+  const groups = new Map<string, RepoEntry[]>();
+  for (const agent of input.agents) {
+    agent.repos.forEach((repo, i) => {
+      const key = repoKey(agent.id, i === 0 ? undefined : repo.subdir);
+      const base = repo.parent_branch || "main";
+      const groupKey = `${repo.repo_path} ${base}`;
+      const entry: RepoEntry = {
+        agent,
+        subdir: i === 0 ? undefined : repo.subdir,
+        base,
+        pr: input.prStates[key] ?? null,
+        behind: input.gitMeta[key]?.behind ?? null,
+      };
+      const group = groups.get(groupKey);
+      if (group) group.push(entry);
+      else groups.set(groupKey, [entry]);
+    });
+  }
+
+  const items: ReviewItem[] = [];
+  for (const [groupKey, entries] of groups) {
+    // The most recently merged PR in the group (highest number) is the "what".
+    const merged = entries
+      .filter((e) => e.pr?.state === "merged")
+      .sort((a, b) => (b.pr?.number ?? 0) - (a.pr?.number ?? 0))[0];
+    if (!merged?.pr) continue;
+    // Agents on this repo now behind the moved base — the merged agent itself
+    // is naturally excluded (its HEAD is the base), and only actionable agents
+    // are listed so "Update all" never dispatches to a stopped/errored one.
+    const affected: FanoutAgent[] = entries
+      .filter(
+        (e) =>
+          e.agent.id !== merged.agent.id &&
+          e.behind != null &&
+          e.behind > 0 &&
+          canDelegate(e.agent),
+      )
+      .map((e) => ({
+        agentId: e.agent.id,
+        name: e.agent.name,
+        behind: e.behind as number,
+        subdir: e.subdir,
+      }))
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    if (affected.length === 0) continue;
+
+    const base = merged.base;
+    const repoPath = groupKey.slice(0, groupKey.indexOf(" "));
+    const pr = merged.pr;
+    items.push({
+      id: `fanout:${repoPath}:${base}`,
+      kind: "fanout",
+      bucket: BUCKET.fanout,
+      // Merge identity + the affected set: a new merge, or an agent catching up
+      // (behind change) / dropping out, moves the signature so a dismissal
+      // expires exactly when the situation actually changes.
+      signature: `${pr.number}|${affected.map((a) => `${a.agentId}:${a.behind}`).join(",")}`,
+      // No natural timestamp; the most recent merge (highest PR number) floats
+      // its repo's fan-out to the top of the bucket. Pure + stable.
+      activityAt: pr.number,
+      title: pr.title || `PR #${pr.number}`,
+      goal: `${affected.length} ${affected.length === 1 ? "agent is" : "agents are"} now behind ${base}`,
+      reasons: [],
+      fanout: {
+        base,
+        merged: { title: pr.title || `PR #${pr.number}`, number: pr.number, url: pr.url },
+        agents: affected,
+      },
+    });
+  }
+  return items;
+}
+
 /** Compose the fleet review queue from current app state. Pure and synchronous:
  *  it never blocks on evidence (workflow approvals rank top because they carry a
  *  dedicated review surface, not because their evidence has finished loading). */
 export function buildReviewQueue(input: QueueInput): ReviewItem[] {
   const items: ReviewItem[] = [];
+  const overlaps = computeOverlaps(input);
 
   // ── workflow runs paused on a human decision (§1: approval or conflict) ──
   for (const run of input.runs) {
@@ -233,10 +422,15 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
       prSubdir: shown?.repo ? shown.repo : undefined,
       checks: shown?.checks ?? undefined,
       unresolvedComments: unresolved > 0 ? unresolved : undefined,
-      // Future-PR slot — no signal feeds it yet, so it's always absent today.
-      staleness: null,
+      // Always-visible signals (§2/§4): the base-moved chip and overlap hints
+      // decorate an existing card in every panel state — they never create one.
+      staleness: stalenessOf(agent.id, input),
+      overlaps: overlaps[agent.id],
     });
   }
+
+  // ── merge fan-out (§3): a sibling merged, siblings on the repo are behind ──
+  items.push(...buildFanoutItems(input));
 
   // Hide items dismissed at their *current* signature; a signature change (new
   // turn, new diff, CI flip) no longer matches the stored mark, so the item

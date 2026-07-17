@@ -10,6 +10,7 @@ import { buildReviewQueue, type ReviewItem } from "./queue";
 export function useReviewQueue(): ReviewItem[] {
   const agents = useAppStore((s) => s.workspace?.agents ?? EMPTY_AGENTS);
   const gitShortstats = useAppStore((s) => s.gitShortstats);
+  const gitMeta = useAppStore((s) => s.gitMeta);
   const unseenResults = useAppStore((s) => s.unseenResults);
   const prStates = useAppStore((s) => s.prStates);
   const prChecks = useAppStore((s) => s.prChecks);
@@ -22,6 +23,7 @@ export function useReviewQueue(): ReviewItem[] {
       buildReviewQueue({
         agents,
         gitShortstats,
+        gitMeta,
         unseenResults,
         prStates,
         prChecks,
@@ -29,6 +31,16 @@ export function useReviewQueue(): ReviewItem[] {
         runs,
         dismissed,
       }),
-    [agents, gitShortstats, unseenResults, prStates, prChecks, prComments, runs, dismissed],
+    [
+      agents,
+      gitShortstats,
+      gitMeta,
+      unseenResults,
+      prStates,
+      prChecks,
+      prComments,
+      runs,
+      dismissed,
+    ],
   );
 }

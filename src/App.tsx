@@ -22,6 +22,8 @@ import { setAppBadgeCount } from "./util/window";
 export function App() {
   const init = useAppStore((s) => s.init);
   const fetchAllShortstats = useAppStore((s) => s.fetchAllShortstats);
+  const fetchAllGitMeta = useAppStore((s) => s.fetchAllGitMeta);
+  const refreshBaseFreshness = useAppStore((s) => s.refreshBaseFreshness);
   const refreshAllPrStates = useAppStore((s) => s.refreshAllPrStates);
   const refreshAllPrChecks = useAppStore((s) => s.refreshAllPrChecks);
   // PR polls hit the GitHub API — skip them entirely in local-only mode
@@ -75,6 +77,26 @@ export function App() {
   // panel to mount. Queries run in parallel on the backend; the reply is a
   // flat number-only map so payload stays small as agent count grows.
   usePoll(fetchAllShortstats, 5000, [fetchAllShortstats]);
+
+  // App-wide poll for advisory git metadata — base staleness (how far each
+  // checkout has fallen behind its base) + changed-file paths for overlap
+  // hints. Local git only (no network), so it runs regardless of GitHub; a
+  // slower 15s cadence since it's advisory and the fleet's diff/base move far
+  // less often than the sidebar badges the 5s shortstats poll drives.
+  usePoll(fetchAllGitMeta, 15000, [fetchAllGitMeta]);
+
+  // App-wide slow poll that fetches each project's base branch on its source
+  // repo, so the staleness chips above track a base that moved on GitHub (a
+  // sibling's PR merging, a teammate's push). Network + GitHub-gated like the
+  // PR polls; 5min cadence — a moved base is normal, not urgent — and silent by
+  // contract (a background fetch never raises a user-facing error).
+  usePoll(
+    async () => {
+      if (githubConnected) await refreshBaseFreshness();
+    },
+    300000,
+    [refreshBaseFreshness, githubConnected],
+  );
 
   // App-wide poll for remote PR state (open → merged / closed, mergeability)
   // so the sidebar PR badge tracks changes made on GitHub — a merge by a

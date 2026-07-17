@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentRecord, PrChecks, PrComments, PrState, ShortStats, WfRun } from "@/api";
+import type { AgentRecord, GitMeta, PrChecks, PrComments, PrState, ShortStats, WfRun } from "@/api";
 import { BUCKET, buildReviewQueue, type QueueInput } from "./queue";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -82,10 +82,18 @@ function run(over: Partial<WfRun> & { id: string }): WfRun {
   };
 }
 
+const meta = (over: Partial<GitMeta>): GitMeta => ({
+  base: "main",
+  behind: null,
+  files: [],
+  ...over,
+});
+
 function input(over: Partial<QueueInput>): QueueInput {
   return {
     agents: [],
     gitShortstats: {},
+    gitMeta: {},
     unseenResults: {},
     prStates: {},
     prChecks: {},
@@ -94,6 +102,16 @@ function input(over: Partial<QueueInput>): QueueInput {
     dismissed: {},
     ...over,
   };
+}
+
+/** A single-repo agent bound to `repoPath`, so fan-out/overlap grouping keys off
+ *  a real primary repo. */
+function repoAgent(id: string, repoPath: string, over: Partial<AgentRecord> = {}): AgentRecord {
+  return agent({
+    id,
+    repos: [{ repo_path: repoPath, subdir: "", parent_branch: "main" }],
+    ...over,
+  });
 }
 
 // ── tests ───────────────────────────────────────────────────────────────────
@@ -282,5 +300,174 @@ describe("buildReviewQueue", () => {
     });
     expect(grown).toHaveLength(1);
     expect(grown[0].id).toBe("agent:a");
+  });
+
+  // ── staleness (§2) ──────────────────────────────────────────────────────────
+
+  it("feeds staleness onto an existing card when the base has moved", () => {
+    const q = buildReviewQueue(
+      input({
+        agents: [agent({ id: "a" })],
+        unseenResults: { a: true },
+        gitShortstats: { a: stats(4, 2) },
+        gitMeta: { a: meta({ base: "main", behind: 3 }) },
+      }),
+    );
+    expect(q).toHaveLength(1);
+    expect(q[0].staleness).toEqual({ base: "main", behind: 3 });
+  });
+
+  it("never fakes a zero/unknown staleness, and never creates a card on its own", () => {
+    // behind 0 and behind null both render nothing.
+    for (const behind of [0, null]) {
+      const q = buildReviewQueue(
+        input({
+          agents: [agent({ id: "a" })],
+          unseenResults: { a: true },
+          gitShortstats: { a: stats(1, 0) },
+          gitMeta: { a: meta({ behind }) },
+        }),
+      );
+      expect(q[0].staleness).toBeNull();
+    }
+    // Staleness alone (no other reason) does NOT surface a card.
+    expect(
+      buildReviewQueue(
+        input({ agents: [agent({ id: "a" })], gitMeta: { a: meta({ behind: 5 }) } }),
+      ),
+    ).toEqual([]);
+  });
+
+  // ── overlap hints (§4) ────────────────────────────────────────────────────────
+
+  it("adds pairwise overlap hints for agents on the same repo touching shared files", () => {
+    const q = buildReviewQueue(
+      input({
+        agents: [repoAgent("a", "/repo"), repoAgent("b", "/repo")],
+        // Both surface for unseen results so they have cards to decorate.
+        unseenResults: { a: true, b: true },
+        gitShortstats: { a: stats(1, 0), b: stats(1, 0) },
+        gitMeta: {
+          a: meta({ files: ["src/x.ts", "src/y.ts"] }),
+          b: meta({ files: ["src/y.ts", "src/z.ts"] }),
+        },
+      }),
+    );
+    const a = q.find((i) => i.id === "agent:a");
+    const b = q.find((i) => i.id === "agent:b");
+    expect(a?.overlaps).toEqual([{ agentName: "b", count: 1 }]);
+    expect(b?.overlaps).toEqual([{ agentName: "a", count: 1 }]);
+  });
+
+  it("no overlap hint when agents are on different repos or share no files", () => {
+    const q = buildReviewQueue(
+      input({
+        agents: [repoAgent("a", "/repo1"), repoAgent("b", "/repo2")],
+        unseenResults: { a: true, b: true },
+        gitShortstats: { a: stats(1, 0), b: stats(1, 0) },
+        gitMeta: {
+          a: meta({ files: ["src/x.ts"] }),
+          b: meta({ files: ["src/x.ts"] }), // same path, different repo
+        },
+      }),
+    );
+    expect(q.find((i) => i.id === "agent:a")?.overlaps).toBeUndefined();
+  });
+
+  // ── merge fan-out (§3) ────────────────────────────────────────────────────────
+
+  it("raises ONE fan-out item when a sibling merges and others are behind", () => {
+    const mergedPr: PrState = { ...openPr(42), state: "merged", title: "Add auth" };
+    const q = buildReviewQueue(
+      input({
+        agents: [
+          repoAgent("shipped", "/repo"),
+          repoAgent("behind1", "/repo"),
+          repoAgent("behind2", "/repo"),
+        ],
+        prStates: { shipped: mergedPr },
+        gitMeta: {
+          shipped: meta({ behind: 0 }),
+          behind1: meta({ behind: 2 }),
+          behind2: meta({ behind: 5 }),
+        },
+      }),
+    );
+    expect(q).toHaveLength(1);
+    const f = q[0];
+    expect(f.kind).toBe("fanout");
+    expect(f.bucket).toBe(BUCKET.fanout);
+    expect(f.id).toBe("fanout:/repo:main");
+    expect(f.fanout?.base).toBe("main");
+    expect(f.fanout?.merged).toEqual({ title: "Add auth", number: 42, url: "https://gh/pr/42" });
+    // Both behind siblings are affected (sorted by name); the shipped agent is
+    // excluded (its HEAD is the base, behind 0).
+    expect(f.fanout?.agents.map((a) => a.agentId)).toEqual(["behind1", "behind2"]);
+    expect(f.goal).toContain("2 agents are now behind main");
+  });
+
+  it("no fan-out when nobody is behind, or nobody merged", () => {
+    const mergedPr: PrState = { ...openPr(1), state: "merged" };
+    // Merged, but siblings caught up (behind 0) → no fan-out.
+    expect(
+      buildReviewQueue(
+        input({
+          agents: [repoAgent("shipped", "/repo"), repoAgent("sib", "/repo")],
+          prStates: { shipped: mergedPr },
+          gitMeta: { sib: meta({ behind: 0 }) },
+        }),
+      ),
+    ).toEqual([]);
+    // Behind, but no merged PR on the repo (a teammate push) → only per-agent
+    // staleness chips, no fan-out card.
+    expect(
+      buildReviewQueue(
+        input({
+          agents: [repoAgent("a", "/repo"), repoAgent("b", "/repo")],
+          gitMeta: { a: meta({ behind: 3 }), b: meta({ behind: 3 }) },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("a fan-out item is dismissible and resurfaces when the affected set changes", () => {
+    const mergedPr: PrState = { ...openPr(7), state: "merged", title: "T" };
+    const base = input({
+      agents: [repoAgent("shipped", "/repo"), repoAgent("behind1", "/repo")],
+      prStates: { shipped: mergedPr },
+      gitMeta: { behind1: meta({ behind: 2 }) },
+    });
+    const [item] = buildReviewQueue(base);
+    expect(item.kind).toBe("fanout");
+    // Dismissed at its current signature → hidden.
+    expect(buildReviewQueue({ ...base, dismissed: { [item.id]: item.signature } })).toEqual([]);
+    // The behind count changed → new signature, dismissal expires, item returns.
+    const moved = buildReviewQueue({
+      ...base,
+      gitMeta: { behind1: meta({ behind: 9 }) },
+      dismissed: { [item.id]: item.signature },
+    });
+    expect(moved).toHaveLength(1);
+    expect(moved[0].id).toBe(item.id);
+  });
+
+  it("fan-out excludes agents that can't act (stopped/errored)", () => {
+    const mergedPr: PrState = { ...openPr(3), state: "merged" };
+    const q = buildReviewQueue(
+      input({
+        agents: [
+          repoAgent("shipped", "/repo"),
+          repoAgent("stopped", "/repo", { status: "stopped" }),
+          repoAgent("live", "/repo", { status: "idle" }),
+        ],
+        prStates: { shipped: mergedPr },
+        gitMeta: {
+          stopped: meta({ behind: 2 }),
+          live: meta({ behind: 2 }),
+        },
+      }),
+    );
+    expect(q).toHaveLength(1);
+    expect(q[0].fanout?.agents.map((a) => a.agentId)).toEqual(["live"]);
   });
 });
