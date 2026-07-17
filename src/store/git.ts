@@ -1,4 +1,4 @@
-import { api } from "@/api";
+import { api, type GitMeta } from "@/api";
 import { gitActionProvesKind } from "@/components/RightPanel/delegation";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { setSetting } from "@/storage/settings";
@@ -14,6 +14,21 @@ type GitGet = Parameters<SliceCreator<GitSlice>>[1];
  *  the suffixed form. */
 export function gitKey(agentId: string, subdir?: string): string {
   return subdir ? `${agentId}::${subdir}` : agentId;
+}
+
+/** Max `behind` across an agent's checkouts (the `agentId` primary key plus
+ *  every `agentId::subdir` secondary in `gitMeta`), or null when every base is
+ *  unknown or fresh — a stale secondary must surface even when the primary is
+ *  current. */
+export function maxBehind(meta: Record<string, GitMeta>, agentId: string): number | null {
+  const prefix = `${agentId}::`;
+  let worst: number | null = null;
+  for (const [key, m] of Object.entries(meta)) {
+    if (key !== agentId && !key.startsWith(prefix)) continue;
+    if (m.behind == null || m.behind <= 0) continue;
+    if (worst == null || m.behind > worst) worst = m.behind;
+  }
+  return worst;
 }
 
 // Shared shape for the simple git mutations: run the backend call, refresh git

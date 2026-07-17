@@ -9,6 +9,7 @@ import { lookupModel } from "@/data/modelCatalog";
 import { providerChip, providerLabel } from "@/data/providers";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
+import { maxBehind } from "@/store/git";
 import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import { type AgentPr, useAgentPrs } from "@/util/prState";
@@ -60,10 +61,11 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // only PR lives on a secondary repo still gets its badge.
   const agentPrs = useAgentPrs(agent);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
-  // Base-staleness for the primary checkout — a quiet "base moved" cue. Shown
-  // whenever the base has genuinely moved ahead (behind > 0); an unknown or
-  // zero count renders nothing (never a fake 0).
-  const behind = useAppStore((s) => s.gitMeta[agent.id]?.behind ?? null);
+  // Base-staleness across the agent's checkouts (stalest wins — a behind
+  // secondary must surface even when the primary is fresh). A quiet "base
+  // moved" cue, shown only when a base has genuinely moved ahead (behind > 0);
+  // an unknown or zero count renders nothing (never a fake 0).
+  const behind = useAppStore((s) => maxBehind(s.gitMeta, agent.id));
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
   // Dev-server state for this checkout — orthogonal to the agent's turn status,
   // so it shows as its own play chip beside the identity chip, not among the

@@ -47,10 +47,13 @@ export function EvidenceChips({ item }: { item: ReviewItem }) {
       <span
         key="stale"
         className="mc-chip mc-chip-muted"
-        title={`Base ${item.staleness.base} has moved ${item.staleness.behind} commit(s) ahead`}
+        title={`Base ${item.staleness.base} has moved ${item.staleness.behind} commit(s) ahead${
+          item.staleness.repo ? ` (in ${item.staleness.repo})` : ""
+        }`}
       >
         <Icon name="branch" size={11} />
         base moved · {item.staleness.behind} behind
+        {item.staleness.repo && <span className="mc-chip-sub"> · {item.staleness.repo}</span>}
       </span>
     ) : null,
     // Overlap hints (§4): the quietest chip of all — advisory heads-up that

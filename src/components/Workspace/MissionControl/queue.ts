@@ -34,6 +34,9 @@ export interface Staleness {
   base: string;
   /** How many commits the base has moved ahead by. */
   behind: number;
+  /** The checkout the signal comes from — `undefined` for the primary, the
+   *  subdir for a secondary (so the chip can name it). */
+  repo?: string;
 }
 
 /** One advisory file-overlap hint: another agent on the same repo is touching
@@ -216,53 +219,84 @@ function agentSignature(p: {
   return `u${p.unseen ? 1 : 0}|d${d}|c${c || "-"}`;
 }
 
-/** The agent's primary-repo base staleness, or null when the base hasn't moved
- *  ahead (or is unknown). `behind === null` = base tip couldn't be resolved (no
- *  GitHub / no fetch) → render nothing, never a zero. */
+/** The agent's stalest checkout vs its base, or null when no base has moved
+ *  ahead (or all are unknown). Scans the primary AND every secondary key
+ *  (`agentId` / `agentId::subdir` — same convention as the PR maps): a stale
+ *  secondary must surface even when the primary is fresh. `behind === null` =
+ *  base tip couldn't be resolved (no GitHub / no fetch) → render nothing,
+ *  never a zero. */
 function stalenessOf(agentId: string, input: QueueInput): Staleness | null {
-  const meta = input.gitMeta[agentId];
-  if (!meta || meta.behind == null || meta.behind <= 0) return null;
-  return { base: meta.base, behind: meta.behind };
+  const prefix = `${agentId}::`;
+  const keys = [
+    agentId,
+    ...Object.keys(input.gitMeta)
+      .filter((k) => k.startsWith(prefix))
+      .sort(),
+  ];
+  let worst: Staleness | null = null;
+  for (const key of keys) {
+    const meta = input.gitMeta[key];
+    if (!meta || meta.behind == null || meta.behind <= 0) continue;
+    if (!worst || meta.behind > worst.behind) {
+      worst = {
+        base: meta.base,
+        behind: meta.behind,
+        repo: key === agentId ? undefined : key.slice(prefix.length),
+      };
+    }
+  }
+  return worst;
 }
 
 /** Pairwise file-set overlaps among agents sharing a repo. Two agents "overlap"
- *  when their primary checkouts touch ≥1 of the same file paths; the hint names
- *  the other agent and the shared-file count. Grouped by the primary repo's
- *  source path so only agents actually working the same repo are compared.
- *  Advisory only — never gates anything. Returns agentId → hints (each side of a
- *  pair gets one). */
+ *  when checkouts of the same source repo touch ≥1 of the same file paths; the
+ *  hint names the other agent and the shared-file count. EVERY checkout counts —
+ *  primary or secondary (`agentId::subdir` gitMeta keys) — since a same-repo
+ *  conflict is just as real in a sibling checkout. A pair overlapping in more
+ *  than one shared repo merges into one hint with the summed count. Advisory
+ *  only — never gates anything. Returns agentId → hints (each side of a pair
+ *  gets one). */
 function computeOverlaps(input: QueueInput): Record<string, OverlapHint[]> {
-  // Agents with a non-empty primary file set, grouped by source repo path.
+  // Every checkout with a non-empty file set, grouped by its source repo path.
   const byRepo = new Map<string, { agent: AgentRecord; files: Set<string> }[]>();
   for (const agent of input.agents) {
-    const repoPath = agent.repos[0]?.repo_path;
-    if (!repoPath) continue;
-    const files = input.gitMeta[agent.id]?.files ?? [];
-    if (files.length === 0) continue;
-    const entry = { agent, files: new Set(files) };
-    const group = byRepo.get(repoPath);
-    if (group) group.push(entry);
-    else byRepo.set(repoPath, [entry]);
+    agent.repos.forEach((repo, i) => {
+      if (!repo.repo_path) return;
+      const key = repoKey(agent.id, i === 0 ? undefined : repo.subdir);
+      const files = input.gitMeta[key]?.files ?? [];
+      if (files.length === 0) return;
+      const entry = { agent, files: new Set(files) };
+      const group = byRepo.get(repo.repo_path);
+      if (group) group.push(entry);
+      else byRepo.set(repo.repo_path, [entry]);
+    });
   }
 
-  const out: Record<string, OverlapHint[]> = {};
-  const record = (id: string, hint: OverlapHint) => {
-    const list = out[id] ?? [];
-    list.push(hint);
-    out[id] = list;
+  // agentId → (other agent's name → shared-file count), merged across repos.
+  const counts = new Map<string, Map<string, number>>();
+  const record = (id: string, otherName: string, count: number) => {
+    const per = counts.get(id) ?? new Map<string, number>();
+    per.set(otherName, (per.get(otherName) ?? 0) + count);
+    counts.set(id, per);
   };
   for (const group of byRepo.values()) {
     for (let i = 0; i < group.length; i++) {
       for (let j = i + 1; j < group.length; j++) {
         const a = group[i];
         const b = group[j];
+        if (a.agent.id === b.agent.id) continue;
         let count = 0;
         for (const f of a.files) if (b.files.has(f)) count++;
         if (count === 0) continue;
-        record(a.agent.id, { agentName: b.agent.name, count });
-        record(b.agent.id, { agentName: a.agent.name, count });
+        record(a.agent.id, b.agent.name, count);
+        record(b.agent.id, a.agent.name, count);
       }
     }
+  }
+
+  const out: Record<string, OverlapHint[]> = {};
+  for (const [id, per] of counts) {
+    out[id] = [...per].map(([agentName, count]) => ({ agentName, count }));
   }
   return out;
 }
@@ -292,7 +326,7 @@ function buildFanoutItems(input: QueueInput): ReviewItem[] {
     agent.repos.forEach((repo, i) => {
       const key = repoKey(agent.id, i === 0 ? undefined : repo.subdir);
       const base = repo.parent_branch || "main";
-      const groupKey = `${repo.repo_path} ${base}`;
+      const groupKey = `${repo.repo_path}\u0000${base}`;
       const entry: RepoEntry = {
         agent,
         subdir: i === 0 ? undefined : repo.subdir,
@@ -334,7 +368,7 @@ function buildFanoutItems(input: QueueInput): ReviewItem[] {
     if (affected.length === 0) continue;
 
     const base = merged.base;
-    const repoPath = groupKey.slice(0, groupKey.indexOf(" "));
+    const repoPath = groupKey.slice(0, groupKey.indexOf("\u0000"));
     const pr = merged.pr;
     items.push({
       id: `fanout:${repoPath}:${base}`,

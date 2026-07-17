@@ -338,6 +338,21 @@ describe("buildReviewQueue", () => {
     ).toEqual([]);
   });
 
+  it("surfaces staleness from a secondary checkout — stalest wins, repo named", () => {
+    const q = buildReviewQueue(
+      input({
+        agents: [agent({ id: "a" })],
+        unseenResults: { a: true },
+        gitShortstats: { a: stats(1, 0) },
+        gitMeta: {
+          a: meta({ behind: 0 }), // primary fresh
+          "a::pkg/api": meta({ base: "main", behind: 4 }), // secondary stale
+        },
+      }),
+    );
+    expect(q[0].staleness).toEqual({ base: "main", behind: 4, repo: "pkg/api" });
+  });
+
   // ── overlap hints (§4) ────────────────────────────────────────────────────────
 
   it("adds pairwise overlap hints for agents on the same repo touching shared files", () => {
@@ -372,6 +387,31 @@ describe("buildReviewQueue", () => {
       }),
     );
     expect(q.find((i) => i.id === "agent:a")?.overlaps).toBeUndefined();
+  });
+
+  it("detects overlaps in secondary checkouts of the same source repo", () => {
+    const twoRepo = (id: string) =>
+      agent({
+        id,
+        repos: [
+          { repo_path: `/primary-${id}`, subdir: "", parent_branch: "main" },
+          { repo_path: "/shared", subdir: "pkg/api", parent_branch: "main" },
+        ],
+      });
+    const q = buildReviewQueue(
+      input({
+        agents: [twoRepo("a"), twoRepo("b")],
+        unseenResults: { a: true, b: true },
+        gitShortstats: { a: stats(1, 0), b: stats(1, 0) },
+        // Only the secondary checkouts (distinct primaries) touch shared files.
+        gitMeta: {
+          "a::pkg/api": meta({ files: ["src/x.ts"] }),
+          "b::pkg/api": meta({ files: ["src/x.ts", "src/y.ts"] }),
+        },
+      }),
+    );
+    expect(q.find((i) => i.id === "agent:a")?.overlaps).toEqual([{ agentName: "b", count: 1 }]);
+    expect(q.find((i) => i.id === "agent:b")?.overlaps).toEqual([{ agentName: "a", count: 1 }]);
   });
 
   // ── merge fan-out (§3) ────────────────────────────────────────────────────────
