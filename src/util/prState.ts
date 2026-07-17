@@ -53,18 +53,22 @@ export interface AgentPr {
 
 /** Every PR across an agent's repos, in repo order (primary first). Each repo
  *  reads its own store entry — plain agent id for the primary, the suffixed
- *  `gitKey` for secondaries, both fed by the app-wide bulk polls — with the
- *  same live-else-snapshot fallback as `usePrState`, applied per repo (a
- *  secondary never inherits the primary's snapshot). Repos without a PR drop
- *  out, so a single-repo agent yields exactly the `usePrState` result. */
+ *  `gitKey` for secondaries, both fed by the app-wide bulk polls — resolved
+ *  with the same per-repo policy as the panel sections and the PR-set strip:
+ *  a present key, even a confirmed `null` (a fetch that found no PR), is
+ *  authoritative; only a never-fetched key (absent = `undefined`) falls back
+ *  to that repo's own persisted snapshot (a secondary never inherits the
+ *  primary's). Repos without a PR drop out. */
 export function useAgentPrs(agent: AgentRecord): AgentPr[] {
   const keys = agent.repos.map((r, i) => gitKey(agent.id, i === 0 ? undefined : r.subdir));
-  const live = useAppStore(useShallow((s) => keys.map((k) => s.prStates[k] ?? null)));
+  const live = useAppStore(
+    useShallow((s) => keys.map((k) => (k in s.prStates ? s.prStates[k] : undefined))),
+  );
   const checks = useAppStore(useShallow((s) => keys.map((k) => s.prChecks[k] ?? null)));
   return useMemo(
     () =>
       agent.repos.flatMap((repo, i) => {
-        const pr = live[i] ?? prSnapshot(repo);
+        const pr = live[i] !== undefined ? live[i] : prSnapshot(repo);
         return pr ? [{ pr, checks: checks[i], repo }] : [];
       }),
     [agent.repos, live, checks],
