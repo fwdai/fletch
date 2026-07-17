@@ -53,8 +53,9 @@ export function GitRepoSection({
   const { override, msg, setMsg, commitRef, customActive, openOverride, revertOverride } =
     useCommitDraft(agent.id, panelState);
 
-  // Delegations are agent-keyed and watched against the primary repo's state;
-  // secondary sections only read the delegation for display.
+  // Delegations are agent-keyed but repo-scoped: the section whose scope
+  // matches the delegation's target watches its lifecycle against THIS repo's
+  // state; other sections only read it for display.
   const delegation = useDelegationLifecycle({
     agentId: agent.id,
     agentStatus: agent.status,
@@ -63,7 +64,7 @@ export function GitRepoSection({
     checks,
     showNotice,
     fetchPrChecks,
-    enabled: subdir === undefined,
+    subdir,
   });
 
   // Selected file in the changes list — kept valid across polls (fall back to

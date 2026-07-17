@@ -133,7 +133,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   fetchPrComments: (agentId, subdir) =>
     fetchPrAux(set, agentId, "prComments", api.getPrComments, subdir),
 
-  delegateGitAction: (agentId, kind, prompt) => {
+  delegateGitAction: (agentId, kind, prompt, subdir) => {
     // If the agent is already running, DON'T inject the trigger mid-turn: Claude
     // coalesces a stdin message into the current turn (it wouldn't run as its
     // own turn), and the turn boundary isn't observable, so we couldn't tell our
@@ -152,6 +152,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
           sawRunning: false,
           sawGitOp: false,
           queued,
+          subdir,
         },
       },
     }));

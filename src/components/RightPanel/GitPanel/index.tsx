@@ -19,8 +19,17 @@ const scopesFor = (agent: AgentRecord): RepoScope[] =>
   agent.repos.map((repo, i) => ({ repo, subdir: i === 0 ? undefined : repo.subdir }));
 
 /** A repo earns its own section once it has anything git-worthy to show:
- *  uncommitted changes, a named branch, or a bound PR. */
-const repoActive = (scope: RepoScope, gitStates: Record<string, GitState>, agentId: string) =>
+ *  uncommitted changes, a named branch, or a bound PR. A repo targeted by the
+ *  agent's in-flight delegation is pinned active regardless — its section owns
+ *  the lifecycle watcher, so it must not unmount mid-delegation (e.g. when a
+ *  commit empties the file list before the branch materializes). */
+const repoActive = (
+  scope: RepoScope,
+  gitStates: Record<string, GitState>,
+  agentId: string,
+  delegatedSubdir: string | null | undefined,
+) =>
+  (delegatedSubdir !== null && scope.subdir === delegatedSubdir) ||
   (gitStates[gitKey(agentId, scope.subdir)]?.files.length ?? 0) > 0 ||
   Boolean(scope.repo.branch) ||
   scope.repo.pr_number != null;
@@ -40,9 +49,16 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
   const fetchGitState = useAppStore((s) => s.fetchGitState);
   const gitStates = useAppStore((s) => s.gitStates);
+  // The repo scope of the agent's in-flight delegation, if any: `null` when
+  // there is no delegation (pins nothing), `undefined` when it targets the
+  // primary. Distinct sentinel needed because `undefined` is a real scope.
+  const delegatedSubdir = useAppStore((s) => {
+    const d = s.gitDelegations[agent.id];
+    return d ? d.subdir : null;
+  });
 
   const scopes = scopesFor(agent);
-  const active = scopes.filter((sc) => repoActive(sc, gitStates, agent.id));
+  const active = scopes.filter((sc) => repoActive(sc, gitStates, agent.id, delegatedSubdir));
   // Nothing active yet → the primary repo's section (today's empty state),
   // with no section header.
   const sections = active.length > 0 ? active : [scopes[0]];

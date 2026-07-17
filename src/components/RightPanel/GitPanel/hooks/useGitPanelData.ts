@@ -25,8 +25,14 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
   // scoped to this section's repo): live store value wins; the last persisted
   // snapshot fills in when live state is absent or null.
   const livePr = useAppStore((s) => s.prStates[key] ?? null);
-  const snapshotRepo = useAppStore(
-    (s) => repo ?? s.workspace?.agents.find((a) => a.id === agentId)?.repos[0],
+  // A scoped (secondary) section must NEVER fall back to the primary repo for
+  // its snapshot — that would leak the primary's persisted PR number/title
+  // into this repo's card until the scoped fetch lands. Its snapshot comes
+  // from its own TrackedRepo or nowhere.
+  const snapshotRepo = useAppStore((s) =>
+    subdir === undefined
+      ? (repo ?? s.workspace?.agents.find((a) => a.id === agentId)?.repos[0])
+      : repo,
   );
   const prState = useMemo(() => livePr ?? prSnapshot(snapshotRepo), [livePr, snapshotRepo]);
 

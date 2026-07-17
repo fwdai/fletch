@@ -269,7 +269,13 @@ export interface GitSlice {
   refreshAllPrChecks: () => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
   fetchPrComments: (agentId: string, subdir?: string) => Promise<void>;
-  delegateGitAction: (agentId: string, kind: GitDelegationKind, prompt: string) => void;
+  delegateGitAction: (
+    agentId: string,
+    kind: GitDelegationKind,
+    prompt: string,
+    /** Target checkout of a multi-repo agent; undefined = primary. */
+    subdir?: string,
+  ) => void;
   markGitDelegationRunning: (agentId: string) => void;
   /** The agent ran a successful mutating git op `op` (backend
    *  `agent:git-action`). Sets the causal proof only if `op` matches the

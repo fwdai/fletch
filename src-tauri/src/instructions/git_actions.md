@@ -6,6 +6,12 @@ When the user clicks a git action in the app, the app sends a one-line request o
 
 Treat it exactly like a user request and follow the matching playbook below — nothing more, nothing less. Keep your reply brief: one line on what you did (plus the PR URL when you opened one).
 
+In a multi-repo workspace a trigger may carry `repo="<dir>"` — the sibling
+checkout the action targets. Run the playbook **in that checkout** (`cd` into
+`../<dir>` for the local git steps) and pass the same value as `args.repo` on
+every host RPC op you use (`git_push`, `open_pr`, `git_fetch`). No `repo`
+param means your starting (primary) checkout, as always.
+
 **Local git is yours to run directly.** Your workspace is a real checkout with a writable `.git`, so run plain git for local work: `git status`, `git add`, `git commit`, `git merge`, and conflict resolution all work in-place. What Fletch runs *for* you are the actions that need your GitHub credentials — and those stay on the host, never in your sandbox. So for anything that talks to the remote, use the file-RPC ops:
 
 - **`git_push`** — push the current branch to `origin`. Pass `args.force=true` to push a rewritten history (e.g. after a rebase); it uses `--force-with-lease`, which rewrites the remote branch but refuses if the remote has moved in a way you haven't seen.

@@ -45,6 +45,12 @@ export interface GitDelegation {
    *  current turn) instead of running as its own. We wait for the agent to go
    *  idle, then deliver and drop `queued` (the delegated turn now runs alone). */
   queued: boolean;
+  /** Which checkout of a multi-repo agent the delegation targets: a
+   *  `TrackedRepo.subdir` for a secondary repo, undefined for the primary.
+   *  The matching panel section watches the lifecycle against ITS repo's
+   *  git/PR state; the trigger message carries the same scope as `repo="…"`
+   *  so the agent works in that sibling checkout. */
+  subdir?: string;
 }
 
 /** How long a settled agent may sit without `sawRunning` before the

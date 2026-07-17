@@ -83,12 +83,22 @@ export function useGitActions(ctx: GitActionsCtx) {
 
   // Hand control to the coding agent: it writes the judgment part (message /
   // description / conflict edits) and executes the mutation through the app's
-  // file RPC. The panel tracks the delegation until the matching transition.
+  // file RPC. The panel tracks the delegation until the matching transition —
+  // scoped to this section's repo, so this section's watcher owns it.
   const delegate = useCallback(
     (kind: GitDelegationKind, prompt: string) => {
-      delegateGitAction(agentId, kind, prompt);
+      delegateGitAction(agentId, kind, prompt, subdir);
     },
-    [agentId, delegateGitAction],
+    [agentId, subdir, delegateGitAction],
+  );
+
+  // Trigger builder scoped to this section's repo: a secondary section adds
+  // `repo="<subdir>"` so the agent works in that sibling checkout (and passes
+  // `args.repo` on the host git ops — see git_actions.md).
+  const trigger = useCallback(
+    (name: string, params?: Record<string, string>) =>
+      appActionMessage(name, subdir ? { ...params, repo: subdir } : params),
+    [subdir],
   );
 
   // "→ chat" on a review comment: drop the formatted comment into this agent's
@@ -131,29 +141,29 @@ export function useGitActions(ctx: GitActionsCtx) {
       // lives in the agent's injected instructions (git_actions.md), keeping
       // the chat free of boilerplate. Params carry only dynamic context.
       case "agent-commit-pr":
-        delegate("commit-pr", appActionMessage("commit-pr", { base }));
+        delegate("commit-pr", trigger("commit-pr", { base }));
         break;
       case "agent-commit":
-        delegate("commit", appActionMessage("commit"));
+        delegate("commit", trigger("commit"));
         break;
       case "agent-commit-push":
-        delegate("commit-push", appActionMessage("commit-push"));
+        delegate("commit-push", trigger("commit-push"));
         break;
       case "agent-open-pr":
-        delegate("open-pr", appActionMessage("open-pr", { base }));
+        delegate("open-pr", trigger("open-pr", { base }));
         break;
       case "agent-resolve":
-        delegate("resolve", appActionMessage("resolve-conflicts"));
+        delegate("resolve", trigger("resolve-conflicts"));
         break;
       case "agent-update-branch":
         // PR can't merge cleanly with the base (the base advanced). This is NOT
         // a local in-progress merge — the agent must sync the base in first.
-        delegate("update-branch", appActionMessage("update-branch", { base }));
+        delegate("update-branch", trigger("update-branch", { base }));
         break;
       case "agent-fix":
         delegate(
           "fix-checks",
-          appActionMessage("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") }),
+          trigger("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") }),
         );
         break;
       // ── direct, agent bypassed (user typed their own message) ──
@@ -179,7 +189,7 @@ export function useGitActions(ctx: GitActionsCtx) {
             const ok = await commitChanges(agentId, msg.trim(), subdir);
             if (ok) {
               revertOverride();
-              delegate("open-pr", appActionMessage("open-pr", { base }));
+              delegate("open-pr", trigger("open-pr", { base }));
             }
           });
           break;
@@ -193,7 +203,7 @@ export function useGitActions(ctx: GitActionsCtx) {
         // Needs a branch — hand to the agent to name + create one if there
         // isn't one yet; otherwise the direct gh --fill PR.
         if (!hasBranch) {
-          delegate("open-pr", appActionMessage("open-pr", { base }));
+          delegate("open-pr", trigger("open-pr", { base }));
           break;
         }
         void runBusy("Opening PR…", async () => {
@@ -216,7 +226,7 @@ export function useGitActions(ctx: GitActionsCtx) {
         // Direct git push needs a branch; with none yet, the agent names and
         // creates one, then pushes.
         if (!hasBranch) {
-          delegate("push", appActionMessage("push"));
+          delegate("push", trigger("push"));
           break;
         }
         void runBusy("Pushing…", async () => {

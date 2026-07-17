@@ -14,10 +14,11 @@ import { useAppStore } from "@/store";
  *  agent only reads as "gave up" after our own turn ran or the grace window
  *  passed. Returns the active delegation (or undefined) for the render.
  *
- *  Delegations are agent-keyed and watched against the PRIMARY repo's state
- *  only — secondary sections of a multi-repo panel pass `enabled: false` so
- *  exactly one lifecycle effect runs per agent (they still get the delegation
- *  back for display, e.g. to yield the commit composer). */
+ *  Delegations are agent-keyed but scoped to one repo (`delegation.subdir`).
+ *  Only the section whose scope matches watches the lifecycle — its git/PR
+ *  state is the one the delegation's target transition happens in — so
+ *  exactly one lifecycle effect runs per delegation. Every section still gets
+ *  the delegation back for display (e.g. to yield the commit composer). */
 export function useDelegationLifecycle({
   agentId,
   agentStatus,
@@ -26,7 +27,7 @@ export function useDelegationLifecycle({
   checks,
   showNotice,
   fetchPrChecks,
-  enabled = true,
+  subdir,
 }: {
   agentId: string;
   agentStatus: AgentRecord["status"];
@@ -35,7 +36,8 @@ export function useDelegationLifecycle({
   checks: PrChecks | null;
   showNotice: (m: string) => void;
   fetchPrChecks: (agentId: string) => unknown;
-  enabled?: boolean;
+  /** This section's repo scope; undefined = the primary repo. */
+  subdir?: string;
 }) {
   const delegation = useAppStore((s) => s.gitDelegations[agentId]);
   const markGitDelegationRunning = useAppStore((s) => s.markGitDelegationRunning);
@@ -43,7 +45,7 @@ export function useDelegationLifecycle({
   const clearGitDelegation = useAppStore((s) => s.clearGitDelegation);
 
   useEffect(() => {
-    if (!enabled || !delegation) return;
+    if (!delegation || delegation.subdir !== subdir) return;
     const resolved = delegationResolved(delegation.kind, gitState, prState, checks);
     switch (delegationStep(delegation, agentStatus, resolved, Date.now())) {
       case "resolve":
@@ -71,7 +73,7 @@ export function useDelegationLifecycle({
         break;
     }
   }, [
-    enabled,
+    subdir,
     delegation,
     agentId,
     agentStatus,
