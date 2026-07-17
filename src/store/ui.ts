@@ -23,6 +23,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   leftWidth: DEFAULT_LEFT_WIDTH,
   rightWidth: DEFAULT_RIGHT_WIDTH,
   rightPanelTabs: {},
+  reviewDismissed: {},
 
   // ── UI ──────────────────────────────────────────────────────────────────────
   toggleSettings: (open) => set((s) => ({ settingsOpen: open ?? !s.settingsOpen })),
@@ -81,4 +82,13 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   commitRightWidth: (w) => setSetting("rightWidth", String(w)),
   setRightPanelTab: (agentId, tab) =>
     set((s) => ({ rightPanelTabs: { ...s.rightPanelTabs, [agentId]: tab } })),
+  dismissReviewItem: (id, signature) =>
+    set((s) => {
+      // No-op if the exact same mark is already stored — avoids a redundant DB
+      // write (and re-render) when a card is dismissed twice at one signature.
+      if (s.reviewDismissed[id] === signature) return s;
+      const reviewDismissed = { ...s.reviewDismissed, [id]: signature };
+      setSetting("reviewDismissed", reviewDismissed);
+      return { reviewDismissed };
+    }),
 });

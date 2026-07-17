@@ -8,6 +8,7 @@ import { EMPTY_AGENTS, useAppStore } from "@/store";
 import { RunView } from "@/workflows/run/RunView";
 import { ChatView } from "./ChatView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
+import { MissionControl } from "./MissionControl";
 import { NativeView } from "./NativeView";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
@@ -32,8 +33,10 @@ export function Workspace() {
     return <RunView id={selectedRunId} key={selectedRunId} />;
   }
 
+  // No agent selected → Home is Mission Control: the fleet review queue. The
+  // bare "Loading…" placeholder stands only until the workspace connects.
   const agent = agents.find((a) => a.id === selectedId);
-  if (!workspace || !agent) {
+  if (!workspace) {
     return (
       <div className="pane center">
         <div className="center-h flex-center">
@@ -44,19 +47,11 @@ export function Workspace() {
             <Icon name="sidebarL" />
           </IconButton>
         </div>
-        <Placeholder
-          title={!workspace ? "Loading…" : agents.length === 0 ? "No agents yet" : "Pick an agent"}
-          body={
-            !workspace
-              ? "Connecting to Fletch…"
-              : agents.length === 0
-                ? "Click the + button on a project to spawn one, or add a repo from the sidebar."
-                : "Choose an agent from the sidebar to attach."
-          }
-        />
+        <Placeholder title="Loading…" body="Connecting to Fletch…" />
       </div>
     );
   }
+  if (!agent) return <MissionControl />;
 
   return (
     <div className="pane center fade-in" key={agent.id}>

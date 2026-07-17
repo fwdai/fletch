@@ -17,6 +17,7 @@
 @import "./components/Sidebar/Sidebar.css";
 @import "./styles/shared/badge.css";
 @import "./components/Workspace/Workspace.css";
+@import "./components/Workspace/MissionControl/MissionControl.css";
 @import "./components/Workspace/Chat.css";
 @import "./components/Workspace/messages/UserInput/UserInput.css";
 @import "./components/Composer/Composer.css";
