@@ -317,11 +317,9 @@ async fn query_ahead_behind(checkout_path: &Path, parent_branch: &str) -> (u32, 
     if let Some(counts) = rev_list_counts(checkout_path, parent_branch).await {
         return counts;
     }
-    // In a clone workspace (`workspace_mode = clone`) the parent branch may
-    // exist only as a remote-tracking ref: `git clone` creates a local branch
-    // for the source's HEAD alone, and bare branch names don't resolve
-    // through `refs/remotes/origin/`. Worktrees never hit this — they share
-    // the source repo's refs.
+    // In a clone workspace the parent branch may exist only as a remote-
+    // tracking ref: `git clone` creates a local branch for the source's HEAD
+    // alone, and bare branch names don't resolve through `refs/remotes/origin/`.
     if !parent_branch.starts_with("origin/") {
         if let Some(counts) =
             rev_list_counts(checkout_path, &format!("origin/{parent_branch}")).await

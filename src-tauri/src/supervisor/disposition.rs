@@ -7,14 +7,14 @@ use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 use crate::git;
-use crate::sandbox::provision::{self, CheckoutSpec, WorkspaceMode};
+use crate::sandbox::provision::{self, CheckoutSpec};
 use crate::workspace::{
     agent_parent_dir, repo_checkout_path, AgentRecord, AgentStatus, ArchiveMetadata,
     ArchivedRepoSnapshot, DiffStats, TrackedRepo,
 };
 
 use super::events::emit_workspace_changed;
-use super::lifecycle::{arm_spawn_timeout, effective_workspace_mode, fail_spawn, stamped_engine};
+use super::lifecycle::{arm_spawn_timeout, fail_spawn};
 use super::Supervisor;
 
 impl Supervisor {
@@ -57,12 +57,7 @@ impl Supervisor {
             let Some(tip) = snap.branch_tip_sha.as_deref() else {
                 continue;
             };
-            let Ok(wt) = repo_checkout_path(agent_id, &snap.subdir) else {
-                continue;
-            };
-            if provision::detect_mode(&wt) == Some(WorkspaceMode::Clone)
-                && git::rev_parse(&snap.repo_path, tip).await.is_err()
-            {
+            if git::rev_parse(&snap.repo_path, tip).await.is_err() {
                 tracing::warn!(
                     agent_id,
                     subdir = %snap.subdir,
@@ -107,27 +102,15 @@ impl Supervisor {
             ));
         }
 
-        // Restore re-derives the provisioning mode (the archived workspace
-        // left no on-disk trace to detect it from): the `workspace_mode` dev
-        // flag under seatbelt, forced to `Clone` for a docker-stamped agent —
-        // its restored workspace gets bind-mounted, so a linked worktree
-        // would leak the real repo's `.git` into the container (invariant 2).
-        let workspace_mode = effective_workspace_mode(
-            stamped_engine(&record),
-            self.workspace
-                .setting(provision::WORKSPACE_MODE_SETTING)
-                .as_deref(),
-        );
-
         // Pre-flight: every snapshot must have a tip SHA, and that SHA must
         // be recoverable. We do this before any mutation so we don't leave a
         // half-restored agent on failure. A clone's commits live only in the
-        // (torn-down) clone and on the real remote once pushed, so under
-        // clone mode a tip that isn't in the source repo is still fine when a
-        // branch name exists: provisioning recovers it from origin — by branch,
-        // or (branch auto-deleted after merge) by the commit SHA, or failing
-        // that by opening detached at the parent base. Any deep failure there
-        // tears the half-built clone down and aborts before we mutate state.
+        // (torn-down) clone and on the real remote once pushed, so a tip that
+        // isn't in the source repo is still fine when a branch name exists:
+        // provisioning recovers it from origin — by branch, or (branch
+        // auto-deleted after merge) by the commit SHA, or failing that by
+        // opening detached at the parent base. Any deep failure there tears the
+        // half-built clone down and aborts before we mutate state.
         for snap in &archive.repos {
             let sha = snap.branch_tip_sha.as_deref().ok_or_else(|| {
                 Error::Other(format!(
@@ -136,14 +119,13 @@ impl Supervisor {
                 ))
             })?;
             if let Err(e) = git::rev_parse(&snap.repo_path, sha).await {
-                // A clone-mode tip that's gone from the source store is still
-                // recoverable by refetching the pushed branch — but only when
-                // the source actually has an `origin` to fetch from. Without
-                // one (a repo with no remote), provisioning would fail deep in
+                // A tip that's gone from the source store is still recoverable
+                // by refetching the pushed branch — but only when the source
+                // actually has an `origin` to fetch from. Without one (a repo
+                // with no remote), provisioning would fail deep in
                 // `fetch_branch` with a rawer error, so reject it here instead.
-                let refetchable = matches!(workspace_mode, WorkspaceMode::Clone)
-                    && snap.branch_name.is_some()
-                    && source_has_origin(&snap.repo_path).await;
+                let refetchable =
+                    snap.branch_name.is_some() && source_has_origin(&snap.repo_path).await;
                 if !refetchable {
                     return Err(Error::Other(format!(
                         "branch tip {} no longer reachable in {}: {e}",
@@ -185,11 +167,10 @@ impl Supervisor {
                 Some(desired_name) => {
                     let chosen = choose_restore_branch_name(&snap.repo_path, desired_name).await;
                     // `desired_name` rides along as the fetch source: when the
-                    // tip must be refetched (clone mode), the remote only
-                    // knows the original name, not the -restored rename.
-                    // `parent_branch_sha` is the last-resort detached base.
+                    // tip must be refetched, the remote only knows the original
+                    // name, not the -restored rename. `parent_branch_sha` is
+                    // the last-resort detached base.
                     let landed_on_branch = provision::provision_on_branch(
-                        workspace_mode,
                         &spec,
                         &chosen,
                         desired_name,
@@ -201,7 +182,7 @@ impl Supervisor {
                 // Branchless agent (never pushed) → restore detached at the
                 // tip, ready to name its branch at the next push.
                 None => {
-                    provision::provision(workspace_mode, &spec).await?;
+                    provision::provision(&spec).await?;
                     None
                 }
             };
@@ -428,38 +409,12 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
                 continue;
             }
         };
-        // Detect what actually sits on disk rather than re-reading the
-        // settings key: a dev-flag flip between spawn and teardown must not
-        // run the wrong arm. A missing/empty dir defaults to the worktree
-        // arm, whose prune+remove degrade to the pre-existing warnings.
-        let detected = provision::detect_mode(&checkout);
-        let mode = detected.unwrap_or(WorkspaceMode::Worktree);
-        let spec = CheckoutSpec {
-            source_repo: &repo.repo_path,
-            base_ref: "HEAD", // unused by teardown
-            dest: &checkout,
-        };
-        if let Err(e) = provision::teardown(mode, &spec).await {
+        // A clone is self-contained — `rm -rf` the checkout dir. The agent's
+        // branch (if any) lived inside that clone and was never created in the
+        // user's source repo, so there is nothing to `branch -D` here: doing so
+        // would force-delete an unrelated same-named branch in the source repo.
+        if let Err(e) = provision::teardown(&checkout).await {
             tracing::warn!(error = %e, subdir = %repo.subdir, op, "workspace teardown failed");
-        }
-        // Only worktree-mode branches are refs of the source repo. A clone's
-        // branch lives inside the (now `rm -rf`'d) clone and was never created
-        // in the source repo, so `branch -D` here would force-delete an
-        // unrelated same-named branch in the user's source repo — losing the
-        // pointer to their unpushed work.
-        //
-        // Gate on the *positive* worktree detection, not `mode`: ambiguous
-        // disk state (`detect_mode` == `None` — the `.git` is already gone, as
-        // happens for a half-torn-down clone) falls back to the worktree arm
-        // for the harmless prune+remove, but must never reach `branch -D`. A
-        // torn-down clone would otherwise force-delete an unrelated same-named
-        // branch in the user's source repo.
-        if detected == Some(WorkspaceMode::Worktree) {
-            if let Some(branch) = &repo.branch {
-                if let Err(e) = git::branch_delete(&repo.repo_path, branch).await {
-                    tracing::warn!(%branch, error = %e, op, "branch delete failed");
-                }
-            }
         }
     }
 
