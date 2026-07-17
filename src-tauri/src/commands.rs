@@ -182,6 +182,12 @@ pub async fn attach_repo_to_project(
     repo_path: String,
 ) -> Result<Workspace> {
     let sup = supervisor.inner().clone();
+    // Validate the target project before ensure_git_repo touches the picked
+    // folder: a stale settings modal (project deleted meanwhile) must fail
+    // cleanly, not leave a freshly initialized `.git` behind.
+    if !sup.project_exists(&project_id) {
+        return Err(Error::Other(format!("project not found: {project_id}")));
+    }
     let path = PathBuf::from(repo_path);
     new_project::ensure_git_repo(&path).await?;
     sup.attach_repo_to_project(&project_id, path)

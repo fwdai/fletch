@@ -423,6 +423,10 @@ impl Supervisor {
         self.workspace.remove_workspace_repo(&repo_path)
     }
 
+    pub fn project_exists(&self, project_id: &str) -> bool {
+        self.workspace.project_exists(project_id)
+    }
+
     pub fn attach_repo_to_project(
         &self,
         project_id: &str,

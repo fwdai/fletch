@@ -69,6 +69,7 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
             busy={busy}
             onRelocate={() => void onRelocate(r.path)}
             onDetach={() => void run(() => detachRepoFromProject(projectId, r.path))}
+            onError={setError}
           />
         ))}
       </div>
@@ -96,6 +97,7 @@ function RepoRow({
   busy,
   onRelocate,
   onDetach,
+  onError,
 }: {
   repo: ProjectRef;
   primary: boolean;
@@ -103,6 +105,9 @@ function RepoRow({
   busy: boolean;
   onRelocate: () => void;
   onDetach: () => void;
+  /** Surface a failed save in the field's shared error slot (null clears it) —
+   *  a reverted input alone would read as the label silently vanishing. */
+  onError: (msg: string | null) => void;
 }) {
   const setRepoLabel = useAppStore((s) => s.setRepoLabel);
   const saved = repo.label ?? "";
@@ -115,8 +120,10 @@ function RepoRow({
       // The store round-trips the trimmed value (or "" when cleared); mirror it
       // so the field matches what was persisted.
       setLabel(label.trim());
-    } catch {
-      setLabel(saved); // revert on failure; section-level errors cover the rest
+      onError(null);
+    } catch (e) {
+      setLabel(saved);
+      onError(String(e));
     }
   }
 

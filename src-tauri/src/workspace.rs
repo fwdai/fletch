@@ -494,6 +494,21 @@ impl WorkspaceManager {
         Ok(self.current().expect("workspace initialized"))
     }
 
+    /// Whether a project row exists. The attach command checks this *before*
+    /// `ensure_git_repo` can initialize the picked folder, so a stale settings
+    /// modal can't leave a fresh `.git` on disk as the side effect of an
+    /// attach that was doomed to fail.
+    pub fn project_exists(&self, project_id: &str) -> bool {
+        let conn = self.db.lock();
+        conn.query_row(
+            "SELECT COUNT(*) FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false)
+    }
+
     /// Attach a repo to an existing project, making it a multi-repo project.
     /// An unpinned path is inserted under the target project; a path already
     /// attached to the target is a no-op. A path pinned as its own project is
