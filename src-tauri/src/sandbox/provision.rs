@@ -944,13 +944,9 @@ mod tests {
             dest: &dest,
         };
 
-        provision_on_branch(&spec,
-            "feat/restore",
-            "feat/restore",
-            None,
-        )
-        .await
-        .unwrap();
+        provision_on_branch(&spec, "feat/restore", "feat/restore", None)
+            .await
+            .unwrap();
         assert_eq!(
             run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]),
             "feat/restore"
@@ -1332,10 +1328,9 @@ mod tests {
             dest: &dest,
         };
         // `head` (the parent base) is present in the source store → reachable.
-        let on_branch =
-            provision_on_branch(&spec, "feat", "feat", Some(&head))
-                .await
-                .unwrap();
+        let on_branch = provision_on_branch(&spec, "feat", "feat", Some(&head))
+            .await
+            .unwrap();
         assert!(!on_branch);
         assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);

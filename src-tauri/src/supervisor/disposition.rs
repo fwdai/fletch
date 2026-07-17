@@ -416,6 +416,14 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
         if let Err(e) = provision::teardown(&checkout).await {
             tracing::warn!(error = %e, subdir = %repo.subdir, op, "workspace teardown failed");
         }
+        // Legacy safety net: an agent provisioned under the removed worktree
+        // mode (pre-upgrade) left a `.git/worktrees/<name>` registration in the
+        // source repo. The `rm -rf` above orphans that entry, which keeps its
+        // branch marked checked-out and blocks later `checkout` / `branch -D` in
+        // the source repo until pruned. A best-effort prune clears any now-
+        // missing registration; it is a no-op for clone workspaces (nothing is
+        // registered) and never touches the branch itself.
+        let _ = git::worktree_prune(&repo.repo_path).await;
     }
 
     // Remove the parent dir (may still hold orphan files if any checkout

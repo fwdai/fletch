@@ -40,7 +40,6 @@ pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
         .unwrap_or(EngineKind::SandboxExec)
 }
 
-
 /// Which providers run in Docker sandboxes: those with a wired-up container
 /// image + config-mount + auth (see [`sandbox::docker::DockerProvider`]) — claude,
 /// codex, opencode, pi, and cursor so far. antigravity stays gated: its CLI has no
