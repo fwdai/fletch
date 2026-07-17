@@ -44,13 +44,63 @@ fn is_signalable_action(action: &str) -> bool {
 
 #[derive(Clone)]
 pub struct GitDispatcher {
+    /// Default checkout (the agent's primary repo) — used when an op carries
+    /// no `args.repo`, which keeps single-repo agents byte-identical.
     cwd: PathBuf,
     base_branch: String,
+    /// Sibling checkouts by subdir (directory name under the workspace root),
+    /// each with its own base branch. Includes the primary. Empty for
+    /// dispatchers built without `with_repos` (tests, old call sites) — then
+    /// `args.repo` is rejected as unknown.
+    repos: std::collections::HashMap<String, (PathBuf, String)>,
 }
 
 impl GitDispatcher {
     pub fn new(cwd: PathBuf, base_branch: String) -> Self {
-        Self { cwd, base_branch }
+        Self {
+            cwd,
+            base_branch,
+            repos: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Register the agent's tracked checkouts as `(subdir, cwd, base_branch)`
+    /// so ops can be pointed at any of them via `args.repo`.
+    pub fn with_repos(mut self, repos: Vec<(String, PathBuf, String)>) -> Self {
+        self.repos = repos
+            .into_iter()
+            .map(|(subdir, cwd, base)| (subdir, (cwd, base)))
+            .collect();
+        self
+    }
+
+    /// Resolve the checkout an op targets: `args.repo` (a tracked subdir) when
+    /// present, the primary checkout otherwise. An unknown repo is an error
+    /// response listing the tracked names, so a typo can't silently operate on
+    /// the wrong repo.
+    fn target(&self, id: &str, args: &Value) -> std::result::Result<(PathBuf, String), Response> {
+        let requested = args
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        match requested {
+            None => Ok((self.cwd.clone(), self.base_branch.clone())),
+            Some(name) => match self.repos.get(name) {
+                Some((cwd, base)) => Ok((cwd.clone(), base.clone())),
+                None => {
+                    let mut known: Vec<&str> = self.repos.keys().map(String::as_str).collect();
+                    known.sort_unstable();
+                    Err(Response::err(
+                        id,
+                        format!(
+                            "unknown repo {name:?}; tracked checkouts: {}",
+                            known.join(", ")
+                        ),
+                    ))
+                }
+            },
+        }
     }
 }
 
@@ -83,16 +133,13 @@ impl GitDispatcher {
                 Response::ok(id, 0, "pong".to_string(), String::new()),
                 Vec::new(),
             ),
-            "git_status" => (
-                run_git_command(
-                    id,
-                    &self.cwd,
-                    &["status", "--porcelain=v1", "--branch"],
-                    &[],
-                )
-                .await,
-                Vec::new(),
-            ),
+            "git_status" => match self.target(id, args) {
+                Ok((cwd, _)) => (
+                    run_git_command(id, &cwd, &["status", "--porcelain=v1", "--branch"], &[]).await,
+                    Vec::new(),
+                ),
+                Err(resp) => (resp, Vec::new()),
+            },
             other => (
                 Response::err(id, format!("unknown op: {other}")),
                 Vec::new(),
@@ -139,11 +186,15 @@ impl GitDispatcher {
     }
 
     async fn open_pr(&self, id: &str, args: &Value) -> (Response, Vec<RpcEvent>) {
+        let (cwd, base_branch) = match self.target(id, args) {
+            Ok(t) => t,
+            Err(resp) => return (resp, Vec::new()),
+        };
         let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
         let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
         let requested = arg_branch(args);
 
-        let current = match crate::git::current_branch(&self.cwd).await {
+        let current = match crate::git::current_branch(&cwd).await {
             Ok(b) => b,
             Err(e) => return (Response::err(id, format!("open_pr: {e}")), Vec::new()),
         };
@@ -152,7 +203,7 @@ impl GitDispatcher {
         let branch = match (current, requested) {
             (Some(cur), None) => cur,
             (Some(cur), Some(req)) if req == cur => cur,
-            (Some(_), Some(req)) => match materialize_branch(&self.cwd, &req).await {
+            (Some(_), Some(req)) => match materialize_branch(&cwd, &req).await {
                 Ok(name) => {
                     effects.push(RpcEvent::named(
                         EVENT_BRANCH_CREATED,
@@ -164,7 +215,7 @@ impl GitDispatcher {
             },
             (None, req) => {
                 let desired = req.unwrap_or_else(|| fallback_branch(title));
-                match materialize_branch(&self.cwd, &desired).await {
+                match materialize_branch(&cwd, &desired).await {
                     Ok(name) => {
                         effects.push(RpcEvent::named(
                             EVENT_BRANCH_CREATED,
@@ -177,13 +228,13 @@ impl GitDispatcher {
             }
         };
 
-        if let Err(e) = crate::git::push(&self.cwd, &branch, false).await {
+        if let Err(e) = crate::git::push(&cwd, &branch, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
                 effects,
             );
         }
-        match crate::github::pr_create(&self.cwd, title, body, &self.base_branch).await {
+        match crate::github::pr_create(&cwd, title, body, &base_branch).await {
             Ok(pr) => {
                 crate::telemetry::track("pr_opened", json!({ "source": "agent_rpc" }));
                 effects.push(RpcEvent::named(
@@ -197,7 +248,11 @@ impl GitDispatcher {
     }
 
     async fn git_push(&self, id: &str, args: &Value) -> (Response, Vec<RpcEvent>) {
-        let current = match crate::git::current_branch(&self.cwd).await {
+        let (cwd, _) = match self.target(id, args) {
+            Ok(t) => t,
+            Err(resp) => return (resp, Vec::new()),
+        };
+        let current = match crate::git::current_branch(&cwd).await {
             Ok(b) => b,
             Err(e) => return (Response::err(id, format!("git_push: {e}")), Vec::new()),
         };
@@ -206,7 +261,7 @@ impl GitDispatcher {
         let branch = match current {
             Some(cur) => cur,
             None => match arg_branch(args) {
-                Some(req) => match materialize_branch(&self.cwd, &req).await {
+                Some(req) => match materialize_branch(&cwd, &req).await {
                     Ok(name) => {
                         effects.push(RpcEvent::named(
                             EVENT_BRANCH_CREATED,
@@ -232,7 +287,7 @@ impl GitDispatcher {
         // history (e.g. after the agent rebased its branch). Lease-based so a
         // stale local view can't clobber remote work it hasn't seen.
         let force = arg_bool(args, "force");
-        match crate::git::push(&self.cwd, &branch, force).await {
+        match crate::git::push(&cwd, &branch, force).await {
             Ok(summary) => (Response::ok(id, 0, summary, String::new()), effects),
             Err(e) => (Response::err(id, e.to_string()), effects),
         }
@@ -247,9 +302,13 @@ impl GitDispatcher {
     /// absent, the spawn parent branch is used. Hooks are disabled on this
     /// host-side invocation for the same reason as push (agent-writable `.git`).
     async fn git_fetch(&self, id: &str, args: &Value) -> Response {
+        let (cwd, base_branch) = match self.target(id, args) {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
         let branch = match arg_branch_named(args, "ref") {
             Some(r) => r,
-            None => self.base_branch.clone(),
+            None => base_branch,
         };
         if branch.starts_with('-') {
             return Response::err(
@@ -261,7 +320,7 @@ impl GitDispatcher {
             &crate::github::git_auth_env(),
             &crate::git::no_hooks_env(),
         ]);
-        let resp = run_git_command(id, &self.cwd, &["fetch", "origin", &branch], &auth).await;
+        let resp = run_git_command(id, &cwd, &["fetch", "origin", &branch], &auth).await;
         // `run_git_command` reports `ok: true` for any git that *ran*, carrying a
         // non-zero result only in `exit_code`. For fetch that's a trap: a missing
         // ref or a transient remote failure would leave `origin/<branch>` stale
@@ -787,6 +846,62 @@ mod tests {
             String::from_utf8_lossy(&b_head.stdout).trim(),
             "remote main must be untouched after the refused force push"
         );
+    }
+
+    #[tokio::test]
+    async fn repo_arg_targets_sibling_checkout() {
+        let td = tempfile::tempdir().unwrap();
+        let a = td.path().join("a");
+        let b = td.path().join("b");
+        for repo in [&a, &b] {
+            std::fs::create_dir_all(repo).unwrap();
+            run_git(repo, &["init", "-q", "-b", "main"]);
+        }
+        // A dirty file only in `b`, so the two checkouts are distinguishable.
+        std::fs::write(b.join("x.txt"), b"x").unwrap();
+
+        let disp = GitDispatcher::new(a.clone(), "main".into()).with_repos(vec![
+            ("a".into(), a.clone(), "main".into()),
+            ("b".into(), b.clone(), "main".into()),
+        ]);
+
+        let (resp, _fx) = disp
+            .dispatch_inner("s1", "git_status", &json!({"repo": "b"}))
+            .await;
+        assert_eq!(resp.exit_code, Some(0), "status in b: {resp:?}");
+        assert!(
+            resp.stdout.as_deref().unwrap_or_default().contains("x.txt"),
+            "targeting `b` must see its dirty file: {resp:?}"
+        );
+
+        // No `repo` arg → the primary checkout, exactly as before.
+        let (resp, _fx) = disp.dispatch_inner("s2", "git_status", &Value::Null).await;
+        assert!(
+            !resp.stdout.as_deref().unwrap_or_default().contains("x.txt"),
+            "the default target must remain the primary checkout: {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_repo_arg_is_rejected_with_tracked_names() {
+        let td = tempfile::tempdir().unwrap();
+        let a = td.path().join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        run_git(&a, &["init", "-q", "-b", "main"]);
+
+        let disp = GitDispatcher::new(a.clone(), "main".into()).with_repos(vec![(
+            "a".into(),
+            a.clone(),
+            "main".into(),
+        )]);
+        let (resp, fx) = disp
+            .dispatch_inner("p", "git_push", &json!({"repo": "nope"}))
+            .await;
+        assert!(!resp.ok, "an unknown repo must be rejected: {resp:?}");
+        let err = resp.error.as_deref().unwrap_or_default();
+        assert!(err.contains("unknown repo"), "got: {err}");
+        assert!(err.contains('a'), "should list tracked checkouts: {err}");
+        assert!(fx.is_empty(), "a rejected op must emit nothing: {fx:?}");
     }
 
     #[test]

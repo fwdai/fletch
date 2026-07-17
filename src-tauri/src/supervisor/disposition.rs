@@ -203,6 +203,7 @@ impl Supervisor {
                 pr_url: None,
                 pr_title: None,
                 pr_state: None,
+                label: None,
             });
         }
 

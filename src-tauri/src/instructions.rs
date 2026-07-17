@@ -52,6 +52,47 @@ pub fn text() -> String {
     combined
 }
 
+/// Per-agent workspace-layout note for multi-repo projects, composed ahead of
+/// any custom brief by the spawn path. `None` for single-repo agents, so the
+/// common case injects nothing extra. Lists each sibling checkout by its
+/// directory name (with the repo's project label when one is set) and points
+/// at the `args.repo` selector the git RPC ops accept.
+pub fn multi_repo_workspace_note(repos: &[crate::workspace::TrackedRepo]) -> Option<String> {
+    if repos.len() < 2 {
+        return None;
+    }
+    let mut lines = String::new();
+    for (i, r) in repos.iter().enumerate() {
+        let basename = r
+            .repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        let name = r.label.as_deref().unwrap_or(basename);
+        let marker = if i == 0 {
+            " (your starting checkout)"
+        } else {
+            ""
+        };
+        if name.is_empty() || name == r.subdir {
+            lines.push_str(&format!("- `{}/`{}\n", r.subdir, marker));
+        } else {
+            lines.push_str(&format!("- `{}/` — {}{}\n", r.subdir, name, marker));
+        }
+    }
+    Some(format!(
+        "## Workspace layout: multiple repositories\n\n\
+         This project spans {} repositories; this workspace holds a sibling checkout of each \
+         under the workspace root:\n\n{lines}\n\
+         Work across whichever checkouts the task requires (e.g. `cd ../{}`), committing per \
+         repository with plain git. The host git ops (`git_push`, `open_pr`, `git_fetch`, \
+         `git_status`) target your starting repository by default — pass `\"repo\": \
+         \"<checkout dir name>\"` inside `args` to run one against a sibling checkout instead.",
+        repos.len(),
+        repos[1].subdir,
+    ))
+}
+
 /// The global instruction text plus an optional per-session suffix (a custom
 /// agent's standing brief). The suffix is appended *after* the global block so
 /// project/global guidance composes with the agent's role rather than replacing
@@ -209,6 +250,43 @@ mod tests {
             append_system_prompt_args(Some("   ")),
             append_system_prompt_args(None)
         );
+    }
+
+    #[test]
+    fn multi_repo_note_lists_checkouts_and_labels() {
+        use crate::workspace::TrackedRepo;
+        fn repo(subdir: &str, path: &str, label: Option<&str>) -> TrackedRepo {
+            TrackedRepo {
+                repo_path: std::path::PathBuf::from(path),
+                subdir: subdir.into(),
+                branch: None,
+                parent_branch: None,
+                base_sha: None,
+                pr_number: None,
+                pr_url: None,
+                pr_title: None,
+                pr_state: None,
+                label: label.map(str::to_string),
+            }
+        }
+
+        // Single repo (the common case): no note at all.
+        assert_eq!(
+            multi_repo_workspace_note(&[repo("app", "/src/app", None)]),
+            None
+        );
+
+        let note = multi_repo_workspace_note(&[
+            repo("frontend", "/src/frontend", None),
+            repo("backend", "/src/backend", Some("Gateway")),
+        ])
+        .unwrap();
+        assert!(note.contains("`frontend/`"), "note: {note}");
+        assert!(note.contains("(your starting checkout)"), "note: {note}");
+        assert!(note.contains("`backend/` — Gateway"), "note: {note}");
+        assert!(note.contains("args"), "must point at args.repo: {note}");
+        // No redundant "frontend — frontend" suffix when label == subdir.
+        assert!(!note.contains("frontend/` — frontend"), "note: {note}");
     }
 
     #[test]

@@ -31,6 +31,13 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
     }
     return [...seen.values()];
   }, [projectRefs]);
+  // How many repos the drafted project spans — a multi-repo project gets a
+  // checkout of each at spawn, and the sub-copy should say so.
+  const repoCount = useMemo(() => {
+    const projectId = projectRefs.find((r) => r.path === draft.repoPath)?.project_id;
+    if (!projectId) return 1;
+    return projectRefs.filter((r) => r.project_id === projectId).length;
+  }, [projectRefs, draft.repoPath]);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const runLocalCommand = useAppStore((s) => s.runLocalCommand);
@@ -121,7 +128,9 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             <>
               <h1 className="empty-title text-5xl">What should be the first task?</h1>
               <p className="empty-sub text-base">
-                A checkout and sandbox will be created at{" "}
+                {repoCount > 1
+                  ? `Checkouts of all ${repoCount} repositories and a sandbox will be created at `
+                  : "A checkout and sandbox will be created at "}
                 <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
                   ~/.fletch/workspaces/{draft.name}
                 </span>

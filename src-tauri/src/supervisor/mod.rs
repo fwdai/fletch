@@ -727,6 +727,7 @@ mod tests {
                 pr_url: None,
                 pr_title: None,
                 pr_state: None,
+                label: None,
             },
             String::new(),
             AgentView::Custom,
@@ -797,6 +798,7 @@ mod tests {
             pr_url: None,
             pr_title: None,
             pr_state: None,
+            label: None,
         };
         let mut record = new_agent_record(
             "yosemite".into(),

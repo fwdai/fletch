@@ -63,3 +63,9 @@ actions that need host-held GitHub credentials — `git_push`, `open_pr`, and
 `git_fetch` (local git you run directly; see the git-actions playbooks). The
 dispatcher also exposes `echo` as a simple round-trip check. Future app features
 can define their own ops on top of the same mailbox.
+
+In a multi-repo workspace (sibling repository checkouts under the workspace
+root), every git op accepts an optional `args.repo` — the sibling checkout's
+directory name — and defaults to your starting repository when absent. Commit
+in each repo with plain local git; use `args.repo` only for the host-brokered
+ops above, e.g. `{"op":"git_push","args":{"repo":"backend","branch":"feat/x"}}`.
