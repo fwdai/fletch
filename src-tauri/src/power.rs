@@ -170,7 +170,11 @@ impl ActivityMonitor {
             } else {
                 schedule_release(inner.release_gen);
             }
-            (inner.agents.len(), inner.runs.len(), inner.on_change.clone())
+            (
+                inner.agents.len(),
+                inner.runs.len(),
+                inner.on_change.clone(),
+            )
         };
         if let Some(cb) = cb {
             cb(agents_n, runs_n);
@@ -229,8 +233,10 @@ mod macos {
     const IO_RETURN_SUCCESS: i32 = 0;
     const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 
+    // Split per framework — one `#[link]` each — rather than two `#[link]`
+    // attributes on a single block, which trips clippy's `duplicated_attributes`
+    // (both would carry `kind = "framework"`).
     #[link(name = "IOKit", kind = "framework")]
-    #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
         fn IOPMAssertionCreateWithName(
             assertion_type: CFStringRef,
@@ -239,6 +245,10 @@ mod macos {
             assertion_id: *mut u32,
         ) -> i32;
         fn IOPMAssertionRelease(assertion_id: u32) -> i32;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
         fn CFStringCreateWithCString(
             alloc: *const c_void,
             c_str: *const c_char,
@@ -294,7 +304,10 @@ pub fn status_line(agents: usize, runs: usize) -> String {
     if agents == 0 && runs == 0 {
         return "No active agents".to_string();
     }
-    let a = format!("{agents} agent{} working", if agents == 1 { "" } else { "s" });
+    let a = format!(
+        "{agents} agent{} working",
+        if agents == 1 { "" } else { "s" }
+    );
     let r = format!("{runs} run{} active", if runs == 1 { "" } else { "s" });
     format!("{a} · {r}")
 }

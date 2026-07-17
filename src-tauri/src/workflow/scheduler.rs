@@ -635,15 +635,22 @@ fn spawn_drive_task(
         let respawn_requested = {
             let mut m = runs.lock();
             m.remove(&run_id);
-            respawn.load(Ordering::SeqCst)
+            let respawn_requested = respawn.load(Ordering::SeqCst) && !panicked;
+            if !respawn_requested {
+                // Driver gone and not respawning (paused, terminal, or done):
+                // the run is no longer active work. Clear the activity flag
+                // while still holding the registry lock, so a concurrent
+                // `spawn_drive` for the same run_id — which re-inserts under
+                // this same lock and only then marks the run active — cannot
+                // have its fresh `true` clobbered by this stale `false`. The
+                // clear strictly precedes any re-insert, so the final state is
+                // whatever the newest driver set.
+                crate::power::ActivityMonitor::global().set_run_active(&run_id, false);
+            }
+            respawn_requested
         };
-        if respawn_requested && !panicked {
+        if respawn_requested {
             spawn_drive_task(db, driver, app, runs, run_id);
-        } else {
-            // Driver gone and not respawning (paused, terminal, or done): the
-            // run is no longer active work. A respawn re-registers immediately
-            // above, so we only clear when the run truly stops being driven.
-            crate::power::ActivityMonitor::global().set_run_active(&run_id, false);
         }
     });
 }

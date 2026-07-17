@@ -969,7 +969,7 @@ fn setup_menu_bar(app: &tauri::AppHandle, supervisor: &Arc<Supervisor>) -> tauri
     power::ActivityMonitor::global().resync_agents(running_of(supervisor));
     let supervisor = supervisor.clone();
     tauri::async_runtime::spawn(async move {
-        use tokio::sync::broadcast::error::RecvError;
+        use tokio::sync::broadcast::error::{RecvError, TryRecvError};
         loop {
             match rx.recv().await {
                 Ok(ev) => power::ActivityMonitor::global().set_agent_running(
@@ -977,6 +977,16 @@ fn setup_menu_bar(app: &tauri::AppHandle, supervisor: &Arc<Supervisor>) -> tauri
                     ev.status == crate::workspace::AgentStatus::Running,
                 ),
                 Err(RecvError::Lagged(_)) => {
+                    // Skipped events. The live status map is the source of
+                    // truth — `set_status` updates it *before* it broadcasts —
+                    // so it is never staler than a dropped event. Drain the
+                    // still-buffered backlog first (all of it predates "now"),
+                    // *then* snapshot: resyncing after the drain means a stale
+                    // buffered event can't be re-applied on top of the fresh
+                    // snapshot (the bug: a lag across Running→Idle could
+                    // otherwise leave the assertion stuck active), while an
+                    // event landing mid-drain is captured by the later snapshot.
+                    while let Ok(_) | Err(TryRecvError::Lagged(_)) = rx.try_recv() {}
                     power::ActivityMonitor::global().resync_agents(running_of(&supervisor));
                 }
                 Err(RecvError::Closed) => break,
@@ -1255,8 +1265,13 @@ pub fn run() {
             // keeps running; the tray brings it back. Its status line and the
             // idle-sleep assertion are both driven by the activity monitor,
             // fed off the supervisor's status broadcast + the scheduler's run
-            // registry — no polling.
-            setup_menu_bar(app.handle(), &supervisor)?;
+            // registry — no polling. The tray is a convenience, not a launch
+            // prerequisite: if its backend is unavailable, log and continue
+            // rather than blocking startup (sleep-prevention degrades with it,
+            // which is preferable to failing to open).
+            if let Err(e) = setup_menu_bar(app.handle(), &supervisor) {
+                tracing::error!(error = %e, "menu-bar/tray setup failed; continuing without it");
+            }
 
             // Reclaim nested-Fletch RPC mailbox and checkout roots left in the
             // temp dir by dead instances (dogfooding runs). Live instances'
