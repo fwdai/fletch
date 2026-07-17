@@ -103,6 +103,7 @@
   width: 18px;
   height: 18px;
   border-radius: var(--r-xs);
+  justify-content: center;
   flex-shrink: 0;
   color: var(--accent);
   background: var(--accent-soft);
@@ -272,6 +273,7 @@
   height: 48px;
   margin-bottom: 12px;
   border-radius: 50%;
+  justify-content: center;
   color: var(--success);
   background: color-mix(in oklch, var(--success) 12%, transparent);
 }
