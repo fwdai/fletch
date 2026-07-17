@@ -13,8 +13,11 @@ import { DiffPanel } from "./DiffPanel";
 import { ReviewActions } from "./ReviewActions";
 
 export interface ReviewSurfaceProps {
-  /** The assembled gate evidence, or `null` while it's still being prepared. */
+  /** The assembled gate evidence, or `null` when none was journaled. */
   evidence: GateEvidence | null;
+  /** Evidence may still arrive (events are loading). Actions stay disabled —
+   *  approving before the evidence renders defeats the surface's purpose. */
+  pending?: boolean;
   /** Fetch a file's unified diff (the whole diff when `path` is `null`). */
   getDiff: (path: string | null) => Promise<string>;
   /** Promote the step and advance the run. */
@@ -27,18 +30,31 @@ export interface ReviewSurfaceProps {
 
 export function ReviewSurface({
   evidence,
+  pending = false,
   getDiff,
   onApprove,
   onReject,
   onError,
 }: ReviewSurfaceProps) {
+  const waiting = pending && !evidence;
   return (
     <div className="review-surface">
       <div className="rv-body">
-        {evidence ? <Evidence evidence={evidence} getDiff={getDiff} /> : <Preparing />}
+        {evidence ? (
+          <Evidence evidence={evidence} getDiff={getDiff} />
+        ) : waiting ? (
+          <Preparing />
+        ) : (
+          <NoEvidence />
+        )}
       </div>
       <div className="rv-foot">
-        <ReviewActions onApprove={onApprove} onReject={onReject} onError={onError} />
+        <ReviewActions
+          disabled={waiting}
+          onApprove={onApprove}
+          onReject={onReject}
+          onError={onError}
+        />
       </div>
     </div>
   );
@@ -113,6 +129,18 @@ function Preparing() {
     <div className="empty-msg" style={{ margin: "auto" }}>
       <div className="et">Preparing the review…</div>
       <div>Gathering verification, the diff, and budget for this step.</div>
+    </div>
+  );
+}
+
+/** The pause pre-dates evidence collection (or the event was lost). Actions stay
+ *  live — an evidence-less legacy pause must never be unapprovable — but the
+ *  absence is stated plainly instead of an eternal "preparing" spinner. */
+function NoEvidence() {
+  return (
+    <div className="empty-msg" style={{ margin: "auto" }}>
+      <div className="et">No evidence was recorded for this pause</div>
+      <div>Review the step's chat and the run timeline before deciding.</div>
     </div>
   );
 }

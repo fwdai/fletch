@@ -177,6 +177,7 @@ export function RunView({ id }: { id: string }) {
         detail={pausedDetail}
         question={pendingQuestion}
         evidence={gateEvidence}
+        evidencePending={loading}
       />
 
       <div className="wf-run-main">

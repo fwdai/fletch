@@ -3,7 +3,7 @@
 // approve (S4), retry/resume (S4), answer a question (S10), and conflict
 // resolution (S9). No dead buttons — each paused reason wires to its command.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type GateEvidence, type WfMessage, type WfRun } from "../../../api";
 import type { IconName } from "../../../components/Icon";
 import { Icon } from "../../../components/Icon";
@@ -114,18 +114,31 @@ export function PausedBanner({
   detail,
   question,
   evidence,
+  evidencePending,
 }: {
   run: WfRun;
   detail?: string;
   /** The pending human `ask` message when `paused_reason === "question"`. */
   question?: WfMessage;
   /** The review evidence for a `paused(approval)` run (its `gate_evidence`
-   *  event), or `null` while it's still loading. */
+   *  event), or `null` when none has arrived. */
   evidence?: GateEvidence | null;
+  /** The journal is still loading — absent evidence may yet arrive. */
+  evidencePending?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const setLastError = useAppStore((s) => s.setLastError);
+
+  const isApproval = run.status === "paused" && run.paused_reason === "approval";
+
+  // The review is only meaningful while the run is paused on approval; when the
+  // state flips underneath it (approved elsewhere, reject exhausted the budget),
+  // an open modal would review a run that no longer awaits one — close it.
+  useEffect(() => {
+    if (!isApproval) setReviewing(false);
+  }, [isApproval]);
+
   const spec = specFor(run, detail);
   if (!spec) return null;
 
@@ -146,7 +159,6 @@ export function PausedBanner({
   const paused = run.status === "paused";
   const isQuestion = paused && run.paused_reason === "question";
   const isBudget = paused && run.paused_reason === "budget_exceeded";
-  const isApproval = paused && run.paused_reason === "approval";
 
   return (
     <div className={`wf-banner ${spec.tone}`}>
@@ -181,6 +193,7 @@ export function PausedBanner({
         <ReviewModal
           run={run}
           evidence={evidence ?? null}
+          pending={evidencePending ?? false}
           onClose={() => setReviewing(false)}
           onError={setLastError}
         />
@@ -195,11 +208,13 @@ export function PausedBanner({
 function ReviewModal({
   run,
   evidence,
+  pending,
   onClose,
   onError,
 }: {
   run: WfRun;
   evidence: GateEvidence | null;
+  pending: boolean;
   onClose: () => void;
   onError: (message: string) => void;
 }) {
@@ -209,6 +224,15 @@ function ReviewModal({
       return api.wfRunDiff(run.id, evidence.base_sha, evidence.head_sha, path ?? undefined);
     },
     [run.id, evidence],
+  );
+
+  // Close on success; the run-state effect above also catches external flips.
+  const decide = useCallback(
+    async (action: Promise<void>) => {
+      await action;
+      onClose();
+    },
+    [onClose],
   );
 
   return (
@@ -227,9 +251,10 @@ function ReviewModal({
           </div>
           <ReviewSurface
             evidence={evidence}
+            pending={pending}
             getDiff={getDiff}
-            onApprove={() => api.wfApprove(run.id)}
-            onReject={(note) => api.wfReject(run.id, note)}
+            onApprove={() => decide(api.wfApprove(run.id))}
+            onReject={(note) => decide(api.wfReject(run.id, note))}
             onError={onError}
           />
         </div>

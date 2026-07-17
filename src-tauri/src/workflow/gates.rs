@@ -155,12 +155,21 @@ fn evaluate_approval(require: &[Require], inputs: &GateInputs) -> GateResult {
     // `require: [tests]` (spec §9): the deterministic gate is evaluated first, so
     // the approval pause is unreachable while tests are red — a failing/timed-out/
     // setup-failed run blocks exactly like a `tests` gate, quoting the same reason
-    // (and output tail) so the re-prompt is identical. A green run, or one with no
-    // resolvable test command (the tests gate's degrade case), falls through to
-    // the human-approval decision — the engine never blocks on tests it can't run.
+    // (and output tail) so the re-prompt is identical. With no resolvable test
+    // command the tests gate degrades to the verdict (spec §9.4); mirror that when
+    // the step wrote one, so a "revise"/"blocked" verdict never reaches the human.
+    // A step with no verdict at all still falls through to approval — the approval
+    // gate never demands a verdict, and blocking on a missing file would strand
+    // the step in a re-prompt loop tests can't satisfy.
     if require.contains(&Require::Tests) {
         if let Some(reason) = tests_block_reason(inputs.tests) {
             return GateResult::blocked(reason);
+        }
+        if matches!(inputs.tests, Some(TestsOutcome::NoCommand)) && inputs.verdict.is_some() {
+            let degraded = evaluate_verdict(inputs);
+            if degraded.outcome == GateOutcome::Blocked {
+                return degraded;
+            }
         }
     }
     if inputs.approved {
@@ -411,6 +420,38 @@ mod tests {
                 "outcome {outcome:?} should await the human"
             );
         }
+    }
+
+    #[test]
+    fn approval_require_tests_degrades_to_verdict_on_no_command() {
+        // With no resolvable test command, `require: [tests]` mirrors the tests
+        // gate's degrade (spec §9.4): a blocking verdict never reaches the human.
+        let gate = Gate::Approval {
+            require: vec![Require::Tests],
+        };
+        let v = verdict(VerdictResult::Revise, "flaky assertion");
+        let r = evaluate(
+            &gate,
+            &GateInputs {
+                tests: Some(&TestsOutcome::NoCommand),
+                verdict: Some(&v),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::Blocked);
+        assert!(r.reason.contains("flaky assertion"), "reason: {}", r.reason);
+
+        // A "done" verdict falls through to the human as usual.
+        let v = verdict(VerdictResult::Done, "shipped");
+        let r = evaluate(
+            &gate,
+            &GateInputs {
+                tests: Some(&TestsOutcome::NoCommand),
+                verdict: Some(&v),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::AwaitingApproval);
     }
 
     #[test]

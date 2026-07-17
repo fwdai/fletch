@@ -8,10 +8,13 @@ import { Icon } from "../Icon";
 import { Button } from "../ui";
 
 export function ReviewActions({
+  disabled = false,
   onApprove,
   onReject,
   onError,
 }: {
+  /** Evidence hasn't arrived yet — hold both decisions until it renders. */
+  disabled?: boolean;
   onApprove: () => Promise<void>;
   onReject: (note: string) => Promise<void>;
   onError?: (message: string) => void;
@@ -27,7 +30,7 @@ export function ReviewActions({
   }, [rejecting]);
 
   const run = async (action: () => Promise<void>) => {
-    if (busy) return;
+    if (busy || disabled) return;
     setBusy(true);
     try {
       await action();
@@ -86,10 +89,15 @@ export function ReviewActions({
 
   return (
     <div className="rv-actions-row">
-      <Button variant="outline" danger disabled={busy} onClick={() => setRejecting(true)}>
+      <Button
+        variant="outline"
+        danger
+        disabled={busy || disabled}
+        onClick={() => setRejecting(true)}
+      >
         <Icon name="close" size={13} /> Request changes
       </Button>
-      <Button variant="primary" disabled={busy} onClick={() => void run(onApprove)}>
+      <Button variant="primary" disabled={busy || disabled} onClick={() => void run(onApprove)}>
         <Icon name="check" size={13} /> Approve
       </Button>
     </div>
