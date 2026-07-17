@@ -114,7 +114,8 @@ impl ActivityMonitor {
     }
 
     /// Enable real side effects and register the status-line callback. Called
-    /// once from `setup` in the real app.
+    /// once from `setup` in the real app — unconditionally, so it never depends
+    /// on optional UI (e.g. the tray) being available.
     pub fn arm(&self, on_change: ChangeCb) {
         {
             let mut inner = self.inner.lock();
@@ -123,6 +124,25 @@ impl ActivityMonitor {
         self.armed.store(true, Ordering::SeqCst);
         // Render the initial (idle) status line immediately.
         self.apply();
+    }
+
+    /// Re-fire the status-line callback with the current counts, without
+    /// touching the assertion or the release debounce. Used when the tray's
+    /// status item is published *after* arming (the tray is built lazily and may
+    /// fail), so the menu line reflects live state at once rather than on the
+    /// next transition.
+    pub fn refresh(&self) {
+        let (agents_n, runs_n, cb) = {
+            let inner = self.inner.lock();
+            (
+                inner.agents.len(),
+                inner.runs.len(),
+                inner.on_change.clone(),
+            )
+        };
+        if let Some(cb) = cb {
+            cb(agents_n, runs_n);
+        }
     }
 
     /// Mark an agent running (or not). No-op until armed.
@@ -394,5 +414,29 @@ mod tests {
         // Only when the last driver (the parent) is gone does activity reach 0.
         m.set_run_active("parent", false);
         assert_eq!(m.active_run_count(), 0);
+    }
+
+    // Decoupling guard: the tray and the sleep assertion are independent. When
+    // the tray fails/absent, its status-line callback finds no menu item and is
+    // a no-op — but the monitor is still armed, so activity (the assertion
+    // signal) is tracked exactly as if the tray existed. Mirrors the real
+    // `TrayStatusSlot` (an `Option` the callback checks): here the slot stays
+    // `None`, standing in for a tray that never built.
+    #[test]
+    fn activity_tracked_when_tray_callback_is_a_noop() {
+        let tray_slot: std::sync::Arc<Mutex<Option<()>>> = std::sync::Arc::new(Mutex::new(None));
+        let m = ActivityMonitor::fresh();
+        let slot = tray_slot.clone();
+        m.arm(std::sync::Arc::new(move |_agents, _runs| {
+            // No item published → nothing to update, just like a tray-less run.
+            if slot.lock().is_some() {
+                unreachable!("no tray item was published in this test");
+            }
+        }));
+
+        m.set_run_active("run-1", true);
+        m.set_agent_running("agent-1", true);
+        assert_eq!(m.active_run_count(), 1);
+        assert!(m.is_run_active("run-1"));
     }
 }

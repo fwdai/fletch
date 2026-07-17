@@ -877,10 +877,84 @@ fn quit_warning(agents: usize, runs: usize) -> String {
     )
 }
 
-/// Build the menu-bar tray and wire the activity monitor. The tray keeps a
-/// long-running fleet alive after the window is closed; the monitor drives its
-/// status line and (macOS) the idle-sleep assertion off transition events only.
-fn setup_menu_bar(app: &tauri::AppHandle, supervisor: &Arc<Supervisor>) -> tauri::Result<()> {
+/// The tray's status-line menu item, published here once (and if) the tray is
+/// successfully built. The activity monitor's callback writes through it when
+/// present and no-ops when absent — so the tray and the sleep assertion are
+/// fully decoupled: a tray that never appears leaves this `None` forever without
+/// affecting activity tracking.
+type TrayStatusSlot = Arc<Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>>;
+
+/// Arm the activity monitor and start the status-event subscription. This is the
+/// sleep-assertion + activity-tracking half of the menu-bar feature and MUST NOT
+/// depend on the tray: it is called unconditionally and cannot fail, so a
+/// later tray-build error can never leave the monitor unarmed (which would
+/// silently disable idle-sleep prevention mid-fleet). The returned slot is where
+/// the tray, if it builds, publishes its status item for the callback to update.
+fn arm_activity_monitor(supervisor: &Arc<Supervisor>) -> TrayStatusSlot {
+    let status_slot: TrayStatusSlot = Arc::new(Mutex::new(None));
+
+    // The status-line callback updates the tray item *only if one has been
+    // published*; with no tray it is a no-op, while activity is still tracked
+    // and the assertion still toggles.
+    {
+        let status_slot = status_slot.clone();
+        power::ActivityMonitor::global().arm(std::sync::Arc::new(move |agents, runs| {
+            if let Some(item) = status_slot.lock().as_ref() {
+                let _ = item.set_text(power::status_line(agents, runs));
+            }
+        }));
+    }
+
+    // Feed agent activity off the existing status broadcast — no polling.
+    // Subscribe first, then seed the running set, then follow transitions: the
+    // subscribe-before-read discipline (see `Supervisor::subscribe_status`)
+    // makes a fast Running→Idle flap unlosable. A lagged receiver resyncs from
+    // the live status map.
+    let running_of = |sup: &Arc<Supervisor>| -> std::collections::HashSet<String> {
+        sup.statuses
+            .lock()
+            .iter()
+            .filter(|(_, s)| **s == crate::workspace::AgentStatus::Running)
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    let mut rx = supervisor.subscribe_status();
+    power::ActivityMonitor::global().resync_agents(running_of(supervisor));
+    let supervisor = supervisor.clone();
+    tauri::async_runtime::spawn(async move {
+        use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+        loop {
+            match rx.recv().await {
+                Ok(ev) => power::ActivityMonitor::global().set_agent_running(
+                    &ev.agent_id,
+                    ev.status == crate::workspace::AgentStatus::Running,
+                ),
+                Err(RecvError::Lagged(_)) => {
+                    // Skipped events. The live status map is the source of
+                    // truth — `set_status` updates it *before* it broadcasts —
+                    // so it is never staler than a dropped event. Drain the
+                    // still-buffered backlog first (all of it predates "now"),
+                    // *then* snapshot: resyncing after the drain means a stale
+                    // buffered event can't be re-applied on top of the fresh
+                    // snapshot (the bug: a lag across Running→Idle could
+                    // otherwise leave the assertion stuck active), while an
+                    // event landing mid-drain is captured by the later snapshot.
+                    while let Ok(_) | Err(TryRecvError::Lagged(_)) = rx.try_recv() {}
+                    power::ActivityMonitor::global().resync_agents(running_of(&supervisor));
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+
+    status_slot
+}
+
+/// Build the menu-bar tray (best-effort UI). On success, publish its status item
+/// into `status_slot` so the already-armed monitor starts updating the menu
+/// line. A failure here is non-fatal — the monitor stays armed regardless (see
+/// `arm_activity_monitor`); the caller logs and continues.
+fn setup_tray(app: &tauri::AppHandle, status_slot: &TrayStatusSlot) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
@@ -942,57 +1016,10 @@ fn setup_menu_bar(app: &tauri::AppHandle, supervisor: &Arc<Supervisor>) -> tauri
     }
     let _tray = tray.build(app)?;
 
-    // Arm the monitor: re-render the status line on every change and (macOS)
-    // hold/release the sleep assertion. Arming is what enables real side
-    // effects, so nothing before this point — including tests — touches IOKit.
-    {
-        let status_item = status_item.clone();
-        power::ActivityMonitor::global().arm(std::sync::Arc::new(move |agents, runs| {
-            let _ = status_item.set_text(power::status_line(agents, runs));
-        }));
-    }
-
-    // Feed agent activity off the existing status broadcast — no polling.
-    // Subscribe first, then seed the running set, then follow transitions: the
-    // subscribe-before-read discipline (see `Supervisor::subscribe_status`)
-    // makes a fast Running→Idle flap unlosable. A lagged receiver resyncs from
-    // the live status map.
-    let running_of = |sup: &Arc<Supervisor>| -> std::collections::HashSet<String> {
-        sup.statuses
-            .lock()
-            .iter()
-            .filter(|(_, s)| **s == crate::workspace::AgentStatus::Running)
-            .map(|(id, _)| id.clone())
-            .collect()
-    };
-    let mut rx = supervisor.subscribe_status();
-    power::ActivityMonitor::global().resync_agents(running_of(supervisor));
-    let supervisor = supervisor.clone();
-    tauri::async_runtime::spawn(async move {
-        use tokio::sync::broadcast::error::{RecvError, TryRecvError};
-        loop {
-            match rx.recv().await {
-                Ok(ev) => power::ActivityMonitor::global().set_agent_running(
-                    &ev.agent_id,
-                    ev.status == crate::workspace::AgentStatus::Running,
-                ),
-                Err(RecvError::Lagged(_)) => {
-                    // Skipped events. The live status map is the source of
-                    // truth — `set_status` updates it *before* it broadcasts —
-                    // so it is never staler than a dropped event. Drain the
-                    // still-buffered backlog first (all of it predates "now"),
-                    // *then* snapshot: resyncing after the drain means a stale
-                    // buffered event can't be re-applied on top of the fresh
-                    // snapshot (the bug: a lag across Running→Idle could
-                    // otherwise leave the assertion stuck active), while an
-                    // event landing mid-drain is captured by the later snapshot.
-                    while let Ok(_) | Err(TryRecvError::Lagged(_)) = rx.try_recv() {}
-                    power::ActivityMonitor::global().resync_agents(running_of(&supervisor));
-                }
-                Err(RecvError::Closed) => break,
-            }
-        }
-    });
+    // Publish the status item and render the current line at once (the monitor
+    // is already armed and may have counted activity before the tray appeared).
+    *status_slot.lock() = Some(status_item);
+    power::ActivityMonitor::global().refresh();
 
     Ok(())
 }
@@ -1236,6 +1263,16 @@ pub fn run() {
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
 
+            // Arm the activity monitor (idle-sleep assertion + activity
+            // tracking) *before* any work is resumed below, so the run-level
+            // signal is tight from the first instant: runs re-driven by
+            // `resume_active_runs` register into an already-armed monitor (and
+            // subscribing before resume means no resumed agent's status event
+            // is missed). Infallible and independent of the tray — a tray
+            // failure can never leave sleep-prevention disabled. The tray is
+            // built later and late-publishes its status item into this slot.
+            let tray_status_slot = arm_activity_monitor(&supervisor);
+
             // Workflow engine (S4): the run scheduler + active-run registry. Its
             // driver wraps the supervisor; runs left `pending`/`running` by a
             // prior session are re-driven now (paused runs wait for a user
@@ -1260,17 +1297,16 @@ pub fn run() {
             // code-submit / cancel commands reach it through this slot.
             app.manage(ClaudeSetupState::default());
 
-            // Menu-bar presence + sleep survival (PR: laptop-GUI hardening).
-            // Closing the window hides it (see `on_window_event`) and the app
-            // keeps running; the tray brings it back. Its status line and the
-            // idle-sleep assertion are both driven by the activity monitor,
-            // fed off the supervisor's status broadcast + the scheduler's run
-            // registry — no polling. The tray is a convenience, not a launch
-            // prerequisite: if its backend is unavailable, log and continue
-            // rather than blocking startup (sleep-prevention degrades with it,
-            // which is preferable to failing to open).
-            if let Err(e) = setup_menu_bar(app.handle(), &supervisor) {
-                tracing::error!(error = %e, "menu-bar/tray setup failed; continuing without it");
+            // Menu-bar tray (close-to-tray + status line) — the second half of
+            // the laptop-GUI hardening feature; the first half (the activity
+            // monitor) was already armed above, before any work resumed.
+            // Best-effort: a failure logs and continues — the app still starts
+            // and the monitor stays armed. The tray publishes its status item
+            // into `tray_status_slot` for the monitor's status-line callback,
+            // then `setup_tray` refreshes the line to reflect activity that may
+            // already have been counted before the tray appeared.
+            if let Err(e) = setup_tray(app.handle(), &tray_status_slot) {
+                tracing::error!(error = %e, "menu-bar tray setup failed; continuing without it");
             }
 
             // Reclaim nested-Fletch RPC mailbox and checkout roots left in the
