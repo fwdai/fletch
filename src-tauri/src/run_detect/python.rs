@@ -116,15 +116,12 @@ impl RunDetector for PythonDetector {
         }
 
         // lint: only when Ruff is a declared *dependency* (conservative — no
-        // inventing a command the project may not have installed). A bare
-        // `[tool.ruff]` config table means the project is configured for Ruff
-        // but doesn't itself install the executable, so a line that is a TOML
-        // section header is not treated as a dependency — otherwise verification
-        // would run `ruff check .` and fail where Ruff isn't on PATH.
-        let ruff_dependency = deps_text
-            .lines()
-            .any(|l| l.contains("ruff") && !l.trim_start().starts_with('['));
-        if ruff_dependency {
+        // inventing a command the project may not have installed). We match the
+        // declared package *name*, not a raw substring, so a comment (`# ruff`),
+        // a config table (`[tool.ruff]`), or an unrelated package (`ruffus`,
+        // `ruff-lsp`) never triggers it — otherwise verification would run
+        // `ruff check .` and fail where the executable isn't on PATH.
+        if declares_package(&deps_text, "ruff") {
             rows.push(DetectedRow::new(
                 "lint",
                 RowGroup::Scripts,
@@ -140,6 +137,64 @@ impl RunDetector for PythonDetector {
             rows,
         })
     }
+}
+
+/// Whether `deps_text` (the combined, lowercased dependency manifests) declares
+/// a dependency on package `name` (lowercase). Matches the leading PEP 508
+/// package *token* of a requirement rather than a raw substring, across the
+/// shapes Python manifests use:
+///
+/// * requirements.txt lines — `ruff`, `ruff==0.4`, `ruff[extra]`, `ruff>=0.1; …`;
+/// * quoted specs in a PEP 621 / Poetry `dependencies` array — `"ruff>=0.1"`;
+/// * the `ruff = "…"` key form of a Poetry / Pipfile dependency table.
+///
+/// Blank lines, comments (`# …`), and TOML section headers (`[tool.ruff]`) never
+/// count, and an unrelated package whose name merely contains `name`
+/// (`ruffus`, `sruff`, `ruff-lsp`) is rejected because the whole token must
+/// match.
+fn declares_package(deps_text: &str, name: &str) -> bool {
+    deps_text.lines().any(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+            return false;
+        }
+        // Candidates: the bare line (requirements.txt / TOML key form) plus every
+        // quoted string on it (array elements / table values).
+        std::iter::once(line)
+            .chain(quoted_substrings(line))
+            .any(|cand| leading_package_token(cand) == name)
+    })
+}
+
+/// The leading PEP 508 package name of `spec`: the run of name characters
+/// (`a-z0-9._-`) at its start, before any version / extras / marker punctuation
+/// or a `key =`-style separator.
+fn leading_package_token(spec: &str) -> &str {
+    let spec = spec.trim();
+    let end = spec
+        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')))
+        .unwrap_or(spec.len());
+    &spec[..end]
+}
+
+/// Every `"…"` / `'…'`-quoted substring in `line` (its inner text), so quoted
+/// dependency specs are inspected without their surrounding array/table syntax.
+fn quoted_substrings(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for quote in ['"', '\''] {
+        let mut rest = line;
+        while let Some(open) = rest.find(quote) {
+            let after = &rest[open + 1..];
+            match after.find(quote) {
+                Some(close) => {
+                    out.push(&after[..close]);
+                    rest = &after[close + 1..];
+                }
+                None => break,
+            }
+        }
+    }
+    out
 }
 
 /// Extract `requires-python = "..."` from pyproject.toml text.
@@ -238,6 +293,28 @@ mod tests {
     }
 
     #[test]
+    fn ruff_pinned_spec_yields_lint_row() {
+        let cfg = detect(&[("requirements.txt", "ruff==0.4.9\n")]).unwrap();
+        assert_eq!(val(&cfg, "lint"), "ruff check .");
+    }
+
+    #[test]
+    fn ruff_extras_spec_yields_lint_row() {
+        let cfg = detect(&[("requirements.txt", "ruff[extra]>=0.1\n")]).unwrap();
+        assert_eq!(val(&cfg, "lint"), "ruff check .");
+    }
+
+    #[test]
+    fn ruff_pep621_array_spec_yields_lint_row() {
+        let cfg = detect(&[(
+            "pyproject.toml",
+            "[project]\ndependencies = [\"requests\", \"ruff>=0.1\"]\n",
+        )])
+        .unwrap();
+        assert_eq!(val(&cfg, "lint"), "ruff check .");
+    }
+
+    #[test]
     fn ruff_poetry_dependency_yields_lint_row() {
         let cfg = detect(&[(
             "pyproject.toml",
@@ -256,6 +333,21 @@ mod tests {
             "[project]\nname = \"x\"\n\n[tool.ruff]\nline-length = 100\n",
         )])
         .unwrap();
+        assert!(cfg.rows.iter().all(|r| r.id != "lint"));
+    }
+
+    #[test]
+    fn ruff_comment_mention_omits_lint_row() {
+        // A commented-out / aspirational mention is not a declared dependency.
+        let cfg = detect(&[("requirements.txt", "requests\n# TODO: add ruff later\n")]).unwrap();
+        assert!(cfg.rows.iter().all(|r| r.id != "lint"));
+    }
+
+    #[test]
+    fn ruff_substring_package_omits_lint_row() {
+        // `ruffus` / `sruff` merely contain the substring; the whole package
+        // token must match, so neither yields a Ruff lint row.
+        let cfg = detect(&[("requirements.txt", "ruffus==2.8\nsruff\n")]).unwrap();
         assert!(cfg.rows.iter().all(|r| r.id != "lint"));
     }
 
