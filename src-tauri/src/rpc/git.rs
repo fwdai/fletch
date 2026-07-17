@@ -154,31 +154,58 @@ fn with_repo(mut payload: Value, subdir: &Option<String>) -> Value {
     payload
 }
 
-/// True when `body` already references issue `#number` — bounded so `#12`
-/// doesn't match `#123` (a trailing digit means a different issue). Used to
-/// keep the `Closes` trailer idempotent when the agent already wrote one.
-fn mentions_issue(body: &str, number: u32) -> bool {
+/// GitHub's closing keywords (case-insensitive). Only one of these directly
+/// preceding the reference makes merging the PR close the issue — a bare
+/// mention (`see #12`) links but never closes.
+const CLOSING_KEYWORDS: [&str; 9] = [
+    "close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved",
+];
+
+/// True when `body` already contains a CLOSING reference to issue `#number`
+/// (`fixes #12`, `Closes: #12`, …) — bounded so `#12` doesn't match `#123` (a
+/// trailing digit means a different issue). A mere mention does NOT count: it
+/// wouldn't close the issue, so the trailer is still required. Used to keep
+/// the `Closes` trailer idempotent when the agent already wrote one.
+fn closes_issue(body: &str, number: u32) -> bool {
     let needle = format!("#{number}");
-    let mut rest = body;
-    while let Some(pos) = rest.find(&needle) {
-        let after = &rest[pos + needle.len()..];
-        if after.chars().next().map_or(true, |c| !c.is_ascii_digit()) {
+    let mut offset = 0;
+    while let Some(pos) = body[offset..].find(&needle) {
+        let at = offset + pos;
+        let after = &body[at + needle.len()..];
+        let bounded = after.chars().next().map_or(true, |c| !c.is_ascii_digit());
+        if bounded && ends_with_closing_keyword(&body[..at]) {
             return true;
         }
-        rest = after;
+        offset = at + needle.len();
     }
     false
 }
 
+/// Does the text leading up to a `#N` reference end with a closing keyword
+/// (allowing `fixes #12`, `Fixes: #12`, `fixes#12`)? Strict on the keyword
+/// itself (`prefixes #12` is not a match) — a false negative merely appends a
+/// redundant trailer, while a false positive would leave the issue open.
+fn ends_with_closing_keyword(before: &str) -> bool {
+    let trimmed = before.trim_end();
+    let trimmed = trimmed.strip_suffix(':').unwrap_or(trimmed);
+    let word_start = trimmed
+        .rfind(|c: char| !c.is_ascii_alphabetic())
+        .map_or(0, |i| i + 1);
+    let word = &trimmed[word_start..];
+    CLOSING_KEYWORDS
+        .iter()
+        .any(|k| word.eq_ignore_ascii_case(k))
+}
+
 /// Append a `Closes #<n>` trailer to a PR body for an issue-originated
-/// workspace, unless the body already references the issue. `None` leaves the
-/// body untouched (the normal, non-issue spawn). A blank body becomes just the
-/// trailer.
+/// workspace, unless the body already CLOSES the issue (a bare mention is not
+/// enough). `None` leaves the body untouched (the normal, non-issue spawn). A
+/// blank body becomes just the trailer.
 fn with_closes_trailer(body: &str, close_issue: Option<u32>) -> String {
     let Some(number) = close_issue else {
         return body.to_string();
     };
-    if mentions_issue(body, number) {
+    if closes_issue(body, number) {
         return body.to_string();
     }
     let trailer = format!("Closes #{number}");
@@ -564,19 +591,41 @@ mod tests {
 
     #[test]
     fn closes_trailer_is_idempotent_and_number_bounded() {
-        // Already referenced → left as-is (no duplicate).
+        // Already CLOSED by the body → left as-is (no duplicate).
         assert_eq!(
             with_closes_trailer("Work.\n\nCloses #42", Some(42)),
             "Work.\n\nCloses #42"
         );
-        // A superstring number must NOT count as a mention (#12 vs #123).
-        assert!(!mentions_issue("Closes #123", 12));
-        assert!(mentions_issue("Closes #123", 123));
-        assert!(mentions_issue("see #42, thanks", 42));
+        // A superstring number must NOT count (#12 vs #123).
+        assert!(!closes_issue("Closes #123", 12));
+        assert!(closes_issue("Closes #123", 123));
         assert_eq!(
             with_closes_trailer("Refs #120 and #121", Some(12)),
             "Refs #120 and #121\n\nCloses #12"
         );
+    }
+
+    #[test]
+    fn closes_trailer_requires_a_closing_keyword_not_a_mention() {
+        // A bare mention links but doesn't close — the trailer must still land.
+        assert!(!closes_issue("see #42, thanks", 42));
+        assert_eq!(
+            with_closes_trailer("Follow-up to the report in #42.", Some(42)),
+            "Follow-up to the report in #42.\n\nCloses #42"
+        );
+        // GitHub's closing spellings all count (case, colon, no-space).
+        for body in [
+            "fixes #42",
+            "Fixes: #42",
+            "RESOLVED #42",
+            "close#42",
+            "This should fix #42 for good",
+        ] {
+            assert!(closes_issue(body, 42), "should close: {body}");
+        }
+        // A keyword-suffixed word is not a keyword.
+        assert!(!closes_issue("prefixes #42", 42));
+        assert!(!closes_issue("sunfixed #42", 42));
     }
 
     #[tokio::test]
