@@ -19,6 +19,7 @@ import {
   onSessionSyncHealth,
   onShellOutput,
   onTurnStarted,
+  onVerificationReport,
   onWorkspaceChanged,
 } from "@/api";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
@@ -404,6 +405,14 @@ const registerEventListeners = async (set: AppSet, get: AppGet) => {
 
   await onPrStateChanged((e) => {
     set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
+  });
+
+  // Turn-end verification result (opt-in per project) — stored per agent to
+  // feed the Mission Control card's tests chip.
+  await onVerificationReport((e) => {
+    set((s) => ({
+      verificationReports: { ...s.verificationReports, [e.agent_id]: e.report },
+    }));
   });
 
   // App-wide run-phase tracking. The RunPanel unmounts when its tab isn't

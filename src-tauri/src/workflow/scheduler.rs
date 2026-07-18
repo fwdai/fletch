@@ -144,6 +144,11 @@ impl WorkflowService {
         // entry step's prompt only (see `drive_run_inner` / `execute_step`) — the
         // same form a chat message delivers them, scoped to the first agent.
         attachments: Vec<String>,
+        // The GitHub issue this run was started from (Home-inbox "Start work" →
+        // Pipeline), as a bare issue number. Threaded onto the run row so the
+        // finalize open-PR path can append a `Closes #<n>` trailer. `None` for a
+        // normal launch — backward-compatible with today's behavior.
+        issue_ref: Option<String>,
     ) -> Result<String> {
         let _lifecycle_guard = self.lifecycle.lock().await;
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
@@ -192,8 +197,8 @@ impl WorkflowService {
             conn.execute(
                 "INSERT INTO wf_run (id, definition_id, parent_run_id, name, spec_json, task,
                      project_id, repo_path, run_dir, branch, base_sha, base_branch, status,
-                     budgets_json, spent_json, created_at, updated_at)
-                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12, '{}', ?13, ?13)",
+                     budgets_json, spent_json, created_at, updated_at, issue_ref)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12, '{}', ?13, ?13, ?14)",
                 rusqlite::params![
                     run_id,
                     definition_id,
@@ -208,6 +213,7 @@ impl WorkflowService {
                     base_branch,
                     budgets_json,
                     now,
+                    issue_ref,
                 ],
             )
             .map_err(|e| Error::Other(e.to_string()))?;
@@ -766,6 +772,9 @@ struct RunEssentials {
     status: String,
     budgets_json: String,
     spent_json: String,
+    /// The GitHub issue this run was started from (bare number), or `None`.
+    /// Drives the finalized PR's `Closes #<n>` trailer.
+    issue_ref: Option<String>,
 }
 
 /// Drive one run to a terminal or paused state. Any error bubbling out marks the
@@ -1168,13 +1177,20 @@ async fn finalize_run(
         .or_else(|| Some(run.base_branch.clone()).filter(|b| !b.is_empty()))
         .unwrap_or_else(|| "main".to_string());
     let title = format!("wf: {}", spec.name);
+    // A run started from a Home-inbox issue carries its number; append a
+    // `Closes #<n>` trailer so merging the finalized PR closes the issue. The
+    // run repo is inherently the issue's repo (single-repo), so no subdir
+    // gating — unlike the multi-repo agent path. Idempotent; `None` (a normal
+    // launch) leaves the empty body untouched.
+    let close_issue = run.issue_ref.as_deref().and_then(|s| s.trim().parse().ok());
+    let body = crate::github::with_closes_trailer("", close_issue);
     let outcome = gitops::finalize(
         run_repo,
         &final_ref,
         &run.branch,
         &base,
         &title,
-        "",
+        &body,
         fin.open_pr,
     )
     .await?;
@@ -5644,7 +5660,7 @@ fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<Str
 fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
     conn.query_row(
         "SELECT spec_json, task, project_id, repo_path, run_dir, branch, base_sha, base_branch,
-                status, budgets_json, spent_json
+                status, budgets_json, spent_json, issue_ref
          FROM wf_run WHERE id = ?1",
         [run_id],
         |r| {
@@ -5660,6 +5676,7 @@ fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials> {
                 status: r.get(8)?,
                 budgets_json: r.get(9)?,
                 spent_json: r.get(10)?,
+                issue_ref: r.get(11)?,
             })
         },
     )
@@ -6371,6 +6388,10 @@ pub async fn wf_launch(
     base_branch: Option<String>,
     base_sha: Option<String>,
     attachments: Vec<String>,
+    // Set when the launch originates from a Home-inbox issue (Pipeline mode);
+    // carried onto the run row so its finalized PR closes the issue. `None` for
+    // a normal launch.
+    issue_ref: Option<String>,
     service: Svc<'_>,
     supervisor: tauri::State<'_, Arc<Supervisor>>,
 ) -> std::result::Result<String, String> {
@@ -6393,6 +6414,7 @@ pub async fn wf_launch(
             base_branch,
             base_sha,
             attachments,
+            issue_ref,
         )
         .await
         .map_err(|e| e.to_string())

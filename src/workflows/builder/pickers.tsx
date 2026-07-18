@@ -63,11 +63,16 @@ export function AgentPick({
 export function GatePick({
   rect,
   gate,
+  requireTests,
   onPick,
+  onToggleRequireTests,
 }: {
   rect: PopRect;
   gate: GateKind;
+  /** Whether the current approval gate carries `require: [tests]`. */
+  requireTests: boolean;
   onPick: (kind: GateKind) => void;
+  onToggleRequireTests: (checked: boolean) => void;
 }) {
   return (
     <div className="dd" style={{ position: "fixed", top: rect.top, left: rect.left, width: 300 }}>
@@ -88,6 +93,21 @@ export function GatePick({
           </span>
         </div>
       ))}
+      {gate === "approval" && (
+        // One extra prerequisite the approval gate can require first — the human
+        // pause stays unreachable until the project's tests pass (spec §9).
+        <label
+          className="dd-item"
+          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+        >
+          <input
+            type="checkbox"
+            checked={requireTests}
+            onChange={(e) => onToggleRequireTests(e.target.checked)}
+          />
+          <span style={{ fontSize: 12 }}>Require passing tests first</span>
+        </label>
+      )}
     </div>
   );
 }

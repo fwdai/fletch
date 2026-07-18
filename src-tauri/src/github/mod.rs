@@ -15,12 +15,14 @@
 //! same ones that parsed gh's output.
 
 pub mod client;
+pub mod closes;
 
 use std::path::Path;
 
 use serde_json::{json, Value};
 
 pub use client::{git_auth_env, set_token, TOKEN_SETTING};
+pub(crate) use closes::with_closes_trailer;
 
 use crate::error::{Error, Result};
 

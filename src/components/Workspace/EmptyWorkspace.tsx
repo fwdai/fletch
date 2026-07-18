@@ -175,6 +175,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 name={draft.name}
                 projectId={projectId}
                 defaultWorkflowId={defaultWorkflowId}
+                issueRef={draft.issueRef}
               />
             ) : (
               <Composer

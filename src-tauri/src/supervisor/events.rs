@@ -357,3 +357,28 @@ pub(super) fn emit_run_port(app: &AppHandle, agent_id: &str, port: u16) {
 pub(super) fn emit_workspace_changed(app: &AppHandle) {
     emit(app, "workspace:changed", ());
 }
+
+#[derive(Clone, serde::Serialize)]
+struct VerificationReportPayload {
+    agent_id: String,
+    report: crate::verify::VerificationReport,
+}
+
+/// A turn-end verification (opt-in per project) finished for an ad-hoc agent —
+/// its Mission Control card renders a tests chip from this report. Fire-and-
+/// forget from `trigger_turn_end_verification`; the frontend stores the latest
+/// per agent.
+pub(super) fn emit_verification(
+    app: &AppHandle,
+    agent_id: &str,
+    report: crate::verify::VerificationReport,
+) {
+    emit(
+        app,
+        "verify:report",
+        VerificationReportPayload {
+            agent_id: agent_id.to_string(),
+            report,
+        },
+    );
+}

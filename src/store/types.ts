@@ -16,6 +16,7 @@ import type {
   PrState,
   RunPhase,
   ShortStats,
+  VerificationReport,
   Workspace,
 } from "@/api";
 import type { GitDelegation, GitDelegationKind } from "@/components/RightPanel/delegation";
@@ -287,6 +288,10 @@ export interface GitSlice {
    *  panel action hands control to the agent; cleared by the panel when the
    *  watched git/PR transition lands or the agent gives up. */
   gitDelegations: Record<string, GitDelegation>;
+  /** Latest turn-end verification report per agent (keyed by agent_id), from
+   *  the opt-in `verify:report` event. Feeds the Mission Control card's tests
+   *  chip. Absent = never verified (no chip). */
+  verificationReports: Record<string, VerificationReport>;
   /** Sticky changes-state commit mode (Commit / & push / & open PR). Global
    *  across workspaces, persisted in settings until the user picks another. */
   gitCommitAction: GitCommitAction;

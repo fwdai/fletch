@@ -10,6 +10,7 @@ import { EnvVarsSection } from "./EnvVarsSection";
 import { GeneralSection } from "./GeneralSection";
 import { ProjectPulse } from "./ProjectPulse";
 import { RunEnvSection } from "./RunEnvSection";
+import { VerifySection } from "./VerifySection";
 
 interface Loaded {
   projectId: string;
@@ -114,6 +115,7 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
                 initialOverrides={loaded.overrides}
               />
               <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
+              <VerifySection projectId={loaded.projectId} />
               <DeleteSection projectId={loaded.projectId} projectName={name} />
             </div>
           )}

@@ -37,6 +37,10 @@ export interface ComposerContext {
   /** The project's remembered default workflow — preselected when the user
    *  hasn't picked another this session. */
   defaultWorkflowId?: string | null;
+  /** GitHub issue number (as text) this launch was started from (Home inbox
+   *  "Start work" → Pipeline). Threaded onto the run so its finalized PR
+   *  closes the issue. Undefined for a normal launch. */
+  issueRef?: string;
 }
 
 /** Heading slot for the workflow mode — replaces the agent's title/subtitle on
@@ -57,6 +61,7 @@ export function WorkflowComposer({
   baseBranch,
   projectId,
   defaultWorkflowId,
+  issueRef,
 }: ComposerContext) {
   const selectRun = useAppStore((s) => s.selectRun);
   const setLastError = useAppStore((s) => s.setLastError);
@@ -117,6 +122,8 @@ export function WorkflowComposer({
         def.id,
         baseBranch || undefined,
         input.attachments,
+        undefined,
+        issueRef,
       );
       selectRun(runId);
     } catch (e) {

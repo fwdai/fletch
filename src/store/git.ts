@@ -80,6 +80,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   prChecks: {},
   prComments: {},
   gitDelegations: {},
+  verificationReports: {},
   gitCommitAction: "agent-commit-pr" as GitCommitAction,
 
   fetchGitState: async (agentId, subdir) => {

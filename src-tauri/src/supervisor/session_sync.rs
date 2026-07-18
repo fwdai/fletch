@@ -8,11 +8,21 @@ use crate::agent::per_turn_descriptor;
 use crate::github::{PrState, PrStatus};
 use crate::workspace::{repo_checkout_path, AgentRecord, AgentView, TrackedRepo, WorkspaceManager};
 
-use super::events::{emit_pr_state, emit_session_records_appended, emit_session_sync_health};
+use super::events::{
+    emit_pr_state, emit_session_records_appended, emit_session_sync_health, emit_verification,
+};
 use super::Supervisor;
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
+
+/// Wall-clock ceiling for a turn-end verification, matching the ad-hoc
+/// `run_verification` command (spec §9.4 uses the same 15-minute bound).
+const TURN_END_VERIFY_TIMEOUT_SECS: u64 = 900;
+
+/// Project setting key (stored by the frontend Project Settings toggle) that
+/// opts a project into running verification at every ad-hoc turn end.
+const VERIFY_ON_TURN_END_KEY: &str = "verify.on_turn_end";
 
 impl Supervisor {
     /// Synchronously ingest the agent's transcript into session_records (used
@@ -91,6 +101,78 @@ impl Supervisor {
                 .await
                 .and_then(|(pr, bound)| bound.then_some(pr));
             emit_pr_state(&app, &agent_id, state);
+        });
+    }
+
+    /// Fire-and-forget turn-end verification for an ad-hoc agent, gated on the
+    /// project's opt-in `verify.on_turn_end` flag. Runs the same engine as the
+    /// `run_verification` command on the agent's primary checkout and emits
+    /// `verify:report`, so the agent's Mission Control card arrives with test
+    /// evidence (workflow items already carry gate evidence). Never blocks the
+    /// turn; any failure is silent.
+    ///
+    /// Guardrails (each a cheap early return): only ad-hoc agents (a workflow
+    /// step agent has gates — `owner_run_id` set → skip), only when the flag is
+    /// on, and never two at once for the same agent (they'd race on the
+    /// checkout). Called only on a normal Idle transition (not stop/archive).
+    pub fn trigger_turn_end_verification(&self, app: AppHandle, agent_id: String) {
+        let Ok(record) = self.workspace.agent(&agent_id) else {
+            return;
+        };
+        // Workflow step agents have their own gate evidence — skip them.
+        if record.owner_run_id.is_some() {
+            return;
+        }
+        // A user-stopped turn also converges on Idle, but its checkout is a
+        // half-done interruption — not a turn to certify. The flag is still set
+        // here (drain_message_queue consumes it after us), so peek without
+        // clearing.
+        if self.interrupted.lock().contains(&agent_id) {
+            return;
+        }
+        let project_id = record.project_id;
+        if project_id.is_empty() {
+            return;
+        }
+        // Opt-in per project, OFF by default.
+        let enabled = self
+            .workspace
+            .project_setting(&project_id, VERIFY_ON_TURN_END_KEY)
+            .is_some_and(|v| matches!(v.trim(), "1" | "true"));
+        if !enabled {
+            return;
+        }
+        // Primary repo's checkout (the repo the agent was spawned against).
+        let Some(primary) = record.repos.first() else {
+            return;
+        };
+        let Ok(checkout) = repo_checkout_path(&agent_id, &primary.subdir) else {
+            return;
+        };
+        // Debounce: skip if a verification for this agent is already running.
+        if !self.verify_inflight.lock().insert(agent_id.clone()) {
+            return;
+        }
+        // Project command overrides layer over detection, same as the ad-hoc
+        // `run_verification` command and the workflow tests gate.
+        let setting = |key: &str| self.workspace.project_setting(&project_id, key);
+        let verifier = match crate::verify::Verifier::new(
+            setting("run.test"),
+            setting("run.install"),
+            setting("run.lint"),
+            TURN_END_VERIFY_TIMEOUT_SECS,
+        ) {
+            Ok(v) => v,
+            Err(_) => {
+                self.verify_inflight.lock().remove(&agent_id);
+                return;
+            }
+        };
+        let inflight = self.verify_inflight.clone();
+        tauri::async_runtime::spawn(async move {
+            let report = verifier.verify(&checkout).await;
+            inflight.lock().remove(&agent_id);
+            emit_verification(&app, &agent_id, report);
         });
     }
 }
