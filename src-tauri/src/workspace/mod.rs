@@ -22,14 +22,14 @@ mod paths;
 mod query;
 mod repos;
 mod sessions;
-mod turns;
 #[cfg(test)]
 mod tests;
+mod turns;
 
 pub use factory::{is_per_turn_provider, new_agent_record};
 pub use paths::{
-    agent_parent_dir, allocate_repo_subdir, migrate_default_checkouts_root,
-    occupied_checkout_dirs, repo_checkout_path, WORKSPACES_ROOT_ENV,
+    agent_parent_dir, allocate_repo_subdir, migrate_default_checkouts_root, occupied_checkout_dirs,
+    repo_checkout_path, WORKSPACES_ROOT_ENV,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

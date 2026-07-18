@@ -140,7 +140,10 @@ impl WorkspaceManager {
             .collect()
     }
 
-    pub(super) fn query_agents_for_project(conn: &Connection, project_id: &str) -> Vec<AgentRecord> {
+    pub(super) fn query_agents_for_project(
+        conn: &Connection,
+        project_id: &str,
+    ) -> Vec<AgentRecord> {
         let mut stmt = match conn.prepare(&format!(
             "{AGENT_SELECT} WHERE w.project_id = ?1 ORDER BY w.created_at"
         )) {
@@ -318,7 +321,11 @@ impl WorkspaceManager {
         Ok(project_id)
     }
 
-    pub(super) fn insert_worktree(conn: &Connection, agent_id: &str, repo: &TrackedRepo) -> Result<()> {
+    pub(super) fn insert_worktree(
+        conn: &Connection,
+        agent_id: &str,
+        repo: &TrackedRepo,
+    ) -> Result<()> {
         let path_str = repo.repo_path.to_string_lossy().to_string();
 
         // Look up repo_id from repos table.
