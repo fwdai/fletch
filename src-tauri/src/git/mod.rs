@@ -11,8 +11,8 @@ mod transport;
 mod worktree;
 
 pub use branch::*;
+pub(crate) use cmd::*;
 pub use diff::*;
 pub use files::*;
 pub use transport::*;
 pub use worktree::*;
-pub(crate) use cmd::*;

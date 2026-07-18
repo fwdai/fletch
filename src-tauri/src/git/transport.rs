@@ -281,9 +281,9 @@ pub async fn branch_delete(repo: &Path, branch: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::branch::{checkout_new_branch, current_branch};
     use super::super::worktree::{commit_all, init_repo};
+    use super::*;
     use tokio::process::Command;
 
     async fn config(repo: &Path, key: &str, val: &str) {

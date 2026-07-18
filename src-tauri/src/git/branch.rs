@@ -201,8 +201,8 @@ pub async fn list_local_branches(repo: &Path) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::worktree::{commit_all, init_repo};
+    use super::*;
     use tokio::process::Command;
 
     async fn config(repo: &Path, key: &str, val: &str) {
