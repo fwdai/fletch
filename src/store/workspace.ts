@@ -1,6 +1,15 @@
 import { applyPolicy, type ChatItem, getAdapter } from "@/adapters";
-import { hasUsage, usageFromRecords } from "@/adapters/usage";
-import { api, type SessionRecord } from "@/api";
+import { type AgentUsage, hasUsage, usageFromRecords } from "@/adapters/usage";
+import {
+  type AgentRecord,
+  type AgentView,
+  api,
+  type ForkCode,
+  type ForkContext,
+  type RunPhase,
+  type SessionRecord,
+  type Workspace,
+} from "@/api";
 import {
   applyUserTurns,
   dropAgentEntries,
@@ -16,7 +25,159 @@ import { setSetting } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { forkContextDigest } from "./forkDigest";
 import { interruptedAgents } from "./interrupted";
-import type { AppState, SliceCreator, WorkspaceSlice } from "./types";
+import type { AppState, SliceCreator } from "./types";
+
+/** A degraded transcript-ingest state stored per agent (the `healthy` status is
+ *  never stored — it deletes the key). `provider`/`version` are for the banner
+ *  copy; `status` picks the message. */
+export interface SyncHealthInfo {
+  status: "no_root" | "format_drift" | "read_error" | "partial_read";
+  provider: string;
+  version: string | null;
+}
+
+/** A seed for "promote to workflow": everything the builder needs to open
+ *  pre-filled from an ad-hoc session and launch a run that forks at the
+ *  session's working commit. */
+export interface PromoteSeed {
+  agentId: string;
+  /** The session's display name — titles the seeded workflow. */
+  agentName: string;
+  /** Custom-agent id (when the session had one and it still exists), else the
+   *  base-provider id — the argument `ensureAlias` turns into a spec alias. */
+  agentPick: string;
+  /** The session brief — becomes the run's task text. */
+  task: string;
+  /** The session's HEAD commit — the run's fork point. Empty when the checkout
+   *  has no commit yet (the launch then resolves HEAD in the source repo). */
+  baseSha: string;
+  /** Short, human-facing label for the fork point (short SHA or branch). */
+  baseLabel: string;
+  repoPath: string;
+  projectId: string;
+}
+
+export interface WorkspaceSlice {
+  workspace: Workspace | null;
+  selectedAgentId: string | null;
+  /** A workflow run selected for the main pane, by run id. Mutually exclusive
+   *  with selectedAgentId / activeDraftId. */
+  selectedRunId: string | null;
+  /** A run's step agent whose chat the monitor should focus (set when a sidebar
+   *  step child is clicked). Consumed and cleared by RunView. */
+  focusedStepAgentId: string | null;
+  /** Pending "promote to workflow" seed: the builder opens pre-filled from it. */
+  promoteSeed: PromoteSeed | null;
+  managedLogs: Record<string, ChatItem[]>;
+  /** Question tools the agent is paused on, awaiting a human answer.
+   *  Keyed by agent id, then by the tool_use id of the held `AskUserQuestion`
+   *  call → the control-protocol `request_id` to answer it with. Populated when
+   *  the backend forwards a held `can_use_tool` request; cleared on answer or
+   *  turn end. The widget uses it to know a question is answerable and to route
+   *  the answer back as the tool result (the real pause). */
+  pendingToolUse: Record<string, Record<string, string>>;
+  /** True while an on-disk Claude transcript is being replayed into
+   *  the custom-view log. */
+  transcriptLoading: Record<string, boolean>;
+  /** True once the current process has attempted transcript replay for
+   *  an agent. Prevents repeated reloads when a session has no JSONL. */
+  transcriptLoaded: Record<string, boolean>;
+  /** True between user sending a turn and claude's `result` event for
+   *  that turn. Drives the send-button disabled state and the
+   *  "thinking…" indicator. */
+  managedBusy: Record<string, boolean>;
+  /** The backend's own start timestamp (epoch millis) for the current turn,
+   *  from the `turn:started` event — the live-timer anchor. Shared with the
+   *  persisted `started_at`, so the strip and footer measure from the identical
+   *  instant; cleared at turn end. */
+  turnStartedAt: Record<string, number>;
+  /** Optional label shown alongside the busy indicator, e.g. "Compacting"
+   *  for `/compact`. Cleared when the turn ends. */
+  managedBusyLabel: Record<string, string | undefined>;
+  /** True while a view switch is in flight — disable toggle UI. */
+  switchInFlight: Record<string, boolean>;
+  /** True for agents that completed a turn while not focused — drives the
+   *  "new results to review" dot in the sidebar. Set on turn-end for any
+   *  non-selected agent (covers research-only turns with no diff), cleared
+   *  when the agent is selected. */
+  unseenResults: Record<string, boolean>;
+  /** Degraded transcript-ingest health per agent, keyed by agent_id, from the
+   *  `session:sync-health` event. Absent = healthy (the common case): a `healthy`
+   *  event deletes the key. Present = the vendor CLI drifted, so the chat view
+   *  shows a non-blocking "couldn't read history" banner. In-memory only. */
+  syncHealth: Record<string, SyncHealthInfo>;
+  /** Per-agent cumulative token usage (and latest context-window fill),
+   *  folded from session_records at turn-end and on transcript load. Keyed by
+   *  agent_id; absent until the agent's first turn lands. Empty for agents that
+   *  don't persist usage on disk (cursor, antigravity). See adapters/usage.ts. */
+  usage: Record<string, AgentUsage>;
+  /** Live run phase per agent, keyed by agent_id, from the `run:state` event
+   *  stream. Absent = never started (read as "idle"). Fed by an app-wide
+   *  subscription (not the RunPanel, which unmounts on tab switch) so the Run
+   *  tab's "app is running" green dot stays lit from any tab. Single source of
+   *  truth for phase — the RunPanel reads it rather than holding its own copy. */
+  runPhases: Record<string, RunPhase>;
+  /** Dev-server port per agent, keyed by agent_id. Written by the RunPanel when
+   *  it resolves the run config (detected value + overrides), so the sidebar's
+   *  running indicator can show `:port`. Absent until that agent's Run panel has
+   *  been opened this session (the port isn't on the `run:state` event yet). */
+  runPorts: Record<string, string>;
+
+  selectAgent: (id: string | null) => void;
+  /** Select a workflow run for the main pane (clears agent/draft/settings selection). */
+  selectRun: (id: string) => void;
+  /** Select a run and focus one of its step agents' chats in the monitor. */
+  selectRunStep: (runId: string, agentId: string) => void;
+  /** Clear the pending step-agent focus once the monitor has applied it. */
+  clearFocusedStepAgent: () => void;
+  /** Seed the workflow builder from an ad-hoc session and open it. */
+  promoteAgentToWorkflow: (agentId: string) => Promise<void>;
+  /** Discard a consumed promote seed so it fires only once. */
+  clearPromoteSeed: () => void;
+  spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
+  /** Fork an existing workspace into a new one, seeding its worktree (`code`)
+   *  and conversation (`context`) independently. Refreshes the workspace and
+   *  selects the new agent. Resolves to the new record, or null on failure. */
+  forkAgent: (
+    parentId: string,
+    code: ForkCode,
+    context: ForkContext,
+  ) => Promise<AgentRecord | null>;
+  sendUserMessage: (
+    id: string,
+    text: string,
+    attachments?: string[],
+    thinking?: string,
+  ) => Promise<void>;
+  /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
+   *  Looks up the held control-protocol request for `toolUseId` and delivers
+   *  `updatedInput` (the tool's input with the user's `answers` merged in) as
+   *  an allow/deny control response, resuming the turn. No-op if no held request
+   *  matches (e.g. replayed history, where the answer routes as a normal
+   *  message instead). */
+  answerToolUse: (
+    id: string,
+    toolUseId: string,
+    updatedInput: unknown,
+    behavior?: "allow" | "deny",
+    message?: string,
+  ) => Promise<void>;
+  switchView: (id: string, view: AgentView) => Promise<void>;
+  /** Record an agent's run phase (from a `run:state` event or a RunPanel
+   *  snapshot rehydrate). Drives the Run tab's running indicator. */
+  setRunPhase: (id: string, phase: RunPhase) => void;
+  /** Record an agent's resolved dev-server port (from the RunPanel), for the
+   *  sidebar's `:port` running indicator. */
+  setRunPort: (id: string, port: string) => void;
+  resume: (id: string) => Promise<void>;
+  stop: (id: string) => Promise<void>;
+  discard: (id: string) => Promise<void>;
+  archive: (id: string) => Promise<void>;
+  restore: (id: string) => Promise<void>;
+  /** Read the on-disk JSONL for an agent and replay it through the
+   *  same adapter that processes live events. */
+  loadHistoryTranscript: (id: string) => Promise<void>;
+}
 
 /** Read an agent's canonical log exactly as the transcript view does: pull its
  *  session_records (lazily ingesting on-disk history when the DB is still empty),

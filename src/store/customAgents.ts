@@ -6,7 +6,23 @@ import {
   listCustomAgents,
   type NewCustomAgent,
 } from "@/storage/customAgents";
-import type { AppState, CustomAgentsSlice, SliceCreator } from "./types";
+import type { AppState, SliceCreator } from "./types";
+
+export interface CustomAgentsSlice {
+  /** User-defined agent presets, mirrored from the `custom_agents` table and
+   *  ordered newest-edited first. Loaded once on init. */
+  customAgents: CustomAgent[];
+
+  loadCustomAgents: () => Promise<void>;
+  createCustomAgent: (agent: NewCustomAgent) => Promise<CustomAgent>;
+  /** Patch an existing custom agent; resolves to the merged row, or null if the
+   *  id is unknown. */
+  updateCustomAgent: (id: string, patch: Partial<NewCustomAgent>) => Promise<CustomAgent | null>;
+  deleteCustomAgent: (id: string) => Promise<void>;
+  /** Clone a custom agent ("… copy"); resolves to the new row, or null if the
+   *  source id is unknown. */
+  duplicateCustomAgent: (id: string) => Promise<CustomAgent | null>;
+}
 
 // Store slice for custom agents. The list mirrors the `custom_agents` table and
 // is loaded once on init; every mutation writes through to the db and updates

@@ -7,7 +7,21 @@ import {
   type NewMcpServer,
 } from "@/storage/mcpServers";
 import { detachIdFromAgents } from "./customAgents";
-import type { McpServersSlice, SliceCreator } from "./types";
+import type { SliceCreator } from "./types";
+
+export interface McpServersSlice {
+  /** Shared MCP server registry, mirrored from the `mcp_servers` table and
+   *  ordered newest-edited first. Loaded once on init. */
+  mcpServers: McpServer[];
+
+  loadMcpServers: () => Promise<void>;
+  createMcpServer: (server: NewMcpServer) => Promise<McpServer>;
+  /** Patch an existing server; resolves to the merged row, or null if the id is
+   *  unknown. */
+  updateMcpServer: (id: string, patch: Partial<NewMcpServer>) => Promise<McpServer | null>;
+  /** Delete a server and detach its id from every custom agent. */
+  deleteMcpServer: (id: string) => Promise<void>;
+}
 
 // Store slice for the shared MCP server registry. Mirrors the `mcp_servers`
 // table (loaded once on init); every mutation writes through to the db and

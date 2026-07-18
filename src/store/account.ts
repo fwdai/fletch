@@ -1,6 +1,27 @@
-import { api } from "@/api";
-import { getAccount, saveAccountProfile, toProfile } from "@/storage/accounts";
-import type { AccountSlice, SliceCreator } from "./types";
+import { api, type GhStatus } from "@/api";
+import { type AccountProfile, getAccount, saveAccountProfile, toProfile } from "@/storage/accounts";
+import type { SliceCreator } from "./types";
+
+export interface AccountSlice {
+  /** Local account profile, loaded on init. `null` until the row is read. */
+  account: AccountProfile | null;
+  /** Anonymous usage telemetry consent. Opt-out: defaults on. */
+  telemetryEnabled: boolean;
+  /** GitHub connection: null until the first probe, then the live status.
+   *  `authenticated` gates push/PR/clone affordances app-wide. */
+  github: GhStatus | null;
+
+  saveAccount: (patch: Pick<AccountProfile, "firstName" | "lastName" | "email">) => Promise<void>;
+  /** Re-read the local account row into the store — e.g. after an OAuth
+   *  sign-in writes the provider profile to SQLite. */
+  refreshAccount: () => Promise<void>;
+  /** Re-probe the GitHub connection into `github` (after sign-in/disconnect,
+   *  and once on init). */
+  refreshGithub: () => Promise<void>;
+  /** Drop the stored GitHub token and return to local-only mode. */
+  disconnectGithub: () => Promise<void>;
+  setTelemetryEnabled: (enabled: boolean) => void;
+}
 
 export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   account: null,
