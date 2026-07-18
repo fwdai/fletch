@@ -1,4 +1,3 @@
-
 use super::paths::{migrate_checkouts_root_in, occupied_checkout_dirs_in};
 use super::*;
 
