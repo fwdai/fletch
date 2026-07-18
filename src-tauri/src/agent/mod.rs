@@ -32,11 +32,11 @@ use crate::sandbox::Keepalive;
 pub use capabilities::{
     capabilities, injection_mode, per_turn_descriptor, transcript_reader, PerTurnDescriptor,
 };
+pub(crate) use probe::parse_semver;
 pub use probe::{
     cached_provider_version, check_cli, probe_all_providers, validate_bin, BinValidation,
     ProviderProbe, ToolStatus,
 };
-pub(crate) use probe::parse_semver;
 pub use spawn::{PerTurnSpec, SpawnSpec};
 pub use transcript::{read_jsonl_tail, ReadDiagnostics};
 

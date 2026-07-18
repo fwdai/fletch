@@ -90,8 +90,7 @@ fn read_jsonl_tail_positional_ids_continue_from_start_index() {
         write!(f, "{{\"type\":\"mode\"}}\n{{\"type\":\"summary\"}}\n").unwrap();
     }
     // Pretend 5 records were already ingested.
-    let (recs, _off) =
-        read_jsonl_tail(&path, 0, 5, None, false, &mut ReadDiagnostics::default());
+    let (recs, _off) = read_jsonl_tail(&path, 0, 5, None, false, &mut ReadDiagnostics::default());
     assert_eq!(
         recs.iter()
             .map(|r| r.native_id.as_str())
