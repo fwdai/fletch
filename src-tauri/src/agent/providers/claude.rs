@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::agent::transcript::{records_with_id, JsonlTail, RawRecord, ReadDiagnostics, TranscriptReader};
+use crate::agent::transcript::{
+    records_with_id, JsonlTail, RawRecord, ReadDiagnostics, TranscriptReader,
+};
 
 fn claude_locate(session_id: &str, cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
     crate::transcripts::find_session_jsonl(session_id, cwd, diag)
