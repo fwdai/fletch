@@ -64,6 +64,13 @@ export function History() {
 
   // Keyboard: Esc, ↑↓ navigation, Enter to restore
   useEffect(() => {
+    // The same Enter keystroke that selects `/resume` from the composer
+    // autocomplete opens History and then leaks into this document-level
+    // listener, which would immediately restore the focused (newest) row.
+    // Ignore Enter for a brief window after open so only a deliberate,
+    // later keypress restores — no human reacts to the overlay this fast,
+    // and mouse-opened History is unaffected (its first Enter comes later).
+    const openedAt = performance.now();
     const onKey = (e: KeyboardEvent) => {
       const f = filteredRef.current;
       const idx = focusedIndexRef.current;
@@ -79,6 +86,7 @@ export function History() {
         setFocusedIndex(Math.max(idx - 1, 0));
       } else if (e.key === "Enter") {
         e.preventDefault();
+        if (performance.now() - openedAt < 250) return;
         const item = f[idx];
         if (item && !restoring) {
           setRestoringId(item.id);
