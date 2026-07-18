@@ -297,6 +297,13 @@ export interface PrStateChangedEvent {
   state: PrState | null;
 }
 
+/** A turn-end verification finished for an ad-hoc agent (opt-in per project) —
+ *  the Mission Control card renders a tests chip from this report. */
+export interface VerificationReportEvent {
+  agent_id: string;
+  report: VerificationReport;
+}
+
 /** Lightweight PR summary for the composer's "#" mention autocomplete. */
 export interface PrSummary {
   number: number;
@@ -942,6 +949,10 @@ export const api = {
     /** Explicit fork-point commit (promote-to-workflow). Wins over `baseBranch`
      *  for the fork point; leave undefined for a normal branch-based launch. */
     baseSha?: string,
+    /** GitHub issue number (as text) this run was started from, via the Home
+     *  inbox "Start work" in Pipeline mode. The finalized PR closes it
+     *  (backend appends `Closes #N`). Undefined for a normal launch. */
+    issueRef?: string,
   ) =>
     invoke<string>("wf_launch", {
       spec,
@@ -952,6 +963,7 @@ export const api = {
       baseBranch,
       baseSha,
       attachments,
+      issueRef,
     }),
   /** Cancel a run: stops the live attempt's agent and marks the run canceled. */
   wfCancel: (runId: string) => invoke<void>("wf_cancel", { runId }),
@@ -1265,6 +1277,12 @@ export function onWorkspaceChanged(cb: () => void): Promise<UnlistenFn> {
 
 export function onPrStateChanged(cb: (e: PrStateChangedEvent) => void): Promise<UnlistenFn> {
   return listen<PrStateChangedEvent>("pr:state_changed", (event) => cb(event.payload));
+}
+
+export function onVerificationReport(
+  cb: (e: VerificationReportEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<VerificationReportEvent>("verify:report", (event) => cb(event.payload));
 }
 
 export function onRunOutput(cb: (e: RunOutputEvent) => void): Promise<UnlistenFn> {

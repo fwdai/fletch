@@ -20,6 +20,23 @@ export function EvidenceChips({ item }: { item: ReviewItem }) {
       </span>
     ) : null,
     item.checks ? <ChecksChip key="checks" checks={item.checks} /> : null,
+    // Turn-end verification (§ opt-in): a quiet tests verdict, tinted only on a
+    // definitive pass/fail — `item.tests` is undefined while unknown/running,
+    // so nothing renders (never a fake state).
+    item.tests ? (
+      <span
+        key="tests"
+        className={`mc-chip ${item.tests === "passed" ? "mc-chip-ok" : "mc-chip-fail"}`}
+        title={
+          item.tests === "passed"
+            ? "Project tests passed at the last turn end"
+            : "Project tests failed at the last turn end"
+        }
+      >
+        <Icon name="flask" size={11} />
+        tests {item.tests === "passed" ? "✓" : "✗"}
+      </span>
+    ) : null,
     typeof item.unresolvedComments === "number" && item.unresolvedComments > 0 ? (
       <span key="comments" className="mc-chip">
         <Icon name="bot" size={11} />

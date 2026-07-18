@@ -3,7 +3,7 @@
 // through the editor is value-preserving.
 
 import { describe, expect, it } from "vitest";
-import type { Definition, Spec } from "../spec";
+import type { Definition, Gate, Spec } from "../spec";
 import { blankEditor, ensureAlias, fromDefinition, toSpec, validateEditor } from "./model";
 
 /** The canonical §5.3 example in the stored (JSON) shape: gates always present,
@@ -91,6 +91,25 @@ describe("spec ↔ editor mapping", () => {
     const spec = canonicalSpec();
     const editor = fromDefinition(asDefinition(spec));
     expect(toSpec(editor)).toEqual(spec);
+  });
+
+  it("round-trips an approval gate with and without require: [tests]", () => {
+    // A minimal spec whose only agent is the one the step references (the
+    // editor prunes unreferenced aliases, so the fixture must be self-contained).
+    const approvalSpec = (gate: Gate): Spec => ({
+      version: 1,
+      name: "approval-flow",
+      budgets: { turns: 10, wall_clock_mins: 30, tokens: 100000 },
+      agents: { reviewer: { base: "claude" } },
+      workflow: [{ step: { id: "handoff", agent: "reviewer", goal: "Hand off.", gate } }],
+      finalize: { push: true, open_pr: true, pr_base: "main" },
+    });
+
+    const withReq = approvalSpec({ type: "approval", require: ["tests"] });
+    expect(toSpec(fromDefinition(asDefinition(withReq)))).toEqual(withReq);
+
+    const bare = approvalSpec({ type: "approval" });
+    expect(toSpec(fromDefinition(asDefinition(bare)))).toEqual(bare);
   });
 
   it("preserves the definition id and hue for the edit path", () => {

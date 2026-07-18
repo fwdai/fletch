@@ -12,9 +12,15 @@ import type {
   PrComments,
   PrState,
   ShortStats,
+  VerificationReport,
   WfPausedReason,
   WfRun,
 } from "@/api";
+
+/** A card's tests-evidence chip state, derived from a turn-end
+ *  [`VerificationReport`]. Only ever a definitive verdict — `undefined` while
+ *  unknown/running/skipped, so the card never shows a fake state. */
+export type TestsEvidence = "passed" | "failed";
 
 /** Why an item is in the queue. One card can carry several (an agent with both
  *  unseen results and a failing PR is ONE item with both reasons — see the
@@ -100,6 +106,10 @@ export interface ReviewItem {
   prSubdir?: string;
   checks?: PrChecks;
   unresolvedComments?: number;
+  /** Turn-end verification verdict (opt-in per project) — a quiet tests chip.
+   *  Omitted when unknown/running/no-tests, so it decorates an existing card
+   *  and never fakes a state. */
+  tests?: TestsEvidence;
   staleness?: Staleness | null;
   /** Advisory overlap hints — other agents on the same repo touching some of
    *  the same files. Omitted when there are none. */
@@ -134,9 +144,22 @@ export interface QueueInput {
   prStates: Record<string, PrState | null>;
   prChecks: Record<string, PrChecks | null>;
   prComments: Record<string, PrComments | null>;
+  /** Latest turn-end verification report per agent (keyed by agent_id). Absent
+   *  = never verified. */
+  verificationReports: Record<string, VerificationReport>;
   runs: readonly WfRun[];
   /** Item id → signal signature it was dismissed at. */
   dismissed: Record<string, string>;
+}
+
+/** The definitive tests verdict from a turn-end verification, or `undefined`
+ *  when there's nothing to show (no report, or its `test` check never ran).
+ *  A failing/timed-out/setup-failed test all read as `"failed"` — tests didn't
+ *  pass; a `skipped` test (no command) is not a verdict. */
+function testsEvidence(report: VerificationReport | undefined): TestsEvidence | undefined {
+  const test = report?.checks.find((c) => c.name === "test");
+  if (!test || test.outcome === "skipped") return undefined;
+  return test.outcome === "passed" ? "passed" : "failed";
 }
 
 /** Per-repo map key mirroring `store/git.ts::gitKey` — plain agent id for the
@@ -208,6 +231,7 @@ function agentSignature(p: {
   unseen: boolean;
   stats: ShortStats | undefined;
   signals: PrSignal[];
+  tests: TestsEvidence | undefined;
 }): string {
   const d = p.stats ? `${p.stats.additions}/${p.stats.deletions}/${p.stats.file_count}` : "-";
   const c = p.signals
@@ -216,7 +240,9 @@ function agentSignature(p: {
       return `${s.repo}=${checks}:${s.unresolved}`;
     })
     .join(",");
-  return `u${p.unseen ? 1 : 0}|d${d}|c${c || "-"}`;
+  // Include the tests verdict so a fresh verification resurfaces a dismissed
+  // card (a pass→fail flip, or the first result landing after dismissal).
+  return `u${p.unseen ? 1 : 0}|d${d}|c${c || "-"}|t${p.tests ?? "-"}`;
 }
 
 /** The agent's stalest checkout vs its base, or null when no base has moved
@@ -429,6 +455,7 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
     const signals = collectPrSignals(agent.id, input);
     const failing = signals.filter((s) => s.checks?.rollup === "failing");
     const unresolved = signals.reduce((n, s) => n + s.unresolved, 0);
+    const tests = testsEvidence(input.verificationReports[agent.id]);
 
     const reasons: ReviewReason[] = [];
     // Ad-hoc: a turn landed while you weren't looking and left changes behind.
@@ -445,7 +472,7 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
       id: `agent:${agent.id}`,
       kind: "agent",
       bucket: isPr ? BUCKET.pr : BUCKET.unseen,
-      signature: agentSignature({ unseen, stats, signals }),
+      signature: agentSignature({ unseen, stats, signals, tests }),
       activityAt: parseCreated(agent.created_at),
       title: agent.name,
       goal: firstLine(agent.task) || "—",
@@ -456,6 +483,9 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
       prSubdir: shown?.repo ? shown.repo : undefined,
       checks: shown?.checks ?? undefined,
       unresolvedComments: unresolved > 0 ? unresolved : undefined,
+      // Decoration on an existing card (like staleness/overlaps below): the
+      // tests chip never creates a card, only annotates one.
+      tests,
       // Always-visible signals (§2/§4): the base-moved chip and overlap hints
       // decorate an existing card in every panel state — they never create one.
       staleness: stalenessOf(agent.id, input),

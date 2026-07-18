@@ -292,14 +292,29 @@ export function WorkflowBuilder({
         <GatePick
           rect={pop.rect}
           gate={findStep(state, pop.nid)?.gate.type ?? "verdict"}
+          requireTests={(() => {
+            const cur = findStep(state, pop.nid)?.gate;
+            return cur?.type === "approval" && (cur.require?.includes("tests") ?? false);
+          })()}
           onPick={(kind) => {
             const cur = findStep(state, pop.nid)?.gate;
             const gate: Gate =
               kind === "artifact"
                 ? { type: "artifact", path: cur?.type === "artifact" ? cur.path : "" }
-                : { type: kind };
+                : // Re-picking approval preserves any existing `require: [tests]`.
+                  kind === "approval"
+                  ? {
+                      type: "approval",
+                      require: cur?.type === "approval" ? cur.require : undefined,
+                    }
+                  : { type: kind };
             setGate(pop.nid, gate);
-            closePop();
+            // The gate mode is chosen; approval's require checkbox lives in the
+            // same popover, so keep it open rather than closing on pick.
+            if (kind !== "approval") closePop();
+          }}
+          onToggleRequireTests={(checked) => {
+            setGate(pop.nid, { type: "approval", require: checked ? ["tests"] : undefined });
           }}
         />
       )}

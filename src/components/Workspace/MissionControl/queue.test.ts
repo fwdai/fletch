@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { AgentRecord, GitMeta, PrChecks, PrComments, PrState, ShortStats, WfRun } from "@/api";
+import type {
+  AgentRecord,
+  CheckOutcome,
+  GitMeta,
+  PrChecks,
+  PrComments,
+  PrState,
+  ShortStats,
+  VerificationReport,
+  WfRun,
+} from "@/api";
 import { BUCKET, buildReviewQueue, type QueueInput } from "./queue";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -89,6 +99,11 @@ const meta = (over: Partial<GitMeta>): GitMeta => ({
   ...over,
 });
 
+/** A verification report whose `test` check has the given outcome. */
+const report = (testOutcome: CheckOutcome): VerificationReport => ({
+  checks: [{ name: "test", command: "npm test", outcome: testOutcome, duration_ms: 1, tail: [] }],
+});
+
 function input(over: Partial<QueueInput>): QueueInput {
   return {
     agents: [],
@@ -98,6 +113,7 @@ function input(over: Partial<QueueInput>): QueueInput {
     prStates: {},
     prChecks: {},
     prComments: {},
+    verificationReports: {},
     runs: [],
     dismissed: {},
     ...over,
@@ -300,6 +316,65 @@ describe("buildReviewQueue", () => {
     });
     expect(grown).toHaveLength(1);
     expect(grown[0].id).toBe("agent:a");
+  });
+
+  // ── tests evidence (verify on turn end) ───────────────────────────────────
+
+  it("feeds a passing/failing tests verdict onto an existing card", () => {
+    const base = {
+      agents: [agent({ id: "a" })],
+      unseenResults: { a: true },
+      gitShortstats: { a: stats(4, 2) },
+    };
+    const pass = buildReviewQueue(input({ ...base, verificationReports: { a: report("passed") } }));
+    expect(pass).toHaveLength(1);
+    expect(pass[0].tests).toBe("passed");
+
+    for (const outcome of ["failed", "timed_out", "setup_failed"] as const) {
+      const q = buildReviewQueue(input({ ...base, verificationReports: { a: report(outcome) } }));
+      expect(q[0].tests).toBe("failed");
+    }
+  });
+
+  it("shows no tests verdict when unknown, skipped, or absent (never a fake state)", () => {
+    const base = {
+      agents: [agent({ id: "a" })],
+      unseenResults: { a: true },
+      gitShortstats: { a: stats(4, 2) },
+    };
+    // No report at all.
+    expect(buildReviewQueue(input(base))[0].tests).toBeUndefined();
+    // A skipped test (no command resolved) is not a verdict.
+    const skipped = buildReviewQueue(
+      input({ ...base, verificationReports: { a: report("skipped") } }),
+    );
+    expect(skipped[0].tests).toBeUndefined();
+  });
+
+  it("does not create a card from a tests verdict alone", () => {
+    // No unseen/diff/PR signals → no card, even with a report present.
+    const q = buildReviewQueue(
+      input({ agents: [agent({ id: "a" })], verificationReports: { a: report("failed") } }),
+    );
+    expect(q).toEqual([]);
+  });
+
+  it("resurfaces a dismissed card when a fresh tests verdict flips", () => {
+    const base = input({
+      agents: [agent({ id: "a" })],
+      unseenResults: { a: true },
+      gitShortstats: { a: stats(4, 2) },
+      verificationReports: { a: report("passed") },
+    });
+    const [item] = buildReviewQueue(base);
+    // Dismissed while green; a later failing verification changes the signature.
+    const flipped = buildReviewQueue({
+      ...base,
+      verificationReports: { a: report("failed") },
+      dismissed: { [item.id]: item.signature },
+    });
+    expect(flipped).toHaveLength(1);
+    expect(flipped[0].tests).toBe("failed");
   });
 
   // ── staleness (§2) ──────────────────────────────────────────────────────────

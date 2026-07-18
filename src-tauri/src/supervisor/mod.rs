@@ -105,6 +105,12 @@ pub struct Supervisor {
     /// never persisted (see `session_sync`). Behind an `Arc` so the fire-and-
     /// forget sync task can hold it without borrowing `self`.
     pub sync_health: Arc<Mutex<HashMap<String, session_sync::SyncHealth>>>,
+    /// Agent ids with a turn-end verification currently running, so a fresh turn
+    /// end never launches a second concurrent verify for the same agent (they'd
+    /// race on the checkout). Cleared when the background task finishes. Behind
+    /// an `Arc` so the fire-and-forget task can drop its entry without borrowing
+    /// `self`. See `trigger_turn_end_verification` in `session_sync`.
+    pub verify_inflight: Arc<Mutex<HashSet<String>>>,
     /// Per-agent RPC dispatchers, so the mailbox can be drained on demand
     /// (`settle_agent_rpc`) in addition to the polling watcher — the scheduler
     /// drains a step agent's mailbox at turn end so a `wf_ask` is dispatched
@@ -134,6 +140,7 @@ impl Supervisor {
             message_queue: Mutex::new(MessageQueue::new()),
             interrupted: Mutex::new(HashSet::new()),
             sync_health: Arc::new(Mutex::new(HashMap::new())),
+            verify_inflight: Arc::new(Mutex::new(HashSet::new())),
             rpc_dispatchers: Mutex::new(HashMap::new()),
             // Capacity is generous: a lagging subscriber gets `Lagged` and
             // re-reads `status_of`, so overflow degrades to a resync, never a
@@ -559,6 +566,10 @@ fn transition_active(sup: &Supervisor, app: &AppHandle, agent_id: &str, new: Age
             // session_records. Idempotent + reader-gated, so it's a cheap no-op
             // for agents without a reader.
             sup.trigger_session_sync(app.clone(), agent_id.to_string());
+            // Opt-in per project (OFF by default): run verification on the
+            // agent's checkout so its Mission Control card carries test
+            // evidence. Ad-hoc agents only, fire-and-forget, never blocks.
+            sup.trigger_turn_end_verification(app.clone(), agent_id.to_string());
             drain_pending_bin_respawn(sup, app, agent_id);
             drain_message_queue(sup, app, agent_id);
         }
