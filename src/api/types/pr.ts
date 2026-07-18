@@ -20,26 +20,6 @@ export interface PrSummary {
   state: PrStatus;
 }
 
-/** One label on an issue, for the Home inbox's quiet chips. `color` is
- *  GitHub's 6-hex assignment (no leading `#`), used subtly when present. */
-export interface IssueLabel {
-  name: string;
-  color?: string;
-}
-
-/** An open GitHub issue for the Home inbox. Carries the body so "Start work"
- *  composes the brief without a second round-trip. */
-export interface IssueSummary {
-  number: number;
-  title: string;
-  url: string;
-  labels: IssueLabel[];
-  assignee?: string;
-  /** `updatedAt` as ms-epoch, for the "updated N ago" hint. */
-  updated_at?: number;
-  body?: string;
-}
-
 /** GitHub's combined merge gate (`mergeStateStatus`), normalized (spec §6). */
 export type MergeState =
   | "clean"

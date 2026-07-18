@@ -38,12 +38,31 @@ fn token_registry() -> &'static RwLock<Option<String>> {
 
 /// Replace the in-process token. Callers that change the *persisted* token
 /// (login, disconnect) write the DB and then call this; blank counts as none.
+/// Also drops the cached viewer login — it belongs to the old token.
 pub fn set_token(token: Option<String>) {
     *token_registry().write().unwrap() = token.filter(|t| !t.trim().is_empty());
+    set_cached_login(None);
 }
 
 pub fn token() -> Option<String> {
     token_registry().read().unwrap().clone()
+}
+
+/// The authenticated user's login, cached in-process next to the token. The
+/// issue relevance filter compares assignees against it on every inbox poll,
+/// and it only changes when the token does (`set_token` clears it), so one
+/// `viewer` lookup per sign-in suffices.
+fn login_registry() -> &'static RwLock<Option<String>> {
+    static LOGIN: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+    LOGIN.get_or_init(|| RwLock::new(None))
+}
+
+pub(crate) fn cached_login() -> Option<String> {
+    login_registry().read().unwrap().clone()
+}
+
+pub(crate) fn set_cached_login(login: Option<String>) {
+    *login_registry().write().unwrap() = login.filter(|l| !l.trim().is_empty());
 }
 
 // ---------------------------------------------------------------------------

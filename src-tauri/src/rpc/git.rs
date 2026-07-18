@@ -67,11 +67,13 @@ pub struct GitDispatcher {
     /// dispatchers built without `with_repos` (tests, old call sites) — then
     /// `args.repo` is rejected as unknown.
     repos: std::collections::HashMap<String, (PathBuf, String)>,
-    /// The GitHub issue this workspace was started from (Home inbox "Start
-    /// work"). When set, `open_pr` appends a `Closes #<n>` trailer to the PR
-    /// body for the *primary* checkout, so merging the PR closes the issue.
-    /// `None` for a workspace not tied to an issue.
-    close_issue: Option<u32>,
+    /// The issue this workspace was started from (Home inbox "Start work", a
+    /// composer issue pick), in its source's canonical form — `"123"` for a
+    /// GitHub issue, `"ENG-123"` for a Linear ticket. When set, `open_pr`
+    /// appends the matching closing trailer (`Closes #123` / `Fixes ENG-123`)
+    /// to the PR body for the *primary* checkout, so merging the PR closes
+    /// the issue. `None` for a workspace not tied to an issue.
+    close_issue: Option<String>,
 }
 
 impl GitDispatcher {
@@ -85,10 +87,10 @@ impl GitDispatcher {
         }
     }
 
-    /// Record the originating issue number so `open_pr` closes it from the PR
+    /// Record the originating issue ref so `open_pr` closes it from the PR
     /// body. A no-op when `None` (the normal, non-issue spawn).
-    pub fn with_close_issue(mut self, number: Option<u32>) -> Self {
-        self.close_issue = number;
+    pub fn with_close_issue(mut self, issue_ref: Option<String>) -> Self {
+        self.close_issue = issue_ref;
         self
     }
 
@@ -244,11 +246,12 @@ impl GitDispatcher {
         let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
         let body_arg = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
         // Compose the final body: when this workspace originated from an issue
-        // and the PR targets the issue's (primary) repo, ensure a `Closes #<n>`
-        // trailer so merging the PR closes the issue — reliably, without relying
-        // on the agent to remember. Idempotent (skips if already referenced).
+        // and the PR targets the issue's (primary) repo, ensure a closing
+        // trailer (`Closes #123` / `Fixes ENG-123`) so merging the PR closes
+        // the issue — reliably, without relying on the agent to remember.
+        // Idempotent (skips if already referenced).
         let closes = (t.subdir == self.default_subdir)
-            .then_some(self.close_issue)
+            .then_some(self.close_issue.as_deref())
             .flatten();
         let body_owned = crate::github::with_closes_trailer(body_arg, closes);
         let body = body_owned.as_str();

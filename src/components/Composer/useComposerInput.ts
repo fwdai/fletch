@@ -141,13 +141,12 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     if (draftKey) setComposerDraft(draftKey, text);
   }, [draftKey, text, setComposerDraft]);
 
-  // Apply an externally-supplied seed: append to the current draft (blank-line
-  // separated), focus, resize, and notify the parent to clear it.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs only when a new seed arrives, not on grow identity
-  useEffect(() => {
-    if (!seed) return;
+  /** Append text to the draft (blank-line separated), then focus, resize,
+   *  and land the caret at the end. Used by the external `seed` prop and by
+   *  in-composer inserts (e.g. the issue picker's brief). */
+  function append(extra: string) {
     setText((cur) => {
-      const next = cur.trim() ? `${cur}\n\n${seed}` : seed;
+      const next = cur.trim() ? `${cur}\n\n${extra}` : extra;
       requestAnimationFrame(() => {
         const el = ta.current;
         if (!el) return;
@@ -159,6 +158,13 @@ export function useComposerInput(cfg: ComposerInputConfig) {
       });
       return next;
     });
+  }
+
+  // Apply an externally-supplied seed, and notify the parent to clear it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs only when a new seed arrives, not on append identity
+  useEffect(() => {
+    if (!seed) return;
+    append(seed);
     onSeedConsumed?.();
   }, [seed, onSeedConsumed]);
 
@@ -172,6 +178,7 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   return {
     text,
     setText,
+    append,
     caret,
     attachments,
     addPaths,

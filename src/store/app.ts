@@ -66,8 +66,10 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     void get().loadSkills();
     void get().loadMcpServers();
     // Probe the GitHub connection once (async, non-blocking) so push/PR/clone
-    // affordances know whether to act or prompt to connect.
+    // affordances know whether to act or prompt to connect. Same for Linear —
+    // it gates the issue inbox and the composer's issue picker.
     void get().refreshGithub();
+    void get().refreshLinear();
 
     await registerEventListeners(set, get);
     setupResync(set);

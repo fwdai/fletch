@@ -1,6 +1,6 @@
 import { invoke } from "../invoke";
 import type { Workspace } from "../types/agent";
-import type { IssueSummary, PrChecks, PrComments, PrState, PrSummary } from "../types/pr";
+import type { PrChecks, PrComments, PrState, PrSummary } from "../types/pr";
 import type { GhRepoSummary, GhStatus } from "../types/providers";
 
 export const githubApi = {
@@ -38,9 +38,4 @@ export const githubApi = {
   mergePr: (agentId: string, subdir?: string) => invoke<void>("merge_pr", { agentId, subdir }),
   listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),
   listRepoPrs: (repoPath: string) => invoke<PrSummary[]>("list_repo_prs", { repoPath }),
-  /** Open GitHub issues for the Home inbox, by repo path. `null` when the repo
-   *  has no token / non-GitHub origin / a rate-limit pause is active — the
-   *  section degrades quietly. `[]` means connected but no open issues. */
-  listRepoIssues: (repoPath: string) =>
-    invoke<IssueSummary[] | null>("list_repo_issues", { repoPath }),
 };

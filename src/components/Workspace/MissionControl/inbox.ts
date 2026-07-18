@@ -1,25 +1,28 @@
 // MissionControl/inbox.ts — pure logic for the Home issue inbox: the
 // branch-name suggestion, the "Start work" brief composition, and merging
-// per-repo issue lists into one ordered set of rows. Kept side-effect-free so
-// each piece is unit-tested without the network or the store (inbox.test.ts).
+// per-repo issue lists into one ordered set of rows. Source-agnostic — it
+// speaks `TrackerIssue`, so GitHub issues and Linear tickets (and future
+// sources) flow through the same code. Kept side-effect-free so each piece
+// is unit-tested without the network or the store (inbox.test.ts).
 
-import type { IssueLabel, IssueSummary } from "@/api";
+import { issueDisplayKey, type TrackerIssue, type TrackerLabel } from "@/api";
 
-/** A tracked GitHub repo's fetched issues, tagged with its display label. */
+/** A tracked repo's fetched issues, tagged with its display label. */
 export interface InboxRepo {
   repoPath: string;
   /** Human label for the repo (project/repo name), shown when >1 repo. */
   repoLabel: string;
-  issues: IssueSummary[];
+  issues: TrackerIssue[];
 }
 
 /** One rendered inbox row: an issue plus the repo it belongs to. Keyed by
- *  repo+number so the same issue number in two repos never collides. */
+ *  repo+source+key so the same issue number in two repos (or a GitHub #12
+ *  next to a Linear ENG-12) never collides. */
 export interface InboxRow {
   key: string;
   repoPath: string;
   repoLabel: string;
-  issue: IssueSummary;
+  issue: TrackerIssue;
 }
 
 /** Slugify an issue title for a branch name: lowercase, non-alphanumerics to
@@ -39,7 +42,7 @@ export function slugifyTitle(title: string, maxWords = 5, maxLen = 40): string {
 /** Conventional branch prefix inferred from the issue's labels — `feat` for a
  *  feature/enhancement, `chore` for chore/docs/deps, else `fix` (the safe
  *  default for a bug or an unlabeled issue). */
-export function branchKind(labels: IssueLabel[]): "fix" | "feat" | "chore" {
+export function branchKind(labels: TrackerLabel[]): "fix" | "feat" | "chore" {
   const names = labels.map((l) => l.name.toLowerCase());
   const has = (...needles: string[]) =>
     names.some((n) => needles.some((needle) => n.includes(needle)));
@@ -48,23 +51,30 @@ export function branchKind(labels: IssueLabel[]): "fix" | "feat" | "chore" {
   return "fix";
 }
 
-/** Suggested branch name for an issue, e.g. `fix/123-login-crash`. Visible and
- *  editable in the composed brief — never hidden magic. Falls back to just the
- *  number when the title yields no slug. */
-export function suggestBranchName(
-  issue: Pick<IssueSummary, "number" | "title" | "labels">,
-): string {
+/** Suggested branch name for an issue, e.g. `fix/123-login-crash` (GitHub) or
+ *  `fix/eng-123-login-crash` (Linear). Visible and editable in the composed
+ *  brief — never hidden magic. Falls back to just the key when the title
+ *  yields no slug. */
+export function suggestBranchName(issue: Pick<TrackerIssue, "key" | "title" | "labels">): string {
   const kind = branchKind(issue.labels);
+  const ref = issue.key.toLowerCase();
   const slug = slugifyTitle(issue.title);
-  return slug ? `${kind}/${issue.number}-${slug}` : `${kind}/${issue.number}`;
+  return slug ? `${kind}/${ref}-${slug}` : `${kind}/${ref}`;
 }
 
-/** Compose the new-task brief for "Start work": issue reference, title, body,
- *  and a visible/editable branch suggestion. The `Closes #N` trailer is added
- *  reliably by the backend at PR time, so the brief needn't instruct it. */
-export function composeIssueBrief(issue: IssueSummary): string {
+/** Human name of an issue's source, for the brief's opening line. */
+const SOURCE_LABEL: Record<TrackerIssue["source"], string> = {
+  github: "GitHub",
+  linear: "Linear",
+};
+
+/** Compose the new-task brief for "Start work" / the composer's issue picker:
+ *  issue reference, title, body, and a visible/editable branch suggestion.
+ *  The closing trailer (`Closes #N` / `Fixes ENG-N`) is added reliably by the
+ *  backend at PR time, so the brief needn't instruct it. */
+export function composeIssueBrief(issue: TrackerIssue): string {
   const branch = suggestBranchName(issue);
-  const parts = [`GitHub issue #${issue.number}: ${issue.title}`];
+  const parts = [`${SOURCE_LABEL[issue.source]} issue ${issueDisplayKey(issue)}: ${issue.title}`];
   const body = issue.body?.trim();
   if (body) parts.push(body);
   parts.push(issue.url);
@@ -79,7 +89,7 @@ export function deriveInboxRows(repos: InboxRepo[], limit = 20): InboxRow[] {
   for (const repo of repos) {
     for (const issue of repo.issues) {
       rows.push({
-        key: `${repo.repoPath}#${issue.number}`,
+        key: `${repo.repoPath}#${issue.source}:${issue.key}`,
         repoPath: repo.repoPath,
         repoLabel: repo.repoLabel,
         issue,

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DirListing, PrSummary } from "@/api";
+import type { DirListing, PrSummary, TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Chip } from "@/components/ui/Chip";
+import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { lookupModel, lookupModelInList } from "@/data/modelCatalog";
 import {
   PROVIDER_DETAIL,
@@ -13,6 +14,7 @@ import type { LocalCommandAction } from "@/data/slashCommands";
 import type { AgentUsage } from "@/store";
 import { useAppStore } from "@/store";
 import { ComposerFrame } from "./ComposerFrame";
+import { IssuePicker } from "./IssuePicker";
 import { ModelPicker } from "./ModelPicker";
 import { UsageMeter } from "./UsageMeter";
 import { useComposerInput } from "./useComposerInput";
@@ -71,6 +73,13 @@ interface Props {
   /** Lists the repo's open PRs for the "#" mention autocomplete, which
    *  inserts a `#<number>` reference. Omit to disable "#" mentions. */
   listPrs?: () => Promise<PrSummary[]>;
+  /** Lists open tracker issues (GitHub, Linear) for the footer issue picker;
+   *  picking one appends its brief to the prompt so the agent works that
+   *  exact issue. Omit to hide the picker. */
+  listIssues?: () => Promise<TrackerIssue[]>;
+  /** Fired after an issue pick (in addition to the brief insert), so parents
+   *  with a draft can tag it (`issueRef`) for the PR closing trailer. */
+  onPickIssue?: (issue: TrackerIssue) => void;
   /** Text to inject into the input from elsewhere (e.g. the Git panel's
    *  "→ chat" review-comment action). Appended to whatever is already typed,
    *  then `onSeedConsumed` fires so the parent can clear it. */
@@ -141,6 +150,8 @@ export function Composer({
   mentionSource,
   listDir,
   listPrs,
+  listIssues,
+  onPickIssue,
   seed,
   onSeedConsumed,
   draftKey,
@@ -324,6 +335,18 @@ export function Composer({
           <Chip tip="Attach" onClick={input.browse}>
             <Icon name="attach" size={11} />
           </Chip>
+          {listIssues && (
+            <IssuePicker
+              listIssues={listIssues}
+              onPick={(issue) => {
+                // The brief lands in the prompt for the user to review/edit;
+                // the parent additionally tags its draft so the eventual PR
+                // closes the issue.
+                input.append(composeIssueBrief(issue));
+                onPickIssue?.(issue);
+              }}
+            />
+          )}
           <span style={{ flex: 1 }} />
           {features.tokenUsage && usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
           {/* A disabled <button> swallows hover in the WebView, so the reason

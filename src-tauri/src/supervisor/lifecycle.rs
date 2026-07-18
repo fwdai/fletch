@@ -586,12 +586,10 @@ impl Supervisor {
                 .unwrap_or_else(|| "main".to_string());
             repo_targets.push((r.subdir.clone(), checkout, base));
         }
-        // A workspace started from a Home-inbox issue carries its number here;
-        // the dispatcher appends `Closes #<n>` to the primary repo's PR body.
-        let close_issue = record
-            .issue_ref
-            .as_deref()
-            .and_then(|s| s.trim().parse().ok());
+        // A workspace started from an issue carries its ref here ("123" for
+        // GitHub, "ENG-123" for Linear); the dispatcher appends the matching
+        // closing trailer to the primary repo's PR body.
+        let close_issue = record.issue_ref.clone().filter(|s| !s.trim().is_empty());
         let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch)
             .with_repos(repo_targets)
             .with_close_issue(close_issue);

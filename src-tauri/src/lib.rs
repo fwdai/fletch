@@ -14,6 +14,8 @@ mod git_dist;
 mod git_state;
 mod github;
 mod instructions;
+mod issues;
+mod linear;
 mod managed_session;
 mod message_queue;
 mod model_catalog;
@@ -1179,6 +1181,10 @@ pub fn run() {
             // Seed the in-process GitHub token so API calls and git network
             // auth work without a DB handle (updated on sign-in).
             seed_secret_mirror(&db, github::TOKEN_SETTING, github::set_token);
+            // Same for the Linear API key, so the issue adapters — reached
+            // from poll paths with no DB handle — see a key pasted in a
+            // previous run.
+            seed_secret_mirror(&db, linear::TOKEN_SETTING, linear::set_token);
             {
                 let db = db.clone();
                 git_dist::set_identity_source(Box::new(move || {
@@ -1487,7 +1493,11 @@ pub fn run() {
             commands::run_claude_command,
             commands::list_prs,
             commands::list_repo_prs,
-            commands::list_repo_issues,
+            commands::list_tracker_issues,
+            commands::linear_status,
+            commands::linear_connect,
+            commands::linear_disconnect,
+            commands::linear_list_teams,
             commands::list_repo_tree,
             commands::read_checkout_file,
             commands::get_file_diff,

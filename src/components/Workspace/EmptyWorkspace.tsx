@@ -5,6 +5,7 @@ import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import {
@@ -52,6 +53,23 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
     () => projectRefs.find((r) => r.path === draft.repoPath)?.project_id ?? "",
     [projectRefs, draft.repoPath],
   );
+
+  // The project's configured Linear team (Project Settings), scoping the
+  // composer's issue picker. Undefined while loading or when none is set —
+  // the picker then serves GitHub issues only.
+  const [linearTeamId, setLinearTeamId] = useState<string | undefined>();
+  useEffect(() => {
+    let cancelled = false;
+    setLinearTeamId(undefined);
+    getLinearTeamId(projectId)
+      .then((teamId) => {
+        if (!cancelled) setLinearTeamId(teamId);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   // Kickoff mode: a quick single agent, or a multi-step pipeline. The toggle
   // sits at the top of the page and swaps the whole block — it never gates the
@@ -192,6 +210,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 mentionSource={() => api.listRepoTree(draft.repoPath)}
                 listDir={api.listDir}
                 listPrs={() => api.listRepoPrs(draft.repoPath)}
+                listIssues={() => api.listTrackerIssues(draft.repoPath, linearTeamId)}
+                onPickIssue={(issue) => updateDraft(draft.id, { issueRef: issue.key })}
                 defaultModel={draft.model}
                 defaultCustomAgentId={draft.customAgentId}
                 onChangeSelection={(provider, model, customAgentId) => {

@@ -8,6 +8,7 @@ import { basename } from "@/util/format";
 import { DeleteSection } from "./DeleteSection";
 import { EnvVarsSection } from "./EnvVarsSection";
 import { GeneralSection } from "./GeneralSection";
+import { LinearSection } from "./LinearSection";
 import { ProjectPulse } from "./ProjectPulse";
 import { RunEnvSection } from "./RunEnvSection";
 import { VerifySection } from "./VerifySection";
@@ -115,6 +116,7 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
                 initialOverrides={loaded.overrides}
               />
               <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
+              <LinearSection projectId={loaded.projectId} />
               <VerifySection projectId={loaded.projectId} />
               <DeleteSection projectId={loaded.projectId} projectName={name} />
             </div>
