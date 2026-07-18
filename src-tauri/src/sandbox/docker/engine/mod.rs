@@ -53,11 +53,14 @@
 //! mounted host files appear owned by the user. // TODO(linux-host): UID
 //! mapping before supporting Linux hosts.
 //!
-//! Layout: this module folder splits the engine into [`settings`] (launch knobs
-//! + version-refresh guard), [`auth`] (per-provider container auth), [`config_dir`]
-//! (non-default config-dir detection + borrowed object stores), [`run_args`] (the
-//! `docker run` argv builder), and [`util`] (naming, liveness, exit codes). The
-//! `DockerEngine` struct and its `SandboxEngine` impl stay here.
+//! Layout: this module folder splits the engine into
+//! - [`settings`] — launch knobs and the version-refresh guard
+//! - [`auth`] — per-provider container auth
+//! - [`config_dir`] — non-default config-dir detection and borrowed object stores
+//! - [`run_args`] — the `docker run` argv builder
+//! - [`util`] — naming, liveness, exit codes
+//!
+//! The `DockerEngine` struct and its `SandboxEngine` impl stay here.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
