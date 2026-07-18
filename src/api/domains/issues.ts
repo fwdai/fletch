@@ -13,6 +13,10 @@ export const issuesApi = {
       repoPath,
       linearTeamId: linearTeamId ?? null,
     }),
+  /** Re-tag a running agent with the issue it's working (a mid-session pick
+   *  in the composer), so its eventual PR carries the closing trailer. */
+  setAgentIssueRef: (agentId: string, issueRef: string) =>
+    invoke<void>("set_agent_issue_ref", { agentId, issueRef }),
   linearStatus: () => invoke<LinearStatus>("linear_status"),
   /** Validate + store a Linear personal API key. Rejects on a bad key. */
   linearConnect: (apiKey: string) => invoke<LinearStatus>("linear_connect", { apiKey }),

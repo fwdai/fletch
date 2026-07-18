@@ -587,12 +587,14 @@ impl Supervisor {
             repo_targets.push((r.subdir.clone(), checkout, base));
         }
         // A workspace started from an issue carries its ref here ("123" for
-        // GitHub, "ENG-123" for Linear); the dispatcher appends the matching
-        // closing trailer to the primary repo's PR body.
+        // GitHub, "ENG-123" for Linear); it seeds the agent's live issue ref,
+        // which the dispatcher reads at open_pr time to append the matching
+        // closing trailer to the primary repo's PR body (a mid-session
+        // composer pick replaces the seed).
         let close_issue = record.issue_ref.clone().filter(|s| !s.trim().is_empty());
         let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch)
             .with_repos(repo_targets)
-            .with_close_issue(close_issue);
+            .with_close_issue(agent_id, close_issue);
         // A run-owned step agent also gets the workflow comms ops (wf_report /
         // wf_ask / wf_notify, §10); everything else still falls through to the
         // git dispatcher. Plain agents keep the git dispatcher unchanged.

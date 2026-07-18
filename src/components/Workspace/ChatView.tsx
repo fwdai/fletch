@@ -381,6 +381,14 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               listIssues={
                 repoPath ? () => api.listTrackerIssues(repoPath, linearTeamId) : undefined
               }
+              onPickIssue={(issue) => {
+                // Persist the pick so the agent's eventual PR closes this
+                // issue — the brief insert alone wouldn't survive to the
+                // trailer. Best-effort: a failure only loses the trailer.
+                api.setAgentIssueRef(agent.id, issue.key).catch((e) => {
+                  console.error("set_agent_issue_ref failed", e);
+                });
+              }}
               seed={composerSeed}
               onSeedConsumed={onSeedConsumed}
               draftKey={agent.id}

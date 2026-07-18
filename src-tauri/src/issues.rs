@@ -4,9 +4,40 @@
 //! inbox and the composer's issue picker consume [`TrackerIssue`] only, so
 //! adding a source never touches the UI plumbing.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use crate::github;
+
+/// Live issue ref per agent ("123" / "ENG-123"), read by the git dispatcher
+/// at `open_pr` time so a mid-session pick (the composer's issue picker in an
+/// existing chat) reaches the PR trailer without rebuilding the dispatcher —
+/// which is constructed once per session and would otherwise hold a stale
+/// copy. Seeded from the workspace row at spawn/resume and updated by the
+/// `set_agent_issue_ref` command alongside that row, which stays the durable
+/// source of truth across restarts.
+fn issue_ref_registry() -> &'static Mutex<HashMap<String, String>> {
+    static REG: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Set (or, with `None`/blank, clear) an agent's live issue ref.
+pub fn set_live_issue_ref(agent_id: &str, issue_ref: Option<String>) {
+    let mut reg = issue_ref_registry().lock().unwrap();
+    match issue_ref.filter(|s| !s.trim().is_empty()) {
+        Some(r) => {
+            reg.insert(agent_id.to_string(), r);
+        }
+        None => {
+            reg.remove(agent_id);
+        }
+    }
+}
+
+pub fn live_issue_ref(agent_id: &str) -> Option<String> {
+    issue_ref_registry().lock().unwrap().get(agent_id).cloned()
+}
 
 /// Which tracker an issue came from. Serialized lowercase — the frontend's
 /// `IssueSource` union mirrors it.
@@ -103,4 +134,24 @@ pub async fn issue_list(
     issues.sort_by_key(|i| std::cmp::Reverse(i.updated_at.unwrap_or(0)));
     issues.truncate(limit as usize);
     issues
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A later pick replaces the spawn seed, and a blank/None clears the tag
+    /// (open_pr then appends no trailer).
+    #[test]
+    fn live_issue_ref_set_replace_clear() {
+        set_live_issue_ref("issues-test-agent", Some("123".into()));
+        assert_eq!(live_issue_ref("issues-test-agent").as_deref(), Some("123"));
+        set_live_issue_ref("issues-test-agent", Some("ENG-9".into()));
+        assert_eq!(
+            live_issue_ref("issues-test-agent").as_deref(),
+            Some("ENG-9")
+        );
+        set_live_issue_ref("issues-test-agent", Some("  ".into()));
+        assert_eq!(live_issue_ref("issues-test-agent"), None);
+    }
 }

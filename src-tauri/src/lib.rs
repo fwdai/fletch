@@ -1494,6 +1494,7 @@ pub fn run() {
             commands::list_prs,
             commands::list_repo_prs,
             commands::list_tracker_issues,
+            commands::set_agent_issue_ref,
             commands::linear_status,
             commands::linear_connect,
             commands::linear_disconnect,

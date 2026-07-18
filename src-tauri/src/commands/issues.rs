@@ -8,6 +8,7 @@ use tauri::State;
 use crate::error::Result;
 use crate::issues::TrackerIssue;
 use crate::linear;
+use crate::supervisor::Supervisor;
 
 use super::files::expand_tilde;
 
@@ -38,6 +39,26 @@ pub async fn list_tracker_issues(
     linear_team_id: Option<String>,
 ) -> Result<Vec<TrackerIssue>> {
     Ok(crate::issues::issue_list(&expand_tilde(&repo_path), linear_team_id.as_deref(), 30).await)
+}
+
+/// Re-tag a running agent with the issue it's working — the composer's issue
+/// picker in an existing chat. A spawn-time ref only exists for drafts;
+/// picking mid-session must land the same way, so this persists the ref to
+/// the workspace row (the durable source across restarts) and updates the
+/// live registry the git dispatcher reads at `open_pr` time, so the PR's
+/// closing trailer follows the latest pick. `None`/blank clears the tag.
+#[tauri::command]
+pub fn set_agent_issue_ref(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    issue_ref: Option<String>,
+) -> Result<()> {
+    let issue_ref = issue_ref.filter(|s| !s.trim().is_empty());
+    supervisor
+        .workspace
+        .update_agent_issue_ref(&agent_id, issue_ref.as_deref())?;
+    crate::issues::set_live_issue_ref(&agent_id, issue_ref);
+    Ok(())
 }
 
 /// The Linear connection state: whether an API key is stored, and who it
