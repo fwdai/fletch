@@ -1,4 +1,20 @@
-import type { ComposerSlice, SliceCreator } from "./types";
+import type { SliceCreator } from "./types";
+
+export interface ComposerSlice {
+  /** Pending text to push into an agent's chat composer (the "→ chat" quick
+   *  action on a review comment). Generic, single-channel: a new seed for an
+   *  agent appends to any unconsumed one. The Composer applies and clears it. */
+  composerSeeds: Record<string, string>;
+  /** Unsent composer text, keyed by agent id (existing chats) or draft id
+   *  (the new-agent composer). Switching views remounts the Composer and would
+   *  otherwise drop what the user typed; this preserves it until sent. Set to
+   *  "" to clear an entry. */
+  composerDrafts: Record<string, string>;
+
+  seedComposer: (agentId: string, text: string) => void;
+  consumeComposerSeed: (agentId: string) => void;
+  setComposerDraft: (key: string, text: string) => void;
+}
 
 export const createComposerSlice: SliceCreator<ComposerSlice> = (set) => ({
   composerSeeds: {},

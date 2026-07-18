@@ -10,8 +10,18 @@
 import type { ChatItem } from "@/adapters";
 import type { AgentUsage } from "@/adapters/usage";
 import { api } from "@/api";
+import type { LocalCommandAction } from "@/data/slashCommands";
 import { repoPathFor } from "@/helpers";
-import type { LocalCommandsSlice, SliceCreator } from "./types";
+import type { SliceCreator } from "./types";
+
+/** Dispatcher for app-handled ("local") slash commands — Claude built-ins that
+ *  don't resolve over stream-json. Implemented in store/localCommands.ts. */
+export interface LocalCommandsSlice {
+  /** Execute an app-handled slash command picked in the composer. Never sends
+   *  text to the agent. `agentId` is absent in the new-agent (draft) composer,
+   *  where session-scoped commands no-op. */
+  runLocalCommand: (action: LocalCommandAction, agentId?: string) => Promise<void>;
+}
 
 /** One-line-per-field summary of a session's token usage, for `/cost`. Claude
  *  doesn't report a dollar cost in-transcript, so that line only appears for

@@ -1,7 +1,48 @@
 import { api } from "@/api";
-import { loadCachedCatalog, refreshCatalog } from "@/data/modelCatalog";
+import {
+  loadCachedCatalog,
+  type ModelMeta,
+  refreshCatalog,
+  type SlimCatalog,
+} from "@/data/modelCatalog";
 import { setSetting } from "@/storage/settings";
-import type { ProvidersSlice, SliceCreator } from "./types";
+import type { SliceCreator } from "./types";
+
+export interface ProvidersSlice {
+  providerFlags: Record<string, boolean>;
+  /** Live-probed version strings keyed by provider id. Populated async on
+   *  init; absent until a probe resolves (never a hardcoded default). */
+  providerVersions: Record<string, string>;
+  /** Resolved binary paths keyed by provider id, from the version probe. */
+  providerPaths: Record<string, string>;
+  /** True once a provider probe has *succeeded*. Stays false while probing and
+   *  after a failed probe, so install-aware UI (model picker, readiness check)
+   *  fails open — treating install state as unknown rather than "all missing" —
+   *  instead of disabling every agent on a transient IPC error or on boot. */
+  providersProbed: boolean;
+  /** User-set custom binary paths keyed by provider id (the raw value entered,
+   *  before resolution). Absent = auto-detect. This is the source of truth for
+   *  the "Custom" tag in the providers settings, independent of the probe. */
+  providerPathOverrides: Record<string, string>;
+  /** Per-model metadata (context window, reasoning) keyed by bare model id —
+   *  the `byId` view of the hybrid catalog. Seeded from the localStorage cache
+   *  on init, rebuilt from agent discovery + models.dev when stale (24h). */
+  modelCatalog: SlimCatalog;
+  /** Supported models grouped by agent — the `byAgent` view, for the model
+   *  picker. Same provenance and refresh cadence as `modelCatalog`. */
+  modelsByAgent: Record<string, ModelMeta[]>;
+
+  setProviderEnabled: (id: string, enabled: boolean) => void;
+  /** Re-probe installed provider CLIs for versions + binary paths. Runs once
+   *  on init and again when the user re-scans from the Providers settings. */
+  refreshProviderVersions: () => Promise<void>;
+  /** Set (path) or clear (null) a provider's custom binary path. Persists the
+   *  override, updates local state, and re-probes so the version/path refresh. */
+  setProviderPathOverride: (id: string, path: string | null) => Promise<void>;
+  /** Rebuild the model catalog (agent discovery + models.dev) when the cache is
+   *  stale (1h), or immediately when forced by the manual developer action. */
+  refreshModelCatalog: (force?: boolean) => Promise<void>;
+}
 
 // Seed the catalog from the localStorage cache once (read + parse), then split
 // into the two views; init() rebuilds it in the background when stale.

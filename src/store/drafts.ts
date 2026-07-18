@@ -8,7 +8,7 @@ import {
   usedNames,
 } from "@/helpers";
 import { setSetting } from "@/storage/settings";
-import type { AppState, DraftsSlice, SliceCreator } from "./types";
+import type { AppState, SliceCreator } from "./types";
 
 // ---- Drafts ----------------------------------------------------------------
 // A draft is a new agent the user is about to spawn. It owns a landmark
@@ -35,6 +35,43 @@ export interface DraftAgent {
    *  inbox's "Start work". Carried to the backend at spawn so the agent's PR
    *  closes it. Undefined for a plain draft. */
   issueRef?: string;
+}
+
+export interface DraftsSlice {
+  drafts: DraftAgent[];
+  activeDraftId: string | null;
+  newDraftProvider: string;
+  newDraftModel?: string;
+  /** Sticky custom-agent selection for the next new draft (persisted). */
+  newDraftCustomAgentId?: string;
+  /** The project a new agent was last started in (persisted). Seeds ⌘N's
+   *  default project; validated against the live repo list on use. */
+  lastRepoPath?: string;
+
+  // drafts
+  createDraft: (repoPath: string) => Promise<void>;
+  /** Start a draft from a Home-inbox GitHub issue: opens a new draft on the
+   *  issue's repo, seeds the composer with the issue brief (title + body + url
+   *  + a suggested branch), and tags it with the issue number so the agent's
+   *  PR closes it. Lands the user in the composer, ready to launch. */
+  startWorkFromIssue: (repoPath: string, issue: import("@/api").IssueSummary) => Promise<void>;
+  /** Remember the last project an agent was started in and persist it. */
+  setLastRepoPath: (repoPath: string) => void;
+  updateDraft: (id: string, patch: Partial<DraftAgent>) => void;
+  removeDraft: (id: string) => void;
+  selectDraft: (id: string | null) => void;
+  setNewDraftSelection: (provider: string, model?: string, customAgentId?: string) => void;
+  rerollDraftName: (id: string) => Promise<void>;
+  /** Spawn the real agent for a draft and dispatch the first message. */
+  spawnFromDraft: (
+    id: string,
+    text: string,
+    provider: string,
+    model?: string,
+    attachments?: string[],
+    thinking?: string,
+    customAgentId?: string,
+  ) => Promise<void>;
 }
 
 const NEW_DRAFT_SELECTION_SETTING = "newDraftSelection";

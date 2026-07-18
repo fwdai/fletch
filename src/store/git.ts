@@ -1,8 +1,135 @@
-import { api, type GitMeta } from "@/api";
-import { gitActionProvesKind } from "@/components/RightPanel/delegation";
+import {
+  api,
+  type GitMeta,
+  type GitState,
+  type PrChecks,
+  type PrComments,
+  type PrState,
+  type ShortStats,
+  type VerificationReport,
+} from "@/api";
+import {
+  type GitDelegation,
+  type GitDelegationKind,
+  gitActionProvesKind,
+} from "@/components/RightPanel/delegation";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { setSetting } from "@/storage/settings";
-import type { GitSlice, SliceCreator } from "./types";
+import type { SliceCreator } from "./types";
+
+export interface GitSlice {
+  /** Full git state — branch, ahead/behind, file list, totals. Keyed by
+   *  `gitKey(agentId, subdir?)` (store/git.ts): the plain agent_id addresses
+   *  the primary repo, `agentId::subdir` a secondary repo of a multi-repo
+   *  agent. Only populated for the focused agent (by GitPanel's 1s poll
+   *  while it's mounted). For sidebar shortstats / right-rail badges of
+   *  other agents, read from `gitShortstats` instead. */
+  gitStates: Record<string, GitState>;
+  /** Compact per-agent shortstats (additions / deletions / file count),
+   *  keyed by agent_id. Updated for every live agent on the app-wide 5s
+   *  poll — kept in its own map so the focused agent's richer `gitStates`
+   *  entry isn't clobbered by a slower bulk reply. */
+  gitShortstats: Record<string, ShortStats>;
+  /** Advisory per-checkout git metadata (base staleness + changed-file paths),
+   *  keyed by `gitKey(agentId, subdir?)`. Fed by the app-wide `getAllGitMeta`
+   *  poll — separate from `gitShortstats` (badge numbers) so each evolves on its
+   *  own cadence. Drives the "base moved" staleness chips and overlap hints. */
+  gitMeta: Record<string, GitMeta>;
+  /** PR state, keyed by `gitKey(agentId, subdir?)` — plain agent_id for the
+   *  primary repo (updated by the pr:state_changed watcher event + bulk
+   *  polls), `agentId::subdir` for a secondary repo. */
+  prStates: Record<string, PrState | null>;
+  /** Rich PR merge-gate + checks, keyed by `gitKey(agentId, subdir?)`. Absent
+   *  key = not yet fetched; `null` = confirmed unavailable (no PR / gh
+   *  failure). */
+  prChecks: Record<string, PrChecks | null>;
+  /** Unresolved PR review comments, keyed by `gitKey(agentId, subdir?)`.
+   *  Absent = not yet fetched; `null` = confirmed unavailable (no PR / gh
+   *  failure). */
+  prComments: Record<string, PrComments | null>;
+  /** Active agent-delegated git action per agent (absent = none). Set when a
+   *  panel action hands control to the agent; cleared by the panel when the
+   *  watched git/PR transition lands or the agent gives up. */
+  gitDelegations: Record<string, GitDelegation>;
+  /** Latest turn-end verification report per agent (keyed by agent_id), from
+   *  the opt-in `verify:report` event. Feeds the Mission Control card's tests
+   *  chip. Absent = never verified (no chip). */
+  verificationReports: Record<string, VerificationReport>;
+  /** Sticky changes-state commit mode (Commit / & push / & open PR). Global
+   *  across workspaces, persisted in settings until the user picks another. */
+  gitCommitAction: GitCommitAction;
+
+  /** Fetch full git state for one agent (used by the focused panel's poll).
+   *  `subdir` targets a secondary repo of a multi-repo agent (stored under
+   *  `gitKey(agentId, subdir)`); omitted = the primary repo, plain key. */
+  fetchGitState: (agentId: string, subdir?: string) => Promise<void>;
+  /** Fetch compact shortstats for every live agent in one round-trip
+   *  (used by the app-wide background poll). */
+  fetchAllShortstats: () => Promise<void>;
+  /** Fetch advisory git metadata (base staleness + file paths) for every live
+   *  checkout in one round-trip (app-wide background poll, local git only). */
+  fetchAllGitMeta: () => Promise<void>;
+  /** Slow-cadence host-side fetch of each project's base branch on its source
+   *  repo, so `fetchAllGitMeta` can measure staleness against a moved base.
+   *  Network + GitHub-gated; silent (never surfaces an error). */
+  refreshBaseFreshness: () => Promise<void>;
+  fetchPrState: (agentId: string, subdir?: string) => Promise<void>;
+  /** Refresh PR state for every repo with a known PR across every agent in
+   *  one round-trip (used by the app-wide background poll). The reply is
+   *  keyed by `gitKey`, so a multi-repo agent's secondary-repo PRs land in
+   *  the store too and the sidebar badge updates without opening the panel. */
+  refreshAllPrStates: () => Promise<void>;
+  /** Refresh CI checks for every repo with an open PR in one round-trip
+   *  (used by the app-wide background poll, keyed by `gitKey` like
+   *  `refreshAllPrStates`) so the sidebar PR pill can tint pass/fail without
+   *  opening the Git panel. */
+  refreshAllPrChecks: () => Promise<void>;
+  fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
+  fetchPrComments: (agentId: string, subdir?: string) => Promise<void>;
+  delegateGitAction: (
+    agentId: string,
+    kind: GitDelegationKind,
+    prompt: string,
+    /** Target checkout of a multi-repo agent; undefined = primary. */
+    subdir?: string,
+  ) => void;
+  markGitDelegationRunning: (agentId: string) => void;
+  /** The agent ran a successful mutating git op `op` (backend
+   *  `agent:git-action`). Sets the causal proof only if `op` matches the
+   *  pending delegation's kind. */
+  markGitDelegationActed: (agentId: string, op: string) => void;
+  /** The pre-existing turn the delegation was queued behind has settled —
+   *  drop `queued` and restart the give-up clock for our own turn. */
+  markGitDelegationDequeued: (agentId: string) => void;
+  clearGitDelegation: (agentId: string) => void;
+  setGitCommitAction: (action: GitCommitAction) => void;
+  /** Resolves to "up-to-date" | "pushed" on success, null on error. */
+  pushAgent: (agentId: string, subdir?: string) => Promise<string | null>;
+  /** Resolves true on success, false on error. */
+  pullAgent: (agentId: string, subdir?: string) => Promise<boolean>;
+  /** Resolves true on success, false on error. */
+  rebaseAgent: (agentId: string, subdir?: string) => Promise<boolean>;
+  commitChanges: (agentId: string, message: string, subdir?: string) => Promise<boolean>;
+  /** Commit all changes, push, and open a PR — the "Commit & open PR"
+   *  primary CTA wired from the git panel. Returns false on any step
+   *  failure so the UI can leave the textarea content in place. */
+  commitAndOpenPr: (agentId: string, message: string, subdir?: string) => Promise<boolean>;
+  stashChanges: (agentId: string, subdir?: string) => Promise<void>;
+  discardChanges: (agentId: string, subdir?: string) => Promise<void>;
+  abortMerge: (agentId: string, subdir?: string) => Promise<void>;
+  deleteBranch: (agentId: string, subdir?: string) => Promise<void>;
+  createPr: (
+    agentId: string,
+    title: string,
+    body: string,
+    subdir?: string,
+  ) => Promise<PrState | null>;
+  mergePr: (agentId: string, subdir?: string) => Promise<void>;
+  /** Publish a local-only project (no origin) to GitHub, then refresh git
+   *  state so the panel switches out of the no-origin affordances. Resolves
+   *  the repo web URL on success, null on error. */
+  publishAgent: (agentId: string, isPrivate: boolean) => Promise<string | null>;
+}
 
 type GitSet = Parameters<SliceCreator<GitSlice>>[0];
 type GitGet = Parameters<SliceCreator<GitSlice>>[1];

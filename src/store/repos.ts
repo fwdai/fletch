@@ -2,7 +2,43 @@ import { api } from "@/api";
 import { dropAgentEntries } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
-import type { ReposSlice, SliceCreator } from "./types";
+import type { SliceCreator } from "./types";
+
+export interface ReposSlice {
+  addWorkspaceRepo: (path: string) => Promise<void>;
+  removeWorkspaceRepo: (path: string) => Promise<void>;
+  // Attach/detach resolve on success and throw on failure, so the Project
+  // Settings Repositories section can show the error inline.
+  /** Attach a repo to an existing project (multi-repo projects). */
+  attachRepoToProject: (projectId: string, path: string) => Promise<void>;
+  /** Detach a repo from a project (guarded backend-side). */
+  detachRepoFromProject: (projectId: string, path: string) => Promise<void>;
+  /** Set a repo's display label; blank clears to the basename fallback. */
+  setRepoLabel: (path: string, label: string) => Promise<void>;
+  // Rename/relocate resolve on success and throw on failure, so the Project
+  // Settings modal can show the error inline rather than in the global banner.
+  /** Set a project's custom display name (independent of its folder). */
+  renameProject: (projectId: string, name: string) => Promise<void>;
+  /** Delete a project and all agents/workspaces belonging to it. */
+  deleteProject: (projectId: string) => Promise<void>;
+  /** Repoint a pinned repo at a moved folder, migrating its sidebar order and
+   *  the open settings modal to the new path. */
+  relocateProject: (oldPath: string, newPath: string) => Promise<void>;
+  /** Open the log folder in the OS file manager; surfaces failures via
+   *  `lastError` rather than swallowing them. */
+  revealLogs: () => Promise<void>;
+  // Clone/create resolve on success and throw on failure, so the New Project
+  // modal can show the error inline rather than in the global banner.
+  cloneRepo: (spec: string, destParent: string) => Promise<void>;
+  createRepo: (
+    name: string,
+    destParent: string,
+    isPrivate: boolean,
+    description?: string,
+    /** Also create + push to GitHub. False = local-only (no connection yet). */
+    publish?: boolean,
+  ) => Promise<void>;
+}
 
 export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
   addWorkspaceRepo: async (path) => {
