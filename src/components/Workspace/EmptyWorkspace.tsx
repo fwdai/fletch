@@ -238,8 +238,12 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 projects={projectOptions}
                 onChange={(repoPath) => {
                   // Switching projects: the previously chosen base branch may not
-                  // exist in the new repo, so reset to main.
-                  updateDraft(draft.id, { repoPath, base: "main" });
+                  // exist in the new repo, so reset to main — and drop any issue
+                  // tag, which belongs to the previous project's tracker (its key
+                  // would close the wrong issue, or a dead one, from the new
+                  // repo's PR). The brief text stays: it's visible and editable,
+                  // unlike the hidden ref.
+                  updateDraft(draft.id, { repoPath, base: "main", issueRef: undefined });
                   setLastRepoPath(repoPath);
                 }}
               />
