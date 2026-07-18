@@ -2,11 +2,11 @@ use super::answer::deliver_answer;
 use super::route::route;
 use super::sender::{resolve_caps, Poke};
 use super::*;
-use serde_json::json;
 use crate::workflow::spec::{
     AgentSpec, Block, ChildTemplate, ComposeLimits, Gate, Integrate, Join, Orchestrate, Spec, Step,
 };
 use crate::workflow::types::{MessageKind, MessageStatus};
+use serde_json::json;
 use std::collections::BTreeMap;
 
 // ── caps matrix (spec §10.1) ──────────────────────────────────────────

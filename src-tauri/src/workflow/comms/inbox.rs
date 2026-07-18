@@ -179,7 +179,12 @@ pub(in crate::workflow) fn forward_subrun_finished(
 /// Queue an engine-authored `ask` to the human on the orchestrator's behalf
 /// (spec §10.4) — used when the orchestrator stalls and the engine escalates, so
 /// there is a concrete question `wf_answer` can resolve on resume.
-pub(in crate::workflow) fn queue_engine_ask(conn: &Connection, run_id: &str, orch_exec: &str, question: &str) {
+pub(in crate::workflow) fn queue_engine_ask(
+    conn: &Connection,
+    run_id: &str,
+    orch_exec: &str,
+    question: &str,
+) {
     let _ = insert_message(
         conn,
         &new_msg_id(),
@@ -199,7 +204,12 @@ pub(in crate::workflow) fn queue_engine_ask(conn: &Connection, run_id: &str, orc
 /// the (now abandoned) approval exec by id; `take_pending_deliveries` joins on the
 /// step id, so it reaches the step's fresh attempt. Modeled as a `notify` so no
 /// new message kind is needed.
-pub(in crate::workflow) fn queue_rejection(conn: &Connection, run_id: &str, step_exec_id: &str, note: &str) {
+pub(in crate::workflow) fn queue_rejection(
+    conn: &Connection,
+    run_id: &str,
+    step_exec_id: &str,
+    note: &str,
+) {
     let body = json!({
         "message": format!(
             "A human reviewed your work and requested changes before approving it:\n\n{note}\n\n\
