@@ -13,6 +13,7 @@ export function History() {
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [focusedIndex, setFocusedIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const sheetRef = useRef<HTMLDivElement>(null);
 
   // Mutable refs so document-level handler always sees latest values
   const filteredRef = useRef<AgentRecord[]>([]);
@@ -78,6 +79,14 @@ export function History() {
         e.preventDefault();
         setFocusedIndex(Math.max(idx - 1, 0));
       } else if (e.key === "Enter") {
+        // Only restore for Enter aimed at History itself. The same Enter
+        // keystroke that selects `/resume` from the composer autocomplete
+        // opens History and leaks into this document-level listener, but
+        // its target is the composer textarea — outside the sheet — so it
+        // is ignored. A deliberate restore (or an assistive/programmatic
+        // Enter) targets the auto-focused search input inside the sheet and
+        // is honored immediately, with nothing swallowed.
+        if (!sheetRef.current?.contains(e.target as Node)) return;
         e.preventDefault();
         const item = f[idx];
         if (item && !restoring) {
@@ -102,7 +111,7 @@ export function History() {
 
   return (
     <div className="history-overlay" onClick={() => toggleHistory(false)}>
-      <div className="history-sheet" onClick={(e) => e.stopPropagation()}>
+      <div className="history-sheet" ref={sheetRef} onClick={(e) => e.stopPropagation()}>
         {/* Search header */}
         <div className="hh">
           <div className="hh-search flex-center text-base">
