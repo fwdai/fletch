@@ -23,7 +23,10 @@ pub(super) const NO_CONTAINER_AUTH_MSG: &str = "No Anthropic credentials for con
 /// [`resolve`]: crate::sandbox::docker::auth::resolve
 /// [`run_args`]: super::run_args::run_args
 /// [`AuthSource`]: crate::sandbox::docker::auth::AuthSource
-pub(super) fn apply_container_auth(env: &mut Vec<(String, String)>, auth: ContainerAuth) -> Result<()> {
+pub(super) fn apply_container_auth(
+    env: &mut Vec<(String, String)>,
+    auth: ContainerAuth,
+) -> Result<()> {
     match auth {
         ContainerAuth::Resolved {
             env: auth_env,
@@ -124,7 +127,10 @@ pub(super) fn prepare_codex_launch(
 /// `OPENAI_API_KEY` (if any) and whether `auth.json` exists on the mount. A
 /// non-blank key is forwarded (trimmed); the mounted `auth.json` carries auth on
 /// its own with nothing to inject. Neither present → the launch-blocking error.
-pub(super) fn codex_auth_env(api_key: Option<&str>, auth_file: bool) -> Result<Vec<(String, String)>> {
+pub(super) fn codex_auth_env(
+    api_key: Option<&str>,
+    auth_file: bool,
+) -> Result<Vec<(String, String)>> {
     let api_key = api_key.map(str::trim).filter(|k| !k.is_empty());
     if let Some(key) = api_key {
         return Ok(vec![("OPENAI_API_KEY".to_string(), key.to_string())]);

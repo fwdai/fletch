@@ -75,9 +75,9 @@ mod auth;
 mod config_dir;
 mod run_args;
 mod settings;
-mod util;
 #[cfg(test)]
 mod tests;
+mod util;
 
 // Public surface consumed outside this module (re-exported again by
 // `super::mod`); the `engine::X` paths callers already use stay valid.

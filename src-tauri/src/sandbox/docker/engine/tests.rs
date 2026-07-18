@@ -241,9 +241,7 @@ fn argv_mounts_claude_readonly_with_writable_credentials() {
         .expect("~/.claude mounted read-only");
     let creds_idx = mounts
         .iter()
-        .position(|m| {
-            *m == "/Users/u/.claude/.credentials.json:/Users/u/.claude/.credentials.json"
-        })
+        .position(|m| *m == "/Users/u/.claude/.credentials.json:/Users/u/.claude/.credentials.json")
         .expect("credentials file mounted read-write");
     assert!(
         dir_idx < creds_idx,
