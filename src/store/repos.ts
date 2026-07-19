@@ -115,9 +115,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     // new location so it follows the move instead of being dropped from the view.
     set((state) => ({
       workspace: ws,
-      drafts: state.drafts.map((d) =>
-        d.repoPath === oldPath ? { ...d, repoPath: newPath } : d,
-      ),
+      drafts: state.drafts.map((d) => (d.repoPath === oldPath ? { ...d, repoPath: newPath } : d)),
     }));
     if (get().projectSettingsRepoPath === oldPath) get().openProjectSettings(newPath);
   },

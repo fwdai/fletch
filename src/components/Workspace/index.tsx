@@ -29,7 +29,8 @@ export function Workspace() {
   // Only surface the draft while its repo is still pinned; a draft stranded on a
   // deleted/relocated project falls through to the normal view instead of
   // showing a ghost composer for a project that's gone.
-  const draftRepoLive = draft && (workspace?.projects.some((p) => p.path === draft.repoPath) ?? false);
+  const draftRepoLive =
+    draft && (workspace?.projects.some((p) => p.path === draft.repoPath) ?? false);
   if (draft && draftRepoLive) return <EmptyWorkspace draft={draft} key={draft.id} />;
 
   // A selected workflow run takes the center pane.
