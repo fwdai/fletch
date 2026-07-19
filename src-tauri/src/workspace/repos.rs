@@ -379,9 +379,19 @@ impl WorkspaceManager {
         if changed == 0 {
             return Err(Error::Other(format!("repo not found: {old_str}")));
         }
+        // Scope the run rewrite to the relocated repo's project. `repo_path` is a
+        // launch-time snapshot that isn't unique across projects — a lingering
+        // historical run from a previous occupant of this same path string would
+        // otherwise be dragged to the new location and resume against the wrong
+        // repo. `repos.path` is UNIQUE, so this resolves the one owning project.
+        let project_id: String = tx.query_row(
+            "SELECT project_id FROM repos WHERE path = ?1",
+            [&new_str],
+            |row| row.get(0),
+        )?;
         tx.execute(
-            "UPDATE wf_run SET repo_path = ?1 WHERE repo_path = ?2",
-            rusqlite::params![new_str, old_str],
+            "UPDATE wf_run SET repo_path = ?1 WHERE repo_path = ?2 AND project_id = ?3",
+            rusqlite::params![new_str, old_str, project_id],
         )?;
         tx.commit()?;
         drop(conn);
