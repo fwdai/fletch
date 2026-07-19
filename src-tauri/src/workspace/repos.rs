@@ -341,7 +341,7 @@ impl WorkspaceManager {
             )));
         }
 
-        let conn = self.db.lock();
+        let mut conn = self.db.lock();
         let old_str = old_path.to_string_lossy().to_string();
         let new_str = new_path.to_string_lossy().to_string();
 
@@ -365,13 +365,25 @@ impl WorkspaceManager {
             )));
         }
 
-        let changed = conn.execute(
+        // Repoint the repo and, in the same transaction, every workflow run that
+        // snapshotted the old path at launch. `wf_run.repo_path` is a stored
+        // column with no FK to `repos`, so — unlike the agents' worktree join,
+        // which follows automatically via `repo_id` — it does not track the move
+        // on its own. Leaving it stale would fork the sidebar across both paths
+        // and resume runs from the old location.
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
             "UPDATE repos SET path = ?1 WHERE path = ?2",
             rusqlite::params![new_str, old_str],
         )?;
         if changed == 0 {
             return Err(Error::Other(format!("repo not found: {old_str}")));
         }
+        tx.execute(
+            "UPDATE wf_run SET repo_path = ?1 WHERE repo_path = ?2",
+            rusqlite::params![new_str, old_str],
+        )?;
+        tx.commit()?;
         drop(conn);
         Ok(self.current().expect("workspace initialized"))
     }

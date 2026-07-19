@@ -523,6 +523,42 @@ fn relocate_repo_repoints_path() {
 }
 
 #[test]
+fn relocate_repo_repoints_workflow_runs() {
+    let db = test_db();
+    let td = tempfile::tempdir().unwrap();
+    let old = init_repo(td.path());
+    let new = td.path().join("moved");
+    std::fs::create_dir_all(new.join(".git")).unwrap();
+
+    let wm = WorkspaceManager::new(db.clone());
+    wm.add_workspace_repo(old.clone()).unwrap();
+    let pid = wm.current().unwrap().projects[0].project_id.clone();
+
+    let old_str = old.to_string_lossy().to_string();
+    let new_str = new.to_string_lossy().to_string();
+    // A run snapshots its repo path at launch; `wf_run.repo_path` has no FK to
+    // `repos`, so it won't follow the move unless relocate rewrites it.
+    db.lock()
+        .execute(
+            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES ('r1','n','{}','t',?1,?2,'/d','wf/x','sha','done','{}','{}',0,0)",
+            [&pid, &old_str],
+        )
+        .unwrap();
+
+    wm.relocate_repo(&old, &new).unwrap();
+
+    let repo_path: String = db
+        .lock()
+        .query_row("SELECT repo_path FROM wf_run WHERE id = 'r1'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(repo_path, new_str, "run repo_path follows the relocate");
+}
+
+#[test]
 fn relocate_repo_rejects_non_git_dest() {
     let db = test_db();
     let td = tempfile::tempdir().unwrap();
