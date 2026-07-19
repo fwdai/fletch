@@ -29,11 +29,18 @@ interface ProjectGroupData {
   pinned: boolean;
 }
 
-/** Build one group per project from (a) pinned repos (each carries its
- *  project via ProjectRef; a multi-repo project folds into one group),
- *  (b) any repo referenced by an existing agent, draft, or workflow run —
- *  those resolve to their project's group, or a path-keyed fallback group
- *  when the repo isn't pinned. */
+/** Build one group per project. The pinned repos (`workspace.projects`) are the
+ *  single source of truth for which groups exist: a multi-repo project folds
+ *  into one group, keyed by `project_id`. Agents, runs, and drafts only *attach*
+ *  to those groups — they never fabricate one from a stale reference, so a
+ *  deleted or relocated project can't reappear as a phantom sidebar group.
+ *
+ *  Agents and runs resolve by `project_id` first (it survives a relocate, where
+ *  a run's stored `repo_path` and a draft's path both go stale), then by repo
+ *  path, and only a genuinely *unpinned* repo (e.g. detached while an agent
+ *  still runs in it) gets a path-keyed fallback group. Drafts carry no
+ *  project_id, so they attach by path only and are dropped from the view when
+ *  their repo is gone. */
 function groupByProject(
   refs: readonly ProjectRef[],
   agents: readonly AgentRecord[],
@@ -42,6 +49,7 @@ function groupByProject(
 ): ProjectGroupData[] {
   const groups = new Map<string, ProjectGroupData>();
   const byPath = new Map<string, ProjectGroupData>();
+  const byProjectId = new Map<string, ProjectGroupData>();
   for (const ref of refs) {
     const key = ref.project_id || ref.path;
     let g = groups.get(key);
@@ -57,34 +65,42 @@ function groupByProject(
         pinned: true,
       };
       groups.set(key, g);
+      if (ref.project_id) byProjectId.set(ref.project_id, g);
     }
     g.repoPaths.push(ref.path);
     byPath.set(ref.path, g);
   }
-  const ensure = (p: string): ProjectGroupData => {
-    let g = byPath.get(p);
+  // Resolve real backend work (agents, runs) to its group: by project first, so
+  // a relocate — which moves the repo path but keeps the project_id — attaches
+  // to the moved group instead of forking. A repo that isn't pinned at all
+  // still surfaces its work via a path-keyed fallback group.
+  const groupFor = (projectId: string, path: string | undefined): ProjectGroupData | null => {
+    const byId = projectId ? byProjectId.get(projectId) : undefined;
+    if (byId) return byId;
+    if (!path) return null;
+    let g = byPath.get(path);
     if (!g) {
       g = {
-        key: p,
-        label: basename(p),
-        repoPaths: [p],
-        primaryPath: p,
+        key: path,
+        label: basename(path),
+        repoPaths: [path],
+        primaryPath: path,
         agents: [],
         drafts: [],
         runs: [],
         pinned: false,
       };
-      groups.set(p, g);
-      byPath.set(p, g);
+      groups.set(path, g);
+      byPath.set(path, g);
     }
     return g;
   };
-  for (const a of agents) {
-    const primary = a.repos[0]?.repo_path;
-    if (primary) ensure(primary).agents.push(a);
-  }
-  for (const d of drafts) ensure(d.repoPath).drafts.push(d);
-  for (const r of runs) ensure(r.repo_path).runs.push(r);
+  for (const a of agents) groupFor(a.project_id, a.repos[0]?.repo_path)?.agents.push(a);
+  for (const r of runs) groupFor(r.project_id, r.repo_path)?.runs.push(r);
+  // Drafts are client-only and keyed solely by repo path. Attach to an existing
+  // group but never create one: a draft left pointing at a deleted/relocated
+  // repo is dropped from the view rather than resurrecting a phantom group.
+  for (const d of drafts) byPath.get(d.repoPath)?.drafts.push(d);
   return Array.from(groups.values());
 }
 

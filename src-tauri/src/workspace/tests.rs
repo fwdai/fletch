@@ -523,6 +523,66 @@ fn relocate_repo_repoints_path() {
 }
 
 #[test]
+fn relocate_repo_repoints_workflow_runs() {
+    let db = test_db();
+    let td = tempfile::tempdir().unwrap();
+    let old = init_repo(td.path());
+    let new = td.path().join("moved");
+    std::fs::create_dir_all(new.join(".git")).unwrap();
+
+    let wm = WorkspaceManager::new(db.clone());
+    wm.add_workspace_repo(old.clone()).unwrap();
+    let pid = wm.current().unwrap().projects[0].project_id.clone();
+    // A second, unrelated project whose historical run snapshotted the SAME path
+    // string as `old` (a previous occupant of that path). `repo_path` isn't
+    // unique across projects, so the rewrite must not drag this run along.
+    let other_pid = "other-project".to_string();
+    db.lock()
+        .execute(
+            "INSERT INTO projects (id, name, created_at) VALUES (?1, 'other', 0)",
+            [&other_pid],
+        )
+        .unwrap();
+
+    let old_str = old.to_string_lossy().to_string();
+    let new_str = new.to_string_lossy().to_string();
+    // A run snapshots its repo path at launch; `wf_run.repo_path` has no FK to
+    // `repos`, so it won't follow the move unless relocate rewrites it.
+    let insert = |id: &str, project_id: &String| {
+        db.lock()
+            .execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES (?1,'n','{}','t',?2,?3,'/d','wf/x','sha','done','{}','{}',0,0)",
+                [&id.to_string(), project_id, &old_str],
+            )
+            .unwrap();
+    };
+    insert("r1", &pid);
+    insert("r2", &other_pid);
+
+    wm.relocate_repo(&old, &new).unwrap();
+
+    let repo_path = |id: &str| -> String {
+        db.lock()
+            .query_row("SELECT repo_path FROM wf_run WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        repo_path("r1"),
+        new_str,
+        "this project's run follows the relocate"
+    );
+    assert_eq!(
+        repo_path("r2"),
+        old_str,
+        "another project's run sharing the path string is left untouched"
+    );
+}
+
+#[test]
 fn relocate_repo_rejects_non_git_dest() {
     let db = test_db();
     let td = tempfile::tempdir().unwrap();

@@ -111,7 +111,12 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     // Keep the project's manual sidebar position, and repoint the open settings
     // modal (keyed by repo path) at the new location so it doesn't go stale.
     remapProjectOrder(oldPath, newPath);
-    set({ workspace: ws });
+    // Drafts are keyed by repo path; carry any in-progress composer over to the
+    // new location so it follows the move instead of being dropped from the view.
+    set((state) => ({
+      workspace: ws,
+      drafts: state.drafts.map((d) => (d.repoPath === oldPath ? { ...d, repoPath: newPath } : d)),
+    }));
     if (get().projectSettingsRepoPath === oldPath) get().openProjectSettings(newPath);
   },
 
