@@ -36,12 +36,35 @@ fn token_registry() -> &'static RwLock<Option<String>> {
     TOKEN.get_or_init(|| RwLock::new(None))
 }
 
+/// True once an explicit [`set_token`] (login/disconnect) has run. Guards
+/// [`seed_token`]: the startup seed retries in the background while the
+/// keychain is locked, and a delayed retry must never overwrite newer user
+/// action with the stale value it read.
+static SEALED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Replace the in-process token. Callers that change the *persisted* token
 /// (login, disconnect) write the DB and then call this; blank counts as none.
-/// Also drops the cached viewer login — it belongs to the old token.
+/// Also drops the cached viewer login — it belongs to the old token — and
+/// seals the mirror against any still-pending startup seed.
 pub fn set_token(token: Option<String>) {
-    *token_registry().write().unwrap() = token.filter(|t| !t.trim().is_empty());
+    {
+        let mut w = token_registry().write().unwrap();
+        SEALED.store(true, std::sync::atomic::Ordering::SeqCst);
+        *w = token.filter(|t| !t.trim().is_empty());
+    }
     set_cached_login(None);
+}
+
+/// Startup-seed variant of [`set_token`]: applies only while no explicit set
+/// has run. The seal is checked under the registry's write lock, so a racing
+/// login/disconnect either lands after this (and overwrites the seed) or
+/// before it (and the seed no-ops) — the fresher value wins in both orders.
+pub fn seed_token(token: Option<String>) {
+    let mut w = token_registry().write().unwrap();
+    if SEALED.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    *w = token.filter(|t| !t.trim().is_empty());
 }
 
 pub fn token() -> Option<String> {

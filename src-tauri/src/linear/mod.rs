@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::error::Result;
 use crate::issues::{IssueSource, TrackerIssue, TrackerLabel};
 
-pub use client::{set_token, TOKEN_SETTING};
+pub use client::{seed_token, set_token, TOKEN_SETTING};
 
 /// One Linear team, for the Project Settings team picker. `id` is the UUID
 /// the issues query filters by; `key` is the human prefix (`ENG`).

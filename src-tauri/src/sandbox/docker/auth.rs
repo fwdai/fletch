@@ -107,10 +107,32 @@ const SETUP_TOKEN_PREFIX: &str = "sk-ant-oat";
 /// never touches the DB. Same pattern as `github::set_token`.
 static STORED_TOKEN: RwLock<Option<String>> = RwLock::new(None);
 
+/// True once an explicit [`set_stored_token`] (paste/clear command) has run.
+/// Guards [`seed_stored_token`]: the startup seed retries in the background
+/// while the keychain is locked, and a delayed retry must never overwrite
+/// newer user action with the stale value it read.
+static SEALED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Replace the in-process stored token. Callers that change the *persisted*
-/// token write the DB and then call this; blank counts as none.
+/// token write the DB and then call this; blank counts as none. Seals the
+/// mirror against any still-pending startup seed.
 pub fn set_stored_token(token: Option<String>) {
-    *STORED_TOKEN.write() = sanitize(token);
+    let mut w = STORED_TOKEN.write();
+    SEALED.store(true, std::sync::atomic::Ordering::SeqCst);
+    *w = sanitize(token);
+}
+
+/// Startup-seed variant of [`set_stored_token`]: applies only while no
+/// explicit set has run. The seal is checked under the mirror's write lock,
+/// so a racing paste/clear either lands after this (and overwrites the seed)
+/// or before it (and the seed no-ops) — the fresher value wins in both
+/// orders.
+pub fn seed_stored_token(token: Option<String>) {
+    let mut w = STORED_TOKEN.write();
+    if SEALED.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    *w = sanitize(token);
 }
 
 fn stored_token() -> Option<String> {

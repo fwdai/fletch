@@ -31,11 +31,31 @@ fn token_registry() -> &'static RwLock<Option<String>> {
     TOKEN.get_or_init(|| RwLock::new(None))
 }
 
+/// True once an explicit [`set_token`] (connect/disconnect) has run. Guards
+/// [`seed_token`]: the startup seed retries in the background while the
+/// keychain is locked, and a delayed retry must never overwrite newer user
+/// action with the stale value it read.
+static SEALED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Replace the in-process key. Callers that change the *persisted* key
 /// (connect, disconnect) write the store and then call this; blank counts
-/// as none.
+/// as none. Seals the mirror against any still-pending startup seed.
 pub fn set_token(token: Option<String>) {
-    *token_registry().write().unwrap() = token.filter(|t| !t.trim().is_empty());
+    let mut w = token_registry().write().unwrap();
+    SEALED.store(true, std::sync::atomic::Ordering::SeqCst);
+    *w = token.filter(|t| !t.trim().is_empty());
+}
+
+/// Startup-seed variant of [`set_token`]: applies only while no explicit set
+/// has run. The seal is checked under the registry's write lock, so a racing
+/// connect/disconnect either lands after this (and overwrites the seed) or
+/// before it (and the seed no-ops) — the fresher value wins in both orders.
+pub fn seed_token(token: Option<String>) {
+    let mut w = token_registry().write().unwrap();
+    if SEALED.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    *w = token.filter(|t| !t.trim().is_empty());
 }
 
 pub fn token() -> Option<String> {
@@ -117,6 +137,13 @@ pub(crate) fn test_token_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+/// Reset the seal. Tests only — `SEALED` is process-global and latches, so
+/// each seeding test must start from the unsealed state.
+#[cfg(test)]
+pub(crate) fn unseal() {
+    SEALED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +155,26 @@ mod tests {
         set_token(Some("  ".into()));
         assert_eq!(token(), None);
         set_token(None);
+    }
+
+    /// The startup seed applies while nothing else has run, but a delayed
+    /// seed (the locked-keychain retry) must never overwrite a newer
+    /// explicit connect or disconnect.
+    #[test]
+    fn delayed_seed_never_overwrites_explicit_set() {
+        let _guard = test_token_lock();
+        unseal();
+        // Undisturbed startup: the seed lands.
+        seed_token(Some("seeded".into()));
+        assert_eq!(token().as_deref(), Some("seeded"));
+        // User reconnects with a new key; a late seed retry must not clobber it.
+        set_token(Some("fresh".into()));
+        seed_token(Some("stale".into()));
+        assert_eq!(token().as_deref(), Some("fresh"));
+        // User disconnects; a late seed must not resurrect the old key.
+        set_token(None);
+        seed_token(Some("stale".into()));
+        assert_eq!(token(), None);
+        unseal();
     }
 }
