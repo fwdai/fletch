@@ -515,13 +515,13 @@ async fn finalize_run(
         .or_else(|| Some(run.base_branch.clone()).filter(|b| !b.is_empty()))
         .unwrap_or_else(|| "main".to_string());
     let title = format!("wf: {}", spec.name);
-    // A run started from a Home-inbox issue carries its number; append a
-    // `Closes #<n>` trailer so merging the finalized PR closes the issue. The
-    // run repo is inherently the issue's repo (single-repo), so no subdir
-    // gating — unlike the multi-repo agent path. Idempotent; `None` (a normal
-    // launch) leaves the empty body untouched.
-    let close_issue = run.issue_ref.as_deref().and_then(|s| s.trim().parse().ok());
-    let body = crate::github::with_closes_trailer("", close_issue);
+    // A run started from an issue carries its ref ("123" for GitHub,
+    // "ENG-123" for Linear); append the matching closing trailer so merging
+    // the finalized PR closes the issue. The run repo is inherently the
+    // issue's repo (single-repo), so no subdir gating — unlike the multi-repo
+    // agent path. Idempotent; `None` (a normal launch) leaves the empty body
+    // untouched.
+    let body = crate::github::with_closes_trailer("", run.issue_ref.as_deref());
     let outcome = gitops::finalize(
         run_repo,
         &final_ref,

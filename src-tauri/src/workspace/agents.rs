@@ -243,6 +243,20 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Re-tag an agent with the issue it's working ("123" / "ENG-123"), or
+    /// clear it with `None`. The row is the durable source for the PR
+    /// closing trailer across restarts; the caller also updates the live
+    /// registry (`crate::issues`) the git dispatcher reads mid-session.
+    pub fn update_agent_issue_ref(&self, id: &str, issue_ref: Option<&str>) -> Result<()> {
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE workspaces SET issue_ref = ?1 WHERE id = ?2",
+            rusqlite::params![issue_ref, id],
+        )?;
+        Ok(())
+    }
+
     pub fn agent(&self, id: &str) -> Result<AgentRecord> {
         let conn = self.db.lock();
         Self::load_agent(&conn, id)

@@ -1,3 +1,4 @@
+import { issueDisplayKey } from "@/api";
 import { Icon } from "@/components/Icon";
 import type { InboxRow } from "./inbox";
 
@@ -34,7 +35,7 @@ export function IssueRow({
     <div className="mc-inbox-row">
       <div className="mc-inbox-body">
         <div className="mc-inbox-titleline">
-          <span className="mc-inbox-num">#{issue.number}</span>
+          <span className="mc-inbox-num">{issueDisplayKey(issue)}</span>
           <span className="mc-inbox-title" title={issue.title}>
             {issue.title}
           </span>
@@ -43,7 +44,7 @@ export function IssueRow({
             href={issue.url}
             target="_blank"
             rel="noreferrer"
-            title="Open on GitHub"
+            title={issue.source === "linear" ? "Open in Linear" : "Open on GitHub"}
             onClick={(e) => e.stopPropagation()}
           >
             <Icon name="external" size={12} />

@@ -67,11 +67,15 @@ pub struct GitDispatcher {
     /// dispatchers built without `with_repos` (tests, old call sites) — then
     /// `args.repo` is rejected as unknown.
     repos: std::collections::HashMap<String, (PathBuf, String)>,
-    /// The GitHub issue this workspace was started from (Home inbox "Start
-    /// work"). When set, `open_pr` appends a `Closes #<n>` trailer to the PR
-    /// body for the *primary* checkout, so merging the PR closes the issue.
-    /// `None` for a workspace not tied to an issue.
-    close_issue: Option<u32>,
+    /// Agent whose *live* issue ref (`crate::issues::live_issue_ref`) drives
+    /// `open_pr`'s closing trailer — `"123"` for a GitHub issue, `"ENG-123"`
+    /// for a Linear ticket. Resolved at open_pr time, not construction, so a
+    /// mid-session pick in the composer reaches the trailer even though this
+    /// dispatcher is built once per session. When a ref resolves, the
+    /// matching trailer (`Closes #123` / `Fixes ENG-123`) is appended to the
+    /// PR body for the *primary* checkout, so merging the PR closes the
+    /// issue. `None` for dispatchers built without `with_close_issue`.
+    issue_agent: Option<String>,
 }
 
 impl GitDispatcher {
@@ -81,14 +85,17 @@ impl GitDispatcher {
             base_branch,
             default_subdir: None,
             repos: std::collections::HashMap::new(),
-            close_issue: None,
+            issue_agent: None,
         }
     }
 
-    /// Record the originating issue number so `open_pr` closes it from the PR
-    /// body. A no-op when `None` (the normal, non-issue spawn).
-    pub fn with_close_issue(mut self, number: Option<u32>) -> Self {
-        self.close_issue = number;
+    /// Seed the agent's live issue ref (the one it was spawned from, if any)
+    /// and bind this dispatcher to the agent so `open_pr` reads the ref
+    /// *current at PR time* — a later composer pick replaces the seed via
+    /// `set_agent_issue_ref`.
+    pub fn with_close_issue(mut self, agent_id: &str, issue_ref: Option<String>) -> Self {
+        crate::issues::set_live_issue_ref(agent_id, issue_ref);
+        self.issue_agent = Some(agent_id.to_string());
         self
     }
 
@@ -243,12 +250,18 @@ impl GitDispatcher {
         };
         let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
         let body_arg = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
-        // Compose the final body: when this workspace originated from an issue
-        // and the PR targets the issue's (primary) repo, ensure a `Closes #<n>`
-        // trailer so merging the PR closes the issue — reliably, without relying
-        // on the agent to remember. Idempotent (skips if already referenced).
+        // Compose the final body: when this workspace is tied to an issue
+        // (at spawn or via a later composer pick — hence the live lookup, not
+        // a spawn-time snapshot) and the PR targets the issue's (primary)
+        // repo, ensure a closing trailer (`Closes #123` / `Fixes ENG-123`) so
+        // merging the PR closes the issue — reliably, without relying on the
+        // agent to remember. Idempotent (skips if already referenced).
+        let live_ref = self
+            .issue_agent
+            .as_deref()
+            .and_then(crate::issues::live_issue_ref);
         let closes = (t.subdir == self.default_subdir)
-            .then_some(self.close_issue)
+            .then_some(live_ref.as_deref())
             .flatten();
         let body_owned = crate::github::with_closes_trailer(body_arg, closes);
         let body = body_owned.as_str();

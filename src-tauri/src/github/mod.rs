@@ -25,7 +25,7 @@ mod query;
 mod repo;
 mod types;
 
-pub use client::{git_auth_env, set_token, TOKEN_SETTING};
+pub use client::{git_auth_env, seed_token, set_token, TOKEN_SETTING};
 pub(crate) use closes::with_closes_trailer;
 
 pub use checks::*;

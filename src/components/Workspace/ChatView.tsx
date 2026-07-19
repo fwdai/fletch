@@ -5,6 +5,7 @@ import { Composer } from "@/components/Composer";
 import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
 import { Loader } from "@/components/ui/Loader";
 import { providerLabel } from "@/data/providers";
+import { getLinearTeamId } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
 import { stripInjectedInstructions } from "@/util/instructions";
 import { ChatNav } from "./ChatNav";
@@ -46,6 +47,27 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     () => consumeComposerSeed(agent.id),
     [agent.id, consumeComposerSeed],
   );
+
+  // The project's configured Linear team, scoping the composer's issue
+  // picker to the agent's primary repo. Undefined while loading or unset —
+  // the picker then serves GitHub issues only.
+  const repoPath = agent.repos[0]?.repo_path;
+  const projectId = useAppStore((s) =>
+    repoPath ? (s.workspace?.projects.find((p) => p.path === repoPath)?.project_id ?? "") : "",
+  );
+  const [linearTeamId, setLinearTeamId] = useState<string | undefined>();
+  useEffect(() => {
+    let cancelled = false;
+    setLinearTeamId(undefined);
+    getLinearTeamId(projectId)
+      .then((teamId) => {
+        if (!cancelled) setLinearTeamId(teamId);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -356,6 +378,17 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               }
               listDir={api.listDir}
               listPrs={() => api.listPrs(agent.id)}
+              listIssues={
+                repoPath ? () => api.listTrackerIssues(repoPath, linearTeamId) : undefined
+              }
+              onPickIssue={(issue) => {
+                // Persist the pick so the agent's eventual PR closes this
+                // issue — the brief insert alone wouldn't survive to the
+                // trailer. Best-effort: a failure only loses the trailer.
+                api.setAgentIssueRef(agent.id, issue.key).catch((e) => {
+                  console.error("set_agent_issue_ref failed", e);
+                });
+              }}
               seed={composerSeed}
               onSeedConsumed={onSeedConsumed}
               draftKey={agent.id}

@@ -14,6 +14,8 @@ mod git_dist;
 mod git_state;
 mod github;
 mod instructions;
+mod issues;
+mod linear;
 mod managed_session;
 mod message_queue;
 mod model_catalog;
@@ -782,8 +784,11 @@ const SECRET_SEED_RETRY_CAP: std::time::Duration = std::time::Duration::from_sec
 /// Seed an in-process secret mirror from the store at startup. A definitive
 /// answer (present or absent) applies immediately; an *unavailable* store
 /// (`Err` — e.g. the keychain is locked) retries in the background until it
-/// gets one. `apply` is a plain fn: both mirrors (`github::set_token`,
-/// `docker::auth::set_stored_token`) have that shape.
+/// gets one. `apply` must be the mirror's `seed_*` variant
+/// (`github::seed_token`, `linear::seed_token`,
+/// `docker::auth::seed_stored_token`), which no-ops once any explicit set
+/// has run — a connect/disconnect that lands while a retry is pending must
+/// win over the (possibly stale) value that retry read.
 fn seed_secret_mirror(db: &DbState, key: &'static str, apply: fn(Option<String>)) {
     match secrets::get(&db.lock(), key) {
         Ok(value) => apply(value),
@@ -795,10 +800,12 @@ fn seed_secret_mirror(db: &DbState, key: &'static str, apply: fn(Option<String>)
                 loop {
                     tokio::time::sleep(delay).await;
                     match secrets::get(&db.lock(), key) {
-                        // Only a real value is applied: the mirror already
-                        // defaults to empty, and a sign-in/paste may have set
-                        // it directly while we waited — a late None could only
-                        // clobber that fresher token, never fix anything.
+                        // A definitive answer ends the retry either way; the
+                        // seed fn itself refuses to apply over an explicit
+                        // set that happened while we waited (the mirror's
+                        // seal), so a late read can't clobber fresher state.
+                        // Applying a late None is skipped outright — the
+                        // mirror already defaults to empty.
                         Ok(Some(value)) => return apply(Some(value)),
                         Ok(None) => return,
                         Err(_) => delay = (delay * 2).min(SECRET_SEED_RETRY_CAP),
@@ -1167,7 +1174,7 @@ pub fn run() {
             seed_secret_mirror(
                 &db,
                 sandbox::docker::auth::TOKEN_SETTING,
-                sandbox::docker::auth::set_stored_token,
+                sandbox::docker::auth::seed_stored_token,
             );
 
             // Unified git resolution: point the portable-install root at app
@@ -1178,7 +1185,11 @@ pub fn run() {
             git_dist::init(data_dir.join("git-dist"));
             // Seed the in-process GitHub token so API calls and git network
             // auth work without a DB handle (updated on sign-in).
-            seed_secret_mirror(&db, github::TOKEN_SETTING, github::set_token);
+            seed_secret_mirror(&db, github::TOKEN_SETTING, github::seed_token);
+            // Same for the Linear API key, so the issue adapters — reached
+            // from poll paths with no DB handle — see a key pasted in a
+            // previous run.
+            seed_secret_mirror(&db, linear::TOKEN_SETTING, linear::seed_token);
             {
                 let db = db.clone();
                 git_dist::set_identity_source(Box::new(move || {
@@ -1487,7 +1498,12 @@ pub fn run() {
             commands::run_claude_command,
             commands::list_prs,
             commands::list_repo_prs,
-            commands::list_repo_issues,
+            commands::list_tracker_issues,
+            commands::set_agent_issue_ref,
+            commands::linear_status,
+            commands::linear_connect,
+            commands::linear_disconnect,
+            commands::linear_list_teams,
             commands::list_repo_tree,
             commands::read_checkout_file,
             commands::get_file_diff,

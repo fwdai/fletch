@@ -173,16 +173,6 @@ pub async fn list_repo_prs(repo_path: String) -> Result<Vec<gh::PrSummary>> {
     gh::pr_list(&expand_tilde(&repo_path), 50).await
 }
 
-/// List open GitHub issues for a repo by path, for the Home inbox. Like
-/// `list_repo_prs`, this needs no agent — Home works over the workspace's
-/// tracked repo paths. `Ok(None)` (not an error) when the repo has no token /
-/// non-GitHub origin / a rate-limit pause is active, so the inbox degrades
-/// quietly. Capped at 30 — the inbox shows a handful, newest-updated first.
-#[tauri::command]
-pub async fn list_repo_issues(repo_path: String) -> Result<Option<Vec<gh::IssueSummary>>> {
-    gh::issue_list(&expand_tilde(&repo_path), 30).await
-}
-
 /// Fetch the PR merge gate + per-check detail (spec §6). Best-effort: any
 /// failure (no PR, gh missing, API error) returns `None` and the panel falls
 /// back to `mergeable`-only behavior.

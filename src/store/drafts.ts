@@ -31,9 +31,10 @@ export interface DraftAgent {
   customAgentId?: string;
   /** Base branch to fork from. */
   base: string;
-  /** GitHub issue number (as text) this draft was started from, via the Home
-   *  inbox's "Start work". Carried to the backend at spawn so the agent's PR
-   *  closes it. Undefined for a plain draft. */
+  /** Canonical issue ref this draft was started from ("123" for GitHub,
+   *  "ENG-123" for Linear), via the Home inbox's "Start work" or the
+   *  composer's issue picker. Carried to the backend at spawn so the agent's
+   *  PR closes it. Undefined for a plain draft. */
   issueRef?: string;
 }
 
@@ -50,11 +51,12 @@ export interface DraftsSlice {
 
   // drafts
   createDraft: (repoPath: string) => Promise<void>;
-  /** Start a draft from a Home-inbox GitHub issue: opens a new draft on the
-   *  issue's repo, seeds the composer with the issue brief (title + body + url
-   *  + a suggested branch), and tags it with the issue number so the agent's
-   *  PR closes it. Lands the user in the composer, ready to launch. */
-  startWorkFromIssue: (repoPath: string, issue: import("@/api").IssueSummary) => Promise<void>;
+  /** Start a draft from a Home-inbox issue (any tracker source): opens a new
+   *  draft on the issue's repo, seeds the composer with the issue brief
+   *  (title + body + url + a suggested branch), and tags it with the issue
+   *  ref so the agent's PR closes it. Lands the user in the composer, ready
+   *  to launch. */
+  startWorkFromIssue: (repoPath: string, issue: import("@/api").TrackerIssue) => Promise<void>;
   /** Remember the last project an agent was started in and persist it. */
   setLastRepoPath: (repoPath: string) => void;
   updateDraft: (id: string, patch: Partial<DraftAgent>) => void;
@@ -169,7 +171,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       model: selection.model,
       customAgentId,
       base: "main",
-      issueRef: String(issue.number),
+      issueRef: issue.key,
     };
     // Seed the composer for this draft (read as its initial text on mount) with
     // the issue brief, so "Start work" lands fully prefilled — the user reviews

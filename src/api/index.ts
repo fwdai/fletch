@@ -3,6 +3,7 @@ import { commandsApi } from "./domains/commands";
 import { filesApi } from "./domains/files";
 import { gitApi } from "./domains/git";
 import { githubApi } from "./domains/github";
+import { issuesApi } from "./domains/issues";
 import { miscApi } from "./domains/misc";
 import { providersApi } from "./domains/providers";
 import { runApi } from "./domains/run";
@@ -19,6 +20,7 @@ export * from "./types/agent";
 export * from "./types/checkout";
 export * from "./types/commands";
 export * from "./types/git";
+export * from "./types/issues";
 export * from "./types/pr";
 export * from "./types/providers";
 export * from "./types/run";
@@ -35,6 +37,7 @@ export const api = {
   ...miscApi,
   ...sandboxApi,
   ...githubApi,
+  ...issuesApi,
   ...agentsApi,
   ...sessionApi,
   ...gitApi,
