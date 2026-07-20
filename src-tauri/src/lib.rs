@@ -1527,6 +1527,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building fletch")
         .run(|app, event| {
+            // Dock-icon click (or any macOS reopen) while the app is running
+            // but the main window is hidden — closing the window only hides it
+            // (see the `CloseRequested` handler), so re-show it here, matching
+            // the tray's "Open Fletch" behavior. macOS-only event.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_main_window(app);
+                return;
+            }
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
                 use std::sync::atomic::Ordering;
                 // Quit confirmation: a quit kills every live agent/run child
