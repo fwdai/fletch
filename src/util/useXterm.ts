@@ -25,12 +25,18 @@ const XTERM_BASE_OPTIONS: ITerminalOptions = {
  *  return a cleanup that the hook runs on unmount, before disposing the
  *  terminal. The whole lifecycle re-runs whenever `deps` change (e.g. a
  *  different agent id).
+ *
+ *  `hostOptions.autoFocus` (default true) focuses the terminal after mount.
+ *  Read-only surfaces (e.g. a log view) pass false so mounting doesn't pull
+ *  keyboard focus away from the editor.
  */
 export function useXterm(
   options: ITerminalOptions,
   onReady: (term: Terminal) => (() => void) | undefined,
   deps: DependencyList,
+  hostOptions?: { autoFocus?: boolean },
 ) {
+  const autoFocus = hostOptions?.autoFocus ?? true;
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -81,7 +87,7 @@ export function useXterm(
       }, 100);
     });
     ro.observe(el);
-    term.focus();
+    if (autoFocus) term.focus();
 
     return () => {
       cancelAnimationFrame(initialFit);

@@ -1,3 +1,4 @@
+import type { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import { type AgentRecord, api, onRunOutput, onRunState } from "@/api";
 import { Icon } from "@/components/Icon";
@@ -10,6 +11,8 @@ import {
   toSetupRows,
 } from "@/components/RunConfig";
 import { useAppStore } from "@/store";
+import { useXterm } from "@/util/useXterm";
+import { resolveTheme } from "@/util/xtermTheme";
 import { RunSettingsSheet } from "./RunSettingsSheet";
 
 // Detected run config replaces the old hardcoded defaults. The backend
@@ -17,23 +20,12 @@ import { RunSettingsSheet } from "./RunSettingsSheet";
 // highest-confidence one. Two settings layers sit on top: the project's
 // `run.*` settings (edited in Project Settings), then this agent's
 // `run.agent.<id>.*` overrides (edited here in the sheet).
-
-// Strip ANSI escape sequences before rendering. v1 keeps log rendering
-// dead-simple (plain text with pre-wrap); colorization can come later.
-// Covers CSI (ESC [ ... letter) and OSC (ESC ] ... BEL / ST).
-const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
-
-// Cap the in-memory log so a long-running dev server can't grow React state
-// without bound. Keep the tail — what a terminal would show — and trim from
-// the front on a line boundary so a half-line never gets rendered.
-const MAX_LOG_CHARS = 256 * 1024;
-const capLog = (s: string): string => {
-  if (s.length <= MAX_LOG_CHARS) return s;
-  const tail = s.slice(s.length - MAX_LOG_CHARS);
-  const nl = tail.indexOf("\n");
-  return nl === -1 ? tail : tail.slice(nl + 1);
-};
+//
+// Output is rendered by a read-only xterm terminal (same hook as TermPanel),
+// so ANSI colors *and* cursor control (spinners, progress-bar rewrites) render
+// faithfully. Raw PTY bytes from `run:output` are written straight to the
+// terminal — no ANSI stripping, no React state per chunk; xterm owns decoding,
+// scrollback, and scrolling.
 
 export function RunPanel({ agent }: { agent: AgentRecord }) {
   // Phase is owned by the store (fed by an app-wide `run:state` subscription) so
@@ -42,17 +34,12 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   const setRunPhase = useAppStore((s) => s.setRunPhase);
   const setRunPort = useAppStore((s) => s.setRunPort);
   const [lastError, setLastError] = useState<string | null>(null);
-  const [log, setLog] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectValues, setProjectValues] = useState<Record<string, string>>({});
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [rows, setRows] = useState<SetupRow[]>([]);
   const [ecosystem, setEcosystem] = useState<string | null>(null);
-  const logRef = useRef<HTMLDivElement | null>(null);
-  // Streaming UTF-8 decoder so a multi-byte rune split across two
-  // PTY chunks doesn't produce a replacement character. Reset each
-  // time we re-subscribe (agent switch).
-  const decoderRef = useRef<TextDecoder | null>(null);
+  const termRef = useRef<Terminal | null>(null);
 
   // Load the project's run settings (the base every agent inherits) and this
   // agent's overrides on top of them. Re-loads on agent switch.
@@ -100,73 +87,92 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     };
   }, [agent.id]);
 
-  // Subscribe to run output and state events for this agent.
-  // Rehydrate snapshot on mount/agent-switch so the panel preserves
-  // logs from prior starts (and across panel mounts).
+  // Mount a read-only xterm terminal and stream run output into it.
+  // Rehydrate the snapshot on mount/agent-switch so the panel preserves logs
+  // from prior starts (and across panel mounts). The whole lifecycle re-runs
+  // when the agent id changes: the old terminal is disposed and a fresh one
+  // replays that agent's snapshot.
+  const termContainerRef = useXterm(
+    {
+      fontSize: 12,
+      lineHeight: 1.2,
+      theme: resolveTheme(),
+      scrollback: 20000,
+      // Read-only log view: no input, no blinking input caret.
+      disableStdin: true,
+      cursorBlink: false,
+      cursorInactiveStyle: "none",
+    },
+    (term) => {
+      termRef.current = term;
+
+      // `onRunOutput` / `onRunState` return promises that resolve to the
+      // unlisten fn. StrictMode runs effects twice in dev, and cleanup may fire
+      // before those promises resolve — so we track a cancelled flag and
+      // dispose any unlistener that arrives late. Without this, the first
+      // mount's listener leaks and every event is delivered twice.
+      let cancelled = false;
+      let unlistenOutput: (() => void) | null = null;
+      let unlistenState: (() => void) | null = null;
+
+      api.runState(agent.id).then((snap) => {
+        if (cancelled) return;
+        // Rehydrate the store phase too, so a running app opened after an app
+        // reload lights the tab dot even before the next live event arrives.
+        setRunPhase(agent.id, snap.phase);
+        setLastError(snap.last_error);
+        // Write raw snapshot bytes; xterm decodes UTF-8 (and handles multi-byte
+        // runes) itself, so no TextDecoder is needed here or on live chunks.
+        if (snap.log.length > 0) term.write(new Uint8Array(snap.log));
+      });
+
+      onRunOutput((e) => {
+        if (e.agent_id !== agent.id) return;
+        term.write(new Uint8Array(e.bytes));
+      }).then((un) => {
+        if (cancelled) {
+          un();
+          return;
+        }
+        unlistenOutput = un;
+      });
+
+      onRunState((e) => {
+        if (e.agent_id !== agent.id) return;
+        // Phase flows through the store via the app-wide listener; this local
+        // subscription only mirrors last_error, which the store doesn't track.
+        setLastError(e.last_error);
+      }).then((un) => {
+        if (cancelled) {
+          un();
+          return;
+        }
+        unlistenState = un;
+      });
+
+      return () => {
+        cancelled = true;
+        termRef.current = null;
+        unlistenOutput?.();
+        unlistenState?.();
+      };
+    },
+    [agent.id, setRunPhase],
+    { autoFocus: false },
+  );
+
+  // Re-apply the xterm theme on dark ↔ light switches without recreating the
+  // terminal (same approach as TermPanel).
   useEffect(() => {
-    // `onRunOutput` / `onRunState` return promises that resolve to
-    // the unlisten fn. StrictMode runs effects twice in dev, and the
-    // cleanup may fire before those promises resolve — so we track a
-    // cancelled flag and dispose any unlistener that arrives late.
-    // Without this, the first mount's listener leaks and every event
-    // is delivered twice.
-    let cancelled = false;
-    let unlistenOutput: (() => void) | null = null;
-    let unlistenState: (() => void) | null = null;
-    const decoder = new TextDecoder("utf-8", { fatal: false });
-    decoderRef.current = decoder;
-
-    api.runState(agent.id).then((snap) => {
-      if (cancelled) return;
-      // Rehydrate the store phase too, so a running app opened after an app
-      // reload lights the tab dot even before the next live event arrives.
-      setRunPhase(agent.id, snap.phase);
-      setLastError(snap.last_error);
-      // Snapshot is a one-shot buffer — decode it without streaming
-      // mode using its own decoder so it doesn't pollute the live
-      // stream decoder.
-      const snapDecoder = new TextDecoder("utf-8", { fatal: false });
-      setLog(capLog(stripAnsi(snapDecoder.decode(new Uint8Array(snap.log)))));
+    const observer = new MutationObserver(() => {
+      if (termRef.current) termRef.current.options.theme = resolveTheme();
     });
-
-    onRunOutput((e) => {
-      if (e.agent_id !== agent.id) return;
-      const chunk = stripAnsi(decoder.decode(new Uint8Array(e.bytes), { stream: true }));
-      setLog((prev) => capLog(prev + chunk));
-    }).then((un) => {
-      if (cancelled) {
-        un();
-        return;
-      }
-      unlistenOutput = un;
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
     });
-
-    onRunState((e) => {
-      if (e.agent_id !== agent.id) return;
-      // Phase flows through the store via the app-wide listener; this local
-      // subscription only mirrors last_error, which the store doesn't track.
-      setLastError(e.last_error);
-    }).then((un) => {
-      if (cancelled) {
-        un();
-        return;
-      }
-      unlistenState = un;
-    });
-
-    return () => {
-      cancelled = true;
-      unlistenOutput?.();
-      unlistenState?.();
-    };
-  }, [agent.id, setRunPhase]);
-
-  // Auto-scroll to bottom on log append.
-  useEffect(() => {
-    const el = logRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [log]);
+    return () => observer.disconnect();
+  }, []);
 
   // What each row inherits: the project setting when one exists, else the
   // detected value. Agent-level overrides compare against these, so a value
@@ -271,17 +277,11 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         </button>
       </div>
 
-      {/* ── Logs ── */}
-      <div className="run-logs text-sm" ref={logRef}>
-        {log.length > 0 && <div>{log}</div>}
-        {lastError && phase === "stopped" && <div className="e">{lastError}</div>}
-        {isActive && (
-          <div className="p">
-            {"› "}
-            <span className="term-cursor" />
-          </div>
-        )}
+      {/* ── Logs (read-only xterm) ── */}
+      <div className="xterm-slot">
+        <div ref={termContainerRef} className="xterm-host" style={{ inset: "10px 6px 12px 14px" }} />
       </div>
+      {lastError && phase === "stopped" && <div className="run-error e text-sm">{lastError}</div>}
 
       {/* ── Settings sheet ── */}
       {settingsOpen && (
