@@ -631,11 +631,16 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       await api.archiveAgent(id);
       clearOutputBuffer(id);
-      // Drop the agent's side maps immediately; the optimistic hide above
-      // already removed the row. The guarded refresh then lands the real
-      // metadata without letting a stale snapshot resurrect the row.
-      set((s) => dropAgentEntries(s, id));
-      await refreshWorkspace(set);
+      // Drop the agent's side maps ATOMICALLY with the post-commit snapshot that
+      // archives (hides) the row, by folding the cleanup into the guarded
+      // refresh. Unlike the sidebar's optimistic placeholder — which a stale,
+      // still-current-generation refresh could transiently clobber and re-expose
+      // the row — this refresh's snapshot is taken after the archive committed,
+      // so applying it and dropping the maps together can never leave a reachable
+      // row whose logs/git/PR/panel state is already gone. If this refresh is
+      // superseded or returns null, the maps are kept until a later snapshot
+      // hides the row.
+      await refreshWorkspace(set, (_fresh, s) => dropAgentEntries(s, id));
     } catch (e) {
       set((s) => {
         const ws = s.workspace;

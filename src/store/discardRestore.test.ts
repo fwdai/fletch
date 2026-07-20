@@ -1,19 +1,24 @@
-// Regression tests for the discard/restore optimistic workspace edits. The bug
+// Regression tests for the discard/restore/archive workspace edits. The bug
 // these pin: when the guarded workspace refresh returns null (fetch failed) or
-// is superseded, the store must still leave the workspace itself consistent —
-// a discarded agent gone from the list (its side-state was cleared), and a
-// restored agent un-archived and selectable — rather than relying on a later
-// refresh to heal it. A null refresh is the exact worst case, so we force it.
+// is superseded, the store must still leave the workspace consistent — a
+// discarded agent gone from the list (side-state cleared), a restored agent
+// un-archived and selectable, and an archived agent whose destructive side-map
+// cleanup only runs atomically with a snapshot that hides the row (so a
+// transiently re-exposed row is never left emptied). A null refresh is the
+// exact worst case, so we force it.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 
-const { discardAgent, restoreAgent, getWorkspace } = vi.hoisted(() => ({
+const { discardAgent, restoreAgent, archiveAgent, getWorkspace } = vi.hoisted(() => ({
   discardAgent: vi.fn(),
   restoreAgent: vi.fn(),
+  archiveAgent: vi.fn(),
   getWorkspace: vi.fn(),
 }));
-vi.mock("@/api", () => ({ api: { discardAgent, restoreAgent, getWorkspace } }));
+vi.mock("@/api", () => ({
+  api: { discardAgent, restoreAgent, archiveAgent, getWorkspace },
+}));
 vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn() }));
 
 import type { AppState } from "./types";
@@ -55,10 +60,11 @@ const makeStore = (agents: any[]) => {
   return store;
 };
 
-describe("discard/restore stay consistent when the refresh returns null", () => {
+describe("discard/restore/archive stay consistent when the refresh returns null", () => {
   beforeEach(() => {
     discardAgent.mockReset().mockResolvedValue(undefined);
     restoreAgent.mockReset().mockResolvedValue(undefined);
+    archiveAgent.mockReset().mockResolvedValue(undefined);
     getWorkspace.mockReset().mockResolvedValue(null); // force the failed-refresh case
   });
 
@@ -81,5 +87,39 @@ describe("discard/restore stay consistent when the refresh returns null", () => 
     expect(restored?.archive).toBeNull();
     expect(store.getState().selectedAgentId).toBe("a");
     expect(store.getState().historyOpen).toBe(false);
+  });
+
+  it("archive keeps the agent's side state when the refresh fails", async () => {
+    // A failed refresh leaves only the optimistic placeholder hiding the row —
+    // which a stale refresh could transiently re-expose. The destructive side-map
+    // cleanup must therefore NOT have run, so a re-exposed row is never emptied.
+    const store = makeStore([agent("a"), agent("b")]);
+    store.setState({ managedLogs: { a: [{ kind: "user_message", text: "hi" }] } });
+
+    await store.getState().archive("a");
+
+    expect(store.getState().managedLogs.a).toBeDefined();
+    // The optimistic placeholder still hides the row from the live sidebar.
+    const a = store.getState().workspace?.agents.find((x) => x.id === "a");
+    expect(a?.archive).not.toBeNull();
+  });
+
+  it("archive drops the side state atomically with a snapshot that hides the row", async () => {
+    getWorkspace.mockResolvedValue({
+      agents: [
+        { id: "a", archive: { archived_at: "t" } },
+        { id: "b", archive: null },
+      ],
+      // biome-ignore lint/suspicious/noExplicitAny: minimal workspace fixture
+    } as any);
+    const store = makeStore([agent("a"), agent("b")]);
+    store.setState({ managedLogs: { a: [{ kind: "user_message", text: "hi" }] } });
+
+    await store.getState().archive("a");
+
+    // The winning snapshot archives the row, so the cleanup runs with it.
+    expect(store.getState().managedLogs.a).toBeUndefined();
+    const a = store.getState().workspace?.agents.find((x) => x.id === "a");
+    expect(a?.archive).not.toBeNull();
   });
 });
