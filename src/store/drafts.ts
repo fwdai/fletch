@@ -8,6 +8,7 @@ import {
   usedNames,
 } from "@/helpers";
 import { setSetting } from "@/storage/settings";
+import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppState, SliceCreator } from "./types";
 
 // ---- Drafts ----------------------------------------------------------------
@@ -300,11 +301,12 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // closes it (backend appends `Closes #N` to the primary repo's PR).
         draft.issueRef,
       );
-      const fresh = await api.getWorkspace();
+      // Apply the selection, draft cleanup and custom-view log seed immediately,
+      // ahead of the guarded workspace refresh, so this user-intent state can
+      // never be dropped if a concurrent refresh supersedes ours.
       set((state) => {
         const { [id]: _droppedDraft, ...restComposerDrafts } = state.composerDrafts;
         const patches: Partial<AppState> = {
-          workspace: fresh,
           selectedAgentId: rec.id,
           drafts: state.drafts.filter((d) => d.id !== id),
           activeDraftId: null,
@@ -323,6 +325,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         }
         return patches;
       });
+      await refreshWorkspace(set);
       if (view === "native") {
         await sendWhenAgentReady(() =>
           api.writeToAgent(rec.id, `${prompt.replace(/\r?\n/g, " ")}\r`),

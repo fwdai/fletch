@@ -58,6 +58,7 @@ import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { notify } from "@/util/notify";
 import { playAgentDone } from "@/util/sound";
 import { interruptedAgents } from "./interrupted";
+import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppSlice, SliceCreator } from "./types";
 
 type AppSet = Parameters<SliceCreator<AppSlice>>[0];
@@ -283,8 +284,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
         // into the live workspace so the Native toggle unblocks without a
         // reload. Only when still missing locally — avoids per-turn re-fetch.
         if (needsSessionIdRefresh(get().workspace, id)) {
-          const fresh = await api.getWorkspace();
-          if (fresh) set({ workspace: fresh });
+          await refreshWorkspace(set);
         }
       } catch {
         // Non-critical refresh; the next load picks up the records.
@@ -403,8 +403,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // which `agent:status` alone doesn't cover. The backend emits this
   // small ping after either operation; we reload the workspace.
   await onWorkspaceChanged(async () => {
-    const fresh = await api.getWorkspace();
-    if (fresh) set({ workspace: fresh });
+    await refreshWorkspace(set);
   });
 
   await onPrStateChanged((e) => {
@@ -469,9 +468,7 @@ export const setupResync = (set: AppSet) => {
     if (resyncInFlight) return;
     resyncInFlight = true;
     try {
-      const fresh = await api.getWorkspace();
-      if (!fresh) return;
-      set((state) => {
+      await refreshWorkspace(set, (fresh, state) => {
         const managedBusy = { ...state.managedBusy };
         for (const a of fresh.agents) {
           if (a.status === "running" || a.status === "spawning") {
@@ -480,7 +477,7 @@ export const setupResync = (set: AppSet) => {
             managedBusy[a.id] = false;
           }
         }
-        return { workspace: fresh, managedBusy };
+        return { managedBusy };
       });
     } catch {
       // Best-effort; the next event or resync recovers.

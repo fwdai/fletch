@@ -1,4 +1,3 @@
-import { api } from "@/api";
 import { checkForUpdate } from "@/util/autoUpdate";
 import {
   hydrateAccount,
@@ -6,6 +5,7 @@ import {
   registerEventListeners,
   setupResync,
 } from "./eventListeners";
+import { refreshWorkspace } from "./refreshWorkspace";
 import type { SliceCreator } from "./types";
 
 export interface AppSlice {
@@ -74,8 +74,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     await registerEventListeners(set, get);
     setupResync(set);
 
-    const workspace = await api.getWorkspace();
-    set({ workspace });
+    await refreshWorkspace(set);
   },
 
   clearError: () => set({ lastError: null }),

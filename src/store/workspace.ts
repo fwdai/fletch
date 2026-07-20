@@ -25,6 +25,7 @@ import { setSetting } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { forkContextDigest } from "./forkDigest";
 import { interruptedAgents } from "./interrupted";
+import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppState, SliceCreator } from "./types";
 
 /** A degraded transcript-ingest state stored per agent (the `healthy` status is
@@ -322,18 +323,18 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     set({ busy: true, lastError: null });
     try {
       const rec = await api.spawnAgent(view, repoPath);
-      const fresh = await api.getWorkspace();
+      // Apply the selection (and custom-view log seeds) immediately, ahead of the
+      // guarded workspace refresh, so this user-intent state can never be dropped
+      // if a concurrent refresh supersedes ours.
       set((state) => {
-        const patches: Partial<AppState> = {
-          workspace: fresh,
-          selectedAgentId: rec.id,
-        };
+        const patches: Partial<AppState> = { selectedAgentId: rec.id };
         if (view === "custom") {
           patches.managedLogs = { ...state.managedLogs, [rec.id]: [] };
           patches.managedBusy = { ...state.managedBusy, [rec.id]: false };
         }
         return patches;
       });
+      await refreshWorkspace(set);
       return rec;
     } catch (e) {
       set({ lastError: String(e) });
@@ -370,12 +371,13 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         digest = forkContextDigest(visible, context);
       }
       const rec = await api.forkAgent(parentId, code, context, digest, snapshotMaxSeq);
-      const fresh = await api.getWorkspace();
       // No optimistic managedLogs seed. When context is carried the fork is
       // created with a non-empty task, so opening it triggers
       // loadHistoryTranscript to render the copied history; a context-less fork
-      // opens as an empty chat.
-      set({ workspace: fresh, selectedAgentId: rec.id, activeDraftId: null });
+      // opens as an empty chat. Set the selection ahead of the guarded refresh
+      // so it survives a superseding concurrent refresh.
+      set({ selectedAgentId: rec.id, activeDraftId: null });
+      await refreshWorkspace(set);
       return rec;
     } catch (e) {
       set({ lastError: String(e) });
@@ -581,12 +583,21 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       await api.discardAgent(id);
       clearOutputBuffer(id);
-      const fresh = await api.getWorkspace();
+      // The discard has committed, so drop the agent optimistically: remove its
+      // row from the workspace AND its side maps together, and clear the
+      // selection. Editing the workspace here (not just the side maps) keeps the
+      // list and the per-agent state consistent even if the guarded refresh
+      // below returns null (fetch failed) or is superseded — otherwise the old
+      // snapshot would keep showing a discarded agent whose logs/git/PR state we
+      // just cleared, rendering an emptied view when opened.
       set((s) => ({
         ...dropAgentEntries(s, id),
-        workspace: fresh,
+        workspace: s.workspace
+          ? { ...s.workspace, agents: s.workspace.agents.filter((a) => a.id !== id) }
+          : s.workspace,
         selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
       }));
+      await refreshWorkspace(set);
     } catch (e) {
       set({ lastError: String(e) });
     }
@@ -620,11 +631,16 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       await api.archiveAgent(id);
       clearOutputBuffer(id);
-      const fresh = await api.getWorkspace();
-      set((s) => ({
-        ...dropAgentEntries(s, id),
-        workspace: fresh ?? s.workspace,
-      }));
+      // Drop the agent's side maps ATOMICALLY with the post-commit snapshot that
+      // archives (hides) the row, by folding the cleanup into the guarded
+      // refresh. Unlike the sidebar's optimistic placeholder — which a stale,
+      // still-current-generation refresh could transiently clobber and re-expose
+      // the row — this refresh's snapshot is taken after the archive committed,
+      // so applying it and dropping the maps together can never leave a reachable
+      // row whose logs/git/PR/panel state is already gone. If this refresh is
+      // superseded or returns null, the maps are kept until a later snapshot
+      // hides the row.
+      await refreshWorkspace(set, (_fresh, s) => dropAgentEntries(s, id));
     } catch (e) {
       set((s) => {
         const ws = s.workspace;
@@ -669,17 +685,27 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   restore: async (id) => {
     try {
       await api.restoreAgent(id);
-      const fresh = await api.getWorkspace();
       // Keep the JSONL-replayed log in place — claude's `--resume` in
       // stream-json mode emits new events on top of the existing
       // conversation, so the chat view picks up exactly where the
-      // preview left off.
+      // preview left off. The restore has committed, so optimistically
+      // un-archive the row AND select it together: editing the workspace here
+      // (not just the selection) keeps the live sidebar and the center pane
+      // consistent even if the guarded refresh below returns null (fetch
+      // failed) or is superseded — otherwise we'd point the center pane at an
+      // agent the sidebar still filters out as archived.
       set((s) => ({
-        workspace: fresh ?? s.workspace,
+        workspace: s.workspace
+          ? {
+              ...s.workspace,
+              agents: s.workspace.agents.map((a) => (a.id === id ? { ...a, archive: null } : a)),
+            }
+          : s.workspace,
         historyOpen: false,
         selectedHistoryAgentId: null,
         selectedAgentId: id,
       }));
+      await refreshWorkspace(set);
     } catch (e) {
       set({ lastError: String(e) });
     }
