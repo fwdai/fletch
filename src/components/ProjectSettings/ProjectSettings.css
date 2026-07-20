@@ -534,3 +534,51 @@
   font-family: var(--font-mono);
   color: var(--fg-2);
 }
+/* Add-a-variable control: a dashed button that opens an inline key/value form
+ * for a var that isn't in `.env` (stored as a shared override). */
+.ev-add-btn {
+  gap: 6px;
+  margin-top: 10px;
+  padding: 7px 11px;
+  color: var(--fg-2);
+  background: transparent;
+  border: 1px dashed var(--bd-soft);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition:
+    color 0.1s,
+    border-color 0.1s,
+    background 0.1s;
+}
+.ev-add-btn:hover {
+  color: var(--fg-0);
+  border-color: var(--bd);
+  background: var(--hover);
+}
+.ev-add-form {
+  margin-top: 10px;
+}
+.ev-add-fields {
+  gap: 8px;
+}
+.ev-add-cancel {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  color: var(--fg-3);
+  background: transparent;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition:
+    color 0.1s,
+    border-color 0.1s;
+}
+.ev-add-cancel:hover {
+  color: var(--fg-1);
+  border-color: var(--bd);
+}
+.ev-add-err {
+  margin-top: 6px;
+  color: var(--danger);
+}

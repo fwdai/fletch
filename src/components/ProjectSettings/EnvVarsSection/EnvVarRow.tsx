@@ -16,6 +16,8 @@ interface Props {
   onCommit: (value: string) => void;
   /** Explicit revert-to-`.env` (the revert control by the caption). */
   onRevert: () => void;
+  /** Delete a variable that isn't in `.env` (a user-added or now-stale one). */
+  onRemove: () => void;
 }
 
 /** One environment-variable row. Same value-editing UX as the run-config rows
@@ -30,6 +32,7 @@ export function EnvVarRow({
   onToggleShare,
   onCommit,
   onRevert,
+  onRemove,
 }: Props) {
   const isOverride = cfg.source === "override";
   const inEnv = envValue !== undefined;
@@ -38,15 +41,23 @@ export function EnvVarRow({
   const display = isOverride ? (overrideValue ?? "") : (envValue ?? "");
 
   const caption = isOverride ? (
-    <>
-      <span className="dot" /> Overridden · differs from <code>.env</code>
-    </>
+    inEnv ? (
+      <>
+        <span className="dot" /> Overridden · differs from <code>.env</code>
+      </>
+    ) : (
+      <>
+        <span className="dot" /> Added · not in <code>.env</code>
+      </>
+    )
   ) : inEnv ? (
     <>
       from <code>.env</code>
     </>
   ) : (
-    <>not in .env</>
+    <>
+      not in <code>.env</code>
+    </>
   );
 
   return (
@@ -54,7 +65,7 @@ export function EnvVarRow({
       <div className="ev-l">
         <div className="ev-key-row iflex-center">
           <span className="ev-key mono text-base truncate">{varKey}</span>
-          {isOverride && (
+          {isOverride && inEnv && (
             <IconButton
               size="sm"
               tip="Revert to .env"
@@ -62,6 +73,16 @@ export function EnvVarRow({
               onClick={onRevert}
             >
               <Icon name="refresh" size={12} />
+            </IconButton>
+          )}
+          {!inEnv && (
+            <IconButton
+              size="sm"
+              tip="Remove variable"
+              aria-label="Remove variable"
+              onClick={onRemove}
+            >
+              <Icon name="trash" size={12} />
             </IconButton>
           )}
         </div>
