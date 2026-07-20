@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Icon } from "@/components/Icon";
 import { ValueChip } from "@/components/RunConfig";
 import { IconButton } from "@/components/ui/IconButton";
@@ -34,6 +35,12 @@ export function EnvVarRow({
   onRevert,
   onRemove,
 }: Props) {
+  // Hide the revert/remove controls while the value chip is being edited: the
+  // chip's blur commits, so a control clicked mid-edit would fire its mutation
+  // in the same gesture as that commit and the two could race on the keychain +
+  // document. Gone during editing, they can only be clicked after the commit
+  // has already dispatched. (Same guard the run-config row uses for revert.)
+  const [editing, setEditing] = useState(false);
   const isOverride = cfg.source === "override";
   const inEnv = envValue !== undefined;
   // The effective value: the override when set, otherwise the mirrored `.env`
@@ -65,7 +72,7 @@ export function EnvVarRow({
       <div className="ev-l">
         <div className="ev-key-row iflex-center">
           <span className="ev-key mono text-base truncate">{varKey}</span>
-          {isOverride && inEnv && (
+          {isOverride && inEnv && !editing && (
             <IconButton
               size="sm"
               tip="Revert to .env"
@@ -75,7 +82,7 @@ export function EnvVarRow({
               <Icon name="refresh" size={12} />
             </IconButton>
           )}
-          {!inEnv && (
+          {!inEnv && !editing && (
             <IconButton
               size="sm"
               tip="Remove variable"
@@ -94,6 +101,7 @@ export function EnvVarRow({
           placeholder={envValue ?? "not set"}
           ariaLabel={varKey}
           onCommit={onCommit}
+          onEditingChange={setEditing}
         />
         <SandboxToggle value={cfg.shared} onChange={onToggleShare} />
       </div>

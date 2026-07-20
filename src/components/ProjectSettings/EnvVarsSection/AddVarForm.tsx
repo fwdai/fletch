@@ -81,7 +81,7 @@ export function AddVarForm({ existingKeys, onAdd }: Props) {
           value={key}
           autoFocus
           onChange={(e) => setKey(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
+          onKeyDown={(e) => e.key === "Enter" && !busy && submit()}
         />
         <input
           className="ps-input mono"
@@ -89,7 +89,7 @@ export function AddVarForm({ existingKeys, onAdd }: Props) {
           aria-label="New variable value"
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
+          onKeyDown={(e) => e.key === "Enter" && !busy && submit()}
         />
         <button type="button" className="ps-btn" onClick={submit} disabled={busy}>
           Add
