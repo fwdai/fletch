@@ -166,6 +166,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
 
         // With the listeners live, fetch the snapshot. Its `log_seq` is the
         // boundary the buffered/live chunks dedupe against.
+        let snapEnd = 0;
         try {
           const snap = await api.runState(agent.id);
           if (cancelled) return;
@@ -177,14 +178,21 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           // multi-byte runes) itself, so no TextDecoder is needed here or on
           // live chunks.
           if (snap.log.length > 0) term.write(new Uint8Array(snap.log));
-          boundary = snap.log_seq;
-          // Flush anything buffered during the round-trip, deduped, then release
-          // the buffer — subsequent events write directly via `writeChunk`.
-          for (const c of pending) writeChunk(c.bytes, c.seq);
-          pending.length = 0;
+          snapEnd = snap.log_seq;
         } catch (err) {
-          console.error("runState failed", err);
+          // Snapshot failed: fall back to a zero boundary so buffered and
+          // future chunks still stream (writeChunk against 0 writes them
+          // whole). We lose the rehydrated backlog, but the gate MUST open —
+          // otherwise every event strands in `pending` and the terminal stays
+          // blank until the panel remounts.
+          console.error("runState failed — streaming live output without snapshot", err);
         }
+        if (cancelled) return;
+        // Open the gate regardless of snapshot success, then flush the buffer
+        // (deduped); subsequent events write directly via `writeChunk`.
+        boundary = snapEnd;
+        for (const c of pending) writeChunk(c.bytes, c.seq);
+        pending.length = 0;
       })();
 
       return () => {
