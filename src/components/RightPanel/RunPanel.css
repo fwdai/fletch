@@ -156,52 +156,22 @@
   box-shadow: 0 0 0 1.5px var(--bg-1);
 }
 
-.run-logs {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
-  font-family: var(--font-mono);
-  line-height: var(--lh-relaxed);
-  padding: 10px 18px 16px;
-  color: var(--fg-1);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.run-logs .p {
-  color: var(--accent);
-}
-.run-logs .d {
-  color: var(--fg-3);
-}
-.run-logs .s {
-  color: var(--success);
-}
-.run-logs .w {
-  color: var(--warn);
-}
-.run-logs .e {
-  color: var(--danger);
-}
-.run-logs .i {
-  color: var(--info);
-}
-.run-logs .b {
-  font-weight: 600;
-  color: var(--fg-0);
+/* xterm output owns its own scrolling; force the viewport to scroll within
+   the flex slot (matches the .term-panel rule in shared/terminal.css). */
+.run-wrap .xterm-viewport {
+  overflow-y: auto !important;
 }
 
-@keyframes term-blink {
-  50% {
-    opacity: 0;
-  }
-}
-.term-cursor {
-  display: inline-block;
-  width: 7px;
-  height: 14px;
-  vertical-align: text-bottom;
-  background: var(--accent);
-  animation: term-blink 1s steps(2) infinite;
+/* Supervisor-level error (distinct from the process's own stderr, which is
+   already in the terminal above). Shown below the log when stopped. */
+.run-error {
+  flex-shrink: 0;
+  padding: 8px 14px 10px;
+  font-family: var(--font-mono);
+  color: var(--danger);
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-top: 1px solid var(--bd-soft);
 }
 
 /* run settings sheet */

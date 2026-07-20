@@ -6,6 +6,11 @@ export interface RunStateSnapshot {
   /** Raw PTY bytes accumulated since the panel was last cleared.
    *  Sent as a JSON array of u8 values; decode with TextDecoder. */
   log: number[];
+  /** Absolute end offset of `log` — total bytes ever appended to the run
+   *  session (monotonic, unaffected by ring eviction). A panel that subscribes
+   *  to `run:output` before fetching this snapshot dedupes the overlap here:
+   *  any live chunk with `seq <= log_seq` is already contained in `log`. */
+  log_seq: number;
 }
 
 /** A single detected run-config row (see Rust `run_detect::DetectedRow`). */
@@ -42,6 +47,10 @@ export interface EnvEntry {
 export interface RunOutputEvent {
   agent_id: string;
   bytes: number[];
+  /** Absolute end offset of this chunk (running total of bytes appended to the
+   *  run log, including these). Compared against `RunStateSnapshot.log_seq` to
+   *  drop bytes already present in the rehydration snapshot. */
+  seq: number;
 }
 
 export interface RunStateEvent {

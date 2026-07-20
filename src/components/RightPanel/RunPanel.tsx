@@ -1,3 +1,4 @@
+import type { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import { type AgentRecord, api, onRunOutput, onRunState } from "@/api";
 import { Icon } from "@/components/Icon";
@@ -10,6 +11,8 @@ import {
   toSetupRows,
 } from "@/components/RunConfig";
 import { useAppStore } from "@/store";
+import { useXterm } from "@/util/useXterm";
+import { resolveTheme } from "@/util/xtermTheme";
 import { RunSettingsSheet } from "./RunSettingsSheet";
 
 // Detected run config replaces the old hardcoded defaults. The backend
@@ -17,23 +20,12 @@ import { RunSettingsSheet } from "./RunSettingsSheet";
 // highest-confidence one. Two settings layers sit on top: the project's
 // `run.*` settings (edited in Project Settings), then this agent's
 // `run.agent.<id>.*` overrides (edited here in the sheet).
-
-// Strip ANSI escape sequences before rendering. v1 keeps log rendering
-// dead-simple (plain text with pre-wrap); colorization can come later.
-// Covers CSI (ESC [ ... letter) and OSC (ESC ] ... BEL / ST).
-const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
-
-// Cap the in-memory log so a long-running dev server can't grow React state
-// without bound. Keep the tail — what a terminal would show — and trim from
-// the front on a line boundary so a half-line never gets rendered.
-const MAX_LOG_CHARS = 256 * 1024;
-const capLog = (s: string): string => {
-  if (s.length <= MAX_LOG_CHARS) return s;
-  const tail = s.slice(s.length - MAX_LOG_CHARS);
-  const nl = tail.indexOf("\n");
-  return nl === -1 ? tail : tail.slice(nl + 1);
-};
+//
+// Output is rendered by a read-only xterm terminal (same hook as TermPanel),
+// so ANSI colors *and* cursor control (spinners, progress-bar rewrites) render
+// faithfully. Raw PTY bytes from `run:output` are written straight to the
+// terminal — no ANSI stripping, no React state per chunk; xterm owns decoding,
+// scrollback, and scrolling.
 
 export function RunPanel({ agent }: { agent: AgentRecord }) {
   // Phase is owned by the store (fed by an app-wide `run:state` subscription) so
@@ -42,17 +34,12 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   const setRunPhase = useAppStore((s) => s.setRunPhase);
   const setRunPort = useAppStore((s) => s.setRunPort);
   const [lastError, setLastError] = useState<string | null>(null);
-  const [log, setLog] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectValues, setProjectValues] = useState<Record<string, string>>({});
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [rows, setRows] = useState<SetupRow[]>([]);
   const [ecosystem, setEcosystem] = useState<string | null>(null);
-  const logRef = useRef<HTMLDivElement | null>(null);
-  // Streaming UTF-8 decoder so a multi-byte rune split across two
-  // PTY chunks doesn't produce a replacement character. Reset each
-  // time we re-subscribe (agent switch).
-  const decoderRef = useRef<TextDecoder | null>(null);
+  const termRef = useRef<Terminal | null>(null);
 
   // Load the project's run settings (the base every agent inherits) and this
   // agent's overrides on top of them. Re-loads on agent switch.
@@ -100,73 +87,140 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     };
   }, [agent.id]);
 
-  // Subscribe to run output and state events for this agent.
-  // Rehydrate snapshot on mount/agent-switch so the panel preserves
-  // logs from prior starts (and across panel mounts).
+  // Mount a read-only xterm terminal and stream run output into it.
+  // Rehydrate the snapshot on mount/agent-switch so the panel preserves logs
+  // from prior starts (and across panel mounts). The whole lifecycle re-runs
+  // when the agent id changes: the old terminal is disposed and a fresh one
+  // replays that agent's snapshot.
+  const termContainerRef = useXterm(
+    {
+      fontSize: 12,
+      lineHeight: 1.2,
+      theme: resolveTheme(),
+      scrollback: 20000,
+      // Read-only log view: no input, no blinking input caret.
+      disableStdin: true,
+      cursorBlink: false,
+      cursorInactiveStyle: "none",
+    },
+    (term) => {
+      // StrictMode runs effects twice in dev, and cleanup may fire before the
+      // async setup below resolves — so we track a cancelled flag and dispose
+      // any listener that registers late. Without this, the first mount's
+      // listener leaks and every event is delivered twice.
+      let cancelled = false;
+      let unlistenOutput: (() => void) | null = null;
+      let unlistenState: (() => void) | null = null;
+      termRef.current = term;
+
+      // Subscribe to live output BEFORE fetching the snapshot, so no chunk
+      // produced during the snapshot round-trip can slip through a gap. Because
+      // we subscribe first, `pending` is a *complete, contiguous* byte range
+      // from the moment the listener went live (`liveStart`) onward — we never
+      // miss a chunk in that range, and we never drop one. The snapshot is only
+      // needed to prepend BACKLOG that predates `liveStart`.
+      //
+      // This matters because the backend log is a capped ring: `snap.log` holds
+      // only the tail `[log_seq - log.length, log_seq)`, while `log_seq` counts
+      // every byte ever appended. A noisy run can evict, during the round trip,
+      // bytes that a buffered chunk still carries — so we must NOT dedupe
+      // buffered chunks by offset against `log_seq` (that would drop chunks
+      // whose bytes are no longer in `snap.log`). Instead: write the snapshot's
+      // prefix up to `liveStart`, then every buffered chunk in full.
+      let gateOpen = false;
+      const pending: { bytes: Uint8Array; seq: number }[] = [];
+
+      (async () => {
+        const unOutput = await onRunOutput((e) => {
+          if (e.agent_id !== agent.id) return;
+          const bytes = new Uint8Array(e.bytes);
+          // Buffer until the handoff completes; after that every chunk is
+          // strictly newer than everything written, so write it directly.
+          if (gateOpen) term.write(bytes);
+          else pending.push({ bytes, seq: e.seq });
+        });
+        if (cancelled) {
+          unOutput();
+          return;
+        }
+        unlistenOutput = unOutput;
+
+        const unState = await onRunState((e) => {
+          if (e.agent_id !== agent.id) return;
+          // Phase flows through the store via the app-wide listener; this local
+          // subscription only mirrors last_error, which the store doesn't track.
+          setLastError(e.last_error);
+        });
+        if (cancelled) {
+          unState();
+          return;
+        }
+        unlistenState = unState;
+
+        // With the listeners live, fetch the rehydration snapshot.
+        let snapLog: Uint8Array | null = null;
+        let snapEnd = 0; // absolute end offset of the snapshot (log_seq)
+        try {
+          const snap = await api.runState(agent.id);
+          if (cancelled) return;
+          // Rehydrate the store phase too, so a running app opened after an app
+          // reload lights the tab dot even before the next live event arrives.
+          setRunPhase(agent.id, snap.phase);
+          setLastError(snap.last_error);
+          if (snap.log.length > 0) snapLog = new Uint8Array(snap.log);
+          snapEnd = snap.log_seq;
+        } catch (err) {
+          // Snapshot failed: no backlog, but the handoff MUST still complete —
+          // otherwise every buffered/future chunk strands in `pending` and the
+          // terminal stays blank until remount. Fall through with snapLog=null.
+          console.error("runState failed — streaming live output without snapshot", err);
+        }
+        if (cancelled) return;
+
+        // Handoff. `liveStart` is the absolute offset of the first buffered
+        // byte; the snapshot need only supply what precedes it. With no buffered
+        // output, the snapshot is the whole story up to `snapEnd`.
+        const liveStart = pending.length > 0 ? pending[0].seq - pending[0].bytes.length : snapEnd;
+        if (snapLog) {
+          const snapStart = snapEnd - snapLog.length;
+          // Backlog = snapshot bytes before our live coverage. Clamp to the
+          // retained range: if eviction already advanced past `liveStart`
+          // (snapStart >= liveStart), there's no backlog to prepend and the
+          // buffered chunks cover everything the snapshot could. Writing whole
+          // chunks (below) then means no drop, no dup, no reorder.
+          const backlogLen = Math.max(0, Math.min(liveStart, snapEnd) - snapStart);
+          if (backlogLen > 0) term.write(snapLog.subarray(0, backlogLen));
+        }
+        // Every buffered chunk in full — never dropped, even if its bytes were
+        // evicted from the snapshot tail during the round trip.
+        for (const c of pending) term.write(c.bytes);
+        pending.length = 0;
+        gateOpen = true;
+      })();
+
+      return () => {
+        cancelled = true;
+        termRef.current = null;
+        unlistenOutput?.();
+        unlistenState?.();
+      };
+    },
+    [agent.id, setRunPhase],
+    { autoFocus: false },
+  );
+
+  // Re-apply the xterm theme on dark ↔ light switches without recreating the
+  // terminal (same approach as TermPanel).
   useEffect(() => {
-    // `onRunOutput` / `onRunState` return promises that resolve to
-    // the unlisten fn. StrictMode runs effects twice in dev, and the
-    // cleanup may fire before those promises resolve — so we track a
-    // cancelled flag and dispose any unlistener that arrives late.
-    // Without this, the first mount's listener leaks and every event
-    // is delivered twice.
-    let cancelled = false;
-    let unlistenOutput: (() => void) | null = null;
-    let unlistenState: (() => void) | null = null;
-    const decoder = new TextDecoder("utf-8", { fatal: false });
-    decoderRef.current = decoder;
-
-    api.runState(agent.id).then((snap) => {
-      if (cancelled) return;
-      // Rehydrate the store phase too, so a running app opened after an app
-      // reload lights the tab dot even before the next live event arrives.
-      setRunPhase(agent.id, snap.phase);
-      setLastError(snap.last_error);
-      // Snapshot is a one-shot buffer — decode it without streaming
-      // mode using its own decoder so it doesn't pollute the live
-      // stream decoder.
-      const snapDecoder = new TextDecoder("utf-8", { fatal: false });
-      setLog(capLog(stripAnsi(snapDecoder.decode(new Uint8Array(snap.log)))));
+    const observer = new MutationObserver(() => {
+      if (termRef.current) termRef.current.options.theme = resolveTheme();
     });
-
-    onRunOutput((e) => {
-      if (e.agent_id !== agent.id) return;
-      const chunk = stripAnsi(decoder.decode(new Uint8Array(e.bytes), { stream: true }));
-      setLog((prev) => capLog(prev + chunk));
-    }).then((un) => {
-      if (cancelled) {
-        un();
-        return;
-      }
-      unlistenOutput = un;
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
     });
-
-    onRunState((e) => {
-      if (e.agent_id !== agent.id) return;
-      // Phase flows through the store via the app-wide listener; this local
-      // subscription only mirrors last_error, which the store doesn't track.
-      setLastError(e.last_error);
-    }).then((un) => {
-      if (cancelled) {
-        un();
-        return;
-      }
-      unlistenState = un;
-    });
-
-    return () => {
-      cancelled = true;
-      unlistenOutput?.();
-      unlistenState?.();
-    };
-  }, [agent.id, setRunPhase]);
-
-  // Auto-scroll to bottom on log append.
-  useEffect(() => {
-    const el = logRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [log]);
+    return () => observer.disconnect();
+  }, []);
 
   // What each row inherits: the project setting when one exists, else the
   // detected value. Agent-level overrides compare against these, so a value
@@ -271,17 +325,15 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         </button>
       </div>
 
-      {/* ── Logs ── */}
-      <div className="run-logs text-sm" ref={logRef}>
-        {log.length > 0 && <div>{log}</div>}
-        {lastError && phase === "stopped" && <div className="e">{lastError}</div>}
-        {isActive && (
-          <div className="p">
-            {"› "}
-            <span className="term-cursor" />
-          </div>
-        )}
+      {/* ── Logs (read-only xterm) ── */}
+      <div className="xterm-slot">
+        <div
+          ref={termContainerRef}
+          className="xterm-host"
+          style={{ inset: "10px 6px 12px 14px" }}
+        />
       </div>
+      {lastError && phase === "stopped" && <div className="run-error e text-sm">{lastError}</div>}
 
       {/* ── Settings sheet ── */}
       {settingsOpen && (

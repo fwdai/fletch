@@ -40,6 +40,13 @@ pub struct RunStateSnapshot {
     /// Encoded as a byte array so the frontend can render or strip
     /// ANSI without re-decoding.
     pub log: Vec<u8>,
+    /// Absolute end offset of `log` — the total number of bytes ever
+    /// appended to this session (monotonic, uncapped, unaffected by ring
+    /// eviction). Each `run:output` event carries the same running counter
+    /// as its `seq`, so a panel that subscribes before fetching this snapshot
+    /// can dedupe the overlap exactly at this boundary: any live chunk whose
+    /// `seq <= log_seq` is already contained here.
+    pub log_seq: u64,
 }
 
 /// State for one agent's run process. Reused across start/stop cycles
@@ -88,6 +95,7 @@ impl RunSession {
             phase: inner.phase,
             last_error: inner.last_error.clone(),
             log: inner.log.bytes().to_vec(),
+            log_seq: inner.log.total(),
         }
     }
 
@@ -99,10 +107,14 @@ impl RunSession {
         matches!(self.phase(), RunPhase::Setup | RunPhase::Running)
     }
 
-    /// Append PTY output to the rolling buffer. Called from the
-    /// per-spawn output callback.
-    pub fn append_log(&self, bytes: &[u8]) {
-        self.inner.lock().log.append(bytes);
+    /// Append PTY output to the rolling buffer. Called from the per-spawn
+    /// output callback. Returns the new absolute end offset (total bytes ever
+    /// appended) so the caller can stamp the emitted `run:output` event with a
+    /// `seq` the panel dedupes against `RunStateSnapshot::log_seq`.
+    pub fn append_log(&self, bytes: &[u8]) -> u64 {
+        let mut inner = self.inner.lock();
+        inner.log.append(bytes);
+        inner.log.total()
     }
 
     /// Kill the active PTY (if any), bump generation so any in-flight
@@ -239,6 +251,9 @@ pub fn shell_args(cmd: &str) -> Vec<String> {
 struct LogBuffer {
     bytes: Vec<u8>,
     cap: usize,
+    /// Monotonic count of every byte ever appended, independent of ring
+    /// eviction. Serves as the absolute offset frontends align against.
+    total: u64,
 }
 
 impl LogBuffer {
@@ -246,10 +261,16 @@ impl LogBuffer {
         Self {
             bytes: Vec::new(),
             cap,
+            total: 0,
         }
     }
 
+    fn total(&self) -> u64 {
+        self.total
+    }
+
     fn append(&mut self, b: &[u8]) {
+        self.total += b.len() as u64;
         self.bytes.extend_from_slice(b);
         // Compact only when we've drifted ≥50% past cap so per-byte
         // amortized work stays O(1).
@@ -279,6 +300,30 @@ mod tests {
         assert!(buf.bytes().len() >= 100);
         assert!(buf.bytes().len() <= 150);
         assert!(buf.bytes().iter().all(|&b| b == b'x'));
+    }
+
+    #[test]
+    fn log_buffer_total_counts_all_bytes_past_eviction() {
+        let mut buf = LogBuffer::new(100);
+        assert_eq!(buf.total(), 0);
+        for _ in 0..20 {
+            buf.append(&[b'x'; 50]);
+        }
+        // total is monotonic and uncapped even though the ring evicts: it is
+        // the absolute offset the panel dedupes against.
+        assert_eq!(buf.total(), 20 * 50);
+    }
+
+    #[test]
+    fn append_log_returns_running_offset_and_snapshot_matches() {
+        let s = RunSession::new();
+        assert_eq!(s.append_log(b"hello"), 5);
+        assert_eq!(s.append_log(b" world"), 11);
+        let snap = s.snapshot();
+        // The snapshot's end offset equals the last append's returned seq, so a
+        // `run:output` event stamped with that seq is recognized as contained.
+        assert_eq!(snap.log_seq, 11);
+        assert_eq!(snap.log, b"hello world");
     }
 
     #[test]
