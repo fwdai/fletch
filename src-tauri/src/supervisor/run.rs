@@ -141,6 +141,7 @@ impl Supervisor {
                 phase: RunPhase::Idle,
                 last_error: None,
                 log: Vec::new(),
+                log_seq: 0,
             },
         }
     }
@@ -239,12 +240,12 @@ pub struct ProjectRunConfig {
 /// Inject a "$ <cmd>" header line into the log so each phase has a
 /// visible boundary, then emit it like any other PTY output.
 fn write_header(app: &AppHandle, agent_id: &str, session: &Arc<RunSession>, cmd: &str) {
-    // Dim ANSI for the prompt — the frontend strips ANSI for v1,
-    // so the line still reads fine without color support.
+    // Dim ANSI for the prompt — the panel renders ANSI, so this shows as a
+    // muted prompt line separating each phase.
     let line = format!("\x1b[2m$ {cmd}\x1b[0m\r\n");
     let bytes = line.into_bytes();
-    session.append_log(&bytes);
-    emit_run_output(app, agent_id, bytes);
+    let seq = session.append_log(&bytes);
+    emit_run_output(app, agent_id, bytes, seq);
 }
 
 /// Inject a port-safety note (e.g. "Port 3000 in use — using 3001") into the
@@ -252,8 +253,8 @@ fn write_header(app: &AppHandle, agent_id: &str, session: &Arc<RunSession>, cmd:
 fn write_note(app: &AppHandle, agent_id: &str, session: &Arc<RunSession>, note: &str) {
     let line = format!("\x1b[2m{note}\x1b[0m\r\n");
     let bytes = line.into_bytes();
-    session.append_log(&bytes);
-    emit_run_output(app, agent_id, bytes);
+    let seq = session.append_log(&bytes);
+    emit_run_output(app, agent_id, bytes, seq);
 }
 
 /// A dev command prepared for spawn: the (possibly port-rewritten) command,
@@ -412,8 +413,8 @@ fn spawn_run_phase(
         &cwd,
         &env,
         move |bytes| {
-            session_out.append_log(&bytes);
-            emit_run_output(&app_out, &id_out, bytes);
+            let seq = session_out.append_log(&bytes);
+            emit_run_output(&app_out, &id_out, bytes, seq);
         },
         move |exit| {
             handle_run_phase_exit(

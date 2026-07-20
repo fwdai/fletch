@@ -293,16 +293,22 @@ pub(super) fn emit_pr_state(app: &AppHandle, agent_id: &str, state: Option<PrSta
 struct RunOutputPayload {
     agent_id: String,
     bytes: Vec<u8>,
+    /// Absolute end offset of this chunk (total bytes appended to the run log
+    /// including it). The panel dedupes against `RunStateSnapshot::log_seq`:
+    /// a chunk with `seq <= log_seq` is already in the snapshot.
+    seq: u64,
 }
 
-/// Raw bytes from the Run panel's PTY (setup or dev-server phase).
-pub(super) fn emit_run_output(app: &AppHandle, agent_id: &str, bytes: Vec<u8>) {
+/// Raw bytes from the Run panel's PTY (setup or dev-server phase). `seq` is the
+/// running byte offset returned by `RunSession::append_log`.
+pub(super) fn emit_run_output(app: &AppHandle, agent_id: &str, bytes: Vec<u8>, seq: u64) {
     emit(
         app,
         "run:output",
         RunOutputPayload {
             agent_id: agent_id.to_string(),
             bytes,
+            seq,
         },
     );
 }

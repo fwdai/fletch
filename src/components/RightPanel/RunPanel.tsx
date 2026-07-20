@@ -113,35 +113,38 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       let unlistenState: (() => void) | null = null;
       termRef.current = term;
 
-      // Rehydrate the persisted snapshot, THEN subscribe to the live stream —
-      // in that order. `term.write` is append-only, so the snapshot must be
-      // written before any live byte can be: if a live chunk landed first, the
-      // later snapshot write would replay older bytes *after* newer ones,
-      // duplicating and reordering output for a run that's still writing.
-      // Awaiting the snapshot before registering the output listener makes that
-      // ordering deterministic. (The narrow window between the backend snapshot
-      // and the listener going live can drop a chunk, but never duplicate or
-      // reorder — the same guarantee the previous plain-text panel had.)
-      (async () => {
-        try {
-          const snap = await api.runState(agent.id);
-          if (cancelled) return;
-          // Rehydrate the store phase too, so a running app opened after an app
-          // reload lights the tab dot even before the next live event arrives.
-          setRunPhase(agent.id, snap.phase);
-          setLastError(snap.last_error);
-          // Write raw snapshot bytes; xterm decodes UTF-8 (and handles
-          // multi-byte runes) itself, so no TextDecoder is needed here or on
-          // live chunks.
-          if (snap.log.length > 0) term.write(new Uint8Array(snap.log));
-        } catch (err) {
-          console.error("runState failed", err);
-        }
-        if (cancelled) return;
+      // Subscribe to live output BEFORE fetching the snapshot, so no chunk
+      // produced during the snapshot round-trip can slip through the gap. Live
+      // chunks that arrive before the snapshot resolves are held in `pending`
+      // (we can't write them yet — `term.write` is append-only, so they must go
+      // *after* the snapshot). Once the snapshot's end offset `boundary` is
+      // known, `writeChunk` dedupes each chunk against it exactly: the backend
+      // stamps every chunk with an absolute `seq` (its end offset), so a chunk
+      // already contained in the snapshot (`seq <= boundary`) is dropped, and
+      // the one chunk straddling the boundary is trimmed to just its new tail.
+      // Net: no gap (subscribed first), no duplication/reorder (deduped by
+      // offset) — even when the panel opens mid-run.
+      let boundary: number | null = null;
+      const pending: { bytes: Uint8Array; seq: number }[] = [];
 
+      const writeChunk = (bytes: Uint8Array, seq: number) => {
+        if (boundary === null) return;
+        const start = seq - bytes.length; // absolute start offset of this chunk
+        if (seq <= boundary) return; // fully within the snapshot — already shown
+        if (start >= boundary) {
+          term.write(bytes); // entirely new
+          return;
+        }
+        term.write(bytes.subarray(boundary - start)); // straddles: write new tail only
+      };
+
+      (async () => {
         const unOutput = await onRunOutput((e) => {
           if (e.agent_id !== agent.id) return;
-          term.write(new Uint8Array(e.bytes));
+          const bytes = new Uint8Array(e.bytes);
+          // Buffer until the boundary is known; after that, write directly.
+          if (boundary === null) pending.push({ bytes, seq: e.seq });
+          else writeChunk(bytes, e.seq);
         });
         if (cancelled) {
           unOutput();
@@ -160,6 +163,28 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           return;
         }
         unlistenState = unState;
+
+        // With the listeners live, fetch the snapshot. Its `log_seq` is the
+        // boundary the buffered/live chunks dedupe against.
+        try {
+          const snap = await api.runState(agent.id);
+          if (cancelled) return;
+          // Rehydrate the store phase too, so a running app opened after an app
+          // reload lights the tab dot even before the next live event arrives.
+          setRunPhase(agent.id, snap.phase);
+          setLastError(snap.last_error);
+          // Write raw snapshot bytes; xterm decodes UTF-8 (and handles
+          // multi-byte runes) itself, so no TextDecoder is needed here or on
+          // live chunks.
+          if (snap.log.length > 0) term.write(new Uint8Array(snap.log));
+          boundary = snap.log_seq;
+          // Flush anything buffered during the round-trip, deduped, then release
+          // the buffer — subsequent events write directly via `writeChunk`.
+          for (const c of pending) writeChunk(c.bytes, c.seq);
+          pending.length = 0;
+        } catch (err) {
+          console.error("runState failed", err);
+        }
       })();
 
       return () => {
