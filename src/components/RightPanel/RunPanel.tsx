@@ -104,51 +104,63 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       cursorInactiveStyle: "none",
     },
     (term) => {
-      termRef.current = term;
-
-      // `onRunOutput` / `onRunState` return promises that resolve to the
-      // unlisten fn. StrictMode runs effects twice in dev, and cleanup may fire
-      // before those promises resolve — so we track a cancelled flag and
-      // dispose any unlistener that arrives late. Without this, the first
-      // mount's listener leaks and every event is delivered twice.
+      // StrictMode runs effects twice in dev, and cleanup may fire before the
+      // async setup below resolves — so we track a cancelled flag and dispose
+      // any listener that registers late. Without this, the first mount's
+      // listener leaks and every event is delivered twice.
       let cancelled = false;
       let unlistenOutput: (() => void) | null = null;
       let unlistenState: (() => void) | null = null;
+      termRef.current = term;
 
-      api.runState(agent.id).then((snap) => {
+      // Rehydrate the persisted snapshot, THEN subscribe to the live stream —
+      // in that order. `term.write` is append-only, so the snapshot must be
+      // written before any live byte can be: if a live chunk landed first, the
+      // later snapshot write would replay older bytes *after* newer ones,
+      // duplicating and reordering output for a run that's still writing.
+      // Awaiting the snapshot before registering the output listener makes that
+      // ordering deterministic. (The narrow window between the backend snapshot
+      // and the listener going live can drop a chunk, but never duplicate or
+      // reorder — the same guarantee the previous plain-text panel had.)
+      (async () => {
+        try {
+          const snap = await api.runState(agent.id);
+          if (cancelled) return;
+          // Rehydrate the store phase too, so a running app opened after an app
+          // reload lights the tab dot even before the next live event arrives.
+          setRunPhase(agent.id, snap.phase);
+          setLastError(snap.last_error);
+          // Write raw snapshot bytes; xterm decodes UTF-8 (and handles
+          // multi-byte runes) itself, so no TextDecoder is needed here or on
+          // live chunks.
+          if (snap.log.length > 0) term.write(new Uint8Array(snap.log));
+        } catch (err) {
+          console.error("runState failed", err);
+        }
         if (cancelled) return;
-        // Rehydrate the store phase too, so a running app opened after an app
-        // reload lights the tab dot even before the next live event arrives.
-        setRunPhase(agent.id, snap.phase);
-        setLastError(snap.last_error);
-        // Write raw snapshot bytes; xterm decodes UTF-8 (and handles multi-byte
-        // runes) itself, so no TextDecoder is needed here or on live chunks.
-        if (snap.log.length > 0) term.write(new Uint8Array(snap.log));
-      });
 
-      onRunOutput((e) => {
-        if (e.agent_id !== agent.id) return;
-        term.write(new Uint8Array(e.bytes));
-      }).then((un) => {
+        const unOutput = await onRunOutput((e) => {
+          if (e.agent_id !== agent.id) return;
+          term.write(new Uint8Array(e.bytes));
+        });
         if (cancelled) {
-          un();
+          unOutput();
           return;
         }
-        unlistenOutput = un;
-      });
+        unlistenOutput = unOutput;
 
-      onRunState((e) => {
-        if (e.agent_id !== agent.id) return;
-        // Phase flows through the store via the app-wide listener; this local
-        // subscription only mirrors last_error, which the store doesn't track.
-        setLastError(e.last_error);
-      }).then((un) => {
+        const unState = await onRunState((e) => {
+          if (e.agent_id !== agent.id) return;
+          // Phase flows through the store via the app-wide listener; this local
+          // subscription only mirrors last_error, which the store doesn't track.
+          setLastError(e.last_error);
+        });
         if (cancelled) {
-          un();
+          unState();
           return;
         }
-        unlistenState = un;
-      });
+        unlistenState = unState;
+      })();
 
       return () => {
         cancelled = true;
@@ -279,7 +291,11 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
 
       {/* ── Logs (read-only xterm) ── */}
       <div className="xterm-slot">
-        <div ref={termContainerRef} className="xterm-host" style={{ inset: "10px 6px 12px 14px" }} />
+        <div
+          ref={termContainerRef}
+          className="xterm-host"
+          style={{ inset: "10px 6px 12px 14px" }}
+        />
       </div>
       {lastError && phase === "stopped" && <div className="run-error e text-sm">{lastError}</div>}
 
