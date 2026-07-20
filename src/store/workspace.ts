@@ -583,11 +583,18 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       await api.discardAgent(id);
       clearOutputBuffer(id);
-      // Drop the agent's side maps and clear the selection immediately, ahead of
-      // the guarded refresh, so these survive even if a concurrent refresh
-      // supersedes ours.
+      // The discard has committed, so drop the agent optimistically: remove its
+      // row from the workspace AND its side maps together, and clear the
+      // selection. Editing the workspace here (not just the side maps) keeps the
+      // list and the per-agent state consistent even if the guarded refresh
+      // below returns null (fetch failed) or is superseded — otherwise the old
+      // snapshot would keep showing a discarded agent whose logs/git/PR state we
+      // just cleared, rendering an emptied view when opened.
       set((s) => ({
         ...dropAgentEntries(s, id),
+        workspace: s.workspace
+          ? { ...s.workspace, agents: s.workspace.agents.filter((a) => a.id !== id) }
+          : s.workspace,
         selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
       }));
       await refreshWorkspace(set);
@@ -676,13 +683,23 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // Keep the JSONL-replayed log in place — claude's `--resume` in
       // stream-json mode emits new events on top of the existing
       // conversation, so the chat view picks up exactly where the
-      // preview left off. Apply the selection ahead of the guarded refresh so
-      // it survives a superseding concurrent refresh.
-      set({
+      // preview left off. The restore has committed, so optimistically
+      // un-archive the row AND select it together: editing the workspace here
+      // (not just the selection) keeps the live sidebar and the center pane
+      // consistent even if the guarded refresh below returns null (fetch
+      // failed) or is superseded — otherwise we'd point the center pane at an
+      // agent the sidebar still filters out as archived.
+      set((s) => ({
+        workspace: s.workspace
+          ? {
+              ...s.workspace,
+              agents: s.workspace.agents.map((a) => (a.id === id ? { ...a, archive: null } : a)),
+            }
+          : s.workspace,
         historyOpen: false,
         selectedHistoryAgentId: null,
         selectedAgentId: id,
-      });
+      }));
       await refreshWorkspace(set);
     } catch (e) {
       set({ lastError: String(e) });
