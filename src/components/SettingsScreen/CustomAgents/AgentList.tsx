@@ -1,4 +1,5 @@
 import { Icon } from "@/components/Icon";
+import { CustomizeSwitch } from "@/components/SettingsScreen/CustomizeSwitch";
 import { ArmedDeleteButton, useArmedDelete } from "@/components/SettingsScreen/LibraryList";
 import { SetHead } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
@@ -33,7 +34,8 @@ export function AgentList({
   return (
     <div className="set-pane">
       <SetHead
-        eyebrow="Settings · Custom agents"
+        eyebrow="Settings · Customize"
+        eyebrowAside={<CustomizeSwitch />}
         title="Custom agents"
         desc="Give a base coding agent a name, a model, and a standing brief. Custom agents show up in the composer next to the built-ins."
         actions={

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { SetHead } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
@@ -56,6 +56,7 @@ export function ArmedDeleteButton({ armed, onClick }: { armed: boolean; onClick:
  *  idiom via {@link useArmedDelete}. */
 export function LibraryList<T extends { id: string }>({
   eyebrow,
+  eyebrowAside,
   title,
   desc,
   newLabel,
@@ -68,6 +69,8 @@ export function LibraryList<T extends { id: string }>({
   onDelete,
 }: {
   eyebrow: string;
+  /** Optional controls for the eyebrow row — e.g. the Customize section switch. */
+  eyebrowAside?: ReactNode;
   title: string;
   desc: string;
   newLabel: string;
@@ -87,6 +90,7 @@ export function LibraryList<T extends { id: string }>({
     <div className="set-pane">
       <SetHead
         eyebrow={eyebrow}
+        eyebrowAside={eyebrowAside}
         title={title}
         desc={desc}
         actions={

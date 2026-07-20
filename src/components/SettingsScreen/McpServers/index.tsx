@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { CustomizeSwitch } from "@/components/SettingsScreen/CustomizeSwitch";
 import { LibraryList } from "@/components/SettingsScreen/LibraryList";
 import type { McpServer, NewMcpServer } from "@/storage/mcpServers";
 import { useAppStore } from "@/store";
@@ -67,7 +68,8 @@ export function McpServersPane() {
 
   return (
     <LibraryList
-      eyebrow="Settings · Tools"
+      eyebrow="Settings · Customize"
+      eyebrowAside={<CustomizeSwitch />}
       title="Tools (MCP)"
       desc="MCP servers your custom agents can attach as tools. Supported by Claude Code and Codex bases; other bases run without them. Running sessions keep the configuration they spawned with."
       newLabel="New server"

@@ -4,6 +4,7 @@
 import { Fragment } from "react";
 import { Icon } from "../../components/Icon";
 import { SetHead } from "../../components/SettingsScreen/primitives";
+import { Button } from "../../components/ui/Button";
 import type { ModelMeta } from "../../data/modelCatalog/types";
 import type { CustomAgent } from "../../storage/customAgents";
 import { type resolveAgent, resolveAlias } from "../shared";
@@ -117,7 +118,12 @@ export function WorkflowList({
       <SetHead
         eyebrow="Settings · Workflows"
         title="Workflows"
-        desc="Chain agents into a repeatable pipeline. Each step hands its work to the next on the same git branch — so the checkout itself is the shared context. Define once here; launch on any task."
+        desc="Chain agents into a repeatable pipeline, each handing off on the same git branch. Define once here; launch on any task."
+        actions={
+          <Button variant="primary" onClick={onNew}>
+            <Icon name="plus" size={13} /> New workflow
+          </Button>
+        }
       />
 
       <div className="set-list-head">
@@ -133,9 +139,6 @@ export function WorkflowList({
           )}
           <button className="btn-t" onClick={onImport}>
             <Icon name="upload" size={13} /> Import
-          </button>
-          <button className="btn-t primary" onClick={onNew}>
-            <Icon name="plus" size={13} /> New workflow
           </button>
         </div>
       </div>

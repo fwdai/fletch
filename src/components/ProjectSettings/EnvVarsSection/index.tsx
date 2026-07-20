@@ -199,11 +199,9 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
       <header className="ps-section-h">
         <h2 className="ps-section-t text-lg">Environment variables</h2>
         <p className="ps-section-lead text-sm">
-          Variables found in this project’s <code>.env</code>. Nothing is shared with the sandbox
-          unless you switch it on. Shared values are mirrored live from <code>.env</code>; edit one
-          to override it (e.g. a disposable per-agent database) — use <code>{"{{agent_id}}"}</code>{" "}
-          for a per-agent value, and clear the field to revert to <code>.env</code>. Add a variable
-          that isn’t in <code>.env</code> with the button below.
+          Variables from this project’s <code>.env</code> — nothing reaches the sandbox unless you
+          switch it on. Edit a shared value to override it (use <code>{"{{agent_id}}"}</code> per
+          agent), or add one below.
         </p>
       </header>
 

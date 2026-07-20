@@ -21,17 +21,35 @@ const DeveloperPane = import.meta.env.DEV
 
 // Built-in sections carry explicit order weights (spaced by 10) so extension
 // panes can slot *between* them via their own `order`, not just append.
-type NavItem = { id: SettingsSection; label: string; icon: IconName; order: number };
+// `subsections` groups several sections behind a single nav entry, surfaced as
+// an in-pane segmented switch (see CUSTOMIZE_IDS below).
+type NavItem = {
+  id: SettingsSection;
+  label: string;
+  icon: IconName;
+  order: number;
+  subsections?: SettingsSection[];
+};
+
+// Custom agents / Tools / Skills are all agent-building primitives — tools and
+// skills exist mainly to be composed into agents — so they live behind one
+// "Customize" nav entry with an in-pane segmented switch (see CustomizeSwitch).
+// The nav entry's `id` is the default sub-tab.
+const CUSTOMIZE_IDS: SettingsSection[] = ["agents", "tools", "skills"];
 
 const NAV: NavItem[] = [
   { id: "account", label: "Account", icon: "user", order: 10 },
   { id: "general", label: "General", icon: "settings", order: 20 },
   { id: "providers", label: "Providers", icon: "cube", order: 30 },
-  { id: "agents", label: "Custom agents", icon: "bot", order: 40 },
-  // Right after Custom agents — workflows chain those agents.
+  {
+    id: "agents",
+    label: "Customize",
+    icon: "sparkle",
+    order: 40,
+    subsections: CUSTOMIZE_IDS,
+  },
+  // Right after Customize — workflows chain those custom agents.
   { id: "workflows", label: "Workflows", icon: "combine", order: 41 },
-  { id: "skills", label: "Skills", icon: "notebookPen", order: 42 },
-  { id: "tools", label: "Tools", icon: "zap", order: 44 },
   { id: "experimental", label: "Experimental", icon: "flask", order: 50 },
   // Dev-only: omitted entirely from production builds.
   ...(DeveloperPane
@@ -60,16 +78,25 @@ export function SettingsScreen() {
           <span>Back to app</span>
         </button>
         <div className="set-nav-list">
-          {NAV.map((n) => (
-            <button
-              key={n.id}
-              className={`set-nav-item flex-center text-base ${section === n.id ? "active" : ""}`}
-              onClick={() => setSection(n.id)}
-            >
-              <Icon name={n.icon} size={14} />
-              <span>{n.label}</span>
-            </button>
-          ))}
+          {NAV.map((n) => {
+            // A grouped entry stays active for any of its sub-sections, and
+            // clicking it while already inside the group keeps the current
+            // sub-tab rather than snapping back to the default.
+            const active = n.subsections ? n.subsections.includes(section) : section === n.id;
+            return (
+              <button
+                key={n.id}
+                className={`set-nav-item flex-center text-base ${active ? "active" : ""}`}
+                onClick={() => {
+                  if (active && n.subsections) return;
+                  setSection(n.id);
+                }}
+              >
+                <Icon name={n.icon} size={14} />
+                <span>{n.label}</span>
+              </button>
+            );
+          })}
         </div>
         <div className="set-nav-foot text-xs">
           <span className="mono">Fletch</span>
