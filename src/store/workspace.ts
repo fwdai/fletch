@@ -25,6 +25,7 @@ import { setSetting } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { forkContextDigest } from "./forkDigest";
 import { interruptedAgents } from "./interrupted";
+import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppState, SliceCreator } from "./types";
 
 /** A degraded transcript-ingest state stored per agent (the `healthy` status is
@@ -322,18 +323,18 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     set({ busy: true, lastError: null });
     try {
       const rec = await api.spawnAgent(view, repoPath);
-      const fresh = await api.getWorkspace();
+      // Apply the selection (and custom-view log seeds) immediately, ahead of the
+      // guarded workspace refresh, so this user-intent state can never be dropped
+      // if a concurrent refresh supersedes ours.
       set((state) => {
-        const patches: Partial<AppState> = {
-          workspace: fresh,
-          selectedAgentId: rec.id,
-        };
+        const patches: Partial<AppState> = { selectedAgentId: rec.id };
         if (view === "custom") {
           patches.managedLogs = { ...state.managedLogs, [rec.id]: [] };
           patches.managedBusy = { ...state.managedBusy, [rec.id]: false };
         }
         return patches;
       });
+      await refreshWorkspace(set);
       return rec;
     } catch (e) {
       set({ lastError: String(e) });
@@ -370,12 +371,13 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         digest = forkContextDigest(visible, context);
       }
       const rec = await api.forkAgent(parentId, code, context, digest, snapshotMaxSeq);
-      const fresh = await api.getWorkspace();
       // No optimistic managedLogs seed. When context is carried the fork is
       // created with a non-empty task, so opening it triggers
       // loadHistoryTranscript to render the copied history; a context-less fork
-      // opens as an empty chat.
-      set({ workspace: fresh, selectedAgentId: rec.id, activeDraftId: null });
+      // opens as an empty chat. Set the selection ahead of the guarded refresh
+      // so it survives a superseding concurrent refresh.
+      set({ selectedAgentId: rec.id, activeDraftId: null });
+      await refreshWorkspace(set);
       return rec;
     } catch (e) {
       set({ lastError: String(e) });
@@ -581,12 +583,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       await api.discardAgent(id);
       clearOutputBuffer(id);
-      const fresh = await api.getWorkspace();
+      // Drop the agent's side maps and clear the selection immediately, ahead of
+      // the guarded refresh, so these survive even if a concurrent refresh
+      // supersedes ours.
       set((s) => ({
         ...dropAgentEntries(s, id),
-        workspace: fresh,
         selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
       }));
+      await refreshWorkspace(set);
     } catch (e) {
       set({ lastError: String(e) });
     }
@@ -620,11 +624,11 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       await api.archiveAgent(id);
       clearOutputBuffer(id);
-      const fresh = await api.getWorkspace();
-      set((s) => ({
-        ...dropAgentEntries(s, id),
-        workspace: fresh ?? s.workspace,
-      }));
+      // Drop the agent's side maps immediately; the optimistic hide above
+      // already removed the row. The guarded refresh then lands the real
+      // metadata without letting a stale snapshot resurrect the row.
+      set((s) => dropAgentEntries(s, id));
+      await refreshWorkspace(set);
     } catch (e) {
       set((s) => {
         const ws = s.workspace;
@@ -669,17 +673,17 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   restore: async (id) => {
     try {
       await api.restoreAgent(id);
-      const fresh = await api.getWorkspace();
       // Keep the JSONL-replayed log in place — claude's `--resume` in
       // stream-json mode emits new events on top of the existing
       // conversation, so the chat view picks up exactly where the
-      // preview left off.
-      set((s) => ({
-        workspace: fresh ?? s.workspace,
+      // preview left off. Apply the selection ahead of the guarded refresh so
+      // it survives a superseding concurrent refresh.
+      set({
         historyOpen: false,
         selectedHistoryAgentId: null,
         selectedAgentId: id,
-      }));
+      });
+      await refreshWorkspace(set);
     } catch (e) {
       set({ lastError: String(e) });
     }
