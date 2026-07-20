@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type EnvEntry } from "@/api";
-import { loadRunEnvDoc, type RunEnvDoc, saveRunEnvDoc, varConfig, withVar } from "@/storage/runEnv";
+import {
+  loadRunEnvDoc,
+  type RunEnvDoc,
+  saveRunEnvDoc,
+  varConfig,
+  withoutVar,
+  withVar,
+} from "@/storage/runEnv";
 import { basename } from "@/util/format";
+import { AddVarForm } from "./AddVarForm";
 import { EnvVarRow } from "./EnvVarRow";
 
 interface Props {
@@ -63,6 +71,9 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
     for (const v of doc.vars) if (!envMap.has(v.key)) keys.push(v.key);
     return keys.map((key) => ({ key, envValue: envMap.get(key) }));
   }, [envMap, doc]);
+
+  // Every key already on screen — for rejecting a duplicate add.
+  const existingKeys = useMemo(() => new Set(rows.map((r) => r.key)), [rows]);
 
   // Apply a pure mutation to the latest document: update ref + state
   // synchronously (no `await` across the mutation, so concurrent edits can't
@@ -137,6 +148,52 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
     }
   };
 
+  // Add a variable that isn't in `.env`: store its value as an override and
+  // share it by default — the reason to add one is to proxy it into the sandbox.
+  // Rolls back the keychain write if the document save fails, so the two stores
+  // don't split; rethrows so the form can surface the failure.
+  const addVar = async (key: string, value: string) => {
+    await api.setEnvOverride(projectId, key, value);
+    setOverrides((prev) => ({ ...prev, [key]: value }));
+    try {
+      await setVar(key, { shared: true, source: "override" });
+    } catch (e) {
+      console.error("run_env: add save failed; rolling back keychain", e);
+      await api.clearEnvOverride(projectId, key).catch(() => {});
+      setOverrides((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      throw e;
+    }
+  };
+
+  // Delete a variable that isn't backed by `.env` (a user-added or now-stale
+  // override). Clear its keychain value and drop it from the document. Capture
+  // the prior config/value first so a failed document save can be rolled back,
+  // leaving both stores exactly as they were.
+  const removeVar = async (key: string) => {
+    const prevCfg = varConfig(docRef.current, key);
+    const prevValue = await api.getEnvOverride(projectId, key);
+    await api.clearEnvOverride(projectId, key);
+    setOverrides((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    try {
+      await commitDoc((d) => withoutVar(d, key));
+    } catch (e) {
+      console.error("run_env: remove save failed; restoring variable", e);
+      if (prevCfg.source === "override" && prevValue != null) {
+        await api.setEnvOverride(projectId, key, prevValue).catch(() => {});
+        setOverrides((prev) => ({ ...prev, [key]: prevValue }));
+      }
+      await commitDoc((d) => withVar(d, prevCfg)).catch(() => {});
+    }
+  };
+
   return (
     <section className="ps-section">
       <header className="ps-section-h">
@@ -145,7 +202,8 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
           Variables found in this project’s <code>.env</code>. Nothing is shared with the sandbox
           unless you switch it on. Shared values are mirrored live from <code>.env</code>; edit one
           to override it (e.g. a disposable per-agent database) — use <code>{"{{agent_id}}"}</code>{" "}
-          for a per-agent value, and clear the field to revert to <code>.env</code>.
+          for a per-agent value, and clear the field to revert to <code>.env</code>. Add a variable
+          that isn’t in <code>.env</code> with the button below.
         </p>
       </header>
 
@@ -167,10 +225,13 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
               onToggleShare={(shared) => onToggleShare(key, shared)}
               onCommit={(value) => onCommit(key, value)}
               onRevert={() => revertToMirror(key)}
+              onRemove={() => removeVar(key)}
             />
           ))}
         </div>
       )}
+
+      {entries !== null && <AddVarForm existingKeys={existingKeys} onAdd={addVar} />}
     </section>
   );
 }

@@ -60,3 +60,11 @@ export function withVar(doc: RunEnvDoc, next: EnvVarCfg): RunEnvDoc {
   const isDefault = !next.shared && next.source === "mirror";
   return { ...doc, vars: isDefault ? rest : [...rest, next] };
 }
+
+/** Remove one variable's config from the document (immutably). Used to delete a
+ *  variable that isn't backed by `.env` (a user-added or now-stale override) —
+ *  `withVar` only drops a var that reverts to the default shape, so removing a
+ *  shared/override var needs this. */
+export function withoutVar(doc: RunEnvDoc, key: string): RunEnvDoc {
+  return { ...doc, vars: doc.vars.filter((v) => v.key !== key) };
+}
