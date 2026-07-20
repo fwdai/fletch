@@ -109,7 +109,7 @@
     var(--bg-1);
 }
 .set-content {
-  max-width: 720px;
+  max-width: 860px;
   margin: 0 auto;
   padding: 52px 56px 96px;
 }
@@ -143,13 +143,27 @@
   gap: 4px;
   flex-shrink: 0;
 }
+/* Eyebrow row: the "Settings · X" kicker, plus an optional right-aligned aside
+   (the Customize section switch). Sits above the tab-dependent title. */
+.set-head-eyebrow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 32px;
+}
+.set-head-eyebrow-aside {
+  gap: 4px;
+  flex-shrink: 0;
+  /* Nudge the section switch up so it optically aligns with the eyebrow cap. */
+  margin-top: -12px;
+}
 .set-eyebrow {
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--accent);
   white-space: nowrap;
-  margin-bottom: 12px;
 }
 .set-h1 {
   font-weight: 500;
@@ -288,6 +302,13 @@
   background: var(--bg-2);
   color: var(--fg-0);
   box-shadow: var(--shadow-1);
+}
+/* Customize section switch: icon + label per pill, like the new-agent page's
+   Agent | Workflow toggle. */
+.set-head-eyebrow-aside .set-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* accent swatches */

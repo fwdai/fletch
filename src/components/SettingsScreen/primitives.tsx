@@ -14,11 +14,15 @@ export interface FeatureItem {
 
 export function SetHead({
   eyebrow,
+  eyebrowAside,
   title,
   desc,
   actions,
 }: {
   eyebrow: string;
+  /** Optional controls aligned to the right of the eyebrow row — e.g. the
+   *  Customize section switch, which sits above the (tab-dependent) title. */
+  eyebrowAside?: ReactNode;
   title: string;
   desc?: ReactNode;
   /** Optional controls aligned to the right of the title row. */
@@ -26,9 +30,12 @@ export function SetHead({
 }) {
   return (
     <header className="set-head">
+      <div className="set-head-eyebrow">
+        <div className="set-eyebrow mono text-xs">{eyebrow}</div>
+        {eyebrowAside && <div className="set-head-eyebrow-aside flex-center">{eyebrowAside}</div>}
+      </div>
       <div className="set-head-top">
         <div className="set-head-titles">
-          <div className="set-eyebrow mono text-xs">{eyebrow}</div>
           <h1 className="set-h1 text-3xl">{title}</h1>
         </div>
         {actions && <div className="set-head-actions flex-center">{actions}</div>}
