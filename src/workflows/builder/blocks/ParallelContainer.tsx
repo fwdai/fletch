@@ -1,73 +1,59 @@
 // ParallelContainer.tsx — a fan-out stage: children run at once, then join.
-// Rendered as a labelled container wrapping a vertical stack of step cards.
+// Collapsed chrome on the canvas (a labelled container with a branch grid);
+// join/integrate/max-concurrency are edited in the inspector when selected.
 
 import { Icon } from "../../../components/Icon";
 import type { BuilderCtx } from "../ctx";
 import type { EParallel } from "../model";
-import { ContainerErrors } from "./ContainerErrors";
 import { StepCard } from "./StepCard";
 
-export function ParallelContainer({ block, ctx }: { block: EParallel; ctx: BuilderCtx }) {
+export function ParallelContainer({
+  block,
+  ctx,
+  indexLabel,
+}: {
+  block: EParallel;
+  ctx: BuilderCtx;
+  indexLabel?: string;
+}) {
+  const errors = ctx.errorsFor(block.nid);
+  const selected = ctx.selectedNid === block.nid;
+
   return (
-    <div className="wb-cont wb-parallel">
+    <div
+      className={`wb-cont wb-parallel ${selected ? "sel" : ""} ${errors ? "has-err" : ""}`}
+      onClick={() => ctx.select(block.nid)}
+    >
       <div className="wb-cont-h">
+        {indexLabel && <span className="wb-step-idx">{indexLabel}</span>}
         <span className="wb-cont-badge">
           <Icon name="layers" size={12} /> Parallel
         </span>
-        <label className="wb-ctl">
-          join
-          <select
-            className="ca-select sm"
-            value={block.join}
-            onChange={(e) =>
-              ctx.patchBlock(block.nid, { join: e.target.value as EParallel["join"] })
-            }
-          >
-            <option value="all">all</option>
-            <option value="any">any</option>
-          </select>
-        </label>
-        <label className="wb-ctl">
-          integrate
-          <select
-            className="ca-select sm"
-            value={block.integrate}
-            onChange={(e) =>
-              ctx.patchBlock(block.nid, { integrate: e.target.value as EParallel["integrate"] })
-            }
-          >
-            <option value="none">none</option>
-            <option value="merge">merge</option>
-          </select>
-        </label>
-        <label className="wb-ctl">
-          max at once
-          <input
-            className="ca-input sm"
-            type="number"
-            min={1}
-            style={{ width: 52 }}
-            placeholder="all"
-            value={block.maxConcurrent ?? ""}
-            onChange={(e) =>
-              ctx.patchBlock(block.nid, {
-                maxConcurrent: e.target.value.trim() === "" ? null : Number(e.target.value),
-              })
-            }
-          />
-        </label>
-        <span className="grow" />
+        <span className="wb-cont-sum">
+          join {block.join}
+          {block.maxConcurrent != null ? ` · ${block.maxConcurrent} at once` : ""} ·{" "}
+          {block.steps.length} branch{block.steps.length === 1 ? "" : "es"}
+        </span>
+        {errors && (
+          <span className="wb-chip err">
+            <Icon name="close" /> {errors.length}
+          </span>
+        )}
         <button
           className="wb-step-menu tip"
           data-tip-down
           data-tip="Remove parallel"
-          onClick={() => ctx.removeNode(block.nid)}
+          onClick={(e) => {
+            e.stopPropagation();
+            ctx.removeNode(block.nid);
+          }}
         >
           <Icon name="close" />
         </button>
       </div>
 
-      <div className="wb-cont-body wb-parallel-body">
+      {/* Clicks inside the body select the child card, not this container. */}
+      <div className="wb-cont-body wb-branches" onClick={(e) => e.stopPropagation()}>
         {block.steps.map((s, i) => (
           <StepCard
             key={s.nid}
@@ -78,15 +64,19 @@ export function ParallelContainer({ block, ctx }: { block: EParallel; ctx: Build
             role="child"
           />
         ))}
-        <button className="wb-add sm" onClick={() => ctx.addStepToContainer(block.nid)}>
+        <button
+          className="wb-add sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            ctx.addStepToContainer(block.nid);
+          }}
+        >
           <span className="wb-add-ic">
             <Icon name="plus" />
           </span>
           <span className="wb-add-l">Add branch</span>
         </button>
       </div>
-
-      <ContainerErrors errors={ctx.errorsFor(block.nid)} />
     </div>
   );
 }

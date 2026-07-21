@@ -1,21 +1,23 @@
-// WorkflowBuilder.tsx — the block-tree editor (spec §14.1). The canvas renders
-// the recursive block sequence; a shared `ctx` lets any nested card dispatch an
-// edit or open a popover. Validation from `model.ts` renders inline and gates
-// the save. Persistence is the caller's job (Save hands back the editor state).
+// WorkflowBuilder.tsx — the block-tree editor (spec §14.1), v2 layout: a
+// vertical pipeline canvas on the left, a sticky inspector on the right editing
+// the selected node (or the workflow overview). A shared `ctx` lets any nested
+// card dispatch an edit, select itself, or open the agent picker. Validation
+// from `model.ts` renders inline and gates the save. Persistence is the
+// caller's job (Save hands back the editor state).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { ModelMeta } from "../../data/modelCatalog/types";
 import type { CustomAgent } from "../../storage/customAgents";
 import { resolveAlias } from "../shared";
-import type { Budgets, Gate, Spec } from "../spec";
+import type { Spec } from "../spec";
 import { BlockSequence } from "./blocks/BlockSequence";
 import type { BuilderCtx, Pop, PopRect } from "./ctx";
 import {
   type AgentRole,
   addBlockOfType,
   addStepToContainer,
-  findStep,
+  findNode,
   patchBlock,
   patchStep,
   removeNode,
@@ -23,9 +25,10 @@ import {
   setField,
 } from "./edits";
 import { useDismissOnViewportChange } from "./hooks";
+import { Inspector } from "./inspector";
 import type { EditorState, NodeId } from "./model";
 import { toSpec, validateEditor } from "./model";
-import { AgentPick, BudgetsPopover, GatePick } from "./pickers";
+import { AgentPick } from "./pickers";
 
 /** Launch context threaded in when the builder was opened by "promote to
  *  workflow": the run's fork point + brief ride alongside the definition so the
@@ -67,6 +70,7 @@ export function WorkflowBuilder({
   promote?: PromoteLaunch;
 }) {
   const [state, setState] = useState<EditorState>(initial);
+  const [sel, setSel] = useState<NodeId | null>(null);
   const [launchTask, setLaunchTask] = useState(promote?.taskSeed ?? "");
   const [pop, setPop] = useState<Pop | null>(null);
   const closePop = () => setPop(null);
@@ -74,35 +78,41 @@ export function WorkflowBuilder({
 
   const validation = useMemo(() => validateEditor(state), [state]);
 
+  // A deleted node can't stay selected — fall back to the overview.
+  const selected = sel ? findNode(state, sel) : null;
+  useEffect(() => {
+    if (sel && !findNode(state, sel)) setSel(null);
+  }, [state, sel]);
+
   const ctx: BuilderCtx = useMemo(
     () => ({
       // `id` is an alias into `state.agents`; `resolveAlias` maps it to the
       // underlying custom-agent id or base provider before rendering.
       resolve: (id) => resolveAlias(state.agents, id ?? undefined, agents, modelsByAgent),
       errorsFor: (nid) => validation.byNode[nid],
+      selectedNid: sel,
+      select: setSel,
       patchStep: (nid, patch) => setState((s) => patchStep(s, nid, patch)),
       patchBlock: (nid, patch) => setState((s) => patchBlock(s, nid, patch)),
       removeNode: (nid) => setState((s) => removeNode(s, nid)),
-      addStepToContainer: (nid) => setState((s) => addStepToContainer(s, nid)),
-      addBlock: (seqNid, type) => setState((s) => addBlockOfType(s, seqNid, type)),
-      openAgent: (nid, role: AgentRole, e) =>
-        setPop({ type: "agent", nid, role, rect: rectFrom(e) }),
-      openGate: (nid, e) => setPop({ type: "gate", nid, rect: rectFrom(e) }),
-      openBudgets: (target, e) => setPop({ type: "budgets", target, rect: rectFrom(e) }),
+      addStepToContainer: (nid) => {
+        const r = addStepToContainer(state, nid);
+        setState(r.state);
+        setSel(r.nid);
+      },
+      addBlock: (seqNid, type, index) => {
+        const r = addBlockOfType(state, seqNid, type, index);
+        setState(r.state);
+        setSel(r.nid);
+      },
+      openAgent: (nid, role: AgentRole, e) => setPop({ type: "agent", nid, role, rect: rectFrom(e) }),
     }),
-    [agents, modelsByAgent, validation, state.agents],
+    // validation is derived from state, so ctx refreshes on every edit — the
+    // closures over `state` above stay current.
+    [agents, modelsByAgent, validation, state, sel],
   );
 
-  const runBudgetLabel = state.budgets?.turns ? `${state.budgets.turns} turns` : "budgets";
-  const finalize = state.finalize;
-
-  const setGate = (nid: NodeId, gate: Gate) => setState((s) => patchStep(s, nid, { gate }));
-  const budgetsOf = (target: NodeId | "run"): Budgets | undefined =>
-    target === "run" ? state.budgets : (findStep(state, target)?.budgets ?? undefined);
-  const setBudgets = (target: NodeId | "run", next: Budgets | undefined) =>
-    target === "run"
-      ? setState((s) => setField(s, { budgets: next }))
-      : setState((s) => patchStep(s, target, { budgets: next }));
+  const onField = (patch: Partial<EditorState>) => setState((s) => setField(s, patch));
 
   return (
     <div className="set-pane">
@@ -111,139 +121,53 @@ export function WorkflowBuilder({
           <Icon name="chevL" /> All workflows
         </button>
 
-        <div className="wb-top">
-          <div className="wb-titlewrap">
-            <input
-              className="wb-name"
-              placeholder="Name this workflow…"
-              value={state.name}
-              autoFocus
-              onChange={(e) => setState((s) => setField(s, { name: e.target.value }))}
-            />
-            <textarea
-              className="wb-desc"
-              rows={1}
-              placeholder="What is this pipeline for?"
-              value={state.description}
-              onChange={(e) => setState((s) => setField(s, { description: e.target.value }))}
-            />
-          </div>
-          <button
-            className="wb-chip-btn lg tip"
-            data-tip-down
-            data-tip="Run-level budgets"
-            onClick={(e) => ctx.openBudgets("run", e)}
-          >
-            <Icon name="clock" size={12} /> {runBudgetLabel}
-          </button>
-        </div>
-
-        <div className="wb-canvas">
-          <BlockSequence blocks={state.blocks} seqNid={null} ctx={ctx} />
-        </div>
-
-        <div className="wb-finish">
-          <span className="wb-finish-l">When the run finishes</span>
-          <label className="wb-toggle">
-            <input
-              type="checkbox"
-              checked={!!finalize?.push}
-              onChange={(e) =>
-                setState((s) =>
-                  setField(s, {
-                    finalize: {
-                      push: e.target.checked,
-                      open_pr: finalize?.open_pr ?? false,
-                      pr_base: finalize?.pr_base,
-                    },
-                  }),
-                )
-              }
-            />
-            Push the branch
-          </label>
-          <label className="wb-toggle">
-            <input
-              type="checkbox"
-              checked={!!finalize?.open_pr}
-              onChange={(e) =>
-                setState((s) =>
-                  setField(s, {
-                    finalize: {
-                      push: finalize?.push ?? false,
-                      open_pr: e.target.checked,
-                      pr_base: finalize?.pr_base,
-                    },
-                  }),
-                )
-              }
-            />
-            Open a PR
-          </label>
-          {finalize?.open_pr && (
-            <input
-              className="ca-input sm"
-              style={{ width: 120 }}
-              placeholder="base: main"
-              value={finalize.pr_base ?? ""}
-              onChange={(e) =>
-                setState((s) =>
-                  setField(s, {
-                    finalize: {
-                      push: finalize.push,
-                      open_pr: finalize.open_pr,
-                      pr_base: e.target.value.trim() || undefined,
-                    },
-                  }),
-                )
-              }
-            />
-          )}
-        </div>
-
-        {promote && (
-          <div className="wb-promote">
-            <div className="wb-promote-head">
-              <Icon name="combine" size={13} style={{ color: "var(--accent)" }} />
-              <span>Launch this workflow now</span>
-              <span
-                className="wb-promote-base tip"
-                data-tip="Forks from the promoted session's commit"
-              >
-                base <span className="mono">{promote.baseLabel}</span>
-              </span>
+        <div className="wb-body">
+          <div className="wb-canvas" style={{ "--h": state.hue } as React.CSSProperties}>
+            <div className="wb-head">
+              <div className="wb-eyebrow">Workflow pipeline</div>
+              <input
+                className="wb-name"
+                placeholder="Name this workflow…"
+                value={state.name}
+                autoFocus={isNew}
+                onChange={(e) => onField({ name: e.target.value })}
+              />
+              <textarea
+                className="wb-desc"
+                rows={2}
+                placeholder="What is this pipeline for? Each step hands off to the next."
+                value={state.description}
+                onChange={(e) => onField({ description: e.target.value })}
+              />
             </div>
-            <textarea
-              className="wb-desc"
-              rows={2}
-              placeholder="Task for the run…"
-              value={launchTask}
-              onChange={(e) => setLaunchTask(e.target.value)}
-            />
-            {promote.launchError && <div className="wb-summary-err">{promote.launchError}</div>}
-            <div className="wb-promote-foot">
-              <span className="wb-promote-note">Or just save it as a reusable workflow below.</span>
-              <span className="grow" />
-              <button
-                className="btn-t primary"
-                disabled={!validation.ok || !launchTask.trim() || promote.launching}
-                style={
-                  !validation.ok || !launchTask.trim() || promote.launching
-                    ? { opacity: 0.5 }
-                    : undefined
-                }
-                onClick={() =>
-                  validation.ok &&
-                  launchTask.trim() &&
-                  promote.onLaunch(toSpec(state), launchTask.trim())
-                }
-              >
-                <Icon name={promote.launching ? "refresh" : "arrowUp"} size={13} />{" "}
-                {promote.launching ? "Launching…" : "Launch run"}
-              </button>
-            </div>
+
+            <BlockSequence blocks={state.blocks} seqNid={null} ctx={ctx} />
           </div>
-        )}
+
+          <Inspector
+            state={state}
+            selected={selected}
+            ctx={ctx}
+            onField={onField}
+            formErrors={validation.form}
+            promote={
+              promote
+                ? {
+                    baseLabel: promote.baseLabel,
+                    task: launchTask,
+                    setTask: setLaunchTask,
+                    canLaunch: validation.ok && !!launchTask.trim(),
+                    launching: promote.launching,
+                    launchError: promote.launchError,
+                    onLaunch: () =>
+                      validation.ok &&
+                      launchTask.trim() &&
+                      promote.onLaunch(toSpec(state), launchTask.trim()),
+                  }
+                : undefined
+            }
+          />
+        </div>
 
         <div className="wb-foot">
           <div className="wb-summary">
@@ -286,44 +210,6 @@ export function WorkflowBuilder({
             setState((s) => setAgent(s, pop.nid, pop.role, id, agents));
             closePop();
           }}
-        />
-      )}
-      {pop?.type === "gate" && (
-        <GatePick
-          rect={pop.rect}
-          gate={findStep(state, pop.nid)?.gate.type ?? "verdict"}
-          requireTests={(() => {
-            const cur = findStep(state, pop.nid)?.gate;
-            return cur?.type === "approval" && (cur.require?.includes("tests") ?? false);
-          })()}
-          onPick={(kind) => {
-            const cur = findStep(state, pop.nid)?.gate;
-            const gate: Gate =
-              kind === "artifact"
-                ? { type: "artifact", path: cur?.type === "artifact" ? cur.path : "" }
-                : // Re-picking approval preserves any existing `require: [tests]`.
-                  kind === "approval"
-                  ? {
-                      type: "approval",
-                      require: cur?.type === "approval" ? cur.require : undefined,
-                    }
-                  : { type: kind };
-            setGate(pop.nid, gate);
-            // The gate mode is chosen; approval's require checkbox lives in the
-            // same popover, so keep it open rather than closing on pick.
-            if (kind !== "approval") closePop();
-          }}
-          onToggleRequireTests={(checked) => {
-            setGate(pop.nid, { type: "approval", require: checked ? ["tests"] : undefined });
-          }}
-        />
-      )}
-      {pop?.type === "budgets" && (
-        <BudgetsPopover
-          rect={pop.rect}
-          scope={pop.target === "run" ? "run" : "step"}
-          value={budgetsOf(pop.target)}
-          onChange={(next) => setBudgets(pop.target, next)}
         />
       )}
     </div>

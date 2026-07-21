@@ -113,9 +113,10 @@
   margin: 0 auto;
   padding: 52px 56px 96px;
 }
-/* Wider column for panes that opt in — e.g. the workflow builder canvas. */
+/* Wider column for panes that opt in — e.g. the workflow builder canvas,
+   which lays a pipeline canvas and a sticky inspector side by side. */
 .set-content.is-wide {
-  max-width: 1080px;
+  max-width: 1240px;
 }
 @media (max-width: 1080px) {
   .set-content {

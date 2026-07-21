@@ -190,131 +190,258 @@
   width: 11px;
   height: 11px;
 }
+
+/* ───────────────────── Builder: vertical pipeline editor ─────────────────────
+   Canvas (a vertical flow of collapsed block cards) + a sticky right-hand
+   inspector editing the selected node. Cards carry previews and summary chips
+   only; all field editing happens in the inspector (builder/inspector/). */
+
 .wb {
-  --wb-step-w: 256px;
   display: flex;
   flex-direction: column;
   min-height: 0;
   animation: fade-in 0.2s var(--ease);
 }
-.wb-top {
+.wb-body {
   display: flex;
   align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 4px;
+  gap: 24px;
+  margin-top: 14px;
 }
-.wb-top .wb-titlewrap {
+
+/* ── canvas ─────────────────────────────────────────────────────────── */
+.wb-canvas {
   flex: 1;
   min-width: 0;
+  padding: 34px 30px 52px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-lg);
+  background:
+    radial-gradient(var(--bd-soft) 0.6px, transparent 0.6px) 0 0 / 22px 22px,
+    radial-gradient(130% 50% at 50% -6%, oklch(0.72 0.13 var(--h, 50) / 0.05), transparent 60%),
+    var(--bg-1);
+}
+.wb-head {
+  max-width: 600px;
+  margin: 0 auto 30px;
+}
+.wb-eyebrow {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 10px;
 }
 .wb-name {
-  font-size: 22px;
+  width: 100%;
+  font-size: 24px;
   font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
   color: var(--fg-0);
-  letter-spacing: -0.015em;
   background: transparent;
   border: 0;
-  padding: 2px 5px;
+  padding: 3px 6px;
+  margin: 0 -6px;
   border-radius: var(--r-sm);
-  width: 100%;
+}
+.wb-name::placeholder {
+  color: var(--fg-3);
 }
 .wb-name:focus {
   background: var(--bg-2);
   box-shadow: 0 0 0 1px var(--accent-line);
 }
 .wb-desc {
-  margin-top: 4px;
   width: 100%;
+  margin: 6px -6px 0;
+  padding: 4px 6px;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--fg-2);
   background: transparent;
   border: 0;
-  padding: 2px 5px;
-  border-radius: var(--r-sm);
   resize: none;
+  border-radius: var(--r-sm);
+  font-family: var(--font-sans);
+}
+.wb-desc::placeholder {
+  color: var(--fg-3);
 }
 .wb-desc:focus {
   background: var(--bg-2);
   box-shadow: 0 0 0 1px var(--accent-line);
   color: var(--fg-1);
 }
-.wb-canvas {
-  margin-top: 20px;
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-lg);
-  background:
-    radial-gradient(var(--bd-soft) 0.6px, transparent 0.6px) 0 0 / 22px 22px,
-    var(--bg-1);
-  overflow: hidden;
+
+/* ── vertical flow ──────────────────────────────────────────────────── */
+.wb-seq {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.wb-canvas > .wb-seq {
+  max-width: 600px;
+  margin: 0 auto;
 }
 .wb-conn {
-  width: 30px;
-  flex-shrink: 0;
+  position: relative;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-  align-self: center;
 }
 .wb-conn::before {
   content: "";
   position: absolute;
-  left: -1px;
-  right: -1px;
-  top: 50%;
-  height: 1.5px;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
   background: var(--bd-strong);
 }
-.wb-conn svg {
+.wb-conn .wb-insert {
   position: relative;
-  z-index: 1;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-1);
+  border: 1.5px solid var(--bd-strong);
+  color: var(--fg-3);
+  opacity: 0;
+  transform: scale(0.8);
+  transition: all 0.14s var(--ease);
+}
+.wb-conn:hover .wb-insert {
+  opacity: 1;
+  transform: scale(1);
+}
+.wb-insert:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.wb-insert svg {
   width: 12px;
   height: 12px;
-  color: var(--fg-3);
-  background: var(--bg-1);
-  border-radius: 50%;
 }
+
+/* add block / add branch */
+.wb-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  margin-top: 26px;
+  border: 1.5px dashed var(--bd-strong);
+  border-radius: var(--r-lg);
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  background: transparent;
+  transition: all 0.14s var(--ease);
+}
+.wb-add:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.wb-add .wb-add-ic {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.wb-add .wb-add-ic svg {
+  width: 12px;
+  height: 12px;
+}
+.wb-add.sm {
+  min-height: 38px;
+  margin-top: 0;
+  border-radius: var(--r-md);
+  font-size: 11.5px;
+}
+.wb-add-menu {
+  z-index: 56;
+  width: 270px;
+}
+
+/* ── step card (collapsed; edits happen in the inspector) ───────────── */
 .wb-step {
-  flex: 0 0 var(--wb-step-w);
-  width: var(--wb-step-w);
+  position: relative;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--bd);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   background: var(--bg-2);
   box-shadow: var(--shadow-1);
-  position: relative;
+  cursor: pointer;
   transition:
-    border-color 0.14s,
-    box-shadow 0.14s;
+    border-color 0.14s var(--ease),
+    box-shadow 0.14s var(--ease);
 }
 .wb-step:hover {
   border-color: var(--bd-strong);
 }
+.wb-step.sel {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 3px var(--accent-soft),
+    var(--shadow-1);
+}
+.wb-step.has-err {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--bd));
+}
+/* left hue spine, tinted by the assigned agent */
+.wb-step::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 13px;
+  bottom: 13px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: oklch(0.72 0.13 var(--h));
+  opacity: 0.9;
+}
+.wb-step.unassigned::before {
+  background: var(--bd-strong);
+}
 .wb-step-h {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 9px 10px 8px;
-  border-bottom: 1px solid var(--bd-soft);
+  gap: 10px;
+  /* right padding clears the absolute remove button */
+  padding: 12px 34px 11px 16px;
 }
 .wb-step-idx {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 600;
   color: var(--fg-3);
   letter-spacing: 0.04em;
+  flex-shrink: 0;
 }
 .wb-step-mono {
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 600;
   color: oklch(0.18 0.03 var(--h));
   background: oklch(0.72 0.13 var(--h));
@@ -325,6 +452,11 @@
   color: var(--fg-3);
   border: 1.5px dashed var(--bd-strong);
 }
+.wb-step-mono.empty.sm {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
 .wb-step-agent {
   flex: 1;
   min-width: 0;
@@ -332,39 +464,39 @@
   text-align: left;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 9px;
 }
 .wb-step-agent .wb-step-agent-text {
   flex: 1;
   min-width: 0;
 }
-.wb-step-agent .wb-an {
-  font-size: 12.5px;
+.wb-an {
+  font-size: 13px;
   font-weight: 500;
   color: var(--fg-0);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wb-step-agent .wb-an.empty {
+.wb-an.empty {
   color: var(--fg-3);
   font-weight: 400;
 }
-.wb-step-agent .wb-am {
+.wb-am {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--fg-3);
+  margin-top: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Scoped under .wb-step so `position: absolute` beats `.tip { position: relative }`
-   (same specificity otherwise — the tooltip class was winning, leaving the
-   button in flow and centered in the header). */
-.wb-step .wb-step-menu {
+/* Scoped so `position: absolute` beats `.tip { position: relative }`. */
+.wb-step .wb-step-menu,
+.wb-cont .wb-step-menu {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 8px;
+  right: 8px;
   width: 20px;
   height: 20px;
   display: inline-flex;
@@ -379,143 +511,583 @@
     color 0.12s;
   z-index: 3;
 }
-.wb-step .wb-step-menu svg {
+.wb-step .wb-step-menu svg,
+.wb-cont .wb-step-menu svg {
   width: 14px;
   height: 14px;
 }
-.wb-step .wb-step-menu:hover {
+.wb-step .wb-step-menu:hover,
+.wb-cont .wb-step-menu:hover {
   background: color-mix(in oklch, var(--danger) 14%, transparent);
   color: var(--danger);
 }
-.wb-step:hover .wb-step-menu {
+.wb-step:hover > .wb-step-h .wb-step-menu,
+.wb-cont:hover > .wb-cont-h .wb-step-menu {
   opacity: 1;
 }
 .wb-step-goal {
-  padding: 10px 11px;
-  font-size: 11px;
-  line-height: 1.45;
+  margin: 0 13px 0 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--bd-soft);
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--fg-1);
-  min-height: 72px;
-  flex: 1;
-  background: transparent;
-  border: 0;
-  resize: none;
-  width: 100%;
-  font-family: var(--font-sans);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-wrap: pretty;
 }
-.wb-step-goal::placeholder {
+.wb-step-goal.empty {
   color: var(--fg-3);
-}
-.wb-step-goal:focus {
-  outline: 0;
-  background: var(--bg-1);
+  font-style: italic;
 }
 .wb-step-foot {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px;
+  flex-wrap: wrap;
+  padding: 10px 13px 12px 16px;
   border-top: 1px solid var(--bd-soft);
-  background: var(--bg-1);
-  border-radius: 0 0 var(--r-md) var(--r-md);
 }
-.wb-advance {
-  flex: 1;
-  min-width: 0;
+.wb-step-foot:empty {
+  display: none;
+}
+.wb-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 10.5px;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+  font-size: 11px;
   color: var(--fg-2);
+  white-space: nowrap;
 }
-.wb-advance svg {
+.wb-chip svg {
   width: 11px;
   height: 11px;
   color: var(--fg-3);
   flex-shrink: 0;
 }
-.wb-advance .wb-adv-sel {
+.wb-chip b {
   color: var(--fg-1);
   font-weight: 500;
-  text-decoration: underline;
-  text-decoration-color: var(--bd-strong);
-  text-underline-offset: 2px;
-  cursor: pointer;
 }
-.wb-advance .wb-adv-sel:hover {
-  color: var(--accent);
-  text-decoration-color: var(--accent-line);
+.wb-chip.err {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  color: var(--danger);
 }
-.wb-add {
-  flex: 0 0 var(--wb-step-w);
-  width: var(--wb-step-w);
-  align-self: stretch;
+.wb-chip.err svg {
+  color: var(--danger);
+}
+
+/* ── container blocks (parallel / loop / orchestrate) ───────────────── */
+.wb-cont {
+  position: relative;
   display: flex;
   flex-direction: column;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  transition:
+    border-color 0.14s var(--ease),
+    box-shadow 0.14s var(--ease);
+}
+.wb-cont:hover {
+  border-color: var(--bd-strong);
+}
+.wb-cont.sel {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 3px var(--accent-soft),
+    var(--shadow-1);
+}
+.wb-cont.has-err {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--bd));
+}
+.wb-loop {
+  border-left: 3px solid var(--accent-line);
+}
+.wb-cont-h {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 10px;
-  border: 1.5px dashed var(--bd-strong);
-  border-radius: var(--r-md);
-  color: var(--fg-3);
-  background: transparent;
-  transition: all 0.14s var(--ease);
+  gap: 10px;
+  /* right padding clears the absolute remove button */
+  padding: 11px 34px 11px 14px;
 }
-.wb-add:hover {
-  border-color: var(--accent-line);
+.wb-cont-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-1);
+}
+.wb-cont-badge.loop {
   color: var(--accent);
-  background: var(--accent-soft);
 }
-.wb-add .wb-add-ic {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  border: 1.5px solid currentColor;
+.wb-cont-sum {
+  font-size: 11.5px;
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-cont-sum b {
+  color: var(--fg-0);
+  font-weight: 500;
+}
+.wb-cont-body {
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--bd-soft);
+  cursor: default;
+}
+.wb-branches {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.wb-branches > .wb-add.sm {
+  grid-column: 1 / -1;
+}
+.wb-loop-body .wb-seq .wb-conn {
+  height: 24px;
+}
+.wb-loop-body .wb-add {
+  margin-top: 18px;
+  min-height: 40px;
+}
+
+/* orchestrate lead row */
+.wb-orch-lead {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 14px 13px 16px;
+  border-top: 1px solid var(--bd-soft);
+}
+.wb-orch-lead .wb-step-goal {
+  margin: 0;
+  padding: 0;
+  border-top: 0;
+}
+.wb-orch-lead .wb-step-foot {
+  padding: 0;
+  border-top: 0;
+}
+
+/* ── inspector ──────────────────────────────────────────────────────── */
+.wb-insp {
+  width: 340px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 110px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  box-shadow: var(--shadow-1);
+}
+@media (max-width: 1200px) {
+  .wb-insp {
+    width: 300px;
+  }
+}
+.wb-insp-h {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--bd-soft);
+}
+.wb-insp-eye {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.wb-insp-t {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--fg-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-insp-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  color: var(--fg-2);
+  flex-shrink: 0;
 }
-.wb-add .wb-add-ic svg {
-  width: 14px;
-  height: 14px;
+.wb-insp-close:hover {
+  background: var(--hover);
+  color: var(--fg-0);
 }
-.wb-add .wb-add-l {
+.wb-insp-body {
+  padding: 16px 16px 26px;
+  animation: fade-in 0.16s var(--ease);
+}
+
+.wb-field {
+  margin-bottom: 20px;
+}
+.wb-field:last-child {
+  margin-bottom: 0;
+}
+.wb-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-bottom: 8px;
+}
+.wb-label .req {
+  color: var(--accent);
+}
+.wb-label .hint {
+  margin-left: auto;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
   font-size: 11px;
-  font-weight: 500;
-  text-align: center;
+  color: var(--fg-3);
 }
-.wb-loop-pop {
-  position: absolute;
-  z-index: 60;
-  width: 260px;
-  padding: 13px 14px;
+.wb-field-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-3);
+  text-wrap: pretty;
+  margin-top: 8px;
+}
+
+/* agent select button */
+.wb-agent-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--bd);
+  background: var(--bg-2);
+  transition: border-color 0.12s;
+}
+.wb-agent-btn:hover {
+  border-color: var(--bd-strong);
+}
+.wb-agent-btn .wb-agent-btn-l {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.wb-agent-btn > svg {
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+
+.wb-insp-textarea {
+  width: 100%;
   background: var(--bg-2);
   border: 1px solid var(--bd);
   border-radius: var(--r-md);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
-  animation: ddIn 0.14s var(--ease);
-}
-.wb-loop-pop .wlp-h {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-  margin-bottom: 10px;
-}
-.wb-loop-pop .wlp-row {
-  margin-bottom: 11px;
-}
-.wb-loop-pop .wlp-row:last-child {
-  margin-bottom: 0;
-}
-.wb-loop-pop label {
-  font-size: 11.5px;
   color: var(--fg-1);
-  display: block;
-  margin-bottom: 5px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 10px 11px;
+  min-height: 130px;
+  resize: vertical;
+  font-family: var(--font-sans);
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
 }
+.wb-insp-textarea.sm {
+  min-height: 60px;
+}
+.wb-insp-textarea::placeholder {
+  color: var(--fg-3);
+}
+.wb-insp-textarea:focus {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* gate option list */
+.wb-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wb-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--bd-soft);
+  background: var(--bg-2);
+  text-align: left;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+.wb-opt:hover {
+  border-color: var(--bd-strong);
+  background: var(--hover);
+}
+.wb-opt.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.wb-opt .wb-opt-ic {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-1);
+  color: var(--fg-2);
+}
+.wb-opt.on .wb-opt-ic {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.wb-opt .wb-opt-ic svg {
+  width: 12px;
+  height: 12px;
+}
+.wb-opt .wb-opt-l {
+  flex: 1;
+  min-width: 0;
+}
+.wb-opt .wb-opt-t {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-0);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wb-opt .wb-opt-t .ck {
+  margin-left: auto;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.wb-opt .wb-opt-s {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--fg-2);
+  margin-top: 2px;
+  text-wrap: pretty;
+}
+
+/* grouped boxes (finalize, dynamic children, sub-workflows) */
+.wb-box {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px 12px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+}
+.wb-box-cfg {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 22px;
+}
+.wb-box-cfg.row {
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 10px;
+}
+.wb-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--fg-1);
+  cursor: pointer;
+}
+
+/* budget fields */
+.wb-budget-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.wb-budget-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+}
+.wb-budget-field .ca-input,
+.wb-budget-field .ca-select {
+  width: 110px;
+  flex-shrink: 0;
+}
+
+/* comms toggles */
+.wb-comms {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wb-comm {
+  padding: 3px 10px;
+  border: 1px solid var(--bd);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.14s var(--ease);
+}
+.wb-comm.on {
+  border-color: transparent;
+  background: color-mix(in oklch, var(--accent) 18%, transparent);
+  color: var(--fg-1);
+}
+
+/* overview: stats, flow map, hue picker */
+.wb-stats {
+  display: flex;
+  gap: 20px;
+  padding: 12px 2px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+  margin-bottom: 18px;
+}
+.wb-stat .v {
+  font-size: 19px;
+  font-weight: 500;
+  color: var(--fg-0);
+  font-variant-numeric: tabular-nums;
+}
+.wb-stat .k {
+  font-size: 11px;
+  color: var(--fg-3);
+  margin-top: 1px;
+}
+.wb-ov-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.wb-ov-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 6px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  color: var(--fg-1);
+  transition: background 0.12s;
+}
+.wb-ov-step:hover {
+  background: var(--hover);
+}
+.wb-ov-step .i {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--fg-3);
+  width: 16px;
+  flex-shrink: 0;
+}
+.wb-ov-step .n {
+  font-size: 12px;
+  color: var(--fg-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-ov-cont-ic {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bd-soft);
+  background: var(--bg-2);
+  color: var(--fg-2);
+  flex-shrink: 0;
+}
+.wb-hues {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.wb-hue {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: oklch(0.72 0.13 var(--h));
+  transition: transform 0.1s;
+}
+.wb-hue:hover {
+  transform: scale(1.12);
+}
+.wb-hue.on {
+  border-color: var(--fg-0);
+}
+
+/* inline validation (inspector) */
+.wb-errs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+}
+.wb-err {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--danger);
+}
+
+/* ── footer + shared bits ───────────────────────────────────────────── */
 .wb-foot {
   display: flex;
   align-items: center;
@@ -535,6 +1107,21 @@
   color: var(--fg-1);
   font-weight: 500;
 }
+.wb-summary-err {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--danger);
+}
+
+.ca-select.sm,
+.ca-input.sm {
+  height: 26px;
+  padding: 0 7px;
+  font-size: 11.5px;
+}
+
+/* agent picker popover */
 .wb-pick {
   min-width: 244px;
   max-height: 320px;
@@ -566,6 +1153,44 @@
 .wb-pick-item .wb-pick-m {
   font-family: var(--font-mono);
   font-size: 10px;
+  color: var(--fg-3);
+}
+
+/* promote-to-workflow launch card (inspector): accent-tinted so the "launch
+   now" path reads as the primary intent of a promoted session. */
+.wb-promote {
+  margin-bottom: 18px;
+  padding: 12px;
+  border: 1px solid color-mix(in oklch, var(--accent) 40%, var(--bd-soft));
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--accent) 6%, var(--bg-1));
+}
+.wb-promote-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg-0);
+  margin-bottom: 9px;
+}
+.wb-promote-base {
+  margin-left: auto;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--fg-2);
+}
+.wb-promote-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+}
+.wb-promote-foot .grow {
+  flex: 1;
+}
+.wb-promote-note {
+  font-size: 11px;
   color: var(--fg-3);
 }
 
@@ -1170,282 +1795,6 @@
   color: var(--fg-1);
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-/* ───────────────────────── Builder v2: block editor ───────────────────────── */
-
-/* A sequence of blocks laid out left-to-right; the top-level one scrolls, nested
-   loop bodies sit inline. */
-.wb-seq {
-  position: relative;
-  display: flex;
-  align-items: stretch;
-}
-.wb-canvas > .wb-seq {
-  /* A horizontal scroller clips vertically too, so the vertical padding doubles
-     as breathing room that keeps `data-tip-down` tooltips inside the scrollport
-     instead of being cut off at the card edges. */
-  padding: 44px 24px 44px;
-  overflow-x: auto;
-}
-.wb-loop-body .wb-seq {
-  padding: 2px 0;
-}
-
-/* Small control chips shared by the top bar and container headers. */
-.wb-chip-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 9px;
-  border: 1px solid var(--bd);
-  border-radius: var(--r-sm);
-  background: var(--bg-2);
-  color: var(--fg-2);
-  font-size: 11.5px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: border-color 0.14s var(--ease);
-}
-.wb-chip-btn.lg {
-  height: 30px;
-}
-.wb-chip-btn:hover {
-  border-color: var(--bd-strong);
-  color: var(--fg-1);
-}
-
-.ca-select.sm,
-.ca-input.sm {
-  height: 24px;
-  padding: 0 6px;
-  font-size: 11.5px;
-}
-
-/* Container blocks (parallel / loop / orchestrate). */
-.wb-cont {
-  flex: 0 0 auto;
-  align-self: center;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--bd);
-  border-radius: var(--r-md);
-  background: var(--bg-1);
-  box-shadow: var(--shadow-1);
-}
-.wb-cont-h {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--bd-soft);
-}
-.wb-cont-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 10.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-2);
-}
-.wb-ctl {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--fg-3);
-}
-.wb-cont-body {
-  padding: 14px;
-}
-.wb-parallel-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.wb-loop {
-  border-left: 3px solid oklch(0.65 0.13 265);
-}
-.wb-loop-body {
-  padding: 8px 14px 14px;
-}
-
-/* Orchestrate internals. */
-.wb-orch-lead {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--bd-soft);
-}
-.wb-orch-children {
-  padding: 12px 14px;
-}
-.wb-sub-h,
-.wb-comms-l {
-  font-size: 10.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-3);
-  margin-bottom: 8px;
-}
-.wb-orch-opts {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border-top: 1px solid var(--bd-soft);
-}
-.wb-opt-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding-left: 22px;
-}
-.wb-toggle {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--fg-1);
-  cursor: pointer;
-}
-
-/* Comms caps + artifact path inside a step card. */
-.wb-comms {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 12px 10px;
-}
-.wb-comms-l {
-  margin-bottom: 0;
-}
-.wb-comm {
-  padding: 2px 9px;
-  border: 1px solid var(--bd);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg-3);
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.14s var(--ease);
-}
-.wb-comm.on {
-  border-color: transparent;
-  background: color-mix(in oklch, var(--accent, oklch(0.65 0.13 265)) 18%, transparent);
-  color: var(--fg-1);
-}
-.wb-artifact {
-  margin: 0 12px 8px;
-}
-
-/* Add-block menu (a sequence's "Add block" dropdown). */
-.wb-addwrap {
-  position: relative;
-  align-self: stretch;
-  display: flex;
-}
-.wb-add.sm {
-  flex: 0 0 auto;
-  width: auto;
-  min-height: 0;
-  flex-direction: row;
-  gap: 6px;
-  padding: 8px 12px;
-  font-size: 11.5px;
-}
-.wb-add-menu {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 56;
-  width: 260px;
-  margin-top: 6px;
-}
-
-/* Inline validation. */
-.wb-step.has-err {
-  border-color: color-mix(in srgb, var(--danger) 55%, var(--bd));
-}
-.wb-errs {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 0 12px 10px;
-}
-.wb-err {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--danger);
-}
-
-/* Finalize bar + save summary. */
-.wb-finish {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-top: 16px;
-  padding: 12px 14px;
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-md);
-  background: var(--bg-1);
-}
-.wb-finish-l {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-3);
-}
-.wb-summary-err {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--danger);
-}
-
-/* Promote-to-workflow launch card: sits above the save footer, accent-tinted so
-   the "launch now" path reads as the primary intent of a promoted session. */
-.wb-promote {
-  margin-top: 16px;
-  padding: 12px 14px;
-  border: 1px solid color-mix(in oklch, var(--accent) 40%, var(--bd-soft));
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--accent) 6%, var(--bg-1));
-}
-.wb-promote-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  color: var(--fg-0);
-  margin-bottom: 8px;
-}
-.wb-promote-base {
-  margin-left: auto;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--fg-2);
-}
-.wb-promote-foot {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 8px;
-}
-.wb-promote-foot .grow {
-  flex: 1;
-}
-.wb-promote-note {
-  font-size: 12px;
-  color: var(--fg-3);
 }
 
 /* ── YAML import/export (spec §14.3) ────────────────────────────────────── */
