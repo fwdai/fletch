@@ -719,6 +719,28 @@
 body.wb-drawer-open .set-main {
   padding-right: var(--wb-drawer-w);
 }
+/* On narrower desktop windows (min supported is 900px), the drawer + settings
+   nav would otherwise crush the canvas. Shrink the drawer (the token drives both
+   its width and the reserved padding) and tighten the content column's side
+   padding while the builder is open, keeping the canvas workable down to 900px. */
+@media (max-width: 1280px) {
+  :root {
+    --wb-drawer-w: 340px;
+  }
+  body.wb-drawer-open .set-content {
+    padding-left: 32px;
+    padding-right: 32px;
+  }
+}
+@media (max-width: 1080px) {
+  :root {
+    --wb-drawer-w: 300px;
+  }
+  body.wb-drawer-open .set-content {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+}
 .wb-insp-h {
   position: sticky;
   top: 0;
