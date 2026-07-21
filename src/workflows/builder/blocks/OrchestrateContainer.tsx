@@ -110,14 +110,7 @@ export function OrchestrateContainer({
       {/* Clicks inside the body select the child card, not this container. */}
       <div className="wb-cont-body wb-branches" onClick={(e) => e.stopPropagation()}>
         {block.body.map((s, i) => (
-          <StepCard
-            key={s.nid}
-            step={s}
-            ctx={ctx}
-            indexLabel={`${i + 1}`}
-            canRemove
-            role="child"
-          />
+          <StepCard key={s.nid} step={s} ctx={ctx} indexLabel={`${i + 1}`} canRemove role="child" />
         ))}
         <button
           className="wb-add sm"

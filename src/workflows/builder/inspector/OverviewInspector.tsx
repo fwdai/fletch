@@ -32,15 +32,7 @@ function countSteps(blocks: EBlock[]): number {
   return n;
 }
 
-function FlowRow({
-  index,
-  block,
-  ctx,
-}: {
-  index: number;
-  block: EBlock;
-  ctx: BuilderCtx;
-}) {
+function FlowRow({ index, block, ctx }: { index: number; block: EBlock; ctx: BuilderCtx }) {
   const idx = String(index + 1).padStart(2, "0");
   if (block.kind === "step") {
     const a = ctx.resolve(block.agent);
@@ -48,7 +40,13 @@ function FlowRow({
       <button className="wb-ov-step" onClick={() => ctx.select(block.nid)}>
         <span className="i">{idx}</span>
         {a ? (
-          <AgentAvatar custom={a.custom} slug={a.providerId} short={a.short} hue={a.hue} size={22} />
+          <AgentAvatar
+            custom={a.custom}
+            slug={a.providerId}
+            short={a.short}
+            hue={a.hue}
+            size={22}
+          />
         ) : (
           <span className="wb-step-mono empty sm">
             <Icon name="plus" size={10} />

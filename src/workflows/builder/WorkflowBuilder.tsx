@@ -105,7 +105,8 @@ export function WorkflowBuilder({
         setState(r.state);
         setSel(r.nid);
       },
-      openAgent: (nid, role: AgentRole, e) => setPop({ type: "agent", nid, role, rect: rectFrom(e) }),
+      openAgent: (nid, role: AgentRole, e) =>
+        setPop({ type: "agent", nid, role, rect: rectFrom(e) }),
     }),
     // validation is derived from state, so ctx refreshes on every edit — the
     // closures over `state` above stay current.

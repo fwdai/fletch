@@ -32,7 +32,8 @@ export function StepInspector({ step, ctx }: { step: EStep; ctx: BuilderCtx }) {
     });
   };
 
-  const requireTests = step.gate.type === "approval" && (step.gate.require?.includes("tests") ?? false);
+  const requireTests =
+    step.gate.type === "approval" && (step.gate.require?.includes("tests") ?? false);
 
   return (
     <>
