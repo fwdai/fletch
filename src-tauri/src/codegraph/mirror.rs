@@ -230,7 +230,9 @@ pub async fn append_git_exclude(checkout: &Path) -> Result<()> {
         .await
         .map_err(|e| Error::Other(format!("create .git/info: {e}")))?;
     let exclude = info_dir.join("exclude");
-    let existing = tokio::fs::read_to_string(&exclude).await.unwrap_or_default();
+    let existing = tokio::fs::read_to_string(&exclude)
+        .await
+        .unwrap_or_default();
     if existing.lines().any(|l| l.trim() == INDEX_DIR) {
         return Ok(());
     }
@@ -298,8 +300,7 @@ mod tests {
         append_git_exclude(checkout).await.unwrap();
         append_git_exclude(checkout).await.unwrap();
         append_git_exclude(checkout).await.unwrap();
-        let body =
-            std::fs::read_to_string(checkout.join(".git/info/exclude")).unwrap();
+        let body = std::fs::read_to_string(checkout.join(".git/info/exclude")).unwrap();
         let count = body.lines().filter(|l| l.trim() == ".codegraph").count();
         assert_eq!(count, 1, "the exclude line must appear exactly once");
     }
@@ -340,7 +341,10 @@ mod tests {
         assert_eq!(std::fs::read(dst.join("codegraph.db")).unwrap(), b"DB");
         assert_eq!(std::fs::read(dst.join("codegraph.db-wal")).unwrap(), b"WAL");
         assert_eq!(std::fs::read(dst.join("codegraph.db-shm")).unwrap(), b"SHM");
-        assert!(!dst.join("daemon.pid").exists(), "daemon.pid must be skipped");
+        assert!(
+            !dst.join("daemon.pid").exists(),
+            "daemon.pid must be skipped"
+        );
         assert!(
             !dst.join("daemon.sock").exists(),
             "daemon.sock must be skipped"
