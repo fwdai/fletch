@@ -80,6 +80,14 @@ export function WorkflowBuilder({
 
   const validation = useMemo(() => validateEditor(state), [state]);
 
+  // The inspector renders as a full-height right-hand drawer pinned outside the
+  // settings content column. Flag the shell while the builder is mounted so the
+  // scroll area reserves room for it (see `.set-main` rule in workflows.css).
+  useEffect(() => {
+    document.body.classList.add("wb-drawer-open");
+    return () => document.body.classList.remove("wb-drawer-open");
+  }, []);
+
   // A deleted node can't stay selected — fall back to the overview.
   const selected = sel ? findNode(state, sel) : null;
   useEffect(() => {
@@ -123,14 +131,14 @@ export function WorkflowBuilder({
   return (
     <div className="set-pane">
       <div className="wb">
-        <button className="ca-ed-back" onClick={onCancel}>
-          <Icon name="chevL" /> All workflows
+        <div className="set-eyebrow mono text-xs wb-section-eye">Settings · Workflows</div>
+        <button className="ca-ed-back iflex-center text-sm" onClick={onCancel}>
+          <Icon name="chevL" size={13} /> All workflows
         </button>
 
         <div className="wb-body">
           <div className="wb-canvas" style={{ "--h": state.hue } as React.CSSProperties}>
             <div className="wb-head">
-              <div className="wb-eyebrow">Workflow pipeline</div>
               <input
                 className="wb-name"
                 placeholder="Name this workflow…"

@@ -67,9 +67,6 @@ export function SettingsScreen() {
   const setSection = useAppStore((s) => s.setSettingsSection);
   const close = useAppStore((s) => s.closeSettingsScreen);
 
-  // The workflow builder canvas needs a wider content column than the forms.
-  const wide = section === "workflows";
-
   return (
     <div className="set-screen">
       <nav className="set-nav">
@@ -105,7 +102,7 @@ export function SettingsScreen() {
       </nav>
 
       <div className="set-main">
-        <div className={`set-content ${wide ? "is-wide" : ""}`}>
+        <div className="set-content">
           {section === "account" && <AccountPane />}
           {section === "providers" && <ProvidersPane />}
           {section === "agents" && <CustomAgentsPane />}
