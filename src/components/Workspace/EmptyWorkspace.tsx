@@ -203,6 +203,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 // composer) — otherwise a wrong-repo file/PR could be inserted.
                 key={draft.repoPath}
                 autoFocus
+                minRows={2}
                 draftKey={draft.id}
                 defaultProvider={draft.provider}
                 projectDir={draft.repoPath}
