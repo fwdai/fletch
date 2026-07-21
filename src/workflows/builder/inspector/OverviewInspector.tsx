@@ -32,6 +32,15 @@ function countSteps(blocks: EBlock[]): number {
   return n;
 }
 
+/** Loops anywhere in the tree — imported specs may nest them in loop bodies. */
+function countLoops(blocks: EBlock[]): number {
+  let n = 0;
+  for (const b of blocks) {
+    if (b.kind === "loop") n += 1 + countLoops(b.body);
+  }
+  return n;
+}
+
 function FlowRow({ index, block, ctx }: { index: number; block: EBlock; ctx: BuilderCtx }) {
   const idx = String(index + 1).padStart(2, "0");
   if (block.kind === "step") {
@@ -87,7 +96,7 @@ export function OverviewInspector({
   promote?: PromotePanel;
 }) {
   const steps = countSteps(state.blocks);
-  const loops = state.blocks.filter((b) => b.kind === "loop").length;
+  const loops = countLoops(state.blocks);
   const finalize = state.finalize;
 
   return (

@@ -16,7 +16,7 @@ import {
 } from "./model";
 
 /** Every spec step id currently in the tree (so new steps avoid collisions). */
-function editorStepIds(state: EditorState): Set<string> {
+export function editorStepIds(state: EditorState): Set<string> {
   const ids = new Set<string>();
   const walk = (blocks: EBlock[]) => {
     for (const b of blocks) {
@@ -128,13 +128,14 @@ export function addBlock(
   return { ...state, blocks: apply(state.blocks) };
 }
 
-/** Add a child step to a parallel or orchestrate container. Returns the new
- *  state and the child's nid so the caller can select it. */
+/** Append a prebuilt child step to a parallel or orchestrate container. The
+ *  step is constructed by the caller (see `newStep`) so this stays a pure
+ *  state→state op, safe to run inside a React functional update. */
 export function addStepToContainer(
   state: EditorState,
   containerNid: NodeId,
-): { state: EditorState; nid: NodeId } {
-  const step = newStep(editorStepIds(state));
+  step: EStep,
+): EditorState {
   const apply = (blocks: EBlock[]): EBlock[] =>
     blocks.map((b) => {
       if (b.nid === containerNid && b.kind === "parallel") {
@@ -146,28 +147,25 @@ export function addStepToContainer(
       if (b.kind === "loop") return { ...b, body: apply(b.body) };
       return b;
     });
-  return { state: { ...state, blocks: apply(state.blocks) }, nid: step.nid };
+  return { ...state, blocks: apply(state.blocks) };
 }
 
-/** Insert a fresh block of the chosen kind into a sequence (top level or loop),
- *  at `index` (appended when omitted). Returns the new state and the block's nid
- *  so the caller can select it. */
-export function addBlockOfType(
-  state: EditorState,
-  seqNid: NodeId | null,
+/** Construct a fresh block of the chosen kind. Built eagerly (outside any
+ *  React updater) so the node's nid/step-ids are fixed once per user action —
+ *  the caller then inserts it with `addBlock` inside a functional update. The
+ *  global id counters keep step ids unique even across rapid actions that
+ *  shared a `taken` snapshot. */
+export function newBlockOfType(
+  taken: Set<string>,
   type: "step" | "parallel" | "loop" | "orchestrate",
-  index?: number,
-): { state: EditorState; nid: NodeId } {
-  const taken = editorStepIds(state);
-  const block =
-    type === "step"
-      ? newStep(taken)
-      : type === "parallel"
-        ? newParallel(taken)
-        : type === "loop"
-          ? newLoop(taken)
-          : newOrchestrate(taken);
-  return { state: addBlock(state, seqNid, block, index), nid: block.nid };
+): EBlock {
+  return type === "step"
+    ? newStep(taken)
+    : type === "parallel"
+      ? newParallel(taken)
+      : type === "loop"
+        ? newLoop(taken)
+        : newOrchestrate(taken);
 }
 
 /** Find any node — step or container — by nid anywhere in the tree. Used by the

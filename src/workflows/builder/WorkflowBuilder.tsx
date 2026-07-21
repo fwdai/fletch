@@ -15,9 +15,11 @@ import { BlockSequence } from "./blocks/BlockSequence";
 import type { BuilderCtx, Pop, PopRect } from "./ctx";
 import {
   type AgentRole,
-  addBlockOfType,
+  addBlock,
   addStepToContainer,
+  editorStepIds,
   findNode,
+  newBlockOfType,
   patchBlock,
   patchStep,
   removeNode,
@@ -27,7 +29,7 @@ import {
 import { useDismissOnViewportChange } from "./hooks";
 import { Inspector } from "./inspector";
 import type { EditorState, NodeId } from "./model";
-import { toSpec, validateEditor } from "./model";
+import { newStep, toSpec, validateEditor } from "./model";
 import { AgentPick } from "./pickers";
 
 /** Launch context threaded in when the builder was opened by "promote to
@@ -95,15 +97,18 @@ export function WorkflowBuilder({
       patchStep: (nid, patch) => setState((s) => patchStep(s, nid, patch)),
       patchBlock: (nid, patch) => setState((s) => patchBlock(s, nid, patch)),
       removeNode: (nid) => setState((s) => removeNode(s, nid)),
+      // Structural adds build the node eagerly (fixed nid to select; the global
+      // id counters keep step ids unique) but insert with a functional update,
+      // so rapid successive adds merge instead of overwriting each other.
       addStepToContainer: (nid) => {
-        const r = addStepToContainer(state, nid);
-        setState(r.state);
-        setSel(r.nid);
+        const step = newStep(editorStepIds(state));
+        setState((s) => addStepToContainer(s, nid, step));
+        setSel(step.nid);
       },
       addBlock: (seqNid, type, index) => {
-        const r = addBlockOfType(state, seqNid, type, index);
-        setState(r.state);
-        setSel(r.nid);
+        const block = newBlockOfType(editorStepIds(state), type);
+        setState((s) => addBlock(s, seqNid, block, index));
+        setSel(block.nid);
       },
       openAgent: (nid, role: AgentRole, e) =>
         setPop({ type: "agent", nid, role, rect: rectFrom(e) }),
