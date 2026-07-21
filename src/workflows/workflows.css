@@ -192,9 +192,16 @@
 }
 
 /* ───────────────────── Builder: vertical pipeline editor ─────────────────────
-   Canvas (a vertical flow of collapsed block cards) + a sticky right-hand
-   inspector editing the selected node. Cards carry previews and summary chips
-   only; all field editing happens in the inspector (builder/inspector/). */
+   A full-width canvas (a vertical flow of collapsed block cards) with a
+   full-height inspector drawer pinned to the right edge of the settings shell.
+   Cards carry previews and summary chips only; all field editing happens in the
+   inspector (builder/inspector/). */
+
+/* Width of the right-hand inspector drawer; the settings scroll area reserves
+   this much room on the right while the builder is mounted. */
+:root {
+  --wb-drawer-w: 380px;
+}
 
 .wb {
   display: flex;
@@ -202,17 +209,17 @@
   min-height: 0;
   animation: fade-in 0.2s var(--ease);
 }
+/* Section kicker mirroring the workflows list header, so the builder still reads
+   as living under Settings · Workflows — sits at the top like the other panes. */
+.wb-section-eye {
+  margin-bottom: 10px;
+}
 .wb-body {
-  display: flex;
-  align-items: flex-start;
-  gap: 24px;
   margin-top: 14px;
 }
 
 /* ── canvas ─────────────────────────────────────────────────────────── */
 .wb-canvas {
-  flex: 1;
-  min-width: 0;
   padding: 34px 30px 52px;
   border: 1px solid var(--bd-soft);
   border-radius: var(--r-lg);
@@ -222,16 +229,8 @@
     var(--bg-1);
 }
 .wb-head {
-  max-width: 600px;
+  max-width: 640px;
   margin: 0 auto 30px;
-}
-.wb-eyebrow {
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--accent);
-  margin-bottom: 10px;
 }
 .wb-name {
   width: 100%;
@@ -282,7 +281,7 @@
   align-items: stretch;
 }
 .wb-canvas > .wb-seq {
-  max-width: 600px;
+  max-width: 640px;
   margin: 0 auto;
 }
 .wb-conn {
@@ -683,24 +682,63 @@
   border-top: 0;
 }
 
-/* ── inspector ──────────────────────────────────────────────────────── */
+/* ── inspector drawer ───────────────────────────────────────────────────
+   A full-height panel pinned to the right edge of the settings shell. `top`
+   clears the 36px title bar (.tb); the settings scroll area reserves matching
+   room on the right via the `.set-main` rule below, so the drawer never covers
+   the canvas or the save bar. */
 .wb-insp {
-  width: 340px;
-  flex-shrink: 0;
-  position: sticky;
-  top: 16px;
-  max-height: calc(100vh - 110px);
+  position: fixed;
+  top: 36px;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  width: var(--wb-drawer-w);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-lg);
+  border-left: 1px solid var(--bd-soft);
   background: var(--bg-1);
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--shadow-2);
+  animation: wb-drawer-in 0.34s var(--ease);
 }
-@media (max-width: 1200px) {
-  .wb-insp {
-    width: 300px;
+/* Slide + fade in from the right edge as the builder opens, timed to match the
+   content column's shift (.set-main padding-right transition). */
+@keyframes wb-drawer-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+/* Reserve room for the drawer so the centered content column shifts clear of
+   it. Toggled on the shell by WorkflowBuilder for as long as it is mounted. */
+body.wb-drawer-open .set-main {
+  padding-right: var(--wb-drawer-w);
+}
+/* On narrower desktop windows (min supported is 900px), the drawer + settings
+   nav would otherwise crush the canvas. Shrink the drawer (the token drives both
+   its width and the reserved padding) and tighten the content column's side
+   padding while the builder is open, keeping the canvas workable down to 900px. */
+@media (max-width: 1280px) {
+  :root {
+    --wb-drawer-w: 340px;
+  }
+  body.wb-drawer-open .set-content {
+    padding-left: 32px;
+    padding-right: 32px;
+  }
+}
+@media (max-width: 1080px) {
+  :root {
+    --wb-drawer-w: 300px;
+  }
+  body.wb-drawer-open .set-content {
+    padding-left: 20px;
+    padding-right: 20px;
   }
 }
 .wb-insp-h {
@@ -1126,11 +1164,8 @@
   min-width: 244px;
   max-height: 320px;
   overflow-y: auto;
-}
-.wb-pick .dd-sect {
-  position: sticky;
-  top: 0;
-  background: var(--bg-2);
+  /* Keep wheel scrolling inside the menu — don't chain to the page at the edge. */
+  overscroll-behavior: contain;
 }
 .wb-pick-item {
   display: flex;

@@ -100,6 +100,9 @@
   flex: 1;
   min-width: 0;
   overflow-y: auto;
+  /* Glide the centered content column left/right as the workflow builder's
+     inspector drawer reserves (or releases) room on the right. */
+  transition: padding-right 0.34s var(--ease);
   background:
     radial-gradient(
       120% 60% at 100% 0%,
@@ -112,11 +115,6 @@
   max-width: 860px;
   margin: 0 auto;
   padding: 52px 56px 96px;
-}
-/* Wider column for panes that opt in — e.g. the workflow builder canvas,
-   which lays a pipeline canvas and a sticky inspector side by side. */
-.set-content.is-wide {
-  max-width: 1240px;
 }
 @media (max-width: 1080px) {
   .set-content {
