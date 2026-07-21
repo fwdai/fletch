@@ -16,7 +16,7 @@ import {
 } from "./model";
 
 /** Every spec step id currently in the tree (so new steps avoid collisions). */
-function editorStepIds(state: EditorState): Set<string> {
+export function editorStepIds(state: EditorState): Set<string> {
   const ids = new Set<string>();
   const walk = (blocks: EBlock[]) => {
     for (const b of blocks) {
@@ -106,21 +106,36 @@ export function removeNode(state: EditorState, nid: NodeId): EditorState {
 
 // ───────────────────────────── structural edits ────────────────────────────
 
-/** Append a block to a sequence: the top level (`seqNid = null`) or a loop body. */
-export function addBlock(state: EditorState, seqNid: NodeId | null, block: EBlock): EditorState {
-  if (seqNid === null) return { ...state, blocks: [...state.blocks, block] };
+/** Insert a block into a sequence — the top level (`seqNid = null`) or a loop
+ *  body — at `index` (appended when omitted or out of range). */
+export function addBlock(
+  state: EditorState,
+  seqNid: NodeId | null,
+  block: EBlock,
+  index?: number,
+): EditorState {
+  const insert = (blocks: EBlock[]): EBlock[] => {
+    const at = index == null || index < 0 || index > blocks.length ? blocks.length : index;
+    return [...blocks.slice(0, at), block, ...blocks.slice(at)];
+  };
+  if (seqNid === null) return { ...state, blocks: insert(state.blocks) };
   const apply = (blocks: EBlock[]): EBlock[] =>
     blocks.map((b) => {
       if (b.kind !== "loop") return b;
-      if (b.nid === seqNid) return { ...b, body: [...b.body, block] };
+      if (b.nid === seqNid) return { ...b, body: insert(b.body) };
       return { ...b, body: apply(b.body) };
     });
   return { ...state, blocks: apply(state.blocks) };
 }
 
-/** Add a child step to a parallel or orchestrate container. */
-export function addStepToContainer(state: EditorState, containerNid: NodeId): EditorState {
-  const step = newStep(editorStepIds(state));
+/** Append a prebuilt child step to a parallel or orchestrate container. The
+ *  step is constructed by the caller (see `newStep`) so this stays a pure
+ *  state→state op, safe to run inside a React functional update. */
+export function addStepToContainer(
+  state: EditorState,
+  containerNid: NodeId,
+  step: EStep,
+): EditorState {
   const apply = (blocks: EBlock[]): EBlock[] =>
     blocks.map((b) => {
       if (b.nid === containerNid && b.kind === "parallel") {
@@ -135,43 +150,62 @@ export function addStepToContainer(state: EditorState, containerNid: NodeId): Ed
   return { ...state, blocks: apply(state.blocks) };
 }
 
-/** Append a fresh block of the chosen kind to a sequence (top level or loop). */
-export function addBlockOfType(
-  state: EditorState,
-  seqNid: NodeId | null,
+/** Construct a fresh block of the chosen kind. Built eagerly (outside any
+ *  React updater) so the node's nid/step-ids are fixed once per user action —
+ *  the caller then inserts it with `addBlock` inside a functional update. The
+ *  global id counters keep step ids unique even across rapid actions that
+ *  shared a `taken` snapshot. */
+export function newBlockOfType(
+  taken: Set<string>,
   type: "step" | "parallel" | "loop" | "orchestrate",
-): EditorState {
-  const taken = editorStepIds(state);
-  const block =
-    type === "step"
-      ? newStep(taken)
-      : type === "parallel"
-        ? newParallel(taken)
-        : type === "loop"
-          ? newLoop(taken)
-          : newOrchestrate(taken);
-  return addBlock(state, seqNid, block);
+): EBlock {
+  return type === "step"
+    ? newStep(taken)
+    : type === "parallel"
+      ? newParallel(taken)
+      : type === "loop"
+        ? newLoop(taken)
+        : newOrchestrate(taken);
 }
 
-/** Find a step by nid anywhere in the tree (for popovers that need its data). */
-export function findStep(state: EditorState, nid: NodeId): EStep | null {
-  let found: EStep | null = null;
+/** Find any node — step or container — by nid anywhere in the tree. Used by the
+ *  inspector to render the selected node and to drop a stale selection. */
+export function findNode(state: EditorState, nid: NodeId): EBlock | null {
+  let found: EBlock | null = null;
   const walk = (blocks: EBlock[]) => {
     for (const b of blocks) {
       if (found) return;
-      if (b.kind === "step") {
-        if (b.nid === nid) found = b;
-      } else if (b.kind === "parallel") {
+      if (b.nid === nid) {
+        found = b;
+        return;
+      }
+      if (b.kind === "parallel") {
         found = b.steps.find((s) => s.nid === nid) ?? null;
       } else if (b.kind === "loop") {
         walk(b.body);
-      } else {
+      } else if (b.kind === "orchestrate") {
         found = b.body.find((s) => s.nid === nid) ?? null;
       }
     }
   };
   walk(state.blocks);
   return found;
+}
+
+/** Every step in a loop body, flattened, as loop-exit candidates. */
+export function loopExitCandidates(blocks: EBlock[]): { nid: NodeId; label: string }[] {
+  const out: { nid: NodeId; label: string }[] = [];
+  const walk = (bs: EBlock[]) => {
+    for (const b of bs) {
+      if (b.kind === "step") out.push({ nid: b.nid, label: b.stepId });
+      else if (b.kind === "parallel")
+        for (const s of b.steps) out.push({ nid: s.nid, label: s.stepId });
+      else if (b.kind === "loop") walk(b.body);
+      else for (const s of b.body) out.push({ nid: s.nid, label: s.stepId });
+    }
+  };
+  walk(blocks);
+  return out;
 }
 
 // ───────────────────────────── agent assignment ────────────────────────────

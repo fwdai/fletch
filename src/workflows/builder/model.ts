@@ -177,7 +177,7 @@ export function newOrchestrate(taken: Set<string>): EOrchestrate {
 
 // ───────────────────────────── blank / defaults ───────────────────────────
 
-const WF_HUES = [265, 150, 25, 215, 320, 95, 175, 50];
+export const WF_HUES = [265, 150, 25, 215, 320, 95, 175, 50];
 
 export function blankEditor(seed: number): EditorState {
   const taken = new Set<string>();
