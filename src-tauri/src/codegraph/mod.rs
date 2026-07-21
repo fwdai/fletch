@@ -64,13 +64,12 @@ pub fn parse_enabled(raw: Option<&str>) -> bool {
     raw != Some("false")
 }
 
-/// Install root passed to the vendor installer as `CODEGRAPH_INSTALL_DIR`:
-/// `~/.fletch/tools/codegraph/`.
+/// Install root for the verified release bundle: `~/.fletch/tools/codegraph/`.
 pub fn install_dir() -> Result<PathBuf> {
     Ok(tools_root()?.join("codegraph"))
 }
 
-/// Symlink/bin dir passed as `CODEGRAPH_BIN_DIR`: `~/.fletch/tools/codegraph/bin`.
+/// Launcher symlink dir: `~/.fletch/tools/codegraph/bin`.
 pub fn bin_dir() -> Result<PathBuf> {
     Ok(install_dir()?.join("bin"))
 }
