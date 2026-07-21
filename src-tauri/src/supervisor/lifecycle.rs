@@ -62,6 +62,87 @@ fn ensure_engine_supports_provider(engine: EngineKind, provider: &str) -> Result
     Ok(())
 }
 
+/// Wire codegraph indexing into a freshly-provisioned checkout — best-effort and
+/// never fatal to a spawn. Skipped entirely when indexing is off or the engine
+/// is Docker (a container can't exec the host binary).
+///
+/// The cheap, synchronous part runs inline before the agent starts: register
+/// the `.git/info/exclude` entry, and — if the repo's mirror already holds a
+/// built index — copy `codegraph.db` into `<checkout>/.codegraph/` so the MCP
+/// server has an index from turn one. The expensive part (install + clone +
+/// index/advance the mirror to this checkout's base commit) is detached to a
+/// background task. When no index existed to copy synchronously, that task
+/// copies the freshly-built db into the checkout afterward if it still exists —
+/// codegraph's MCP server picks up a late-appearing index on a later tool call.
+pub(super) async fn provision_codegraph_index(
+    project_id: String,
+    source_repo: PathBuf,
+    checkout: PathBuf,
+    base_sha: Option<String>,
+    engine: EngineKind,
+) {
+    use crate::codegraph;
+
+    if !codegraph::enabled() || engine == EngineKind::Docker {
+        return;
+    }
+    let mirror = match codegraph::mirror_dir(&project_id, &source_repo) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, repo = %source_repo.display(), "codegraph mirror path failed");
+            return;
+        }
+    };
+
+    // Always register the exclude entry when enabled, even if no index exists
+    // yet — so the index dir never surfaces in diffs once it lands.
+    if let Err(e) = codegraph::append_git_exclude(&checkout).await {
+        tracing::warn!(error = %e, "codegraph exclude entry failed");
+    }
+    // Synchronously copy an already-built index in, if the mirror has one.
+    let db = mirror.join(".codegraph").join("codegraph.db");
+    let copied_sync = db.exists();
+    if copied_sync {
+        if let Err(e) = codegraph::copy_index_into(&mirror, &checkout).await {
+            tracing::warn!(error = %e, "codegraph index copy failed");
+        }
+    }
+
+    // Prefer the resolved fork-point SHA; fall back to the checkout's HEAD when
+    // the base was a local/HEAD fallback so the mirror still advances to the
+    // exact commit the agent starts on.
+    let sha = match base_sha {
+        Some(s) => Some(s),
+        None => git::rev_parse(&checkout, "HEAD").await.ok(),
+    };
+
+    tauri::async_runtime::spawn(async move {
+        let bin = match codegraph::ensure_installed().await {
+            Ok(bin) => bin,
+            Err(e) => {
+                tracing::warn!(error = %e, "codegraph install failed; skipping mirror advance");
+                return;
+            }
+        };
+        if let Err(e) = codegraph::ensure_mirror(&source_repo, &mirror, &bin).await {
+            tracing::warn!(error = %e, "codegraph ensure_mirror failed");
+            return;
+        }
+        if let Some(sha) = &sha {
+            if let Err(e) = codegraph::advance_mirror(&mirror, &source_repo, sha, &bin).await {
+                tracing::warn!(error = %e, "codegraph advance_mirror failed");
+            }
+        }
+        // Late index: nothing was copied synchronously, so copy the db the
+        // mirror just built — provided the checkout wasn't torn down meanwhile.
+        if !copied_sync && checkout.exists() {
+            if let Err(e) = codegraph::copy_index_into(&mirror, &checkout).await {
+                tracing::warn!(error = %e, "codegraph late index copy failed");
+            }
+        }
+    });
+}
+
 /// Resolved, per-spawn inputs for `spawn_agent_process` — everything that
 /// isn't already carried on the `AgentRecord` (paths, session id, and this
 /// spawn's generation number).
@@ -370,6 +451,18 @@ impl Supervisor {
                     .set_repo_base_sha(&id_for_task, &subdir_for_fork, sha);
             }
 
+            // Warm the codegraph index for this checkout (best-effort; no-op when
+            // indexing is off or under Docker). Runs the cheap copy inline and
+            // advances the mirror in the background.
+            provision_codegraph_index(
+                project_id_for_task.clone(),
+                repo_path.clone(),
+                primary_checkout.clone(),
+                base_sha.clone(),
+                engine_kind,
+            )
+            .await;
+
             // Fork "carry code": overlay the source workspace's current working
             // tree onto the fresh checkout, so the fork starts from that
             // workspace's uncommitted work. Fatal on failure — the user asked to
@@ -507,6 +600,18 @@ impl Supervisor {
             provision::provision(&spec).await?;
         }
         let base_sha = git::rev_parse(&checkout, "HEAD").await.ok();
+
+        // Warm the codegraph index for this additional checkout too, so a
+        // multi-repo workspace (and a live "+ Repo") indexes every repo. Uses
+        // the agent's stamped engine — a docker-stamped agent is skipped inside.
+        provision_codegraph_index(
+            record.project_id.clone(),
+            repo_path.clone(),
+            checkout.clone(),
+            base_sha.clone(),
+            stamped_engine(&record),
+        )
+        .await;
 
         let repo = TrackedRepo {
             repo_path: repo_path.clone(),
@@ -736,6 +841,14 @@ impl Supervisor {
         // respawn), not just fresh spawns: only claude runs under docker.
         ensure_engine_supports_provider(engine, &record.provider)?;
 
+        // Dynamically fold the codegraph MCP server into the session's snapshot
+        // for this launch, when code indexing is on, the engine isn't Docker,
+        // and the binary is installed. Injected here (not persisted onto the
+        // session snapshot) so this runs identically for fresh spawns and
+        // resumes and the toggle's *current* state always wins. A user-defined
+        // "codegraph" server suppresses injection (see `codegraph`).
+        let mcp_servers = crate::codegraph::inject_mcp_server(&record.mcp_servers, engine);
+
         // Materialize the session's skill snapshot under the writable root and
         // fold its index into the injected instructions. Recomputed on every
         // launch path so the files always exist (e.g. after a checkout is
@@ -761,7 +874,7 @@ impl Supervisor {
         // providers take their MCP delivery from the spec's snapshot instead
         // (codex `-c` overrides); see `agent_profile`.
         let mcp_config = if record.provider == "claude" {
-            crate::agent_profile::write_claude_mcp_config(&record.mcp_servers, &sandbox_root)?
+            crate::agent_profile::write_claude_mcp_config(&mcp_servers, &sandbox_root)?
         } else {
             None
         };
@@ -789,7 +902,7 @@ impl Supervisor {
                         effort: None,
                         model: record.model.as_deref(),
                         instructions: instructions.as_deref(),
-                        mcp_servers: &record.mcp_servers,
+                        mcp_servers: &mcp_servers,
                         mcp_config: None,
                         rpc_dir,
                         cols: 120,
@@ -818,7 +931,7 @@ impl Supervisor {
                         session_id,
                         model: record.model.clone(),
                         instructions: instructions.clone(),
-                        mcp_servers: record.mcp_servers.clone(),
+                        mcp_servers: mcp_servers.clone(),
                         rpc_dir,
                         engine,
                         blackboard: blackboard.clone(),
@@ -844,7 +957,7 @@ impl Supervisor {
                 effort: record.effort.as_deref(),
                 model: record.model.as_deref(),
                 instructions: instructions.as_deref(),
-                mcp_servers: &record.mcp_servers,
+                mcp_servers: &mcp_servers,
                 mcp_config: mcp_config.as_deref(),
                 rpc_dir,
                 cols: 120,

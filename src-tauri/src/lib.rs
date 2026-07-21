@@ -4,6 +4,7 @@ mod agent_install;
 mod agent_profile;
 mod bin_resolve;
 mod child_io;
+mod codegraph;
 mod commands;
 mod database;
 mod editors;
@@ -490,6 +491,76 @@ async fn set_telemetry_enabled(
     }
     telemetry::set_enabled(enabled);
     Ok(())
+}
+
+/// Flip code-indexing consent. Persists it to `settings` (so the renderer's
+/// `getAllSettings` sees it as `s.code_indexing_enabled`) and updates the
+/// in-process mirror the spawn path reads — the same persist-then-mirror shape
+/// as `set_sandbox_engine`/`set_telemetry_enabled`. Backend-owned snake_case key.
+///
+/// Turning it ON kicks a best-effort background task: install the codegraph
+/// bundle, then warm the index mirror for every pinned repo so the first agent
+/// spawn after a fresh enable already has an index to copy in. Turning it OFF
+/// does nothing else — indexes die with their workspaces, no cleanup needed.
+#[tauri::command]
+async fn set_code_indexing_enabled(
+    enabled: bool,
+    state: tauri::State<'_, DbState>,
+    supervisor: tauri::State<'_, Arc<Supervisor>>,
+) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(
+            &conn,
+            codegraph::SETTING,
+            if enabled { "true" } else { "false" },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    codegraph::set_enabled(enabled);
+    if enabled {
+        // Snapshot the pinned repos (path + owning project) up front so the
+        // background task holds no DB handle across awaits.
+        let repos: Vec<(String, PathBuf)> = supervisor
+            .workspace
+            .current()
+            .map(|w| {
+                w.projects
+                    .into_iter()
+                    .map(|p| (p.project_id, p.path))
+                    .collect()
+            })
+            .unwrap_or_default();
+        tauri::async_runtime::spawn(async move {
+            warm_codegraph_index(repos).await;
+        });
+    }
+    Ok(())
+}
+
+/// Best-effort: ensure codegraph is installed, then build/refresh the index
+/// mirror for each `(project_id, source_repo)`. Every step logs and continues —
+/// a failure here just means indexing warms up on a later spawn.
+async fn warm_codegraph_index(repos: Vec<(String, PathBuf)>) {
+    let bin = match codegraph::ensure_installed().await {
+        Ok(bin) => bin,
+        Err(e) => {
+            tracing::warn!(error = %e, "codegraph install failed; indexing stays off until retry");
+            return;
+        }
+    };
+    for (project_id, source_repo) in repos {
+        let mirror = match codegraph::mirror_dir(&project_id, &source_repo) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, repo = %source_repo.display(), "codegraph mirror path failed");
+                continue;
+            }
+        };
+        if let Err(e) = codegraph::ensure_mirror(&source_repo, &mirror, &bin).await {
+            tracing::warn!(error = %e, repo = %source_repo.display(), "codegraph mirror warm-up failed");
+        }
+    }
 }
 
 /// Emit the deferred first `app_opened`. The frontend calls this once, when the
@@ -1130,6 +1201,26 @@ pub fn run() {
                 sandbox::set_selected_engine_kind(kind);
             }
 
+            // Seed the in-memory code-indexing consent (mirror of the
+            // `code_indexing_enabled` setting, default on) so the spawn path can
+            // read it without a DB handle. If enabled, kick a silent background
+            // install of the codegraph bundle — non-fatal: a failure just means
+            // MCP injection doesn't happen until a later successful install
+            // (retried next launch or when the user re-toggles).
+            {
+                let enabled = codegraph::parse_enabled(
+                    database::get_setting(&db.lock(), codegraph::SETTING).as_deref(),
+                );
+                codegraph::set_enabled(enabled);
+                if enabled {
+                    tauri::async_runtime::spawn(async {
+                        if let Err(e) = codegraph::ensure_installed().await {
+                            tracing::warn!(error = %e, "codegraph startup install failed; continuing");
+                        }
+                    });
+                }
+            }
+
             // Seed the docker launch knobs (image override + resource limits)
             // the same way — mirrored in-process for the spawn path. Slice C2
             // adds the settings UI whose set-commands keep this in sync
@@ -1391,6 +1482,7 @@ pub fn run() {
             db_query,
             set_agent_bin_override,
             set_telemetry_enabled,
+            set_code_indexing_enabled,
             track_app_opened,
             get_sandbox_engine,
             set_sandbox_engine,

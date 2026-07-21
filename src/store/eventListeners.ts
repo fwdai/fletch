@@ -134,6 +134,10 @@ export const hydrateSettings = async (set: AppSet) => {
       // switch a caller to `setSetting("telemetryEnabled", …)`: that's a
       // different key and the toggle would silently stop working.
       telemetryEnabled: s.telemetry_enabled !== "false",
+      // Code indexing is opt-out too, and backend-owned (snake_case, written by
+      // the `set_code_indexing_enabled` Rust command): read `s.code_indexing_enabled`,
+      // never setSetting it. Only an explicit "false" disables.
+      codeIndexingEnabled: s.code_indexing_enabled !== "false",
       // Backend-owned like telemetry_enabled (snake_case, written by the
       // `set_sandbox_engine` Rust command) — read it, never setSetting it.
       sandboxEngine: parseSandboxEngine(s.sandbox_engine),
