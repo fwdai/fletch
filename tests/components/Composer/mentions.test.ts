@@ -43,11 +43,9 @@ describe("filterFiles", () => {
 
 describe("isFsPath", () => {
   it.each(["~", "~/Downloads", "/etc", "./src", "../x"])("treats %s as a filesystem path", (q) =>
-    expect(isFsPath(q)).toBe(true),
-  );
+    expect(isFsPath(q)).toBe(true));
   it.each(["src", "Composer", "index.ts", ""])("treats %s as a worktree search", (q) =>
-    expect(isFsPath(q)).toBe(false),
-  );
+    expect(isFsPath(q)).toBe(false));
 });
 
 describe("splitFsPath", () => {
