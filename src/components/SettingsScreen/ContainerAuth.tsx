@@ -42,7 +42,7 @@ export function ContainerAuth() {
     <>
       <SetRow
         title="Claude auth for containers"
-        sub="Docker agents use your macOS Keychain Claude login automatically, tracking whichever account you're currently logged into. If that's unavailable (no login, or a non-macOS host) they fall back to an API key from your environment or a setup-token. Seatbelt agents keep using your own login."
+        sub="Docker agents use your macOS Keychain Claude login, falling back to an API key or setup-token if it's unavailable. Seatbelt agents keep your own login."
       >
         <span className={`set-cauth-status text-sm ${connected ? "connected" : ""}`}>
           {status ? STATUS_LABELS[status] : "Checking…"}

@@ -46,7 +46,7 @@ const DOCKER_FIELDS = [
   {
     key: "image",
     title: "Container image",
-    sub: "Override the built-in agent image. Your image must have Claude Code (`claude`) on PATH and git installed. Leave blank to use Fletch's image (built on the first Docker run).",
+    sub: "Override the built-in agent image. It must have Claude Code (`claude`) and git on PATH. Blank uses Fletch's image.",
     placeholder: "fletch-agent (built-in)",
   },
   {

@@ -152,13 +152,13 @@ export function GeneralPane() {
       <SetGroup label="Notifications">
         <SetRow
           title="Sound"
-          sub="Play a chime when an agent finishes a turn or needs your input while you're looking elsewhere."
+          sub="Play a chime when an agent finishes or needs your input."
         >
           <SetToggle on={soundEnabled} onClick={() => setSoundEnabled(!soundEnabled)} />
         </SetRow>
         <SetRow
           title="Native notifications"
-          sub="Show a desktop notification when an agent finishes a turn or needs your input while you're looking elsewhere."
+          sub="Show a desktop notification when an agent finishes or needs your input."
         >
           <SetToggle on={notifyEnabled} onClick={() => setNotifyEnabled(!notifyEnabled)} />
         </SetRow>
@@ -167,7 +167,7 @@ export function GeneralPane() {
       <SetGroup label="Code indexing">
         <SetRow
           title="Code indexing"
-          sub="Index project code so agents can query symbols and call graphs instead of searching files. Indexes are stored inside Fletch's data directory."
+          sub="Let agents query symbols and call graphs instead of searching files. Stored in Fletch's data directory."
         >
           <SetToggle
             on={codeIndexingEnabled}
@@ -179,7 +179,7 @@ export function GeneralPane() {
       <SetGroup label="Sandbox">
         <SetRow
           title="Engine"
-          sub="Applies to newly created agents; existing agents keep the engine they started with. Docker agents run in a Linux container: builds and tests run on Linux, not macOS. Claude Code, Codex, OpenCode, Pi, and Cursor Agent are available in containers for now; Antigravity stays on Seatbelt."
+          sub="Applies to new agents; existing ones keep their engine. Docker runs agents in a Linux container, so builds and tests run on Linux."
         >
           <Select<SandboxEngine>
             value={sandboxEngine}
@@ -200,8 +200,8 @@ export function GeneralPane() {
           <div className="set-sandbox-warn">
             Docker is selected but{" "}
             {dockerProbe.status === "daemon-down" ? "the daemon isn't running" : "isn't installed"}.
-            New agents won't launch until it's available —{" "}
-            {dockerProbe.status === "daemon-down" ? "start" : "install"} Docker Desktop, or switch
+            New agents won't launch until it's available.{" "}
+            {dockerProbe.status === "daemon-down" ? "Start" : "Install"} Docker Desktop, or switch
             back to Seatbelt.
           </div>
         )}
@@ -211,7 +211,7 @@ export function GeneralPane() {
       <SetGroup label="Diagnostics" last>
         <SetRow
           title="Usage analytics"
-          sub="Share anonymous usage events (app opens, agents spawned, turns completed, PRs opened) to help improve Fletch. No code, file paths, repo names, or prompts are ever sent."
+          sub="Share anonymous usage events to help improve Fletch. No code, file paths, repo names, or prompts are ever sent."
         >
           <SetToggle on={telemetryEnabled} onClick={() => setTelemetryEnabled(!telemetryEnabled)} />
         </SetRow>
