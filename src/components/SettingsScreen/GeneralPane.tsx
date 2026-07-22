@@ -150,10 +150,7 @@ export function GeneralPane() {
       </SetGroup>
 
       <SetGroup label="Notifications">
-        <SetRow
-          title="Sound"
-          sub="Play a chime when an agent finishes or needs your input."
-        >
+        <SetRow title="Sound" sub="Play a chime when an agent finishes or needs your input.">
           <SetToggle on={soundEnabled} onClick={() => setSoundEnabled(!soundEnabled)} />
         </SetRow>
         <SetRow
