@@ -49,6 +49,42 @@ pub fn checkouts_root() -> Result<PathBuf> {
     Ok(home.join(".fletch").join("workspaces"))
 }
 
+/// Env var overriding the tools root (default `~/.fletch/tools`). Same style as
+/// [`WORKSPACES_ROOT_ENV`] — set in tests so the codegraph install/probe never
+/// touches a developer's real `~/.fletch`.
+pub const TOOLS_ROOT_ENV: &str = "FLETCH_TOOLS_ROOT";
+
+/// Absolute path to the root holding Fletch-managed external tool installs:
+/// `~/.fletch/tools/`. A sibling of the workspaces root, deliberately **outside**
+/// the app-data dir (`~/Library/Application Support/com.fletch.desktop`) which
+/// the sandbox policy denies sandboxed agents from reading — agents must be able
+/// to exec the codegraph binary that lands here. `$FLETCH_TOOLS_ROOT` overrides
+/// it when set and non-empty.
+pub fn tools_root() -> Result<PathBuf> {
+    if let Some(root) = std::env::var_os(TOOLS_ROOT_ENV).filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(root));
+    }
+    let home =
+        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+    Ok(home.join(".fletch").join("tools"))
+}
+
+/// Env var overriding the projects root (default `~/.fletch/projects`).
+pub const PROJECTS_ROOT_ENV: &str = "FLETCH_PROJECTS_ROOT";
+
+/// Absolute path to the root holding per-project Fletch state that isn't a
+/// live agent checkout — currently the codegraph index mirrors at
+/// `~/.fletch/projects/<project_id>/codegraph/<repo>/`. A sibling of the
+/// workspaces root; `$FLETCH_PROJECTS_ROOT` overrides it when set and non-empty.
+pub fn projects_root() -> Result<PathBuf> {
+    if let Some(root) = std::env::var_os(PROJECTS_ROOT_ENV).filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(root));
+    }
+    let home =
+        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+    Ok(home.join(".fletch").join("projects"))
+}
+
 /// The set of agent-id directories that physically exist under the checkouts
 /// root. These are off-limits as new agent ids regardless of what any single
 /// database knows: the directory is the resource `git worktree add` collides

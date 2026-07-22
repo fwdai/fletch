@@ -14,7 +14,7 @@ use crate::workspace::{
 };
 
 use super::events::emit_workspace_changed;
-use super::lifecycle::{arm_spawn_timeout, fail_spawn};
+use super::lifecycle::{arm_spawn_timeout, fail_spawn, provision_codegraph_index, stamped_engine};
 use super::Supervisor;
 
 impl Supervisor {
@@ -186,6 +186,17 @@ impl Supervisor {
                     None
                 }
             };
+
+            // Warm the codegraph index for the restored checkout too (best-effort;
+            // no-op when indexing is off or under Docker).
+            provision_codegraph_index(
+                record.project_id.clone(),
+                snap.repo_path.clone(),
+                checkout.clone(),
+                Some(tip_sha.to_string()),
+                stamped_engine(&record),
+            )
+            .await;
 
             restored.push(TrackedRepo {
                 repo_path: snap.repo_path.clone(),

@@ -54,6 +54,8 @@ export function GeneralPane() {
   const setNotifyEnabled = useAppStore((s) => s.setNotifyEnabled);
   const telemetryEnabled = useAppStore((s) => s.telemetryEnabled);
   const setTelemetryEnabled = useAppStore((s) => s.setTelemetryEnabled);
+  const codeIndexingEnabled = useAppStore((s) => s.codeIndexingEnabled);
+  const setCodeIndexingEnabled = useAppStore((s) => s.setCodeIndexingEnabled);
   const revealLogs = useAppStore((s) => s.revealLogs);
   const sandboxEngine = useAppStore((s) => s.sandboxEngine);
   const setSandboxEngine = useAppStore((s) => s.setSandboxEngine);
@@ -159,6 +161,18 @@ export function GeneralPane() {
           sub="Show a desktop notification when an agent finishes a turn or needs your input while you're looking elsewhere."
         >
           <SetToggle on={notifyEnabled} onClick={() => setNotifyEnabled(!notifyEnabled)} />
+        </SetRow>
+      </SetGroup>
+
+      <SetGroup label="Code indexing">
+        <SetRow
+          title="Code indexing"
+          sub="Index project code so agents can query symbols and call graphs instead of searching files. Indexes are stored inside Fletch's data directory."
+        >
+          <SetToggle
+            on={codeIndexingEnabled}
+            onClick={() => setCodeIndexingEnabled(!codeIndexingEnabled)}
+          />
         </SetRow>
       </SetGroup>
 
