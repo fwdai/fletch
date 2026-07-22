@@ -73,7 +73,7 @@
 }
 .tb-right {
   margin-left: auto;
-  gap: 2px;
+  gap: 4px;
   -webkit-app-region: no-drag;
 }
 .tb-vdiv {

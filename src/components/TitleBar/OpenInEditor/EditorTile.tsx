@@ -13,8 +13,8 @@ export function EditorTile({ editor, size = 18 }: { editor: DetectedEditor; size
       <span className="oe-tile" style={box}>
         <svg
           viewBox="0 0 24 24"
-          width={Math.round(size * 0.6)}
-          height={Math.round(size * 0.6)}
+          width={Math.round(size * 0.72)}
+          height={Math.round(size * 0.72)}
           fill="currentColor"
           aria-hidden="true"
         >
@@ -26,12 +26,12 @@ export function EditorTile({ editor, size = 18 }: { editor: DetectedEditor; size
   if (face.icon) {
     return (
       <span className="oe-tile" style={box}>
-        <Icon name={face.icon} size={size <= 18 ? 11 : 13} />
+        <Icon name={face.icon} size={size <= 18 ? 13 : 15} />
       </span>
     );
   }
   return (
-    <span className="oe-tile" style={{ ...box, fontSize: size <= 18 ? 8.5 : 10 }}>
+    <span className="oe-tile" style={{ ...box, fontSize: size <= 18 ? 10 : 12 }}>
       {face.mono}
     </span>
   );
