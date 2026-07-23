@@ -1,4 +1,4 @@
-use super::paths::{migrate_checkouts_root_in, occupied_checkout_dirs_in};
+use super::paths::migrate_checkouts_root_in;
 use super::*;
 
 /// The one branch that mutates on-disk state: legacy dir present, new dir
@@ -1812,28 +1812,6 @@ fn allocate_subdir_handles_collision() {
         allocate_repo_subdir(Path::new("/foo/fresh"), &used),
         "fresh"
     );
-}
-
-#[test]
-fn occupied_checkout_dirs_lists_only_subdirs() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(root.path().join("kilimanjaro")).unwrap();
-    std::fs::create_dir_all(root.path().join("seychelles")).unwrap();
-    // A stray file (not a dir) must not be reported as an occupied name.
-    std::fs::write(root.path().join("notes.txt"), b"x").unwrap();
-
-    let found = occupied_checkout_dirs_in(root.path());
-    assert_eq!(found.len(), 2);
-    assert!(found.contains("kilimanjaro"));
-    assert!(found.contains("seychelles"));
-    assert!(!found.contains("notes.txt"));
-}
-
-#[test]
-fn occupied_checkout_dirs_empty_when_root_missing() {
-    let root = tempfile::tempdir().unwrap();
-    let missing = root.path().join("does-not-exist");
-    assert!(occupied_checkout_dirs_in(&missing).is_empty());
 }
 
 /// Mark a workspace archived directly (tests don't go through the full

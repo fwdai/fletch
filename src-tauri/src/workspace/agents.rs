@@ -5,21 +5,25 @@ use super::*;
 
 impl WorkspaceManager {
     pub fn allocate_agent_id(&self) -> Result<String> {
+        let used: HashSet<String> = self.live_agent_ids()?.into_iter().collect();
+        Ok(names::allocate(&used))
+    }
+
+    /// Ids of every live (non-archived) agent — the only names that are
+    /// reserved. Archived agents have had their checkout torn down, so their
+    /// name is free to reuse. With a per-build checkouts root (see
+    /// `checkouts_root`) no other build shares this namespace, so the DB is
+    /// authoritative and allocation never consults the filesystem: a stale dir
+    /// from a crashed spawn or a failed teardown can't collide either, since
+    /// provision clears any leftover at the clone target.
+    pub fn live_agent_ids(&self) -> Result<Vec<String>> {
         let conn = self.db.lock();
-        // Only *live* (non-archived) agents reserve their name. Once an agent
-        // is archived its checkout is torn down, so the name is free to reuse —
-        // unless a directory still lingers on disk (cleanup failed, or it
-        // belongs to another running instance such as a dev build, which shares
-        // this same checkouts root). The on-disk listing closes that gap: it's
-        // the only namespace shared across every Fletch process on the machine,
-        // so a collision there is what actually breaks `git worktree add`.
         let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
-        let mut used: HashSet<String> = stmt
+        let ids = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
             .collect();
-        used.extend(occupied_checkout_dirs());
-        Ok(names::allocate(&used))
+        Ok(ids)
     }
 
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {

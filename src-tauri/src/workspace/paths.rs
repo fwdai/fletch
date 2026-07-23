@@ -46,7 +46,20 @@ pub fn checkouts_root() -> Result<PathBuf> {
     }
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    Ok(home.join(".fletch").join("workspaces"))
+    Ok(home.join(".fletch").join(build_workspaces_subpath()))
+}
+
+/// The workspaces path segment(s) under `~/.fletch`, split per build so a debug
+/// instance never shares the checkout namespace with a release install. Release
+/// keeps the historical flat `workspaces/` (so existing installs need no
+/// migration); debug builds get a sibling `dev/workspaces/` root, mirroring the
+/// `dev` split `data_dir` already uses for app data.
+fn build_workspaces_subpath() -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from("dev").join("workspaces")
+    } else {
+        PathBuf::from("workspaces")
+    }
 }
 
 /// Env var overriding the tools root (default `~/.fletch/tools`). Same style as
@@ -83,28 +96,6 @@ pub fn projects_root() -> Result<PathBuf> {
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     Ok(home.join(".fletch").join("projects"))
-}
-
-/// The set of agent-id directories that physically exist under the checkouts
-/// root. These are off-limits as new agent ids regardless of what any single
-/// database knows: the directory is the resource `git worktree add` collides
-/// on. Best-effort — a missing or unreadable root just yields an empty set.
-pub fn occupied_checkout_dirs() -> HashSet<String> {
-    match checkouts_root() {
-        Ok(root) => occupied_checkout_dirs_in(&root),
-        Err(_) => HashSet::new(),
-    }
-}
-
-pub(super) fn occupied_checkout_dirs_in(root: &Path) -> HashSet<String> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return HashSet::new();
-    };
-    entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect()
 }
 
 /// Absolute path to the dir holding all of one agent's checkouts:

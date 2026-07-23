@@ -330,11 +330,22 @@ pub fn allocate(used: &HashSet<String>) -> String {
             return candidate.to_string();
         }
     }
+    // Every random pick collided. With a ~300-name pool this is vanishingly
+    // rare unless `used` is large — and `used` folds in every on-disk checkout
+    // across all builds sharing the root, so hitting this points at namespace
+    // saturation or a pile-up of orphaned dirs. Log loudly with the set size so
+    // the cause is diagnosable rather than a silent `-2`.
     let base = pick_random();
     let mut n: u32 = 2;
     loop {
         let candidate = format!("{base}-{n}");
         if !used.contains(&candidate) {
+            tracing::warn!(
+                used = used.len(),
+                pool = PLACES.len(),
+                name = %candidate,
+                "name allocator exhausted 10 random picks; falling back to a numbered suffix"
+            );
             return candidate;
         }
         n += 1;

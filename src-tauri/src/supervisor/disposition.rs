@@ -439,12 +439,52 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
     }
 
     // Remove the parent dir (may still hold orphan files if any checkout
-    // removal failed). Best-effort.
-    if let Ok(parent) = agent_parent_dir(agent_id) {
-        if parent.exists() {
-            let _ = tokio::fs::remove_dir_all(&parent).await;
+    // removal failed). Best-effort, retried + logged (see `remove_agent_dir`).
+    let _ = remove_agent_dir(agent_id, op).await;
+}
+
+/// Remove an agent's parent checkout dir, retrying briefly. Returns `true` once
+/// the dir is gone (removed now or already absent).
+///
+/// The common failure right after process shutdown is a still-open file handle
+/// — a just-exited child, the codegraph indexer — that clears within a moment,
+/// so a few spaced retries recover most cases. A dir that survives everything
+/// is logged at `error`. It no longer reserves the agent's name — allocation is
+/// DB-authoritative (per-build root) and provision clears any leftover at the
+/// clone target — so a lingering dir is only wasted disk, not a correctness
+/// problem; the log is the hygiene hook.
+async fn remove_agent_dir(agent_id: &str, op: &str) -> bool {
+    let parent = match agent_parent_dir(agent_id) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(agent_id, op, error = %e, "agent dir path resolution failed");
+            return false;
+        }
+    };
+    for attempt in 1..=3u32 {
+        if !parent.exists() {
+            return true;
+        }
+        match tokio::fs::remove_dir_all(&parent).await {
+            Ok(()) => return true,
+            Err(e) if attempt < 3 => {
+                tracing::warn!(
+                    agent_id, op, attempt, path = %parent.display(), error = %e,
+                    "checkout dir removal failed; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(150 * attempt as u64)).await;
+            }
+            Err(e) => {
+                tracing::error!(
+                    agent_id, op, path = %parent.display(), error = %e,
+                    "checkout dir removal failed after retries; it now orphans the agent \
+                     name in the on-disk namespace the allocator consults"
+                );
+                return false;
+            }
         }
     }
+    !parent.exists()
 }
 
 #[cfg(test)]
