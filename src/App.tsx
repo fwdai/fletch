@@ -166,7 +166,11 @@ export function App() {
             </ErrorBoundary>
 
             {rightPaneVisible && <div className="splitter" onMouseDown={onRightDrag} />}
-            {!activeDraftId && (
+            {/* Only mount the right pane when an agent is selected — its content
+             *  needs one. Without this gate the container still claims layout
+             *  width on Home / the run view, stranding the center pane in a
+             *  narrow column beside an empty rail. */}
+            {!activeDraftId && selectedAgent && (
               <div
                 className={`pane right ${rightCollapsed ? "collapsed" : ""}`}
                 style={{

@@ -8,6 +8,7 @@ import { EMPTY_AGENTS, useAppStore } from "@/store";
 import { RunView } from "@/workflows/run/RunView";
 import { ChatView } from "./ChatView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
+import { Home } from "./Home";
 import { MissionControl } from "./MissionControl";
 import { NativeView } from "./NativeView";
 import { WorkspaceHeader } from "./WorkspaceHeader";
@@ -24,6 +25,7 @@ export function Workspace() {
   const activeDraftId = useAppStore((s) => s.activeDraftId);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
+  const missionControl = useAppStore((s) => s.features.missionControl);
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
   // Only surface the draft while its repo is still pinned; a draft stranded on a
@@ -38,8 +40,9 @@ export function Workspace() {
     return <RunView id={selectedRunId} key={selectedRunId} />;
   }
 
-  // No agent selected → Home is Mission Control: the fleet review queue. The
-  // bare "Loading…" placeholder stands only until the workspace connects.
+  // No agent selected → Home. Mission Control (the fleet review queue) is gated
+  // behind the Developer setting; when off, Home is a blank pane. The bare
+  // "Loading…" placeholder stands only until the workspace connects.
   const agent = agents.find((a) => a.id === selectedId);
   if (!workspace) {
     return (
@@ -56,7 +59,7 @@ export function Workspace() {
       </div>
     );
   }
-  if (!agent) return <MissionControl />;
+  if (!agent) return missionControl ? <MissionControl /> : <Home />;
 
   return (
     <div className="pane center fade-in" key={agent.id}>

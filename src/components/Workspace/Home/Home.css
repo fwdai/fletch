@@ -1,0 +1,268 @@
+/* Home — the landing surface shown when nothing is selected and Mission
+ * Control is off. Editorial, calm, token-driven so it tracks theme + accent. */
+
+.home-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: center;
+  padding: 64px 40px 72px;
+  overflow: hidden;
+}
+
+/* Ambient accent glow behind the hero — the same vocabulary as onboarding,
+ * dialled down so it reads as a whisper, not a spotlight. */
+.home-glow {
+  position: absolute;
+  top: -28%;
+  left: 50%;
+  width: 120vw;
+  height: 80vh;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: radial-gradient(
+    50% 50% at 50% 50%,
+    color-mix(in oklch, var(--accent), transparent 88%) 0%,
+    transparent 68%
+  );
+  opacity: 0.9;
+  animation: home-glow-drift 14s var(--ease) infinite alternate;
+}
+
+@keyframes home-glow-drift {
+  from {
+    transform: translateX(-50%) translateY(0) scale(1);
+    opacity: 0.75;
+  }
+  to {
+    transform: translateX(-50%) translateY(2%) scale(1.06);
+    opacity: 1;
+  }
+}
+
+.home-inner {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ---- Identity / hero copy ---- */
+
+.home-id {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  margin-bottom: 34px;
+}
+
+.home-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.home-eyebrow .d {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.home-title {
+  font-size: var(--fs-4xl);
+  line-height: var(--lh-none);
+  letter-spacing: -0.025em;
+  color: var(--fg-0);
+  margin: 0;
+}
+
+.home-sub {
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  color: var(--fg-2);
+  max-width: 460px;
+  margin: 0;
+}
+
+/* ---- Action stack ---- */
+
+.home-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 10px;
+}
+
+.home-card {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  width: 100%;
+  text-align: left;
+  padding: 13px 15px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  transition:
+    border-color 0.14s var(--ease),
+    background 0.14s var(--ease),
+    transform 0.14s var(--ease),
+    box-shadow 0.14s var(--ease);
+}
+
+.home-card:hover:not(:disabled) {
+  border-color: var(--bd);
+  background: var(--hover);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
+}
+
+.home-card:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.home-card:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* Hero action — larger, accent-tinted, with a solid accent tile. */
+.home-card.primary {
+  padding: 17px 18px;
+  border-color: var(--accent-line);
+  background: color-mix(in oklch, var(--accent-soft) 55%, var(--bg-2));
+}
+
+.home-card.primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: color-mix(in oklch, var(--accent-soft) 80%, var(--bg-2));
+}
+
+.home-card-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-sm);
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+}
+
+.home-card.primary .home-card-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--accent) 20%, transparent);
+}
+
+.home-card-icon.spin :where(svg) {
+  animation: home-spin 0.8s linear infinite;
+}
+
+@keyframes home-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.home-card-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.home-card-title {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--fg-0);
+}
+
+.home-card.primary .home-card-title {
+  font-size: var(--fs-lg);
+}
+
+.home-card-sub {
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+}
+
+.home-card-arrow {
+  flex: none;
+  color: var(--fg-3);
+  transition:
+    color 0.14s var(--ease),
+    transform 0.14s var(--ease);
+}
+
+.home-card:hover:not(:disabled) .home-card-arrow {
+  color: var(--fg-1);
+  transform: translateX(2px);
+}
+
+/* Keyboard hint chip — reused for the hero and the tips footer. */
+.home-kbd {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+  background: var(--bg-0);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-xs);
+  padding: 2px 6px;
+  line-height: var(--lh-none);
+}
+
+/* ---- Shortcut footer ---- */
+
+.home-tips {
+  gap: 18px;
+  margin-top: 30px;
+  flex-wrap: wrap;
+}
+
+.home-tip {
+  gap: 7px;
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-glow {
+    animation: none;
+  }
+  .home-card,
+  .home-card-arrow {
+    transition: none;
+  }
+  .home-card:hover:not(:disabled) {
+    transform: none;
+  }
+  .home-card-icon.spin :where(svg) {
+    animation: none;
+  }
+}

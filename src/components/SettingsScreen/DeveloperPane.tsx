@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
-import { SetGroup, SetHead, SetRow } from "./primitives";
+import { SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
 
 /** Dev-only settings surface. The nav entry that routes here is gated on
  *  `import.meta.env.DEV`, so this pane only ships under `bun tauri dev`. */
@@ -11,6 +11,8 @@ export function DeveloperPane() {
   const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
   const refreshModelCatalog = useAppStore((s) => s.refreshModelCatalog);
   const setUpdateReady = useAppStore((s) => s.setUpdateReady);
+  const features = useAppStore((s) => s.features);
+  const setFeature = useAppStore((s) => s.setFeature);
   const [refreshingModels, setRefreshingModels] = useState(false);
 
   const handleRefreshModels = async () => {
@@ -30,6 +32,18 @@ export function DeveloperPane() {
         title="Developer"
         desc="Tools for working on Fletch itself. Only available in development builds."
       />
+
+      <SetGroup label="Home">
+        <SetRow
+          title="Mission Control"
+          sub="Use the fleet review queue as the Home view. When off, Home is the quick-actions landing screen."
+        >
+          <SetToggle
+            on={!!features.missionControl}
+            onClick={() => setFeature("missionControl", !features.missionControl)}
+          />
+        </SetRow>
+      </SetGroup>
 
       <SetGroup label="Onboarding">
         <SetRow
