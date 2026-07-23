@@ -35,22 +35,39 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
 /// `sandbox::nested_checkouts_root`. Mirrors `rpc::RPC_ROOT_ENV`.
 pub const WORKSPACES_ROOT_ENV: &str = "FLETCH_WORKSPACES_ROOT";
 
-/// Absolute path to the root holding every agent's checkouts:
-/// `~/.fletch/workspaces/`. Shared by *all* Fletch processes on the machine
-/// (release and dev builds alike — only the database is namespaced per build),
-/// which is why name allocation has to consult it directly. `$FLETCH_WORKSPACES_ROOT`
-/// overrides it when set and non-empty (nested-Fletch Run redirect).
+/// Absolute path to the root holding this build's agent checkouts —
+/// `~/.fletch/workspaces/` (release) or `~/.fletch/dev/workspaces/` (debug).
+///
+/// The per-build split is what lets name allocation be DB-authoritative: each
+/// build gets an *exclusive* root, so a name freed in one build's DB can be
+/// reused without the filesystem colliding with another build, and provision
+/// can safely clear a leftover dir (it can only ever be this build's own
+/// crash-orphan). `$FLETCH_WORKSPACES_ROOT` redirects the *base* (nested-Fletch
+/// Run, whose sandbox denies the host's `~/.fletch`) — but the build subpath is
+/// still appended, so the override can't bypass the split: two different builds
+/// pointed at the same override still land in separate roots, preserving that
+/// exclusivity invariant.
 pub fn checkouts_root() -> Result<PathBuf> {
-    if let Some(root) = std::env::var_os(WORKSPACES_ROOT_ENV).filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(root));
-    }
-    let home =
-        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    Ok(home.join(".fletch").join(build_workspaces_subpath()))
+    let base = match std::env::var_os(WORKSPACES_ROOT_ENV).filter(|v| !v.is_empty()) {
+        Some(root) => PathBuf::from(root),
+        None => dirs::home_dir()
+            .ok_or_else(|| Error::Other("HOME directory not available".into()))?
+            .join(".fletch"),
+    };
+    Ok(checkouts_root_in(&base))
 }
 
-/// The workspaces path segment(s) under `~/.fletch`, split per build so a debug
-/// instance never shares the checkout namespace with a release install. Release
+/// Apply the per-build split to a checkouts base. Split out so it's testable
+/// without mutating the process-global override env var — and to keep the
+/// override and default paths sharing the exact same "append the build subpath"
+/// step, so neither can drift into bypassing the split.
+pub(super) fn checkouts_root_in(base: &Path) -> PathBuf {
+    base.join(build_workspaces_subpath())
+}
+
+/// The workspaces path segment(s) under the checkouts base (`~/.fletch` or the
+/// `$FLETCH_WORKSPACES_ROOT` override), split per build so a debug instance
+/// never shares the checkout namespace with a release install. Release
 /// keeps the historical flat `workspaces/` (so existing installs need no
 /// migration); debug builds get a sibling `dev/workspaces/` root, mirroring the
 /// `dev` split `data_dir` already uses for app data.

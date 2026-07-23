@@ -1,4 +1,4 @@
-use super::paths::{build_workspaces_subpath, migrate_checkouts_root_in};
+use super::paths::{build_workspaces_subpath, checkouts_root_in, migrate_checkouts_root_in};
 use super::*;
 
 /// The one branch that mutates on-disk state: legacy dir present, new dir
@@ -1812,6 +1812,19 @@ fn allocate_subdir_handles_collision() {
         allocate_repo_subdir(Path::new("/foo/fresh"), &used),
         "fresh"
     );
+}
+
+#[test]
+fn override_base_still_gets_the_build_split() {
+    // A redirected base (`$FLETCH_WORKSPACES_ROOT`, nested-Fletch Run) must not
+    // bypass the per-build split: without it, two different builds sharing the
+    // same override would land in one root, allocate the same id from their
+    // separate DBs, and provision would clobber the other build's live checkout.
+    let base = std::path::Path::new("/tmp/shared-override");
+    let root = checkouts_root_in(base);
+    assert!(root.starts_with(base));
+    assert!(root.ends_with(build_workspaces_subpath()));
+    assert_ne!(root, base, "the build subpath must be appended, not bypassed");
 }
 
 #[test]
