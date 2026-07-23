@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bashPresenter } from "@/components/Workspace/messages/presenters/Bash";
+import { codegraphPresenter } from "@/components/Workspace/messages/presenters/Codegraph";
 import { defaultPresenter } from "@/components/Workspace/messages/presenters/default";
 import { getPresenter, PRESENTERS } from "@/components/Workspace/messages/presenters/index";
 import type { ToolCall } from "@/components/Workspace/messages/presenters/types";
@@ -21,6 +22,17 @@ describe("getPresenter", () => {
 
   it("resolves cross-provider renames (cursor shell → Bash)", () => {
     expect(getPresenter("shell")).toBe(PRESENTERS.Bash);
+  });
+
+  it("matches the whole mcp__codegraph__* family by prefix", () => {
+    expect(getPresenter("mcp__codegraph__codegraph_explore")).toBe(codegraphPresenter);
+    expect(getPresenter("mcp__codegraph__codegraph_search")).toBe(codegraphPresenter);
+    // Case-insensitive, matching the exact-name lookup.
+    expect(getPresenter("MCP__CODEGRAPH__codegraph_explore")).toBe(codegraphPresenter);
+  });
+
+  it("does not match other mcp servers", () => {
+    expect(getPresenter("mcp__other__do_thing")).toBe(defaultPresenter);
   });
 
   it("falls back to the default presenter for unknown tools", () => {

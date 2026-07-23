@@ -1,5 +1,6 @@
 import { agentPresenter } from "./Agent";
 import { bashPresenter } from "./Bash";
+import { codegraphPresenter } from "./Codegraph";
 import { defaultPresenter } from "./default";
 import { editPresenter } from "./Edit";
 import { globPresenter } from "./Glob";
@@ -34,6 +35,18 @@ const BY_KEY: Record<string, ToolPresenter> = Object.fromEntries(
   Object.entries(PRESENTERS).map(([name, p]) => [name.toLowerCase(), p]),
 );
 
+// Prefix matches for tool families that share one presenter — MCP servers
+// expose many tools under a `mcp__<server>__*` namespace, so a single presenter
+// covers the whole family (e.g. every `mcp__codegraph__*` tool). Checked only
+// after an exact BY_KEY miss.
+const BY_PREFIX: { prefix: string; presenter: ToolPresenter }[] = [
+  { prefix: "mcp__codegraph__", presenter: codegraphPresenter },
+];
+
 export function getPresenter(toolName: string): ToolPresenter {
-  return BY_KEY[toolName.toLowerCase()] ?? defaultPresenter;
+  const key = toolName.toLowerCase();
+  const exact = BY_KEY[key];
+  if (exact) return exact;
+  const prefixed = BY_PREFIX.find((entry) => key.startsWith(entry.prefix));
+  return prefixed?.presenter ?? defaultPresenter;
 }
