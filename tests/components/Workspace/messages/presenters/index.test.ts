@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bashPresenter } from "@/components/Workspace/messages/presenters/Bash";
+import { codegraphPresenter } from "@/components/Workspace/messages/presenters/Codegraph";
 import { defaultPresenter } from "@/components/Workspace/messages/presenters/default";
 import { getPresenter, PRESENTERS } from "@/components/Workspace/messages/presenters/index";
 import type { ToolCall } from "@/components/Workspace/messages/presenters/types";
@@ -21,6 +22,26 @@ describe("getPresenter", () => {
 
   it("resolves cross-provider renames (cursor shell → Bash)", () => {
     expect(getPresenter("shell")).toBe(PRESENTERS.Bash);
+  });
+
+  it("routes codegraph tools across every adapter naming convention", () => {
+    // Claude: raw mcp__<server>__<tool> passed through (case-insensitive).
+    expect(getPresenter("mcp__codegraph__codegraph_explore")).toBe(codegraphPresenter);
+    expect(getPresenter("MCP__CODEGRAPH__codegraph_explore")).toBe(codegraphPresenter);
+    // Codex: <server>.<tool>, mcp__ stripped, dot-joined.
+    expect(getPresenter("codegraph.codegraph_explore")).toBe(codegraphPresenter);
+    // Underscore-joined server (e.g. opencode-style).
+    expect(getPresenter("codegraph_codegraph_explore")).toBe(codegraphPresenter);
+    // Any codegraph operation, not just explore.
+    expect(getPresenter("codegraph.codegraph_search")).toBe(codegraphPresenter);
+  });
+
+  it("does not match other mcp servers", () => {
+    expect(getPresenter("mcp__other__do_thing")).toBe(defaultPresenter);
+    expect(getPresenter("other.do_thing")).toBe(defaultPresenter);
+    // A separator must follow the `codegraph` token — no false positive on a
+    // longer word that merely starts with it.
+    expect(getPresenter("codegraphite_tool")).toBe(defaultPresenter);
   });
 
   it("falls back to the default presenter for unknown tools", () => {

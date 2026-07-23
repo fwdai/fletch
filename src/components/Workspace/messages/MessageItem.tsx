@@ -94,7 +94,7 @@ export const MessageItem = memo(function MessageItem({
       const running = Boolean(busy) && !item.result;
       return (
         <ToolRow
-          name={item.call.name}
+          name={presenter.title ?? item.call.name}
           icon={presenter.icon}
           isError={item.result?.is_error}
           running={running}
@@ -130,7 +130,7 @@ export const MessageItem = memo(function MessageItem({
       const presenter = getPresenter(item.name);
       return (
         <ToolRow
-          name={item.name}
+          name={presenter.title ?? item.name}
           icon={presenter.icon}
           summary={presenter.summary(item, null)}
           expanded={presenter.expanded(item, null)}
