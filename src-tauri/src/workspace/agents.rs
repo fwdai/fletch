@@ -5,6 +5,11 @@ use super::*;
 
 impl WorkspaceManager {
     pub fn allocate_agent_id(&self) -> Result<String> {
+        // DB-authoritative (see `live_agent_ids`); no filesystem check needed.
+        // Two instances of the same build share this DB, so a concurrent
+        // allocation race is resolved by the `workspaces.id` primary key: the
+        // loser's `add_agent` INSERT fails, and since insert precedes provision
+        // in the spawn path it never creates — or clears — a checkout dir.
         let used: HashSet<String> = self.live_agent_ids()?.into_iter().collect();
         Ok(names::allocate(&used))
     }
