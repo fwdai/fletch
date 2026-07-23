@@ -31,7 +31,6 @@ const HEADER_TEXT_BY_SITUATION: Record<
   draft: () => "draft",
   computing: () => "checking…",
   "no-conflicts": () => "no conflicts",
-  "cant-merge": () => "can’t merge yet",
 };
 
 interface HeaderInfo {
@@ -81,7 +80,7 @@ export function describeHeader(
       const pill = n != null ? `PR #${n}` : "PR";
       const gate = describeMergeGate(mergeState, {
         checksFailed,
-        mergeable: !!pr?.mergeable,
+        mergeable: pr?.mergeable ?? "unknown",
       });
       return {
         kind: HEADER_KIND_BY_TONE[gate.tone],

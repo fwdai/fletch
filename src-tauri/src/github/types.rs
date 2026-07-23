@@ -31,13 +31,27 @@ impl PrStatus {
     }
 }
 
+/// GitHub's coarse `mergeable` verdict — the *only* merge signal when the
+/// richer `MergeState` (from `mergeStateStatus`) is unavailable. Deliberately
+/// tri-state: GitHub computes mergeability lazily, so `Unknown` ("not computed
+/// yet", normal for a while after any push) must stay distinct from
+/// `Conflicting` (a real conflict) — collapsing both to a bool made the panel
+/// claim "can't merge — update your branch" for perfectly mergeable PRs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeableState {
+    Mergeable,
+    Conflicting,
+    Unknown,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PrState {
     pub number: u32,
     pub url: String,
     pub state: PrStatus,
     pub title: String,
-    pub mergeable: bool,
+    pub mergeable: MergeableState,
     /// GitHub's createdAt / mergedAt as ms-epoch, when reported. Stamped onto
     /// `worktrees.pr_opened_at/pr_merged_at` by every PR-state fetch path so
     /// per-day PR history accrues locally (see `record_pr_times`).

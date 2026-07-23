@@ -46,7 +46,14 @@ const file = (kind: GitState["files"][number]["kind"]) => ({
   deletions: 0,
 });
 function pr(over: Partial<PrState> = {}): PrState {
-  return { number: 7, url: "https://x", state: "open", title: "t", mergeable: true, ...over };
+  return {
+    number: 7,
+    url: "https://x",
+    state: "open",
+    title: "t",
+    mergeable: "mergeable",
+    ...over,
+  };
 }
 function checks(merge_state: PrChecks["merge_state"]): PrChecks {
   return {
@@ -107,8 +114,13 @@ describe("delegationResolved", () => {
     expect(delegationResolved("update-branch", git(), pr(), checks("dirty"))).toBe(false);
     expect(delegationResolved("update-branch", git(), pr(), checks("unknown"))).toBe(false);
     expect(delegationResolved("update-branch", git(), pr(), checks("clean"))).toBe(true);
-    expect(delegationResolved("update-branch", git(), pr({ mergeable: false }), null)).toBe(false);
-    expect(delegationResolved("update-branch", git(), pr({ mergeable: true }), null)).toBe(true);
+    // No checks → fall back to the tri-state mergeable: only a real conflict or
+    // a not-yet-computed verdict keeps waiting; a clean "mergeable" resolves.
+    const noChecks = (m: PrState["mergeable"]) =>
+      delegationResolved("update-branch", git(), pr({ mergeable: m }), null);
+    expect(noChecks("conflicting")).toBe(false);
+    expect(noChecks("unknown")).toBe(false);
+    expect(noChecks("mergeable")).toBe(true);
   });
 
   it("fix-checks never resolves from state (caller resolves on agent idle)", () => {

@@ -21,7 +21,7 @@ describe("prSnapshot", () => {
       url: "https://github.com/o/r/pull/42",
       state: "merged",
       title: "feat: x",
-      mergeable: false,
+      mergeable: "unknown",
     });
   });
 

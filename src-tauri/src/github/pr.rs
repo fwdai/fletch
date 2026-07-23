@@ -26,8 +26,18 @@ pub(crate) fn parse_pr_state(node: &Value) -> PrState {
             _ => PrStatus::Open,
         },
         title: node["title"].as_str().unwrap_or_default().to_string(),
-        mergeable: node["state"].as_str() == Some("OPEN")
-            && node["mergeable"].as_str() == Some("MERGEABLE"),
+        // Only an OPEN PR has a meaningful mergeability; carry GitHub's
+        // tri-state verdict through so "not computed yet" (Unknown) stays
+        // distinct from a real conflict (Conflicting).
+        mergeable: if node["state"].as_str() == Some("OPEN") {
+            match node["mergeable"].as_str() {
+                Some("MERGEABLE") => MergeableState::Mergeable,
+                Some("CONFLICTING") => MergeableState::Conflicting,
+                _ => MergeableState::Unknown,
+            }
+        } else {
+            MergeableState::Unknown
+        },
         opened_at: gh_time_ms(node, "createdAt"),
         merged_at: gh_time_ms(node, "mergedAt"),
     }
@@ -365,18 +375,28 @@ mod tests {
     fn pr_state_open_mergeable() {
         let pr = parse_pr_state(&pr_node("OPEN", 42, "MERGEABLE"));
         assert!(matches!(pr.state, PrStatus::Open));
-        assert!(pr.mergeable);
+        assert_eq!(pr.mergeable, MergeableState::Mergeable);
         assert_eq!(pr.number, 42);
+    }
+
+    #[test]
+    fn pr_state_open_carries_conflicting_and_unknown_distinctly() {
+        // The whole point of the tri-state: CONFLICTING (a real conflict) must
+        // not read the same as UNKNOWN (GitHub hasn't computed it yet).
+        let conflicting = parse_pr_state(&pr_node("OPEN", 7, "CONFLICTING"));
+        assert_eq!(conflicting.mergeable, MergeableState::Conflicting);
+        let unknown = parse_pr_state(&pr_node("OPEN", 8, "UNKNOWN"));
+        assert_eq!(unknown.mergeable, MergeableState::Unknown);
     }
 
     #[test]
     fn pr_state_merged_and_closed_are_never_mergeable() {
         let merged = parse_pr_state(&pr_node("MERGED", 1, "MERGEABLE"));
         assert!(matches!(merged.state, PrStatus::Merged));
-        assert!(!merged.mergeable);
+        assert_eq!(merged.mergeable, MergeableState::Unknown);
         let closed = parse_pr_state(&pr_node("CLOSED", 2, "UNKNOWN"));
         assert!(matches!(closed.state, PrStatus::Closed));
-        assert!(!closed.mergeable);
+        assert_eq!(closed.mergeable, MergeableState::Unknown);
     }
 
     #[test]

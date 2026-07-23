@@ -1,11 +1,18 @@
 export type PrStatus = "open" | "merged" | "closed";
 
+/** GitHub's coarse `mergeable` verdict — the only merge signal when the richer
+ *  `MergeState` (from `mergeStateStatus`) is unavailable. Tri-state on purpose:
+ *  GitHub computes mergeability lazily, so `"unknown"` ("not computed yet",
+ *  normal for a while after any push) must stay distinct from `"conflicting"`
+ *  (a real conflict) — see mergeGate's no-checks fallback. */
+export type Mergeable = "mergeable" | "conflicting" | "unknown";
+
 export interface PrState {
   number: number;
   url: string;
   state: PrStatus;
   title: string;
-  mergeable: boolean;
+  mergeable: Mergeable;
 }
 
 export interface PrStateChangedEvent {

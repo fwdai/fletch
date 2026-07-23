@@ -20,10 +20,6 @@ const CARD_GATE_BY_SITUATION: Record<
   draft: { cls: "ok", text: () => "Draft — mark ready on GitHub to merge" },
   computing: { cls: "ok", text: () => "Computing merge status…" },
   "no-conflicts": { cls: "ok", text: () => "✓ No merge conflicts" },
-  "cant-merge": {
-    cls: "att",
-    text: (base) => `△ Can’t merge cleanly with ${base} — update your branch`,
-  },
 };
 
 export function PRCard({

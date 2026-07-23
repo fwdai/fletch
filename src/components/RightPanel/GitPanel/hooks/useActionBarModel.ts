@@ -46,7 +46,7 @@ export function useActionBarModel(input: {
   const setGitCommitAction = useAppStore((s) => s.setGitCommitAction);
 
   const behind = gitState?.behind ?? 0;
-  const mergeable = prState?.mergeable ?? false;
+  const mergeable = prState?.mergeable ?? "unknown";
 
   const counts = {
     files: gitState?.files.length ?? 0,

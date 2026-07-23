@@ -26,7 +26,14 @@ const file = (kind: GitState["files"][number]["kind"]) => ({
   deletions: 0,
 });
 function pr(over: Partial<PrState> = {}): PrState {
-  return { number: 7, url: "https://x", state: "open", title: "t", mergeable: true, ...over };
+  return {
+    number: 7,
+    url: "https://x",
+    state: "open",
+    title: "t",
+    mergeable: "mergeable",
+    ...over,
+  };
 }
 
 describe("deriveState", () => {
@@ -165,13 +172,19 @@ describe("pr-open primary by merge_state (§7)", () => {
     }
   });
 
-  it("no checks data falls back to mergeable-only behavior", () => {
-    const ok = primaryFor("pr-open", { ...base, mergeable: true });
+  it("no checks data falls back to the tri-state mergeable verdict", () => {
+    const ok = primaryFor("pr-open", { ...base, mergeable: "mergeable" });
     expect(ok.key).toBe("merge");
     expect(ok.statusLabel).toContain("no conflicts");
-    const blocked = primaryFor("pr-open", { ...base, mergeable: false });
-    expect(blocked.key).toBe("merge");
-    expect(blocked.statusKind).toBe("attention");
+    // Unknown = GitHub hasn't computed mergeability yet (also the snapshot's
+    // value) → still-computing, never a false "can't merge — update branch".
+    const unknown = primaryFor("pr-open", { ...base, mergeable: "unknown" });
+    expect(unknown.key).toBe("merge");
+    expect(unknown.statusLabel).toContain("checking");
+    // Only an actual conflict routes to Update branch.
+    const conflicting = primaryFor("pr-open", { ...base, mergeable: "conflicting" });
+    expect(conflicting.key).toBe("agent-update-branch");
+    expect(conflicting.statusKind).toBe("attention");
   });
 });
 

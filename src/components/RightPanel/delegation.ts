@@ -222,7 +222,7 @@ export function delegationResolved(
     case "update-branch":
       // `unknown` = GitHub still recomputing after a push — keep waiting.
       if (checks) return !["behind", "dirty", "unknown"].includes(checks.merge_state);
-      return pr?.mergeable === true;
+      return pr?.mergeable === "mergeable";
     case "fix-checks":
       return false;
   }

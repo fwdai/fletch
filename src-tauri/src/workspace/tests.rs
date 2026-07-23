@@ -1102,7 +1102,7 @@ fn pr_snapshot_persists_and_loads() {
         url: "https://github.com/o/r/pull/42".into(),
         title: "feat: thing".into(),
         state: crate::github::PrStatus::Open,
-        mergeable: true,
+        mergeable: crate::github::MergeableState::Mergeable,
         opened_at: Some(1_000),
         merged_at: None,
     };
@@ -1119,7 +1119,7 @@ fn pr_snapshot_persists_and_loads() {
     // Merge lands; a payload without opened_at keeps the earlier value.
     let merged = crate::github::PrState {
         state: crate::github::PrStatus::Merged,
-        mergeable: false,
+        mergeable: crate::github::MergeableState::Unknown,
         opened_at: None,
         merged_at: Some(2_000),
         ..open
