@@ -1,7 +1,9 @@
 import { api } from "@/api";
 import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
+import { discoverCommands } from "@/data/slashCommands";
 import {
+  expandSlashCommand,
   resolveSkillInvocation,
   sendWhenAgentReady,
   snapshotAgentDeliverables,
@@ -282,7 +284,17 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // verbatim. The rewritten prompt is used everywhere — optimistic log and
       // send — so the visible message matches what the transcript will replay.
       const invocation = resolveSkillInvocation(get().skills, provider, text);
-      const prompt = invocation ? invocation.prompt : text;
+      let prompt = invocation ? invocation.prompt : text;
+      // A bodied provider command (codex prompt) expands app-side: `codex
+      // exec` takes the prompt as a positional arg and never resolves
+      // `/name`. Skills win name clashes (resolved above, mirroring the
+      // menu's precedence), and the native view is exempt — the provider's
+      // own TUI expands the typed command there. Discovery is awaited so a
+      // spawn typed straight into a fresh composer still sees disk prompts.
+      if (view === "custom" && !invocation && text.startsWith("/")) {
+        await discoverCommands(provider, draft.repoPath);
+        prompt = expandSlashCommand(provider, text, draft.repoPath) ?? prompt;
+      }
       const skills = invocation
         ? [
             ...(assigned ?? []).filter((s) => s.name !== invocation.snapshot.name),

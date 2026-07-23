@@ -4,10 +4,14 @@ import type { ProviderId } from "../providers";
 //
 // Two flavors:
 //
-//  - `passthrough` — forwarded verbatim to the agent. For Claude these are
-//    "skills": built-ins plus custom commands discovered from
-//    `.claude/commands/*.md`. Picking one inserts `/<name> ` into the input;
-//    the user then sends.
+//  - `passthrough` — sent to the agent. For Claude these are "skills":
+//    built-ins plus custom commands discovered from `.claude/commands/*.md`,
+//    forwarded verbatim (the CLI resolves `/<name>` itself). A passthrough
+//    command carrying a `body` (codex prompts) is instead expanded app-side
+//    at send: the CLI would treat `/<name>` as literal text, so Fletch
+//    substitutes the arguments into the body (see helpers/commands.ts).
+//    Either way, picking one inserts `/<name> ` into the input; the user then
+//    sends.
 //
 //  - `local` — handled by Fletch itself; the text never reaches the agent.
 //    Picking one fires the action identified by `action`. None are defined
@@ -32,6 +36,13 @@ export type SlashCommand =
       name: string;
       description: string;
       hint?: string;
+      /** When set, the provider's CLI can't resolve this command itself and
+       *  Fletch expands the invocation at send time: the typed `/name args`
+       *  line stays first (the turn row, transcript matching, and the
+       *  user-bubble fold all key off it — see MessageItem), followed by this
+       *  body with `$1`…`$9` / `$ARGUMENTS` / `$NAMED` / `$$` placeholders
+       *  substituted. Set for codex prompts; absent for claude commands. */
+      body?: string;
     }
   | {
       kind: "local";

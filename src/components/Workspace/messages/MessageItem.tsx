@@ -4,6 +4,7 @@ import { AttachmentList } from "@/components/Composer/AttachmentList";
 import { Markdown } from "@/components/Markdown";
 import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { expandedCommandInvocation } from "@/helpers";
 import type { ChatItem } from "@/store";
 import { stripInjectedInstructions } from "@/util/instructions";
 import { pairToolItems, rowKey, type ViewItem } from "./pair";
@@ -44,7 +45,7 @@ export const MessageItem = memo(function MessageItem({
   turnId?: number;
 }) {
   switch (item.kind) {
-    case "user_message":
+    case "user_message": {
       // App-sent git-action triggers fold into a quiet chip (like slash
       // commands) instead of a user bubble — one rendering rule covers both
       // the live optimistic entry and history rebuilt from session records.
@@ -56,7 +57,21 @@ export const MessageItem = memo(function MessageItem({
           </div>
         );
       }
+      // An app-expanded slash command (codex prompt): the sent text is the
+      // typed `/name args` line followed by the substituted prompt body. Fold
+      // to the same quiet chip as a slash_command notice — again one rule for
+      // the optimistic seed and history rebuilt from session records.
+      const invocation = expandedCommandInvocation(provider, item.text);
+      if (invocation) {
+        return (
+          <div className="m-reasoning" style={{ fontStyle: "italic" }}>
+            <div className="label">command</div>
+            <code>{invocation}</code>
+          </div>
+        );
+      }
       return <UserBubble text={item.text} attachments={item.attachments} turnId={turnId} />;
+    }
     case "queued_message":
       // A follow-up the user sent mid-turn. Badged "queued" only while it's
       // genuinely held for a later turn boundary (item.queued); once delivered/

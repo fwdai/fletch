@@ -1,8 +1,16 @@
 // Slash-command resolution: matching typed `/…` input against passthrough
 // provider commands, invocable library skills, and the curated set of Claude
-// TUI-only commands that don't work over stream-json.
+// TUI-only commands that don't work over stream-json. Also the app-side
+// expansion of bodied commands (codex prompts), whose CLI never resolves
+// `/name` itself over the managed transport.
 
-import { builtinCommandsFor, commandsFor, discoverCommands } from "../data/slashCommands";
+import {
+  builtinCommandsFor,
+  commandsFor,
+  discoverCommands,
+  hasBodiedCommand,
+  type SlashCommand,
+} from "../data/slashCommands";
 import { type Skill, type SkillSnapshot, skillSlug } from "../storage/skills";
 
 /** If `text` is a `/<name>` matching a known passthrough command for the
@@ -68,6 +76,95 @@ export function resolveSkillInvocation(
     `Use the "${name}" skill for this task: read its file (listed in the Skills index in your instructions) and follow its instructions now.` +
     (args ? `\n\nArguments: ${args}` : "");
   return { snapshot: { name, description, body }, prompt };
+}
+
+/** Strip one pair of surrounding double quotes, so `FILES="a b"` yields the
+ *  bare value while embedded quotes elsewhere stay untouched. */
+function unquote(s: string): string {
+  return s.length >= 2 && s.startsWith('"') && s.endsWith('"') ? s.slice(1, -1) : s;
+}
+
+/** Substitute codex-style placeholders into a prompt body: `$1`…`$9`
+ *  positional (from whitespace-separated args), `$ARGUMENTS` all positionals
+ *  joined, `$NAME` from `NAME=value` args (uppercase key, value may be
+ *  quoted), `$$` a literal `$`. A missing positional becomes empty; an
+ *  unmatched `$NAME` stays literal (it may be intentional text like `$PATH`).
+ *  When the body references no placeholder at all, non-empty args are
+ *  appended on their own paragraph so they're never silently dropped. */
+export function substitutePromptArgs(body: string, args: string): string {
+  // Tokens are runs of non-space/non-quote chars and quoted spans, so
+  // `FILES="a b.ts"` survives as one token.
+  const tokens = args.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+  const named = new Map<string, string>();
+  const positional: string[] = [];
+  for (const tok of tokens) {
+    const m = /^([A-Z][A-Z0-9_]*)=([\s\S]*)$/.exec(tok);
+    if (m) named.set(m[1], unquote(m[2]));
+    else positional.push(unquote(tok));
+  }
+  // Placeholder detection ignores `$$` escapes, so a body using only literal
+  // dollars still gets its args appended below.
+  const consumesArgs = /\$([1-9]|[A-Z][A-Z0-9_]*)/.test(body.replace(/\$\$/g, ""));
+  const expanded = body.replace(/\$(\$|[1-9]|[A-Z][A-Z0-9_]*)/g, (whole, key: string) => {
+    if (key === "$") return "$";
+    if (key === "ARGUMENTS") return positional.join(" ");
+    if (/^[1-9]$/.test(key)) return positional[Number(key) - 1] ?? "";
+    return named.get(key) ?? whole;
+  });
+  return consumesArgs || !args ? expanded : `${expanded}\n\n${args}`;
+}
+
+/** If `text` invokes a bodied command in `commands`, return the full text to
+ *  send: the typed invocation stays as the first line — the turn row,
+ *  transcript matching, and the user-bubble fold all key off it (see
+ *  MessageItem) — followed by the body with the arguments substituted. Null
+ *  when the text isn't such an invocation; verbatim-passthrough commands and
+ *  plain messages flow through untouched. Pure over `commands` so it's
+ *  directly testable; `expandSlashCommand` binds it to the discovery cache. */
+export function expandCommandText(commands: SlashCommand[], text: string): string | null {
+  if (!text.startsWith("/")) return null;
+  const name = text.split(/\s/)[0].slice(1);
+  if (!name) return null;
+  const match = commands.find(
+    (c) => c.kind === "passthrough" && c.body !== undefined && c.name === name,
+  );
+  // Re-narrow for TS: `find`'s predicate doesn't carry into the result type.
+  if (match?.kind !== "passthrough" || match.body === undefined) return null;
+  const args = text.slice(name.length + 1).trim();
+  return `${text}\n\n${substitutePromptArgs(match.body, args)}`;
+}
+
+/** `expandCommandText` against the provider's cached command set (builtins +
+ *  discovered). Callers on the send path should `await discoverCommands`
+ *  first so a send racing the composer's async cache fill still expands. */
+export function expandSlashCommand(
+  providerId: string | undefined,
+  text: string,
+  projectDir?: string,
+): string | null {
+  if (!providerId) return null;
+  return expandCommandText(commandsFor(providerId, projectDir), text);
+}
+
+/** If a user message's text is an app-expanded command send — first line
+ *  `/name args` naming a bodied command for this provider, expansion below —
+ *  return the invocation line so the bubble can fold to a quiet chip,
+ *  mirroring the optimistic slash_command notice. Checks every cached
+ *  discovery for the provider because render sites don't know their project
+ *  dir; before discovery has run it returns null and the message renders in
+ *  full (graceful, never a wrong fold — bodied names can't be sent unexpanded
+ *  by the composer). */
+export function expandedCommandInvocation(
+  providerId: string | undefined,
+  text: string,
+): string | null {
+  if (!providerId || !text.startsWith("/")) return null;
+  const nl = text.indexOf("\n");
+  if (nl < 0) return null; // single line — nothing was expanded
+  const firstLine = text.slice(0, nl).trimEnd();
+  const name = firstLine.split(/\s/)[0].slice(1);
+  if (!name || !hasBodiedCommand(providerId, name)) return null;
+  return firstLine;
 }
 
 /** Claude built-in control commands that only work in its interactive TUI and

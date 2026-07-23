@@ -1,6 +1,7 @@
 import { api, type DiscoveredCommand } from "../../api";
 import type { ProviderId } from "../providers";
 import { claudeCommandAdapter } from "./claude";
+import { codexCommandAdapter } from "./codex";
 import type { CommandAdapter, SlashCommand } from "./types";
 
 export type { DiscoveredCommand } from "../../api";
@@ -11,7 +12,7 @@ export type { CommandAdapter, LocalCommandAction, SlashCommand } from "./types";
  *  provider with no slash commands gets an empty, non-discoverable adapter. */
 export const COMMAND_ADAPTERS: Record<ProviderId, CommandAdapter> = {
   claude: claudeCommandAdapter,
-  codex: emptyAdapter("codex"),
+  codex: codexCommandAdapter,
   cursor: emptyAdapter("cursor"),
   antigravity: emptyAdapter("antigravity"),
   opencode: emptyAdapter("opencode"),
@@ -38,7 +39,13 @@ function cacheKey(provider: string, projectDir?: string): string {
 }
 
 function toSlashCommand(c: DiscoveredCommand): SlashCommand {
-  return { kind: "passthrough", name: c.name, description: c.description, hint: c.hint };
+  return {
+    kind: "passthrough",
+    name: c.name,
+    description: c.description,
+    hint: c.hint,
+    body: c.body,
+  };
 }
 
 /** Builtins plus discovered commands, deduped by name. Builtins win, so a
@@ -87,4 +94,21 @@ export function commandsFor(providerId: string, projectDir?: string): SlashComma
   if (!adapter) return [];
   const discovered = discoveredCache.get(cacheKey(providerId, projectDir)) ?? [];
   return merge(adapter.builtins, discovered);
+}
+
+/** Whether `name` is a known app-expanded (bodied) command for the provider,
+ *  looking across every cached discovery regardless of project dir. Render
+ *  sites (MessageItem) don't know their project dir, and app-expanded
+ *  commands are user-level anyway, so any cache entry counts. Before any
+ *  composer has run discovery this returns false — the message then renders
+ *  in full, a graceful cold-cache degradation, never a wrong fold. */
+export function hasBodiedCommand(providerId: string, name: string): boolean {
+  const prefix = `${providerId}\u0000`;
+  for (const [key, cmds] of discoveredCache) {
+    if (!key.startsWith(prefix)) continue;
+    if (cmds.some((c) => c.kind === "passthrough" && c.body !== undefined && c.name === name)) {
+      return true;
+    }
+  }
+  return false;
 }

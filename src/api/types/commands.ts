@@ -7,6 +7,11 @@ export interface DiscoveredCommand {
   description: string;
   hint?: string;
   scope: "user" | "project";
+  /** The command's prompt body, present only for providers whose CLI does not
+   *  resolve `/name` over the managed transport (codex prompts): Fletch
+   *  expands the invocation into this body at send time. Absent for
+   *  CLI-resolved commands (claude). */
+  body?: string;
 }
 
 /** Captured output of a one-shot `claude <args>` invocation run for a local
