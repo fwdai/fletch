@@ -54,7 +54,7 @@ pub fn checkouts_root() -> Result<PathBuf> {
 /// keeps the historical flat `workspaces/` (so existing installs need no
 /// migration); debug builds get a sibling `dev/workspaces/` root, mirroring the
 /// `dev` split `data_dir` already uses for app data.
-fn build_workspaces_subpath() -> PathBuf {
+pub(super) fn build_workspaces_subpath() -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from("dev").join("workspaces")
     } else {

@@ -1,4 +1,4 @@
-use super::paths::migrate_checkouts_root_in;
+use super::paths::{build_workspaces_subpath, migrate_checkouts_root_in};
 use super::*;
 
 /// The one branch that mutates on-disk state: legacy dir present, new dir
@@ -1812,6 +1812,18 @@ fn allocate_subdir_handles_collision() {
         allocate_repo_subdir(Path::new("/foo/fresh"), &used),
         "fresh"
     );
+}
+
+#[test]
+fn build_workspaces_subpath_splits_debug_from_release() {
+    // The per-build split keeps a debug instance's checkouts out of the release
+    // install's flat root. Tests compile with debug_assertions on.
+    let sub = build_workspaces_subpath();
+    if cfg!(debug_assertions) {
+        assert_eq!(sub, std::path::PathBuf::from("dev").join("workspaces"));
+    } else {
+        assert_eq!(sub, std::path::PathBuf::from("workspaces"));
+    }
 }
 
 /// Mark a workspace archived directly (tests don't go through the full
