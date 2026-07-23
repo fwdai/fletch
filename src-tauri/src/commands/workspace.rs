@@ -14,7 +14,7 @@ use crate::workspace::{ProjectDeleteResult, Workspace};
 /// Allocate a fresh name from the place pool for a draft agent. The frontend
 /// passes the names already taken (live agents + other open drafts); the
 /// per-build DB is authoritative for the rest, so there's nothing else to fold
-/// in. This is only a preview — `allocate_agent_id` is authoritative at create.
+/// in. This is only a preview — `add_agent_allocating` is authoritative at create.
 #[tauri::command]
 pub fn allocate_draft_name(used: Vec<String>) -> String {
     let reserved: std::collections::HashSet<String> = used.into_iter().collect();

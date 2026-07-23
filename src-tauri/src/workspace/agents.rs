@@ -4,40 +4,50 @@
 use super::*;
 
 impl WorkspaceManager {
-    pub fn allocate_agent_id(&self) -> Result<String> {
-        // DB-authoritative (see `live_agent_ids`); no filesystem check needed.
-        // Two instances of the same build share this DB, so a concurrent
-        // allocation race is resolved by the `workspaces.id` primary key: the
-        // loser's `add_agent` INSERT fails, and since insert precedes provision
-        // in the spawn path it never creates — or clears — a checkout dir.
-        let used: HashSet<String> = self.live_agent_ids()?.into_iter().collect();
-        Ok(names::allocate(&used))
-    }
-
-    /// Ids of every live (non-archived) agent — the only names that are
-    /// reserved. Archived agents have had their checkout torn down, so their
-    /// name is free to reuse. With a per-build checkouts root (see
-    /// `checkouts_root`) no other build shares this namespace, so the DB is
-    /// authoritative and allocation never consults the filesystem: a stale dir
-    /// from a crashed spawn or a failed teardown can't collide either, since
-    /// provision clears any leftover at the clone target.
-    pub fn live_agent_ids(&self) -> Result<Vec<String>> {
-        let conn = self.db.lock();
-        let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
-        let ids = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(ids)
-    }
-
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {
         let conn = self.db.lock();
+        Self::insert_agent(&conn, record)
+    }
 
+    /// Allocate a fresh name and insert the record under a *single* held lock.
+    ///
+    /// Allocation is DB-authoritative: the only reserved names are this build's
+    /// live (non-archived) rows. Archived agents have had their checkout torn
+    /// down, and each build has its own checkouts root (see `checkouts_root`),
+    /// so no other build shares this namespace and we never consult the
+    /// filesystem — a stale dir from a crashed spawn or a failed teardown can't
+    /// collide, since provision clears any leftover at the clone target.
+    ///
+    /// Reading the live set and inserting under one lock is what makes
+    /// concurrent spawns safe: a split (allocate, then insert in a separate
+    /// lock) would let a multi-threaded race pick the same free name and fail
+    /// the loser's INSERT on the `workspaces.id` primary key. Overwrites
+    /// `record.id`/`record.name`; callers that must keep a specific id (restore,
+    /// a draft-supplied name) use `add_agent`, where a clash is a real error.
+    pub fn add_agent_allocating(&self, record: &mut AgentRecord) -> Result<()> {
+        let conn = self.db.lock();
+        // Read live names on the *same* connection the insert uses — routing
+        // through `live_agent_ids` would re-lock and deadlock, and holding one
+        // lock across the read + insert is exactly what closes the race.
+        let live: HashSet<String> = {
+            let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
+            let ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            ids
+        };
+        let id = names::allocate(&live);
+        record.name = id.clone();
+        record.id = id;
+        Self::insert_agent(&conn, record)
+    }
+
+    fn insert_agent(conn: &rusqlite::Connection, record: &mut AgentRecord) -> Result<()> {
         // Look up project_id from the primary repo path.
         let project_id = if let Some(primary) = record.repos.first() {
             let path_str = primary.repo_path.to_string_lossy().to_string();
-            Self::project_id_for_repo_path(&conn, &path_str)?
+            Self::project_id_for_repo_path(conn, &path_str)?
         } else {
             return Err(Error::Other("agent must have at least one repo".into()));
         };
