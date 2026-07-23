@@ -18,8 +18,24 @@ impl WorkspaceManager {
             .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
             .collect();
-        used.extend(occupied_checkout_dirs());
-        Ok(names::allocate(&used))
+        let live_rows = used.len();
+        let disk_dirs = occupied_checkout_dirs();
+        let disk_count = disk_dirs.len();
+        used.extend(disk_dirs);
+        let id = names::allocate(&used);
+        // A numbered-suffix id means the random pool was exhausted. Record the
+        // live-rows-vs-on-disk split so we can tell namespace saturation from an
+        // orphaned-dir pile-up the next time a `<name>-N` shows up.
+        if !names::is_pool_name(&id) {
+            tracing::warn!(
+                live_rows,
+                disk_dirs = disk_count,
+                total_used = used.len(),
+                name = %id,
+                "allocated a numbered-suffix agent id (pool exhausted)"
+            );
+        }
+        Ok(id)
     }
 
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {

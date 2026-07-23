@@ -330,15 +330,33 @@ pub fn allocate(used: &HashSet<String>) -> String {
             return candidate.to_string();
         }
     }
+    // Every random pick collided. With a ~300-name pool this is vanishingly
+    // rare unless `used` is large — and `used` folds in every on-disk checkout
+    // across all builds sharing the root, so hitting this points at namespace
+    // saturation or a pile-up of orphaned dirs. Log loudly with the set size so
+    // the cause is diagnosable rather than a silent `-2`.
     let base = pick_random();
     let mut n: u32 = 2;
     loop {
         let candidate = format!("{base}-{n}");
         if !used.contains(&candidate) {
+            tracing::warn!(
+                used = used.len(),
+                pool = PLACES.len(),
+                name = %candidate,
+                "name allocator exhausted 10 random picks; falling back to a numbered suffix"
+            );
             return candidate;
         }
         n += 1;
     }
+}
+
+/// Whether `name` is a bare pool name (vs. a numbered-suffix fallback like
+/// `iguazu-2`). Callers use this to detect that [`allocate`] fell back without
+/// tripping on legitimately hyphenated pool names (`great-ocean`, `wadi-rum`).
+pub fn is_pool_name(name: &str) -> bool {
+    PLACES.contains(&name)
 }
 
 /// Cheap random pick — folds the first 8 bytes of a fresh UUID into a
