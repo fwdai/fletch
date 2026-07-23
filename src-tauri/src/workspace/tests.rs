@@ -1824,7 +1824,10 @@ fn override_base_still_gets_the_build_split() {
     let root = checkouts_root_in(base);
     assert!(root.starts_with(base));
     assert!(root.ends_with(build_workspaces_subpath()));
-    assert_ne!(root, base, "the build subpath must be appended, not bypassed");
+    assert_ne!(
+        root, base,
+        "the build subpath must be appended, not bypassed"
+    );
 }
 
 #[test]
