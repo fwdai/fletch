@@ -46,7 +46,13 @@ export function Home() {
   const targetName = projects.find((p) => p.path === targetRepo)?.name;
 
   const newAgent = () => {
-    if (targetRepo) createDraft(targetRepo);
+    if (!targetRepo) return;
+    // createDraft already routes name-allocation failures to the error banner,
+    // but never leave the returned promise floating: catch here so any other
+    // reject path can't become an unhandled rejection with no user feedback.
+    void createDraft(targetRepo).catch((e) => {
+      setLastError(`Couldn't start a new agent: ${String(e)}`);
+    });
   };
 
   // Same flow as the sidebar's "Open a folder" (NewProjectPopover): native
