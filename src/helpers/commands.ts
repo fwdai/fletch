@@ -114,12 +114,21 @@ export function substitutePromptArgs(body: string, args: string): string {
   return consumesArgs || !args ? expanded : `${expanded}\n\n${args}`;
 }
 
+/** Separator between the typed invocation and the substituted body in an
+ *  app-expanded send. The zero-width space makes the seam STRUCTURAL: the
+ *  char isn't typeable, so a literal user message can never accidentally read
+ *  as an expansion — which matters because the render fold must classify
+ *  historical transcript text with no send-time metadata, where even
+ *  byte-exact recomputation couldn't tell a lookalike apart. Costs one
+ *  invisible model-visible char per command send. */
+export const EXPANSION_SEPARATOR = "\n\n\u200B";
+
 /** If `text` invokes a bodied command in `commands`, return the full text to
- *  send: the typed invocation stays as the first line — the turn row,
- *  transcript matching, and the user-bubble fold all key off it (see
- *  MessageItem) — followed by the body with the arguments substituted. Null
- *  when the text isn't such an invocation; verbatim-passthrough commands and
- *  plain messages flow through untouched. Pure over `commands` so it's
+ *  send: the typed invocation stays first — the turn row, transcript
+ *  matching, and the user-bubble fold all key off it (see MessageItem) —
+ *  then EXPANSION_SEPARATOR, then the body with the arguments substituted.
+ *  Null when the text isn't such an invocation; verbatim-passthrough commands
+ *  and plain messages flow through untouched. Pure over `commands` so it's
  *  directly testable; `expandSlashCommand` binds it to the discovery cache. */
 export function expandCommandText(commands: SlashCommand[], text: string): string | null {
   if (!text.startsWith("/")) return null;
@@ -131,7 +140,7 @@ export function expandCommandText(commands: SlashCommand[], text: string): strin
   // Re-narrow for TS: `find`'s predicate doesn't carry into the result type.
   if (match?.kind !== "passthrough" || match.body === undefined) return null;
   const args = text.slice(name.length + 1).trim();
-  return `${text}\n\n${substitutePromptArgs(match.body, args)}`;
+  return `${text}${EXPANSION_SEPARATOR}${substitutePromptArgs(match.body, args)}`;
 }
 
 /** `expandCommandText` against the provider's cached command set (builtins +
@@ -146,34 +155,27 @@ export function expandSlashCommand(
   return expandCommandText(commandsFor(providerId, projectDir), text);
 }
 
-/** If a user message's text is an app-expanded command send, return the
- *  invocation line so the bubble can fold to a quiet chip, mirroring the
- *  optimistic slash_command notice. The fold is decided by RECOMPUTATION, not
- *  by shape: the text folds only when it is exactly what expanding its first
- *  line against a known body produces today. So an ordinary message that
- *  merely *starts* with `/name` — e.g. sent before a prompt of that name
- *  existed on disk — never loses its body to a later discovery, and an
- *  expansion whose prompt file has since been edited unfolds to its full
- *  (still accurate) sent text. Both degradations show more, never hide.
- *  Multiline-args invocations also render in full: the typed portion can't be
- *  recovered from the sent text alone, so they can't be verified.
- *  Pure over `commands` for testability; `expandedCommandInvocation` binds it
- *  to the discovery cache. */
+/** If a user message's text is an app-expanded command send — the typed
+ *  invocation, EXPANSION_SEPARATOR, the substituted body — return the typed
+ *  invocation so the bubble can fold to a quiet chip, mirroring the
+ *  optimistic slash_command notice. The separator's zero-width space can't be
+ *  typed, so an ordinary message that merely looks like an expansion (even
+ *  one byte-equal to what expansion would produce) never folds. Requiring the
+ *  name to be a known bodied command is defense in depth; its cost is
+ *  rendering in full while the discovery cache is cold — graceful, showing
+ *  more rather than hiding. Pure over `commands` for testability;
+ *  `expandedCommandInvocation` binds it to the discovery cache. */
 export function expandedCommandLine(commands: SlashCommand[], text: string): string | null {
   if (!text.startsWith("/")) return null;
-  const nl = text.indexOf("\n");
-  if (nl < 0) return null; // single line — nothing was expanded
-  const firstLine = text.slice(0, nl);
-  const name = firstLine.split(/\s/)[0].slice(1);
+  const sep = text.indexOf(EXPANSION_SEPARATOR);
+  if (sep <= 0) return null;
+  const invocation = text.slice(0, sep);
+  const name = invocation.split(/\s/)[0].slice(1);
   if (!name) return null;
-  const args = firstLine.slice(name.length + 1).trim();
-  for (const c of commands) {
-    if (c.kind !== "passthrough" || c.body === undefined || c.name !== name) continue;
-    if (text === `${firstLine}\n\n${substitutePromptArgs(c.body, args)}`) {
-      return firstLine.trimEnd();
-    }
-  }
-  return null;
+  const known = commands.some(
+    (c) => c.kind === "passthrough" && c.body !== undefined && c.name === name,
+  );
+  return known ? invocation : null;
 }
 
 /** `expandedCommandLine` against every cached discovery for the provider —

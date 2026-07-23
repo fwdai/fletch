@@ -590,7 +590,11 @@ fn codex_parse_command(path: &Path, name: &str, scope: CommandScope) -> Option<D
 
 /// Codex declares no `RootKind::Skills` roots, so this is never reached; it
 /// exists only to satisfy the `CommandDiscovery` shape.
-fn codex_parse_skill(_path: &Path, _dir_name: &str, _scope: CommandScope) -> Option<DiscoveredCommand> {
+fn codex_parse_skill(
+    _path: &Path,
+    _dir_name: &str,
+    _scope: CommandScope,
+) -> Option<DiscoveredCommand> {
     None
 }
 

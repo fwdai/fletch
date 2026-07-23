@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SlashCommand } from "@/data/slashCommands";
-import { expandCommandText, expandedCommandLine, substitutePromptArgs } from "@/helpers";
+import {
+  EXPANSION_SEPARATOR,
+  expandCommandText,
+  expandedCommandLine,
+  substitutePromptArgs,
+} from "@/helpers";
 
 describe("substitutePromptArgs", () => {
   it("substitutes positionals and $ARGUMENTS", () => {
@@ -51,9 +56,9 @@ describe("expandCommandText", () => {
     { kind: "local", name: "clear", description: "", action: "app:clear" },
   ];
 
-  it("expands a bodied command, keeping the typed invocation as the first line", () => {
+  it("expands a bodied command: typed invocation, separator, substituted body", () => {
     expect(expandCommandText(commands, "/draftpr fix login")).toBe(
-      "/draftpr fix login\n\nOpen a PR: fix login",
+      `/draftpr fix login${EXPANSION_SEPARATOR}Open a PR: fix login`,
     );
   });
 
@@ -67,7 +72,7 @@ describe("expandCommandText", () => {
 
   it("carries multi-line arguments into the expansion", () => {
     expect(expandCommandText(commands, "/draftpr fix\nlogin")).toBe(
-      "/draftpr fix\nlogin\n\nOpen a PR: fix login",
+      `/draftpr fix\nlogin${EXPANSION_SEPARATOR}Open a PR: fix login`,
     );
   });
 });
@@ -82,29 +87,34 @@ describe("expandedCommandLine", () => {
     },
   ];
 
-  it("folds a message that is exactly what expansion produces", () => {
+  it("folds an expansion round-trip back to its typed invocation", () => {
     const sent = expandCommandText(commands, "/draftpr fix login");
     expect(sent).not.toBeNull();
     expect(expandedCommandLine(commands, sent as string)).toBe("/draftpr fix login");
   });
 
-  it("never folds an ordinary message that merely starts with a bodied command's name", () => {
-    // The regression: this literal message predates the `draftpr` prompt (or
-    // was sent unexpanded for any reason). A later discovery of the name must
-    // not hide its body — recomputation fails the comparison.
+  it("folds a multiline typed invocation whole", () => {
+    const sent = expandCommandText(commands, "/draftpr fix\nlogin");
+    expect(expandedCommandLine(commands, sent as string)).toBe("/draftpr fix\nlogin");
+  });
+
+  it("never folds a literal message, even one byte-equal to an expansion sans separator", () => {
+    // The regression pair: literal messages sent before the `draftpr` prompt
+    // existed. Neither a same-name multiline message nor a message that
+    // exactly reproduces the expansion text can fold — the zero-width-space
+    // separator only ever comes from the app's own expansion.
     expect(
       expandedCommandLine(commands, "/draftpr fix login\nalso please update the changelog"),
     ).toBeNull();
+    expect(expandedCommandLine(commands, "/draftpr fix login\n\nOpen a PR: fix login")).toBeNull();
   });
 
-  it("unfolds when the prompt body has been edited since the send", () => {
-    const sentWithOldBody = "/draftpr fix login\n\nOld body: fix login";
-    expect(expandedCommandLine(commands, sentWithOldBody)).toBeNull();
+  it("ignores separator-bearing text whose name isn't a known bodied command", () => {
+    expect(expandedCommandLine(commands, `/other x${EXPANSION_SEPARATOR}Open a PR: x`)).toBeNull();
   });
 
-  it("ignores single-line, unknown, and non-slash texts", () => {
+  it("ignores single-line and non-slash texts", () => {
     expect(expandedCommandLine(commands, "/draftpr fix login")).toBeNull();
-    expect(expandedCommandLine(commands, "/other x\n\nOpen a PR: x")).toBeNull();
     expect(expandedCommandLine(commands, "plain text\nwith lines")).toBeNull();
   });
 });
