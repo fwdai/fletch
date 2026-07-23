@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { issueDisplayKey, type TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
-import { Chip } from "@/components/ui/Chip";
 import { DropdownItem, DropdownMenu, DropdownSection } from "@/components/ui/Dropdown";
+import { IconButton } from "@/components/ui/IconButton";
 import { Scrim } from "@/components/ui/Scrim";
 
 /** How long a fetched issue list stays fresh before the next open refetches —
@@ -55,17 +55,24 @@ export function IssuePicker({ listIssues, onPick }: Props) {
 
   return (
     <span style={{ position: "relative", minWidth: 0 }}>
-      <Chip tip="Work an issue" onClick={() => setOpen((v) => !v)}>
-        <Icon name="inbox" size={11} />
-      </Chip>
+      <IconButton
+        className="composer-action"
+        tip="Work an issue"
+        active={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Icon name="issue" size={15} />
+      </IconButton>
 
       {open && (
         <>
           <Scrim onClose={() => setOpen(false)} />
           <DropdownMenu
+            // Right-anchored: the trigger now sits at the composer's right
+            // edge, so a left-anchored 280px+ menu would overflow the frame.
             style={{
               bottom: "calc(100% + 6px)",
-              left: 0,
+              right: 0,
               padding: 0,
               overflow: "hidden",
               minWidth: 280,
