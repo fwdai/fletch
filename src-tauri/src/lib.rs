@@ -1366,17 +1366,6 @@ pub fn run() {
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
 
-            // Reap checkout dirs a prior failed teardown left behind. A
-            // lingering dir keeps reserving its agent's name in the on-disk
-            // namespace the allocator consults, which is what accumulates into
-            // `<name>-2` suffixes. Best-effort and off the startup path.
-            {
-                let sup = supervisor.clone();
-                tauri::async_runtime::spawn(async move {
-                    sup.reconcile_orphaned_checkouts().await;
-                });
-            }
-
             // Arm the activity monitor (idle-sleep assertion + activity
             // tracking) *before* any work is resumed below, so the run-level
             // signal is tight from the first instant: runs re-driven by

@@ -22,20 +22,6 @@ impl WorkspaceManager {
         Ok(names::allocate(&used))
     }
 
-    /// Ids of every archived agent. The startup reconcile pass uses these to
-    /// retry removal of checkout dirs a failed teardown left behind — an
-    /// archived agent's checkout should be gone, so any dir that survives is a
-    /// leak that keeps reserving its name in the on-disk namespace.
-    pub fn archived_agent_ids(&self) -> Result<Vec<String>> {
-        let conn = self.db.lock();
-        let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NOT NULL")?;
-        let ids = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(ids)
-    }
-
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {
         let conn = self.db.lock();
 
