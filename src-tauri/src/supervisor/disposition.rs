@@ -248,6 +248,39 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Best-effort startup sweep for checkout dirs left behind by a failed
+    /// teardown. An archived agent's checkout should have been removed when it
+    /// was archived, but teardown is best-effort and can fail (a file still
+    /// open, a lock). A lingering dir keeps reserving the agent's name in the
+    /// on-disk namespace the allocator consults (`occupied_checkout_dirs`) —
+    /// the accumulation of these is what forces `<name>-2` suffixes over time.
+    ///
+    /// We retry removal for every archived row *this DB owns* and keep the row,
+    /// so restore still works (it refetches from snapshots / origin). We never
+    /// touch a dir whose id we don't own: a sibling Fletch build shares this
+    /// checkouts root, and its live checkouts are not ours to delete.
+    pub async fn reconcile_orphaned_checkouts(&self) {
+        let ids = match self.workspace.archived_agent_ids() {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(error = %e, "reconcile: failed to list archived agents");
+                return;
+            }
+        };
+        let mut reaped = 0usize;
+        for id in ids {
+            let Ok(parent) = agent_parent_dir(&id) else {
+                continue;
+            };
+            if parent.exists() && remove_agent_dir(&id, "reconcile").await {
+                reaped += 1;
+            }
+        }
+        if reaped > 0 {
+            tracing::info!(reaped, "reconcile: reaped orphaned archived checkout dirs");
+        }
+    }
+
     /// Detach every idle project agent without deleting its durable row. The
     /// project FK cascade is the single DB commit point; separating runtime
     /// detachment from row deletion prevents per-agent partial commits.
@@ -439,12 +472,55 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
     }
 
     // Remove the parent dir (may still hold orphan files if any checkout
-    // removal failed). Best-effort.
-    if let Ok(parent) = agent_parent_dir(agent_id) {
-        if parent.exists() {
-            let _ = tokio::fs::remove_dir_all(&parent).await;
+    // removal failed). Best-effort, but retried + logged: a surviving dir
+    // keeps reserving the agent's name (see `remove_agent_dir`).
+    let _ = remove_agent_dir(agent_id, op).await;
+}
+
+/// Remove an agent's parent checkout dir (`~/.fletch/workspaces/<id>/`),
+/// retrying briefly. Returns `true` once the dir is gone (removed now or
+/// already absent).
+///
+/// The common failure right after process shutdown is a still-open file handle
+/// — a just-exited child, the codegraph indexer — that clears within a moment,
+/// so a few spaced retries recover most cases. A dir that survives everything
+/// is logged at `error`: it permanently reserves the agent's name in the
+/// on-disk namespace the allocator consults (`occupied_checkout_dirs`), which
+/// is what eventually forces `<name>-2` suffixes. We can't safely auto-reap it
+/// later — a sibling Fletch build (dev/release) shares this checkouts root — so
+/// the loud log is the diagnostic hook.
+async fn remove_agent_dir(agent_id: &str, op: &str) -> bool {
+    let parent = match agent_parent_dir(agent_id) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(agent_id, op, error = %e, "agent dir path resolution failed");
+            return false;
+        }
+    };
+    for attempt in 1..=3u32 {
+        if !parent.exists() {
+            return true;
+        }
+        match tokio::fs::remove_dir_all(&parent).await {
+            Ok(()) => return true,
+            Err(e) if attempt < 3 => {
+                tracing::warn!(
+                    agent_id, op, attempt, path = %parent.display(), error = %e,
+                    "checkout dir removal failed; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(150 * attempt as u64)).await;
+            }
+            Err(e) => {
+                tracing::error!(
+                    agent_id, op, path = %parent.display(), error = %e,
+                    "checkout dir removal failed after retries; it now orphans the agent \
+                     name in the on-disk namespace the allocator consults"
+                );
+                return false;
+            }
         }
     }
+    !parent.exists()
 }
 
 #[cfg(test)]

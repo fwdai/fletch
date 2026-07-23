@@ -1265,6 +1265,47 @@ fn archive_then_restore_roundtrip() {
 }
 
 #[test]
+fn archived_agent_ids_lists_only_archived() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+
+    // One live, one archived.
+    let mut live = new_agent_record(
+        "kyoto".into(),
+        "kyoto".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "".into(),
+        AgentView::Custom,
+    );
+    wm.add_agent(&mut live).unwrap();
+
+    let mut gone = new_agent_record(
+        "osaka".into(),
+        "osaka".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "".into(),
+        AgentView::Custom,
+    );
+    let gone_id = gone.id.clone();
+    wm.add_agent(&mut gone).unwrap();
+    wm.archive_agent(
+        &gone_id,
+        ArchiveMetadata {
+            archived_at: "2026-05-26T12:00:00+00:00".into(),
+            repos: vec![],
+            diff_stats: DiffStats::default(),
+        },
+    )
+    .unwrap();
+
+    let archived = wm.archived_agent_ids().unwrap();
+    assert_eq!(archived, vec![gone_id]);
+}
+
+#[test]
 fn archived_agents_survive_reload_without_reconcile() {
     let db = test_db();
     seed_repo(&db, "/r");
