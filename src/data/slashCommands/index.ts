@@ -1,6 +1,7 @@
 import { api, type DiscoveredCommand } from "../../api";
 import type { ProviderId } from "../providers";
 import { claudeCommandAdapter } from "./claude";
+import { codexCommandAdapter } from "./codex";
 import type { CommandAdapter, SlashCommand } from "./types";
 
 export type { DiscoveredCommand } from "../../api";
@@ -11,7 +12,7 @@ export type { CommandAdapter, LocalCommandAction, SlashCommand } from "./types";
  *  provider with no slash commands gets an empty, non-discoverable adapter. */
 export const COMMAND_ADAPTERS: Record<ProviderId, CommandAdapter> = {
   claude: claudeCommandAdapter,
-  codex: emptyAdapter("codex"),
+  codex: codexCommandAdapter,
   cursor: emptyAdapter("cursor"),
   antigravity: emptyAdapter("antigravity"),
   opencode: emptyAdapter("opencode"),
@@ -38,7 +39,13 @@ function cacheKey(provider: string, projectDir?: string): string {
 }
 
 function toSlashCommand(c: DiscoveredCommand): SlashCommand {
-  return { kind: "passthrough", name: c.name, description: c.description, hint: c.hint };
+  return {
+    kind: "passthrough",
+    name: c.name,
+    description: c.description,
+    hint: c.hint,
+    body: c.body,
+  };
 }
 
 /** Builtins plus discovered commands, deduped by name. Builtins win, so a
@@ -87,4 +94,18 @@ export function commandsFor(providerId: string, projectDir?: string): SlashComma
   if (!adapter) return [];
   const discovered = discoveredCache.get(cacheKey(providerId, projectDir)) ?? [];
   return merge(adapter.builtins, discovered);
+}
+
+/** Every discovered command cached for the provider, across all project dirs.
+ *  Render sites (MessageItem) don't know their project dir, and app-expanded
+ *  commands are user-level anyway, so any cache entry counts. Before any
+ *  composer has run discovery this is empty — the caller then renders the
+ *  message in full, a graceful cold-cache degradation, never a wrong fold. */
+export function cachedCommandsAcrossProjects(providerId: string): SlashCommand[] {
+  const prefix = `${providerId}\u0000`;
+  const out: SlashCommand[] = [];
+  for (const [key, cmds] of discoveredCache) {
+    if (key.startsWith(prefix)) out.push(...cmds);
+  }
+  return out;
 }

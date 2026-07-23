@@ -34,6 +34,14 @@ pub struct DiscoveredCommand {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
     pub scope: CommandScope,
+    /// The command's prompt body, carried only for providers whose CLI does
+    /// NOT resolve `/name` itself over the managed transport (codex: `exec`
+    /// takes the prompt as a positional arg). The frontend expands the typed
+    /// invocation into this body at send time (see helpers/commands.ts).
+    /// `None` for providers that resolve commands CLI-side (claude), keeping
+    /// their discovery payload lean.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// How a root's on-disk layout is enumerated. Providers expose two shapes: a
@@ -86,6 +94,7 @@ pub struct CommandDiscovery {
 fn discovery_for(provider: &str) -> Option<&'static CommandDiscovery> {
     match provider {
         "claude" => Some(&CLAUDE_COMMANDS),
+        "codex" => Some(&CODEX_COMMANDS),
         _ => None,
     }
 }
@@ -423,7 +432,8 @@ fn claude_plugin_command_roots(home: &Path) -> Vec<CommandRoot> {
 }
 
 /// The frontmatter keys a Claude command file may declare. All optional;
-/// unknown keys (e.g. `allowed-tools`, `model`) are ignored.
+/// unknown keys (e.g. `allowed-tools`, `model`) are ignored. Codex prompt
+/// files declare the identical keys, so the codex parser reuses this shape.
 #[derive(Default, serde::Deserialize)]
 struct ClaudeFrontmatter {
     description: Option<String>,
@@ -452,6 +462,9 @@ fn claude_parse_command(path: &Path, name: &str, scope: CommandScope) -> Option<
         description,
         hint,
         scope,
+        // Claude resolves `/name` itself over stream-json; no app-side
+        // expansion, so the body stays on disk.
+        body: None,
     })
 }
 
@@ -504,7 +517,85 @@ fn claude_parse_skill(
         description,
         hint: None,
         scope,
+        body: None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Codex adapter
+// ---------------------------------------------------------------------------
+
+static CODEX_COMMANDS: CommandDiscovery = CommandDiscovery {
+    roots: codex_command_roots,
+    parse: codex_parse_command,
+    parse_skill: codex_parse_skill,
+};
+
+/// Codex custom prompts live in one user-level directory:
+/// `$CODEX_HOME/prompts` (default `~/.codex/prompts`). There is no
+/// project-level root and no skills tree. Codex itself reads only top-level
+/// `*.md` files here; nested dirs we surface as `a:b` names are a Fletch
+/// extra and still work, because invocation is expanded app-side rather than
+/// by the codex CLI.
+fn codex_command_roots(_project: Option<&Path>) -> Vec<CommandRoot> {
+    let home = std::env::var_os("CODEX_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")));
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    vec![CommandRoot {
+        dir: home.join("prompts"),
+        scope: CommandScope::User,
+        kind: RootKind::Commands,
+        prefix: None,
+    }]
+}
+
+/// Parse one codex prompt file. Same frontmatter keys as Claude commands
+/// (`description`, `argument-hint`), but unlike Claude — whose CLI resolves
+/// `/name` itself — `codex exec` treats its prompt argument as literal text,
+/// so the body is shipped to the frontend for app-side expansion at send
+/// time. A file with an empty body can't expand to anything; skip it rather
+/// than surface a command that would send nothing.
+fn codex_parse_command(path: &Path, name: &str, scope: CommandScope) -> Option<DiscoveredCommand> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let (frontmatter, body) = split_frontmatter(&raw);
+    let body = body.trim();
+    if body.is_empty() {
+        return None;
+    }
+    let fm: ClaudeFrontmatter = frontmatter
+        .and_then(|y| serde_yaml::from_str(y).ok())
+        .unwrap_or_default();
+    let description = fm
+        .description
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| first_meaningful_line(body))
+        .unwrap_or_else(|| "Custom prompt".to_string());
+    let hint = fm
+        .argument_hint
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    Some(DiscoveredCommand {
+        name: name.to_string(),
+        description,
+        hint,
+        scope,
+        body: Some(body.to_string()),
+    })
+}
+
+/// Codex declares no `RootKind::Skills` roots, so this is never reached; it
+/// exists only to satisfy the `CommandDiscovery` shape.
+fn codex_parse_skill(
+    _path: &Path,
+    _dir_name: &str,
+    _scope: CommandScope,
+) -> Option<DiscoveredCommand> {
+    None
 }
 
 /// Split a leading YAML frontmatter block (a `---` line, the YAML, then a
@@ -642,6 +733,50 @@ mod tests {
         assert_eq!(cmd.description, "Ship it");
         assert_eq!(cmd.hint.as_deref(), Some("<env>"));
         assert_eq!(cmd.scope, CommandScope::Project);
+        // Claude resolves commands CLI-side — no body is shipped.
+        assert_eq!(cmd.body, None);
+    }
+
+    // -- codex prompts -------------------------------------------------------
+
+    #[test]
+    fn codex_prompt_carries_body_for_app_side_expansion() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("draftpr.md");
+        // NB: an unquoted `argument-hint: [FILES=…]` reads as a YAML flow
+        // sequence and fails the (whole-frontmatter) parse — same pre-existing
+        // degradation as Claude commands: the prompt still works, it just
+        // falls back to a body-derived description.
+        std::fs::write(
+            &file,
+            "---\ndescription: Draft a PR\nargument-hint: \"[FILES=<paths>]\"\n---\nOpen a PR touching $FILES.\n",
+        )
+        .unwrap();
+        let cmd = codex_parse_command(&file, "draftpr", CommandScope::User).unwrap();
+        assert_eq!(cmd.description, "Draft a PR");
+        assert_eq!(cmd.hint.as_deref(), Some("[FILES=<paths>]"));
+        assert_eq!(cmd.body.as_deref(), Some("Open a PR touching $FILES."));
+    }
+
+    #[test]
+    fn codex_prompt_without_frontmatter_describes_from_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("review.md");
+        std::fs::write(&file, "Review the diff carefully.\nThen summarize.\n").unwrap();
+        let cmd = codex_parse_command(&file, "review", CommandScope::User).unwrap();
+        assert_eq!(cmd.description, "Review the diff carefully.");
+        assert_eq!(
+            cmd.body.as_deref(),
+            Some("Review the diff carefully.\nThen summarize.")
+        );
+    }
+
+    #[test]
+    fn codex_prompt_with_empty_body_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("empty.md");
+        std::fs::write(&file, "---\ndescription: Nothing to send\n---\n\n").unwrap();
+        assert!(codex_parse_command(&file, "empty", CommandScope::User).is_none());
     }
 
     #[test]

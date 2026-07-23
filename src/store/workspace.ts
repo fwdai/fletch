@@ -10,9 +10,11 @@ import {
   type SessionRecord,
   type Workspace,
 } from "@/api";
+import { discoverCommands } from "@/data/slashCommands";
 import {
   applyUserTurns,
   dropAgentEntries,
+  expandSlashCommand,
   passthroughSlashName,
   providerFor,
   reduceRecords,
@@ -419,6 +421,22 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       }));
       return;
     }
+    // App-expanded commands (codex prompts): the CLI receives the prompt as a
+    // positional arg and never resolves `/name` itself, so substitute the
+    // prompt body here and send that instead. The typed text stays first in
+    // the expansion, so the transcript's user message still carries it — the
+    // render fold (MessageItem) and the queued-follow-up matcher both key off
+    // that prefix. Discovery is awaited first so a send racing the composer's
+    // async cache fill still expands; the round-trip only happens for
+    // slash-shaped text.
+    let sendText = text;
+    {
+      const provider = providerFor(get(), id);
+      if (provider && text.startsWith("/")) {
+        await discoverCommands(provider, repoPathFor(get(), id));
+        sendText = expandSlashCommand(provider, text, repoPathFor(get(), id)) ?? text;
+      }
+    }
     // Stable per-turn id, reused across the agent-not-ready retry below so the
     // backend's session_user_turns write is idempotent (one row per turn).
     const turnId = crypto.randomUUID();
@@ -462,7 +480,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         };
       });
       try {
-        const enqueued = await api.sendUserMessage(id, turnId, text, attachments, thinking);
+        const enqueued = await api.sendUserMessage(id, turnId, sendText, attachments, thinking);
         // Only a genuinely-held message wears the badge; a delivered one stays a
         // plain bubble. Match by turnId — agent output may have appended since.
         if (wasBusy && enqueued) {
@@ -482,7 +500,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
           // Not busy, so it lands as a new turn (never queued) — no badge.
           await api.resumeAgent(id);
           await sendWhenAgentReady(() =>
-            api.sendUserMessage(id, turnId, text, attachments, thinking),
+            api.sendUserMessage(id, turnId, sendText, attachments, thinking),
           );
         } else {
           throw e;
