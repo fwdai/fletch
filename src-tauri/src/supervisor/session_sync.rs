@@ -5,7 +5,7 @@ use std::time::Duration;
 use tauri::AppHandle;
 
 use crate::agent::per_turn_descriptor;
-use crate::github::{Mergeable, PrState, PrStatus};
+use crate::github::{MergeableState, PrState, PrStatus};
 use crate::workspace::{repo_checkout_path, AgentRecord, AgentView, TrackedRepo, WorkspaceManager};
 
 use super::events::{
@@ -192,7 +192,7 @@ pub(crate) fn pr_snapshot(repo: &TrackedRepo) -> Option<PrState> {
         url: repo.pr_url.clone().unwrap_or_default(),
         state,
         title: repo.pr_title.clone().unwrap_or_default(),
-        mergeable: Mergeable::Unknown,
+        mergeable: MergeableState::Unknown,
         opened_at: None,
         merged_at: None,
     })
@@ -1182,7 +1182,7 @@ mod tests {
         assert!(matches!(pr.state, PrStatus::Merged));
         assert_eq!(
             pr.mergeable,
-            Mergeable::Unknown,
+            MergeableState::Unknown,
             "mergeable isn't persisted — must read Unknown, never a fabricated verdict"
         );
     }

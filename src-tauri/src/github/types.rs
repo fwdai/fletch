@@ -39,7 +39,7 @@ impl PrStatus {
 /// claim "can't merge — update your branch" for perfectly mergeable PRs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Mergeable {
+pub enum MergeableState {
     Mergeable,
     Conflicting,
     Unknown,
@@ -51,7 +51,7 @@ pub struct PrState {
     pub url: String,
     pub state: PrStatus,
     pub title: String,
-    pub mergeable: Mergeable,
+    pub mergeable: MergeableState,
     /// GitHub's createdAt / mergedAt as ms-epoch, when reported. Stamped onto
     /// `worktrees.pr_opened_at/pr_merged_at` by every PR-state fetch path so
     /// per-day PR history accrues locally (see `record_pr_times`).
