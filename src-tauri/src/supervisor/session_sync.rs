@@ -5,7 +5,7 @@ use std::time::Duration;
 use tauri::AppHandle;
 
 use crate::agent::per_turn_descriptor;
-use crate::github::{PrState, PrStatus};
+use crate::github::{Mergeable, PrState, PrStatus};
 use crate::workspace::{repo_checkout_path, AgentRecord, AgentView, TrackedRepo, WorkspaceManager};
 
 use super::events::{
@@ -180,8 +180,10 @@ impl Supervisor {
 /// The last persisted state of a repo's bound PR, rebuilt from its database
 /// columns — what the UI shows when GitHub or the checkout is unavailable.
 /// `None` when no PR is bound or no fetch has ever succeeded (state column
-/// still NULL). `mergeable` isn't persisted and reads `false`; it only means
-/// anything while an open PR is being polled live.
+/// still NULL). `mergeable` isn't persisted and reads `Unknown` — a snapshot
+/// carries no merge verdict, and `Unknown` (not `Conflicting`) is the honest
+/// stand-in so the panel says "checking…" rather than falsely claiming a
+/// conflict. It only means anything while an open PR is being polled live.
 pub(crate) fn pr_snapshot(repo: &TrackedRepo) -> Option<PrState> {
     let number = repo.pr_number?;
     let state = PrStatus::parse(repo.pr_state.as_deref()?)?;
@@ -190,7 +192,7 @@ pub(crate) fn pr_snapshot(repo: &TrackedRepo) -> Option<PrState> {
         url: repo.pr_url.clone().unwrap_or_default(),
         state,
         title: repo.pr_title.clone().unwrap_or_default(),
-        mergeable: false,
+        mergeable: Mergeable::Unknown,
         opened_at: None,
         merged_at: None,
     })
@@ -1178,7 +1180,11 @@ mod tests {
         assert_eq!(pr.url, "https://github.com/o/r/pull/42");
         assert_eq!(pr.title, "feat: x");
         assert!(matches!(pr.state, PrStatus::Merged));
-        assert!(!pr.mergeable, "mergeable isn't persisted — must read false");
+        assert_eq!(
+            pr.mergeable,
+            Mergeable::Unknown,
+            "mergeable isn't persisted — must read Unknown, never a fabricated verdict"
+        );
     }
 
     /// No bound number, no persisted state, or an unknown state string all

@@ -39,7 +39,7 @@ const openPr = (number = 1): PrState => ({
   url: `https://gh/pr/${number}`,
   state: "open",
   title: "PR",
-  mergeable: true,
+  mergeable: "mergeable",
 });
 
 function checks(over: Partial<PrChecks>): PrChecks {

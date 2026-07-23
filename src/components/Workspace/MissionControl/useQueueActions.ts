@@ -120,7 +120,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
         case "pr-open": {
           const gate = describeMergeGate(checks?.merge_state ?? null, {
             checksFailed: checks?.required_failing.length ?? 0,
-            mergeable: pr?.mergeable ?? false,
+            mergeable: pr?.mergeable ?? "unknown",
           });
           if (gate.mergeAllowed) {
             await mergePr(agentId, subdir);

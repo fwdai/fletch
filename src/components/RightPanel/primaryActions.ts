@@ -1,4 +1,4 @@
-import type { GitState, MergeState, PrState } from "@/api";
+import type { GitState, Mergeable, MergeState, PrState } from "@/api";
 import type { IconName } from "@/components/Icon";
 import { describeMergeGate } from "./mergeGate";
 
@@ -79,9 +79,10 @@ export interface ActionCounts {
   /** Changes state: the user opened the override field and typed a message, so
    *  the commit is direct (agent bypassed) rather than delegated. */
   customActive?: boolean;
-  /** PR-open state: whether GitHub reports the PR cleanly mergeable. Gates the
-   *  Merge CTA — when false the panel reads as "can't merge yet" (attention). */
-  mergeable?: boolean;
+  /** PR-open state: GitHub's coarse tri-state mergeability. The only merge
+   *  signal when `mergeState` is unavailable; `"unknown"` means not-yet-computed
+   *  (renders as "checking…"), only `"conflicting"` claims a real conflict. */
+  mergeable?: Mergeable;
   /** PR-open state: GitHub's combined merge gate (spec §6). Null/omitted =
    *  checks unavailable → fall back to `mergeable`-only behavior. */
   mergeState?: MergeState | null;
@@ -145,7 +146,7 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
     prNumber,
     base = "main",
     customActive = false,
-    mergeable = false,
+    mergeable = "unknown",
     mergeState = null,
     checksFailed = 0,
     commitAction = "agent-commit-pr",
@@ -286,8 +287,10 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
           // No checks data — `mergeable` only reports the absence of merge
           // conflicts, NOT CI status, so claim no more than that.
           return merge("no conflicts");
-        default: // cant-merge
-          return merge("can’t merge yet");
+        default:
+          // Defensive: a still-resolving gate renders as "checking…", never a
+          // false "can't merge" (the old cant-merge overclaim, now removed).
+          return merge("checking…");
       }
     }
     case "conflicts":
@@ -347,7 +350,7 @@ export function secondaryFor(state: GitPanelState, counts?: ActionCounts): Secon
     unpushed = 0,
     base = "main",
     customActive = false,
-    mergeable = false,
+    mergeable = "unknown",
     mergeState = null,
     checksFailed = 0,
     prOpen = false,

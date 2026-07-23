@@ -14,7 +14,9 @@ const PR_STATUSES: readonly PrStatus[] = ["open", "merged", "closed"];
 
 /** Rebuild the last persisted PR state from a repo record's snapshot columns.
  *  Null when no PR is bound or no fetch has ever succeeded. `mergeable` isn't
- *  persisted and reads false — it only means anything while polling live. */
+ *  persisted and reads `"unknown"` — a snapshot carries no merge verdict, and
+ *  `"unknown"` (not `"conflicting"`) is the honest stand-in so the panel says
+ *  "checking…" rather than a false conflict. It only means anything live. */
 export function prSnapshot(repo: TrackedRepo | undefined): PrState | null {
   if (!repo || repo.pr_number == null || !repo.pr_state) return null;
   if (!(PR_STATUSES as readonly string[]).includes(repo.pr_state)) return null;
@@ -23,7 +25,7 @@ export function prSnapshot(repo: TrackedRepo | undefined): PrState | null {
     url: repo.pr_url ?? "",
     state: repo.pr_state as PrStatus,
     title: repo.pr_title ?? "",
-    mergeable: false,
+    mergeable: "unknown",
   };
 }
 

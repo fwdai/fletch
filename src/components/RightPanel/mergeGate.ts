@@ -1,4 +1,4 @@
-import type { MergeState } from "@/api";
+import type { Mergeable, MergeState } from "@/api";
 
 // ── Merge-gate semantics: the single source of truth ──────────────────────
 // GitHub's combined merge gate (`mergeStateStatus`, spec §6) feeds three
@@ -19,9 +19,8 @@ export type MergeGateSituation =
   | "behind" // behind base — update the branch
   | "conflicts" // dirty — conflicts with base, update the branch
   | "draft" // draft — mark ready on GitHub before it can merge
-  | "computing" // unknown/has_hooks — gate still resolving
-  | "no-conflicts" // no checks data, `mergeable` only → no conflicts (not an all-clear)
-  | "cant-merge"; // no checks data, not mergeable → can't merge yet
+  | "computing" // unknown/has_hooks, or no-checks + mergeable unknown — still resolving
+  | "no-conflicts"; // no checks data, `mergeable` says mergeable → no conflicts (not an all-clear)
 
 /** Shared severity. A subset of `StatusKind`/`HeaderKind` so every surface can
  *  derive its own tone class from one decision. */
@@ -42,9 +41,10 @@ export interface MergeGateContext {
   /** Number of failing required checks — splits `blocked` into agent-fixable
    *  (checks failing) vs. a pure review gate. */
   checksFailed: number;
-  /** `PrState.mergeable` — the only signal when `merge_state` is unavailable; it
-   *  reports the absence of conflicts, never CI status. */
-  mergeable: boolean;
+  /** `PrState.mergeable` — the only signal when `merge_state` is unavailable. A
+   *  tri-state that reports conflict presence, never CI status: `"unknown"`
+   *  means GitHub hasn't computed mergeability yet, NOT that it can't merge. */
+  mergeable: Mergeable;
 }
 
 /** Map GitHub's combined merge gate to the canonical situation + tone every
@@ -84,10 +84,29 @@ export function describeMergeGate(
     case "has_hooks":
       return { situation: "computing", tone: "info", mergeAllowed: false, needsUpdate: false };
     default:
-      // No checks data — `mergeable` only reports the absence of merge
-      // conflicts, NOT CI status, so claim no more than that.
-      return mergeable
-        ? { situation: "no-conflicts", tone: "info", mergeAllowed: true, needsUpdate: false }
-        : { situation: "cant-merge", tone: "attention", mergeAllowed: false, needsUpdate: true };
+      // No checks data — fall back to GitHub's coarse tri-state `mergeable`,
+      // which reports conflict presence only (never CI status). Crucially,
+      // only claim a conflict when GitHub actually reports one: `"unknown"`
+      // means "not computed yet" (normal for a while after any push, and the
+      // value a DB snapshot always carries), so render it as still-computing —
+      // never a false "can't merge — update your branch".
+      switch (mergeable) {
+        case "mergeable":
+          return {
+            situation: "no-conflicts",
+            tone: "info",
+            mergeAllowed: true,
+            needsUpdate: false,
+          };
+        case "conflicting":
+          return {
+            situation: "conflicts",
+            tone: "attention",
+            mergeAllowed: false,
+            needsUpdate: true,
+          };
+        default: // "unknown"
+          return { situation: "computing", tone: "info", mergeAllowed: false, needsUpdate: false };
+      }
   }
 }
