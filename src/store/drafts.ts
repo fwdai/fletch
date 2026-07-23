@@ -125,7 +125,17 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       modelsByAgent,
     } = get();
     const used = [...usedNames(workspace, drafts)];
-    const name = await api.allocateDraftName(used);
+    // Name allocation is a backend call; if it fails there's no draft to
+    // create. Surface it in the global error banner and bail rather than
+    // leaving an unhandled rejection for the fire-and-forget callers (⌘N,
+    // the sidebar +, the Home screen) and a silently dead click.
+    let name: string;
+    try {
+      name = await api.allocateDraftName(used);
+    } catch (e) {
+      get().setLastError(`Couldn't start a new agent: ${String(e)}`);
+      return;
+    }
     const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
     // Carry the sticky custom-agent pick onto the new draft, but only if it
     // still exists (it may have been deleted since it was last persisted).

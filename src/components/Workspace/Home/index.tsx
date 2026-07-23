@@ -23,21 +23,26 @@ export function Home() {
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
   const toggleHistory = useAppStore((s) => s.toggleHistory);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
+  const setLastError = useAppStore((s) => s.setLastError);
 
   const [adding, setAdding] = useState(false);
 
   const repos = workspace?.repos ?? [];
   const projects = workspace?.projects ?? [];
-  const agents = (workspace?.agents ?? []).filter((a) => !a.archive);
+  const allAgents = workspace?.agents ?? [];
+  const liveAgents = allAgents.filter((a) => !a.archive);
   const hasProjects = repos.length > 0;
-  const hasAgents = agents.length > 0;
+  const hasAgents = liveAgents.length > 0;
+  // History surfaces archived agents, so it's the presence of an archive — not
+  // of live agents — that decides whether the card is worth showing.
+  const hasArchived = allAgents.some((a) => a.archive);
 
   // Resolve the New-agent target repo the same way ⌘N does (see
   // util/shortcuts.ts): the last project an agent was started in if it still
   // exists, else the selected agent's project, else the first pinned repo.
   const recent = lastRepoPath && repos.includes(lastRepoPath) ? lastRepoPath : undefined;
   const targetRepo =
-    recent ?? agents.find((a) => a.id === selectedAgentId)?.repos[0]?.repo_path ?? repos[0];
+    recent ?? liveAgents.find((a) => a.id === selectedAgentId)?.repos[0]?.repo_path ?? repos[0];
   const targetName = projects.find((p) => p.path === targetRepo)?.name;
 
   const newAgent = () => {
@@ -55,10 +60,15 @@ export function Home() {
         multiple: false,
         title: "Select a git repository",
       });
+      // `addWorkspaceRepo` routes its own failures to the error banner; the
+      // dialog itself can still reject (plugin/platform error), which we'd
+      // otherwise drop as an unhandled rejection with no user feedback.
       if (typeof picked === "string") {
         await addWorkspaceRepo(picked);
         setLastRepoPath(picked);
       }
+    } catch (e) {
+      setLastError(`Couldn't open the folder picker: ${String(e)}`);
     } finally {
       setAdding(false);
     }
@@ -125,7 +135,7 @@ export function Home() {
                   busy={adding}
                 />
               )}
-              {hasAgents && (
+              {hasArchived && (
                 <ActionCard
                   icon="history"
                   title="History"
