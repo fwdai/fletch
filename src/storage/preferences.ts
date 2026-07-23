@@ -36,6 +36,10 @@ export interface FeatureFlags {
    *  driven through the provider's own terminal UI. Off by default — native
    *  mode isn't equally solid across providers yet. */
   nativeView: boolean;
+  /** Use Mission Control (the fleet review queue) as the Home view. Off by
+   *  default — Home is then the quick-actions landing screen. Gated behind the
+   *  Developer tab. */
+  missionControl: boolean;
 }
 
 export const DEFAULT_FEATURES: FeatureFlags = {
@@ -46,6 +50,7 @@ export const DEFAULT_FEATURES: FeatureFlags = {
   thinkingBudget: true,
   tokenUsage: true,
   nativeView: false,
+  missionControl: false,
 };
 
 export function parseFeatures(raw: string | undefined): FeatureFlags {
