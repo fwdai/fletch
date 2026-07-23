@@ -57,6 +57,10 @@ export interface UiSlice {
    *  still matches, so a dismissed item resurfaces when its signal changes.
    *  Persisted in settings (`reviewDismissed`); hydrated on init. */
   reviewDismissed: Record<string, string>;
+  /** Whether the current user is an admin — set from the `admin` row in the
+   *  settings table (`value === "true"`). Unlocks the Developer settings
+   *  section in production builds (dev builds always show it). */
+  admin: boolean;
 
   toggleSettings: (open?: boolean) => void;
   openSettingsScreen: (section?: SettingsSection, intent?: SettingsIntent) => void;
@@ -109,6 +113,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   rightWidth: DEFAULT_RIGHT_WIDTH,
   rightPanelTabs: {},
   reviewDismissed: {},
+  admin: false,
 
   // ── UI ──────────────────────────────────────────────────────────────────────
   toggleSettings: (open) => set((s) => ({ settingsOpen: open ?? !s.settingsOpen })),

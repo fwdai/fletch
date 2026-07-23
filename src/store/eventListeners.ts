@@ -157,6 +157,9 @@ export const hydrateSettings = async (set: AppSet) => {
       // Mission Control's dismissed review-queue marks (item id → signal
       // signature); the queue honors a mark only while the signature matches.
       reviewDismissed: parseReviewDismissed(s.reviewDismissed),
+      // Admin unlocks the Developer settings section in production. Opt-in:
+      // only an explicit "true" in the `admin` settings row grants it.
+      admin: s.admin === "true",
     });
   } catch {
     // First launch or DB not ready — defaults are fine.
