@@ -35,18 +35,27 @@ const BY_KEY: Record<string, ToolPresenter> = Object.fromEntries(
   Object.entries(PRESENTERS).map(([name, p]) => [name.toLowerCase(), p]),
 );
 
-// Prefix matches for tool families that share one presenter — MCP servers
-// expose many tools under a `mcp__<server>__*` namespace, so a single presenter
-// covers the whole family (e.g. every `mcp__codegraph__*` tool). Checked only
-// after an exact BY_KEY miss.
-const BY_PREFIX: { prefix: string; presenter: ToolPresenter }[] = [
-  { prefix: "mcp__codegraph__", presenter: codegraphPresenter },
+/** Recognize a codegraph MCP tool across every adapter's naming convention.
+ *  The same server is spelled differently by each: Claude passes the raw
+ *  `mcp__codegraph__codegraph_explore` through; Codex renders it
+ *  `codegraph.codegraph_explore` (its reducer joins server+tool with a dot and
+ *  normalize.ts strips `mcp__`); others may `_`-join (`codegraph_codegraph_…`)
+ *  or drop the server. Rather than chase each literal prefix, match the
+ *  distinctive signal common to all: a `codegraph` server token followed by a
+ *  separator, optionally behind an `mcp__`. `key` is already lowercased. */
+function isCodegraphTool(key: string): boolean {
+  return /^codegraph[._]/.test(key.replace(/^mcp__/, ""));
+}
+
+// Fuzzy matches for tool families that share one presenter — checked only after
+// an exact BY_KEY miss. MCP servers expose many tools under one namespace, and
+// adapters spell that namespace inconsistently (see isCodegraphTool), so each
+// entry is a predicate over the lowercased name rather than a literal prefix.
+const FUZZY: { match: (key: string) => boolean; presenter: ToolPresenter }[] = [
+  { match: isCodegraphTool, presenter: codegraphPresenter },
 ];
 
 export function getPresenter(toolName: string): ToolPresenter {
   const key = toolName.toLowerCase();
-  const exact = BY_KEY[key];
-  if (exact) return exact;
-  const prefixed = BY_PREFIX.find((entry) => key.startsWith(entry.prefix));
-  return prefixed?.presenter ?? defaultPresenter;
+  return BY_KEY[key] ?? FUZZY.find((entry) => entry.match(key))?.presenter ?? defaultPresenter;
 }
