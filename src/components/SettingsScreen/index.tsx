@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useMemo } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import type { SettingsSection } from "@/storage/preferences";
 import { useAppStore } from "@/store";
@@ -12,12 +12,12 @@ import { McpServersPane } from "./McpServers";
 import { ProvidersPane } from "./ProvidersPane";
 import { SkillsPane } from "./Skills";
 
-// Lazily loaded behind `import.meta.env.DEV`. In production the ternary's dead
-// branch — including the dynamic import() — is dropped by Rollup, so the
-// DeveloperPane chunk is never emitted into the build (not merely unloaded).
-const DeveloperPane = import.meta.env.DEV
-  ? lazy(() => import("./DeveloperPane").then((m) => ({ default: m.DeveloperPane })))
-  : null;
+// Lazily loaded — code-split into its own chunk, fetched only when the Developer
+// section is actually opened. Visibility is gated at render (dev builds, or an
+// admin user in production), not by dropping the chunk from the build.
+const DeveloperPane = lazy(() =>
+  import("./DeveloperPane").then((m) => ({ default: m.DeveloperPane })),
+);
 
 // Built-in sections carry explicit order weights (spaced by 10) so extension
 // panes can slot *between* them via their own `order`, not just append.
@@ -51,13 +51,13 @@ const NAV: NavItem[] = [
   // Right after Customize — workflows chain those custom agents.
   { id: "workflows", label: "Workflows", icon: "combine", order: 41 },
   { id: "experimental", label: "Experimental", icon: "flask", order: 50 },
-  // Dev-only: omitted entirely from production builds.
-  ...(DeveloperPane
-    ? [{ id: "developer" as const, label: "Developer", icon: "wrench" as const, order: 60 }]
-    : []),
 ];
 // Stable sort by weight keeps contribution order on ties.
 NAV.sort((a, b) => a.order - b.order);
+
+// Developer is appended at render only when unlocked (dev build or admin user),
+// so it slots by `order` among the base entries above.
+const DEVELOPER_NAV: NavItem = { id: "developer", label: "Developer", icon: "wrench", order: 60 };
 
 /** Dedicated full-screen settings surface. Rendered in place of the workspace
  *  panes while `settingsScreenOpen` is true. The quick-settings popover stays
@@ -66,6 +66,14 @@ export function SettingsScreen() {
   const section = useAppStore((s) => s.settingsSection);
   const setSection = useAppStore((s) => s.setSettingsSection);
   const close = useAppStore((s) => s.closeSettingsScreen);
+  const admin = useAppStore((s) => s.admin);
+
+  // Dev builds always expose Developer; production unlocks it only for admins.
+  const showDeveloper = import.meta.env.DEV || admin;
+  const nav = useMemo(
+    () => (showDeveloper ? [...NAV, DEVELOPER_NAV].sort((a, b) => a.order - b.order) : NAV),
+    [showDeveloper],
+  );
 
   return (
     <div className="set-screen">
@@ -75,7 +83,7 @@ export function SettingsScreen() {
           <span>Back to app</span>
         </button>
         <div className="set-nav-list">
-          {NAV.map((n) => {
+          {nav.map((n) => {
             // A grouped entry stays active for any of its sub-sections, and
             // clicking it while already inside the group keeps the current
             // sub-tab rather than snapping back to the default.
@@ -110,14 +118,14 @@ export function SettingsScreen() {
           {section === "skills" && <SkillsPane />}
           {section === "tools" && <McpServersPane />}
           {section === "experimental" && <ExperimentalPane />}
-          {section === "developer" && DeveloperPane && (
+          {section === "developer" && showDeveloper && (
             <Suspense fallback={null}>
               <DeveloperPane />
             </Suspense>
           )}
-          {/* Fallback: "developer" can't be selected in prod (no nav entry, and
-              DeveloperPane is null), so a stale section value falls back here. */}
-          {(section === "general" || (section === "developer" && !DeveloperPane)) && (
+          {/* Fallback: a stale "developer" section value (e.g. an admin flag
+              that flipped off) has no nav entry, so it falls back to General. */}
+          {(section === "general" || (section === "developer" && !showDeveloper)) && (
             <GeneralPane />
           )}
         </div>
