@@ -4,31 +4,61 @@
 use super::*;
 
 impl WorkspaceManager {
-    pub fn allocate_agent_id(&self) -> Result<String> {
-        let conn = self.db.lock();
-        // Only *live* (non-archived) agents reserve their name. Once an agent
-        // is archived its checkout is torn down, so the name is free to reuse —
-        // unless a directory still lingers on disk (cleanup failed, or it
-        // belongs to another running instance such as a dev build, which shares
-        // this same checkouts root). The on-disk listing closes that gap: it's
-        // the only namespace shared across every Fletch process on the machine,
-        // so a collision there is what actually breaks `git worktree add`.
-        let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
-        let mut used: HashSet<String> = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        used.extend(occupied_checkout_dirs());
-        Ok(names::allocate(&used))
-    }
-
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {
         let conn = self.db.lock();
+        let tx = conn.unchecked_transaction()?;
+        Self::insert_agent(&tx, record)?;
+        tx.commit()?;
+        Ok(())
+    }
 
+    /// Allocate a fresh name and insert the record in one serialized transaction.
+    ///
+    /// Allocation is DB-authoritative: the only reserved names are this build's
+    /// live (non-archived) rows. Archived agents have had their checkout torn
+    /// down, and each build has its own checkouts root (see `checkouts_root`),
+    /// so no other build shares this namespace and we never consult the
+    /// filesystem — a stale dir from a crashed spawn or a failed teardown can't
+    /// collide, since provision clears any leftover at the clone target.
+    ///
+    /// The live-name read and the insert run in a single `IMMEDIATE`
+    /// transaction, so allocation is serialized by the database's write lock —
+    /// the one coordinator threads *and* separate processes share. Two instances
+    /// of the same build hold separate connections the in-process mutex can't
+    /// coordinate, but `IMMEDIATE` takes the write lock up front, so a second
+    /// allocator waits (WAL + `busy_timeout`), then reads the committed set and
+    /// picks a distinct name. No `workspaces.id` conflict can arise, so there is
+    /// nothing to retry. Overwrites `record.id`/`record.name`; callers that must
+    /// keep a specific id (restore, a draft-supplied name) use `add_agent`,
+    /// where a clash is a real error.
+    pub fn add_agent_allocating(&self, record: &mut AgentRecord) -> Result<()> {
+        let mut conn = self.db.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let live: HashSet<String> = {
+            let mut stmt = tx.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
+            let ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            ids
+        };
+        let id = names::allocate(&live);
+        record.name = id.clone();
+        record.id = id;
+        Self::insert_agent(&tx, record)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Write the workspace + session + worktree rows for a new agent. Runs
+    /// inside the caller's transaction — which also scopes name allocation in
+    /// `add_agent_allocating` — so the recycle-delete and every insert commit
+    /// (or roll back) as one unit.
+    fn insert_agent(tx: &rusqlite::Transaction, record: &mut AgentRecord) -> Result<()> {
         // Look up project_id from the primary repo path.
         let project_id = if let Some(primary) = record.repos.first() {
             let path_str = primary.repo_path.to_string_lossy().to_string();
-            Self::project_id_for_repo_path(&conn, &path_str)?
+            Self::project_id_for_repo_path(tx, &path_str)?
         } else {
             return Err(Error::Other("agent must have at least one repo".into()));
         };
@@ -38,14 +68,6 @@ impl WorkspaceManager {
         let created_millis = chrono::DateTime::parse_from_rfc3339(&record.created_at)
             .map(|dt| dt.timestamp_millis())
             .unwrap_or_else(|_| now_millis());
-
-        // Evicting the recycled archived row and writing its replacement must be
-        // atomic. Without a transaction the DELETE auto-commits immediately, so
-        // any later failure (a failed INSERT, disk-full, UUID collision) would
-        // leave the archived agent — and its cascaded sessions/worktrees —
-        // permanently gone with nothing in its place. The transaction rolls the
-        // DELETE back on any error before `commit`.
-        let tx = conn.unchecked_transaction()?;
 
         // Recycling a freed name: the allocator only hands back ids held by
         // *archived* agents (live ones and on-disk checkouts are excluded), but
@@ -107,10 +129,9 @@ impl WorkspaceManager {
 
         // Insert checkout records for each TrackedRepo.
         for repo in &record.repos {
-            Self::insert_worktree(&tx, &record.id, repo)?;
+            Self::insert_worktree(tx, &record.id, repo)?;
         }
 
-        tx.commit()?;
         Ok(())
     }
 

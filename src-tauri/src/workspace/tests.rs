@@ -1,4 +1,4 @@
-use super::paths::{migrate_checkouts_root_in, occupied_checkout_dirs_in};
+use super::paths::{build_workspaces_subpath, checkouts_root_in, migrate_checkouts_root_in};
 use super::*;
 
 /// The one branch that mutates on-disk state: legacy dir present, new dir
@@ -1815,25 +1815,31 @@ fn allocate_subdir_handles_collision() {
 }
 
 #[test]
-fn occupied_checkout_dirs_lists_only_subdirs() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(root.path().join("kilimanjaro")).unwrap();
-    std::fs::create_dir_all(root.path().join("seychelles")).unwrap();
-    // A stray file (not a dir) must not be reported as an occupied name.
-    std::fs::write(root.path().join("notes.txt"), b"x").unwrap();
-
-    let found = occupied_checkout_dirs_in(root.path());
-    assert_eq!(found.len(), 2);
-    assert!(found.contains("kilimanjaro"));
-    assert!(found.contains("seychelles"));
-    assert!(!found.contains("notes.txt"));
+fn override_base_still_gets_the_build_split() {
+    // A redirected base (`$FLETCH_WORKSPACES_ROOT`, nested-Fletch Run) must not
+    // bypass the per-build split: without it, two different builds sharing the
+    // same override would land in one root, allocate the same id from their
+    // separate DBs, and provision would clobber the other build's live checkout.
+    let base = std::path::Path::new("/tmp/shared-override");
+    let root = checkouts_root_in(base);
+    assert!(root.starts_with(base));
+    assert!(root.ends_with(build_workspaces_subpath()));
+    assert_ne!(
+        root, base,
+        "the build subpath must be appended, not bypassed"
+    );
 }
 
 #[test]
-fn occupied_checkout_dirs_empty_when_root_missing() {
-    let root = tempfile::tempdir().unwrap();
-    let missing = root.path().join("does-not-exist");
-    assert!(occupied_checkout_dirs_in(&missing).is_empty());
+fn build_workspaces_subpath_splits_debug_from_release() {
+    // The per-build split keeps a debug instance's checkouts out of the release
+    // install's flat root. Tests compile with debug_assertions on.
+    let sub = build_workspaces_subpath();
+    if cfg!(debug_assertions) {
+        assert_eq!(sub, std::path::PathBuf::from("dev").join("workspaces"));
+    } else {
+        assert_eq!(sub, std::path::PathBuf::from("workspaces"));
+    }
 }
 
 /// Mark a workspace archived directly (tests don't go through the full
@@ -1936,12 +1942,12 @@ fn add_agent_does_not_evict_a_live_name_clash() {
 }
 
 #[test]
-fn allocate_agent_id_excludes_archived_from_reservation() {
+fn add_agent_allocating_excludes_archived_from_reservation() {
     let db = test_db();
     seed_repo(&db, "/r");
     let wm = WorkspaceManager::new(db.clone());
 
-    // Fill the whole pool with archived agents, then one live agent.
+    // Fill the whole pool with archived agents.
     for place in names::PLACES {
         let mut rec = new_agent_record(
             (*place).into(),
@@ -1955,11 +1961,48 @@ fn allocate_agent_id_excludes_archived_from_reservation() {
         mark_archived(&db, place);
     }
 
-    // Every pool name is archived (so all are reusable) — the allocator
-    // should hand back a bare pool name, never a "-N" exhaustion suffix.
-    let id = wm.allocate_agent_id().unwrap();
-    assert!(
-        names::PLACES.contains(&id.as_str()),
-        "expected a reusable pool name, got {id}"
+    // Every pool name is archived (so all are reusable) — allocation should
+    // hand back a bare pool name, never a "-N" exhaustion suffix, evicting the
+    // archived row it reuses.
+    let mut rec = new_agent_record(
+        String::new(),
+        String::new(),
+        "claude".into(),
+        mk_repo("/r"),
+        String::new(),
+        AgentView::Custom,
     );
+    wm.add_agent_allocating(&mut rec).unwrap();
+    assert!(
+        names::PLACES.contains(&rec.id.as_str()),
+        "expected a reusable pool name, got {}",
+        rec.id
+    );
+}
+
+#[test]
+fn add_agent_allocating_assigns_distinct_live_names() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+
+    // The second allocation sees the first as a live row and must pick another
+    // name — allocation and insert happen under one lock, so no two live agents
+    // can share a name.
+    let mk = || {
+        new_agent_record(
+            String::new(),
+            String::new(),
+            "claude".into(),
+            mk_repo("/r"),
+            String::new(),
+            AgentView::Custom,
+        )
+    };
+    let mut a = mk();
+    let mut b = mk();
+    wm.add_agent_allocating(&mut a).unwrap();
+    wm.add_agent_allocating(&mut b).unwrap();
+    assert!(!a.id.is_empty() && !b.id.is_empty());
+    assert_ne!(a.id, b.id, "two live agents must not share a name");
 }

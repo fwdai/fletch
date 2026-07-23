@@ -274,9 +274,10 @@ async fn clone_base(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
     let dest = path_str(spec.dest)?;
 
     // A leftover directory at the target can only be an orphan from a crashed
-    // spawn: agent-id allocation refuses ids whose checkout dir physically
-    // exists (`occupied_checkout_dirs`), so no live workspace can be here.
-    // Clear it rather than letting `git clone` fail on a non-empty dir.
+    // spawn or a failed teardown: allocation only hands out ids that are free
+    // in this build's DB, and each build has its own checkouts root, so no live
+    // workspace can be here. Clear it rather than letting `git clone` fail on a
+    // non-empty dir — this is what makes DB-authoritative allocation safe.
     if spec.dest.exists() {
         tracing::warn!(path = %spec.dest.display(), "clearing orphan dir at clone target");
         tokio::fs::remove_dir_all(spec.dest).await?;

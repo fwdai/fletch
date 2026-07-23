@@ -293,11 +293,15 @@ impl Supervisor {
         // Use the name the draft already showed in the sidebar so it locks in
         // rather than being regenerated; only allocate a fresh one when the
         // caller didn't supply it (the draft-less spawn path).
-        let agent_id = match name {
-            Some(n) if !n.trim().is_empty() => n,
-            _ => self.workspace.allocate_agent_id()?,
+        // Whether the caller pinned a name (draft / restore) or we auto-allocate.
+        // For the auto path the id is chosen inside `add_agent_allocating`, under
+        // the same lock as the insert, so concurrent spawns can't race on it — so
+        // the final id isn't known until after the row is written, below.
+        let supplied_name = match name {
+            Some(n) if !n.trim().is_empty() => Some(n),
+            _ => None,
         };
-        let name = agent_id.clone();
+        let initial_id = supplied_name.clone().unwrap_or_default();
 
         // The agent's parent branch — the base its checkout forks from and the
         // ref it later targets for PRs / ahead-behind. The base the user chose
@@ -332,8 +336,8 @@ impl Supervisor {
         };
 
         let mut record = new_agent_record(
-            agent_id.clone(),
-            name,
+            initial_id.clone(),
+            initial_id,
             provider,
             primary,
             String::new(),
@@ -367,10 +371,17 @@ impl Supervisor {
         // Carry the originating issue (Home inbox "Start work") onto the record
         // so the git dispatcher can close it from the agent's PR.
         record.issue_ref = issue_ref;
+        // Insert first: on the auto path this both allocates the id and writes
+        // the row under one lock, so `record.id` is final only afterward. A
+        // pinned name goes through `add_agent`, where a clash is a real error.
+        if supplied_name.is_some() {
+            self.workspace.add_agent(&mut record)?;
+        } else {
+            self.workspace.add_agent_allocating(&mut record)?;
+        }
+        let agent_id = record.id.clone();
         let parent_dir = agent_parent_dir(&agent_id)?;
         let primary_checkout = repo_checkout_path(&agent_id, &subdir)?;
-
-        self.workspace.add_agent(&mut record)?;
         crate::telemetry::track(
             "agent_spawned",
             serde_json::json!({

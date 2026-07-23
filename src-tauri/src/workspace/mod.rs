@@ -28,8 +28,8 @@ mod turns;
 
 pub use factory::{is_per_turn_provider, new_agent_record};
 pub use paths::{
-    agent_parent_dir, allocate_repo_subdir, migrate_default_checkouts_root, occupied_checkout_dirs,
-    projects_root, repo_checkout_path, tools_root, WORKSPACES_ROOT_ENV,
+    agent_parent_dir, allocate_repo_subdir, migrate_default_checkouts_root, projects_root,
+    repo_checkout_path, tools_root, WORKSPACES_ROOT_ENV,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

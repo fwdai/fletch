@@ -11,15 +11,13 @@ use crate::new_project;
 use crate::supervisor::Supervisor;
 use crate::workspace::{ProjectDeleteResult, Workspace};
 
-/// Allocate a fresh name from the shared place pool for a draft agent.
-/// Frontend passes the names already taken (real agents + other drafts) so
-/// the picker avoids collisions.
+/// Allocate a fresh name from the place pool for a draft agent. The frontend
+/// passes the names already taken (live agents + other open drafts); the
+/// per-build DB is authoritative for the rest, so there's nothing else to fold
+/// in. This is only a preview — `add_agent_allocating` is authoritative at create.
 #[tauri::command]
 pub fn allocate_draft_name(used: Vec<String>) -> String {
-    // Fold in the names already on disk (other instances, stale checkouts) so a
-    // draft never previews a name that `git worktree add` would later reject.
-    let mut reserved: std::collections::HashSet<String> = used.into_iter().collect();
-    reserved.extend(crate::workspace::occupied_checkout_dirs());
+    let reserved: std::collections::HashSet<String> = used.into_iter().collect();
     names::allocate(&reserved)
 }
 
