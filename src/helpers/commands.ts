@@ -6,9 +6,9 @@
 
 import {
   builtinCommandsFor,
+  cachedCommandsAcrossProjects,
   commandsFor,
   discoverCommands,
-  hasBodiedCommand,
   type SlashCommand,
 } from "../data/slashCommands";
 import { type Skill, type SkillSnapshot, skillSlug } from "../storage/skills";
@@ -146,25 +146,45 @@ export function expandSlashCommand(
   return expandCommandText(commandsFor(providerId, projectDir), text);
 }
 
-/** If a user message's text is an app-expanded command send — first line
- *  `/name args` naming a bodied command for this provider, expansion below —
- *  return the invocation line so the bubble can fold to a quiet chip,
- *  mirroring the optimistic slash_command notice. Checks every cached
- *  discovery for the provider because render sites don't know their project
- *  dir; before discovery has run it returns null and the message renders in
- *  full (graceful, never a wrong fold — bodied names can't be sent unexpanded
- *  by the composer). */
+/** If a user message's text is an app-expanded command send, return the
+ *  invocation line so the bubble can fold to a quiet chip, mirroring the
+ *  optimistic slash_command notice. The fold is decided by RECOMPUTATION, not
+ *  by shape: the text folds only when it is exactly what expanding its first
+ *  line against a known body produces today. So an ordinary message that
+ *  merely *starts* with `/name` — e.g. sent before a prompt of that name
+ *  existed on disk — never loses its body to a later discovery, and an
+ *  expansion whose prompt file has since been edited unfolds to its full
+ *  (still accurate) sent text. Both degradations show more, never hide.
+ *  Multiline-args invocations also render in full: the typed portion can't be
+ *  recovered from the sent text alone, so they can't be verified.
+ *  Pure over `commands` for testability; `expandedCommandInvocation` binds it
+ *  to the discovery cache. */
+export function expandedCommandLine(commands: SlashCommand[], text: string): string | null {
+  if (!text.startsWith("/")) return null;
+  const nl = text.indexOf("\n");
+  if (nl < 0) return null; // single line — nothing was expanded
+  const firstLine = text.slice(0, nl);
+  const name = firstLine.split(/\s/)[0].slice(1);
+  if (!name) return null;
+  const args = firstLine.slice(name.length + 1).trim();
+  for (const c of commands) {
+    if (c.kind !== "passthrough" || c.body === undefined || c.name !== name) continue;
+    if (text === `${firstLine}\n\n${substitutePromptArgs(c.body, args)}`) {
+      return firstLine.trimEnd();
+    }
+  }
+  return null;
+}
+
+/** `expandedCommandLine` against every cached discovery for the provider —
+ *  render sites (MessageItem) don't know their project dir. Before discovery
+ *  has run it returns null and the message renders in full. */
 export function expandedCommandInvocation(
   providerId: string | undefined,
   text: string,
 ): string | null {
   if (!providerId || !text.startsWith("/")) return null;
-  const nl = text.indexOf("\n");
-  if (nl < 0) return null; // single line — nothing was expanded
-  const firstLine = text.slice(0, nl).trimEnd();
-  const name = firstLine.split(/\s/)[0].slice(1);
-  if (!name || !hasBodiedCommand(providerId, name)) return null;
-  return firstLine;
+  return expandedCommandLine(cachedCommandsAcrossProjects(providerId), text);
 }
 
 /** Claude built-in control commands that only work in its interactive TUI and

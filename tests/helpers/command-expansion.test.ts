@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SlashCommand } from "@/data/slashCommands";
-import { expandCommandText, substitutePromptArgs } from "@/helpers";
+import { expandCommandText, expandedCommandLine, substitutePromptArgs } from "@/helpers";
 
 describe("substitutePromptArgs", () => {
   it("substitutes positionals and $ARGUMENTS", () => {
@@ -69,5 +69,42 @@ describe("expandCommandText", () => {
     expect(expandCommandText(commands, "/draftpr fix\nlogin")).toBe(
       "/draftpr fix\nlogin\n\nOpen a PR: fix login",
     );
+  });
+});
+
+describe("expandedCommandLine", () => {
+  const commands: SlashCommand[] = [
+    {
+      kind: "passthrough",
+      name: "draftpr",
+      description: "Draft a PR",
+      body: "Open a PR: $ARGUMENTS",
+    },
+  ];
+
+  it("folds a message that is exactly what expansion produces", () => {
+    const sent = expandCommandText(commands, "/draftpr fix login");
+    expect(sent).not.toBeNull();
+    expect(expandedCommandLine(commands, sent as string)).toBe("/draftpr fix login");
+  });
+
+  it("never folds an ordinary message that merely starts with a bodied command's name", () => {
+    // The regression: this literal message predates the `draftpr` prompt (or
+    // was sent unexpanded for any reason). A later discovery of the name must
+    // not hide its body — recomputation fails the comparison.
+    expect(
+      expandedCommandLine(commands, "/draftpr fix login\nalso please update the changelog"),
+    ).toBeNull();
+  });
+
+  it("unfolds when the prompt body has been edited since the send", () => {
+    const sentWithOldBody = "/draftpr fix login\n\nOld body: fix login";
+    expect(expandedCommandLine(commands, sentWithOldBody)).toBeNull();
+  });
+
+  it("ignores single-line, unknown, and non-slash texts", () => {
+    expect(expandedCommandLine(commands, "/draftpr fix login")).toBeNull();
+    expect(expandedCommandLine(commands, "/other x\n\nOpen a PR: x")).toBeNull();
+    expect(expandedCommandLine(commands, "plain text\nwith lines")).toBeNull();
   });
 });

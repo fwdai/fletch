@@ -96,19 +96,16 @@ export function commandsFor(providerId: string, projectDir?: string): SlashComma
   return merge(adapter.builtins, discovered);
 }
 
-/** Whether `name` is a known app-expanded (bodied) command for the provider,
- *  looking across every cached discovery regardless of project dir. Render
- *  sites (MessageItem) don't know their project dir, and app-expanded
+/** Every discovered command cached for the provider, across all project dirs.
+ *  Render sites (MessageItem) don't know their project dir, and app-expanded
  *  commands are user-level anyway, so any cache entry counts. Before any
- *  composer has run discovery this returns false — the message then renders
- *  in full, a graceful cold-cache degradation, never a wrong fold. */
-export function hasBodiedCommand(providerId: string, name: string): boolean {
+ *  composer has run discovery this is empty — the caller then renders the
+ *  message in full, a graceful cold-cache degradation, never a wrong fold. */
+export function cachedCommandsAcrossProjects(providerId: string): SlashCommand[] {
   const prefix = `${providerId}\u0000`;
+  const out: SlashCommand[] = [];
   for (const [key, cmds] of discoveredCache) {
-    if (!key.startsWith(prefix)) continue;
-    if (cmds.some((c) => c.kind === "passthrough" && c.body !== undefined && c.name === name)) {
-      return true;
-    }
+    if (key.startsWith(prefix)) out.push(...cmds);
   }
-  return false;
+  return out;
 }
