@@ -154,10 +154,47 @@
   gap: 6px;
   padding: 6px 8px 6px 10px;
 }
+/* Right-side insert actions (attach, issue) — square icon buttons sized to
+ * pair with .send, so they read as first-class actions rather than stray
+ * glyphs. Rides .btn-i (IconButton) for base behavior + tooltip. */
+.composer-foot .composer-action {
+  width: 28px;
+  height: 28px;
+  color: var(--fg-2);
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s var(--ease),
+    transform 0.08s;
+}
+.composer-foot .composer-action svg {
+  width: 15px;
+  height: 15px;
+}
+.composer-foot .composer-action:hover:not(:disabled) {
+  color: var(--fg-0);
+  background: var(--hover);
+}
+.composer-foot .composer-action:active:not(:disabled) {
+  transform: scale(0.92);
+  background: var(--selected);
+}
+/* Open dropdown (e.g. the issue picker) — accent-tinted "pressed" state. */
+.composer-foot .composer-action.active {
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent), transparent 90%);
+}
+/* Hairline between the insert actions and the usage/send group. */
+.composer-foot-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--bd);
+  flex-shrink: 0;
+}
 .c-chip {
   gap: 5px;
-  height: 24px;
-  padding: 0 8px;
+  height: 26px;
+  padding: 0 9px;
   border-radius: var(--r-sm);
   font-size: var(--fs-sm);
   color: var(--fg-1);

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { DirListing, PrSummary, TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Chip } from "@/components/ui/Chip";
+import { IconButton } from "@/components/ui/IconButton";
 import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { lookupModel, lookupModelInList } from "@/data/modelCatalog";
 import {
@@ -332,9 +333,12 @@ export function Composer({
                 <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
               </Chip>
             ))}
-          <Chip tip="Attach" onClick={input.browse}>
-            <Icon name="attach" size={11} />
-          </Chip>
+          <span style={{ flex: 1 }} />
+          {/* Insert actions live on the right, beside send: what runs (agent/
+           *  model/effort) reads left, what goes into this message reads right. */}
+          <IconButton className="composer-action" tip="Attach files" onClick={input.browse}>
+            <Icon name="attach" size={15} />
+          </IconButton>
           {listIssues && (
             <IssuePicker
               listIssues={listIssues}
@@ -347,7 +351,7 @@ export function Composer({
               }}
             />
           )}
-          <span style={{ flex: 1 }} />
+          <span className="composer-foot-sep" aria-hidden />
           {features.tokenUsage && usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
           {/* A disabled <button> swallows hover in the WebView, so the reason
            *  rides a wrapper span that stays hover-capable (same pattern as the
