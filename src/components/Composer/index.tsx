@@ -106,6 +106,12 @@ interface Props {
    *  also carry the value on the next message via `onSend`'s `thinking`. Omit
    *  for new-session composers, where effort is chosen at spawn. */
   onChangeEffort?: (value: string) => void;
+  /** For existing sessions: persist a mid-session model change. Called with the
+   *  new model id (or undefined for the provider default) when the user picks a
+   *  model. For claude this restarts the session to re-apply `--model`; per-turn
+   *  agents pick it up on their next turn. Omit for new-session composers, where
+   *  the model is chosen at spawn. */
+  onChangeModel?: (model: string | undefined) => void;
   /** The model the agent actually used on its most recent turn, read from the
    *  transcript (Claude, pi, Codex, OpenCode report it). Used as a fallback
    *  when the transcript has not yielded a model yet, so the picker can still
@@ -166,6 +172,7 @@ export function Composer({
   existingSession = false,
   initialThinking,
   onChangeEffort,
+  onChangeModel,
   activeModel,
   usage,
 }: Props) {
@@ -316,14 +323,21 @@ export function Composer({
             provider={provider}
             model={model}
             customAgentId={customAgentId}
-            locked={existingSession}
+            modelOnly={existingSession}
             onChange={(nextProvider, nextModel, nextCustomAgentId) => {
               // Effort follows from the selection via the effect above (a custom
               // agent's reasoning budget, else the per-provider default).
               setProvider(nextProvider);
               setModel(nextModel);
               setCustomAgentId(nextCustomAgentId);
-              onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
+              if (existingSession) {
+                // Model-only change on an existing session: provider/custom-agent
+                // are unchanged; persist the new model (backend restarts claude
+                // to re-apply --model, per-turn agents pick it up next turn).
+                onChangeModel?.(nextModel);
+              } else {
+                onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
+              }
             }}
           />
           {features.thinkingBudget && thinkingLevels.length > 0 && modelSupportsThinking && (

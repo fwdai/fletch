@@ -108,6 +108,8 @@ export const agentsApi = {
   switchView: (agentId: string, view: AgentView) => invoke<void>("switch_view", { agentId, view }),
   setAgentEffort: (agentId: string, effort: string | null) =>
     invoke<void>("set_agent_effort", { agentId, effort }),
+  setAgentModel: (agentId: string, model: string | null) =>
+    invoke<void>("set_agent_model", { agentId, model }),
   resumeAgent: (agentId: string) => invoke<void>("resume_agent", { agentId }),
   stopAgent: (agentId: string) => invoke<void>("stop_agent", { agentId }),
   discardAgent: (agentId: string) => invoke<void>("discard_agent", { agentId }),
