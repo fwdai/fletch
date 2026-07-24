@@ -31,11 +31,6 @@ pub struct PerTurnSpec {
     pub sandbox_root: PathBuf,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
-    /// Session-level model override. `None` keeps the provider CLI default.
-    pub model: Option<String>,
-    /// Session-level reasoning effort, re-emitted on every turn like `model`
-    /// (each turn is a fresh process). `None` keeps the CLI default.
-    pub effort: Option<String>,
     /// A custom agent's standing instructions, snapshotted on the session and
     /// injected into every turn (appended after Fletch's global system prompt).
     /// Includes the materialized skill index when the session has skills.
@@ -453,8 +448,6 @@ impl Agent {
                 keepalive,
                 cwd: spec.cwd,
                 session_id: spec.session_id,
-                model: spec.model,
-                effort: spec.effort,
                 stdout_is_json,
                 env,
                 kill_plan: kill,
@@ -463,7 +456,7 @@ impl Agent {
             extract_session_id,
             cb,
         );
-        Ok(Self::PerTurn(Box::new(PerTurnAgent { session })))
+        Ok(Self::PerTurn(PerTurnAgent { session }))
     }
 
     pub fn write_pty(&self, bytes: &[u8]) -> Result<()> {
@@ -475,29 +468,23 @@ impl Agent {
         }
     }
 
-    /// Push a mid-session model change into a live per-turn runner so the next
-    /// turn uses it. No-op for claude (Managed/Pty), whose config is baked into
-    /// its persistent process and re-applied by a session-preserving respawn.
-    /// Model and effort are set independently so concurrent changes to each
-    /// can't overwrite one another.
-    pub fn set_model(&self, model: Option<&str>) {
-        if let Self::PerTurn(a) = self {
-            a.session.set_model(model);
-        }
-    }
-
-    /// Push a mid-session effort change into a live per-turn runner (see
-    /// `set_model`).
-    pub fn set_effort(&self, effort: Option<&str>) {
-        if let Self::PerTurn(a) = self {
-            a.session.set_effort(effort);
-        }
-    }
-
-    pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
+    /// Deliver a user turn. `model`/`effort` are the session's current config,
+    /// resolved from the record at dispatch (see `deliver_user_message`) and
+    /// used only by per-turn runners, which bake them into that turn's argv.
+    /// claude (Managed) ignores them — its config is fixed on the persistent
+    /// process at spawn and changed via a session-preserving respawn instead.
+    pub fn send_user_message(
+        &self,
+        text: &str,
+        attachments: &[String],
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<()> {
         match self {
             Self::Managed(a) => a.session.send_user_message(text, attachments),
-            Self::PerTurn(a) => a.session.send_user_message(text, attachments),
+            Self::PerTurn(a) => a
+                .session
+                .send_user_message(text, attachments, model, effort),
             Self::Pty(_) => Err(Error::Other("send_user_message called on pty agent".into())),
         }
     }

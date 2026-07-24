@@ -51,13 +51,6 @@ pub struct ExecSpawn {
     pub cwd: PathBuf,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
-    /// Session-level model override. `None` keeps the provider CLI default.
-    pub model: Option<String>,
-    /// Session-level reasoning effort, re-emitted on every turn's argv (like
-    /// `model`) because each turn is a fresh process that re-reads its config;
-    /// `None` keeps the CLI default. Sourced from the session record, not per
-    /// message — effort is a session/config setting in every per-turn CLI.
-    pub effort: Option<String>,
     /// When false, the turn's stdout is **plaintext** — drained without JSON
     /// parsing (no events emitted). History for such agents comes from their
     /// on-disk transcript, and the session id from the filesystem.
@@ -80,11 +73,6 @@ pub struct ExecSession {
     env: Vec<(String, String)>,
     kill_plan: KillHandle,
     session_id: Arc<Mutex<Option<String>>>,
-    /// Session-level model + effort. Interior-mutable (like `session_id`) so a
-    /// mid-session change (`set_config`) is picked up on the next turn without
-    /// recreating the session.
-    model: Mutex<Option<String>>,
-    effort: Mutex<Option<String>>,
     child: Arc<Mutex<Option<Child>>>,
     interrupted: Arc<AtomicBool>,
     /// Monotonic turn counter. A reap thread only reports its exit if its
@@ -139,8 +127,6 @@ impl ExecSession {
             env: spec.env,
             kill_plan: spec.kill_plan,
             session_id: Arc::new(Mutex::new(spec.session_id)),
-            model: Mutex::new(spec.model),
-            effort: Mutex::new(spec.effort),
             child: Arc::new(Mutex::new(None)),
             interrupted: Arc::new(AtomicBool::new(false)),
             turn_seq: Arc::new(AtomicU64::new(0)),
@@ -152,21 +138,17 @@ impl ExecSession {
         }
     }
 
-    /// Update the live session's model mid-conversation. The next turn's argv
-    /// picks it up (each turn is a fresh process that re-reads this), so no
-    /// restart is needed. Touches only the model field so a concurrent effort
-    /// change can't be clobbered.
-    pub fn set_model(&self, model: Option<&str>) {
-        *self.model.lock() = model.map(str::to_string);
-    }
-
-    /// Update the live session's effort mid-conversation (see `set_model`).
-    /// Touches only the effort field.
-    pub fn set_effort(&self, effort: Option<&str>) {
-        *self.effort.lock() = effort.map(str::to_string);
-    }
-
-    pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
+    /// Run one turn. `model`/`effort` are the session's current config, resolved
+    /// by the supervisor from the session record at dispatch and passed in per
+    /// turn (each turn is a fresh process). The session stores no config of its
+    /// own, so there's nothing to go stale or be raced by a concurrent change.
+    pub fn send_user_message(
+        &self,
+        text: &str,
+        attachments: &[String],
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<()> {
         // Claim this turn's sequence number first, so a superseded turn's
         // reap thread sees it's no longer current and stays quiet.
         let seq = self.turn_seq.fetch_add(1, Ordering::SeqCst) + 1;
@@ -190,15 +172,9 @@ impl ExecSession {
             prompt.push_str(&format!("Attached file: {path}"));
         }
 
-        // Read the live session config fresh each turn: model/effort are
-        // session-level but user-changeable mid-session (see `set_config`), so a
-        // change lands on the very next turn without recreating the session.
-        // Clone out of each lock independently so we never hold two at once.
         let args = {
-            let id = self.session_id.lock().clone();
-            let effort = self.effort.lock().clone();
-            let model = self.model.lock().clone();
-            (self.build_args)(&prompt, id.as_deref(), effort.as_deref(), model.as_deref())
+            let id = self.session_id.lock();
+            (self.build_args)(&prompt, id.as_deref(), effort, model)
         };
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.prefix_args);
@@ -461,8 +437,6 @@ mod tests {
                 keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
-                model: None,
-                effort: None,
                 stdout_is_json: true,
                 env: vec![],
                 kill_plan: KillHandle::ProcessGroup,
@@ -482,7 +456,7 @@ mod tests {
             },
         );
 
-        session.send_user_message("hello", &[]).unwrap();
+        session.send_user_message("hello", &[], None, None).unwrap();
 
         let mut events = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -521,8 +495,6 @@ mod tests {
                 keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: Some("prev-thread".into()),
-                model: Some("gpt-5.2-codex".into()),
-                effort: None,
                 stdout_is_json: true,
                 env: vec![],
                 kill_plan: KillHandle::ProcessGroup,
@@ -538,7 +510,9 @@ mod tests {
             },
         );
 
-        session.send_user_message("again", &[]).unwrap();
+        session
+            .send_user_message("again", &[], Some("gpt-5.2-codex"), None)
+            .unwrap();
         erx.recv_timeout(Duration::from_secs(5)).unwrap();
         let args = std::fs::read_to_string(dir.path().join("argv.txt")).unwrap();
         assert!(args.contains("exec resume prev-thread"), "argv was: {args}");
@@ -561,8 +535,6 @@ mod tests {
                 keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
-                model: None,
-                effort: None,
                 stdout_is_json: true,
                 env: vec![],
                 kill_plan: KillHandle::ProcessGroup,
@@ -578,7 +550,7 @@ mod tests {
             },
         );
 
-        session.send_user_message("hello", &[]).unwrap();
+        session.send_user_message("hello", &[], None, None).unwrap();
         let exit = xrx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(!exit.success);
         assert!(!exit.interrupted);
@@ -620,8 +592,6 @@ mod tests {
                 keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
-                model: None,
-                effort: None,
                 stdout_is_json: true,
                 env: vec![],
                 kill_plan: KillHandle::ProcessGroup,
@@ -646,7 +616,7 @@ mod tests {
                 session.interrupt();
                 drop(busy_fd);
             });
-            session.send_user_message("hello", &[]).unwrap();
+            session.send_user_message("hello", &[], None, None).unwrap();
         });
 
         let exit = xrx

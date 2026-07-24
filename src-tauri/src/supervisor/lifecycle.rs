@@ -942,10 +942,9 @@ impl Supervisor {
                         cwd,
                         sandbox_root,
                         session_id,
-                        model: record.model.clone(),
-                        // Session-level effort, re-applied on every turn's argv
-                        // just like model (the CLI reads it per invocation).
-                        effort: record.effort.clone(),
+                        // model/effort aren't spawn-time for per-turn agents:
+                        // the supervisor resolves them from the record and passes
+                        // them into each turn's dispatch (see deliver_user_message).
                         instructions: instructions.clone(),
                         mcp_servers: mcp_servers.clone(),
                         rpc_dir,
@@ -1118,8 +1117,7 @@ impl Supervisor {
     ) -> Result<()> {
         self.workspace.update_agent_effort(agent_id, effort)?;
         emit_effort(app, agent_id, effort);
-        self.reapply_session_config(app, agent_id, |agent| agent.set_effort(effort))
-            .await
+        self.reapply_session_config(app, agent_id).await
     }
 
     /// Change a session's model mid-conversation. Persists the new value so
@@ -1133,38 +1131,26 @@ impl Supervisor {
     ) -> Result<()> {
         self.workspace.update_agent_model(agent_id, model)?;
         emit_model(app, agent_id, model);
-        self.reapply_session_config(app, agent_id, |agent| agent.set_model(model))
-            .await
+        self.reapply_session_config(app, agent_id).await
     }
 
-    /// Make a just-persisted model/effort change take effect on the live agent.
+    /// Make a just-persisted model/effort change take effect.
     ///
-    /// claude bakes both into its launch args (`--model`/`--effort`), so it
-    /// needs a session-preserving respawn (eager when idle, deferred to the next
-    /// turn boundary when busy). A failed restart propagates: the new value is
-    /// persisted, but the caller must not report success when the agent is left
-    /// without a running process.
+    /// Per-turn agents read model/effort from the session record when each turn
+    /// is dispatched (see `deliver_user_message`), so persisting the record is
+    /// all that's needed — nothing to do here.
     ///
-    /// Per-turn agents keep a live `ExecSession` across turns that froze its
-    /// config at construction, so `apply_live` pushes the change into it — the
-    /// next turn's fresh process picks it up, no restart. If the agent isn't
-    /// live, the record update alone suffices (its next spawn reads it).
-    ///
-    /// `apply_live` touches only the one field the caller changed (`set_model`
-    /// *or* `set_effort`), so a model change and an effort change made
-    /// concurrently can't overwrite each other's live value — each writes its
-    /// own independent field.
+    /// claude bakes both into its persistent process's launch args
+    /// (`--model`/`--effort`), so it needs a session-preserving respawn (eager
+    /// when idle, deferred to the next turn boundary when busy). A failed restart
+    /// propagates: the new value is persisted, but the caller must not report
+    /// success when the agent is left without a running process.
     async fn reapply_session_config(
         self: &Arc<Self>,
         app: &AppHandle,
         agent_id: &str,
-        apply_live: impl FnOnce(&Agent),
     ) -> Result<()> {
-        if is_per_turn_provider(&self.workspace.agent(agent_id)?.provider) {
-            if let Some(agent) = self.agents.lock().get(agent_id) {
-                apply_live(agent);
-            }
-        } else {
+        if !is_per_turn_provider(&self.workspace.agent(agent_id)?.provider) {
             self.respawn_agent_preserving_session(app, agent_id).await?;
         }
         Ok(())

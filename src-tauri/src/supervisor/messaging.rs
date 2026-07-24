@@ -120,8 +120,10 @@ impl Supervisor {
         // `live_agent` yields `AgentNotFound` when the turn already ended; the
         // send error then propagates untouched so the caller's fallback still
         // fires. Both happen with the `agents` lock released (see `live_agent`).
+        // Live injection is claude-only (managed), and claude's model/effort are
+        // fixed on its running process — so no per-turn config to pass.
         self.live_agent(agent_id)?
-            .send_user_message(&msg.text, &msg.attachments)?;
+            .send_user_message(&msg.text, &msg.attachments, None, None)?;
         if let Err(e) =
             self.workspace
                 .insert_user_turn(agent_id, &msg.turn_id, &msg.text, &msg.attachments)
@@ -160,8 +162,17 @@ impl Supervisor {
         {
             tracing::warn!(error = %e, agent_id, "persist outgoing user turn failed");
         }
+        // Resolve the session's current model/effort from the record at dispatch
+        // — the single source of truth. Per-turn runners bake it into this turn's
+        // argv; claude (managed) ignores it (config fixed on its process).
+        let record = self.workspace.agent(agent_id)?;
         let agent = self.live_agent(agent_id)?;
-        agent.send_user_message(text, attachments)?;
+        agent.send_user_message(
+            text,
+            attachments,
+            record.model.as_deref(),
+            record.effort.as_deref(),
+        )?;
         Ok(())
     }
 
