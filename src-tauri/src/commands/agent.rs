@@ -184,6 +184,18 @@ pub async fn stop_agent(
 }
 
 #[tauri::command]
+pub async fn set_agent_effort(
+    supervisor: State<'_, Arc<Supervisor>>,
+    app: AppHandle,
+    agent_id: String,
+    effort: Option<String>,
+) -> Result<()> {
+    let sup = supervisor.inner().clone();
+    sup.set_agent_effort(&app, &agent_id, effort.as_deref())
+        .await
+}
+
+#[tauri::command]
 pub async fn discard_agent(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) -> Result<()> {
     let sup = supervisor.inner().clone();
     sup.discard_agent(&agent_id).await

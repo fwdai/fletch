@@ -19,7 +19,7 @@ use crate::workspace::{
     repo_checkout_path, AgentRecord, AgentStatus, AgentView, TrackedRepo,
 };
 
-use super::events::{emit_agent_event, emit_agent_output, emit_repo_added, emit_view};
+use super::events::{emit_agent_event, emit_agent_output, emit_effort, emit_repo_added, emit_view};
 use super::messaging::{
     drain_message_queue, flush_queued, mark_user_turn_started, on_first_user_message,
 };
@@ -1101,6 +1101,30 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Change a session's reasoning effort mid-conversation. Persists the new
+    /// value so every future spawn reads it, then makes it take effect: claude
+    /// bakes `--effort` into the live process, so it needs a session-preserving
+    /// respawn (eager when idle, deferred to the next turn boundary when busy);
+    /// per-turn agents take effort per turn and apply it on their next message
+    /// with no restart. `None` clears the selection (provider default).
+    pub async fn set_agent_effort(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        agent_id: &str,
+        effort: Option<&str>,
+    ) -> Result<()> {
+        self.workspace.update_agent_effort(agent_id, effort)?;
+        emit_effort(app, agent_id, effort);
+        if !is_per_turn_provider(&self.workspace.agent(agent_id)?.provider) {
+            // claude bakes --effort into the process, so re-apply it with a
+            // session-preserving restart. Propagate a failed restart: the new
+            // effort is persisted, but the caller must not report success when
+            // the agent is left without a running process.
+            self.respawn_agent_preserving_session(app, agent_id).await?;
+        }
+        Ok(())
+    }
+
     /// Respawn every live agent using `provider_id` so it picks up a freshly
     /// changed binary path. The binary is resolved only inside `start_process`
     /// (spawn / resume / view-switch), so a live agent keeps the old binary —
@@ -1113,21 +1137,26 @@ impl Supervisor {
     /// will resolve the new binary on its next spawn anyway.
     pub async fn respawn_provider(self: &Arc<Self>, app: &AppHandle, provider_id: &str) {
         // Snapshot ids under a short-lived lock; never hold a guard across the
-        // `start_process` await in `respawn_agent_for_bin` (parking_lot guards
-        // aren't Send, and `start_process` re-locks these maps → deadlock).
+        // `start_process` await in `respawn_agent_preserving_session` (parking_lot
+        // guards aren't Send, and `start_process` re-locks these maps → deadlock).
         let ids: Vec<String> = self.agents.lock().keys().cloned().collect();
         for id in ids {
             match self.workspace.agent(&id) {
                 Ok(r) if r.provider == provider_id => {}
                 _ => continue, // wrong provider, or removed out from under us
             }
-            self.respawn_agent_for_bin(app, &id).await;
+            // Fire-and-forget: a failed restart is logged and reflected in the
+            // agent's status inside the call; there's no caller to surface it to.
+            let _ = self.respawn_agent_preserving_session(app, &id).await;
         }
     }
 
-    /// Tear down and restart one live agent so it execs the freshly resolved
-    /// binary, resuming its existing session (`fresh = false`) so the
-    /// transcript/conversation is preserved.
+    /// Tear down and restart one live agent, resuming its existing session
+    /// (`fresh = false`) so the transcript/conversation is preserved, and
+    /// re-reading the record so any value baked into the launch args (binary
+    /// path, `--model`, `--effort`) is picked up. Shared by the binary-swap
+    /// respawn (`respawn_provider`) and mid-session config changes
+    /// (`set_agent_effort`).
     ///
     /// The idle-check and the `agents` removal happen atomically under a single
     /// `agents` lock: a concurrent send can flip an agent Idle→Running on
@@ -1135,9 +1164,21 @@ impl Supervisor {
     /// separate check-then-remove would risk shutting down an in-flight turn.
     /// If the agent is mid-turn (Spawning/Running) we leave it running and flag
     /// it in `respawn_pending`; the next turn-end Idle transition retries it
-    /// (see `transition_active`). This is what keeps the "swap binary → keep
-    /// going" flow working for an agent that's busy at swap time.
-    pub(super) async fn respawn_agent_for_bin(self: &Arc<Self>, app: &AppHandle, agent_id: &str) {
+    /// (see `transition_active`). This is what keeps the "change config → keep
+    /// going" flow working for an agent that's busy at the time.
+    ///
+    /// Returns `Err` only when the replacement process fails to start (the agent
+    /// is left in `Error` status): the caller that initiated the change (e.g.
+    /// `set_agent_effort`) then surfaces it instead of reporting false success.
+    /// Every "nothing to restart now" outcome — deferred because busy, or the
+    /// agent already gone — is `Ok`: the new record still applies on the next
+    /// spawn. Fire-and-forget callers (binary swap, the turn-end drain) ignore
+    /// the result and rely on the internal status/logging.
+    pub(super) async fn respawn_agent_preserving_session(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        agent_id: &str,
+    ) -> Result<()> {
         // Keep the complete idle -> teardown -> Spawning -> restarted
         // transition mutually exclusive with project deletion. The deletion
         // marker is installed before that path waits for this lifecycle lock,
@@ -1147,12 +1188,12 @@ impl Supervisor {
             Ok(r) => r,
             Err(_) => {
                 self.respawn_pending.lock().remove(agent_id);
-                return;
+                return Ok(());
             }
         };
         if self.deleting_projects.lock().contains(&record.project_id) {
             self.respawn_pending.lock().remove(agent_id);
-            return;
+            return Ok(());
         }
         // Atomic idle-check + remove. `busy` distinguishes "left running" from
         // "already gone" when no agent is taken.
@@ -1175,12 +1216,12 @@ impl Supervisor {
             Some(agent) => agent,
             None if busy => {
                 self.respawn_pending.lock().insert(agent_id.to_string());
-                tracing::info!(agent_id, "binary-swap respawn deferred: agent busy");
-                return;
+                tracing::info!(agent_id, "session-preserving respawn deferred: agent busy");
+                return Ok(());
             }
             None => {
                 self.respawn_pending.lock().remove(agent_id);
-                return;
+                return Ok(());
             }
         };
         self.respawn_pending.lock().remove(agent_id);
@@ -1197,9 +1238,9 @@ impl Supervisor {
 
         if let Err(e) = self.start_process(app, agent_id, false).await {
             let err = e.to_string();
-            tracing::warn!(agent_id, error = %err, "binary-swap respawn failed");
+            tracing::warn!(agent_id, error = %err, "session-preserving respawn failed");
             self.set_status(app, agent_id, AgentStatus::Error, Some(err));
-            return;
+            return Err(e);
         }
 
         // This respawn passed through a turn-end Idle where the normal queue
@@ -1211,6 +1252,7 @@ impl Supervisor {
                 tracing::warn!(agent_id, error = %e, "post-respawn queue flush failed");
             }
         }
+        Ok(())
     }
 
     pub async fn stop_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {

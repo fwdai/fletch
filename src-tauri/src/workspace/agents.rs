@@ -264,6 +264,21 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Update the session's reasoning-effort level mid-conversation. Unlike the
+    /// spawn-time value, this is user-changeable (see
+    /// `Supervisor::set_agent_effort`): claude re-applies it on the next
+    /// `--resume`, while per-turn agents read it on their next turn. `None`
+    /// clears the selection, falling back to the provider's default.
+    pub fn update_agent_effort(&self, id: &str, effort: Option<&str>) -> Result<()> {
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE sessions SET effort = ?1 WHERE workspace_id = ?2",
+            rusqlite::params![effort, id],
+        )?;
+        Ok(())
+    }
+
     /// Re-tag an agent with the issue it's working ("123" / "ENG-123"), or
     /// clear it with `None`. The row is the durable source for the PR
     /// closing trailer across restarts; the caller also updates the live

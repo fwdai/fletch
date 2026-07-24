@@ -1539,6 +1539,7 @@ pub fn run() {
             commands::answer_tool_use,
             commands::resize_agent,
             commands::switch_view,
+            commands::set_agent_effort,
             commands::resume_agent,
             commands::stop_agent,
             commands::discard_agent,
