@@ -189,12 +189,18 @@ export function Composer({
   const [provider, setProvider] = useState(defaultProvider);
   const [model, setModel] = useState<string | undefined>(defaultModel);
   const [customAgentId, setCustomAgentId] = useState<string | undefined>(defaultCustomAgentId);
-  // Resolve the model within the SELECTED provider's list first: a model id
-  // shared across agents keeps only the first-discovered entry in the global
-  // `byId` view, which may belong to another provider and omit this provider's
-  // per-model metadata (e.g. codex's reasoning levels). Fall back to `byId` for
-  // ids the provider list doesn't carry (unknown/new models).
-  const activeModelId = existingSession ? (activeModel ?? model) : model;
+  // Resolve reasoning metadata from the model the NEXT turn will actually use.
+  // The picker's current selection (`model`) wins, so a mid-session model change
+  // immediately drives the effort levels — otherwise the newly picked model
+  // could be paired with a thinking value only the previous model supported.
+  // Fall back to the last transcript-reported model only when no explicit model
+  // is set (provider default), so we still reflect the real running model.
+  // Resolve within the SELECTED provider's list first: a model id shared across
+  // agents keeps only the first-discovered entry in the global `byId` view,
+  // which may belong to another provider and omit this provider's per-model
+  // metadata (e.g. codex's reasoning levels). Fall back to `byId` for ids the
+  // provider list doesn't carry (unknown/new models).
+  const activeModelId = existingSession ? (model ?? activeModel) : model;
   const activeMeta =
     lookupModelInList(modelsByAgent[provider], activeModelId) ??
     lookupModel(modelCatalog, activeModelId);
