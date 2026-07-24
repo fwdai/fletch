@@ -424,7 +424,9 @@ pub(super) fn drain_pending_respawn(sup: &Supervisor, app: &AppHandle, agent_id:
     let app = app.clone();
     let agent_id = agent_id.to_string();
     tauri::async_runtime::spawn(async move {
-        sup_arc
+        // Fire-and-forget at the turn boundary: a failed restart is logged and
+        // set on the agent's status inside the call.
+        let _ = sup_arc
             .respawn_agent_preserving_session(&app, &agent_id)
             .await;
     });

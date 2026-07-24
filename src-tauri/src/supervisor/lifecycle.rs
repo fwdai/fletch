@@ -1116,7 +1116,11 @@ impl Supervisor {
         self.workspace.update_agent_effort(agent_id, effort)?;
         emit_effort(app, agent_id, effort);
         if !is_per_turn_provider(&self.workspace.agent(agent_id)?.provider) {
-            self.respawn_agent_preserving_session(app, agent_id).await;
+            // claude bakes --effort into the process, so re-apply it with a
+            // session-preserving restart. Propagate a failed restart: the new
+            // effort is persisted, but the caller must not report success when
+            // the agent is left without a running process.
+            self.respawn_agent_preserving_session(app, agent_id).await?;
         }
         Ok(())
     }
@@ -1141,7 +1145,9 @@ impl Supervisor {
                 Ok(r) if r.provider == provider_id => {}
                 _ => continue, // wrong provider, or removed out from under us
             }
-            self.respawn_agent_preserving_session(app, &id).await;
+            // Fire-and-forget: a failed restart is logged and reflected in the
+            // agent's status inside the call; there's no caller to surface it to.
+            let _ = self.respawn_agent_preserving_session(app, &id).await;
         }
     }
 
@@ -1160,11 +1166,19 @@ impl Supervisor {
     /// it in `respawn_pending`; the next turn-end Idle transition retries it
     /// (see `transition_active`). This is what keeps the "change config → keep
     /// going" flow working for an agent that's busy at the time.
+    ///
+    /// Returns `Err` only when the replacement process fails to start (the agent
+    /// is left in `Error` status): the caller that initiated the change (e.g.
+    /// `set_agent_effort`) then surfaces it instead of reporting false success.
+    /// Every "nothing to restart now" outcome — deferred because busy, or the
+    /// agent already gone — is `Ok`: the new record still applies on the next
+    /// spawn. Fire-and-forget callers (binary swap, the turn-end drain) ignore
+    /// the result and rely on the internal status/logging.
     pub(super) async fn respawn_agent_preserving_session(
         self: &Arc<Self>,
         app: &AppHandle,
         agent_id: &str,
-    ) {
+    ) -> Result<()> {
         // Keep the complete idle -> teardown -> Spawning -> restarted
         // transition mutually exclusive with project deletion. The deletion
         // marker is installed before that path waits for this lifecycle lock,
@@ -1174,12 +1188,12 @@ impl Supervisor {
             Ok(r) => r,
             Err(_) => {
                 self.respawn_pending.lock().remove(agent_id);
-                return;
+                return Ok(());
             }
         };
         if self.deleting_projects.lock().contains(&record.project_id) {
             self.respawn_pending.lock().remove(agent_id);
-            return;
+            return Ok(());
         }
         // Atomic idle-check + remove. `busy` distinguishes "left running" from
         // "already gone" when no agent is taken.
@@ -1203,11 +1217,11 @@ impl Supervisor {
             None if busy => {
                 self.respawn_pending.lock().insert(agent_id.to_string());
                 tracing::info!(agent_id, "session-preserving respawn deferred: agent busy");
-                return;
+                return Ok(());
             }
             None => {
                 self.respawn_pending.lock().remove(agent_id);
-                return;
+                return Ok(());
             }
         };
         self.respawn_pending.lock().remove(agent_id);
@@ -1226,7 +1240,7 @@ impl Supervisor {
             let err = e.to_string();
             tracing::warn!(agent_id, error = %err, "session-preserving respawn failed");
             self.set_status(app, agent_id, AgentStatus::Error, Some(err));
-            return;
+            return Err(e);
         }
 
         // This respawn passed through a turn-end Idle where the normal queue
@@ -1238,6 +1252,7 @@ impl Supervisor {
                 tracing::warn!(agent_id, error = %e, "post-respawn queue flush failed");
             }
         }
+        Ok(())
     }
 
     pub async fn stop_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
