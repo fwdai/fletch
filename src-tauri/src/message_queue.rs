@@ -45,13 +45,13 @@ pub enum InjectionMode {
 }
 
 /// One follow-up message the user sent. `text` + `attachments` are what get
-/// coalesced; `thinking` rides along to the delivery path.
+/// coalesced. (Reasoning effort is session-level — read from the record on each
+/// turn — so it no longer rides individual messages.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingMsg {
     pub turn_id: String,
     pub text: String,
     pub attachments: Vec<String>,
-    pub thinking: Option<String>,
 }
 
 /// What to do with a freshly-sent message. Pure decision — see
@@ -161,8 +161,8 @@ impl MessageQueue {
 /// Merge queued messages into one delivery:
 /// - text: non-empty bodies newline-joined in send order,
 /// - attachments: unioned, order-preserving, deduped,
-/// - metadata (`thinking`) + `turn_id`: taken from the LAST message — most
-///   recent intent (CQ1-A), and a real client-known id for the coalesced row.
+/// - `turn_id`: taken from the LAST message — a real client-known id for the
+///   coalesced row (CQ1-A).
 ///
 /// A single queued message passes through untouched (no separators, no churn).
 fn coalesce(msgs: Vec<PendingMsg>) -> PendingMsg {
@@ -188,7 +188,6 @@ fn coalesce(msgs: Vec<PendingMsg>) -> PendingMsg {
         turn_id: last.turn_id.clone(),
         text: texts.join("\n\n"),
         attachments,
-        thinking: last.thinking.clone(),
     }
 }
 
@@ -196,12 +195,11 @@ fn coalesce(msgs: Vec<PendingMsg>) -> PendingMsg {
 mod tests {
     use super::*;
 
-    fn msg(turn_id: &str, text: &str, attachments: &[&str], thinking: Option<&str>) -> PendingMsg {
+    fn msg(turn_id: &str, text: &str, attachments: &[&str]) -> PendingMsg {
         PendingMsg {
             turn_id: turn_id.into(),
             text: text.into(),
             attachments: attachments.iter().map(|s| s.to_string()).collect(),
-            thinking: thinking.map(str::to_string),
         }
     }
 
@@ -264,8 +262,8 @@ mod tests {
         let mut q = MessageQueue::new();
         assert!(q.is_empty("a"));
         assert_eq!(q.len("a"), 0);
-        q.enqueue("a", msg("t1", "hi", &[], None));
-        q.enqueue("a", msg("t2", "there", &[], None));
+        q.enqueue("a", msg("t1", "hi", &[]));
+        q.enqueue("a", msg("t2", "there", &[]));
         assert!(!q.is_empty("a"));
         assert_eq!(q.len("a"), 2);
         // isolation between agents
@@ -276,8 +274,8 @@ mod tests {
     fn turn_ids_lists_queued_in_fifo_order() {
         let mut q = MessageQueue::new();
         assert!(q.turn_ids("a").is_empty());
-        q.enqueue("a", msg("t1", "hi", &[], None));
-        q.enqueue("a", msg("t2", "there", &[], None));
+        q.enqueue("a", msg("t1", "hi", &[]));
+        q.enqueue("a", msg("t2", "there", &[]));
         assert_eq!(q.turn_ids("a"), vec!["t1".to_string(), "t2".to_string()]);
         // Draining empties it; the persisted-row cleanup then keeps nothing.
         q.drain_coalesced("a");
@@ -293,7 +291,7 @@ mod tests {
     #[test]
     fn drain_clears_the_queue() {
         let mut q = MessageQueue::new();
-        q.enqueue("a", msg("t1", "hi", &[], None));
+        q.enqueue("a", msg("t1", "hi", &[]));
         assert!(q.drain_coalesced("a").is_some());
         assert!(q.is_empty("a"));
         assert_eq!(q.drain_coalesced("a"), None);
@@ -304,11 +302,8 @@ mod tests {
         // A failed flush re-queues the coalesced batch; a message queued since
         // must not jump ahead of it.
         let mut q = MessageQueue::new();
-        q.enqueue(
-            "a",
-            msg("t-new", "queued after the failed flush", &[], None),
-        );
-        q.requeue_front("a", msg("t-coalesced", "first\n\nsecond", &[], None));
+        q.enqueue("a", msg("t-new", "queued after the failed flush", &[]));
+        q.requeue_front("a", msg("t-coalesced", "first\n\nsecond", &[]));
         let out = q.drain_coalesced("a").unwrap();
         assert_eq!(out.text, "first\n\nsecond\n\nqueued after the failed flush");
     }
@@ -316,7 +311,7 @@ mod tests {
     #[test]
     fn clear_drops_messages() {
         let mut q = MessageQueue::new();
-        q.enqueue("a", msg("t1", "hi", &[], None));
+        q.enqueue("a", msg("t1", "hi", &[]));
         q.clear("a");
         assert!(q.is_empty("a"));
     }
@@ -326,7 +321,7 @@ mod tests {
     #[test]
     fn single_message_passes_through() {
         let mut q = MessageQueue::new();
-        let m = msg("t1", "only", &["/a.txt"], Some("high"));
+        let m = msg("t1", "only", &["/a.txt"]);
         q.enqueue("a", m.clone());
         assert_eq!(q.drain_coalesced("a"), Some(m));
     }
@@ -334,9 +329,9 @@ mod tests {
     #[test]
     fn coalesce_joins_text_in_order() {
         let mut q = MessageQueue::new();
-        q.enqueue("a", msg("t1", "first", &[], None));
-        q.enqueue("a", msg("t2", "second", &[], None));
-        q.enqueue("a", msg("t3", "third", &[], None));
+        q.enqueue("a", msg("t1", "first", &[]));
+        q.enqueue("a", msg("t2", "second", &[]));
+        q.enqueue("a", msg("t3", "third", &[]));
         let out = q.drain_coalesced("a").unwrap();
         assert_eq!(out.text, "first\n\nsecond\n\nthird");
     }
@@ -345,8 +340,8 @@ mod tests {
     fn coalesce_skips_empty_text_bodies() {
         // An attachment-only message contributes no text line.
         let mut q = MessageQueue::new();
-        q.enqueue("a", msg("t1", "hello", &[], None));
-        q.enqueue("a", msg("t2", "", &["/img.png"], None));
+        q.enqueue("a", msg("t1", "hello", &[]));
+        q.enqueue("a", msg("t2", "", &["/img.png"]));
         let out = q.drain_coalesced("a").unwrap();
         assert_eq!(out.text, "hello");
         assert_eq!(out.attachments, vec!["/img.png".to_string()]);
@@ -355,8 +350,8 @@ mod tests {
     #[test]
     fn coalesce_unions_attachments_dedup_preserving_order() {
         let mut q = MessageQueue::new();
-        q.enqueue("a", msg("t1", "x", &["/a.txt", "/b.txt"], None));
-        q.enqueue("a", msg("t2", "y", &["/b.txt", "/c.txt"], None));
+        q.enqueue("a", msg("t1", "x", &["/a.txt", "/b.txt"]));
+        q.enqueue("a", msg("t2", "y", &["/b.txt", "/c.txt"]));
         let out = q.drain_coalesced("a").unwrap();
         assert_eq!(
             out.attachments,
@@ -369,13 +364,12 @@ mod tests {
     }
 
     #[test]
-    fn coalesce_takes_last_message_metadata_and_turn_id() {
-        // CQ1-A: last-message-wins for thinking; turn_id is the last id.
+    fn coalesce_takes_last_turn_id() {
+        // CQ1-A: the coalesced row carries the last message's turn_id.
         let mut q = MessageQueue::new();
-        q.enqueue("a", msg("t1", "x", &[], Some("low")));
-        q.enqueue("a", msg("t2", "y", &[], Some("high")));
+        q.enqueue("a", msg("t1", "x", &[]));
+        q.enqueue("a", msg("t2", "y", &[]));
         let out = q.drain_coalesced("a").unwrap();
-        assert_eq!(out.thinking, Some("high".to_string()));
         assert_eq!(out.turn_id, "t2");
     }
 }

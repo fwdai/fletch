@@ -410,9 +410,13 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               seed={composerSeed}
               onSeedConsumed={onSeedConsumed}
               draftKey={agent.id}
-              onSend={({ text, thinking, attachments }) => {
+              onSend={({ text, attachments }) => {
+                // Effort is session-level now (persisted via onChangeEffort and
+                // read from the record each turn), so sends carry no per-message
+                // effort — the composer's `thinking` in the payload is only used
+                // by the new-agent spawn path.
                 pinnedToBottom.current = true;
-                send(agent.id, text, attachments, thinking);
+                send(agent.id, text, attachments);
               }}
               onStop={() => stop(agent.id)}
             />

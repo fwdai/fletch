@@ -33,6 +33,9 @@ pub struct PerTurnSpec {
     pub session_id: Option<String>,
     /// Session-level model override. `None` keeps the provider CLI default.
     pub model: Option<String>,
+    /// Session-level reasoning effort, re-emitted on every turn like `model`
+    /// (each turn is a fresh process). `None` keeps the CLI default.
+    pub effort: Option<String>,
     /// A custom agent's standing instructions, snapshotted on the session and
     /// injected into every turn (appended after Fletch's global system prompt).
     /// Includes the materialized skill index when the session has skills.
@@ -451,6 +454,7 @@ impl Agent {
                 cwd: spec.cwd,
                 session_id: spec.session_id,
                 model: spec.model,
+                effort: spec.effort,
                 stdout_is_json,
                 env,
                 kill_plan: kill,
@@ -471,15 +475,10 @@ impl Agent {
         }
     }
 
-    pub fn send_user_message(
-        &self,
-        text: &str,
-        attachments: &[String],
-        thinking: Option<&str>,
-    ) -> Result<()> {
+    pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
         match self {
             Self::Managed(a) => a.session.send_user_message(text, attachments),
-            Self::PerTurn(a) => a.session.send_user_message(text, attachments, thinking),
+            Self::PerTurn(a) => a.session.send_user_message(text, attachments),
             Self::Pty(_) => Err(Error::Other("send_user_message called on pty agent".into())),
         }
     }

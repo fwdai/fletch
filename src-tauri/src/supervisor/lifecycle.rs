@@ -943,6 +943,9 @@ impl Supervisor {
                         sandbox_root,
                         session_id,
                         model: record.model.clone(),
+                        // Session-level effort, re-applied on every turn's argv
+                        // just like model (the CLI reads it per invocation).
+                        effort: record.effort.clone(),
                         instructions: instructions.clone(),
                         mcp_servers: mcp_servers.clone(),
                         rpc_dir,

@@ -146,12 +146,7 @@ export interface WorkspaceSlice {
     code: ForkCode,
     context: ForkContext,
   ) => Promise<AgentRecord | null>;
-  sendUserMessage: (
-    id: string,
-    text: string,
-    attachments?: string[],
-    thinking?: string,
-  ) => Promise<void>;
+  sendUserMessage: (id: string, text: string, attachments?: string[]) => Promise<void>;
   /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
    *  Looks up the held control-protocol request for `toolUseId` and delivers
    *  `updatedInput` (the tool's input with the user's `answers` merged in) as
@@ -389,7 +384,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  sendUserMessage: async (id, text, attachments = [], thinking) => {
+  sendUserMessage: async (id, text, attachments = []) => {
     // Guard: some Claude built-in control commands (e.g. /usage, /agents,
     // /login) only work in its interactive TUI and don't resolve over this
     // view's stream-json transport. Dispatched as a plain message they'd
@@ -480,7 +475,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         };
       });
       try {
-        const enqueued = await api.sendUserMessage(id, turnId, sendText, attachments, thinking);
+        const enqueued = await api.sendUserMessage(id, turnId, sendText, attachments);
         // Only a genuinely-held message wears the badge; a delivered one stays a
         // plain bubble. Match by turnId — agent output may have appended since.
         if (wasBusy && enqueued) {
@@ -499,9 +494,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
           // process in --resume mode, then deliver the message once ready.
           // Not busy, so it lands as a new turn (never queued) — no badge.
           await api.resumeAgent(id);
-          await sendWhenAgentReady(() =>
-            api.sendUserMessage(id, turnId, sendText, attachments, thinking),
-          );
+          await sendWhenAgentReady(() => api.sendUserMessage(id, turnId, sendText, attachments));
         } else {
           throw e;
         }

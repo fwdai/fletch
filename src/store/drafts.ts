@@ -301,9 +301,10 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
             invocation.snapshot,
           ]
         : assigned;
-      // `thinking` carries the composer's effort selection. For claude it's a
-      // session-level spawn flag (--effort), applied here; per-turn agents
-      // ignore it at spawn and take it per-turn via sendUserMessage below.
+      // `thinking` carries the composer's effort selection. Effort is
+      // session-level for every provider — it's persisted on the record here at
+      // spawn (claude reads it as `--effort`; per-turn agents re-read it from
+      // the record on each turn), so it never rides individual messages.
       const rec = await api.spawnAgent(
         view,
         draft.repoPath,
@@ -353,9 +354,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
           api.writeToAgent(rec.id, `${prompt.replace(/\r?\n/g, " ")}\r`),
         );
       } else {
-        await sendWhenAgentReady(() =>
-          api.sendUserMessage(rec.id, turnId, prompt, attachments, thinking),
-        );
+        await sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, attachments));
       }
     } catch (e) {
       const selected = get().selectedAgentId;

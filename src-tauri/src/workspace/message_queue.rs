@@ -34,15 +34,14 @@ impl WorkspaceManager {
         )?;
         tx.execute(
             "INSERT INTO pending_messages
-                (session_id, seq, turn_id, text, attachments, thinking, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (session_id, seq, turn_id, text, attachments, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 sid,
                 seq,
                 msg.turn_id,
                 msg.text,
                 attachments_json,
-                msg.thinking,
                 now_millis()
             ],
         )?;
@@ -105,34 +104,29 @@ impl WorkspaceManager {
     ) -> Result<Vec<(String, crate::message_queue::PendingMsg)>> {
         let conn = self.db.lock();
         let mut stmt = conn.prepare(
-            "SELECT s.workspace_id, p.turn_id, p.text, p.attachments, p.thinking
+            "SELECT s.workspace_id, p.turn_id, p.text, p.attachments
              FROM pending_messages p
              JOIN sessions s ON s.id = p.session_id
              JOIN workspaces w ON w.id = s.workspace_id
              WHERE w.archived_at IS NULL
              ORDER BY s.workspace_id, p.seq ASC",
         )?;
-        let rows: Vec<(String, String, String, String, Option<String>)> = stmt
-            .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-            })?
+        let rows: Vec<(String, String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<std::result::Result<_, rusqlite::Error>>()?;
         rows.into_iter()
-            .map(
-                |(workspace_id, turn_id, text, attachments_text, thinking)| {
-                    let attachments = serde_json::from_str(&attachments_text)
-                        .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
-                    Ok((
-                        workspace_id,
-                        crate::message_queue::PendingMsg {
-                            turn_id,
-                            text,
-                            attachments,
-                            thinking,
-                        },
-                    ))
-                },
-            )
+            .map(|(workspace_id, turn_id, text, attachments_text)| {
+                let attachments = serde_json::from_str(&attachments_text)
+                    .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
+                Ok((
+                    workspace_id,
+                    crate::message_queue::PendingMsg {
+                        turn_id,
+                        text,
+                        attachments,
+                    },
+                ))
+            })
             .collect()
     }
 }
