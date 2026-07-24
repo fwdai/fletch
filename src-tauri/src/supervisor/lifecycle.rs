@@ -19,7 +19,9 @@ use crate::workspace::{
     repo_checkout_path, AgentRecord, AgentStatus, AgentView, TrackedRepo,
 };
 
-use super::events::{emit_agent_event, emit_agent_output, emit_effort, emit_repo_added, emit_view};
+use super::events::{
+    emit_agent_event, emit_agent_output, emit_effort, emit_model, emit_repo_added, emit_view,
+};
 use super::messaging::{
     drain_message_queue, flush_queued, mark_user_turn_started, on_first_user_message,
 };
@@ -1102,11 +1104,9 @@ impl Supervisor {
     }
 
     /// Change a session's reasoning effort mid-conversation. Persists the new
-    /// value so every future spawn reads it, then makes it take effect: claude
-    /// bakes `--effort` into the live process, so it needs a session-preserving
-    /// respawn (eager when idle, deferred to the next turn boundary when busy);
-    /// per-turn agents take effort per turn and apply it on their next message
-    /// with no restart. `None` clears the selection (provider default).
+    /// value so every future spawn reads it, then re-applies it to the live
+    /// process (see `reapply_session_config`). `None` clears the selection
+    /// (provider default).
     pub async fn set_agent_effort(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -1115,11 +1115,36 @@ impl Supervisor {
     ) -> Result<()> {
         self.workspace.update_agent_effort(agent_id, effort)?;
         emit_effort(app, agent_id, effort);
+        self.reapply_session_config(app, agent_id).await
+    }
+
+    /// Change a session's model mid-conversation. Persists the new value so
+    /// every future spawn reads it, then re-applies it to the live process (see
+    /// `reapply_session_config`). `None` clears the selection (provider default).
+    pub async fn set_agent_model(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        agent_id: &str,
+        model: Option<&str>,
+    ) -> Result<()> {
+        self.workspace.update_agent_model(agent_id, model)?;
+        emit_model(app, agent_id, model);
+        self.reapply_session_config(app, agent_id).await
+    }
+
+    /// Make a just-persisted model/effort change take effect on the live
+    /// process. claude bakes both into its launch args (`--model`/`--effort`),
+    /// so it needs a session-preserving respawn (eager when idle, deferred to
+    /// the next turn boundary when busy); per-turn agents re-read the record on
+    /// their next turn, so nothing to restart. A failed restart propagates: the
+    /// new value is persisted, but the caller must not report success when the
+    /// agent is left without a running process.
+    async fn reapply_session_config(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        agent_id: &str,
+    ) -> Result<()> {
         if !is_per_turn_provider(&self.workspace.agent(agent_id)?.provider) {
-            // claude bakes --effort into the process, so re-apply it with a
-            // session-preserving restart. Propagate a failed restart: the new
-            // effort is persisted, but the caller must not report success when
-            // the agent is left without a running process.
             self.respawn_agent_preserving_session(app, agent_id).await?;
         }
         Ok(())

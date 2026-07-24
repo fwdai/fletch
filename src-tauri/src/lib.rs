@@ -1540,6 +1540,7 @@ pub fn run() {
             commands::resize_agent,
             commands::switch_view,
             commands::set_agent_effort,
+            commands::set_agent_model,
             commands::resume_agent,
             commands::stop_agent,
             commands::discard_agent,

@@ -279,6 +279,20 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Update the session's model mid-conversation. Like `update_agent_effort`,
+    /// this is user-changeable after spawn (see `Supervisor::set_agent_model`):
+    /// claude re-applies it on the next `--resume`, while per-turn agents read
+    /// it on their next turn. `None` clears the selection (provider default).
+    pub fn update_agent_model(&self, id: &str, model: Option<&str>) -> Result<()> {
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE sessions SET model = ?1 WHERE workspace_id = ?2",
+            rusqlite::params![model, id],
+        )?;
+        Ok(())
+    }
+
     /// Re-tag an agent with the issue it's working ("123" / "ENG-123"), or
     /// clear it with `None`. The row is the durable source for the PR
     /// closing trailer across restarts; the caller also updates the live

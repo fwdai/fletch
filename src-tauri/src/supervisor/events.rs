@@ -200,6 +200,25 @@ pub(super) fn emit_effort(app: &AppHandle, agent_id: &str, effort: Option<&str>)
 }
 
 #[derive(Clone, serde::Serialize)]
+struct AgentModelPayload {
+    agent_id: String,
+    model: Option<String>,
+}
+
+/// The session's model changed mid-conversation (user-initiated). Mirrors
+/// `agent:effort` so the composer reflects the new value without a full resync.
+pub(super) fn emit_model(app: &AppHandle, agent_id: &str, model: Option<&str>) {
+    emit(
+        app,
+        "agent:model",
+        AgentModelPayload {
+            agent_id: agent_id.to_string(),
+            model: model.map(str::to_string),
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
 struct AgentTaskPayload {
     agent_id: String,
     task: String,
