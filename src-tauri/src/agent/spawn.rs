@@ -463,7 +463,7 @@ impl Agent {
             extract_session_id,
             cb,
         );
-        Ok(Self::PerTurn(PerTurnAgent { session }))
+        Ok(Self::PerTurn(Box::new(PerTurnAgent { session })))
     }
 
     pub fn write_pty(&self, bytes: &[u8]) -> Result<()> {
@@ -472,6 +472,16 @@ impl Agent {
             Self::Managed(_) | Self::PerTurn(_) => {
                 Err(Error::Other("write_pty called on a managed agent".into()))
             }
+        }
+    }
+
+    /// Push a mid-session model/effort change into a live per-turn runner so the
+    /// next turn uses it. No-op for claude (Managed/Pty), whose config is baked
+    /// into its persistent process and re-applied by a session-preserving
+    /// respawn instead.
+    pub fn set_config(&self, model: Option<&str>, effort: Option<&str>) {
+        if let Self::PerTurn(a) = self {
+            a.session.set_config(model, effort);
         }
     }
 

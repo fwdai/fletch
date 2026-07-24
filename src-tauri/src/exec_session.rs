@@ -80,8 +80,11 @@ pub struct ExecSession {
     env: Vec<(String, String)>,
     kill_plan: KillHandle,
     session_id: Arc<Mutex<Option<String>>>,
-    model: Option<String>,
-    effort: Option<String>,
+    /// Session-level model + effort. Interior-mutable (like `session_id`) so a
+    /// mid-session change (`set_config`) is picked up on the next turn without
+    /// recreating the session.
+    model: Mutex<Option<String>>,
+    effort: Mutex<Option<String>>,
     child: Arc<Mutex<Option<Child>>>,
     interrupted: Arc<AtomicBool>,
     /// Monotonic turn counter. A reap thread only reports its exit if its
@@ -136,8 +139,8 @@ impl ExecSession {
             env: spec.env,
             kill_plan: spec.kill_plan,
             session_id: Arc::new(Mutex::new(spec.session_id)),
-            model: spec.model,
-            effort: spec.effort,
+            model: Mutex::new(spec.model),
+            effort: Mutex::new(spec.effort),
             child: Arc::new(Mutex::new(None)),
             interrupted: Arc::new(AtomicBool::new(false)),
             turn_seq: Arc::new(AtomicU64::new(0)),
@@ -147,6 +150,15 @@ impl ExecSession {
             on_session_id: Arc::new(cb.on_session_id),
             on_exit: Arc::new(cb.on_exit),
         }
+    }
+
+    /// Update the live session's model/effort mid-conversation. The next turn's
+    /// argv picks them up (each turn is a fresh process that re-reads this), so
+    /// no process restart is needed — unlike claude, whose config is baked into
+    /// its persistent process.
+    pub fn set_config(&self, model: Option<&str>, effort: Option<&str>) {
+        *self.model.lock() = model.map(str::to_string);
+        *self.effort.lock() = effort.map(str::to_string);
     }
 
     pub fn send_user_message(&self, text: &str, attachments: &[String]) -> Result<()> {
@@ -173,15 +185,15 @@ impl ExecSession {
             prompt.push_str(&format!("Attached file: {path}"));
         }
 
+        // Read the live session config fresh each turn: model/effort are
+        // session-level but user-changeable mid-session (see `set_config`), so a
+        // change lands on the very next turn without recreating the session.
+        // Clone out of each lock independently so we never hold two at once.
         let args = {
-            let id = self.session_id.lock();
-            // Effort is a session-level setting, re-emitted each turn like model.
-            (self.build_args)(
-                &prompt,
-                id.as_deref(),
-                self.effort.as_deref(),
-                self.model.as_deref(),
-            )
+            let id = self.session_id.lock().clone();
+            let effort = self.effort.lock().clone();
+            let model = self.model.lock().clone();
+            (self.build_args)(&prompt, id.as_deref(), effort.as_deref(), model.as_deref())
         };
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.prefix_args);

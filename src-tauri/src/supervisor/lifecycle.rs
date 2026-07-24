@@ -1135,19 +1135,29 @@ impl Supervisor {
         self.reapply_session_config(app, agent_id).await
     }
 
-    /// Make a just-persisted model/effort change take effect on the live
-    /// process. claude bakes both into its launch args (`--model`/`--effort`),
-    /// so it needs a session-preserving respawn (eager when idle, deferred to
-    /// the next turn boundary when busy); per-turn agents re-read the record on
-    /// their next turn, so nothing to restart. A failed restart propagates: the
-    /// new value is persisted, but the caller must not report success when the
-    /// agent is left without a running process.
+    /// Make a just-persisted model/effort change take effect on the live agent.
+    ///
+    /// claude bakes both into its launch args (`--model`/`--effort`), so it
+    /// needs a session-preserving respawn (eager when idle, deferred to the next
+    /// turn boundary when busy). A failed restart propagates: the new value is
+    /// persisted, but the caller must not report success when the agent is left
+    /// without a running process.
+    ///
+    /// Per-turn agents keep a live `ExecSession` across turns that froze its
+    /// config at construction, so we push the new values into it directly — the
+    /// next turn's fresh process picks them up, no restart. If the agent isn't
+    /// live, the record update alone suffices (its next spawn reads it).
     async fn reapply_session_config(
         self: &Arc<Self>,
         app: &AppHandle,
         agent_id: &str,
     ) -> Result<()> {
-        if !is_per_turn_provider(&self.workspace.agent(agent_id)?.provider) {
+        let record = self.workspace.agent(agent_id)?;
+        if is_per_turn_provider(&record.provider) {
+            if let Some(agent) = self.agents.lock().get(agent_id) {
+                agent.set_config(record.model.as_deref(), record.effort.as_deref());
+            }
+        } else {
             self.respawn_agent_preserving_session(app, agent_id).await?;
         }
         Ok(())

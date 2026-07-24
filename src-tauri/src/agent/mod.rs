@@ -45,8 +45,10 @@ pub enum Agent {
     Managed(ManagedAgent),
     /// A per-turn runner (codex, cursor): holds no live process between
     /// turns; each user message spawns a fresh process. The agent
-    /// sandboxes itself, so there's no sandbox-exec profile.
-    PerTurn(PerTurnAgent),
+    /// sandboxes itself, so there's no sandbox-exec profile. Boxed: its
+    /// `ExecSession` inlines far more state than the other variants, so
+    /// boxing keeps the enum small (it always lives behind an `Arc` anyway).
+    PerTurn(Box<PerTurnAgent>),
 }
 
 pub struct PtyAgent {
