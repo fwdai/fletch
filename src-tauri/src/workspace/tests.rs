@@ -354,6 +354,35 @@ fn update_agent_effort_round_trips() {
 }
 
 #[test]
+fn update_agent_model_round_trips() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+
+    let mut rec = new_agent_record(
+        "matterhorn".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "t".into(),
+        AgentView::Custom,
+    );
+    wm.add_agent(&mut rec).unwrap();
+
+    // A mid-session model change persists and reloads — the composer's model
+    // picker reads this back, and every future spawn re-applies it.
+    wm.update_agent_model("matterhorn", Some("opus")).unwrap();
+    assert_eq!(
+        wm.agent("matterhorn").unwrap().model.as_deref(),
+        Some("opus")
+    );
+
+    // Clearing it falls back to the provider default (NULL).
+    wm.update_agent_model("matterhorn", None).unwrap();
+    assert_eq!(wm.agent("matterhorn").unwrap().model, None);
+}
+
+#[test]
 fn status_derivation() {
     // Archived workspaces are stopped regardless of error/run state.
     assert_eq!(
