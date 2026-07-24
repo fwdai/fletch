@@ -92,13 +92,20 @@ interface Props {
    *  in sync on every edit; omit it to disable draft persistence. */
   draftKey?: string;
   /** True when rendered for an existing agent (ChatView) rather than a new
-   *  session (EmptyWorkspace). A provider whose effort is set at spawn
-   *  (`effortAtSpawn`, e.g. claude) shows a read-only badge here instead of
-   *  an interactive picker, since the value can't change mid-session. */
+   *  session (EmptyWorkspace). The effort picker stays interactive; for a
+   *  provider whose effort is a spawn flag (`restartToApply`, e.g. claude),
+   *  changing it restarts the session to re-apply the flag (see
+   *  `onChangeEffort`). */
   existingSession?: boolean;
-  /** For existing sessions: the effort value this session was spawned with.
-   *  Shown as a read-only chip for effortAtSpawn providers (e.g. claude). */
+  /** For existing sessions: the session's current effort, used to seed the
+   *  picker so it reflects the persisted value on load. */
   initialThinking?: string;
+  /** For existing sessions: persist a mid-session effort change. Called with
+   *  the raw effort value when the user cycles the effort chip. For claude this
+   *  restarts the session (resuming it) to re-apply `--effort`; per-turn agents
+   *  also carry the value on the next message via `onSend`'s `thinking`. Omit
+   *  for new-session composers, where effort is chosen at spawn. */
+  onChangeEffort?: (value: string) => void;
   /** The model the agent actually used on its most recent turn, read from the
    *  transcript (Claude, pi, Codex, OpenCode report it). Used as a fallback
    *  when the transcript has not yielded a model yet, so the picker can still
@@ -158,6 +165,7 @@ export function Composer({
   draftKey,
   existingSession = false,
   initialThinking,
+  onChangeEffort,
   activeModel,
   usage,
 }: Props) {
@@ -210,7 +218,12 @@ export function Composer({
     !existingSession && sandboxEngine === "docker" && !isDockerSupported(provider);
 
   const [thinkingValue, setThinkingValue] = useState<string | undefined>(() =>
-    resolveThinking(defaultProvider, thinkingLevels, modelReasoning),
+    resolveThinking(
+      defaultProvider,
+      thinkingLevels,
+      modelReasoning,
+      existingSession ? initialThinking : undefined,
+    ),
   );
 
   // Latest custom agents, read via a ref inside the effect below so that
@@ -218,6 +231,12 @@ export function Composer({
   // manually-adjusted thinking level). Kept current on every render.
   const customAgentsRef = useRef(customAgents);
   customAgentsRef.current = customAgents;
+
+  // The session's persisted effort, read via a ref so a change round-tripping
+  // back through the `agent:effort` event doesn't re-fire the effect below and
+  // clobber the value the user just set (same reasoning as `customAgentsRef`).
+  const initialThinkingRef = useRef(initialThinking);
+  initialThinkingRef.current = initialThinking;
 
   // When switching providers or models, restore the last-used level (validated
   // against the new model's supported levels) — a custom agent's own reasoning
@@ -230,10 +249,11 @@ export function Composer({
     const custom = customAgentId
       ? customAgentsRef.current.find((a) => a.id === customAgentId)
       : undefined;
-    setThinkingValue(
-      resolveThinking(provider, thinkingLevels, modelReasoning, custom?.effort ?? undefined),
-    );
-  }, [provider, customAgentId, thinkingLevels, modelReasoning]);
+    // Existing sessions seed from their persisted effort; new drafts prefer the
+    // selected custom agent's saved budget (both validated by resolveThinking).
+    const preferred = existingSession ? initialThinkingRef.current : (custom?.effort ?? undefined);
+    setThinkingValue(resolveThinking(provider, thinkingLevels, modelReasoning, preferred));
+  }, [provider, customAgentId, thinkingLevels, modelReasoning, existingSession]);
 
   // Shared input core (textarea + `/`·`@`·`#` autocomplete + attachments +
   // draft/seed). `onEnter` sends via a ref so the callback can reference the
@@ -306,33 +326,28 @@ export function Composer({
               onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
             }}
           />
-          {features.thinkingBudget &&
-            thinkingLevels.length > 0 &&
-            modelSupportsThinking &&
-            (existingSession && detail?.effortAtSpawn ? (
-              initialThinking && (
-                <Chip tip="Thinking effort — fixed at spawn" disabled>
-                  <Icon name="sparkle" size={11} />
-                  <span>
-                    {thinkingLevels.find((l) => l.value === initialThinking)?.label ??
-                      initialThinking}
-                  </span>
-                </Chip>
-              )
-            ) : (
-              <Chip
-                tip="Thinking budget"
-                onClick={() => {
-                  const idx = thinkingLevels.findIndex((l) => l.value === thinkingValue);
-                  const next = thinkingLevels[(idx + 1) % thinkingLevels.length];
-                  setThinkingValue(next.value);
-                  localStorage.setItem(`thinkingBudget.${provider}`, next.value);
-                }}
-              >
-                <Icon name="sparkle" size={11} />
-                <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
-              </Chip>
-            ))}
+          {features.thinkingBudget && thinkingLevels.length > 0 && modelSupportsThinking && (
+            <Chip
+              tip={
+                existingSession && detail?.restartToApply
+                  ? "Thinking effort — changing restarts the agent (rebuilds cache)"
+                  : "Thinking budget"
+              }
+              onClick={() => {
+                const idx = thinkingLevels.findIndex((l) => l.value === thinkingValue);
+                const next = thinkingLevels[(idx + 1) % thinkingLevels.length];
+                setThinkingValue(next.value);
+                localStorage.setItem(`thinkingBudget.${provider}`, next.value);
+                // Existing sessions persist the change (and, for claude, trigger
+                // the session-preserving restart) via the backend; new-session
+                // composers just carry it into spawnAgent through `onSend`.
+                onChangeEffort?.(next.value);
+              }}
+            >
+              <Icon name="sparkle" size={11} />
+              <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
+            </Chip>
+          )}
           <span style={{ flex: 1 }} />
           {/* Insert actions live on the right, beside send: what runs (agent/
            *  model/effort) reads left, what goes into this message reads right. */}

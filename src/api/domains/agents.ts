@@ -106,6 +106,8 @@ export const agentsApi = {
   resizeAgent: (agentId: string, cols: number, rows: number) =>
     invoke<void>("resize_agent", { agentId, cols, rows }),
   switchView: (agentId: string, view: AgentView) => invoke<void>("switch_view", { agentId, view }),
+  setAgentEffort: (agentId: string, effort: string | null) =>
+    invoke<void>("set_agent_effort", { agentId, effort }),
   resumeAgent: (agentId: string) => invoke<void>("resume_agent", { agentId }),
   stopAgent: (agentId: string) => invoke<void>("stop_agent", { agentId }),
   discardAgent: (agentId: string) => invoke<void>("discard_agent", { agentId }),

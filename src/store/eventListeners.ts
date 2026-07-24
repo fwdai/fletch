@@ -9,6 +9,7 @@ import type { AgentRecord, Workspace } from "@/api";
 import {
   api,
   onAgentBranch,
+  onAgentEffort,
   onAgentEvent,
   onAgentGitAction,
   onAgentOutput,
@@ -342,6 +343,10 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
 
   await onAgentView((e) => {
     patchAgent(get, set, e.agent_id, { view: e.view });
+  });
+
+  await onAgentEffort((e) => {
+    patchAgent(get, set, e.agent_id, { effort: e.effort });
   });
 
   await onAgentStatus((e) => {

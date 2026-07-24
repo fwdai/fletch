@@ -137,6 +137,11 @@ export interface AgentViewEvent {
   view: AgentView;
 }
 
+export interface AgentEffortEvent {
+  agent_id: string;
+  effort: string | null;
+}
+
 export interface AgentTaskEvent {
   agent_id: string;
   task: string;
