@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AgentBranchEvent,
+  AgentEffortEvent,
   AgentGitActionEvent,
   AgentManagedEvent,
   AgentOutputEvent,
@@ -82,6 +83,12 @@ export function onAgentStatus(cb: (e: AgentStatusEvent) => void): Promise<Unlist
 
 export function onAgentView(cb: (e: AgentViewEvent) => void): Promise<UnlistenFn> {
   return listen<AgentViewEvent>("agent:view", (event) => cb(event.payload));
+}
+
+/** Fires when a session's reasoning effort is changed mid-conversation, so the
+ *  composer's effort chip reflects the new value without a full resync. */
+export function onAgentEffort(cb: (e: AgentEffortEvent) => void): Promise<UnlistenFn> {
+  return listen<AgentEffortEvent>("agent:effort", (event) => cb(event.payload));
 }
 
 export function onAgentTask(cb: (e: AgentTaskEvent) => void): Promise<UnlistenFn> {

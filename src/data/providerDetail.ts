@@ -44,10 +44,12 @@ export interface ProviderDetail {
   /** Preferred initial level. Falls back to the highest level when unset. */
   defaultLevel?: string;
   /** True when effort is a session-level spawn flag (claude `--effort`) rather
-   *  than a per-message arg. The composer hides the picker on an existing
-   *  session, since the value can't change mid-session without restarting the
-   *  process (which would discard the conversation's prompt cache). */
-  effortAtSpawn?: boolean;
+   *  than a per-message arg. The picker stays interactive on an existing
+   *  session, but changing it restarts the process (resuming the same session)
+   *  to re-apply the flag, which rebuilds the conversation's prompt cache — so
+   *  the composer surfaces that in the chip's tooltip. Per-turn providers apply
+   *  effort on the next message with no restart. */
+  restartToApply?: boolean;
 }
 
 /** The install one-liner to show (and copy) on this platform, if one exists.
@@ -69,8 +71,9 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     docs: "https://docs.anthropic.com/en/docs/claude-code",
     signIn: "Run `claude` once in a terminal to sign in.",
     // `claude --effort <level>` is a session-level spawn flag (not per-message):
-    // chosen at session creation, threaded through spawn_agent, and persisted on
-    // the session record so it re-applies on every spawn. Fixed for the session.
+    // persisted on the session record and re-applied on every spawn. Changing it
+    // mid-session restarts the process (--resume) to re-apply the flag, so it's
+    // flagged `restartToApply`.
     thinkingLevels: [
       { label: "Low", value: "low" },
       { label: "Med", value: "medium" },
@@ -79,7 +82,7 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
       { label: "Max", value: "max" },
     ],
     defaultLevel: "xhigh", // matches Claude Code's own default
-    effortAtSpawn: true,
+    restartToApply: true,
   },
   codex: {
     path: "~/.codex/bin/codex",

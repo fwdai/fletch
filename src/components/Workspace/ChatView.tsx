@@ -362,6 +362,15 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               defaultModel={agent.model ?? undefined}
               defaultCustomAgentId={agent.custom_agent_id ?? undefined}
               initialThinking={agent.effort ?? undefined}
+              onChangeEffort={(value) => {
+                // Persist the mid-session change; the backend restarts claude
+                // (resuming the same session) to re-apply --effort, and per-turn
+                // agents pick it up on their next message. Best-effort: a failure
+                // just leaves the prior effort in force.
+                api.setAgentEffort(agent.id, value).catch((e) => {
+                  console.error("set_agent_effort failed", e);
+                });
+              }}
               disabled={!canSend}
               placeholder={
                 canSend

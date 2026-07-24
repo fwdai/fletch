@@ -58,8 +58,24 @@ impl Supervisor {
         // also returns `true` (they await the next retry boundary).
         let queued = match delivery {
             Delivery::DeliverNow => {
-                deliver_as_turn(&self, app, agent_id, &msg)?;
-                false
+                if let Err(e) = deliver_as_turn(&self, app, agent_id, &msg) {
+                    // We classified the agent idle-and-ready, but a teardown
+                    // raced our delivery: an idle agent is torn down under the
+                    // `agents` lock while its live status still reads Idle (the
+                    // status flip trails delivery), so a concurrent effort/model
+                    // respawn can remove it — or kill the process mid-send —
+                    // between our `is_busy` check and `live_agent`, surfacing as
+                    // AgentNotFound/a send error. Re-queue rather than dropping
+                    // the (already-persisted) turn: the respawn's post-restart
+                    // flush, or this flush once the restart lands, delivers it
+                    // onto the fresh process — which is the intent, since the
+                    // message then runs under the new config (CQ3-C).
+                    tracing::warn!(error = %e, agent_id, "deliver-now raced a teardown; re-queueing");
+                    self.persist_and_enqueue(agent_id, msg);
+                    flush_queued(&self, app, agent_id)?
+                } else {
+                    false
+                }
             }
             Delivery::FlushNow => {
                 self.persist_and_enqueue(agent_id, msg);
