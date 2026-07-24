@@ -19,7 +19,7 @@ use crate::workspace::{
     repo_checkout_path, AgentRecord, AgentStatus, AgentView, TrackedRepo,
 };
 
-use super::events::{emit_agent_event, emit_agent_output, emit_repo_added, emit_view};
+use super::events::{emit_agent_event, emit_agent_output, emit_effort, emit_repo_added, emit_view};
 use super::messaging::{
     drain_message_queue, flush_queued, mark_user_turn_started, on_first_user_message,
 };
@@ -1101,6 +1101,26 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Change a session's reasoning effort mid-conversation. Persists the new
+    /// value so every future spawn reads it, then makes it take effect: claude
+    /// bakes `--effort` into the live process, so it needs a session-preserving
+    /// respawn (eager when idle, deferred to the next turn boundary when busy);
+    /// per-turn agents take effort per turn and apply it on their next message
+    /// with no restart. `None` clears the selection (provider default).
+    pub async fn set_agent_effort(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        agent_id: &str,
+        effort: Option<&str>,
+    ) -> Result<()> {
+        self.workspace.update_agent_effort(agent_id, effort)?;
+        emit_effort(app, agent_id, effort);
+        if !is_per_turn_provider(&self.workspace.agent(agent_id)?.provider) {
+            self.respawn_agent_preserving_session(app, agent_id).await;
+        }
+        Ok(())
+    }
+
     /// Respawn every live agent using `provider_id` so it picks up a freshly
     /// changed binary path. The binary is resolved only inside `start_process`
     /// (spawn / resume / view-switch), so a live agent keeps the old binary —
@@ -1113,21 +1133,24 @@ impl Supervisor {
     /// will resolve the new binary on its next spawn anyway.
     pub async fn respawn_provider(self: &Arc<Self>, app: &AppHandle, provider_id: &str) {
         // Snapshot ids under a short-lived lock; never hold a guard across the
-        // `start_process` await in `respawn_agent_for_bin` (parking_lot guards
-        // aren't Send, and `start_process` re-locks these maps → deadlock).
+        // `start_process` await in `respawn_agent_preserving_session` (parking_lot
+        // guards aren't Send, and `start_process` re-locks these maps → deadlock).
         let ids: Vec<String> = self.agents.lock().keys().cloned().collect();
         for id in ids {
             match self.workspace.agent(&id) {
                 Ok(r) if r.provider == provider_id => {}
                 _ => continue, // wrong provider, or removed out from under us
             }
-            self.respawn_agent_for_bin(app, &id).await;
+            self.respawn_agent_preserving_session(app, &id).await;
         }
     }
 
-    /// Tear down and restart one live agent so it execs the freshly resolved
-    /// binary, resuming its existing session (`fresh = false`) so the
-    /// transcript/conversation is preserved.
+    /// Tear down and restart one live agent, resuming its existing session
+    /// (`fresh = false`) so the transcript/conversation is preserved, and
+    /// re-reading the record so any value baked into the launch args (binary
+    /// path, `--model`, `--effort`) is picked up. Shared by the binary-swap
+    /// respawn (`respawn_provider`) and mid-session config changes
+    /// (`set_agent_effort`).
     ///
     /// The idle-check and the `agents` removal happen atomically under a single
     /// `agents` lock: a concurrent send can flip an agent Idle→Running on
@@ -1135,9 +1158,13 @@ impl Supervisor {
     /// separate check-then-remove would risk shutting down an in-flight turn.
     /// If the agent is mid-turn (Spawning/Running) we leave it running and flag
     /// it in `respawn_pending`; the next turn-end Idle transition retries it
-    /// (see `transition_active`). This is what keeps the "swap binary → keep
-    /// going" flow working for an agent that's busy at swap time.
-    pub(super) async fn respawn_agent_for_bin(self: &Arc<Self>, app: &AppHandle, agent_id: &str) {
+    /// (see `transition_active`). This is what keeps the "change config → keep
+    /// going" flow working for an agent that's busy at the time.
+    pub(super) async fn respawn_agent_preserving_session(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        agent_id: &str,
+    ) {
         // Keep the complete idle -> teardown -> Spawning -> restarted
         // transition mutually exclusive with project deletion. The deletion
         // marker is installed before that path waits for this lifecycle lock,
@@ -1175,7 +1202,7 @@ impl Supervisor {
             Some(agent) => agent,
             None if busy => {
                 self.respawn_pending.lock().insert(agent_id.to_string());
-                tracing::info!(agent_id, "binary-swap respawn deferred: agent busy");
+                tracing::info!(agent_id, "session-preserving respawn deferred: agent busy");
                 return;
             }
             None => {
@@ -1197,7 +1224,7 @@ impl Supervisor {
 
         if let Err(e) = self.start_process(app, agent_id, false).await {
             let err = e.to_string();
-            tracing::warn!(agent_id, error = %err, "binary-swap respawn failed");
+            tracing::warn!(agent_id, error = %err, "session-preserving respawn failed");
             self.set_status(app, agent_id, AgentStatus::Error, Some(err));
             return;
         }

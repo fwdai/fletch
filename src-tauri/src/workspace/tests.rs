@@ -328,6 +328,32 @@ fn sandbox_engine_stamp_round_trips() {
 }
 
 #[test]
+fn update_agent_effort_round_trips() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+
+    let mut rec = new_agent_record(
+        "eiger".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "t".into(),
+        AgentView::Custom,
+    );
+    wm.add_agent(&mut rec).unwrap();
+
+    // A mid-session effort change persists and reloads — the composer's effort
+    // picker reads this back, and every future spawn re-applies it.
+    wm.update_agent_effort("eiger", Some("high")).unwrap();
+    assert_eq!(wm.agent("eiger").unwrap().effort.as_deref(), Some("high"));
+
+    // Clearing it falls back to the provider default (NULL).
+    wm.update_agent_effort("eiger", None).unwrap();
+    assert_eq!(wm.agent("eiger").unwrap().effort, None);
+}
+
+#[test]
 fn status_derivation() {
     // Archived workspaces are stopped regardless of error/run state.
     assert_eq!(

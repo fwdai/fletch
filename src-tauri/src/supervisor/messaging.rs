@@ -366,19 +366,19 @@ pub(super) fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &st
 /// At a turn-end Idle transition, flush any queued follow-up messages as the
 /// next turn — but only on a *natural* completion. Order of the guards matters:
 ///
-/// 1. A pending binary-swap respawn owns the flush (and the interrupt check):
-///    it tears down and restarts the agent, then flushes once it's ready (see
-///    `respawn_agent_for_bin`). Flushing here would race that teardown and
-///    `AgentNotFound` could drop the queue. The flag is still set at this point
-///    — `transition_active` calls us synchronously right after
-///    `drain_pending_bin_respawn`, before its spawned task clears it.
+/// 1. A pending session-preserving respawn owns the flush (and the interrupt
+///    check): it tears down and restarts the agent, then flushes once it's
+///    ready (see `respawn_agent_preserving_session`). Flushing here would race
+///    that teardown and `AgentNotFound` could drop the queue. The flag is still
+///    set at this point — `transition_active` calls us synchronously right after
+///    `drain_pending_respawn`, before its spawned task clears it.
 /// 2. A user stop converges on this same Idle (the dying process emits its
 ///    result), so when the interrupt flag is set we clear it and keep the queue
 ///    intact (A2-A: stop never auto-sends).
 ///
 /// Spawns the flush because `transition_active` holds only `&Supervisor`, and
 /// the delivery needs an owned `Arc` (recovered from Tauri state, like
-/// `drain_pending_bin_respawn`).
+/// `drain_pending_respawn`).
 pub(super) fn drain_message_queue(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
     if sup.respawn_pending.lock().contains(agent_id) {
         return;
@@ -404,12 +404,14 @@ pub(super) fn drain_message_queue(sup: &Supervisor, app: &AppHandle, agent_id: &
     });
 }
 
-/// If a binary-path change was deferred for this agent because it was
-/// mid-turn (see `respawn_agent_for_bin`), now that it's Idle restart it onto
-/// the new binary. No-op unless the agent is flagged. We recover the managed
-/// `Arc<Supervisor>` from Tauri state because `transition_active` only holds
-/// `&Supervisor`, and the respawn needs an owned `Arc` for its spawned task.
-pub(super) fn drain_pending_bin_respawn(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
+/// If a session-preserving respawn (binary swap or a mid-session model/effort
+/// change) was deferred for this agent because it was mid-turn (see
+/// `respawn_agent_preserving_session`), now that it's Idle restart it so it
+/// re-reads the record. No-op unless the agent is flagged. We recover the
+/// managed `Arc<Supervisor>` from Tauri state because `transition_active` only
+/// holds `&Supervisor`, and the respawn needs an owned `Arc` for its spawned
+/// task.
+pub(super) fn drain_pending_respawn(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
     if !sup.respawn_pending.lock().contains(agent_id) {
         return;
     }
@@ -422,7 +424,9 @@ pub(super) fn drain_pending_bin_respawn(sup: &Supervisor, app: &AppHandle, agent
     let app = app.clone();
     let agent_id = agent_id.to_string();
     tauri::async_runtime::spawn(async move {
-        sup_arc.respawn_agent_for_bin(&app, &agent_id).await;
+        sup_arc
+            .respawn_agent_preserving_session(&app, &agent_id)
+            .await;
     });
 }
 

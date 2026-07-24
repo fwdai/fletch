@@ -180,6 +180,26 @@ pub(super) fn emit_view(app: &AppHandle, agent_id: &str, view: AgentView) {
 }
 
 #[derive(Clone, serde::Serialize)]
+struct AgentEffortPayload {
+    agent_id: String,
+    effort: Option<String>,
+}
+
+/// The session's reasoning-effort level changed mid-conversation
+/// (user-initiated). Mirrors `agent:view` so the composer reflects the new
+/// value without a full resync.
+pub(super) fn emit_effort(app: &AppHandle, agent_id: &str, effort: Option<&str>) {
+    emit(
+        app,
+        "agent:effort",
+        AgentEffortPayload {
+            agent_id: agent_id.to_string(),
+            effort: effort.map(str::to_string),
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
 struct AgentTaskPayload {
     agent_id: String,
     task: String,

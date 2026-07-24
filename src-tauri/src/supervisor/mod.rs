@@ -38,7 +38,7 @@ use crate::workspace::{
 };
 
 use events::emit_status;
-use messaging::{drain_message_queue, drain_pending_bin_respawn};
+use messaging::{drain_message_queue, drain_pending_respawn};
 
 /// A runtime status transition, broadcast to in-process subscribers the moment
 /// it is recorded. The workflow scheduler (`workflow::driver`) subscribes to
@@ -570,7 +570,7 @@ fn transition_active(sup: &Supervisor, app: &AppHandle, agent_id: &str, new: Age
             // agent's checkout so its Mission Control card carries test
             // evidence. Ad-hoc agents only, fire-and-forget, never blocks.
             sup.trigger_turn_end_verification(app.clone(), agent_id.to_string());
-            drain_pending_bin_respawn(sup, app, agent_id);
+            drain_pending_respawn(sup, app, agent_id);
             drain_message_queue(sup, app, agent_id);
         }
     }
