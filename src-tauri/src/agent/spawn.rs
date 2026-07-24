@@ -475,13 +475,22 @@ impl Agent {
         }
     }
 
-    /// Push a mid-session model/effort change into a live per-turn runner so the
-    /// next turn uses it. No-op for claude (Managed/Pty), whose config is baked
-    /// into its persistent process and re-applied by a session-preserving
-    /// respawn instead.
-    pub fn set_config(&self, model: Option<&str>, effort: Option<&str>) {
+    /// Push a mid-session model change into a live per-turn runner so the next
+    /// turn uses it. No-op for claude (Managed/Pty), whose config is baked into
+    /// its persistent process and re-applied by a session-preserving respawn.
+    /// Model and effort are set independently so concurrent changes to each
+    /// can't overwrite one another.
+    pub fn set_model(&self, model: Option<&str>) {
         if let Self::PerTurn(a) = self {
-            a.session.set_config(model, effort);
+            a.session.set_model(model);
+        }
+    }
+
+    /// Push a mid-session effort change into a live per-turn runner (see
+    /// `set_model`).
+    pub fn set_effort(&self, effort: Option<&str>) {
+        if let Self::PerTurn(a) = self {
+            a.session.set_effort(effort);
         }
     }
 

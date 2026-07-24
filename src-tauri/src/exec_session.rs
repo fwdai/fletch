@@ -152,12 +152,17 @@ impl ExecSession {
         }
     }
 
-    /// Update the live session's model/effort mid-conversation. The next turn's
-    /// argv picks them up (each turn is a fresh process that re-reads this), so
-    /// no process restart is needed — unlike claude, whose config is baked into
-    /// its persistent process.
-    pub fn set_config(&self, model: Option<&str>, effort: Option<&str>) {
+    /// Update the live session's model mid-conversation. The next turn's argv
+    /// picks it up (each turn is a fresh process that re-reads this), so no
+    /// restart is needed. Touches only the model field so a concurrent effort
+    /// change can't be clobbered.
+    pub fn set_model(&self, model: Option<&str>) {
         *self.model.lock() = model.map(str::to_string);
+    }
+
+    /// Update the live session's effort mid-conversation (see `set_model`).
+    /// Touches only the effort field.
+    pub fn set_effort(&self, effort: Option<&str>) {
         *self.effort.lock() = effort.map(str::to_string);
     }
 

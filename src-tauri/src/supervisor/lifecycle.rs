@@ -1118,7 +1118,8 @@ impl Supervisor {
     ) -> Result<()> {
         self.workspace.update_agent_effort(agent_id, effort)?;
         emit_effort(app, agent_id, effort);
-        self.reapply_session_config(app, agent_id).await
+        self.reapply_session_config(app, agent_id, |agent| agent.set_effort(effort))
+            .await
     }
 
     /// Change a session's model mid-conversation. Persists the new value so
@@ -1132,7 +1133,8 @@ impl Supervisor {
     ) -> Result<()> {
         self.workspace.update_agent_model(agent_id, model)?;
         emit_model(app, agent_id, model);
-        self.reapply_session_config(app, agent_id).await
+        self.reapply_session_config(app, agent_id, |agent| agent.set_model(model))
+            .await
     }
 
     /// Make a just-persisted model/effort change take effect on the live agent.
@@ -1144,18 +1146,23 @@ impl Supervisor {
     /// without a running process.
     ///
     /// Per-turn agents keep a live `ExecSession` across turns that froze its
-    /// config at construction, so we push the new values into it directly — the
-    /// next turn's fresh process picks them up, no restart. If the agent isn't
+    /// config at construction, so `apply_live` pushes the change into it — the
+    /// next turn's fresh process picks it up, no restart. If the agent isn't
     /// live, the record update alone suffices (its next spawn reads it).
+    ///
+    /// `apply_live` touches only the one field the caller changed (`set_model`
+    /// *or* `set_effort`), so a model change and an effort change made
+    /// concurrently can't overwrite each other's live value — each writes its
+    /// own independent field.
     async fn reapply_session_config(
         self: &Arc<Self>,
         app: &AppHandle,
         agent_id: &str,
+        apply_live: impl FnOnce(&Agent),
     ) -> Result<()> {
-        let record = self.workspace.agent(agent_id)?;
-        if is_per_turn_provider(&record.provider) {
+        if is_per_turn_provider(&self.workspace.agent(agent_id)?.provider) {
             if let Some(agent) = self.agents.lock().get(agent_id) {
-                agent.set_config(record.model.as_deref(), record.effort.as_deref());
+                apply_live(agent);
             }
         } else {
             self.respawn_agent_preserving_session(app, agent_id).await?;
