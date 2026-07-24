@@ -106,6 +106,12 @@ interface Props {
    *  also carry the value on the next message via `onSend`'s `thinking`. Omit
    *  for new-session composers, where effort is chosen at spawn. */
   onChangeEffort?: (value: string) => void;
+  /** For existing sessions: persist a mid-session model change. Called with the
+   *  new model id (or undefined for the provider default) when the user picks a
+   *  model. For claude this restarts the session to re-apply `--model`; per-turn
+   *  agents pick it up on their next turn. Omit for new-session composers, where
+   *  the model is chosen at spawn. */
+  onChangeModel?: (model: string | undefined) => void;
   /** The model the agent actually used on its most recent turn, read from the
    *  transcript (Claude, pi, Codex, OpenCode report it). Used as a fallback
    *  when the transcript has not yielded a model yet, so the picker can still
@@ -166,6 +172,7 @@ export function Composer({
   existingSession = false,
   initialThinking,
   onChangeEffort,
+  onChangeModel,
   activeModel,
   usage,
 }: Props) {
@@ -182,12 +189,18 @@ export function Composer({
   const [provider, setProvider] = useState(defaultProvider);
   const [model, setModel] = useState<string | undefined>(defaultModel);
   const [customAgentId, setCustomAgentId] = useState<string | undefined>(defaultCustomAgentId);
-  // Resolve the model within the SELECTED provider's list first: a model id
-  // shared across agents keeps only the first-discovered entry in the global
-  // `byId` view, which may belong to another provider and omit this provider's
-  // per-model metadata (e.g. codex's reasoning levels). Fall back to `byId` for
-  // ids the provider list doesn't carry (unknown/new models).
-  const activeModelId = existingSession ? (activeModel ?? model) : model;
+  // Resolve reasoning metadata from the model the NEXT turn will actually use.
+  // The picker's current selection (`model`) wins, so a mid-session model change
+  // immediately drives the effort levels — otherwise the newly picked model
+  // could be paired with a thinking value only the previous model supported.
+  // Fall back to the last transcript-reported model only when no explicit model
+  // is set (provider default), so we still reflect the real running model.
+  // Resolve within the SELECTED provider's list first: a model id shared across
+  // agents keeps only the first-discovered entry in the global `byId` view,
+  // which may belong to another provider and omit this provider's per-model
+  // metadata (e.g. codex's reasoning levels). Fall back to `byId` for ids the
+  // provider list doesn't carry (unknown/new models).
+  const activeModelId = existingSession ? (model ?? activeModel) : model;
   const activeMeta =
     lookupModelInList(modelsByAgent[provider], activeModelId) ??
     lookupModel(modelCatalog, activeModelId);
@@ -316,14 +329,21 @@ export function Composer({
             provider={provider}
             model={model}
             customAgentId={customAgentId}
-            locked={existingSession}
+            modelOnly={existingSession}
             onChange={(nextProvider, nextModel, nextCustomAgentId) => {
               // Effort follows from the selection via the effect above (a custom
               // agent's reasoning budget, else the per-provider default).
               setProvider(nextProvider);
               setModel(nextModel);
               setCustomAgentId(nextCustomAgentId);
-              onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
+              if (existingSession) {
+                // Model-only change on an existing session: provider/custom-agent
+                // are unchanged; persist the new model (backend restarts claude
+                // to re-apply --model, per-turn agents pick it up next turn).
+                onChangeModel?.(nextModel);
+              } else {
+                onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
+              }
             }}
           />
           {features.thinkingBudget && thinkingLevels.length > 0 && modelSupportsThinking && (

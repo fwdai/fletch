@@ -142,6 +142,11 @@ export interface AgentEffortEvent {
   effort: string | null;
 }
 
+export interface AgentModelEvent {
+  agent_id: string;
+  model: string | null;
+}
+
 export interface AgentTaskEvent {
   agent_id: string;
   task: string;

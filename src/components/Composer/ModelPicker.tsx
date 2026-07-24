@@ -4,6 +4,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
 import { Chip } from "@/components/ui/Chip";
 import { Scrim } from "@/components/ui/Scrim";
+import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { isDockerSupported, PROVIDERS, providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
 
@@ -15,6 +16,11 @@ interface Props {
   customAgentId?: string;
   onChange: (provider: string, model?: string, customAgentId?: string) => void;
   locked?: boolean;
+  /** Existing sessions: restrict the picker to changing the MODEL within the
+   *  session's current provider. Provider and custom-agent identity are fixed
+   *  at spawn, so the dropdown drops the agent/custom-agent sections and shows
+   *  only this provider's models. */
+  modelOnly?: boolean;
 }
 
 function formatContext(tokens: number): string {
@@ -28,7 +34,14 @@ function formatContext(tokens: number): string {
  *  hovering a coding agent opens a flyout on the right for model selection.
  *  Clicking an agent row commits its default model; leaving model unset
  *  preserves the provider CLI's default. Selections stay sticky via `onChange`. */
-export function ModelPicker({ provider, model, customAgentId, onChange, locked = false }: Props) {
+export function ModelPicker({
+  provider,
+  model,
+  customAgentId,
+  onChange,
+  locked = false,
+  modelOnly = false,
+}: Props) {
   const [open, setOpen] = useState(false);
   // Coding agent whose model flyout is currently expanded (null = none).
   const [hovered, setHovered] = useState<string | null>(null);
@@ -66,9 +79,23 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
     if (open) setHovered(null);
   }, [open]);
 
+  // Model-only (existing session): changing the model on a provider that bakes
+  // it into the process (claude, `restartToApply`) restarts the agent; surface
+  // that in the chip tooltip, mirroring the effort chip.
+  const restartOnChange =
+    modelOnly && !!PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL]?.restartToApply;
+  const chipTip = locked
+    ? (activeCustom?.name ?? selected.label)
+    : modelOnly
+      ? restartOnChange
+        ? "Model — changing restarts the agent (rebuilds cache)"
+        : "Model"
+      : "Agent and model";
+
   function pickModel(providerId: string, id: string | undefined) {
-    // Selecting a built-in model clears any custom-agent selection.
-    onChange(providerId, id, undefined);
+    // A model-only pick (existing session) keeps the session's custom-agent
+    // identity; a full-picker pick clears it.
+    onChange(providerId, id, modelOnly ? customAgentId : undefined);
     setOpen(false);
   }
 
@@ -79,7 +106,9 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
 
   function renderModelList(p: (typeof PROVIDERS)[number]) {
     const models = modelsByAgent[p.id] ?? [];
-    const isCurrent = p.id === provider && !customAgentId;
+    // In model-only mode the list is always the session's own provider, so its
+    // current model highlights even for a custom-agent session (customAgentId set).
+    const isCurrent = modelOnly || (p.id === provider && !customAgentId);
     return (
       <div className="model-list">
         <button
@@ -141,7 +170,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
         onClick={() => {
           if (!locked) setOpen((v) => !v);
         }}
-        tip={locked ? (activeCustom?.name ?? selected.label) : "Agent and model"}
+        tip={chipTip}
         className="model-chip"
       >
         {activeCustom ? (
@@ -162,7 +191,7 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
         {!locked && <Icon name="chevD" size={9} />}
       </Chip>
 
-      {open && (
+      {open && !modelOnly && (
         <>
           <Scrim onClose={() => setOpen(false)} />
           {/* Transparent wrapper: the main card sits above (z-index 2) the
@@ -309,6 +338,21 @@ export function ModelPicker({ provider, model, customAgentId, onChange, locked =
                 </div>
               </div>
             )}
+          </div>
+        </>
+      )}
+
+      {open && modelOnly && (
+        <>
+          <Scrim onClose={() => setOpen(false)} />
+          <div className="model-dd-wrap" style={{ bottom: "calc(100% + 6px)", left: 0 }}>
+            <div className="model-dd-main">
+              <div className="model-sect flex-center text-xs">
+                <span>Model</span>
+                <span className="model-sect-line" />
+              </div>
+              {renderModelList(selected)}
+            </div>
           </div>
         </>
       )}

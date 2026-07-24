@@ -4,6 +4,7 @@ import type {
   AgentEffortEvent,
   AgentGitActionEvent,
   AgentManagedEvent,
+  AgentModelEvent,
   AgentOutputEvent,
   AgentRepoAddedEvent,
   AgentStatusEvent,
@@ -89,6 +90,12 @@ export function onAgentView(cb: (e: AgentViewEvent) => void): Promise<UnlistenFn
  *  composer's effort chip reflects the new value without a full resync. */
 export function onAgentEffort(cb: (e: AgentEffortEvent) => void): Promise<UnlistenFn> {
   return listen<AgentEffortEvent>("agent:effort", (event) => cb(event.payload));
+}
+
+/** Fires when a session's model is changed mid-conversation, so the composer's
+ *  model picker reflects the new value without a full resync. */
+export function onAgentModel(cb: (e: AgentModelEvent) => void): Promise<UnlistenFn> {
+  return listen<AgentModelEvent>("agent:model", (event) => cb(event.payload));
 }
 
 export function onAgentTask(cb: (e: AgentTaskEvent) => void): Promise<UnlistenFn> {

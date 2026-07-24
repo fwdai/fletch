@@ -12,6 +12,7 @@ import {
   onAgentEffort,
   onAgentEvent,
   onAgentGitAction,
+  onAgentModel,
   onAgentOutput,
   onAgentRepoAdded,
   onAgentStatus,
@@ -347,6 +348,10 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
 
   await onAgentEffort((e) => {
     patchAgent(get, set, e.agent_id, { effort: e.effort });
+  });
+
+  await onAgentModel((e) => {
+    patchAgent(get, set, e.agent_id, { model: e.model });
   });
 
   await onAgentStatus((e) => {

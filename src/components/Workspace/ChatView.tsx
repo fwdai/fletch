@@ -371,6 +371,15 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
                   console.error("set_agent_effort failed", e);
                 });
               }}
+              onChangeModel={(model) => {
+                // Persist the mid-session model change; the backend restarts
+                // claude (resuming the same session) to re-apply --model, and
+                // per-turn agents pick it up on their next turn. Best-effort: a
+                // failure just leaves the prior model in force.
+                api.setAgentModel(agent.id, model ?? null).catch((e) => {
+                  console.error("set_agent_model failed", e);
+                });
+              }}
               disabled={!canSend}
               placeholder={
                 canSend
